@@ -1,0 +1,3 @@
+ld: error: duplicate symbol _main in:
+/Users/me/Proj/build/obj1.o
+/Users/me/Proj/build/obj2.o

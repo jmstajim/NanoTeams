@@ -1,0 +1,2 @@
+/Users/me/Proj/Sources/App/main.swift:12:34: error: cannot find 'foo' in scope
+/Users/me/Proj/Sources/App/Util.swift:9:5: warning: initialization of immutable value 'x' was never used; consider replacing with assignment to '_' or removing it
