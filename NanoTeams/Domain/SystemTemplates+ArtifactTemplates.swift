@@ -11,7 +11,7 @@ extension SystemTemplates {
             name: supervisorTaskArtifactName,
             icon: "target",
             mimeType: "text/plain",
-            description: "Supervisor's task for this task"
+            description: "The original task brief — objectives, requirements, and context provided by the Supervisor. Starting point for all downstream work."
         ),
         "Product Requirements": SystemArtifactTemplate(
             name: "Product Requirements",
