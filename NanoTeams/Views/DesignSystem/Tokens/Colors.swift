@@ -123,6 +123,8 @@ enum Colors {
 
     /// Error border — error banner outlines
     static let errorBorder = adaptive(dark: 0x47282C, light: 0xEFCFD3)
+    /// Neutral border — info banner outlines
+    static let neutralBorder = adaptive(dark: 0x2E2B28, light: 0xDDD8D3)
 
     // MARK: - Accent Tint Colors
 

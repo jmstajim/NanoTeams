@@ -11,6 +11,7 @@ final class NTMSOrchestrator {
     var activeTask: NTMSTask?
     var selectedRunID: Int?
     var lastErrorMessage: String?
+    var lastInfoMessage: String?
     private(set) var toolDefinitions: [ToolDefinitionRecord] = []
 
     /// Extracted engine state — views can observe this directly to avoid

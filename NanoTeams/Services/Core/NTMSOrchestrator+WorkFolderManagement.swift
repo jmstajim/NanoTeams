@@ -114,6 +114,8 @@ extension NTMSOrchestrator {
                 config: globalLLMConfig,
                 customPrompt: workFolder?.settings.descriptionPrompt
             )
+        } catch is CancellationError {
+            return nil
         } catch {
             self.lastErrorMessage = error.localizedDescription
             return nil

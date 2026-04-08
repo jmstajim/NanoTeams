@@ -5,6 +5,7 @@ struct WorkFolderSettingsView: View {
     @State private var descriptionDraft: String = ""
     @State private var promptDraft: String = ""
     @State private var isGenerating = false
+    @State private var generateTask: Task<Void, Never>?
     @State private var isShowingResetConfirmation = false
     @State private var isShowingCloseConfirmation = false
     @State private var isPromptExpanded = false
@@ -75,6 +76,9 @@ struct WorkFolderSettingsView: View {
             }
             recentProjects = NSDocumentController.shared.recentDocumentURLs
             Task { availableSchemes = await store.fetchAvailableSchemes() }
+        }
+        .onDisappear {
+            generateTask?.cancel()
         }
         .onChange(of: store.workFolder?.id) { _, _ in
             if let p = store.workFolder {
@@ -185,27 +189,40 @@ struct WorkFolderSettingsView: View {
 
             HStack {
                 Button {
-                    Task {
-                        isGenerating = true
-                        if let description = await store.generateWorkFolderDescription() {
-                            descriptionDraft = description
-                        }
+                    if isGenerating {
+                        generateTask?.cancel()
+                        generateTask = nil
                         isGenerating = false
+                        store.lastInfoMessage = "Generation stopped"
+                    } else {
+                        generateTask = Task {
+                            isGenerating = true
+                            defer { if !Task.isCancelled { isGenerating = false } }
+                            if let description = await store.generateWorkFolderDescription() {
+                                guard !Task.isCancelled else { return }
+                                descriptionDraft = description
+                            }
+                        }
                     }
                 } label: {
                     HStack(spacing: Spacing.s) {
-                        Image(systemName: "sparkles")
+                        ZStack {
+                            if isGenerating {
+                                NTMSLoader(.inline)
+                            } else {
+                                Image(systemName: "sparkles")
+                            }
+                        }
+                        .frame(width: 14, height: 14)
                         Text(isGenerating ? "Generating..." : "Generate")
-                        if isGenerating { NTMSLoader(.inline) }
                     }
                     .font(Typography.captionSemibold)
-                    .foregroundStyle(Colors.surfaceBackground)
+                    .foregroundStyle(isGenerating ? Colors.textSecondary : Colors.surfaceBackground)
                     .padding(.horizontal, Spacing.m)
                     .padding(.vertical, Spacing.xs)
-                    .background(Capsule(style: .continuous).fill(Colors.accent))
+                    .background(Capsule(style: .continuous).fill(isGenerating ? Colors.surfaceElevated : Colors.accent))
                 }
                 .buttonStyle(.plain)
-                .disabled(isGenerating)
 
                 Button {
                     isPromptExpanded.toggle()

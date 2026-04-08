@@ -2,17 +2,50 @@ import SwiftUI
 
 // MARK: - Error Banner View
 
-/// Floating error banner — appears at the top center like an iPhone notification.
+/// Floating banner — appears at the top center like an iPhone notification.
 /// Auto-dismisses after a timeout. Tap to dismiss immediately.
 struct ErrorBannerView: View {
     let message: String
+    var style: Style = .error
     var onDismiss: () -> Void = {}
+
+    enum Style {
+        case error, info
+
+        var icon: String {
+            switch self {
+            case .error: "exclamationmark.triangle.fill"
+            case .info: "info.circle.fill"
+            }
+        }
+
+        var iconColor: Color {
+            switch self {
+            case .error: Colors.error
+            case .info: Colors.neutral
+            }
+        }
+
+        var fill: Color {
+            switch self {
+            case .error: Colors.errorTint
+            case .info: Colors.neutralTint
+            }
+        }
+
+        var border: Color {
+            switch self {
+            case .error: Colors.errorBorder
+            case .info: Colors.neutralBorder
+            }
+        }
+    }
 
     var body: some View {
         HStack(spacing: Spacing.s) {
-            Image(systemName: "exclamationmark.triangle.fill")
+            Image(systemName: style.icon)
                 .font(.body.weight(.semibold))
-                .foregroundStyle(Colors.error)
+                .foregroundStyle(style.iconColor)
 
             Text(message)
                 .font(Typography.subheadlineMedium)
@@ -23,16 +56,16 @@ struct ErrorBannerView: View {
         .padding(.vertical, Spacing.m)
         .background(
             RoundedRectangle.squircle(CornerRadius.large)
-                .fill(Colors.errorTint)
+                .fill(style.fill)
         )
         .overlay {
             RoundedRectangle.squircle(CornerRadius.large)
-                .strokeBorder(Colors.errorBorder, lineWidth: 1)
+                .strokeBorder(style.border, lineWidth: 1)
         }
         .shadow(color: .black.opacity(0.25), radius: 12, y: 4)
         .onTapGesture { onDismiss() }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Error: \(message)")
+        .accessibilityLabel("\(style == .error ? "Error: " : "")\(message)")
         .accessibilityAddTraits(.isButton)
         .accessibilityHint("Tap to dismiss")
     }
@@ -46,6 +79,7 @@ struct ErrorBannerModifier: ViewModifier {
     @Environment(NTMSOrchestrator.self) private var store
 
     @State private var displayedMessage: String?
+    @State private var displayedStyle: ErrorBannerView.Style = .error
     @State private var dismissTask: Task<Void, Never>?
 
     private let autoDismissSeconds: Double = 4
@@ -54,7 +88,7 @@ struct ErrorBannerModifier: ViewModifier {
         content
             .overlay(alignment: .top) {
                 if let message = displayedMessage {
-                    ErrorBannerView(message: message) {
+                    ErrorBannerView(message: message, style: displayedStyle) {
                         dismiss()
                     }
                     .transition(.move(edge: .top).combined(with: .opacity))
@@ -65,12 +99,18 @@ struct ErrorBannerModifier: ViewModifier {
             .onChange(of: store.lastErrorMessage) { _, newValue in
                 guard let newValue, !newValue.isEmpty else { return }
                 store.lastErrorMessage = nil
-                show(newValue)
+                show(newValue, style: .error)
+            }
+            .onChange(of: store.lastInfoMessage) { _, newValue in
+                guard let newValue, !newValue.isEmpty else { return }
+                store.lastInfoMessage = nil
+                show(newValue, style: .info)
             }
     }
 
-    private func show(_ message: String) {
+    private func show(_ message: String, style: ErrorBannerView.Style) {
         dismissTask?.cancel()
+        displayedStyle = style
         displayedMessage = message
         dismissTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(autoDismissSeconds))

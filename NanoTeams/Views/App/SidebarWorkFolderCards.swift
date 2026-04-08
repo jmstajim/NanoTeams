@@ -146,24 +146,34 @@ extension SidebarView {
                     .truncationMode(.tail)
             } else {
                 Button {
-                    Task {
-                        isGeneratingDescription = true
-                        if let description = await store.generateWorkFolderDescription() {
-                            await store.updateWorkFolderDescription(description)
-                        }
+                    if isGeneratingDescription {
+                        generateDescriptionTask?.cancel()
+                        generateDescriptionTask = nil
                         isGeneratingDescription = false
+                        store.lastInfoMessage = "Generation stopped"
+                    } else {
+                        generateDescriptionTask = Task {
+                            isGeneratingDescription = true
+                            defer { if !Task.isCancelled { isGeneratingDescription = false } }
+                            if let description = await store.generateWorkFolderDescription() {
+                                guard !Task.isCancelled else { return }
+                                await store.updateWorkFolderDescription(description)
+                            }
+                        }
                     }
                 } label: {
                     HStack(spacing: Spacing.xs) {
-                        if isGeneratingDescription { NTMSLoader(.mini) }
-                        else { Image(systemName: "sparkles").font(Typography.caption) }
+                        ZStack {
+                            if isGeneratingDescription { NTMSLoader(.mini) }
+                            else { Image(systemName: "sparkles").font(Typography.caption) }
+                        }
+                        .frame(width: 12, height: 12)
                         Text(isGeneratingDescription ? "Generating..." : "Generate Description")
                             .font(Typography.caption)
                     }
-                    .foregroundStyle(Colors.accent)
+                    .foregroundStyle(isGeneratingDescription ? Colors.textSecondary : Colors.accent)
                 }
                 .buttonStyle(.plain)
-                .disabled(isGeneratingDescription)
             }
         }
         .padding(.leading, Spacing.m)
