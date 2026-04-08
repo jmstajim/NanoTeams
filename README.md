@@ -52,7 +52,7 @@ Each role can read/write files, use git, build with Xcode, consult other roles, 
 ### Multi-Agent AI Teams
 Create tasks and let a team of specialized AI roles collaborate. Each role has its own system prompt, tool access, and artifact responsibilities. Roles communicate through consultations, team meetings, and change requests.
 
-<!-- TODO: screenshot — activity feed with role messages and tool calls -->
+<img width="640" height="453" alt="Activity feed with role messages and tool calls" src="https://github.com/user-attachments/assets/34f55b17-31d8-48d3-b3cb-c191a3f673fb" />
 
 ### 28 Built-in Tools
 Sandboxed tool system: file operations, git, Xcode build & test, team collaboration (`ask_teammate`, `request_team_meeting`, `request_changes`), artifact creation, supervisor Q&A, persistent memory, and image analysis.
