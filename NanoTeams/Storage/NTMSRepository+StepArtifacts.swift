@@ -35,6 +35,28 @@ extension NTMSRepository {
         return paths.relativePathWithinNanoteams(for: fileURL)
     }
 
+    /// Persist a binary-format artifact (PDF, RTF, DOCX) alongside the markdown original.
+    /// Returns the relative path within .nanoteams/.
+    func persistStepArtifactBinary(
+        at workFolderRoot: URL,
+        taskID: Int,
+        runID: Int,
+        roleID: String,
+        artifactName: String,
+        data: Data,
+        fileExtension: String
+    ) throws -> String {
+        let paths = NTMSPaths(workFolderRoot: workFolderRoot)
+        let roleDir = paths.roleDir(taskID: taskID, runID: runID, roleID: roleID)
+        try fileManager.createDirectory(at: roleDir, withIntermediateDirectories: true)
+
+        let slug = Artifact.slugify(artifactName)
+        let fileURL = roleDir.appendingPathComponent("artifact_\(slug).\(fileExtension)", isDirectory: false)
+
+        try data.write(to: fileURL, options: [.atomic])
+        return paths.relativePathWithinNanoteams(for: fileURL)
+    }
+
     /// Persist a build diagnostics JSON file under .nanoteams/internal/tasks/<taskID>/runs/<runID>/roles/<roleID>/build_diagnostics.json
     /// and return the relative path within .nanoteams/.
     func persistBuildDiagnosticsPersisted(

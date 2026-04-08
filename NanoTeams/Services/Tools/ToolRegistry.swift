@@ -14,7 +14,7 @@ enum ToolSignal: Hashable {
     case teammateConsultation(id: String, question: String, context: String?)
     case teamMeeting(topic: String, participants: [String], context: String?)
     case changeRequest(targetRole: String, changes: String, reasoning: String)
-    case artifact(name: String, content: String)
+    case artifact(name: String, content: String, format: String?)
     case visionAnalysis(imagePath: String, prompt: String)
 }
 

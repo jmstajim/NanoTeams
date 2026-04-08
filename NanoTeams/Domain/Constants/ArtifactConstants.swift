@@ -18,6 +18,8 @@ enum ArtifactConstants {
     static let supportedMimeTypes: [String] = [
         "text/markdown", "text/plain", "application/json",
         "text/html", "text/css", "application/pdf",
+        "application/rtf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ]
 
     /// Display names for supported MIME types (OCP dictionary).
@@ -28,5 +30,7 @@ enum ArtifactConstants {
         "text/html": "HTML",
         "text/css": "CSS",
         "application/pdf": "PDF",
+        "application/rtf": "RTF",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "DOCX",
     ]
 }

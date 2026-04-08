@@ -14,6 +14,7 @@ struct CreateArtifactTool: ToolHandler {
             properties: [
                 "name": JS.string("Artifact name — must match one of the expected artifacts (e.g., 'World Compendium')"),
                 "content": JS.string("Full artifact content in markdown format"),
+                "format": JS.string("Output format: 'markdown' (default), 'pdf', 'rtf', 'docx'. Non-markdown formats produce binary document files alongside the markdown."),
             ],
             required: ["name", "content"]
         )
@@ -36,7 +37,7 @@ struct CreateArtifactTool: ToolHandler {
                 argumentsJSON: encodeArgsToJSON(args),
                 outputJSON: makeSuccessEnvelope(data: ["artifact": name, "status": "created"]),
                 isError: false,
-                signal: .artifact(name: name, content: content)
+                signal: .artifact(name: name, content: content, format: optionalString(args, "format"))
             )
         }
     }

@@ -202,7 +202,7 @@ final class RevisionContinuationTests: XCTestCase {
             argumentsJSON: "{\"name\":\"Product Requirements\",\"content\":\"Updated content\"}",
             outputJSON: "{\"status\":\"created\"}",
             isError: false,
-            signal: .artifact(name: "Product Requirements", content: "Updated content")
+            signal: .artifact(name: "Product Requirements", content: "Updated content", format: nil)
         )
         await service.processCreateArtifactResult(result: result, stepID: stepID)
 

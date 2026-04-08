@@ -518,6 +518,43 @@ final class NTMSRepositoryTests: XCTestCase {
                        "Non-control content should be preserved")
     }
 
+    // MARK: - persistStepArtifactBinary
+
+    func testPersistStepArtifactBinary_writesFileWithCorrectExtension() throws {
+        let root = try makeProjectRoot()
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        let data = Data("PDF binary content".utf8)
+        let relativePath = try sut.persistStepArtifactBinary(
+            at: root, taskID: 0, runID: 0, roleID: "test_role",
+            artifactName: "Final Report", data: data, fileExtension: "pdf"
+        )
+
+        // Verify file exists with .pdf extension
+        let p = paths(for: root)
+        let slug = Artifact.slugify("Final Report")
+        let fileURL = p.roleDir(taskID: 0, runID: 0, roleID: "test_role")
+            .appendingPathComponent("artifact_\(slug).pdf", isDirectory: false)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fileURL.path))
+
+        let readBack = try Data(contentsOf: fileURL)
+        XCTAssertEqual(readBack, data)
+        XCTAssertTrue(relativePath.contains("artifact_\(slug).pdf"))
+    }
+
+    func testPersistStepArtifactBinary_rtfExtension() throws {
+        let root = try makeProjectRoot()
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        let data = Data("{\\rtf1 Hello}".utf8)
+        let relativePath = try sut.persistStepArtifactBinary(
+            at: root, taskID: 0, runID: 0, roleID: "test_role",
+            artifactName: "Notes", data: data, fileExtension: "rtf"
+        )
+
+        XCTAssertTrue(relativePath.hasSuffix("artifact_notes.rtf"))
+    }
+
     // MARK: - 27. updateWorkFolderDescription_updatesDescription
 
     func testUpdateProjectDescription_updatesDescription() throws {

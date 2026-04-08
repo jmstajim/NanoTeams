@@ -40,6 +40,7 @@ protocol ToolRepository {
 /// remains only as a concrete `NTMSRepository` method for direct use (e.g. tests).
 protocol ArtifactRepository {
     func persistStepArtifactFile(at workFolderRoot: URL, taskID: Int, runID: Int, roleID: String, artifactName: String, content: String) throws -> String
+    func persistStepArtifactBinary(at workFolderRoot: URL, taskID: Int, runID: Int, roleID: String, artifactName: String, data: Data, fileExtension: String) throws -> String
 }
 
 /// Staged-attachment lifecycle (Quick Capture → finalized task attachments).

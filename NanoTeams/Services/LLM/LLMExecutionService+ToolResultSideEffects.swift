@@ -56,7 +56,7 @@ extension LLMExecutionService {
 
     func processCreateArtifactResult(result: ToolExecutionResult, stepID: String) async {
         guard result.toolName == ToolNames.createArtifact, !result.isError,
-              case .artifact(let name, let content) = result.signal,
+              case .artifact(let name, let content, let format) = result.signal,
               let delegate, let tid = taskIDForStep(stepID),
               let workFolderRoot = delegate.workFolderURL,
               let task = delegate.loadedTask(tid),
@@ -74,6 +74,7 @@ extension LLMExecutionService {
         }
 
         // Persist artifact file to disk (uses resolvedName for consistent slug)
+        // Markdown is always written — it's the primary format for downstream roles and UI.
         guard let relativePath = try? repository.persistStepArtifactFile(
             at: workFolderRoot,
             taskID: task.id,
@@ -82,6 +83,23 @@ extension LLMExecutionService {
             artifactName: resolvedName,
             content: content
         ) else { return }
+
+        // Best-effort binary export (PDF/RTF/DOCX) alongside the markdown file.
+        // The markdown remains the primary artifact (relativePath points to .md);
+        // the binary file is a side-car for user download.
+        if let formatStr = format,
+           let exportFormat = DocumentTextExtractor.ExportFormat(rawValue: formatStr.lowercased()),
+           let exportData = DocumentTextExtractor.export(text: content, to: exportFormat) {
+            _ = try? repository.persistStepArtifactBinary(
+                at: workFolderRoot,
+                taskID: task.id,
+                runID: task.runs[runIndex].id,
+                roleID: stepID,
+                artifactName: resolvedName,
+                data: exportData,
+                fileExtension: exportFormat.rawValue
+            )
+        }
 
         let now = MonotonicClock.shared.now()
         let artifact = Artifact(

@@ -13,7 +13,7 @@ struct ReadFileTool: ToolHandler {
     static let name = TN.readFile
     static let schema = ToolSchema(
         name: TN.readFile,
-        description: "Read file content.",
+        description: "Read file content. Supports PDF, DOCX, DOC, RTF, ODT, HTML, XLSX, PPTX — text is extracted automatically.",
         parameters: JS.object(
             properties: [
                 "path": JS.string("Relative path to file"),
@@ -64,6 +64,39 @@ struct ReadFileTool: ToolHandler {
                 )
             }
 
+            struct ReadFileData: Codable {
+                var path: String
+                var content: String
+                var size: Int
+                var encoding: String
+            }
+
+            // Document format auto-detection: extract text from PDF/DOCX/XLSX/etc.
+            if let extracted = DocumentTextExtractor.extractText(from: fileURL) {
+                // Extraction failure → error result (avoids polluting MemoryTagStore/ToolCallCache)
+                if DocumentTextExtractor.isFailureMessage(extracted) {
+                    return makeErrorResult(
+                        toolName: Self.name, args: args,
+                        code: .commandFailed, message: extracted
+                    )
+                }
+
+                let byteCount = extracted.utf8.count
+                let truncated = byteCount > maxBytes
+                let content = truncated
+                    ? String(extracted.utf8.prefix(maxBytes)) ?? String(extracted.prefix(maxBytes))
+                    : extracted
+                return makeSuccessResult(
+                    toolName: Self.name, args: args,
+                    data: ReadFileData(
+                        path: path, content: content,
+                        size: byteCount, encoding: "extracted_text"
+                    ),
+                    telemetry: Telemetry(truncated: truncated)
+                )
+            }
+
+            // Standard UTF-8 text path
             let data = try Data(contentsOf: fileURL)
             var truncated = false
             let contentData: Data
@@ -75,14 +108,6 @@ struct ReadFileTool: ToolHandler {
             }
 
             let content = String(data: contentData, encoding: .utf8) ?? ""
-
-            struct ReadFileData: Codable {
-                var path: String
-                var content: String
-                var size: Int
-                var encoding: String
-            }
-
             return makeSuccessResult(
                 toolName: Self.name, args: args,
                 data: ReadFileData(path: path, content: content, size: data.count, encoding: encoding),
@@ -148,7 +173,19 @@ struct ReadLinesTool: ToolHandler {
                 )
             }
 
-            let content = try String(contentsOf: fileURL, encoding: .utf8)
+            // Document format auto-detection for line reading
+            let content: String
+            if let extracted = DocumentTextExtractor.extractText(from: fileURL) {
+                if DocumentTextExtractor.isFailureMessage(extracted) {
+                    return makeErrorResult(
+                        toolName: Self.name, args: args,
+                        code: .commandFailed, message: extracted
+                    )
+                }
+                content = extracted
+            } else {
+                content = try String(contentsOf: fileURL, encoding: .utf8)
+            }
             let allLines = content.components(separatedBy: .newlines)
             let totalLines = allLines.count
 

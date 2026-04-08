@@ -23,15 +23,10 @@ final class NTMSRepositoryProtocolSplitTests: XCTestCase {
 
     // MARK: - ArtifactRepository narrowness (ISP guard)
 
-    /// `ArtifactRepository` must expose ONLY `persistStepArtifactFile`.
+    /// `ArtifactRepository` exposes `persistStepArtifactFile` and `persistStepArtifactBinary`.
     /// `persistBuildDiagnosticsPersisted` is intentionally concrete-only
     /// (no production consumer through the protocol surface).
-    ///
-    /// This generic helper will fail to compile if anything beyond
-    /// `persistStepArtifactFile` is added to the protocol — Swift refuses
-    /// to resolve the generic if the conforming type is asked for a method
-    /// that isn't declared on the protocol.
-    func testArtifactRepository_exposesOnlyStepArtifactFilePersistence() throws {
+    func testArtifactRepository_exposesArtifactPersistenceMethods() throws {
         let repo: any ArtifactRepository = NTMSRepository()
 
         let tempDir = FileManager.default.temporaryDirectory
@@ -39,8 +34,8 @@ final class NTMSRepositoryProtocolSplitTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: tempDir) }
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
-        // This must compile — the single method on the protocol.
-        let relativePath = try repo.persistStepArtifactFile(
+        // Markdown artifact persistence
+        let mdPath = try repo.persistStepArtifactFile(
             at: tempDir,
             taskID: 0,
             runID: 0,
@@ -48,7 +43,20 @@ final class NTMSRepositoryProtocolSplitTests: XCTestCase {
             artifactName: "Test Artifact",
             content: "hello"
         )
-        XCTAssertFalse(relativePath.isEmpty)
+        XCTAssertFalse(mdPath.isEmpty)
+
+        // Binary artifact persistence (PDF/RTF/DOCX side-car)
+        let binPath = try repo.persistStepArtifactBinary(
+            at: tempDir,
+            taskID: 0,
+            runID: 0,
+            roleID: "test_role",
+            artifactName: "Test Artifact",
+            data: Data("binary".utf8),
+            fileExtension: "pdf"
+        )
+        XCTAssertFalse(binPath.isEmpty)
+        XCTAssertTrue(binPath.hasSuffix(".pdf"))
 
         // `persistBuildDiagnosticsPersisted` is NOT on the protocol — a call via
         // `any ArtifactRepository` would fail to compile. We intentionally do
