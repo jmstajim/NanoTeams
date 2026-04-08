@@ -35,7 +35,7 @@ Built with **LM Studio's stateful chat API** (`previous_response_id`), so the se
 4. Pick a team (or start with **Personal Assistant** for a simple chat)
 5. Create a task, describe what you need — the team takes it from there
 
-<!-- TODO: screenshot — Getting Started flow or new task creation -->
+<img width="640" height="633" alt="Getting Started flow or new task creation" src="https://github.com/user-attachments/assets/d4de18bb-7cdd-4d21-8d72-7018136b8700" />
 
 ## How It Works
 
@@ -45,7 +45,7 @@ For example, with the **FAANG Team**: you describe what you want → PM writes r
 
 Each role can read/write files, use git, build with Xcode, consult other roles, and request team meetings — all within a sandboxed environment limited to your work folder.
 
-<!-- TODO: screenshot — team graph showing roles and artifact flow -->
+<img width="640" height="491" alt="Team graph showing roles and artifact flow" src="https://github.com/user-attachments/assets/59e383b0-9393-4036-92d5-662c431a2d08" />
 
 ## Features
 
@@ -65,7 +65,7 @@ Two global hotkeys work from any app:
 - **Ctrl+Opt+Cmd+0** — Floating overlay to create tasks, answer AI questions, or view status
 - **Ctrl+Opt+Cmd+K** — Capture the current selection (text or files) and attach it to your task
 
-<!-- TODO: screenshot — Quick Capture overlay -->
+<img width="441" height="455" alt="Quick Capture overlay" src="https://github.com/user-attachments/assets/48c6ac05-ff5f-49b8-9131-424a5b4f7acd" />
 
 ### Team Meetings & Change Requests
 Roles consult each other for quick Q&A, hold multi-participant meetings with turn-based dialogue and voting, and request peer-to-peer revisions. Code Reviewer can request changes from the Engineer — the system creates a voting meeting, tallies votes, and re-executes with full context if approved.
