@@ -9,7 +9,7 @@
 
 **Native macOS app for AI agent teams powered by local LLMs.** No cloud. No API keys. No telemetry. Your data stays on your Mac.
 
-<img width="856" height="807" alt="NanoTeams — AI agent teams for local LLMs on macOS" src="https://github.com/user-attachments/assets/c1f54994-07b6-424a-b409-07c5ddaf1f01" />
+<img width="640" height="604" alt="NanoTeams — AI agent teams for local LLMs on macOS" src="https://github.com/user-attachments/assets/aaf71be6-a72f-4f5d-bf77-47d015985f0e" />
 
 ## Why NanoTeams
 
