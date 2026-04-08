@@ -112,16 +112,37 @@ enum ActivityFeedBuilder {
                     question = "?"
                 }
 
-                let answer: String?
+                let rawAnswer: String?
                 if index < answerMessages.count {
                     let content = answerMessages[index].content
-                    answer = content.hasPrefix("Supervisor answer: ")
+                    rawAnswer = content.hasPrefix("Supervisor answer: ")
                         ? String(content.dropFirst("Supervisor answer: ".count))
                         : content
                 } else if isLast {
-                    answer = step.supervisorAnswer
+                    rawAnswer = step.supervisorAnswer
                 } else {
-                    answer = "(answered)"
+                    rawAnswer = "(answered)"
+                }
+
+                // Strip "--- Attached Files ---" section from answer text and extract paths
+                let answer: String?
+                var attachmentPaths: [String] = []
+                if let raw = rawAnswer {
+                    let stripped = stripAttachedFiles(from: raw)
+                    answer = stripped.text ?? (stripped.paths.isEmpty ? nil : "")
+                    attachmentPaths = stripped.paths
+                } else {
+                    answer = nil
+                }
+                // For the last question, merge structured paths from step field
+                if isLast {
+                    let structuredPaths = step.supervisorAnswerAttachmentPaths
+                    if !structuredPaths.isEmpty {
+                        let existing = Set(attachmentPaths)
+                        for path in structuredPaths where !existing.contains(path) {
+                            attachmentPaths.append(path)
+                        }
+                    }
                 }
 
                 let thinking = step.llmConversation
@@ -139,6 +160,7 @@ enum ActivityFeedBuilder {
                     role: step.role,
                     type: .supervisorInput(
                         question: question, answer: answer,
+                        answerAttachmentPaths: attachmentPaths,
                         toolCallID: call.id, thinking: thinking
                     ),
                     createdAt: answerTimestamp
@@ -227,6 +249,27 @@ enum ActivityFeedBuilder {
             ))
         }
         return result
+    }
+
+    /// Strips the `--- Attached Files ---` section from an answer string.
+    /// Returns the cleaned text (nil if empty after stripping) and extracted file paths.
+    static func stripAttachedFiles(from text: String) -> (text: String?, paths: [String]) {
+        let separator = "--- Attached Files ---"
+        guard let range = text.range(of: separator) else {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (trimmed.isEmpty ? nil : trimmed, [])
+        }
+        let before = String(text[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let after = String(text[range.upperBound...])
+        let paths = after
+            .components(separatedBy: .newlines)
+            .compactMap { line -> String? in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                guard trimmed.hasPrefix("- ") else { return nil }
+                let path = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+                return path.isEmpty ? nil : path
+            }
+        return (before.isEmpty ? nil : before, paths)
     }
 
     /// Extracts the question string from an `ask_supervisor` tool call's argumentsJSON.

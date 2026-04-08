@@ -6,6 +6,8 @@ import SwiftUI
 struct SupervisorInputCard: View {
     let question: String
     let answer: String?
+    var answerAttachmentPaths: [String] = []
+    var workFolderURL: URL? = nil
     let thinking: String?
     let thinkingID: UUID
     let isSubmittingAnswer: Bool
@@ -38,13 +40,21 @@ struct SupervisorInputCard: View {
             if isResolved, let answer {
                 if isAutoAnswering {
                     autoAnsweredResult(answer: answer)
-                } else {
+                } else if !answer.isEmpty {
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundStyle(Colors.success)
                             .font(.caption)
                         Text(answer).font(.body).foregroundStyle(.secondary)
                     }
+                }
+
+                if !answerAttachmentPaths.isEmpty {
+                    ReadOnlyAttachmentGrid(
+                        attachmentPaths: answerAttachmentPaths,
+                        clippedTexts: [],
+                        workFolderURL: workFolderURL
+                    )
                 }
             } else if isAutoAnswering {
                 autoAnswerProgress

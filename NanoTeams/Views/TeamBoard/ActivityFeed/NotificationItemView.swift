@@ -8,6 +8,7 @@ struct NotificationItemView: View {
     let role: Role
     let type: ActivityNotificationType
     var isChatMode: Bool = false
+    var workFolderURL: URL? = nil
     @Binding var thinkingExpanded: Set<UUID>
     @Binding var answerText: String
     @Binding var answerAttachments: [StagedAttachment]
@@ -44,10 +45,12 @@ struct NotificationItemView: View {
     @ViewBuilder
     private var notificationContent: some View {
         switch type {
-        case .supervisorInput(let question, let answer, let toolCallID, let thinking):
+        case .supervisorInput(let question, let answer, let answerAttachmentPaths, let toolCallID, let thinking):
             SupervisorInputCard(
                 question: question,
                 answer: answer,
+                answerAttachmentPaths: answerAttachmentPaths,
+                workFolderURL: workFolderURL,
                 thinking: thinking,
                 thinkingID: toolCallID,
                 isSubmittingAnswer: isSubmittingAnswer,
@@ -75,6 +78,7 @@ struct NotificationItemView: View {
         type: .supervisorInput(
             question: "Should I use async/await or completion handlers for the network layer?",
             answer: nil,
+            answerAttachmentPaths: [],
             toolCallID: UUID(),
             thinking: "I need guidance on the concurrency approach."
         ),
@@ -103,6 +107,7 @@ struct NotificationItemView: View {
         type: .supervisorInput(
             question: "Should I use async/await or completion handlers for the network layer?",
             answer: nil,
+            answerAttachmentPaths: [],
             toolCallID: UUID(),
             thinking: "I need guidance on the concurrency approach."
         ),
@@ -131,6 +136,7 @@ struct NotificationItemView: View {
         type: .supervisorInput(
             question: "What should be the priority order for the notification channels?",
             answer: "Push notifications first, then email. SMS can wait for v2.",
+            answerAttachmentPaths: [],
             toolCallID: UUID(),
             thinking: nil
         ),

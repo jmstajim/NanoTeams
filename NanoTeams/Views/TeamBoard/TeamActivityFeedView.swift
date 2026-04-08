@@ -142,9 +142,11 @@ struct TeamActivityFeedView: View {
                         role: q.role,
                         type: .supervisorInput(
                             question: q.question, answer: nil,
+                            answerAttachmentPaths: [],
                             toolCallID: q.toolCallID, thinking: q.thinking
                         ),
                         isChatMode: isChatMode,
+                        workFolderURL: store.workFolderURL,
                         thinkingExpanded: expansionBinding(\.thinking),
                         answerText: answerBinding,
                         answerAttachments: attachmentsBinding,
@@ -469,6 +471,7 @@ struct TeamActivityFeedView: View {
             )
             NotificationItemView(
                 stepID: stepID, role: role, type: type, isChatMode: isChatMode,
+                workFolderURL: store.workFolderURL,
                 thinkingExpanded: expansionBinding(\.thinking),
                 answerText: answerBinding,
                 answerAttachments: attachmentsBinding,
