@@ -143,6 +143,7 @@ struct TeamActivityFeedView: View {
                         type: .supervisorInput(
                             question: q.question, answer: nil,
                             answerAttachmentPaths: [],
+                            answerClippedTexts: [],
                             toolCallID: q.toolCallID, thinking: q.thinking
                         ),
                         isChatMode: isChatMode,

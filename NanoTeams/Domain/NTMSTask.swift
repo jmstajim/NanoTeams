@@ -216,12 +216,19 @@ extension NTMSTask {
         let nonEmptyClips = clippedTexts
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        if nonEmptyClips.count == 1 {
-            sections.append("--- Clipped Text ---\n\(nonEmptyClips[0])")
-        } else if nonEmptyClips.count > 1 {
-            for (i, clip) in nonEmptyClips.enumerated() {
-                sections.append("--- Clipped Text (\(i + 1) of \(nonEmptyClips.count)) ---\n\(clip)")
+        for (i, clip) in nonEmptyClips.enumerated() {
+            let parsed = SourceContext.parse(clip)
+            let header: String
+            if let parsed {
+                header = nonEmptyClips.count == 1
+                    ? "--- Clipped Text (\(parsed.source)) ---"
+                    : "--- Clipped Text (\(i + 1) of \(nonEmptyClips.count), \(parsed.source)) ---"
+            } else {
+                header = nonEmptyClips.count == 1
+                    ? "--- Clipped Text ---"
+                    : "--- Clipped Text (\(i + 1) of \(nonEmptyClips.count)) ---"
             }
+            sections.append("\(header)\n\(parsed?.body ?? clip)")
         }
 
         if !attachmentPaths.isEmpty {

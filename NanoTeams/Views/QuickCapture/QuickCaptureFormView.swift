@@ -405,11 +405,19 @@ struct QuickCaptureFormView: View {
         .buttonStyle(.plain)
         .popover(isPresented: $isShowingSettings) {
             let controller = QuickCaptureController.shared
-            Toggle("Keep open in chat mode", isOn: Binding(
-                get: { controller.keepOpenInChat },
-                set: { controller.keepOpenInChat = $0 }
-            ))
-            .toggleStyle(.checkbox)
+            VStack(alignment: .leading, spacing: Spacing.s) {
+                Toggle("Keep open in chat mode", isOn: Binding(
+                    get: { controller.keepOpenInChat },
+                    set: { controller.keepOpenInChat = $0 }
+                ))
+                .toggleStyle(.checkbox)
+
+                Toggle("Embed files in prompt", isOn: Binding(
+                    get: { controller.embedFilesInPrompt },
+                    set: { controller.embedFilesInPrompt = $0 }
+                ))
+                .toggleStyle(.checkbox)
+            }
             .padding(Spacing.m)
         }
     }

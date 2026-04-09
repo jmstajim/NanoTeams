@@ -7,9 +7,11 @@ enum ActivityNotificationType: Hashable {
     /// Supervisor question notification. Each `ask_supervisor` tool call gets its own notification.
     /// - question: The question text
     /// - answer: The supervisor's answer (nil if unanswered/active)
+    /// - answerAttachmentPaths: File attachment paths from the answer
+    /// - answerClippedTexts: Clipped text snippets extracted from the answer (for card display)
     /// - toolCallID: The originating StepToolCall.id for unique identification
     /// - thinking: The LLM's reasoning that led to this question (nil if none)
-    case supervisorInput(question: String, answer: String?, answerAttachmentPaths: [String], toolCallID: UUID, thinking: String?)
+    case supervisorInput(question: String, answer: String?, answerAttachmentPaths: [String], answerClippedTexts: [String], toolCallID: UUID, thinking: String?)
     case failed(errorMessage: String?)
 
     func icon(isChatMode: Bool) -> String {
@@ -28,7 +30,7 @@ enum ActivityNotificationType: Hashable {
 
     func title(for role: Role, isChatMode: Bool = false) -> String {
         switch self {
-        case .supervisorInput(_, let answer, _, _, _):
+        case .supervisorInput(_, let answer, _, _, _, _):
             if answer != nil {
                 return "\(role.displayName) asked"
             }
@@ -73,7 +75,7 @@ enum TeamActivityTimelineItem: Identifiable {
         case .notification(let stepID, _, let type, _):
             let typeKey: String
             switch type {
-            case .supervisorInput(_, _, _, let tcID, _): typeKey = "input-\(tcID.uuidString)"
+            case .supervisorInput(_, _, _, _, let tcID, _): typeKey = "input-\(tcID.uuidString)"
             case .failed: typeKey = "fail"
             }
             return "notif-\(stepID)-\(typeKey)"

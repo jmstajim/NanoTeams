@@ -124,13 +124,15 @@ enum ActivityFeedBuilder {
                     rawAnswer = "(answered)"
                 }
 
-                // Strip "--- Attached Files ---" section from answer text and extract paths
+                // Strip "--- Attached Files ---" and "--- Clipped Text ---" sections
                 let answer: String?
                 var attachmentPaths: [String] = []
+                var answerClippedTexts: [String] = []
                 if let raw = rawAnswer {
                     let stripped = stripAttachedFiles(from: raw)
-                    answer = stripped.text ?? (stripped.paths.isEmpty ? nil : "")
+                    answer = stripped.text ?? (stripped.paths.isEmpty && stripped.clippedTexts.isEmpty ? nil : "")
                     attachmentPaths = stripped.paths
+                    answerClippedTexts = stripped.clippedTexts
                 } else {
                     answer = nil
                 }
@@ -161,6 +163,7 @@ enum ActivityFeedBuilder {
                     type: .supervisorInput(
                         question: question, answer: answer,
                         answerAttachmentPaths: attachmentPaths,
+                        answerClippedTexts: answerClippedTexts,
                         toolCallID: call.id, thinking: thinking
                     ),
                     createdAt: answerTimestamp
@@ -253,23 +256,65 @@ enum ActivityFeedBuilder {
 
     /// Strips the `--- Attached Files ---` section from an answer string.
     /// Returns the cleaned text (nil if empty after stripping) and extracted file paths.
-    static func stripAttachedFiles(from text: String) -> (text: String?, paths: [String]) {
-        let separator = "--- Attached Files ---"
-        guard let range = text.range(of: separator) else {
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            return (trimmed.isEmpty ? nil : trimmed, [])
+    static func stripAttachedFiles(from text: String) -> (text: String?, paths: [String], clippedTexts: [String]) {
+        var remaining = text
+        var paths: [String] = []
+        var clippedTexts: [String] = []
+
+        // Extract "--- Attached Files ---" section
+        let fileSeparator = "--- Attached Files ---"
+        if let range = remaining.range(of: fileSeparator) {
+            let after = String(remaining[range.upperBound...])
+            remaining = String(remaining[..<range.lowerBound])
+            paths = after
+                .components(separatedBy: .newlines)
+                .compactMap { line -> String? in
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    guard trimmed.hasPrefix("- ") else { return nil }
+                    let path = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+                    return path.isEmpty ? nil : path
+                }
         }
-        let before = String(text[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
-        let after = String(text[range.upperBound...])
-        let paths = after
-            .components(separatedBy: .newlines)
-            .compactMap { line -> String? in
-                let trimmed = line.trimmingCharacters(in: .whitespaces)
-                guard trimmed.hasPrefix("- ") else { return nil }
-                let path = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
-                return path.isEmpty ? nil : path
+
+        // Strip "--- Attached File: filename ---" sections (embedded file contents) — before clips
+        // to prevent embedded file content leaking into the last clip's body.
+        let embeddedFilePattern = "--- Attached File:[^\n]*---"
+        if let regex = try? NSRegularExpression(pattern: embeddedFilePattern) {
+            let nsRemaining = remaining as NSString
+            let matches = regex.matches(in: remaining, range: NSRange(location: 0, length: nsRemaining.length))
+            if let firstMatch = matches.first {
+                remaining = nsRemaining.substring(to: firstMatch.range.location)
             }
-        return (before.isEmpty ? nil : before, paths)
+        }
+
+        // Extract "--- Clipped Text ---" / "--- Clipped Text (...) ---" sections
+        let clipPattern = "---\\s*Clipped Text[^\n]*---"
+        if let regex = try? NSRegularExpression(pattern: clipPattern) {
+            let nsRemaining = remaining as NSString
+            let matches = regex.matches(in: remaining, range: NSRange(location: 0, length: nsRemaining.length))
+            if !matches.isEmpty {
+                // Collect clip content between headers (or after last header until end)
+                let headerRanges = matches.map { $0.range }
+                for i in 0..<headerRanges.count {
+                    let contentStart = headerRanges[i].upperBound
+                    let contentEnd = i + 1 < headerRanges.count
+                        ? headerRanges[i + 1].location
+                        : nsRemaining.length
+                    let clip = nsRemaining.substring(with: NSRange(location: contentStart, length: contentEnd - contentStart))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !clip.isEmpty {
+                        clippedTexts.append(clip)
+                    }
+                }
+                // Remove all clip sections from remaining text
+                if let firstMatch = headerRanges.first {
+                    remaining = nsRemaining.substring(to: firstMatch.location)
+                }
+            }
+        }
+
+        let trimmed = remaining.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (trimmed.isEmpty ? nil : trimmed, paths, clippedTexts)
     }
 
     /// Extracts the question string from an `ask_supervisor` tool call's argumentsJSON.

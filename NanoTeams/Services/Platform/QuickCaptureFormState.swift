@@ -28,6 +28,18 @@ final class QuickCaptureFormState {
     @ObservationIgnored private(set) var isInAnswerMode: Bool = false
     @ObservationIgnored private var savedSupervisorTask: String?
 
+    /// Per-task answer draft storage. Keyed by taskID.
+    /// Preserves attachments, clips, and typed text across task switches and panel close/open.
+    @ObservationIgnored private var answerDrafts: [Int: AnswerDraft] = [:]
+
+    // MARK: - Answer Draft
+
+    struct AnswerDraft {
+        var text: String
+        var attachments: [StagedAttachment]
+        var clippedTexts: [String]
+    }
+
     // MARK: - Answer Mode Transitions
 
     /// Enters answer mode: saves current `supervisorTask`, clears it for answer input, stores the payload.
@@ -35,17 +47,32 @@ final class QuickCaptureFormState {
     /// the original `savedSupervisorTask` (the user's task draft) is preserved.
     func enterAnswerMode(payload: SupervisorAnswerPayload) {
         guard !isInAnswerMode else {
-            pendingAnswer = payload
+            // Task changed while already in answer mode — switch drafts
+            if let oldTaskID = pendingAnswer?.taskID, oldTaskID != payload.taskID {
+                switchAnswerTask(from: oldTaskID, to: payload)
+            } else {
+                pendingAnswer = payload
+            }
             return
         }
         savedSupervisorTask = supervisorTask
         supervisorTask = ""
         pendingAnswer = payload
         isInAnswerMode = true
+        // Restore saved draft for this task if available
+        if let draft = answerDrafts[payload.taskID] {
+            supervisorTask = draft.text
+            answerAttachments = draft.attachments
+            answerClippedTexts = draft.clippedTexts
+        }
     }
 
-    /// Exits answer mode: restores the saved `supervisorTask`, clears answer-mode attachments and clips.
+    /// Exits answer mode: saves current answer draft per-task, restores `supervisorTask`.
     func exitAnswerMode() {
+        // Save current answer state as draft before exiting
+        if let payload = pendingAnswer {
+            saveCurrentAnswerDraft(taskID: payload.taskID)
+        }
         supervisorTask = savedSupervisorTask ?? ""
         savedSupervisorTask = nil
         answerAttachments = []
@@ -60,12 +87,36 @@ final class QuickCaptureFormState {
         pendingAnswer = payload
     }
 
+    /// Saves the current answer-mode fields as a draft for the given task,
+    /// then clears them so the next task starts clean.
+    func switchAnswerTask(from oldTaskID: Int, to newPayload: SupervisorAnswerPayload) {
+        saveCurrentAnswerDraft(taskID: oldTaskID)
+        // Load draft for the new task (or start fresh)
+        if let draft = answerDrafts[newPayload.taskID] {
+            supervisorTask = draft.text
+            answerAttachments = draft.attachments
+            answerClippedTexts = draft.clippedTexts
+        } else {
+            supervisorTask = ""
+            answerAttachments = []
+            answerClippedTexts = []
+        }
+        pendingAnswer = newPayload
+    }
+
     /// Clears answer-mode clips/attachments without restoring the saved supervisor task.
-    /// Used on panel dismiss so stale clips don't pollute a future session, while
-    /// task-mode state is preserved across open/close cycles.
+    /// Used on panel dismiss — saves draft first so it persists across open/close.
     func clearAnswerSession() {
+        if let payload = pendingAnswer {
+            saveCurrentAnswerDraft(taskID: payload.taskID)
+        }
         answerAttachments = []
         answerClippedTexts = []
+    }
+
+    /// Discards the answer draft for a specific task. Called on successful submit or explicit cancel.
+    func discardAnswerDraft(taskID: Int) {
+        answerDrafts.removeValue(forKey: taskID)
     }
 
     // MARK: - Task Creation State Reset
@@ -100,9 +151,25 @@ final class QuickCaptureFormState {
             || !attachments.isEmpty
     }
 
+    // MARK: - Private
+
+    private func saveCurrentAnswerDraft(taskID: Int) {
+        let text = supervisorTask.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty && answerAttachments.isEmpty && answerClippedTexts.isEmpty {
+            answerDrafts.removeValue(forKey: taskID)
+        } else {
+            answerDrafts[taskID] = AnswerDraft(
+                text: supervisorTask,
+                attachments: answerAttachments,
+                clippedTexts: answerClippedTexts
+            )
+        }
+    }
+
     // MARK: - Test Helpers
 
     #if DEBUG
     var _testSavedSupervisorTask: String? { savedSupervisorTask }
+    var _testAnswerDrafts: [Int: AnswerDraft] { answerDrafts }
     #endif
 }

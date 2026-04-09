@@ -26,4 +26,5 @@ enum UserDefaultsKeys {
     static let enterSendsMessage = "NanoTeams.ui.enterSendsMessage.v1"
     static let loggingEnabled = "NanoTeams.debug.loggingEnabled.v1"
     static let sidebarTaskFilter = "NanoTeams.ui.sidebarTaskFilter.v1"
+    static let quickCaptureEmbedFiles = "NanoTeams.ui.quickCaptureEmbedFiles.v1"
 }

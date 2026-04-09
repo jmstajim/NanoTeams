@@ -7,6 +7,7 @@ struct SupervisorInputCard: View {
     let question: String
     let answer: String?
     var answerAttachmentPaths: [String] = []
+    var answerClippedTexts: [String] = []
     var workFolderURL: URL? = nil
     let thinking: String?
     let thinkingID: UUID
@@ -49,10 +50,10 @@ struct SupervisorInputCard: View {
                     }
                 }
 
-                if !answerAttachmentPaths.isEmpty {
+                if !answerAttachmentPaths.isEmpty || !answerClippedTexts.isEmpty {
                     ReadOnlyAttachmentGrid(
                         attachmentPaths: answerAttachmentPaths,
-                        clippedTexts: [],
+                        clippedTexts: answerClippedTexts,
                         workFolderURL: workFolderURL
                     )
                 }

@@ -45,11 +45,12 @@ struct NotificationItemView: View {
     @ViewBuilder
     private var notificationContent: some View {
         switch type {
-        case .supervisorInput(let question, let answer, let answerAttachmentPaths, let toolCallID, let thinking):
+        case .supervisorInput(let question, let answer, let answerAttachmentPaths, let answerClippedTexts, let toolCallID, let thinking):
             SupervisorInputCard(
                 question: question,
                 answer: answer,
                 answerAttachmentPaths: answerAttachmentPaths,
+                answerClippedTexts: answerClippedTexts,
                 workFolderURL: workFolderURL,
                 thinking: thinking,
                 thinkingID: toolCallID,
@@ -79,6 +80,7 @@ struct NotificationItemView: View {
             question: "Should I use async/await or completion handlers for the network layer?",
             answer: nil,
             answerAttachmentPaths: [],
+            answerClippedTexts: [],
             toolCallID: UUID(),
             thinking: "I need guidance on the concurrency approach."
         ),
@@ -108,6 +110,7 @@ struct NotificationItemView: View {
             question: "Should I use async/await or completion handlers for the network layer?",
             answer: nil,
             answerAttachmentPaths: [],
+            answerClippedTexts: [],
             toolCallID: UUID(),
             thinking: "I need guidance on the concurrency approach."
         ),
@@ -137,6 +140,7 @@ struct NotificationItemView: View {
             question: "What should be the priority order for the notification channels?",
             answer: "Push notifications first, then email. SMS can wait for v2.",
             answerAttachmentPaths: [],
+            answerClippedTexts: [],
             toolCallID: UUID(),
             thinking: nil
         ),

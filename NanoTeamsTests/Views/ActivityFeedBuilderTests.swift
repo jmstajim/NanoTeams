@@ -826,4 +826,134 @@ final class ActivityFeedBuilderTests: XCTestCase {
         let result = build(steps: [], supervisorBrief: "Valid goal", supervisorBriefDate: nil)
         XCTAssertTrue(result.isEmpty)
     }
+
+    // MARK: - stripAttachedFiles
+
+    func testStripAttachedFiles_plainText_noExtraction() {
+        let result = ActivityFeedBuilder.stripAttachedFiles(from: "Just an answer")
+        XCTAssertEqual(result.text, "Just an answer")
+        XCTAssertTrue(result.paths.isEmpty)
+        XCTAssertTrue(result.clippedTexts.isEmpty)
+    }
+
+    func testStripAttachedFiles_extractsFilePaths() {
+        let input = "Answer text\n\n--- Attached Files ---\n- .nanoteams/tasks/1/a.txt\n- .nanoteams/tasks/1/b.png"
+        let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
+        XCTAssertEqual(result.text, "Answer text")
+        XCTAssertEqual(result.paths, [".nanoteams/tasks/1/a.txt", ".nanoteams/tasks/1/b.png"])
+        XCTAssertTrue(result.clippedTexts.isEmpty)
+    }
+
+    func testStripAttachedFiles_extractsSingleClip() {
+        let input = "My answer\n\n--- Clipped Text ---\nsome code snippet"
+        let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
+        XCTAssertEqual(result.text, "My answer")
+        XCTAssertEqual(result.clippedTexts, ["some code snippet"])
+    }
+
+    func testStripAttachedFiles_extractsNumberedClips() {
+        let input = "Answer\n\n--- Clipped Text (1 of 2) ---\nclip one\n\n--- Clipped Text (2 of 2) ---\nclip two"
+        let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
+        XCTAssertEqual(result.text, "Answer")
+        XCTAssertEqual(result.clippedTexts.count, 2)
+        XCTAssertEqual(result.clippedTexts[0], "clip one")
+        XCTAssertEqual(result.clippedTexts[1], "clip two")
+    }
+
+    func testStripAttachedFiles_extractsClipWithSourceContext() {
+        let input = "Answer\n\n--- Clipped Text (MyFile.swift:10-20) ---\nfunc hello() { }"
+        let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
+        XCTAssertEqual(result.text, "Answer")
+        XCTAssertEqual(result.clippedTexts, ["func hello() { }"])
+    }
+
+    func testStripAttachedFiles_extractsClipsAndFilesTogether() {
+        let input = "Answer\n\n--- Clipped Text ---\nsnippet\n\n--- Attached Files ---\n- file.txt"
+        let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
+        XCTAssertEqual(result.text, "Answer")
+        XCTAssertEqual(result.clippedTexts, ["snippet"])
+        XCTAssertEqual(result.paths, ["file.txt"])
+    }
+
+    func testStripAttachedFiles_stripsEmbeddedFileContent() {
+        let input = "Answer\n\n--- Attached File: data.swift ---\nlet x = 1"
+        let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
+        XCTAssertEqual(result.text, "Answer")
+    }
+
+    func testStripAttachedFiles_stripsEmbeddedFileWithHyphenatedName() {
+        let input = "Answer\n\n--- Attached File: my-component.swift ---\nlet x = 1"
+        let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
+        XCTAssertEqual(result.text, "Answer")
+    }
+
+    func testStripAttachedFiles_clipsOnlyNoText_returnsEmptyText() {
+        let input = "--- Clipped Text ---\nonly a clip"
+        let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
+        XCTAssertNil(result.text)
+        XCTAssertEqual(result.clippedTexts, ["only a clip"])
+    }
+
+    // MARK: - Regression: Issue #1 — Embedded file with hyphenated filename
+
+    func testStripAttachedFiles_embeddedFile_multipleHyphens() {
+        let input = "Answer\n\n--- Attached File: my-data-model.swift ---\nstruct Foo {}"
+        let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
+        XCTAssertEqual(result.text, "Answer")
+        // Embedded file content must NOT leak into displayed text
+        XCTAssertFalse(result.text?.contains("struct Foo") ?? false)
+    }
+
+    // MARK: - Regression: Issue #3 — Embedded file content leaks into last clip
+
+    func testStripAttachedFiles_clipThenEmbeddedFile_noContentLeak() {
+        let input = "Answer\n\n--- Clipped Text ---\nsnippet\n\n--- Attached File: data.swift ---\nlet x = 1"
+        let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
+        XCTAssertEqual(result.text, "Answer")
+        XCTAssertEqual(result.clippedTexts.count, 1)
+        XCTAssertEqual(result.clippedTexts[0], "snippet")
+        // Embedded file content must NOT appear in clip text
+        XCTAssertFalse(result.clippedTexts[0].contains("let x = 1"))
+    }
+
+    // MARK: - Regression: Issue #5 — Clip header with parentheses in path
+
+    func testStripAttachedFiles_clipWithParenthesesInPath() {
+        let input = "Answer\n\n--- Clipped Text (MyFile(iOS).swift:10-20) ---\nfunc run() {}"
+        let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
+        XCTAssertEqual(result.text, "Answer")
+        XCTAssertEqual(result.clippedTexts, ["func run() {}"])
+    }
+
+    func testStripAttachedFiles_numberedClipWithSourceAndParentheses() {
+        let input = "Answer\n\n--- Clipped Text (1 of 2, App(iOS).swift:5-10) ---\nfirst\n\n--- Clipped Text (2 of 2) ---\nsecond"
+        let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
+        XCTAssertEqual(result.text, "Answer")
+        XCTAssertEqual(result.clippedTexts.count, 2)
+        XCTAssertEqual(result.clippedTexts[0], "first")
+        XCTAssertEqual(result.clippedTexts[1], "second")
+    }
+
+    // MARK: - Regression: all sections combined
+
+    func testStripAttachedFiles_allSectionsCombined() {
+        let input = """
+        My answer
+
+        --- Clipped Text (src/main.swift:1-5) ---
+        import Foundation
+
+        --- Attached File: my-helper.swift ---
+        func helper() {}
+
+        --- Attached Files ---
+        - .nanoteams/tasks/1/attachments/image.png
+        """
+        let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
+        XCTAssertEqual(result.text, "My answer")
+        XCTAssertEqual(result.clippedTexts.count, 1)
+        XCTAssertTrue(result.clippedTexts[0].contains("import Foundation"))
+        XCTAssertFalse(result.clippedTexts[0].contains("func helper"))
+        XCTAssertEqual(result.paths, [".nanoteams/tasks/1/attachments/image.png"])
+    }
 }

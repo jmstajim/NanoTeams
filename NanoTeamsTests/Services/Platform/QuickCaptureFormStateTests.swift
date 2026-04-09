@@ -21,10 +21,14 @@ final class QuickCaptureFormStateTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func makePayload(question: String = "Q?", isChatMode: Bool = false) -> SupervisorAnswerPayload {
+    private func makePayload(
+        taskID: Int = 0,
+        question: String = "Q?",
+        isChatMode: Bool = false
+    ) -> SupervisorAnswerPayload {
         SupervisorAnswerPayload(
-            stepID: "test_step",
-            taskID: Int(),
+            stepID: "step_\(taskID)",
+            taskID: taskID,
             role: .softwareEngineer,
             roleDefinition: nil,
             question: question,
@@ -164,4 +168,187 @@ final class QuickCaptureFormStateTests: XCTestCase {
         sut.supervisorTask = "Build something"
         XCTAssertTrue(sut.hasTaskDraftContent)
     }
+
+    // MARK: - Per-Task Answer Draft Persistence
+
+    func testExitAnswerMode_savesDraft_reenterRestores() {
+        let payload = makePayload(taskID: 1)
+        sut.enterAnswerMode(payload: payload)
+        sut.supervisorTask = "my answer"
+        sut.answerClippedTexts = ["clip A"]
+
+        sut.exitAnswerMode()
+
+        // Draft saved
+        let drafts = sut._testAnswerDrafts
+        XCTAssertEqual(drafts[1]?.text, "my answer")
+        XCTAssertEqual(drafts[1]?.clippedTexts, ["clip A"])
+
+        // Re-enter same task — draft restored
+        sut.enterAnswerMode(payload: payload)
+        XCTAssertEqual(sut.supervisorTask, "my answer")
+        XCTAssertEqual(sut.answerClippedTexts, ["clip A"])
+    }
+
+    func testSwitchAnswerTask_preservesBothDrafts() {
+        let payloadA = makePayload(taskID: 10, question: "Q for A")
+        let payloadB = makePayload(taskID: 20, question: "Q for B")
+
+        sut.enterAnswerMode(payload: payloadA)
+        sut.supervisorTask = "answer A"
+        sut.answerClippedTexts = ["clip A"]
+
+        // Switch to task B
+        sut.switchAnswerTask(from: 10, to: payloadB)
+        XCTAssertEqual(sut.supervisorTask, "")
+        XCTAssertTrue(sut.answerClippedTexts.isEmpty)
+
+        // Type answer for task B
+        sut.supervisorTask = "answer B"
+        sut.answerClippedTexts = ["clip B"]
+
+        // Switch back to task A
+        sut.switchAnswerTask(from: 20, to: payloadA)
+        XCTAssertEqual(sut.supervisorTask, "answer A")
+        XCTAssertEqual(sut.answerClippedTexts, ["clip A"])
+
+        // Switch back to B — still there
+        sut.switchAnswerTask(from: 10, to: payloadB)
+        XCTAssertEqual(sut.supervisorTask, "answer B")
+        XCTAssertEqual(sut.answerClippedTexts, ["clip B"])
+    }
+
+    func testClearAnswerSession_savesDraftBeforeClearing() {
+        let payload = makePayload(taskID: 5)
+        sut.enterAnswerMode(payload: payload)
+        sut.supervisorTask = "draft text"
+        sut.answerClippedTexts = ["clip"]
+
+        // Panel close calls clearAnswerSession
+        sut.clearAnswerSession()
+
+        // Active state cleared
+        XCTAssertTrue(sut.answerClippedTexts.isEmpty)
+
+        // But draft preserved
+        let drafts = sut._testAnswerDrafts
+        XCTAssertEqual(drafts[5]?.text, "draft text")
+        XCTAssertEqual(drafts[5]?.clippedTexts, ["clip"])
+    }
+
+    func testDiscardAnswerDraft_removesDraft() {
+        let payload = makePayload(taskID: 7)
+        sut.enterAnswerMode(payload: payload)
+        sut.supervisorTask = "will be discarded"
+        sut.exitAnswerMode()
+
+        XCTAssertNotNil(sut._testAnswerDrafts[7])
+
+        sut.discardAnswerDraft(taskID: 7)
+        XCTAssertNil(sut._testAnswerDrafts[7])
+    }
+
+    func testExitAnswerMode_emptyDraft_notSaved() {
+        let payload = makePayload(taskID: 3)
+        sut.enterAnswerMode(payload: payload)
+        // Don't type anything, leave empty
+        sut.exitAnswerMode()
+
+        XCTAssertNil(sut._testAnswerDrafts[3])
+    }
+
+    func testDismissAndReopen_preservesDraft() {
+        let payload = makePayload(taskID: 42)
+        sut.enterAnswerMode(payload: payload)
+        sut.supervisorTask = "important answer"
+        sut.answerClippedTexts = ["code snippet"]
+
+        // Simulate panel dismiss
+        sut.exitAnswerMode()
+        XCTAssertFalse(sut.isInAnswerMode)
+        XCTAssertTrue(sut.answerClippedTexts.isEmpty)
+
+        // Simulate panel reopen on same task
+        sut.enterAnswerMode(payload: payload)
+        XCTAssertEqual(sut.supervisorTask, "important answer")
+        XCTAssertEqual(sut.answerClippedTexts, ["code snippet"])
+    }
+
+    func testSwitchAnswerTask_newTaskWithNoDraft_startsFresh() {
+        let payloadA = makePayload(taskID: 1, question: "Q1")
+        let payloadB = makePayload(taskID: 2, question: "Q2")
+
+        sut.enterAnswerMode(payload: payloadA)
+        sut.supervisorTask = "answer for A"
+
+        sut.switchAnswerTask(from: 1, to: payloadB)
+
+        // New task has no draft — starts fresh
+        XCTAssertEqual(sut.supervisorTask, "")
+        XCTAssertTrue(sut.answerAttachments.isEmpty)
+        XCTAssertTrue(sut.answerClippedTexts.isEmpty)
+        XCTAssertEqual(sut.pendingAnswer?.taskID, 2)
+    }
+
+    // MARK: - Regression: Issue #4 — enterAnswerMode re-entry with different taskID
+
+    func testEnterAnswerMode_reentry_differentTaskID_switchesDrafts() {
+        let payloadA = makePayload(taskID: 10, question: "Q for A")
+        let payloadB = makePayload(taskID: 20, question: "Q for B")
+
+        sut.enterAnswerMode(payload: payloadA)
+        sut.supervisorTask = "answer A"
+        sut.answerClippedTexts = ["clip A"]
+
+        // Re-enter with different taskID (without explicit switchAnswerTask)
+        sut.enterAnswerMode(payload: payloadB)
+
+        // Must NOT show stale data from task A
+        XCTAssertEqual(sut.supervisorTask, "")
+        XCTAssertTrue(sut.answerClippedTexts.isEmpty)
+        XCTAssertEqual(sut.pendingAnswer?.taskID, 20)
+
+        // Task A draft must be preserved
+        XCTAssertEqual(sut._testAnswerDrafts[10]?.text, "answer A")
+        XCTAssertEqual(sut._testAnswerDrafts[10]?.clippedTexts, ["clip A"])
+    }
+
+    func testEnterAnswerMode_reentry_sameTaskID_keepsState() {
+        let payload1 = makePayload(taskID: 5, question: "Q1")
+        let payload2 = makePayload(taskID: 5, question: "Q2")
+
+        sut.enterAnswerMode(payload: payload1)
+        sut.supervisorTask = "my answer"
+        sut.answerClippedTexts = ["clip"]
+
+        // Re-enter same taskID with updated question
+        sut.enterAnswerMode(payload: payload2)
+
+        // Answer text and clips stay as-is (same task, just payload update)
+        XCTAssertEqual(sut.supervisorTask, "my answer")
+        XCTAssertEqual(sut.answerClippedTexts, ["clip"])
+        XCTAssertEqual(sut.pendingAnswer?.question, "Q2")
+    }
+
+    func testEnterAnswerMode_reentry_differentTask_thenBackRestoresDraft() {
+        let payloadA = makePayload(taskID: 10, question: "QA")
+        let payloadB = makePayload(taskID: 20, question: "QB")
+
+        sut.enterAnswerMode(payload: payloadA)
+        sut.supervisorTask = "answer A"
+
+        // Switch to B via re-entry
+        sut.enterAnswerMode(payload: payloadB)
+        sut.supervisorTask = "answer B"
+
+        // Switch back to A via re-entry
+        sut.enterAnswerMode(payload: payloadA)
+        XCTAssertEqual(sut.supervisorTask, "answer A")
+
+        // Switch back to B
+        sut.enterAnswerMode(payload: payloadA)
+        // Same task, no switch — stays on A
+        XCTAssertEqual(sut.supervisorTask, "answer A")
+    }
+
 }

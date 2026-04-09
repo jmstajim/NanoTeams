@@ -36,6 +36,12 @@ final class QuickCaptureController {
         didSet { UserDefaults.standard.set(keepOpenInChat, forKey: UserDefaultsKeys.quickCaptureKeepOpenInChat) }
     }
 
+    /// When enabled, file attachment contents are read and embedded directly into the prompt
+    /// instead of being passed as file paths for the LLM to read via `read_file`.
+    var embedFilesInPrompt: Bool {
+        didSet { UserDefaults.standard.set(embedFilesInPrompt, forKey: UserDefaultsKeys.quickCaptureEmbedFiles) }
+    }
+
     // MARK: - Panel State
 
     private(set) var isPanelVisible = false
@@ -65,6 +71,8 @@ final class QuickCaptureController {
         self.keepOpenInChat = UserDefaults.standard.object(forKey: key) != nil
             ? UserDefaults.standard.bool(forKey: key)
             : true
+        let embedKey = UserDefaultsKeys.quickCaptureEmbedFiles
+        self.embedFilesInPrompt = UserDefaults.standard.bool(forKey: embedKey)
     }
 
     // MARK: - Setup
@@ -159,9 +167,8 @@ final class QuickCaptureController {
         isPanelVisible = true
     }
 
-    /// Hides the overlay. Preserves the task draft across open/close cycles, but fully
-    /// tears down answer-mode state so the next `showPanel` starts from a coherent shape
-    /// (no dangling `pendingAnswer` / `isInAnswerMode` flags observable by the sheet entry).
+    /// Hides the overlay. Preserves both task draft and answer drafts across open/close cycles.
+    /// Answer-mode state is saved per-task so reopening restores attachments/clips.
     func dismissPanel() {
         panel?.hideWithAnimation()
         isPanelVisible = false
@@ -240,16 +247,47 @@ final class QuickCaptureController {
         let hasClips = !formState.answerClippedTexts.isEmpty
         guard !answer.isEmpty || !formState.answerAttachments.isEmpty || hasClips else { return }
 
-        // Combine answer text with clipped texts
+        // Combine answer text with clipped texts (always inline in prompt)
         var fullAnswer = answer
         let nonEmptyClips = formState.answerClippedTexts
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         if !nonEmptyClips.isEmpty {
-            let clipsSection = nonEmptyClips.count == 1
-                ? "--- Clipped Text ---\n\(nonEmptyClips[0])"
-                : nonEmptyClips.enumerated().map { "--- Clipped Text (\($0.offset + 1) of \(nonEmptyClips.count)) ---\n\($0.element)" }.joined(separator: "\n\n")
+            let clipSections: [String] = nonEmptyClips.enumerated().map { index, clip in
+                let parsed = SourceContext.parse(clip)
+                let header: String
+                if let parsed {
+                    // Include source file path in header, use body without the SourceContext prefix
+                    header = nonEmptyClips.count == 1
+                        ? "--- Clipped Text (\(parsed.source)) ---"
+                        : "--- Clipped Text (\(index + 1) of \(nonEmptyClips.count), \(parsed.source)) ---"
+                } else {
+                    header = nonEmptyClips.count == 1
+                        ? "--- Clipped Text ---"
+                        : "--- Clipped Text (\(index + 1) of \(nonEmptyClips.count)) ---"
+                }
+                let body = parsed?.body ?? clip
+                return "\(header)\n\(body)"
+            }
+            let clipsSection = clipSections.joined(separator: "\n\n")
             fullAnswer = fullAnswer.isEmpty ? clipsSection : fullAnswer + "\n\n" + clipsSection
+        }
+
+        // When "Embed files in prompt" is on, read file contents and inject inline
+        if embedFilesInPrompt && !formState.answerAttachments.isEmpty {
+            var failedFiles: [String] = []
+            for attachment in formState.answerAttachments {
+                do {
+                    let content = try String(contentsOf: attachment.url, encoding: .utf8)
+                    let section = "--- Attached File: \(attachment.fileName) ---\n\(content)"
+                    fullAnswer = fullAnswer.isEmpty ? section : fullAnswer + "\n\n" + section
+                } catch {
+                    failedFiles.append(attachment.fileName)
+                }
+            }
+            if !failedFiles.isEmpty {
+                store.lastErrorMessage = "Could not embed \(failedFiles.count) file(s) as text: \(failedFiles.joined(separator: ", ")). They may be binary files."
+            }
         }
 
         let isChatMode = payload.isChatMode
@@ -261,6 +299,9 @@ final class QuickCaptureController {
             attachments: formState.answerAttachments
         )
         guard success else { return }
+
+        // Discard the per-task draft on successful submit
+        formState.discardAnswerDraft(taskID: payload.taskID)
 
         if keepOpenInChat && isChatMode {
             // Stay open — clear answer state, panel will switch to loader via refreshPanelIfVisible
@@ -278,8 +319,9 @@ final class QuickCaptureController {
 
     func cancelDraft() {
         if let payload = formState.pendingAnswer {
-            // Answer mode: discard staged directory (covers all answer attachments)
+            // Answer mode: discard staged directory and per-task draft
             store?.discardStagedDraft(draftID: formState.draftID)
+            formState.discardAnswerDraft(taskID: payload.taskID)
             formState.exitAnswerMode()
         } else {
             // Task mode: original behavior
@@ -314,7 +356,12 @@ final class QuickCaptureController {
         } else if !needsAnswerMode && formState.isInAnswerMode {
             formState.exitAnswerMode()
         } else if needsAnswerMode, case .supervisorAnswer(let payload) = resolvedMode {
-            formState.updateAnswerPayload(payload)
+            // Already in answer mode — task switch: save old draft, load new
+            if let oldPayload = formState.pendingAnswer, oldPayload.taskID != payload.taskID {
+                formState.switchAnswerTask(from: oldPayload.taskID, to: payload)
+            } else {
+                formState.updateAnswerPayload(payload)
+            }
         }
     }
 
