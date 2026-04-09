@@ -33,4 +33,5 @@ final class ToolDefinitionRegistry {
             definitionsByID[id]?.toToolSchema()
         }
     }
+    nonisolated deinit {}
 }

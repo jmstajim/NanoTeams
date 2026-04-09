@@ -509,4 +509,5 @@ final class TeamActivityFeedViewModel {
         }
         return contents
     }
+    nonisolated deinit {}
 }

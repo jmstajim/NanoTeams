@@ -264,4 +264,5 @@ final class StoreConfiguration {
             temperature: llmTemperature
         )
     }
+    nonisolated deinit {}
 }

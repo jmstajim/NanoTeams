@@ -325,7 +325,7 @@ struct GitDiffTool: ToolHandler {
             return makeSuccessResult(
                 toolName: Self.name, args: args,
                 data: DiffData(diff: diff, files_changed: filesChanged),
-                telemetry: Telemetry(truncated: truncated)
+                meta: ToolResultMeta(truncated: truncated)
             )
         }
     }

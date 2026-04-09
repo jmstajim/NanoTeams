@@ -14,7 +14,7 @@ final class FolderAccessManager {
         self.storage = storage
     }
 
-    deinit {
+    nonisolated deinit {
         MainActor.assumeIsolated {
             stopSecurityScopedAccessIfNeeded()
         }

@@ -1,8 +1,9 @@
 # NanoTeams
 
+[![Build](https://img.shields.io/github/actions/workflow/status/jmstajim/NanoTeams/ios.yml?branch=main&label=build&color=5F87D9&style=flat-square)](https://github.com/jmstajim/NanoTeams/actions/workflows/ios.yml)
 [![Version](https://img.shields.io/github/v/release/jmstajim/NanoTeams?sort=semver&display_name=tag&label=version&color=5F87D9&style=flat-square)](https://github.com/jmstajim/NanoTeams/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/jmstajim/NanoTeams/total?label=downloads&color=5F87D9&style=flat-square)](https://github.com/jmstajim/NanoTeams/releases/latest/download/NanoTeams.app.zip)
-[![macOS](https://img.shields.io/badge/macOS_15.6+-5F87D9?logo=apple&style=flat-square)](https://github.com/jmstajim/NanoTeams/releases/latest/download/NanoTeams.app.zip)
+[![macOS](https://img.shields.io/badge/macOS_15.0+-5F87D9?logo=apple&style=flat-square)](https://github.com/jmstajim/NanoTeams/releases/latest/download/NanoTeams.app.zip)
 [![Swift](https://img.shields.io/badge/Swift-5F87D9?logo=swift&logoColor=white&style=flat-square)](https://github.com/jmstajim/NanoTeams)
 [![License](https://img.shields.io/github/license/jmstajim/NanoTeams?color=5F87D9&style=flat-square)](LICENSE)
 [![Download](https://img.shields.io/badge/Download-NanoTeams.app.zip-35BE81?style=flat-square)](https://github.com/jmstajim/NanoTeams/releases/latest/download/NanoTeams.app.zip)
@@ -25,7 +26,7 @@ Built with **LM Studio's stateful chat API** (`previous_response_id`), so the se
 2. Drag `NanoTeams.app` into Applications
 3. If macOS blocks the app: System Settings → Privacy & Security → Open Anyway
 
-> Requires **macOS 15.6+** and **[LM Studio 0.4.0+](https://lmstudio.ai)**
+> Requires **macOS 15.0+** and **[LM Studio 0.4.0+](https://lmstudio.ai)**
 
 ## Getting Started
 

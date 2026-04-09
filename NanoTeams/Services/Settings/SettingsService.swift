@@ -17,4 +17,5 @@ final class SettingsService {
         print("[SettingsService] Resetting at: \(url.path)")
         return try repository.resetWorkFolderSettings(at: url)
     }
+    nonisolated deinit {}
 }

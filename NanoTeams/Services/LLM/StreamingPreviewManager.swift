@@ -165,4 +165,5 @@ final class StreamingPreviewManager {
     func hasPreview(for stepID: String) -> Bool {
         previews[stepID] != nil
     }
+    nonisolated deinit {}
 }

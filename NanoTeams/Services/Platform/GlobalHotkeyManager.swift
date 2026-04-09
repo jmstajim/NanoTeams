@@ -97,6 +97,8 @@ final class GlobalHotkeyManager {
             &eventHandler
         )
     }
+
+    nonisolated deinit {}
 }
 
 // MARK: - Carbon Callback

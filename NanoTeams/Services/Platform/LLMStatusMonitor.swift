@@ -37,7 +37,7 @@ final class LLMStatusMonitor {
         pollTask = nil
     }
 
-    deinit {
+    nonisolated deinit {
         pollTask?.cancel()
     }
 }

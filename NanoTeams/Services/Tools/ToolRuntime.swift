@@ -156,6 +156,8 @@ final class ToolRuntime {
         }
         return out
     }
+
+    nonisolated deinit {}
 }
 
 extension ToolCallLogRecord {

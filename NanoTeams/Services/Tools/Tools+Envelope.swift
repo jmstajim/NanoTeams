@@ -7,7 +7,7 @@ private struct SuccessEnvelope<D: Encodable>: Encodable {
     var data: D
     var error: ToolError?
     var next: NextHint?
-    var telemetry: Telemetry
+    var meta: ToolResultMeta
 }
 
 private struct ErrorEnvelope: Encodable {
@@ -15,7 +15,7 @@ private struct ErrorEnvelope: Encodable {
     var data: String?
     var error: ToolError
     var next: NextHint?
-    var telemetry: Telemetry
+    var meta: ToolResultMeta
 }
 
 // MARK: - Response Envelope Helpers
@@ -23,14 +23,14 @@ private struct ErrorEnvelope: Encodable {
 func makeSuccessEnvelope<T: Encodable>(
     data: T,
     next: NextHint? = nil,
-    telemetry: Telemetry = Telemetry()
+    meta: ToolResultMeta = ToolResultMeta()
 ) -> String {
     let envelope = SuccessEnvelope(
         ok: true,
         data: data,
         error: nil,
         next: next,
-        telemetry: telemetry
+        meta: meta
     )
 
     return encodeToJSON(envelope)
@@ -41,14 +41,14 @@ func makeErrorEnvelope(
     message: String,
     details: [String: String]? = nil,
     next: NextHint? = nil,
-    telemetry: Telemetry = Telemetry()
+    meta: ToolResultMeta = ToolResultMeta()
 ) -> String {
     let envelope = ErrorEnvelope(
         ok: false,
         data: nil,
         error: ToolError(code: code.rawValue, message: message, details: details),
         next: next,
-        telemetry: telemetry
+        meta: meta
     )
 
     return encodeToJSON(envelope)
@@ -59,12 +59,12 @@ func makeSuccessResult(
     args: [String: Any],
     data: some Encodable,
     next: NextHint? = nil,
-    telemetry: Telemetry = Telemetry()
+    meta: ToolResultMeta = ToolResultMeta()
 ) -> ToolExecutionResult {
     ToolExecutionResult(
         toolName: toolName,
         argumentsJSON: encodeArgsToJSON(args),
-        outputJSON: makeSuccessEnvelope(data: data, next: next, telemetry: telemetry),
+        outputJSON: makeSuccessEnvelope(data: data, next: next, meta: meta),
         isError: false
     )
 }

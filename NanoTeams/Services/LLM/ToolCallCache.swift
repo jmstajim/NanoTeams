@@ -141,4 +141,5 @@ final class ToolCallCache {
             callCounts.removeValue(forKey: key)
         }
     }
+    nonisolated deinit {}
 }

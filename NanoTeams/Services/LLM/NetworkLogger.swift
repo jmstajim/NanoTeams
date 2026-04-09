@@ -135,4 +135,5 @@ final class NetworkLogger {
             roleName: request.roleName
         )
     }
+    nonisolated deinit {}
 }

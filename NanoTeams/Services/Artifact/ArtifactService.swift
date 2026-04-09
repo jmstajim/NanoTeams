@@ -83,4 +83,5 @@ final class ArtifactService {
 
         return paths.relativePathWithinNanoteams(for: jsonURL)
     }
+    nonisolated deinit {}
 }

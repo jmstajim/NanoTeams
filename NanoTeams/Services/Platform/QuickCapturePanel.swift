@@ -126,6 +126,8 @@ final class QuickCapturePanel: NSPanel {
         let y = screenFrame.midY - panelFrame.height / 2
         setFrameOrigin(NSPoint(x: x, y: y))
     }
+
+    nonisolated deinit {}
 }
 
 // MARK: - Previews

@@ -84,4 +84,5 @@ final class WorkFolderDescriptionService {
         let trimmed = collected.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
+    nonisolated deinit {}
 }

@@ -29,7 +29,7 @@ struct NextHint: Codable {
     var reason: String?
 }
 
-struct Telemetry: Codable {
+struct ToolResultMeta: Codable {
     var truncated: Bool
     var warnings: [String]
 

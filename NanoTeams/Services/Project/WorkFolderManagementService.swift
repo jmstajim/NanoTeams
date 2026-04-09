@@ -44,4 +44,5 @@ final class WorkFolderManagementService {
     func updateSelectedScheme(_ scheme: String?, at url: URL) throws -> WorkFolderContext {
         try repository.updateSelectedScheme(at: url, scheme: scheme)
     }
+    nonisolated deinit {}
 }

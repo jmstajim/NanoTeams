@@ -51,6 +51,8 @@ final class MemoryTagStore {
         self.processors = processors
     }
 
+    nonisolated deinit {}
+
     // MARK: - State
 
     var entries: [String: TagEntry] = [:]   // tag -> entry

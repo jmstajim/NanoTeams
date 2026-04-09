@@ -96,6 +96,8 @@ final class NotificationService {
         notifications.removeAll()
     }
 
+    nonisolated deinit {}
+
     // MARK: - Queries
 
     /// Get notifications sorted by priority

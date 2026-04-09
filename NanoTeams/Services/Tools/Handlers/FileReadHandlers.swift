@@ -92,7 +92,7 @@ struct ReadFileTool: ToolHandler {
                         path: path, content: content,
                         size: byteCount, encoding: "extracted_text"
                     ),
-                    telemetry: Telemetry(truncated: truncated)
+                    meta: ToolResultMeta(truncated: truncated)
                 )
             }
 
@@ -111,7 +111,7 @@ struct ReadFileTool: ToolHandler {
             return makeSuccessResult(
                 toolName: Self.name, args: args,
                 data: ReadFileData(path: path, content: content, size: data.count, encoding: encoding),
-                telemetry: Telemetry(truncated: truncated)
+                meta: ToolResultMeta(truncated: truncated)
             )
         }
     }
@@ -334,7 +334,7 @@ struct ListFilesTool: ToolHandler {
             return makeSuccessResult(
                 toolName: Self.name, args: args,
                 data: ListData(path: path, entries: entries),
-                telemetry: Telemetry(truncated: truncated)
+                meta: ToolResultMeta(truncated: truncated)
             )
         }
     }
@@ -513,7 +513,7 @@ struct SearchTool: ToolHandler {
             return makeSuccessResult(
                 toolName: Self.name, args: args,
                 data: SearchData(query: query, matches: matches, count: matches.count),
-                telemetry: Telemetry(truncated: truncated)
+                meta: ToolResultMeta(truncated: truncated)
             )
         }
     }

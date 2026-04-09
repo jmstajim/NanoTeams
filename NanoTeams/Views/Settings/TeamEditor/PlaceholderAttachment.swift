@@ -82,4 +82,5 @@ final class PlaceholderAttachment: NSTextAttachment {
             )
         }
     }
+    nonisolated deinit {}
 }

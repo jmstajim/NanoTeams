@@ -355,5 +355,6 @@ final class LLMExecutionService {
         return #"{"ok":true,"tool":"\#(toolName)","response":"(response available)"}"#
     }
 
+    nonisolated deinit {}
 }
 

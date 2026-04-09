@@ -89,31 +89,31 @@ final class ToolsEnvelopeTests: XCTestCase {
         XCTAssertNil(decoded.reason)
     }
 
-    // MARK: - Telemetry Tests
+    // MARK: - ToolResultMeta Tests
 
-    func testTelemetryDefaultInit() {
-        let telemetry = Telemetry()
+    func testToolResultMetaDefaultInit() {
+        let meta = ToolResultMeta()
 
-        XCTAssertFalse(telemetry.truncated)
-        XCTAssertTrue(telemetry.warnings.isEmpty)
+        XCTAssertFalse(meta.truncated)
+        XCTAssertTrue(meta.warnings.isEmpty)
     }
 
-    func testTelemetryCustomInit() {
-        let telemetry = Telemetry(truncated: true, warnings: ["Output was truncated", "Large file detected"])
+    func testToolResultMetaCustomInit() {
+        let meta = ToolResultMeta(truncated: true, warnings: ["Output was truncated", "Large file detected"])
 
-        XCTAssertTrue(telemetry.truncated)
-        XCTAssertEqual(telemetry.warnings.count, 2)
-        XCTAssertEqual(telemetry.warnings[0], "Output was truncated")
+        XCTAssertTrue(meta.truncated)
+        XCTAssertEqual(meta.warnings.count, 2)
+        XCTAssertEqual(meta.warnings[0], "Output was truncated")
     }
 
-    func testTelemetryCodableRoundTrip() throws {
-        let telemetry = Telemetry(truncated: true, warnings: ["Warning 1", "Warning 2"])
+    func testToolResultMetaCodableRoundTrip() throws {
+        let meta = ToolResultMeta(truncated: true, warnings: ["Warning 1", "Warning 2"])
 
-        let encoded = try JSONEncoder().encode(telemetry)
-        let decoded = try JSONDecoder().decode(Telemetry.self, from: encoded)
+        let encoded = try JSONEncoder().encode(meta)
+        let decoded = try JSONDecoder().decode(ToolResultMeta.self, from: encoded)
 
-        XCTAssertEqual(decoded.truncated, telemetry.truncated)
-        XCTAssertEqual(decoded.warnings, telemetry.warnings)
+        XCTAssertEqual(decoded.truncated, meta.truncated)
+        XCTAssertEqual(decoded.warnings, meta.warnings)
     }
 
     // MARK: - Entry Tests
@@ -371,18 +371,18 @@ final class ToolsEnvelopeTests: XCTestCase {
         XCTAssertTrue(json.contains("write_file"))
     }
 
-    func testMakeSuccessEnvelopeWithTelemetry() {
-        let telemetry = Telemetry(truncated: true, warnings: ["Output truncated"])
-        let json = makeSuccessEnvelope(data: ["items": [1, 2, 3]], telemetry: telemetry)
+    func testMakeSuccessEnvelopeWithMeta() {
+        let meta = ToolResultMeta(truncated: true, warnings: ["Output truncated"])
+        let json = makeSuccessEnvelope(data: ["items": [1, 2, 3]], meta: meta)
 
         XCTAssertTrue(json.contains("\"truncated\":true"))
         XCTAssertTrue(json.contains("Output truncated"))
     }
 
-    func testMakeSuccessEnvelopeContainsTelemetry() {
+    func testMakeSuccessEnvelopeContainsMeta() {
         let json = makeSuccessEnvelope(data: "test")
 
-        XCTAssertTrue(json.contains("telemetry"))
+        XCTAssertTrue(json.contains("meta"))
     }
 
     // MARK: - makeErrorEnvelope Tests
@@ -448,14 +448,14 @@ final class ToolsEnvelopeTests: XCTestCase {
 
     func testMakeSuccessResultWithAllParameters() {
         let hint = NextHint(suggested_cmd: "parse_file", suggested_args: nil, reason: "Process content")
-        let telemetry = Telemetry(truncated: false, warnings: [])
+        let meta = ToolResultMeta(truncated: false, warnings: [])
 
         let result = makeSuccessResult(
             toolName: "download",
             args: ["url": "https://example.com"],
             data: ["downloaded": true],
             next: hint,
-            telemetry: telemetry
+            meta: meta
         )
 
         XCTAssertEqual(result.toolName, "download")

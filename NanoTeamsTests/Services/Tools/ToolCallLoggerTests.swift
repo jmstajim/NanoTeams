@@ -37,10 +37,10 @@ final class ToolCallLoggerTests: XCTestCase {
         XCTAssertFalse(fileManager.fileExists(atPath: freshLogURL.path))
     }
 
-    let customLogger = ToolCallLogger(logURL: FileManager.default.temporaryDirectory
-        .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        .standardizedFileURL.appendingPathComponent("tool_calls.jsonl"), fileManager: FileManager.default)
     func testInit_acceptsCustomFileManager() {
+        let customLogger = ToolCallLogger(logURL: FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .standardizedFileURL.appendingPathComponent("tool_calls.jsonl"), fileManager: FileManager.default)
         // Should not crash
         XCTAssertNotNil(customLogger)
     }
@@ -55,15 +55,14 @@ final class ToolCallLoggerTests: XCTestCase {
         XCTAssertTrue(fileManager.fileExists(atPath: logURL.path))
     }
 
-    let nestedLogger = ToolCallLogger(
-        logURL: FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-            .standardizedFileURL
-            .appendingPathComponent("nested")
-            .appendingPathComponent("deep")
-            .appendingPathComponent("tool_calls.jsonl"))
-
     func testAppend_createsParentDirectory() throws {
+        let nestedLogger = ToolCallLogger(
+            logURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+                .standardizedFileURL
+                .appendingPathComponent("nested")
+                .appendingPathComponent("deep")
+                .appendingPathComponent("tool_calls.jsonl"))
         let record = makeRecord()
 
         nestedLogger.append(record)
@@ -186,27 +185,28 @@ final class ToolCallLoggerTests: XCTestCase {
         XCTAssertTrue(content.contains("T"))
     }
 
-    let freshLogger = ToolCallLogger(logURL: FileManager.default.temporaryDirectory
-        .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        .standardizedFileURL.appendingPathComponent("tool_calls.jsonl"))
     func testAppend_appendsToExistingFile() throws {
+        let freshLogURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .standardizedFileURL.appendingPathComponent("tool_calls.jsonl")
+        let freshLogger = ToolCallLogger(logURL: freshLogURL)
+
         // Create parent directory and existing log content
-        let parentDir = freshLogger.logURL.deletingLastPathComponent()
+        let parentDir = freshLogURL.deletingLastPathComponent()
         try fileManager.createDirectory(at: parentDir, withIntermediateDirectories: true)
-        try "existing content\n".write(to: freshLogger.logURL, atomically: true, encoding: .utf8)
+        try "existing content\n".write(to: freshLogURL, atomically: true, encoding: .utf8)
 
         // Append using fresh logger
         freshLogger.append(makeRecord(toolName: "new_tool"))
 
-        let content = try String(contentsOf: freshLogger.logURL, encoding: .utf8)
+        let content = try String(contentsOf: freshLogURL, encoding: .utf8)
         XCTAssertTrue(content.contains("existing content"))
         XCTAssertTrue(content.contains("new_tool"))
     }
 
-    let invalidLogger = ToolCallLogger(logURL: URL(fileURLWithPath: "/nonexistent/path/tool_calls.jsonl"))
-
     func testAppend_neverThrows() {
         // Test with invalid URL that can't be written to
+        let invalidLogger = ToolCallLogger(logURL: URL(fileURLWithPath: "/nonexistent/path/tool_calls.jsonl"))
 
         // Should not throw or crash
         invalidLogger.append(makeRecord())

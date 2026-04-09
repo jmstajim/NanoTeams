@@ -117,4 +117,5 @@ final class ToolRegistry {
         let resolved = canonicalName(for: name)
         return handlers[resolved]
     }
+    nonisolated deinit {}
 }

@@ -36,4 +36,5 @@ final class TaskService {
 
         return filtered.sorted(by: { $0.updatedAt > $1.updatedAt })
     }
+    nonisolated deinit {}
 }

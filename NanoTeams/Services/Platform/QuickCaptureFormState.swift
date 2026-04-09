@@ -171,5 +171,7 @@ final class QuickCaptureFormState {
     #if DEBUG
     var _testSavedSupervisorTask: String? { savedSupervisorTask }
     var _testAnswerDrafts: [Int: AnswerDraft] { answerDrafts }
+    func _testClearAnswerDrafts() { answerDrafts.removeAll() }
     #endif
+    nonisolated deinit {}
 }

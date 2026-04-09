@@ -82,4 +82,5 @@ import Foundation
 
         return result.sorted { $0.updatedAt > $1.updatedAt }
     }
+    nonisolated deinit {}
 }

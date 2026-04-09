@@ -462,6 +462,8 @@ final class NTMSOrchestrator {
     func clearActiveMeetingParticipants(for taskID: Int) {
         engineState.clearMeetingParticipants(for: taskID)
     }
+
+    nonisolated deinit {}
 }
 
 // MARK: - LLMExecutionDelegate Conformance
@@ -481,6 +483,6 @@ extension NTMSOrchestrator: LLMExecutionDelegate {}
         func _setActiveTaskID(_ id: Int?) {
             activeTaskID = id
         }
-    }
+}
 #endif
 

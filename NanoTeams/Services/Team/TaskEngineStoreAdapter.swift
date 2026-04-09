@@ -127,4 +127,5 @@ final class TaskEngineStoreAdapter: TeamEngineStore {
         }
         return orchestrator?.workFolder?.activeTeam
     }
+    nonisolated deinit {}
 }

@@ -100,6 +100,8 @@ final class QuickCaptureControllerStateTests: XCTestCase {
     override func setUp() {
         super.setUp()
         sut = QuickCaptureController.shared
+        if sut._testIsInAnswerMode { sut._testExitAnswerMode() }
+        sut.formState._testClearAnswerDrafts()
         sut.formState.supervisorTask = ""
         sut.formState.title = ""
         sut.formState.attachments = []
@@ -331,6 +333,8 @@ final class QuickCaptureAnswerModeTests: XCTestCase {
     override func setUp() {
         super.setUp()
         sut = QuickCaptureController.shared
+        if sut._testIsInAnswerMode { sut._testExitAnswerMode() }
+        sut.formState._testClearAnswerDrafts()
         sut.formState.supervisorTask = ""
         sut.formState.title = ""
         sut.formState.attachments = []

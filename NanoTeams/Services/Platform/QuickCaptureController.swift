@@ -473,4 +473,5 @@ final class QuickCaptureController {
         set { forceNewTaskMode = newValue }
     }
     #endif
+    nonisolated deinit {}
 }

@@ -54,4 +54,5 @@ final class ToolCallLogger {
             }
         }
     }
+    nonisolated deinit {}
 }

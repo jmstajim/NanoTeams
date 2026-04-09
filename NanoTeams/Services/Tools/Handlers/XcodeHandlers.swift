@@ -101,7 +101,7 @@ struct RunXcodebuildTool: ToolHandler {
                     issues: allIssues,
                     log: success ? "" : String(truncatedLog.prefix(BuildConstants.maxBuildLogChars))
                 ),
-                telemetry: Telemetry(truncated: truncated)
+                meta: ToolResultMeta(truncated: truncated)
             )
         }
     }
@@ -248,7 +248,7 @@ struct RunXcodetestsTool: ToolHandler {
                     failures: allFailures,
                     log: testSuccess ? "" : truncatedLog
                 ),
-                telemetry: Telemetry(truncated: truncated)
+                meta: ToolResultMeta(truncated: truncated)
             )
         }
     }

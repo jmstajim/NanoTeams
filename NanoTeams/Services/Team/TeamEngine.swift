@@ -157,4 +157,5 @@ final class TeamEngine {
         return AcceptanceService.getPendingAcceptances(roleStatuses: run.roleStatuses)
     }
 
+    nonisolated deinit {}
 }

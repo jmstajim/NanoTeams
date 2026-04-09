@@ -55,4 +55,5 @@ final class OrchestratorEngineState {
     func clearMeetingParticipants(for taskID: Int) {
         activeMeetingParticipants[taskID] = nil
     }
+    nonisolated deinit {}
 }

@@ -1,0 +1,49 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    name: Build and Test
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
+
+      - name: Build
+        run: >
+          xcodebuild build-for-testing
+          -project NanoTeams.xcodeproj
+          -scheme NanoTeams
+          -destination "platform=macOS"
+          -skipPackagePluginValidation
+          CODE_SIGN_IDENTITY=""
+          CODE_SIGNING_REQUIRED=NO
+          CODE_SIGNING_ALLOWED=NO
+
+      - name: Test
+        run: >
+          xcodebuild test-without-building
+          -project NanoTeams.xcodeproj
+          -scheme NanoTeams
+          -destination "platform=macOS"
+          -skipPackagePluginValidation
+          -parallel-testing-enabled NO
+          CODE_SIGN_IDENTITY=""
+          CODE_SIGNING_REQUIRED=NO
+          CODE_SIGNING_ALLOWED=NO
