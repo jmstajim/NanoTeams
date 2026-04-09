@@ -1,6 +1,6 @@
 # NanoTeams
 
-[![Build](https://img.shields.io/github/actions/workflow/status/jmstajim/NanoTeams/ios.yml?branch=main&label=build&color=5F87D9&style=flat-square)](https://github.com/jmstajim/NanoTeams/actions/workflows/ios.yml)
+[![Build&Test](https://github.com/jmstajim/NanoTeams/actions/workflows/ios.yml/badge.svg)](https://github.com/jmstajim/NanoTeams/actions/workflows/ios.yml)
 [![Version](https://img.shields.io/github/v/release/jmstajim/NanoTeams?sort=semver&display_name=tag&label=version&color=5F87D9&style=flat-square)](https://github.com/jmstajim/NanoTeams/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/jmstajim/NanoTeams/total?label=downloads&color=5F87D9&style=flat-square)](https://github.com/jmstajim/NanoTeams/releases/latest/download/NanoTeams.app.zip)
 [![macOS](https://img.shields.io/badge/macOS_15.0+-5F87D9?logo=apple&style=flat-square)](https://github.com/jmstajim/NanoTeams/releases/latest/download/NanoTeams.app.zip)
