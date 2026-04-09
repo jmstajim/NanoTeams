@@ -8,7 +8,7 @@
 [![License](https://img.shields.io/github/license/jmstajim/NanoTeams?color=5F87D9&style=flat-square)](LICENSE)
 [![Download](https://img.shields.io/badge/Download-NanoTeams.app.zip-35BE81?style=flat-square)](https://github.com/jmstajim/NanoTeams/releases/latest/download/NanoTeams.app.zip)
 
-**Native macOS app for AI agent teams powered by local LLMs.** No cloud. No API keys. No telemetry. Your data stays on your Mac.
+**Native macOS app for AI agent teams and chat powered by local LLMs.** No cloud. No API keys. No telemetry. Your data stays on your Mac.
 
 <img width="640" height="604" alt="NanoTeams — AI agent teams for local LLMs on macOS" src="https://github.com/user-attachments/assets/aaf71be6-a72f-4f5d-bf77-47d015985f0e" />
 
