@@ -14,6 +14,7 @@ struct AttachmentGridView: View {
     let onRequestFilePicker: () -> Void
 
     @Environment(NTMSOrchestrator.self) private var store
+    @Environment(StoreConfiguration.self) private var config
     @State private var isDropTargeted = false
     @State private var quickLookURL: URL?
     @State private var popoverClipIndex: Int?
@@ -112,7 +113,11 @@ struct AttachmentGridView: View {
     }
 
     private func attachmentCell(_ attachment: StagedAttachment) -> some View {
-        VStack(spacing: Spacing.xxs) {
+        let isImage = VisionConstants.supportedExtensions.contains(
+            attachment.url.pathExtension.lowercased()
+        )
+
+        return VStack(spacing: Spacing.xxs) {
             ZStack(alignment: .topTrailing) {
                 Image(nsImage: attachment.thumbnail())
                     .resizable()
@@ -120,6 +125,18 @@ struct AttachmentGridView: View {
                     .frame(width: 48, height: 48)
                     .clipShape(RoundedRectangle.squircle(CornerRadius.micro))
                     .onTapGesture { quickLookURL = attachment.url }
+                    .overlay(alignment: .bottomLeading) {
+                        if isImage && !config.isVisionConfigured {
+                            Image(systemName: "eye.trianglebadge.exclamationmark")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Colors.warning)
+                                .padding(2)
+                                .background(
+                                    Circle().fill(Colors.surfaceCard)
+                                )
+                                .help("Enable Vision model in Settings to analyze images")
+                        }
+                    }
 
                 RemoveBadgeButton {
                     store.removeStagedAttachment(attachment)

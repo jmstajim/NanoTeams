@@ -103,25 +103,10 @@ struct QuickCaptureFormView: View {
             header
             if isWorkingMode {
                 taskWorkingBody
+            } else if answerPayload != nil {
+                answerModeBody
             } else {
-                if let payload = answerPayload {
-                    questionText(payload.question)
-                }
-                if !isSheetMode && answerPayload == nil {
-                    Spacer(minLength: 0)
-                }
-                taskField
-                if answerPayload == nil && isSheetMode {
-                    teamPicker
-                }
-                AttachmentGridView(
-                    formState: formState,
-                    mode: mode,
-                    activeDraftID: activeDraftID,
-                    isSheetMode: isSheetMode,
-                    onRequestFilePicker: { isShowingFilePicker = true }
-                )
-                actions
+                taskCreationBody
             }
         }
         .padding(contentPadding)
@@ -143,6 +128,54 @@ struct QuickCaptureFormView: View {
         }
         .task {
             focusedField = .supervisorTask
+        }
+    }
+
+    // MARK: - Answer Mode
+
+    private var answerModeBody: some View {
+        Group {
+            if let payload = answerPayload {
+                questionText(payload.question)
+            }
+            SupervisorAnswerComposer(
+                text: $formState.supervisorTask,
+                attachments: $formState.answerAttachments,
+                clips: $formState.answerClippedTexts,
+                placeholder: "Type your answer...",
+                canSubmit: canSubmit,
+                isSubmitting: false,
+                onSubmit: onSubmit,
+                onStageAttachment: { url in store.stageAttachment(url: url, draftID: activeDraftID) },
+                onRemoveAttachment: { attachment in store.removeStagedAttachment(attachment) },
+                filePickerBinding: $isShowingFilePicker
+            ) {
+                if !isSheetMode {
+                    quickCaptureSettingsMenu
+                }
+            }
+        }
+    }
+
+    // MARK: - Task Creation Mode
+
+    private var taskCreationBody: some View {
+        Group {
+            if !isSheetMode {
+                Spacer(minLength: 0)
+            }
+            taskField
+            if isSheetMode {
+                teamPicker
+            }
+            AttachmentGridView(
+                formState: formState,
+                mode: mode,
+                activeDraftID: activeDraftID,
+                isSheetMode: isSheetMode,
+                onRequestFilePicker: { isShowingFilePicker = true }
+            )
+            actions
         }
     }
 
@@ -281,27 +314,15 @@ struct QuickCaptureFormView: View {
                         .fill(Colors.surfaceCard)
                 )
                 .focused($focusedField, equals: .supervisorTask)
-                .onKeyPress(.return, phases: .down) { press in
-                    if config.enterSendsMessage {
-                        if press.modifiers.contains(.shift) || press.modifiers.contains(.command) {
-                            NSApp.sendAction(#selector(NSTextView.insertNewlineIgnoringFieldEditor(_:)), to: nil, from: nil)
-                        } else if canSubmit {
-                            onSubmit()
-                        }
-                    } else {
-                        if press.modifiers.contains(.command) {
-                            if canSubmit { onSubmit() }
-                        } else {
-                            NSApp.sendAction(#selector(NSTextView.insertNewlineIgnoringFieldEditor(_:)), to: nil, from: nil)
-                        }
-                    }
-                    return .handled
-                }
+                .enterSendsMessage(
+                    config.enterSendsMessage,
+                    canSubmit: canSubmit,
+                    onSubmit: onSubmit
+                )
         }
     }
 
     private var taskFieldPlaceholder: String {
-        if answerPayload != nil { return "Type your answer..." }
         if selectedTeam?.isChatMode == true { return "Send a message..." }
         return "Describe your task..."
     }
@@ -392,33 +413,14 @@ struct QuickCaptureFormView: View {
 
     // MARK: - Settings Menu
 
-    @State private var isShowingSettings = false
-
     private var quickCaptureSettingsMenu: some View {
-        Button {
-            isShowingSettings.toggle()
-        } label: {
-            Image(systemName: "gearshape")
-                .font(.subheadline)
-                .foregroundStyle(Colors.textTertiary)
-        }
-        .buttonStyle(.plain)
-        .popover(isPresented: $isShowingSettings) {
-            let controller = QuickCaptureController.shared
-            VStack(alignment: .leading, spacing: Spacing.s) {
-                Toggle("Keep open in chat mode", isOn: Binding(
-                    get: { controller.keepOpenInChat },
-                    set: { controller.keepOpenInChat = $0 }
-                ))
-                .toggleStyle(.checkbox)
-
-                Toggle("Embed files in prompt", isOn: Binding(
-                    get: { controller.embedFilesInPrompt },
-                    set: { controller.embedFilesInPrompt = $0 }
-                ))
-                .toggleStyle(.checkbox)
-            }
-            .padding(Spacing.m)
+        let controller = QuickCaptureController.shared
+        return EmbedFilesSettingsButton {
+            Toggle("Keep open in chat mode", isOn: Binding(
+                get: { controller.keepOpenInChat },
+                set: { controller.keepOpenInChat = $0 }
+            ))
+            .toggleStyle(.checkbox)
         }
     }
 

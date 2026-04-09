@@ -17,13 +17,9 @@ struct WatchtowerNotificationBanner: View {
     let onStageAttachment: (String, URL) -> StagedAttachment?
     let onRemoveAttachment: (StagedAttachment) -> Void
 
-    @Environment(StoreConfiguration.self) var config
     @State var answerText = ""
     @State var answerAttachments: [StagedAttachment] = []
     @State var isSubmitting = false
-    @State var isAnswerDropTargeted = false
-    @State var isShowingFilePicker = false
-    @FocusState var isAnswerFocused: Bool
 
     private var resolvedColor: Color { notification.color(isChatMode: isChatMode) }
 

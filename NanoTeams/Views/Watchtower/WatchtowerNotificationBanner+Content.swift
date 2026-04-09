@@ -26,89 +26,23 @@ extension WatchtowerNotificationBanner {
     }
 
     func supervisorInputContent(stepID: String, question: String) -> some View {
-        let area = SupervisorAnswerAttachmentArea(
-            attachments: $answerAttachments,
-            isShowingFilePicker: $isShowingFilePicker,
-            isDropTargeted: $isAnswerDropTargeted,
-            onStage: { url in onStageAttachment(stepID, url) },
-            onRemove: { attachment in onRemoveAttachment(attachment) }
-        )
-
-        return VStack(alignment: .leading, spacing: Spacing.s) {
+        VStack(alignment: .leading, spacing: Spacing.s) {
             Text(question)
                 .font(.body)
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            TextField("Type your answer...", text: $answerText, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(.body)
-                .lineLimit(1...10)
-                .accessibilityLabel("Answer to supervisor question")
-                .padding(Spacing.s)
-                .background(
-                    RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous)
-                        .fill(Colors.surfacePrimary)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous)
-                        .strokeBorder(Colors.borderSubtle, lineWidth: 0.5)
-                )
-                .focused($isAnswerFocused)
-                .onKeyPress(.return, phases: .down) { press in
-                    if config.enterSendsMessage {
-                        if press.modifiers.contains(.shift) || press.modifiers.contains(.command) {
-                            NSApp.sendAction(#selector(NSTextView.insertNewlineIgnoringFieldEditor(_:)), to: nil, from: nil)
-                        } else if canSubmitAnswer && !isSubmitting {
-                            submitAnswer(stepID: stepID)
-                        }
-                    } else {
-                        if press.modifiers.contains(.command) {
-                            if canSubmitAnswer && !isSubmitting { submitAnswer(stepID: stepID) }
-                        } else {
-                            NSApp.sendAction(#selector(NSTextView.insertNewlineIgnoringFieldEditor(_:)), to: nil, from: nil)
-                        }
-                    }
-                    return .handled
-                }
-
-            HStack {
-                Button {
-                    isShowingFilePicker = true
-                } label: {
-                    Image(systemName: "plus.circle")
-                        .font(.title2)
-                        .foregroundStyle(Colors.accent)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Attach files")
-
-                if !answerAttachments.isEmpty {
-                    Text("\(answerAttachments.count) file\(answerAttachments.count == 1 ? "" : "s")")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                Button {
-                    submitAnswer(stepID: stepID)
-                } label: {
-                    if isSubmitting {
-                        NTMSLoader(.small)
-                    } else {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.title2)
-                            .foregroundStyle(!canSubmitAnswer ? Colors.textTertiary : Colors.accent)
-                    }
-                }
-                .buttonStyle(.plain)
-                .disabled(!canSubmitAnswer || isSubmitting)
-            }
-
-            area
+            SupervisorAnswerComposer(
+                text: $answerText,
+                attachments: $answerAttachments,
+                placeholder: "Type your answer...",
+                canSubmit: canSubmitAnswer,
+                isSubmitting: isSubmitting,
+                onSubmit: { submitAnswer(stepID: stepID) },
+                onStageAttachment: { url in onStageAttachment(stepID, url) },
+                onRemoveAttachment: { attachment in onRemoveAttachment(attachment) }
+            )
         }
-        .modifier(area.dropZone())
     }
 
     func acceptanceContent(roleID: String) -> some View {

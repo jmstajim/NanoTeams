@@ -19,6 +19,7 @@ final class StoreConfigurationTests: XCTestCase {
     private var originalDebugModeEnabled: Bool?
     private var originalEnterSendsMessage: Bool?
     private var originalSidebarTaskFilter: String?
+    private var originalEmbedFilesInPrompt: Bool?
 
     override func setUpWithError() throws {
         try super.setUpWithError()
@@ -31,6 +32,7 @@ final class StoreConfigurationTests: XCTestCase {
         originalDebugModeEnabled = UserDefaults.standard.object(forKey: UserDefaultsKeys.debugModeEnabled) as? Bool
         originalEnterSendsMessage = UserDefaults.standard.object(forKey: UserDefaultsKeys.enterSendsMessage) as? Bool
         originalSidebarTaskFilter = UserDefaults.standard.string(forKey: UserDefaultsKeys.sidebarTaskFilter)
+        originalEmbedFilesInPrompt = UserDefaults.standard.object(forKey: UserDefaultsKeys.quickCaptureEmbedFiles) as? Bool
 
         // Clear UserDefaults for clean test state
         UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.llmBaseURL)
@@ -41,6 +43,7 @@ final class StoreConfigurationTests: XCTestCase {
         UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.debugModeEnabled)
         UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.enterSendsMessage)
         UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.sidebarTaskFilter)
+        UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.quickCaptureEmbedFiles)
 
         // Initialize test subject with clean state
         config = StoreConfiguration()
@@ -97,6 +100,12 @@ final class StoreConfigurationTests: XCTestCase {
             UserDefaults.standard.set(original, forKey: UserDefaultsKeys.sidebarTaskFilter)
         } else {
             UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.sidebarTaskFilter)
+        }
+
+        if let original = originalEmbedFilesInPrompt {
+            UserDefaults.standard.set(original, forKey: UserDefaultsKeys.quickCaptureEmbedFiles)
+        } else {
+            UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.quickCaptureEmbedFiles)
         }
 
         try super.tearDownWithError()
@@ -366,5 +375,36 @@ final class StoreConfigurationTests: XCTestCase {
         config.resetToDefaults()
 
         XCTAssertEqual(config.sidebarTaskFilter, .all)
+    }
+
+    // MARK: - Embed Files In Prompt Tests
+
+    func testEmbedFilesInPrompt_defaultsToFalse() {
+        XCTAssertFalse(config.embedFilesInPrompt)
+    }
+
+    func testEmbedFilesInPrompt_persistsToUserDefaults() {
+        config.embedFilesInPrompt = true
+
+        let stored = UserDefaults.standard.bool(forKey: UserDefaultsKeys.quickCaptureEmbedFiles)
+        XCTAssertTrue(stored)
+    }
+
+    var freshConfigEmbedFilesLoads: StoreConfiguration!
+
+    func testEmbedFilesInPrompt_loadsFromUserDefaults() {
+        UserDefaults.standard.set(true, forKey: UserDefaultsKeys.quickCaptureEmbedFiles)
+
+        freshConfigEmbedFilesLoads = StoreConfiguration()
+
+        XCTAssertTrue(freshConfigEmbedFilesLoads.embedFilesInPrompt)
+    }
+
+    func testResetToDefaults_clearsEmbedFilesInPrompt() {
+        config.embedFilesInPrompt = true
+
+        config.resetToDefaults()
+
+        XCTAssertFalse(config.embedFilesInPrompt)
     }
 }

@@ -38,8 +38,9 @@ final class QuickCaptureController {
 
     /// When enabled, file attachment contents are read and embedded directly into the prompt
     /// instead of being passed as file paths for the LLM to read via `read_file`.
+    /// Reads from `StoreConfiguration` via the store.
     var embedFilesInPrompt: Bool {
-        didSet { UserDefaults.standard.set(embedFilesInPrompt, forKey: UserDefaultsKeys.quickCaptureEmbedFiles) }
+        store?.configuration.embedFilesInPrompt ?? false
     }
 
     // MARK: - Panel State
@@ -71,8 +72,6 @@ final class QuickCaptureController {
         self.keepOpenInChat = UserDefaults.standard.object(forKey: key) != nil
             ? UserDefaults.standard.bool(forKey: key)
             : true
-        let embedKey = UserDefaultsKeys.quickCaptureEmbedFiles
-        self.embedFilesInPrompt = UserDefaults.standard.bool(forKey: embedKey)
     }
 
     // MARK: - Setup
@@ -215,11 +214,24 @@ final class QuickCaptureController {
         }
         let isChatMode = team?.isChatMode ?? false
 
+        // Build the supervisor task text with optional file embedding
+        let built = AnswerTextBuilder.build(
+            text: formState.supervisorTask,
+            clips: formState.clippedTexts,
+            attachments: formState.attachments,
+            embedFiles: embedFilesInPrompt
+        )
+        if !built.failedFiles.isEmpty {
+            store.lastErrorMessage = "Could not embed \(built.failedFiles.count) file(s) as text: \(built.failedFiles.joined(separator: ", ")). They may be binary files."
+        }
+        // When clips were provided to the builder, they are always embedded into the text
+        let remainingClips = formState.clippedTexts.isEmpty ? formState.clippedTexts : [String]()
+
         if await store.submitQuickCaptureForm(
             title: formState.title,
-            supervisorTask: formState.supervisorTask,
+            supervisorTask: built.answer,
             teamID: formState.selectedTeamID,
-            clippedTexts: formState.clippedTexts,
+            clippedTexts: remainingClips,
             attachments: formState.attachments,
             draftID: formState.draftID
         ) != nil {
@@ -247,47 +259,15 @@ final class QuickCaptureController {
         let hasClips = !formState.answerClippedTexts.isEmpty
         guard !answer.isEmpty || !formState.answerAttachments.isEmpty || hasClips else { return }
 
-        // Combine answer text with clipped texts (always inline in prompt)
-        var fullAnswer = answer
-        let nonEmptyClips = formState.answerClippedTexts
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        if !nonEmptyClips.isEmpty {
-            let clipSections: [String] = nonEmptyClips.enumerated().map { index, clip in
-                let parsed = SourceContext.parse(clip)
-                let header: String
-                if let parsed {
-                    // Include source file path in header, use body without the SourceContext prefix
-                    header = nonEmptyClips.count == 1
-                        ? "--- Clipped Text (\(parsed.source)) ---"
-                        : "--- Clipped Text (\(index + 1) of \(nonEmptyClips.count), \(parsed.source)) ---"
-                } else {
-                    header = nonEmptyClips.count == 1
-                        ? "--- Clipped Text ---"
-                        : "--- Clipped Text (\(index + 1) of \(nonEmptyClips.count)) ---"
-                }
-                let body = parsed?.body ?? clip
-                return "\(header)\n\(body)"
-            }
-            let clipsSection = clipSections.joined(separator: "\n\n")
-            fullAnswer = fullAnswer.isEmpty ? clipsSection : fullAnswer + "\n\n" + clipsSection
-        }
-
-        // When "Embed files in prompt" is on, read file contents and inject inline
-        if embedFilesInPrompt && !formState.answerAttachments.isEmpty {
-            var failedFiles: [String] = []
-            for attachment in formState.answerAttachments {
-                do {
-                    let content = try String(contentsOf: attachment.url, encoding: .utf8)
-                    let section = "--- Attached File: \(attachment.fileName) ---\n\(content)"
-                    fullAnswer = fullAnswer.isEmpty ? section : fullAnswer + "\n\n" + section
-                } catch {
-                    failedFiles.append(attachment.fileName)
-                }
-            }
-            if !failedFiles.isEmpty {
-                store.lastErrorMessage = "Could not embed \(failedFiles.count) file(s) as text: \(failedFiles.joined(separator: ", ")). They may be binary files."
-            }
+        let result = AnswerTextBuilder.build(
+            text: answer,
+            clips: formState.answerClippedTexts,
+            attachments: formState.answerAttachments,
+            embedFiles: embedFilesInPrompt
+        )
+        let fullAnswer = result.answer
+        if !result.failedFiles.isEmpty {
+            store.lastErrorMessage = "Could not embed \(result.failedFiles.count) file(s) as text: \(result.failedFiles.joined(separator: ", ")). They may be binary files."
         }
 
         let isChatMode = payload.isChatMode
@@ -302,10 +282,11 @@ final class QuickCaptureController {
 
         // Discard the per-task draft on successful submit
         formState.discardAnswerDraft(taskID: payload.taskID)
+        formState.supervisorTask = ""
+        formState.answerAttachments = []
+        formState.answerClippedTexts = []
 
         if keepOpenInChat && isChatMode {
-            // Stay open — clear answer state, panel will switch to loader via refreshPanelIfVisible
-            formState.supervisorTask = ""
             formState.exitAnswerMode()
             currentVisualMode = .working
             updatePanelContent()
@@ -322,6 +303,9 @@ final class QuickCaptureController {
             // Answer mode: discard staged directory and per-task draft
             store?.discardStagedDraft(draftID: formState.draftID)
             formState.discardAnswerDraft(taskID: payload.taskID)
+            formState.supervisorTask = ""
+            formState.answerAttachments = []
+            formState.answerClippedTexts = []
             formState.exitAnswerMode()
         } else {
             // Task mode: original behavior

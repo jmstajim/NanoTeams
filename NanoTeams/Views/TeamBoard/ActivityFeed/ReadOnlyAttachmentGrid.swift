@@ -113,24 +113,25 @@ private struct ClipCell: View {
         let label = parsed?.source ?? String(text.prefix(20))
 
         VStack(spacing: Spacing.xxs) {
-            VStack(spacing: 2) {
-                Image(systemName: parsed != nil ? "doc.text" : "scissors")
-                    .font(.title3)
-                    .foregroundStyle(parsed != nil ? AnyShapeStyle(Colors.accent) : AnyShapeStyle(.tertiary))
-                    .accessibilityHidden(true)
-                Text(displayText)
-                    .font(.system(size: 7))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .frame(maxWidth: .infinity)
-            }
-            .frame(width: 48, height: 48)
-            .background(
-                RoundedRectangle(cornerRadius: CornerRadius.micro, style: .continuous)
-                    .fill(Colors.surfaceElevated)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.micro, style: .continuous))
-            .onTapGesture { isShowingPopover = true }
+            Text(displayText)
+                .font(.system(size: 6, weight: .ultraLight))
+                .foregroundStyle(.secondary)
+                .lineLimit(5)
+                .lineSpacing(0)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(4)
+                .frame(width: 48, height: 48)
+                .background(Colors.surfacePrimary)
+                .overlay {
+                    RoundedRectangle.squircle(CornerRadius.micro)
+                        .strokeBorder(
+                            parsed != nil ? Colors.accentBorder : Colors.borderSubtle,
+                            style: StrokeStyle(lineWidth: 1, dash: [4, 3])
+                        )
+                }
+                .clipShape(RoundedRectangle.squircle(CornerRadius.micro))
+                .onTapGesture { isShowingPopover = true }
 
             Text(label)
                 .font(.caption2)

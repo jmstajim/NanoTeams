@@ -184,12 +184,19 @@ enum ActivityFeedBuilder {
         if let brief = supervisorBrief,
            !brief.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            let date = supervisorBriefDate {
+            // Strip embedded file/clip sections from display text (content is inline for LLM only)
+            let rawTask = supervisorTask ?? brief
+            let stripped = stripAttachedFiles(from: rawTask)
+            let displayTask = stripped.text ?? rawTask
+            // Merge clip/attachment paths from both the stripped text and the structured fields
+            let allClips = supervisorClippedTexts.isEmpty ? stripped.clippedTexts : supervisorClippedTexts
+            let allPaths = supervisorAttachmentPaths.isEmpty ? stripped.paths : supervisorAttachmentPaths
             items.append(.supervisorTask(
                 brief: brief,
                 taskCreatedAt: date,
-                supervisorTask: supervisorTask ?? brief,
-                clippedTexts: supervisorClippedTexts,
-                attachmentPaths: supervisorAttachmentPaths,
+                supervisorTask: displayTask,
+                clippedTexts: allClips,
+                attachmentPaths: allPaths,
                 workFolderURL: supervisorProjectFolderURL
             ))
         }

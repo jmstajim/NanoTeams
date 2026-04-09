@@ -284,7 +284,7 @@ struct WorkFolderSettingsView: View {
                 } label: {
                     HStack(spacing: Spacing.s) {
                         Image(systemName: "arrow.counterclockwise")
-                        Text("Reset Work Folder Settings")
+                        Text("Reset Work Folder")
                     }
                     .font(Typography.captionSemibold)
                     .foregroundStyle(Colors.error)
@@ -297,7 +297,7 @@ struct WorkFolderSettingsView: View {
                 }
                 .buttonStyle(.plain)
 
-                Text("Restores work folder description, teams, roles, and tools to their default values. Tasks and runs are preserved.")
+                Text("Removes all tasks, runs, teams, and settings, then recreates defaults. Your files are not affected.")
                     .font(Typography.caption)
                     .foregroundStyle(Colors.textTertiary)
             }

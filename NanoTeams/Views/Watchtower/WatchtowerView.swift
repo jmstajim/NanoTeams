@@ -46,9 +46,18 @@ struct WatchtowerView: View {
                                 return success
                             },
                             onSubmitAnswer: { stepID, answer, attachments in
+                                let embedFiles = config.embedFilesInPrompt
+                                let built = AnswerTextBuilder.build(
+                                    text: answer,
+                                    attachments: attachments,
+                                    embedFiles: embedFiles
+                                )
+                                if !built.failedFiles.isEmpty {
+                                    store.lastErrorMessage = "Could not embed \(built.failedFiles.count) file(s) as text: \(built.failedFiles.joined(separator: ", ")). They may be binary files."
+                                }
                                 let success = await store.answerSupervisorQuestion(
                                     stepID: stepID, taskID: notification.taskID,
-                                    answer: answer, attachments: attachments
+                                    answer: built.answer, attachments: attachments
                                 )
                                 if success { refreshNotifications() }
                                 return success
@@ -232,12 +241,28 @@ struct WatchtowerView: View {
     /// `engineState.taskEngineStates`, which transitions precisely when a role needs
     /// acceptance, fails, asks the Supervisor, or the task becomes ready for acceptance.
     private func refreshNotifications() {
-        cachedNotifications = store.allLoadedTasks.flatMap { task -> [WatchtowerNotification] in
+        // Build unfiltered list — all active notifications regardless of dismiss state.
+        let allNotifications = store.allLoadedTasks.flatMap { task -> [WatchtowerNotification] in
             guard let run = task.runs.last else { return [] }
             let team = store.resolvedTeam(for: task)
             return run.allWatchtowerNotifications(task: task, teamRoles: team.roles)
-                .filter { !config.dismissedNotificationIDs.contains($0.dismissID) }
                 .map { WatchtowerNotification(taskID: task.id, taskTitle: task.title, isChatMode: task.isChatMode, type: $0) }
+        }
+
+        // Clear dismissed entries for steps that no longer produce notifications.
+        // When a step was answered and is no longer .needsSupervisorInput, its dismissID
+        // is removed so the next question on the same step will show up.
+        // Guard: only run when tasks are loaded — on app startup allLoadedTasks may be
+        // empty, which would incorrectly undismiss everything.
+        if !store.allLoadedTasks.isEmpty {
+            let activeIDs = Set(allNotifications.map(\.id))
+            for id in config.dismissedNotificationIDs where !activeIDs.contains(id) {
+                config.undismissNotification(id: id)
+            }
+        }
+
+        cachedNotifications = allNotifications.filter {
+            !config.dismissedNotificationIDs.contains($0.id)
         }
     }
 
@@ -268,6 +293,11 @@ struct WatchtowerView: View {
                 navigationSelection = .task(taskID)
             }
             return
+        }
+
+        // Dismiss supervisor input when navigating to chat — user will see the question there
+        if case .supervisorInput = notification.type {
+            dismissNotification(notification)
         }
 
         // Switch to the notification's task if needed, then select role

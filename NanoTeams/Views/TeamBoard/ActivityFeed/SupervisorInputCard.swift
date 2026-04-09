@@ -20,9 +20,6 @@ struct SupervisorInputCard: View {
     var onStageAttachment: (URL) -> StagedAttachment?
     var onRemoveAttachment: (StagedAttachment) -> Void
 
-    @Environment(StoreConfiguration.self) private var config
-    @State private var isAnswerDropTargeted = false
-    @State private var isShowingFilePicker = false
 
     var body: some View {
         let isResolved = answer != nil
@@ -101,88 +98,17 @@ struct SupervisorInputCard: View {
 
     // MARK: - Answer input
 
-    private var canSubmit: Bool {
-        !answerText.isEmpty || !answerAttachments.isEmpty
-    }
-
     private var answerInput: some View {
-        let area = SupervisorAnswerAttachmentArea(
+        SupervisorAnswerComposer(
+            text: $answerText,
             attachments: $answerAttachments,
-            isShowingFilePicker: $isShowingFilePicker,
-            isDropTargeted: $isAnswerDropTargeted,
-            onStage: onStageAttachment,
-            onRemove: onRemoveAttachment
+            placeholder: "Type your answer...",
+            canSubmit: !answerText.isEmpty || !answerAttachments.isEmpty,
+            isSubmitting: isSubmittingAnswer,
+            onSubmit: onSubmitAnswer,
+            onStageAttachment: onStageAttachment,
+            onRemoveAttachment: onRemoveAttachment
         )
-
-        return VStack(alignment: .leading, spacing: Spacing.xs) {
-            TextField("Type your answer...", text: $answerText, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(.body)
-                .lineLimit(1...10)
-                .accessibilityLabel("Answer to supervisor question")
-                .padding(Spacing.s)
-                .background(
-                    RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous)
-                        .fill(Colors.surfacePrimary)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous)
-                        .strokeBorder(Colors.borderSubtle, lineWidth: 0.5)
-                )
-                .onKeyPress(.return, phases: .down) { press in
-                    if config.enterSendsMessage {
-                        if press.modifiers.contains(.shift) || press.modifiers.contains(.command) {
-                            NSApp.sendAction(#selector(NSTextView.insertNewlineIgnoringFieldEditor(_:)), to: nil, from: nil)
-                        } else if canSubmit && !isSubmittingAnswer {
-                            onSubmitAnswer()
-                        }
-                    } else {
-                        if press.modifiers.contains(.command) {
-                            if canSubmit && !isSubmittingAnswer { onSubmitAnswer() }
-                        } else {
-                            NSApp.sendAction(#selector(NSTextView.insertNewlineIgnoringFieldEditor(_:)), to: nil, from: nil)
-                        }
-                    }
-                    return .handled
-                }
-
-            HStack {
-                Button {
-                    isShowingFilePicker = true
-                } label: {
-                    Image(systemName: "plus.circle")
-                        .font(.title2)
-                        .foregroundStyle(Colors.accent)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Attach files")
-
-                if !answerAttachments.isEmpty {
-                    Text("\(answerAttachments.count) file\(answerAttachments.count == 1 ? "" : "s")")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                Button {
-                    onSubmitAnswer()
-                } label: {
-                    if isSubmittingAnswer {
-                        NTMSLoader(.small)
-                    } else {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.title2)
-                            .foregroundStyle(!canSubmit ? Colors.textTertiary : Colors.accent)
-                    }
-                }
-                .buttonStyle(.plain)
-                .disabled(!canSubmit || isSubmittingAnswer)
-            }
-
-            area
-        }
-        .modifier(area.dropZone())
     }
 
     // MARK: - Thinking disclosure

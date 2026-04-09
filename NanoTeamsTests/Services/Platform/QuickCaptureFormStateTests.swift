@@ -330,6 +330,49 @@ final class QuickCaptureFormStateTests: XCTestCase {
         XCTAssertEqual(sut.pendingAnswer?.question, "Q2")
     }
 
+    /// Regression: discardAnswerDraft + exitAnswerMode must not re-save stale attachments.
+    /// Simulates the controller's submitAnswer() cleanup sequence.
+    func testDiscardDraft_clearFields_exitAnswerMode_doesNotResaveDraft() {
+        let payload = makePayload(taskID: 42)
+        sut.enterAnswerMode(payload: payload)
+        sut.supervisorTask = "my answer"
+        sut.answerClippedTexts = ["clip"]
+
+        // Simulate controller's post-submit cleanup
+        sut.discardAnswerDraft(taskID: 42)
+        sut.supervisorTask = ""
+        sut.answerAttachments = []
+        sut.answerClippedTexts = []
+        sut.exitAnswerMode()
+
+        // Re-enter for the same task — must start clean
+        sut.enterAnswerMode(payload: payload)
+        XCTAssertEqual(sut.supervisorTask, "", "Stale answer text should not reappear")
+        XCTAssertTrue(sut.answerAttachments.isEmpty, "Stale attachments should not reappear")
+        XCTAssertTrue(sut.answerClippedTexts.isEmpty, "Stale clips should not reappear")
+    }
+
+    /// Regression: cancelDraft path — same pattern as submit.
+    func testCancelDraft_clearFields_exitAnswerMode_doesNotResaveDraft() {
+        let payload = makePayload(taskID: 7)
+        sut.enterAnswerMode(payload: payload)
+        sut.supervisorTask = "partial answer"
+        sut.answerClippedTexts = ["snippet"]
+
+        // Simulate controller's cancelDraft cleanup
+        sut.discardAnswerDraft(taskID: 7)
+        sut.supervisorTask = ""
+        sut.answerAttachments = []
+        sut.answerClippedTexts = []
+        sut.exitAnswerMode()
+
+        // Re-enter — must be clean
+        sut.enterAnswerMode(payload: payload)
+        XCTAssertEqual(sut.supervisorTask, "")
+        XCTAssertTrue(sut.answerAttachments.isEmpty)
+        XCTAssertTrue(sut.answerClippedTexts.isEmpty)
+    }
+
     func testEnterAnswerMode_reentry_differentTask_thenBackRestoresDraft() {
         let payloadA = makePayload(taskID: 10, question: "QA")
         let payloadB = makePayload(taskID: 20, question: "QB")

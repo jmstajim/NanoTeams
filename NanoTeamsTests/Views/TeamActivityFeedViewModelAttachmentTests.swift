@@ -112,6 +112,28 @@ final class TeamActivityFeedViewModelAttachmentTests: XCTestCase {
         XCTAssertTrue(viewModel.isSubmittingAnswer.contains(stepID))
     }
 
+    // MARK: - Failure Preservation
+
+    func testSubmit_failedAnswer_preservesInputForRetry() async throws {
+        let stepID = "test_step"
+        viewModel.supervisorAnswerText[stepID] = "My answer"
+        viewModel.supervisorAnswerAttachments[stepID] = [
+            try makeAttachment(relativePath: ".nanoteams/staged/\(stepID)/file.png"),
+        ]
+
+        // Store with no project → answerSupervisorQuestion returns false
+        let store = NTMSOrchestrator(repository: NTMSRepository())
+        viewModel.submitSupervisorAnswer(stepID: stepID, store: store)
+
+        // Wait for the async Task to complete
+        try? await Task.sleep(for: .milliseconds(100))
+
+        // On failure, answer and attachments should be preserved for retry
+        XCTAssertNotNil(viewModel.supervisorAnswerText[stepID])
+        XCTAssertNotNil(viewModel.supervisorAnswerAttachments[stepID])
+        XCTAssertFalse(viewModel.isSubmittingAnswer.contains(stepID))
+    }
+
     // MARK: - Nil TaskID Preservation
 
     func testSubmit_nilTaskID_preservesAnswerAndAttachments() async throws {

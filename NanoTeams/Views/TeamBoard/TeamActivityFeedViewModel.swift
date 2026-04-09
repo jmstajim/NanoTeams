@@ -464,7 +464,7 @@ final class TeamActivityFeedViewModel {
 
     // MARK: - Supervisor Answer Submission
 
-    func submitSupervisorAnswer(stepID: String, store: NTMSOrchestrator) {
+    func submitSupervisorAnswer(stepID: String, store: NTMSOrchestrator, embedFiles: Bool = false) {
         let answer = supervisorAnswerText[stepID] ?? ""
         let attachments = supervisorAnswerAttachments[stepID] ?? []
         guard !answer.isEmpty || !attachments.isEmpty else { return }
@@ -472,13 +472,23 @@ final class TeamActivityFeedViewModel {
         isSubmittingAnswer.insert(stepID)
         Task {
             if let taskID = store.activeTaskID {
-                await store.answerSupervisorQuestion(
+                let result = AnswerTextBuilder.build(
+                    text: answer,
+                    attachments: attachments,
+                    embedFiles: embedFiles
+                )
+                if !result.failedFiles.isEmpty {
+                    store.lastErrorMessage = "Could not embed \(result.failedFiles.count) file(s) as text: \(result.failedFiles.joined(separator: ", ")). They may be binary files."
+                }
+                let success = await store.answerSupervisorQuestion(
                     stepID: stepID, taskID: taskID,
-                    answer: answer, attachments: attachments
+                    answer: result.answer, attachments: attachments
                 )
                 isSubmittingAnswer.remove(stepID)
-                supervisorAnswerText.removeValue(forKey: stepID)
-                supervisorAnswerAttachments.removeValue(forKey: stepID)
+                if success {
+                    supervisorAnswerText.removeValue(forKey: stepID)
+                    supervisorAnswerAttachments.removeValue(forKey: stepID)
+                }
             } else {
                 isSubmittingAnswer.remove(stepID)
                 store.lastErrorMessage = "No active task — answer not submitted."

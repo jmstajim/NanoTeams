@@ -75,6 +75,10 @@ final class StoreConfiguration {
         didSet { storage.set(enterSendsMessage, forKey: Keys.enterSendsMessage) }
     }
 
+    var embedFilesInPrompt: Bool {
+        didSet { storage.set(embedFilesInPrompt, forKey: Keys.embedFilesInPrompt) }
+    }
+
     var debugModeEnabled: Bool {
         didSet { storage.set(debugModeEnabled, forKey: Keys.debugModeEnabled) }
     }
@@ -105,6 +109,10 @@ final class StoreConfiguration {
 
     func dismissNotification(id: String) {
         dismissedNotificationIDs.insert(id)
+    }
+
+    func undismissNotification(id: String) {
+        dismissedNotificationIDs.remove(id)
     }
 
     // MARK: - Vision Model
@@ -162,6 +170,7 @@ final class StoreConfiguration {
         static let visionMaxTokens = UserDefaultsKeys.visionMaxTokens
         static let dismissedNotificationIDs = UserDefaultsKeys.dismissedNotificationIDs
         static let enterSendsMessage = UserDefaultsKeys.enterSendsMessage
+        static let embedFilesInPrompt = UserDefaultsKeys.quickCaptureEmbedFiles
         static let loggingEnabled = UserDefaultsKeys.loggingEnabled
         static let sidebarTaskFilter = UserDefaultsKeys.sidebarTaskFilter
     }
@@ -179,6 +188,7 @@ final class StoreConfiguration {
         self.toolCallsExpandedByDefault = storage.bool(forKey: Keys.toolCallsExpandedByDefault)
         self.artifactsExpandedByDefault = storage.bool(forKey: Keys.artifactsExpandedByDefault)
         self.enterSendsMessage = (storage.object(forKey: Keys.enterSendsMessage) as? Bool) ?? true
+        self.embedFilesInPrompt = storage.bool(forKey: Keys.embedFilesInPrompt)
         self.debugModeEnabled = storage.bool(forKey: Keys.debugModeEnabled)
         self.loggingEnabled = storage.bool(forKey: Keys.loggingEnabled)
         self.sidebarTaskFilter = storage.string(forKey: Keys.sidebarTaskFilter)
@@ -204,6 +214,7 @@ final class StoreConfiguration {
         storage.removeObject(forKey: Keys.toolCallsExpandedByDefault)
         storage.removeObject(forKey: Keys.artifactsExpandedByDefault)
         storage.removeObject(forKey: Keys.enterSendsMessage)
+        storage.removeObject(forKey: Keys.embedFilesInPrompt)
         storage.removeObject(forKey: Keys.debugModeEnabled)
         storage.removeObject(forKey: Keys.loggingEnabled)
         storage.removeObject(forKey: Keys.maxLLMRetries)
@@ -223,6 +234,7 @@ final class StoreConfiguration {
         toolCallsExpandedByDefault = false
         artifactsExpandedByDefault = false
         enterSendsMessage = true
+        embedFilesInPrompt = false
         debugModeEnabled = false
         loggingEnabled = false
         maxLLMRetries = LLMConstants.defaultMaxLLMRetries

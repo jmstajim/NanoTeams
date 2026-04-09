@@ -956,4 +956,130 @@ final class ActivityFeedBuilderTests: XCTestCase {
         XCTAssertFalse(result.clippedTexts[0].contains("func helper"))
         XCTAssertEqual(result.paths, [".nanoteams/tasks/1/attachments/image.png"])
     }
+
+    // MARK: - Supervisor Task Embedded Content Stripping
+
+    func testSupervisorTask_embeddedFileContent_strippedFromDisplay() {
+        let taskWithEmbed = """
+        опиши логику
+
+        --- Attached File: Логика.pdf ---
+        Page 1: The offline logic...
+        Page 2: When connectivity returns...
+        """
+        let result = ActivityFeedBuilder.buildTimelineItems(
+            steps: [],
+            run: nil,
+            supervisorBrief: taskWithEmbed,
+            supervisorBriefDate: date(10),
+            supervisorTask: taskWithEmbed,
+            stepArtifactContentCache: [:],
+            debugModeEnabled: false,
+            isStreaming: { _ in false }
+        )
+        XCTAssertEqual(result.count, 1)
+        if case .supervisorTask(_, _, let displayText, _, _, _) = result[0].item {
+            XCTAssertEqual(displayText, "опиши логику")
+            XCTAssertFalse(displayText.contains("Attached File"))
+            XCTAssertFalse(displayText.contains("offline logic"))
+        } else {
+            XCTFail("Expected supervisorTask item")
+        }
+    }
+
+    func testSupervisorTask_embeddedFile_extractsAttachmentPaths() {
+        let taskWithEmbed = """
+        check this
+
+        --- Attached File: report.pdf ---
+        Report content here
+
+        --- Attached Files ---
+        - .nanoteams/tasks/1/attachments/report.pdf
+        """
+        let result = ActivityFeedBuilder.buildTimelineItems(
+            steps: [],
+            run: nil,
+            supervisorBrief: taskWithEmbed,
+            supervisorBriefDate: date(10),
+            supervisorTask: taskWithEmbed,
+            stepArtifactContentCache: [:],
+            debugModeEnabled: false,
+            isStreaming: { _ in false }
+        )
+        guard case .supervisorTask(_, _, let displayText, _, let paths, _) = result.first?.item else {
+            return XCTFail("Expected supervisorTask")
+        }
+        XCTAssertEqual(displayText, "check this")
+        XCTAssertEqual(paths, [".nanoteams/tasks/1/attachments/report.pdf"])
+    }
+
+    func testSupervisorTask_embeddedClips_extractedFromDisplay() {
+        let taskWithClips = """
+        do this
+
+        --- Clipped Text ---
+        let x = 42
+        """
+        let result = ActivityFeedBuilder.buildTimelineItems(
+            steps: [],
+            run: nil,
+            supervisorBrief: taskWithClips,
+            supervisorBriefDate: date(10),
+            supervisorTask: taskWithClips,
+            stepArtifactContentCache: [:],
+            debugModeEnabled: false,
+            isStreaming: { _ in false }
+        )
+        guard case .supervisorTask(_, _, let displayText, let clips, _, _) = result.first?.item else {
+            return XCTFail("Expected supervisorTask")
+        }
+        XCTAssertEqual(displayText, "do this")
+        XCTAssertEqual(clips.count, 1)
+        XCTAssertTrue(clips[0].contains("let x = 42"))
+    }
+
+    func testSupervisorTask_structuredFieldsTakePriority() {
+        // When structured fields (supervisorClippedTexts, supervisorAttachmentPaths) are provided,
+        // they take priority over fields extracted from the text.
+        let taskWithEmbed = "task text\n\n--- Clipped Text ---\ninline clip"
+        let result = ActivityFeedBuilder.buildTimelineItems(
+            steps: [],
+            run: nil,
+            supervisorBrief: taskWithEmbed,
+            supervisorBriefDate: date(10),
+            supervisorTask: taskWithEmbed,
+            supervisorClippedTexts: ["structured clip"],
+            supervisorAttachmentPaths: ["path/to/file.pdf"],
+            stepArtifactContentCache: [:],
+            debugModeEnabled: false,
+            isStreaming: { _ in false }
+        )
+        guard case .supervisorTask(_, _, _, let clips, let paths, _) = result.first?.item else {
+            return XCTFail("Expected supervisorTask")
+        }
+        // Structured fields win over stripped-from-text fields
+        XCTAssertEqual(clips, ["structured clip"])
+        XCTAssertEqual(paths, ["path/to/file.pdf"])
+    }
+
+    func testSupervisorTask_plainText_noStripping() {
+        let plain = "simple task description"
+        let result = ActivityFeedBuilder.buildTimelineItems(
+            steps: [],
+            run: nil,
+            supervisorBrief: plain,
+            supervisorBriefDate: date(10),
+            supervisorTask: plain,
+            stepArtifactContentCache: [:],
+            debugModeEnabled: false,
+            isStreaming: { _ in false }
+        )
+        guard case .supervisorTask(_, _, let displayText, let clips, let paths, _) = result.first?.item else {
+            return XCTFail("Expected supervisorTask")
+        }
+        XCTAssertEqual(displayText, "simple task description")
+        XCTAssertTrue(clips.isEmpty)
+        XCTAssertTrue(paths.isEmpty)
+    }
 }

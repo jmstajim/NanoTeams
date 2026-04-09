@@ -153,7 +153,7 @@ struct TeamActivityFeedView: View {
                         answerAttachments: attachmentsBinding,
                         isSubmittingAnswer: viewModel.isSubmittingAnswer.contains(q.stepID),
                         isAutoAnswering: isAutonomousMode,
-                        onSubmitAnswer: { viewModel.submitSupervisorAnswer(stepID: q.stepID, store: store) },
+                        onSubmitAnswer: { viewModel.submitSupervisorAnswer(stepID: q.stepID, store: store, embedFiles: config.embedFilesInPrompt) },
                         onStageAttachment: { url in
                             let draftUUID = UUID()
                             return store.stageAttachment(url: url, draftID: draftUUID)
@@ -478,7 +478,7 @@ struct TeamActivityFeedView: View {
                 answerAttachments: attachmentsBinding,
                 isSubmittingAnswer: viewModel.isSubmittingAnswer.contains(stepID),
                 isAutoAnswering: isAutonomousMode,
-                onSubmitAnswer: { viewModel.submitSupervisorAnswer(stepID: stepID, store: store) },
+                onSubmitAnswer: { viewModel.submitSupervisorAnswer(stepID: stepID, store: store, embedFiles: config.embedFilesInPrompt) },
                 onStageAttachment: { url in
                     let draftUUID = UUID()
                     return store.stageAttachment(url: url, draftID: draftUUID)
