@@ -44,8 +44,17 @@ struct QuickCaptureFormView: View {
 
     @Environment(NTMSOrchestrator.self) private var store
     @Environment(StoreConfiguration.self) private var config
+    @Environment(StreamingPreviewManager.self) private var streamingManager
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isShowingFilePicker = false
     @FocusState private var focusedField: Field?
+
+    /// Fixed vertical slot reserved for the streaming preview line in `.taskWorking`.
+    /// Scales with Dynamic Type at the `.caption` metric so the preview Text (also
+    /// `.font(.caption)`) never clips and the symmetric loader-centering reserve
+    /// grows in lockstep. Must be a stored property — `@ScaledMetric` only works
+    /// as a property wrapper.
+    @ScaledMetric(relativeTo: .caption) private var previewLineHeight: CGFloat = 18
 
     private enum Field: Hashable { case supervisorTask }
 
@@ -274,12 +283,105 @@ struct QuickCaptureFormView: View {
     }
 
     private var taskWorkingBody: some View {
-        VStack(spacing: Spacing.m) {
-            Spacer()
+        // Reserved preview region: fixed so the loader stays geometrically centered
+        // regardless of whether a preview line is currently visible.
+        // `previewLineHeight` is a `@ScaledMetric` property on the view so Dynamic Type
+        // grows the reserve in lockstep with the preview Text's `.caption` font.
+        let previewGap: CGFloat = Spacing.m
+
+        return VStack(spacing: 0) {
+            Spacer(minLength: 0)
+            // Symmetric invisible block above — matches preview + gap below so the
+            // loader's center stays fixed when streaming text appears/disappears.
+            Color.clear.frame(height: previewLineHeight + previewGap)
             NTMSLoader(.large)
-            Spacer()
+            Color.clear.frame(height: previewGap)
+            streamingPreviewLine
+                .frame(height: previewLineHeight)
+            Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Single-line live preview of the currently streaming model content.
+    /// Mirrors the activity feed's polling pattern in `TeamActivityFeedView.messageBubble`
+    /// (including the reduce-motion rate). Only the Text polls — the loader and layout
+    /// spacers stay outside TimelineView so they aren't rebuilt on every tick.
+    private var streamingPreviewLine: some View {
+        TimelineView(.periodic(from: .now, by: reduceMotion ? 1.0 : 0.15)) { _ in
+            Text(currentStreamingLine ?? "")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.horizontal, Spacing.m)
+                .animation(nil, value: currentStreamingLine)
+        }
+    }
+
+    /// Resolves the step-ID for the currently running step in the active task, then
+    /// returns the most informative single-line summary of its streaming state.
+    ///
+    /// `streamingContent` returns `Optional("")` (not nil) between `beginStreaming` and
+    /// the first content chunk, so a naive `?? thinking` fallback would never fire —
+    /// we explicitly check emptiness via `lastNonEmptyLine` before falling through.
+    ///
+    /// Thinking text is not token-cleaned at source (`appendThinking` in
+    /// `StreamingPreviewManager` skips the `ModelTokenCleaner` call that `append` uses),
+    /// so we strip tokens here before displaying.
+    ///
+    /// Returns nil when nothing is streaming — tool execution gaps, team meetings
+    /// (meetings stream locally in `MeetingStreamingService`, not via `StreamingPreviewManager`),
+    /// or between role transitions. The preview line simply disappears.
+    private var currentStreamingLine: String? {
+        guard let stepID = runningStepID else { return nil }
+
+        if let content = streamingManager.streamingContent(for: stepID),
+           let line = Self.lastNonEmptyLine(in: content) {
+            return line
+        }
+
+        if let thinking = streamingManager.streamingThinking(for: stepID) {
+            let cleaned = ModelTokenCleaner.stripTokens(thinking)
+            if let line = Self.lastNonEmptyLine(in: cleaned) {
+                return line
+            }
+        }
+
+        return nil
+    }
+
+    /// A `.running` step in the active task's latest run, or nil if none.
+    ///
+    /// Multiple steps can be `.running` concurrently: `TeamEngine.startRoles`
+    /// (`TeamEngine+RoleTasks.swift`) spawns every ready role in parallel, so any
+    /// team whose dependency graph has parallel branches (e.g. FAANG: UXR + UXD + PM
+    /// after Supervisor Task) will have several steps streaming at once. This picks
+    /// whichever `.running` step happens to come first in `run.steps` array order —
+    /// arbitrary and non-deterministic across runs. Acceptable because the preview
+    /// is decorative; do not rely on this for logic that needs to target a specific
+    /// step. If a deterministic choice is ever needed, tie-break by most-recent
+    /// streaming activity or by the currently selected role.
+    private var runningStepID: String? {
+        store.activeTask?
+            .latestRun?
+            .steps
+            .first(where: { $0.status == .running })?
+            .id
+    }
+
+    /// Returns the last non-empty trimmed line from a multi-line streaming chunk,
+    /// or nil if the text is empty/whitespace-only. Picking the last line shows the
+    /// user what was most recently appended rather than a stale first heading.
+    private static func lastNonEmptyLine(in text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        for line in trimmed.split(whereSeparator: \.isNewline).reversed() {
+            let s = line.trimmingCharacters(in: .whitespaces)
+            if !s.isEmpty { return String(s) }
+        }
+        return nil
     }
 
     // MARK: - Question Text

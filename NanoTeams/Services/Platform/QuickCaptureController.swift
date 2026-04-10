@@ -436,6 +436,7 @@ final class QuickCaptureController {
         )
         .environment(store)
         .environment(store.configuration)
+        .environment(store.streamingPreviewManager)
 
         panel.setContent(formView)
     }

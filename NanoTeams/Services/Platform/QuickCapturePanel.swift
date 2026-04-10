@@ -187,6 +187,7 @@ private enum QuickCapturePanelPreview {
     )
     .environment(store)
     .environment(store.configuration)
+    .environment(StreamingPreviewManager())
     .frame(width: 250, height: 360)
 }
 
@@ -204,6 +205,7 @@ private enum QuickCapturePanelPreview {
     )
     .environment(store)
     .environment(store.configuration)
+    .environment(StreamingPreviewManager())
     .frame(width: 250, height: 360)
 }
 
@@ -225,6 +227,7 @@ private enum QuickCapturePanelPreview {
     )
     .environment(store)
     .environment(store.configuration)
+    .environment(StreamingPreviewManager())
     .frame(width: 250, height: 360)
 }
 
@@ -245,6 +248,7 @@ private enum QuickCapturePanelPreview {
     )
     .environment(store)
     .environment(store.configuration)
+    .environment(StreamingPreviewManager())
     .frame(width: 250, height: 360)
 }
 
@@ -268,6 +272,7 @@ private enum QuickCapturePanelPreview {
     )
     .environment(store)
     .environment(store.configuration)
+    .environment(StreamingPreviewManager())
     .frame(width: 250, height: 420)
 }
 
@@ -294,6 +299,7 @@ private enum QuickCapturePanelPreview {
     )
     .environment(store)
     .environment(store.configuration)
+    .environment(StreamingPreviewManager())
     .frame(width: 250, height: 420)
 }
 
@@ -324,5 +330,6 @@ private enum QuickCapturePanelPreview {
     )
     .environment(store)
     .environment(store.configuration)
+    .environment(StreamingPreviewManager())
     .frame(width: 250, height: 540)
 }
