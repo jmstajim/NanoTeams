@@ -336,19 +336,31 @@ struct QuickCaptureFormView: View {
     /// or between role transitions. The preview line simply disappears.
     private var currentStreamingLine: String? {
         guard let stepID = runningStepID else { return nil }
+        return Self.resolveStreamingLine(
+            content: streamingManager.streamingContent(for: stepID),
+            thinking: streamingManager.streamingThinking(for: stepID)
+        )
+    }
 
-        if let content = streamingManager.streamingContent(for: stepID),
-           let line = Self.lastNonEmptyLine(in: content) {
+    /// Pure resolution of content/thinking into a single displayed line.
+    /// Extracted from `currentStreamingLine` so it can be exercised directly
+    /// without standing up a SwiftUI view + environment (see `#if DEBUG`
+    /// accessors below and `QuickCaptureFormViewLogicTests`).
+    ///
+    /// Contract: prefer content over thinking, skip both the `Optional("")`
+    /// pre-first-chunk state and any whitespace-only chunks, strip Harmony
+    /// tokens from thinking (`appendThinking` in `StreamingPreviewManager`
+    /// doesn't clean at source), return nil when nothing displayable.
+    private static func resolveStreamingLine(content: String?, thinking: String?) -> String? {
+        if let content, let line = lastNonEmptyLine(in: content) {
             return line
         }
-
-        if let thinking = streamingManager.streamingThinking(for: stepID) {
+        if let thinking {
             let cleaned = ModelTokenCleaner.stripTokens(thinking)
-            if let line = Self.lastNonEmptyLine(in: cleaned) {
+            if let line = lastNonEmptyLine(in: cleaned) {
                 return line
             }
         }
-
         return nil
     }
 
@@ -552,3 +564,21 @@ struct QuickCaptureFormView: View {
         }
     }
 }
+
+#if DEBUG
+extension QuickCaptureFormView {
+    /// Test accessor for the pure single-line extractor. Mirrors the production
+    /// call site in `resolveStreamingLine`.
+    static func _testLastNonEmptyLine(in text: String) -> String? {
+        lastNonEmptyLine(in: text)
+    }
+
+    /// Test accessor for the content→thinking resolution logic. Lets unit tests
+    /// exercise both the `Optional("")` pre-first-chunk fall-through and the
+    /// `appendThinking` token-cleaning asymmetry without constructing the full
+    /// SwiftUI view + `StreamingPreviewManager` environment.
+    static func _testResolveStreamingLine(content: String?, thinking: String?) -> String? {
+        resolveStreamingLine(content: content, thinking: thinking)
+    }
+}
+#endif
