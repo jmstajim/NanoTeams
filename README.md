@@ -63,8 +63,8 @@ Assign different local models to different roles in the same team — a fast sma
 
 ### Quick Capture
 Two global hotkeys work from any app:
-- **Ctrl+Opt+Cmd+0** — Floating overlay to create tasks, answer AI questions, or view status
-- **Ctrl+Opt+Cmd+K** — Capture the current selection (text or files) and attach it to your task
+- **Ctrl+Opt+Cmd+0** — Floating overlay to create chat/task, answer AI questions, or view status
+- **Ctrl+Opt+Cmd+K** — Capture the current selection (text or files) and attach it to your chat/task
 
 <img width="441" height="455" alt="NanoTeams — Quick Capture overlay for creating tasks from any app" src="https://github.com/user-attachments/assets/48c6ac05-ff5f-49b8-9131-424a5b4f7acd" />
 
