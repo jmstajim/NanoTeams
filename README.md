@@ -48,6 +48,28 @@ Each role can read/write files, use git, build with Xcode, consult other roles, 
 
 <img width="640" height="491" alt="NanoTeams — team graph showing roles and artifact dependencies" src="https://github.com/user-attachments/assets/59e383b0-9393-4036-92d5-662c431a2d08" />
 
+## How Roles Work
+Every role in a team falls into one of three types — this determines what the role does and how it finishes.
+
+### Producing Roles
+Most roles are producing — they create specific deliverables called artifacts. A PM produces "Product Requirements," an Engineer produces "Engineering Notes," a Code Reviewer produces "Code Review."
+
+You don't need to do anything. The role works autonomously — reading files, using tools, consulting teammates — and finishes automatically once all its artifacts are submitted. You just watch the activity feed and review the results.
+
+All roles in the FAANG, Engineering, and Startup teams are producing roles.
+
+### Chat Roles
+Some roles don't produce artifacts — instead, they talk to you. After reading upstream artifacts (or just your task description), the role enters an open-ended conversation loop, asking you questions and responding to your answers.
+
+The role never finishes on its own. It keeps the conversation going until you pause or close the task. This is how the Personal Assistant works — pure back-and-forth dialogue. In the Quest Party, the Quest Master reads all the world-building artifacts from other roles, then runs an interactive adventure where you play the hero.
+
+When a team has no required deliverables for the Supervisor, the UI switches to Chat mode — you'll see a "Chat" label instead of "Working" or "Review."
+
+### Observer Roles
+A few roles have no artifacts at all — they don't produce anything and don't depend on anything. They sit in the team graph but don't run on their own. Instead, they come alive when invited to team meetings, contributing their perspective to group discussions.
+
+In the Discussion Club, four personality roles (The Open, The Conscientious, The Extrovert, The Neurotic) are observers — only The Agreeable runs as a producing role, kicking off meetings where all five debate the topic together.
+
 ## Features
 
 ### Multi-Agent AI Teams
