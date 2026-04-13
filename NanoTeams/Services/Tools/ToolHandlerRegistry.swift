@@ -63,6 +63,9 @@ enum ToolHandlerRegistry {
 
         // Vision
         AnalyzeImageTool.self,
+
+        // Team
+        CreateTeamTool.self,
     ]
 
     // MARK: - Schema & Metadata Queries (cached)
@@ -83,6 +86,11 @@ enum ToolHandlerRegistry {
     /// hardcoded subtraction is needed here.
     static let cacheableTools: Set<String> =
         Set(allTypes.filter { $0.isCacheable }.map { $0.name })
+
+    /// Tools that must NEVER be offered to a team role's LLM schema. Used by control-flow
+    /// tools (e.g. `create_team`) that have a dedicated invocation path outside the runtime.
+    static let unavailableToRoles: Set<String> =
+        Set(allTypes.filter { !$0.availableToRoles }.map { $0.name })
 
     /// Tool names in a given category. Stable, single source of truth.
     static func names(in category: ToolCategory) -> Set<String> {

@@ -16,6 +16,7 @@ enum ToolSignal: Hashable {
     case changeRequest(targetRole: String, changes: String, reasoning: String)
     case artifact(name: String, content: String, format: String?)
     case visionAnalysis(imagePath: String, prompt: String)
+    case teamCreation(config: GeneratedTeamConfig)
 }
 
 struct ToolExecutionResult: Hashable {

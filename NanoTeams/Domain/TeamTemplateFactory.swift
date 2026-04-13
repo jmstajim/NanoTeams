@@ -23,12 +23,13 @@ enum TeamTemplateFactory {
         TeamTemplateMetadata(id: "startup", name: "Startup", icon: "bolt.fill", description: "Minimal team for rapid prototyping"),
         TeamTemplateMetadata(id: "questParty", name: "Quest Party", icon: "scroll.fill", description: "Adventure creation and management"),
         TeamTemplateMetadata(id: "discussionClub", name: "Discussion Club", icon: "bubble.left.and.bubble.right.fill", description: "Meeting-driven discussion"),
+        TeamTemplateMetadata(id: "generated", name: "Generated Team", icon: "wand.and.stars", description: "AI assembles the optimal team for your task"),
     ]
 
     // MARK: - Public API
 
     static var allTemplates: [Team] {
-        [assistant(), faang(), engineering(), startup(), questParty(), discussionClub()]
+        [assistant(), faang(), engineering(), startup(), questParty(), discussionClub(), generatedTeam()]
     }
 
     static func faang() -> Team {
@@ -144,6 +145,23 @@ enum TeamTemplateFactory {
             ]
             roles[1].dependencies.requiredArtifacts = [SystemTemplates.supervisorTaskArtifactName]
         }
+    }
+
+    /// "Generated Team" — Supervisor-only placeholder. When a task is started with this
+    /// template, the orchestrator triggers a background `create_team` generation (attributed
+    /// to Supervisor, shown in activity feed like `analyze_image`). The resulting team is
+    /// stored on `NTMSTask.generatedTeam` and takes over the run.
+    static func generatedTeam() -> Team {
+        buildTeam(
+            name: "Generated Team",
+            description: "AI assembles the optimal team from your task description.",
+            templateID: "generated",
+            roleIDs: [],
+            artifactNames: [SystemTemplates.supervisorTaskArtifactName],
+            coordinatorIndex: 0,
+            supervisorRequires: [],
+            supervisorMode: .manual
+        )
     }
 
     // MARK: - Shared Builder

@@ -118,9 +118,12 @@ final class TaskEngineStoreAdapter: TeamEngineStore {
 
     // MARK: - Private
 
-    /// Resolve the team for this task: prefer task's preferredTeamID, then project's activeTeam.
+    /// Resolve the team for this task: task.generatedTeam → preferredTeamID → project's activeTeam.
     private var resolvedTeam: Team? {
         let task = activeTask
+        if let generated = task?.generatedTeam {
+            return generated
+        }
         if let preferredTeamID = task?.preferredTeamID,
            let team = orchestrator?.workFolder?.team(withID: preferredTeamID) {
             return team

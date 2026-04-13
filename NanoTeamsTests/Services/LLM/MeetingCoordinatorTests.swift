@@ -17,7 +17,8 @@ final class MeetingCoordinatorTests: XCTestCase {
         XCTAssertTrue(excluded.contains(TN.requestChanges))
         XCTAssertTrue(excluded.contains(TN.createArtifact))
         XCTAssertTrue(excluded.contains(TN.analyzeImage))
-        XCTAssertEqual(excluded.count, 7)
+        XCTAssertTrue(excluded.contains(TN.createTeam))
+        XCTAssertEqual(excluded.count, 8)
     }
 
     // MARK: - filterMeetingTools

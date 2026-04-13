@@ -9,11 +9,21 @@ struct TeamSelectorView: View {
     let activeTeamID: NTMSID
     let onSelect: (NTMSID) -> Void
     let onAdd: () -> Void
+    let onGenerate: () -> Void
     let onDuplicate: () -> Void
     let onDelete: () -> Void
 
     var body: some View {
         Menu {
+            // Generate Team — separate first section
+            Button {
+                onGenerate()
+            } label: {
+                Label("Generate Team...", systemImage: "wand.and.stars")
+            }
+
+            Divider()
+
             // Team list
             ForEach(teams) { team in
                 Button {
@@ -125,6 +135,7 @@ struct TeamSelectorView: View {
         activeTeamID: team1.id,
         onSelect: { _ in },
         onAdd: {},
+        onGenerate: {},
         onDuplicate: {},
         onDelete: {}
     )

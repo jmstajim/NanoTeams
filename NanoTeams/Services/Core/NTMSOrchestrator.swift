@@ -131,6 +131,9 @@ final class NTMSOrchestrator {
 
     /// Resolves the effective team for a task: task.preferredTeamID → workFolder.activeTeam → Team.default
     func resolvedTeam(for task: NTMSTask?) -> Team {
+        if let generated = task?.generatedTeam {
+            return generated
+        }
         if let preferredTeamID = task?.preferredTeamID,
            let team = workFolder?.team(withID: preferredTeamID) {
             return team

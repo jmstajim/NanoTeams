@@ -78,6 +78,8 @@ enum Colors {
     static let surfaceHover = adaptive(dark: 0x1A1A1A, light: 0xEEEEEE)
     /// Overlay (dimmed window, code blocks)
     static let surfaceOverlay = adaptive(dark: 0x141414, light: 0xF0F0F0)
+    /// Strong overlay for blocking content (loading/failure overlays atop the canvas)
+    static let surfaceOverlayStrong = adaptive(dark: 0x0E0E0E, light: 0xF7F7F7)
 
     /// Fade gradient — content fade-out above banners
     static let surfaceFadeClear = adaptive(dark: 0x111111, light: 0xFFFFFF, alpha: 0)
@@ -146,6 +148,9 @@ enum Colors {
     static let textSecondary = adaptive(dark: 0xC2B8B0, light: 0x746B65)
     /// Tertiary text — placeholders, hints, disabled
     static let textTertiary = adaptive(dark: 0x8A817B, light: 0x9E948D)
+    /// Text on accent surfaces (e.g. inside an accent-filled capsule button).
+    /// White in both modes since the accent is dark enough for contrast.
+    static let textOnAccent = adaptive(dark: 0xFFFFFF, light: 0xFFFFFF)
 
     // MARK: - NSColor Accessors (for AppKit contexts: NSTextView, NSAttributedString)
 

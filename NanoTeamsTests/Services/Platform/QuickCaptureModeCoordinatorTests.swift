@@ -37,7 +37,7 @@ final class QuickCaptureModeCoordinatorTests: XCTestCase {
 
     private func makeTask(withQuestion: Bool = false, isChatMode: Bool = false) -> NTMSTask {
         var task = NTMSTask(id: 0, title: "T", supervisorTask: "G")
-        task.isChatMode = isChatMode
+        task.setStoredChatMode(isChatMode)
         var run = Run(id: 0, teamID: "t1")
         var step = StepExecution.make(for: TeamRoleDefinition(
             id: "eng", name: "Engineer",

@@ -77,4 +77,56 @@ final class StepToolCallTests: XCTestCase {
         )
         XCTAssertTrue(call.isAnalyzing)
     }
+
+    // MARK: - isGeneratingTeam
+
+    func testIsGeneratingTeam_trueWhenInterimCreateTeamResult() {
+        let call = StepToolCall(
+            name: ToolNames.createTeam,
+            argumentsJSON: "{}",
+            resultJSON: "{\"ok\":true,\"status\":\"generating\"}",
+            isError: false
+        )
+        XCTAssertTrue(call.isGeneratingTeam)
+    }
+
+    func testIsGeneratingTeam_falseForOtherToolName() {
+        let call = StepToolCall(
+            name: ToolNames.analyzeImage,
+            argumentsJSON: "{}",
+            resultJSON: "{\"status\":\"generating\"}",
+            isError: false
+        )
+        XCTAssertFalse(call.isGeneratingTeam)
+    }
+
+    func testIsGeneratingTeam_falseWhenFinalResult() {
+        let call = StepToolCall(
+            name: ToolNames.createTeam,
+            argumentsJSON: "{}",
+            resultJSON: "{\"ok\":true,\"data\":{\"team\":\"API Team\",\"status\":\"created\"}}",
+            isError: false
+        )
+        XCTAssertFalse(call.isGeneratingTeam)
+    }
+
+    func testIsGeneratingTeam_falseWhenError() {
+        let call = StepToolCall(
+            name: ToolNames.createTeam,
+            argumentsJSON: "{}",
+            resultJSON: "{\"status\":\"generating\"}",
+            isError: true
+        )
+        XCTAssertFalse(call.isGeneratingTeam)
+    }
+
+    func testIsGeneratingTeam_falseWhenResultNil() {
+        let call = StepToolCall(
+            name: ToolNames.createTeam,
+            argumentsJSON: "{}",
+            resultJSON: nil,
+            isError: nil
+        )
+        XCTAssertFalse(call.isGeneratingTeam)
+    }
 }

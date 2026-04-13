@@ -499,8 +499,8 @@ final class TeamModelTests: XCTestCase {
         let wf = WorkFolderProjection(state: WorkFolderState(name: "Test"), settings: .defaults, teams: Team.defaultTeams)
         let names = wf.teams.map(\.name)
 
-        XCTAssertEqual(wf.teams.count, 6)
-        XCTAssertEqual(names, ["Personal Assistant", "FAANG Team", "Engineering Team", "Startup", "Quest Party", "Discussion Club"])
+        XCTAssertEqual(wf.teams.count, 7)
+        XCTAssertEqual(names, ["Personal Assistant", "FAANG Team", "Engineering Team", "Startup", "Quest Party", "Discussion Club", "Generated Team"])
     }
 
     func testProject_AddTeam() {

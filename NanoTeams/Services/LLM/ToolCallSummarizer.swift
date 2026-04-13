@@ -77,6 +77,13 @@ enum ToolCallSummarizer {
                 let trimmed = topic.count > 40 ? String(topic.prefix(40)) + "..." : topic
                 return count > 0 ? "\(trimmed) · \(count)" : trimmed
             },
+            TN.createTeam: { dict in
+                if let config = dict["team_config"] as? [String: Any],
+                   let name = config["name"] as? String {
+                    return name
+                }
+                return ""
+            },
         ]
     }()
 

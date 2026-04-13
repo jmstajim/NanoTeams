@@ -32,10 +32,18 @@ struct StepToolCall: Codable, Identifiable, Hashable {
     }
 
     /// True while a vision analysis is in progress (interim placeholder result).
-    /// Matches the structured `"status":"analyzing"` marker set by `Tools+Vision.swift`.
+    /// Matches the structured `"status":"analyzing"` marker set by `VisionHandlers.swift`.
     var isAnalyzing: Bool {
         name == ToolNames.analyzeImage
             && resultJSON?.contains("\"status\":\"analyzing\"") == true
+            && isError != true
+    }
+
+    /// True while a team generation is in progress (interim placeholder result).
+    /// Matches the structured `"status":"generating"` marker set at generation start.
+    var isGeneratingTeam: Bool {
+        name == ToolNames.createTeam
+            && resultJSON?.contains("\"status\":\"generating\"") == true
             && isError != true
     }
 }

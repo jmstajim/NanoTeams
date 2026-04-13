@@ -336,6 +336,9 @@ final class LLMExecutionService {
 
     /// Resolves the team for a task (prefers preferredTeamID, falls back to activeTeam).
     func resolveTeam(task: NTMSTask) -> Team? {
+        if let generated = task.generatedTeam {
+            return generated
+        }
         if let preferredTeamID = task.preferredTeamID,
            let team = delegate?.snapshot?.workFolder.team(withID: preferredTeamID)
         {

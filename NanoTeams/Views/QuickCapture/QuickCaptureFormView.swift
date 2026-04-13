@@ -87,6 +87,14 @@ struct QuickCaptureFormView: View {
         return availableTeams.first
     }
 
+    /// Mode label shown next to the team picker ("task" / "chat").
+    /// Generated Team template is a placeholder — the actual generated team determines
+    /// the real mode — so we always show "task" for it (it will generate a producing team).
+    private var teamModeLabel: String {
+        if selectedTeam?.templateID == "generated" { return "task" }
+        return selectedTeam?.isChatMode == true ? "chat" : "task"
+    }
+
     /// Draft ID for attachment staging. Always uses the form state's UUID-based draft ID
     /// (step IDs are role ID strings and cannot serve as staging directory names).
     private var activeDraftID: UUID {
@@ -237,7 +245,7 @@ struct QuickCaptureFormView: View {
 
             overlayTeamMenu
 
-            Text(selectedTeam?.isChatMode == true ? "chat" : "task")
+            Text(teamModeLabel)
                 .font(.headline.weight(.medium))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -246,6 +254,14 @@ struct QuickCaptureFormView: View {
 
     private var overlayTeamMenu: some View {
         Menu {
+            Button {
+                selectGeneratedTeamTemplate()
+            } label: {
+                Label("Generate Team...", systemImage: "wand.and.stars")
+            }
+
+            Divider()
+
             ForEach(availableTeams) { team in
                 Button {
                     withAnimation(Animations.quick) {
@@ -269,6 +285,32 @@ struct QuickCaptureFormView: View {
                 .foregroundStyle(Colors.accent)
         }
         .menuStyle(.borderlessButton)
+    }
+
+    /// Selects the "Generated Team" template. On submit, the task runs this special
+    /// template which triggers background team generation via `create_team` tool call
+    /// attributed to Supervisor (similar to `analyze_image`).
+    ///
+    /// If the Generated Team template isn't in `workFolder.teams` yet (e.g., project was
+    /// bootstrapped before this template was added), creates it on-the-fly and appends.
+    private func selectGeneratedTeamTemplate() {
+        Task {
+            var selectedID: NTMSID?
+            await store.mutateWorkFolder { project in
+                if let existing = project.teams.first(where: { $0.templateID == "generated" }) {
+                    selectedID = existing.id
+                } else {
+                    let newTeam = TeamTemplateFactory.generatedTeam()
+                    project.teams.append(newTeam)
+                    selectedID = newTeam.id
+                }
+            }
+            if let id = selectedID {
+                withAnimation(Animations.quick) {
+                    formState.selectedTeamID = id
+                }
+            }
+        }
     }
 
     // MARK: - Task Working
@@ -449,6 +491,14 @@ struct QuickCaptureFormView: View {
                 .font(Typography.subheadlineMedium)
                 .foregroundStyle(.secondary)
             Menu {
+                Button {
+                    selectGeneratedTeamTemplate()
+                } label: {
+                    Label("Generate Team...", systemImage: "wand.and.stars")
+                }
+
+                Divider()
+
                 ForEach(availableTeams) { team in
                     Button {
                         withAnimation(Animations.quick) {

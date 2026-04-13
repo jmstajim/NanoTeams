@@ -112,6 +112,7 @@ enum SystemTemplates {
         "questParty":    TeamTemplateConfig(system: questPartyTemplate,    consultation: questPartyConsultationTemplate,    meeting: questPartyMeetingTemplate),
         "discussionClub":TeamTemplateConfig(system: discussionTemplate,    consultation: discussionConsultationTemplate,    meeting: discussionMeetingTemplate),
         "assistant":     TeamTemplateConfig(system: assistantTemplate,     consultation: genericConsultationTemplate,       meeting: genericMeetingTemplate),
+        "generated":     TeamTemplateConfig(system: genericTemplate,       consultation: genericConsultationTemplate,       meeting: genericMeetingTemplate),
     ]
 
     /// Returns the default system prompt template for a given team template ID.

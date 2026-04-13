@@ -216,6 +216,9 @@ struct TeamBoardView: View {
         let finishClosure: ((String) -> Void)? = isHistoricalRun ? nil : { roleID in
             store.finishAdvisoryRole(taskID: task.id, roleID: roleID)
         }
+        let retryClosure: (() -> Void)? = isHistoricalRun ? nil : {
+            Task { await store.retryTeamGeneration(taskID: task.id) }
+        }
         return GraphPanelView(
             task: task,
             workFolder: workFolder,
@@ -225,6 +228,7 @@ struct TeamBoardView: View {
             selectedRoleID: $selectedRoleID,
             onRestartRole: restartClosure,
             onFinishRole: finishClosure,
+            onRetryGeneration: retryClosure,
             isChatMode: resolvedTeam.isChatMode,
             isPaused: engineState.taskEngineStates[task.id] == .paused,
             isEngineRunning: engineState.taskEngineStates[task.id] == .running,

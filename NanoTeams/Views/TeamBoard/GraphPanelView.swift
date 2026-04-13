@@ -12,6 +12,7 @@ struct GraphPanelView: View {
     @Binding var selectedRoleID: String?
     var onRestartRole: ((String) -> Void)? = nil
     var onFinishRole: ((String) -> Void)? = nil
+    var onRetryGeneration: (() -> Void)? = nil
     var isChatMode: Bool = false
     var isPaused: Bool = false
     var isEngineRunning: Bool = true
@@ -19,11 +20,52 @@ struct GraphPanelView: View {
     var isTaskInReview: Bool = false
 
     private var activeTeam: Team? {
+        if let generated = task.generatedTeam {
+            return generated
+        }
         if let preferredTeamID = task.preferredTeamID,
            let team = workFolder?.teams.first(where: { $0.id == preferredTeamID }) {
             return team
         }
         return workFolder?.activeTeam
+    }
+
+    /// True when task uses the "Generated Team" template and no team has been generated yet.
+    private var isGenerationPending: Bool {
+        guard task.generatedTeam == nil else { return false }
+        guard let preferredID = task.preferredTeamID,
+              let template = workFolder?.teams.first(where: { $0.id == preferredID })
+        else { return false }
+        return template.templateID == "generated"
+    }
+
+    /// The most recent create_team tool call across the latest run's steps, if any.
+    private var generationToolCall: StepToolCall? {
+        guard let run = task.runs.last else { return nil }
+        for step in run.steps.reversed() {
+            if let call = step.toolCalls.last(where: { $0.name == ToolNames.createTeam }) {
+                return call
+            }
+        }
+        return nil
+    }
+
+    private var generationFailed: Bool {
+        isGenerationPending && (generationToolCall?.isError == true)
+    }
+
+    private var isGeneratingTeam: Bool {
+        isGenerationPending && !generationFailed
+    }
+
+    private var generationErrorMessage: String? {
+        guard generationFailed,
+              let json = generationToolCall?.resultJSON,
+              let dict = JSONUtilities.parseJSONDictionary(json),
+              let error = dict["error"] as? [String: Any],
+              let message = error["message"] as? String
+        else { return nil }
+        return message
     }
 
     private var activeTeamMembers: Set<String> {
@@ -35,24 +77,64 @@ struct GraphPanelView: View {
     }
 
     var body: some View {
-        TeamGraphView(
-            roleStatuses: roleStatuses,
-            roleDefinitions: roleDefinitions,
-            nodePositions: nodePositions,
-            teamMembers: activeTeamMembers,
-            selectedRoleID: $selectedRoleID,
-            producedArtifacts: producedArtifacts,
-            team: activeTeam,
-            onRestartRole: onRestartRole,
-            onFinishRole: onFinishRole,
-            isChatMode: isChatMode,
-            isPaused: isPaused,
-            isEngineRunning: isEngineRunning,
-            meetingParticipants: meetingParticipants,
-            isTaskInReview: isTaskInReview
-        )
-        .clipped()
+        ZStack {
+            TeamGraphView(
+                roleStatuses: roleStatuses,
+                roleDefinitions: roleDefinitions,
+                nodePositions: nodePositions,
+                teamMembers: activeTeamMembers,
+                selectedRoleID: $selectedRoleID,
+                producedArtifacts: producedArtifacts,
+                team: activeTeam,
+                onRestartRole: onRestartRole,
+                onFinishRole: onFinishRole,
+                isChatMode: isChatMode,
+                isPaused: isPaused,
+                isEngineRunning: isEngineRunning,
+                meetingParticipants: meetingParticipants,
+                isTaskInReview: isTaskInReview
+            )
+            .clipped()
+
+            if isGeneratingTeam {
+                VStack(spacing: Spacing.m) {
+                    NTMSLoader(.large)
+                    Text("Generating team…")
+                        .font(Typography.captionSemibold)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Colors.surfaceOverlayStrong)
+            } else if generationFailed {
+                generationFailureOverlay
+            }
+        }
         .background(Colors.surfacePrimary)
+    }
+
+    private var generationFailureOverlay: some View {
+        VStack(spacing: Spacing.m) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 32))
+                .foregroundStyle(Colors.error)
+            Text("Team generation failed")
+                .font(Typography.subheadlineSemibold)
+                .foregroundStyle(Colors.textPrimary)
+            if let message = generationErrorMessage {
+                Text(message)
+                    .font(Typography.caption)
+                    .foregroundStyle(Colors.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, Spacing.xl)
+            }
+            if let onRetryGeneration {
+                Button("Retry", action: onRetryGeneration)
+                    .buttonStyle(.borderedProminent)
+                    .padding(.top, Spacing.s)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Colors.surfaceOverlayStrong)
     }
 }
 

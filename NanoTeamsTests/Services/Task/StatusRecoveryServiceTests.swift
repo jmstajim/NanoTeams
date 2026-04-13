@@ -123,7 +123,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
 
     func testRecoverChatModeTask_setsPaused() {
         var task = makeTask(stepStatuses: [.running])
-        task.isChatMode = true
+        task.setStoredChatMode(true)
 
         let changed = StatusRecoveryService.recoverStaleStatuses(in: &task)
 

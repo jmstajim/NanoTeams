@@ -14,6 +14,7 @@ struct TeamEditorView: View {
 
     @State private var selectedTab: EditorTab = .team
     @State private var showingNewTeamSheet = false
+    @State private var showingGenerateTeamSheet = false
     @State private var showingDeleteConfirmation = false
     @State private var validationErrors: [TeamValidationError] = []
     @State private var showingImportTeam = false
@@ -78,6 +79,7 @@ struct TeamEditorView: View {
                         activeTeamID: activeID,
                         onSelect: handleSelectTeam,
                         onAdd: { showingNewTeamSheet = true },
+                        onGenerate: { showingGenerateTeamSheet = true },
                         onDuplicate: handleDuplicateTeam,
                         onDelete: { showingDeleteConfirmation = true }
                     )
@@ -122,6 +124,11 @@ struct TeamEditorView: View {
         }
         .sheet(isPresented: $showingNewTeamSheet) {
             NewTeamSheet(onSave: handleCreateTeam)
+        }
+        .sheet(isPresented: $showingGenerateTeamSheet) {
+            GenerateTeamSheet { taskDescription in
+                await handleGenerateTeam(taskDescription: taskDescription)
+            }
         }
         .alert("Delete Team", isPresented: $showingDeleteConfirmation) {
             Button("Cancel", role: .cancel) {}

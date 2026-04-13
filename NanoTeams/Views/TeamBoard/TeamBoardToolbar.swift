@@ -147,6 +147,16 @@ extension TeamBoardView {
                     Label("Source Files", systemImage: "paperclip")
                 }
             }
+
+            if let task, task.generatedTeam != nil {
+                Divider()
+
+                Button {
+                    Task { await store.saveGeneratedTeam(taskID: task.id) }
+                } label: {
+                    Label("Save Team...", systemImage: "square.and.arrow.down")
+                }
+            }
         } label: {
             Label("More", systemImage: "ellipsis.circle")
         }

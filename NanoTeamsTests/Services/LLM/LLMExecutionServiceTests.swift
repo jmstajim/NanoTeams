@@ -502,6 +502,55 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
             XCTAssertEqual(tool.parameters.type, "object")
         }
     }
+
+    // MARK: - unavailableToRoles filter
+    //
+    // `create_team` has a dedicated invocation path (TeamGenerationService) and must
+    // never appear in any role's tool schema, even if a misconfigured role definition
+    // explicitly lists it. This is the schema-level enforcement of `availableToRoles=false`.
+
+    func testToolSchemas_filtersUnavailableToRoles_evenWhenExplicitlyListed() {
+        let service = LLMExecutionService(repository: NTMSRepository())
+        let delegate = MockLLMExecutionDelegate()
+        service.attach(delegate: delegate)
+
+        // Build a custom role that explicitly lists create_team in its toolIDs.
+        let customRole = TeamRoleDefinition(
+            id: "rogue_role",
+            name: "Rogue",
+            prompt: "p",
+            toolIDs: ["read_file", ToolNames.createTeam, "list_files"],
+            usePlanningPhase: false,
+            dependencies: RoleDependencies()
+        )
+        let team = Team(
+            name: "T", roles: [customRole], artifacts: [],
+            settings: TeamSettings(), graphLayout: TeamGraphLayout()
+        )
+
+        let schemas = service.toolSchemas(for: .custom(id: "rogue_role"), team: team)
+        let names = Set(schemas.map(\.name))
+
+        XCTAssertTrue(names.contains("read_file"), "Other listed tools should pass through")
+        XCTAssertTrue(names.contains("list_files"))
+        XCTAssertFalse(names.contains(ToolNames.createTeam),
+                       "create_team must be filtered out via unavailableToRoles")
+    }
+
+    func testUnavailableToRoles_containsCreateTeam() {
+        XCTAssertTrue(ToolHandlerRegistry.unavailableToRoles.contains(ToolNames.createTeam))
+    }
+
+    func testUnavailableToRoles_doesNotContainNormalTools() {
+        // Sanity: make sure we didn't accidentally exclude useful tools.
+        let normalTools = ["read_file", "write_file", "git_status", "ask_supervisor", "create_artifact"]
+        for name in normalTools {
+            XCTAssertFalse(
+                ToolHandlerRegistry.unavailableToRoles.contains(name),
+                "\(name) should be available to roles"
+            )
+        }
+    }
 }
 
 // MARK: - Role Definition Tool Access Tests

@@ -28,8 +28,48 @@ struct NTMSTask: Codable, Identifiable, Hashable {
     /// Work-folder-root-relative file paths attached to this task (images, documents, etc.).
     var attachmentPaths: [String]
 
-    /// Whether this task operates in open-ended chat mode (set at creation from team config).
-    var isChatMode: Bool
+    /// Backing storage for `isChatMode`. Set at creation from team config.
+    /// Use `isChatMode` publicly — it prefers `generatedTeam.isChatMode` when present
+    /// so the display always reflects whether Supervisor has any incoming artifacts.
+    private var storedIsChatMode: Bool
+
+    /// Whether this task operates in open-ended chat mode.
+    /// Derived from the supervisor's incoming artifacts in the resolved team:
+    /// `generatedTeam.isChatMode` if a team was generated, otherwise the value stored
+    /// at task creation (from the preferred team's `supervisorRequiredArtifacts`).
+    /// Get-only — generated teams override stored value, so a setter would be a footgun.
+    /// Use `setStoredChatMode(_:)` to update the pre-generation default.
+    var isChatMode: Bool {
+        if let generated = generatedTeam {
+            return generated.isChatMode
+        }
+        return storedIsChatMode
+    }
+
+    /// Updates the pre-generation chat-mode default. No effect on the observed
+    /// `isChatMode` while `generatedTeam != nil` — the generated team dominates.
+    mutating func setStoredChatMode(_ value: Bool) {
+        storedIsChatMode = value
+    }
+
+    /// Transient team generated at task runtime (when `preferredTeamID` points to the
+    /// "Generated Team" template). Takes precedence over `preferredTeamID` in `resolvedTeam`
+    /// lookups. Cleared when the user saves the team via the "Save Team" action.
+    /// Mutated only via `adoptGeneratedTeam(_:)` / `clearGeneratedTeam()` so the lifecycle
+    /// stays observable from a single call site.
+    private(set) var generatedTeam: Team?
+
+    /// Installs an LLM-generated team on this task. Called by `runTeamGeneration` on
+    /// success; flips the observed `isChatMode` to the generated team's value.
+    mutating func adoptGeneratedTeam(_ team: Team) {
+        generatedTeam = team
+    }
+
+    /// Clears the generated team reference, typically because it has been promoted
+    /// into the project's persisted teams list (see `saveGeneratedTeam`).
+    mutating func clearGeneratedTeam() {
+        generatedTeam = nil
+    }
 
     init(
         id: Int,
@@ -45,7 +85,8 @@ struct NTMSTask: Codable, Identifiable, Hashable {
         acceptanceCheckpoints: Set<String>? = nil,
         preferredTeamID: NTMSID? = nil,
         attachmentPaths: [String] = [],
-        isChatMode: Bool = false
+        isChatMode: Bool = false,
+        generatedTeam: Team? = nil
     ) {
         self.id = id
         self.title = title
@@ -60,7 +101,8 @@ struct NTMSTask: Codable, Identifiable, Hashable {
         self.acceptanceCheckpoints = acceptanceCheckpoints
         self.preferredTeamID = preferredTeamID
         self.attachmentPaths = attachmentPaths
-        self.isChatMode = isChatMode
+        self.storedIsChatMode = isChatMode
+        self.generatedTeam = generatedTeam
     }
 
     enum CodingKeys: String, CodingKey {
@@ -79,6 +121,7 @@ struct NTMSTask: Codable, Identifiable, Hashable {
         case preferredTeamID
         case attachmentPaths
         case isChatMode
+        case generatedTeam
     }
 
     init(from decoder: Decoder) throws {
@@ -103,7 +146,8 @@ struct NTMSTask: Codable, Identifiable, Hashable {
         self.acceptanceCheckpoints = try container.decodeIfPresent(Set<String>.self, forKey: .acceptanceCheckpoints)
         self.preferredTeamID = try container.decodeIfPresent(String.self, forKey: .preferredTeamID)
         self.attachmentPaths = try container.decodeIfPresent([String].self, forKey: .attachmentPaths) ?? []
-        self.isChatMode = try container.decodeIfPresent(Bool.self, forKey: .isChatMode) ?? false
+        self.storedIsChatMode = try container.decodeIfPresent(Bool.self, forKey: .isChatMode) ?? false
+        self.generatedTeam = try container.decodeIfPresent(Team.self, forKey: .generatedTeam)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -121,7 +165,8 @@ struct NTMSTask: Codable, Identifiable, Hashable {
         try container.encodeIfPresent(acceptanceCheckpoints, forKey: .acceptanceCheckpoints)
         try container.encodeIfPresent(preferredTeamID, forKey: .preferredTeamID)
         try container.encode(attachmentPaths, forKey: .attachmentPaths)
-        try container.encode(isChatMode, forKey: .isChatMode)
+        try container.encode(storedIsChatMode, forKey: .isChatMode)
+        try container.encodeIfPresent(generatedTeam, forKey: .generatedTeam)
     }
 }
 

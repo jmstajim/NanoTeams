@@ -39,4 +39,6 @@ enum ToolNames {
     static let createArtifact = "create_artifact"
     // Vision (1)
     static let analyzeImage = "analyze_image"
+    // Team (1)
+    static let createTeam = "create_team"
 }

@@ -212,7 +212,9 @@ final class QuickCaptureController {
         } else {
             team = store.snapshot?.workFolder.activeTeam
         }
-        let isChatMode = team?.isChatMode ?? false
+        // Generated Team template is a placeholder — treat as non-chat so Quick Capture
+        // dismisses and navigates to the task after submission.
+        let isChatMode = (team?.templateID == "generated") ? false : (team?.isChatMode ?? false)
 
         // Build the supervisor task text with optional file embedding
         let built = AnswerTextBuilder.build(

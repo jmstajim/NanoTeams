@@ -80,6 +80,21 @@ extension LLMExecutionService {
                     networkLogger: networkLogger,
                     conversationMessages: &conversationMessages
                 )
+            case .teamCreation:
+                // create_team is invoked exclusively by TeamGenerationService, not via
+                // the runtime. Filtered out of role schemas via `availableToRoles=false`,
+                // so reaching this branch means a misconfigured role attempted to call
+                // it — process as a regular result and let the model see the success
+                // envelope, but do NOT install the team (that path belongs to
+                // `runTeamGeneration`).
+                await processRegularToolResult(
+                    result: result,
+                    stepID: stepID,
+                    memoryStore: memoryStore,
+                    iterationNumber: iterationNumber,
+                    conversationMessages: &conversationMessages,
+                    outcome: &outcome
+                )
             default:
                 await processRegularToolResult(
                     result: result,

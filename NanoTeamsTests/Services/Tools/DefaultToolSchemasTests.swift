@@ -69,7 +69,7 @@ final class DefaultToolSchemasTests: XCTestCase {
     }
 
     func testCollaborationToolsCount() {
-        XCTAssertEqual(count(in: .collaboration), 4)
+        XCTAssertEqual(count(in: .collaboration), 5)
     }
 
     func testArtifactToolsCount() {
@@ -78,8 +78,18 @@ final class DefaultToolSchemasTests: XCTestCase {
 
     // MARK: - Total Count
 
-    func testDefaultToolsCountIs28() {
-        XCTAssertEqual(tools.count, 28)
+    func testDefaultToolsCountIs29() {
+        XCTAssertEqual(tools.count, 29)
+    }
+
+    /// `create_team` is in the registry (so handler tests can drive it via ToolRuntime),
+    /// but must NEVER be offered to a team role's LLM schema — it has a dedicated
+    /// invocation path through `TeamGenerationService`.
+    func testCreateTeam_unavailableToRoles() {
+        XCTAssertTrue(
+            ToolHandlerRegistry.unavailableToRoles.contains(ToolNames.createTeam),
+            "create_team must be in unavailableToRoles to prevent silent no-op dispatch"
+        )
     }
 
     // MARK: - Registry Invariants

@@ -32,6 +32,35 @@ extension TeamEditorView {
         }
     }
 
+    /// Generates a team via direct LLM call (no task/run). Returns nil on success,
+    /// an error message on failure. Surface non-fatal build warnings (e.g. dropped
+    /// tool names) via `lastInfoMessage`, and surface persistence failure (a stale
+    /// `lastErrorMessage` after the workfolder mutate) as a sheet error.
+    func handleGenerateTeam(taskDescription: String) async -> String? {
+        do {
+            let buildResult = try await TeamGenerationService.generate(
+                taskDescription: taskDescription,
+                config: store.globalLLMConfig
+            )
+            let team = buildResult.team
+            let priorError = store.lastErrorMessage
+            await store.mutateWorkFolder { project in
+                project.teams.append(team)
+                project.activeTeamID = team.id
+            }
+            if store.lastErrorMessage != priorError, let err = store.lastErrorMessage {
+                return err
+            }
+            if !buildResult.warnings.isEmpty {
+                store.lastInfoMessage = buildResult.warnings.joined(separator: " ")
+            }
+            return nil
+        } catch {
+            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            return message
+        }
+    }
+
     func handleDuplicateTeam() {
         guard let team = activeTeam else { return }
 

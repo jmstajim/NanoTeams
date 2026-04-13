@@ -74,10 +74,11 @@ extension LLMExecutionService {
             allowedIDs = SystemTemplates.fallbackToolIDs[role.baseID] ?? SystemTemplates.fallbackCustomRoleToolIDs
         }
 
-        // 3. Filter all tools
+        // 3. Filter all tools (and strip control-flow tools that have a dedicated invocation path)
         let allTools = ToolDefinitionRegistry.shared.allToolSchemas()
+        let unavailable = ToolHandlerRegistry.unavailableToRoles
         var allowedTools = allTools.filter { toolDef in
-            allowedIDs.contains(toolDef.name)
+            allowedIDs.contains(toolDef.name) && !unavailable.contains(toolDef.name)
         }
 
         let tn = ToolNames.self

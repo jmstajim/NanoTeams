@@ -12,6 +12,14 @@ extension NTMSOrchestrator {
         }
         await ensureTaskLoaded(taskID)
         await createNewRun(taskID: taskID)
+
+        // For "Generated Team" template: run team generation before spawning the engine.
+        // The resulting team is stored on `task.generatedTeam` and takes over the run.
+        if needsTeamGeneration(taskID: taskID) {
+            let generated = await runTeamGeneration(taskID: taskID)
+            if !generated { return } // leave run in failed state; user can retry via "New Run"
+        }
+
         let engine = engineForTask(taskID)
         engine.start()
     }

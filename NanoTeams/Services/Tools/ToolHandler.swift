@@ -55,6 +55,11 @@ protocol ToolHandler {
     /// categories (except `git_diff`, which overrides to `false`).
     static var isCacheable: Bool { get }
 
+    /// When `true`, the tool is never included in any role's tool schema offered to
+    /// the LLM. Used by tools that are invoked through a dedicated control flow
+    /// (e.g. `create_team`, called via `TeamGenerationService` rather than the runtime).
+    static var availableToRoles: Bool { get }
+
     /// Factory — constructs an instance bound to a specific work folder. Called
     /// from `ToolHandlerRegistry.buildHandlers`. Handlers ignore the fields they
     /// don't need.
@@ -68,6 +73,7 @@ protocol ToolHandler {
 extension ToolHandler {
     static var excludedInMeetings: Bool { false }
     static var blockedInDefaultStorage: Bool { false }
+    static var availableToRoles: Bool { true }
 
     /// Default: read-only file/git tools are cacheable; everything else is not.
     /// `GitDiffTool` overrides to `false` because the working tree mutates between reads.

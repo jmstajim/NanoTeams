@@ -14,7 +14,7 @@ final class CloseTaskTests: NTMSOrchestratorTestBase {
 
         // Inject a running step (simulates chat advisory role mid-execution)
         await sut.mutateTask(taskID: taskID) { task in
-            task.isChatMode = true
+            task.setStoredChatMode(true)
             var run = Run(id: 0, steps: [
                 StepExecution(id: "assistant", role: .custom(id: "assistant"), title: "Chat", status: .running),
             ], roleStatuses: ["assistant": .working])
@@ -38,7 +38,7 @@ final class CloseTaskTests: NTMSOrchestratorTestBase {
         let taskID = await sut.createTask(title: "Chat", supervisorTask: "Help")!
 
         await sut.mutateTask(taskID: taskID) { task in
-            task.isChatMode = true
+            task.setStoredChatMode(true)
             task.runs = [Run(id: 0, steps: [
                 StepExecution(id: "assistant", role: .custom(id: "assistant"), title: "Chat", status: .paused),
             ], roleStatuses: ["assistant": .working])]
@@ -56,7 +56,7 @@ final class CloseTaskTests: NTMSOrchestratorTestBase {
         let taskID = await sut.createTask(title: "Chat", supervisorTask: "Help")!
 
         await sut.mutateTask(taskID: taskID) { task in
-            task.isChatMode = true
+            task.setStoredChatMode(true)
             task.runs = [Run(id: 0, steps: [
                 StepExecution(id: "assistant", role: .custom(id: "assistant"), title: "Chat", status: .needsSupervisorInput),
             ], roleStatuses: ["assistant": .working])]
@@ -99,7 +99,7 @@ final class CloseTaskTests: NTMSOrchestratorTestBase {
         let taskID = await sut.createTask(title: "Chat", supervisorTask: "Help")!
 
         await sut.mutateTask(taskID: taskID) { task in
-            task.isChatMode = true
+            task.setStoredChatMode(true)
             task.runs = [Run(id: 0, steps: [
                 StepExecution(id: "assistant", role: .custom(id: "assistant"), title: "Chat", status: .failed),
             ], roleStatuses: ["assistant": .failed])]
@@ -116,7 +116,7 @@ final class CloseTaskTests: NTMSOrchestratorTestBase {
         let taskID = await sut.createTask(title: "Chat", supervisorTask: "Help")!
 
         await sut.mutateTask(taskID: taskID) { task in
-            task.isChatMode = true
+            task.setStoredChatMode(true)
             task.runs = [Run(id: 0, steps: [
                 StepExecution(id: "assistant", role: .custom(id: "assistant"), title: "Chat", status: .pending),
             ])]
@@ -135,7 +135,7 @@ final class CloseTaskTests: NTMSOrchestratorTestBase {
         let taskID = await sut.createTask(title: "Chat", supervisorTask: "Help")!
 
         await sut.mutateTask(taskID: taskID) { task in
-            task.isChatMode = true
+            task.setStoredChatMode(true)
             task.runs = [Run(id: 0, steps: [
                 StepExecution(id: "role_a", role: .custom(id: "a"), title: "A", status: .running),
                 StepExecution(id: "role_b", role: .custom(id: "b"), title: "B", status: .done),

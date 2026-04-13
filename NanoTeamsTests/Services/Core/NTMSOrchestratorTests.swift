@@ -412,8 +412,9 @@ final class NTMSOrchestratorTests: NTMSOrchestratorTestBase {
     func testCreatePreparedTaskAndStart_persistsInitialInputAndStartsRun() async throws {
         await sut.openWorkFolder(tempDir)
 
-        guard let selectedTeam = sut.workFolder?.teams.last else {
-            XCTFail("Expected at least one team")
+        // Pick a non-generated team — "Generated Team" would trigger LLM generation flow.
+        guard let selectedTeam = sut.workFolder?.teams.first(where: { $0.templateID != "generated" }) else {
+            XCTFail("Expected at least one non-generated team")
             return
         }
 
