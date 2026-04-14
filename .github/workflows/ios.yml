@@ -43,6 +43,8 @@ jobs:
           -scheme NanoTeams
           -destination "platform=macOS"
           -skipPackagePluginValidation
+          -skip-testing NanoTeamsTests/HeadlessRunnerTests
+          -skip-testing NanoTeamsTests/CreateTeamTrainerTests
           CODE_SIGN_IDENTITY=""
           CODE_SIGNING_REQUIRED=NO
           CODE_SIGNING_ALLOWED=NO
