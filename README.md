@@ -116,8 +116,10 @@ NanoTeams doesn't send your data anywhere. All processing happens locally via LM
 ## Recommended Models
 
 NanoTeams has been trained on:
-- **gpt-oss-20b** — strong general-purpose model for complex multi-step tasks
-- **qwen3.5-9b** — fast and capable for quick iterations
+- **[gpt-oss-20b](https://lmstudio.ai/models/openai/gpt-oss-20b)**
+- **[qwen3.5-9b](https://lmstudio.ai/models/qwen/qwen3.5-9b)**
+- **[gemma-4-26b-a4b](https://lmstudio.ai/models/google/gemma-4-26b-a4b)**
+- **[qwen3.5-35b-a3b](https://lmstudio.ai/models/qwen/qwen3.5-35b-a3b)**
 
 Have a favorite local LLM? [Open an issue](https://github.com/jmstajim/NanoTeams/issues) — I'd love to make NanoTeams work better with it.
 
