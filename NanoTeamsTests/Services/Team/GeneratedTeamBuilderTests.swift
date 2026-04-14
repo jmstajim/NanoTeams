@@ -191,6 +191,47 @@ final class GeneratedTeamBuilderTests: XCTestCase {
         XCTAssertEqual(supervisor.dependencies.requiredArtifacts, ["Output"])
     }
 
+    func testBuild_supervisorRequiresUnproduced_filteredWithWarning() {
+        // A5 remaining-gap regression (gemma sessions 9–10): model requested a
+        // supervisor deliverable that no role actually produces. Left in place the
+        // Supervisor role would wait forever. Builder now drops the unproduced
+        // entry from the Supervisor's dependencies and surfaces it via warnings.
+        let config = makeConfig(
+            roles: [
+                makeRoleConfig(name: "Producer", produces: ["Real Output"], requires: ["Supervisor Task"]),
+            ],
+            artifacts: [
+                makeArtifactConfig(name: "Real Output"),
+                makeArtifactConfig(name: "Phantom Output"),
+            ],
+            supervisorRequires: ["Real Output", "Phantom Output"]
+        )
+        let result = GeneratedTeamBuilder.build(from: config)
+        let supervisor = result.team.roles[0]
+        XCTAssertEqual(
+            supervisor.dependencies.requiredArtifacts,
+            ["Real Output"],
+            "Supervisor should only wait for artifacts some role actually produces."
+        )
+        XCTAssertTrue(
+            result.warnings.contains { $0.contains("Phantom Output") && $0.contains("no role produces") },
+            "Dropped supervisor requirement should surface in warnings — got: \(result.warnings)"
+        )
+    }
+
+    func testBuild_supervisorRequiresAllProduced_noFilterWarning() {
+        let config = makeConfig(
+            roles: [makeRoleConfig(produces: ["Output"], requires: ["Supervisor Task"])],
+            supervisorRequires: ["Output"]
+        )
+        let result = GeneratedTeamBuilder.build(from: config)
+        XCTAssertEqual(result.team.roles[0].dependencies.requiredArtifacts, ["Output"])
+        XCTAssertFalse(
+            result.warnings.contains { $0.contains("supervisor requirement") },
+            "No filter warning when every sup_require has a producer — got: \(result.warnings)"
+        )
+    }
+
     func testBuildTeam_hierarchyAllReportToSupervisor() {
         let config = makeConfig(roles: [
             makeRoleConfig(name: "A"),

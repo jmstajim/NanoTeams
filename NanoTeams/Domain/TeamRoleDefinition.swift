@@ -142,7 +142,7 @@ struct TeamRoleDefinition: Codable, Identifiable {
 // MARK: - Role Completion Type
 
 /// Describes how a role completes its work. Derived from artifact dependencies.
-enum RoleCompletionType {
+enum RoleCompletionType: String, Codable {
     /// Role produces artifacts — auto-completes when all expected artifacts are submitted via create_artifact.
     case producing
     /// Role has required inputs but produces nothing — works until Supervisor explicitly finishes it.

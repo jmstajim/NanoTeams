@@ -23,7 +23,29 @@ enum GeneratedTeamBuilder {
 
         let supervisorTemplate = SystemTemplates.roles["supervisor"]!
         var supervisorRole = SystemTemplates.createRole(from: supervisorTemplate, teamSeed: teamSeed)
-        supervisorRole.dependencies.requiredArtifacts = config.supervisorRequires
+        // A5 remaining-gap fix: drop supervisor requirements that no role produces.
+        // Observed on gemma sessions 9–10 (`vague-short`, `multilingual-russian`,
+        // `adversarial-json-bait`) — model declares an artifact in `supervisor_requires`
+        // but forgets to assign it to any role's `produces_artifacts`. Left as-is the
+        // Supervisor role never becomes ready and the task deadlocks silently. The
+        // filtered names surface in warnings so the Supervisor can see what was
+        // requested but undeliverable.
+        let rolesProducing = Set(config.roles.flatMap(\.producesArtifacts))
+        var filteredSupervisorRequires: [String] = []
+        var unproducedSupervisorRequires: [String] = []
+        for name in config.supervisorRequires {
+            if rolesProducing.contains(name) || name == SystemTemplates.supervisorTaskArtifactName {
+                filteredSupervisorRequires.append(name)
+            } else {
+                unproducedSupervisorRequires.append(name)
+            }
+        }
+        supervisorRole.dependencies.requiredArtifacts = filteredSupervisorRequires
+        if !unproducedSupervisorRequires.isEmpty {
+            warnings.append(
+                "Dropped \(unproducedSupervisorRequires.count) supervisor requirement(s) that no role produces: \(unproducedSupervisorRequires.joined(separator: ", "))."
+            )
+        }
 
         // Drop any LLM-emitted "Supervisor" role — we add it ourselves.
         let llmSupervisors = config.roles.filter { isSupervisorName($0.name) }

@@ -250,6 +250,90 @@ final class TeamGenerationServiceStreamTests: XCTestCase {
         }
     }
 
+    // MARK: - First-content deadline
+
+    /// Streams empty events with inter-event delays — simulates a model stuck in a
+    /// reasoning loop that never emits `content` or `tool_calls`. Observed on
+    /// qwen3.5-35b-a3b on open-ended prompts.
+    private final class SlowEmptyStreamClient: LLMClient, @unchecked Sendable {
+        let totalEvents: Int
+        let delayMs: UInt64
+        init(totalEvents: Int = 20, delayMs: UInt64 = 50) {
+            self.totalEvents = totalEvents
+            self.delayMs = delayMs
+        }
+        func streamChat(
+            config: LLMConfig, messages: [ChatMessage], tools: [ToolSchema],
+            session: LLMSession?, logger: NetworkLogger?,
+            stepID: String?, roleName: String?
+        ) -> AsyncThrowingStream<StreamEvent, Error> {
+            let count = totalEvents
+            let delay = delayMs * 1_000_000
+            return AsyncThrowingStream { continuation in
+                Task {
+                    for _ in 0..<count {
+                        try? await Task.sleep(nanoseconds: delay)
+                        continuation.yield(StreamEvent(contentDelta: "", toolCallDeltas: []))
+                    }
+                    continuation.finish()
+                }
+            }
+        }
+        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] { [] }
+    }
+
+    func testFirstContentDeadline_stuckReasoningLoop_breaksStreamEarly() async {
+        // 20 events × 50ms = 1s total stream. Deadline 100ms — should break at ~100ms.
+        let stub = SlowEmptyStreamClient(totalEvents: 20, delayMs: 50)
+        let start = Date()
+        let outcome = await TeamGenerationService.generateWithDiagnostics(
+            taskDescription: "test", config: LLMConfig(),
+            client: stub, firstContentDeadlineSeconds: 0.1
+        )
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertLessThan(elapsed, 0.5, "Deadline should abort well before the 1s stream finishes")
+        if case .failure(let err) = outcome.result {
+            XCTAssertTrue(
+                err.localizedDescription.contains("reasoning loop")
+                    || err.localizedDescription.contains("no content"),
+                "Expected reasoning-loop message — got: \(err.localizedDescription)"
+            )
+        } else {
+            XCTFail("Expected failure when deadline fires")
+        }
+    }
+
+    func testFirstContentDeadline_contentArrives_deadlineStopsApplying() async {
+        // Emit content on the first event — deadline should NOT fire even though
+        // downstream events continue past the deadline.
+        final class FastFirstThenSlow: LLMClient, @unchecked Sendable {
+            func streamChat(
+                config: LLMConfig, messages: [ChatMessage], tools: [ToolSchema],
+                session: LLMSession?, logger: NetworkLogger?,
+                stepID: String?, roleName: String?
+            ) -> AsyncThrowingStream<StreamEvent, Error> {
+                AsyncThrowingStream { continuation in
+                    Task {
+                        continuation.yield(StreamEvent(contentDelta: "{\"name\":\"T\","))
+                        try? await Task.sleep(nanoseconds: 300_000_000) // 300ms > 100ms deadline
+                        continuation.yield(StreamEvent(contentDelta: "\"description\":\"x\",\"roles\":[{\"name\":\"R\",\"prompt\":\"p\",\"produces_artifacts\":[\"X\"],\"requires_artifacts\":[\"Supervisor Task\"],\"tools\":[]}],\"artifacts\":[{\"name\":\"X\",\"description\":\"d\"}],\"supervisor_requires\":[\"X\"]}"))
+                        continuation.finish()
+                    }
+                }
+            }
+            func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] { [] }
+        }
+        let outcome = await TeamGenerationService.generateWithDiagnostics(
+            taskDescription: "t", config: LLMConfig(),
+            client: FastFirstThenSlow(), firstContentDeadlineSeconds: 0.1
+        )
+        if case .success = outcome.result {
+            // OK — stream completed successfully despite exceeding the deadline.
+        } else {
+            XCTFail("Deadline should not fire once content arrives — got: \(outcome.result)")
+        }
+    }
+
     // MARK: - Task description piping
 
     func testGenerate_taskDescriptionAppearsInUserMessage() async throws {
