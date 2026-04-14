@@ -259,24 +259,44 @@ final class GeneratedTeamConfigTests: XCTestCase {
 
     // MARK: - Validation: name + roles non-empty
 
-    func testDecode_emptyName_throws() {
+    func testDecode_emptyName_synthesizesFromDescription() throws {
+        // Recovery: empty `name` is synthesized from `description` rather than
+        // rejecting the whole team. Captured on models that emit a valid
+        // `team_config` but forget the top-level `name` field.
         let json = """
         {
             "name": "",
-            "description": "d",
+            "description": "Build a calculator app",
             "roles": [{"name": "R", "prompt": "p", "produces_artifacts": ["X"], "requires_artifacts": ["Supervisor Task"], "tools": []}],
             "artifacts": [{"name": "X", "description": "d"}],
             "supervisor_requires": ["X"]
         }
         """.data(using: .utf8)!
-        XCTAssertThrowsError(try JSONDecoder().decode(GeneratedTeamConfig.self, from: json))
+        let cfg = try JSONDecoder().decode(GeneratedTeamConfig.self, from: json)
+        XCTAssertEqual(cfg.name, "Build a calculator app")
     }
 
-    func testDecode_whitespaceOnlyName_throws() {
+    func testDecode_whitespaceOnlyName_synthesizesFromDescription() throws {
         let json = """
         {
             "name": "   \\n  ",
-            "description": "d",
+            "description": "Build a calculator app",
+            "roles": [{"name": "R", "prompt": "p", "produces_artifacts": ["X"], "requires_artifacts": ["Supervisor Task"], "tools": []}],
+            "artifacts": [{"name": "X", "description": "d"}],
+            "supervisor_requires": ["X"]
+        }
+        """.data(using: .utf8)!
+        let cfg = try JSONDecoder().decode(GeneratedTeamConfig.self, from: json)
+        XCTAssertEqual(cfg.name, "Build a calculator app")
+    }
+
+    func testDecode_emptyNameAndDescription_throws() {
+        // Name synthesis only applies when `description` is non-empty. Both empty →
+        // still a hard failure so genuinely broken payloads aren't swallowed.
+        let json = """
+        {
+            "name": "",
+            "description": "",
             "roles": [{"name": "R", "prompt": "p", "produces_artifacts": ["X"], "requires_artifacts": ["Supervisor Task"], "tools": []}],
             "artifacts": [{"name": "X", "description": "d"}],
             "supervisor_requires": ["X"]
@@ -300,7 +320,12 @@ final class GeneratedTeamConfigTests: XCTestCase {
 
     // MARK: - Validation: artifact reference cross-checks
 
-    func testDecode_orphanRequiresArtifact_throws() {
+    func testDecode_phantomRequiresArtifact_rewritesToSupervisorTask() throws {
+        // Recovery: a role requires an artifact that no role produces. Rather than
+        // fail (which would make the consumer stall forever on "no roles ready"),
+        // the decoder rewrites the phantom dependency to the implicit Supervisor
+        // Task. Captured on non-English models that translate "Supervisor Task"
+        // and on models that declare-but-don't-produce an intermediate artifact.
         let json = """
         {
             "name": "T",
@@ -310,22 +335,29 @@ final class GeneratedTeamConfigTests: XCTestCase {
             "supervisor_requires": []
         }
         """.data(using: .utf8)!
-        XCTAssertThrowsError(try JSONDecoder().decode(GeneratedTeamConfig.self, from: json)) { error in
-            XCTAssertTrue("\(error)".contains("Phantom"))
-        }
+        let cfg = try JSONDecoder().decode(GeneratedTeamConfig.self, from: json)
+        XCTAssertEqual(cfg.roles[0].requiresArtifacts, ["Supervisor Task"])
     }
 
-    func testDecode_orphanProducesArtifact_throws() {
+    func testDecode_orphanProducesArtifact_autoSynthesizesArtifactAndPromotes() throws {
+        // Recovery: a role produces an artifact that's missing from `artifacts[]`.
+        // The decoder auto-synthesizes the artifact entry (borrowing the role's
+        // prompt for a stub description) and promotes it to `supervisor_requires`
+        // so the role's work doesn't flow nowhere.
         let json = """
         {
             "name": "T",
             "description": "d",
-            "roles": [{"name": "R", "prompt": "p", "produces_artifacts": ["NotDeclared"], "requires_artifacts": ["Supervisor Task"], "tools": []}],
+            "roles": [{"name": "R", "prompt": "Build it.", "produces_artifacts": ["NotDeclared"], "requires_artifacts": ["Supervisor Task"], "tools": []}],
             "artifacts": [],
             "supervisor_requires": []
         }
         """.data(using: .utf8)!
-        XCTAssertThrowsError(try JSONDecoder().decode(GeneratedTeamConfig.self, from: json))
+        let cfg = try JSONDecoder().decode(GeneratedTeamConfig.self, from: json)
+        XCTAssertTrue(cfg.artifacts.contains { $0.name == "NotDeclared" },
+                      "Orphan produced artifact should be auto-declared.")
+        XCTAssertTrue(cfg.supervisorRequires.contains("NotDeclared"),
+                      "Orphan produced artifact should be promoted to supervisor_requires.")
     }
 
     func testDecode_orphanSupervisorRequires_throws() {

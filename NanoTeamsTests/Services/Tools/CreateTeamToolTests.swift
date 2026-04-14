@@ -199,8 +199,12 @@ final class CreateTeamToolTests: XCTestCase {
         XCTAssertTrue(results[0].outputJSON.contains("at least one role"))
     }
 
-    func testCreateTeam_snakeCaseKeys_camelCaseFails() {
-        // Use camelCase keys (should fail — decoder expects snake_case)
+    func testCreateTeam_snakeCaseKeys_camelCaseTolerated() {
+        // The decoder is snake_case — camelCase keys on role/supervisor fields
+        // are silently ignored and fall back to `[]` defaults. After recovery
+        // (auto-synthesize orphan produces into `artifacts[]` and promote to
+        // `supervisor_requires`), the result decodes successfully even though
+        // the top-level `supervisorRequires` (camelCase) was ignored.
         let call = StepToolCall(
             name: ToolNames.createTeam,
             argumentsJSON: """
@@ -225,7 +229,17 @@ final class CreateTeamToolTests: XCTestCase {
         )
         let results = runtime.executeAll(context: context, toolCalls: [call])
 
-        XCTAssertTrue(results[0].isError, "camelCase keys should fail (decoder expects snake_case)")
+        XCTAssertFalse(results[0].isError,
+                       "camelCase keys should be tolerated: \(results[0].outputJSON)")
+        guard case .teamCreation(let config) = results[0].signal else {
+            XCTFail("Expected .teamCreation signal")
+            return
+        }
+        // camelCase role fields fell back to [], so role.produces/requires are empty.
+        XCTAssertTrue(config.roles[0].producesArtifacts.isEmpty,
+                      "camelCase produces_artifacts should be ignored, defaulting to []")
+        XCTAssertTrue(config.roles[0].requiresArtifacts.isEmpty,
+                      "camelCase requires_artifacts should be ignored, defaulting to []")
     }
 
     // MARK: - Tool Schema Properties
@@ -272,9 +286,11 @@ final class CreateTeamToolTests: XCTestCase {
 
     // MARK: - New decode-time validation
 
-    func testCreateTeam_orphanArtifactReference_returnsError() {
-        // A role requires an artifact that nobody declared. Decoder cross-validation
-        // catches this before the engine stalls on "no roles ready".
+    func testCreateTeam_orphanArtifactReference_rewritesToSupervisorTask() {
+        // A role requires an artifact that no role produces. Rather than fail
+        // (engine would stall on "no roles ready"), the decoder rewrites the
+        // phantom dependency to the implicit Supervisor Task so the role can
+        // start from the supervisor brief.
         let call = StepToolCall(
             name: ToolNames.createTeam,
             argumentsJSON: """
@@ -292,10 +308,14 @@ final class CreateTeamToolTests: XCTestCase {
             """
         )
         let results = runtime.executeAll(context: context, toolCalls: [call])
-        XCTAssertTrue(results[0].isError)
-        XCTAssertNil(results[0].signal)
-        XCTAssertTrue(results[0].outputJSON.contains("Phantom"),
-                      "Error message should name the offending artifact: \(results[0].outputJSON)")
+        XCTAssertFalse(results[0].isError,
+                       "Phantom dependency should be rewritten, not rejected: \(results[0].outputJSON)")
+        guard case .teamCreation(let config) = results[0].signal else {
+            XCTFail("Expected .teamCreation signal")
+            return
+        }
+        XCTAssertEqual(config.roles[0].requiresArtifacts, ["Supervisor Task"],
+                       "Phantom requires should be rewritten to Supervisor Task.")
     }
 
     func testCreateTeam_invalidSupervisorMode_returnsError() {
