@@ -61,15 +61,21 @@ extension LLMExecutionService {
     func toolSchemas(for role: Role, team: Team? = nil) -> [ToolSchema] {
         guard let delegate else { return [] }
 
-        // 1. Find role definition from team or defaults
-        let targetID = role.baseID
-        let roleDefinition = team?.roles.first(where: { $0.id == targetID || $0.systemRoleID == targetID })
+        // 1. Find role definition — findRole handles id, systemRoleID, and name (custom roles
+        // created via Role.fromDefinition carry the role's name, not its id, in `.custom(id:)`).
+        let roleDefinition = team?.findRole(byIdentifier: role.baseID)
 
         // 2. Resolve Tool IDs
         let allowedIDs: Set<String>
         if let roleDefinition {
             allowedIDs = Set(roleDefinition.toolIDs)
         } else {
+            if let team {
+                // Always-on so stale `systemRoleID` / id collisions surface in release logs,
+                // not just DEBUG builds — otherwise the role silently runs with the wrong tools.
+                print("[LLMExecutionService] WARNING: role \(role.baseID) not found in team "
+                    + "'\(team.name)' — using fallback tool IDs")
+            }
             // Fall back to defaults for built-in roles (only when no team role found)
             allowedIDs = SystemTemplates.fallbackToolIDs[role.baseID] ?? SystemTemplates.fallbackCustomRoleToolIDs
         }

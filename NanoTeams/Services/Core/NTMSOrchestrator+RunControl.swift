@@ -10,14 +10,32 @@ extension NTMSOrchestrator {
            state == .running || state == .needsAcceptance || state == .needsSupervisorInput {
             return
         }
+        // Prevent Play / Cmd+R re-entry while generation for this task is in flight.
+        // Without this, `createNewRun` below would wipe the placeholder Supervisor
+        // step and a second concurrent `runTeamGeneration` would be spawned.
+        if isGeneratingTeam(taskID: taskID) { return }
+
         await ensureTaskLoaded(taskID)
         await createNewRun(taskID: taskID)
 
-        // For "Generated Team" template: run team generation before spawning the engine.
-        // The resulting team is stored on `task.generatedTeam` and takes over the run.
+        // For "Generated Team" template: run team generation in a detached Task so
+        // `startRun` (and the QuickCapture submit chain awaiting it) returns as soon
+        // as the placeholder Supervisor step is on disk. The engine is started from
+        // inside the detached Task after generation succeeds — preserving the
+        // invariant that the engine never starts before `task.generatedTeam` is set.
         if needsTeamGeneration(taskID: taskID) {
-            let generated = await runTeamGeneration(taskID: taskID)
-            if !generated { return } // leave run in failed state; user can retry via "New Run"
+            guard beginTeamGeneration(taskID: taskID) else { return }
+            let genTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer { self.endTeamGeneration(taskID: taskID) }
+                let generated = await self.runTeamGeneration(taskID: taskID)
+                // Skip engine start if pauseRun cancelled us mid-generation.
+                guard !Task.isCancelled else { return }
+                guard generated else { return } // failure envelope + lastErrorMessage already set
+                self.engineForTask(taskID).start()
+            }
+            registerTeamGenerationTask(taskID: taskID, task: genTask)
+            return
         }
 
         let engine = engineForTask(taskID)
@@ -25,6 +43,11 @@ extension NTMSOrchestrator {
     }
 
     func pauseRun(taskID: Int) async {
+        // Cancel any in-flight generated-team creation first. The detached Task's
+        // `defer` releases the reserve flag as it unwinds, and the cancellation
+        // check inside the Task prevents `engine.start()` from firing after pause.
+        cancelTeamGeneration(taskID: taskID)
+
         // Cancel LLM streaming BEFORE mutating step statuses to prevent
         // race conditions where LLM completes and transitions steps after pause.
         llmExecutionService.cancelExecutions(forTaskID: taskID)

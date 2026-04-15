@@ -23,13 +23,12 @@ enum TeamTemplateFactory {
         TeamTemplateMetadata(id: "startup", name: "Startup", icon: "bolt.fill", description: "Minimal team for rapid prototyping"),
         TeamTemplateMetadata(id: "questParty", name: "Quest Party", icon: "scroll.fill", description: "Adventure creation and management"),
         TeamTemplateMetadata(id: "discussionClub", name: "Discussion Club", icon: "bubble.left.and.bubble.right.fill", description: "Meeting-driven discussion"),
-        TeamTemplateMetadata(id: "generated", name: "Generated Team", icon: "wand.and.stars", description: "AI assembles the optimal team for your task"),
     ]
 
     // MARK: - Public API
 
     static var allTemplates: [Team] {
-        [assistant(), faang(), engineering(), startup(), questParty(), discussionClub(), generatedTeam()]
+        [assistant(), faang(), engineering(), startup(), questParty(), discussionClub()]
     }
 
     static func faang() -> Team {

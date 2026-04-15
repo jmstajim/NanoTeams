@@ -71,18 +71,22 @@ struct TeamEditorView: View {
         }
         .toolbar {
             ToolbarItemGroup(placement: .principal) {
-                if let snapshot = store.snapshot,
-                   !snapshot.workFolder.teams.isEmpty {
-                    let activeID = snapshot.workFolder.activeTeamID ?? snapshot.workFolder.teams[0].id
-                    TeamSelectorView(
-                        teams: snapshot.workFolder.teams,
-                        activeTeamID: activeID,
-                        onSelect: handleSelectTeam,
-                        onAdd: { showingNewTeamSheet = true },
-                        onGenerate: { showingGenerateTeamSheet = true },
-                        onDuplicate: handleDuplicateTeam,
-                        onDelete: { showingDeleteConfirmation = true }
-                    )
+                if let snapshot = store.snapshot {
+                    // Hide the Generated Team placeholder — it's reachable only via
+                    // the "Generate Team..." entry and has no meaningful content on its own.
+                    let selectableTeams = snapshot.workFolder.teams.filter { $0.templateID != "generated" }
+                    if !selectableTeams.isEmpty {
+                        let activeID = snapshot.workFolder.activeTeamID ?? selectableTeams[0].id
+                        TeamSelectorView(
+                            teams: selectableTeams,
+                            activeTeamID: activeID,
+                            onSelect: handleSelectTeam,
+                            onAdd: { showingNewTeamSheet = true },
+                            onGenerate: { showingGenerateTeamSheet = true },
+                            onDuplicate: handleDuplicateTeam,
+                            onDelete: { showingDeleteConfirmation = true }
+                        )
+                    }
                 }
             }
 
@@ -223,8 +227,12 @@ struct TeamEditorView: View {
 
     var activeTeam: Team? {
         guard let snapshot = store.snapshot else { return nil }
-        let activeID = snapshot.workFolder.activeTeamID ?? snapshot.workFolder.teams.first?.id
-        return snapshot.workFolder.teams.first { $0.id == activeID }
+        // Skip the Generated Team placeholder — it's hidden from the selector, and
+        // rendering its (empty) detail tabs here would strand users on an
+        // unselectable team with no escape path.
+        let selectable = snapshot.workFolder.teams.filter { $0.templateID != "generated" }
+        let preferredID = snapshot.workFolder.activeTeamID ?? selectable.first?.id
+        return selectable.first { $0.id == preferredID } ?? selectable.first
     }
 
     func binding(for team: Team) -> Binding<Team> {

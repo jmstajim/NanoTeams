@@ -537,6 +537,62 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
                        "create_team must be filtered out via unavailableToRoles")
     }
 
+    // Regression test for the "custom role can't use create_artifact" bug: `Role.fromDefinition`
+    // stores the role's `name` (not `id`) in `.custom(id:)`, so a custom-name role arriving at
+    // `toolSchemas(for:team:)` has `role.baseID == definition.name`. The lookup must match by
+    // name (via `Team.findRole(byIdentifier:)`), otherwise it silently falls through to
+    // `fallbackCustomRoleToolIDs` and the role loses its configured tools + auto-injections.
+    func testToolSchemas_customRoleResolvedByName_autoInjectsCreateArtifact() {
+        let service = LLMExecutionService(repository: NTMSRepository())
+        let delegate = MockLLMExecutionDelegate()
+        service.attach(delegate: delegate)
+
+        // Production shape: id is a UUID, name is the human-readable label, systemRoleID is nil.
+        let customRole = TeamRoleDefinition(
+            id: UUID().uuidString,
+            name: "Контент-менеджер",
+            prompt: "Write the post.",
+            toolIDs: [
+                ToolNames.readFile,
+                ToolNames.writeFile,
+                ToolNames.editFile,
+                ToolNames.listFiles,
+                ToolNames.updateScratchpad,
+                ToolNames.askSupervisor,
+            ],
+            usePlanningPhase: false,
+            dependencies: RoleDependencies(
+                requiredArtifacts: ["Supervisor Task"],
+                producesArtifacts: ["LinkedIn Post"]
+            )
+        )
+        let team = Team(
+            name: "LinkedIn Post Team", roles: [customRole], artifacts: [],
+            settings: TeamSettings(), graphLayout: TeamGraphLayout()
+        )
+
+        // `.custom(id: name)` matches the production shape from `Role.fromDefinition`.
+        let schemas = service.toolSchemas(for: .custom(id: "Контент-менеджер"), team: team)
+        let names = Set(schemas.map(\.name))
+
+        // Configured tools pass through — proves roleDefinition was resolved (not fallback).
+        XCTAssertTrue(names.contains(ToolNames.writeFile),
+                      "write_file is in the role's toolIDs; must be present")
+        XCTAssertTrue(names.contains(ToolNames.editFile),
+                      "edit_file is in the role's toolIDs; must be present")
+
+        // create_artifact is auto-injected for producing roles.
+        XCTAssertTrue(names.contains(ToolNames.createArtifact),
+                      "create_artifact must be auto-injected for producing custom roles")
+
+        // Not in role's toolIDs → must NOT leak in via fallback. Guards against regression
+        // back to `fallbackCustomRoleToolIDs` (which contains both of these).
+        XCTAssertFalse(names.contains(ToolNames.askTeammate),
+                       "ask_teammate is not in toolIDs; fallback set must not leak in")
+        XCTAssertFalse(names.contains(ToolNames.requestTeamMeeting),
+                       "request_team_meeting is not in toolIDs; fallback set must not leak in")
+    }
+
     func testUnavailableToRoles_containsCreateTeam() {
         XCTAssertTrue(ToolHandlerRegistry.unavailableToRoles.contains(ToolNames.createTeam))
     }

@@ -61,8 +61,11 @@ struct NTMSTask: Codable, Identifiable, Hashable {
 
     /// Installs an LLM-generated team on this task. Called by `runTeamGeneration` on
     /// success; flips the observed `isChatMode` to the generated team's value.
+    /// Also syncs `storedIsChatMode` so the fallback remains correct after
+    /// `clearGeneratedTeam()` (e.g. from the Save Team flow).
     mutating func adoptGeneratedTeam(_ team: Team) {
         generatedTeam = team
+        storedIsChatMode = team.isChatMode
     }
 
     /// Clears the generated team reference, typically because it has been promoted

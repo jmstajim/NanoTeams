@@ -23,7 +23,7 @@ struct ToolCallItemView: View {
     private var hasCustomSummary: Bool { Self.customSummaryTools.contains(call.name) }
 
     private var statusColor: Color {
-        if call.resultJSON == nil || call.isAnalyzing { return Colors.info }
+        if call.resultJSON == nil || call.isAnalyzing || call.isGeneratingTeam { return Colors.info }
         return call.isError == true ? Colors.error : Colors.success
     }
 
@@ -107,7 +107,7 @@ struct ToolCallItemView: View {
     @ViewBuilder
     private var statusIcon: some View {
         Group {
-            if call.resultJSON == nil || call.isAnalyzing {
+            if call.resultJSON == nil || call.isAnalyzing || call.isGeneratingTeam {
                 NTMSLoader(.inline)
             } else if call.isError == true {
                 Image(systemName: "xmark.circle.fill").foregroundStyle(Colors.error)

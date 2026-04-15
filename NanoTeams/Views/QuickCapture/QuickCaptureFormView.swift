@@ -79,6 +79,13 @@ struct QuickCaptureFormView: View {
         store.snapshot?.workFolder.teams ?? [Team.default]
     }
 
+    /// Teams offered in the picker. The "Generated Team" placeholder is reached via
+    /// the dedicated "Generate Team..." entry above — listing it here would let users
+    /// select the placeholder directly, which has no roles and would silently stall.
+    private var selectableTeams: [Team] {
+        availableTeams.filter { $0.templateID != "generated" }
+    }
+
     private var selectedTeam: Team? {
         let targetID = formState.selectedTeamID ?? store.snapshot?.workFolder.activeTeamID
         if let targetID {
@@ -262,7 +269,7 @@ struct QuickCaptureFormView: View {
 
             Divider()
 
-            ForEach(availableTeams) { team in
+            ForEach(selectableTeams) { team in
                 Button {
                     withAnimation(Animations.quick) {
                         formState.selectedTeamID = team.id
@@ -499,7 +506,7 @@ struct QuickCaptureFormView: View {
 
                 Divider()
 
-                ForEach(availableTeams) { team in
+                ForEach(selectableTeams) { team in
                     Button {
                         withAnimation(Animations.quick) {
                             formState.selectedTeamID = team.id

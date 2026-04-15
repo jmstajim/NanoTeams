@@ -16,7 +16,9 @@ final class NTMSTaskGeneratedTeamTests: XCTestCase {
             dependencies: RoleDependencies(
                 requiredArtifacts: isChatMode ? [] : ["Final"],
                 producesArtifacts: ["Supervisor Task"]
-            )
+            ),
+            isSystemRole: true,
+            systemRoleID: "supervisor"
         )
         return Team(
             id: "t", name: "T", roles: [supervisor], artifacts: [],
@@ -37,18 +39,20 @@ final class NTMSTaskGeneratedTeamTests: XCTestCase {
         var task = NTMSTask(id: 0, title: "T", supervisorTask: "G", isChatMode: false)
         XCTAssertFalse(task.isChatMode)
 
-        // Adopting a chat-mode team flips observed isChatMode without touching the stored value.
+        task.adoptGeneratedTeam(makeTeam(isChatMode: true))
+        XCTAssertTrue(task.isChatMode, "Adopted team's isChatMode should drive the observed value")
+    }
+
+    /// `setStoredChatMode` is the escape hatch for editing the pre-generation default.
+    /// While a generated team is attached, it must not be able to flip the observed
+    /// `isChatMode` out from under the generated team.
+    func testSetStoredChatMode_isNoOpOnObservedWhileGeneratedAttached() {
+        var task = NTMSTask(id: 0, title: "T", supervisorTask: "G", isChatMode: false)
         task.adoptGeneratedTeam(makeTeam(isChatMode: true))
         XCTAssertTrue(task.isChatMode)
 
-        // Setter no-ops the observed value while a team is present (the footgun the
-        // encapsulation prevents being able to write through carelessly).
         task.setStoredChatMode(false)
-        XCTAssertTrue(task.isChatMode, "Generated team's isChatMode should still dominate")
-
-        // Clearing restores the stored default.
-        task.clearGeneratedTeam()
-        XCTAssertFalse(task.isChatMode)
+        XCTAssertTrue(task.isChatMode, "Generated team should still dominate after stored override")
     }
 
     // MARK: - Mutators
@@ -117,5 +121,44 @@ final class NTMSTaskGeneratedTeamTests: XCTestCase {
         let decoded = try JSONDecoder().decode(NTMSTask.self, from: data)
 
         XCTAssertTrue(decoded.isChatMode)
+    }
+
+    /// Regression for the "generated team is treated as chat after Save Team" bug.
+    /// The task is created under the Generated Team placeholder (chat-mode stored default),
+    /// then adopts a real LLM-generated team with a Supervisor deliverable. Clearing the
+    /// transient team — what `saveGeneratedTeam` does — must not snap `isChatMode` back to
+    /// the stale creation-time default.
+    func testAdoptGeneratedTeam_syncsStoredIsChatMode_soClearRestoresCorrectValue() {
+        var task = NTMSTask(id: 0, title: "T", supervisorTask: "G", isChatMode: true)
+        task.adoptGeneratedTeam(makeTeam(isChatMode: false))
+        XCTAssertFalse(task.isChatMode, "Generated team dominates while attached")
+
+        task.clearGeneratedTeam()
+        XCTAssertFalse(task.isChatMode, "Stored mode should have been synced at adopt time")
+    }
+
+    /// Mirror of the above: adopting a chat-mode team over a non-chat stored default
+    /// must also survive `clearGeneratedTeam`. Guards against someone "optimizing"
+    /// `adoptGeneratedTeam` to skip the sync when `team.isChatMode == storedIsChatMode`
+    /// appears redundant — the symmetric path would regress silently.
+    func testAdoptGeneratedTeam_syncsStoredIsChatMode_symmetricChatCase() {
+        var task = NTMSTask(id: 0, title: "T", supervisorTask: "G", isChatMode: false)
+        task.adoptGeneratedTeam(makeTeam(isChatMode: true))
+        XCTAssertTrue(task.isChatMode)
+
+        task.clearGeneratedTeam()
+        XCTAssertTrue(task.isChatMode, "Stored mode should have been synced to chat=true at adopt")
+    }
+
+    /// `retryTeamGeneration` can call `adoptGeneratedTeam` a second time after a prior
+    /// attempt. The last adopted team's `isChatMode` must win on `clearGeneratedTeam`.
+    func testAdoptGeneratedTeam_secondAdoptionOverridesFirst() {
+        var task = NTMSTask(id: 0, title: "T", supervisorTask: "G", isChatMode: true)
+        task.adoptGeneratedTeam(makeTeam(isChatMode: true))
+        task.adoptGeneratedTeam(makeTeam(isChatMode: false))
+        XCTAssertFalse(task.isChatMode, "Second adoption's team drives observed")
+
+        task.clearGeneratedTeam()
+        XCTAssertFalse(task.isChatMode, "Stored mode should reflect the last adoption, not the first")
     }
 }

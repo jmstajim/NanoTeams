@@ -25,7 +25,10 @@ extension NTMSOrchestrator {
     /// Returns `true` on success (team generated and set on the task), `false` on failure.
     @discardableResult
     func runTeamGeneration(taskID: Int) async -> Bool {
-        guard let task = loadedTask(taskID) else { return false }
+        guard let task = loadedTask(taskID) else {
+            lastErrorMessage = "Cannot generate team for task \(taskID): task not loaded."
+            return false
+        }
         let taskDescription = task.effectiveSupervisorBrief
 
         guard !taskDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -91,7 +94,6 @@ extension NTMSOrchestrator {
                 task.runs[ri].steps[si].updatedAt = MonotonicClock.shared.now()
 
                 task.adoptGeneratedTeam(team)
-                // isChatMode is computed from generatedTeam — no need to update explicitly.
 
                 // Seed role statuses via the shared helper so this code path stays
                 // in sync with `GeneratedTeamBuilderTests.testSeedRoleStatuses_*`.
@@ -110,7 +112,14 @@ extension NTMSOrchestrator {
             return true
 
         case .failure(let error):
-            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            // Distinguish user-initiated cancellation (pauseRun → cancelTeamGeneration)
+            // from genuine failures. On cancellation: mark the step `.paused` so a
+            // subsequent resume/retry can continue, and skip `lastErrorMessage` so
+            // the user isn't shown an error banner for an action they took themselves.
+            let isCancellation = Self.isCancellationError(error)
+            let message = isCancellation
+                ? "Team generation was cancelled"
+                : (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             let errorEnvelope = Self.makeErrorEnvelope(message: message)
             await mutateTask(taskID: taskID) { task in
                 guard let ri = task.runs.indices.last,
@@ -120,12 +129,14 @@ extension NTMSOrchestrator {
                     task.runs[ri].steps[si].toolCalls[ti].resultJSON = errorEnvelope
                     task.runs[ri].steps[si].toolCalls[ti].isError = true
                 }
-                task.runs[ri].steps[si].status = .failed
+                task.runs[ri].steps[si].status = isCancellation ? .paused : .failed
                 task.runs[ri].steps[si].completedAt = MonotonicClock.shared.now()
                 task.runs[ri].steps[si].updatedAt = MonotonicClock.shared.now()
                 task.runs[ri].updatedAt = MonotonicClock.shared.now()
             }
-            lastErrorMessage = message
+            if !isCancellation {
+                lastErrorMessage = message
+            }
             return false
         }
     }
@@ -134,6 +145,15 @@ extension NTMSOrchestrator {
     /// generation step from the latest run, then re-runs the generation flow and starts
     /// the engine on success. No-ops when the task isn't using the Generated Team template.
     func retryTeamGeneration(taskID: Int) async {
+        // Guard against double-retry (rapid button clicks) and against retry racing
+        // a still-in-flight detached generation from `startRun`. Surface a banner
+        // so the user understands why the click had no visible effect.
+        guard beginTeamGeneration(taskID: taskID) else {
+            lastInfoMessage = "Team generation is already in progress."
+            return
+        }
+        defer { endTeamGeneration(taskID: taskID) }
+
         await mutateTask(taskID: taskID) { task in
             guard let ri = task.runs.indices.last else { return }
             task.runs[ri].steps.removeAll { step in
@@ -168,6 +188,16 @@ extension NTMSOrchestrator {
         }
 
         lastInfoMessage = "Team '\(team.name)' saved"
+    }
+
+    // MARK: - Cancellation detection
+
+    /// True for `CancellationError` and for `URLError.cancelled` (which
+    /// `URLSession` emits when its streaming task is cancelled mid-request).
+    private static func isCancellationError(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
     }
 
     // MARK: - Envelopes

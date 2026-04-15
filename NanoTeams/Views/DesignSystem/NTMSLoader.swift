@@ -90,26 +90,20 @@ struct NTMSLoader: View {
 
         var lineWidth: CGFloat {
             switch self {
-            case .inline:     return 1.2
-            case .mini:       return 1.5
-            case .small:      return 2
-            case .regular:    return 2.5
-            case .large:      return 3
-            case .extraLarge: return 4
+            case .inline:     return 2
+            case .mini:       return 2.5
+            case .small:      return 3
+            case .regular:    return 3.5
+            case .large:      return 4
+            case .extraLarge: return 4.5
             }
         }
     }
 
     private let size: Size
-    private let lineWidthOverride: CGFloat?
 
     init(_ size: Size = .regular) {
         self.size = size
-        self.lineWidthOverride = nil
-    }
-
-    private var effectiveLineWidth: CGFloat {
-        lineWidthOverride ?? size.lineWidth
     }
 
     /// Color rotation period in seconds (faster).
@@ -124,7 +118,6 @@ struct NTMSLoader: View {
             let elapsed = context.date.timeIntervalSince(startDate)
             let colorAngle = elapsed / colorPeriod * 360
             let shapeAngle = -(elapsed / shapePeriod * 360)
-            let lw = effectiveLineWidth
 
             let gradient = AngularGradient(
                 colors: GlowPalette.colors,
@@ -134,7 +127,7 @@ struct NTMSLoader: View {
             )
 
             lobeShape
-                .stroke(lineWidth: lw)
+                .stroke(lineWidth: size.lineWidth)
                 .fill(gradient)
                 .rotationEffect(.degrees(shapeAngle))
         }

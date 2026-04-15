@@ -68,6 +68,16 @@ final class NTMSOrchestrator {
     @ObservationIgnored let repository: any NTMSRepositoryProtocol
     /// Engine instances keyed by task ID.
     @ObservationIgnored var taskEngines: [Int: TeamEngine] = [:]
+    /// Atomic reserve flag for generated-team creation. Inserted by
+    /// `beginTeamGeneration` before the detached Task is spawned so concurrent
+    /// `startRun` / `retryTeamGeneration` callers see the slot as taken even
+    /// during the brief window before `registerTeamGenerationTask` installs
+    /// the cancellation handle.
+    @ObservationIgnored private var teamGenerationInFlight: Set<Int> = []
+    /// Cancellation handles for detached team-generation Tasks, keyed by taskID.
+    /// `pauseRun` cancels these so an in-flight `TeamGenerationService.generate`
+    /// stream stops before it can transition the engine.
+    @ObservationIgnored private var teamGenerationTasks: [Int: Task<Void, Never>] = [:]
     @ObservationIgnored let llmExecutionService: LLMExecutionService
     @ObservationIgnored let settingsService: SettingsService
     @ObservationIgnored let taskService: TaskService
@@ -168,6 +178,38 @@ final class NTMSOrchestrator {
         }
         taskEngines.removeAll()
         engineState.removeAllEngines()
+    }
+
+    /// Reserves an in-flight slot for generated-team creation for the given task.
+    /// Returns `false` if a generation is already in flight for this task.
+    /// After reserving, create the detached Task and call
+    /// `registerTeamGenerationTask(taskID:task:)` so `pauseRun` can cancel it.
+    func beginTeamGeneration(taskID: Int) -> Bool {
+        teamGenerationInFlight.insert(taskID).inserted
+    }
+
+    /// Installs the Task handle paired with a prior `beginTeamGeneration(taskID:)`.
+    /// Safe to call without a matching `begin` — the handle is still tracked so
+    /// `cancelTeamGeneration` works, but `isGeneratingTeam` reflects the reserve flag.
+    func registerTeamGenerationTask(taskID: Int, task: Task<Void, Never>) {
+        teamGenerationTasks[taskID] = task
+    }
+
+    /// Releases the reserve flag + Task handle for this task.
+    func endTeamGeneration(taskID: Int) {
+        teamGenerationTasks.removeValue(forKey: taskID)
+        teamGenerationInFlight.remove(taskID)
+    }
+
+    /// Cancels an in-flight generation Task for this task. The Task's `defer`
+    /// is expected to call `endTeamGeneration` as it unwinds.
+    func cancelTeamGeneration(taskID: Int) {
+        teamGenerationTasks[taskID]?.cancel()
+    }
+
+    /// Whether a team generation is currently reserved for this task.
+    func isGeneratingTeam(taskID: Int) -> Bool {
+        teamGenerationInFlight.contains(taskID)
     }
 
     /// Syncs `taskEngineStates` from the run's derived status when no engine exists.
@@ -485,6 +527,10 @@ extension NTMSOrchestrator: LLMExecutionDelegate {}
 
         func _setActiveTaskID(_ id: Int?) {
             activeTaskID = id
+        }
+
+        func _testHasGenerationTask(taskID: Int) -> Bool {
+            teamGenerationTasks[taskID] != nil
         }
 }
 #endif

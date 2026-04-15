@@ -363,7 +363,9 @@ struct TeamActivityFeedView: View {
     // MARK: - Team Header Menu
 
     private var teamHeaderMenu: some View {
-        let teams = store.snapshot?.workFolder.teams ?? []
+        // Hide the Generated Team placeholder — users pick it via the
+        // dedicated "Generate Team..." entry in QuickCapture.
+        let teams = (store.snapshot?.workFolder.teams ?? []).filter { $0.templateID != "generated" }
         let activeTeam = store.resolvedTeam(for: store.activeTask)
         return Menu {
             ForEach(teams) { team in
