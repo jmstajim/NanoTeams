@@ -327,7 +327,7 @@ final class QuickCaptureController {
             isTaskSelected: isTaskSelected,
             activeTask: activeTask,
             engineState: engineState,
-            activeTeam: store?.snapshot?.workFolder.activeTeam,
+            activeTeam: store?.resolvedTeam(for: activeTask),
             forceNewTaskMode: forceNewTaskMode
         )
     }

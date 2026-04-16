@@ -17,19 +17,16 @@ struct GenerateTeamSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: Spacing.m) {
             header
             inputField
             if let errorMessage {
                 errorBanner(errorMessage)
             }
-            Spacer(minLength: 0)
             actionBar
         }
-        .padding(.horizontal, 32)
-        .padding(.top, 32)
-        .padding(.bottom, 24)
-        .frame(width: 480, height: 400)
+        .padding(Spacing.l)
+        .frame(width: 380)
         .background(Colors.surfaceBackground)
         .task { isFocused = true }
         .background {
@@ -42,56 +39,59 @@ struct GenerateTeamSheet: View {
     // MARK: - Header
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: Spacing.xs) {
             Text("Generate a team")
-                .font(.system(size: 32, weight: .bold))
+                .font(.title3.weight(.semibold))
                 .foregroundStyle(Colors.textPrimary)
-                .kerning(-0.5)
 
-            Text("Describe your task and AI will build the team.")
-                .font(.system(size: 14))
+            Text("Describe what you need the team for — a task, a project, or a goal.")
+                .font(.caption)
                 .foregroundStyle(Colors.textSecondary)
         }
-        .padding(.bottom, 28)
     }
 
     // MARK: - Input
 
     private var inputField: some View {
         TextField(
-            "Build a REST API with authentication and tests…",
+            "e.g. Build a REST API with auth, or A team for weekly content planning…",
             text: $taskDescription,
             axis: .vertical
         )
-        .lineLimit(3...6)
+        .lineLimit(5...15)
         .textFieldStyle(.plain)
-        .font(.system(size: 15))
+        .font(.system(size: 13))
         .foregroundStyle(Colors.textPrimary)
+        .padding(Spacing.s)
+        .frame(minHeight: 220, alignment: .topLeading)
+        .background(
+            RoundedRectangle.squircle(CornerRadius.small)
+                .fill(Colors.surfaceElevated)
+        )
         .focused($isFocused)
         .disabled(isGenerating)
     }
 
     private func errorBanner(_ message: String) -> some View {
         Text(message)
-            .font(.system(size: 12))
+            .font(.caption2)
             .foregroundStyle(Colors.error)
-            .padding(.top, Spacing.s)
     }
 
     // MARK: - Actions
 
     private var actionBar: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: Spacing.s) {
             Spacer()
 
             Button {
                 dismiss()
             } label: {
                 Text("Cancel")
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.subheadline)
                     .foregroundStyle(Colors.textSecondary)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 12)
+                    .padding(.horizontal, Spacing.m)
+                    .padding(.vertical, Spacing.s)
             }
             .buttonStyle(.plain)
             .disabled(isGenerating)
@@ -99,18 +99,16 @@ struct GenerateTeamSheet: View {
             Button {
                 submit()
             } label: {
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     if isGenerating {
-                        ProgressView()
-                            .controlSize(.small)
-                            .tint(Colors.textOnAccent)
+                        NTMSLoader(.inline)
                     }
                     Text(isGenerating ? "Generating…" : "Generate")
-                        .font(.system(size: 14, weight: .bold))
+                        .font(.subheadline.weight(.semibold))
                         .foregroundStyle(canSubmit || isGenerating ? Colors.textOnAccent : Colors.textTertiary)
                 }
-                .padding(.horizontal, 28)
-                .padding(.vertical, 12)
+                .padding(.horizontal, Spacing.standard)
+                .padding(.vertical, Spacing.s)
                 .background(
                     Capsule()
                         .fill(canSubmit || isGenerating ? Colors.accent : Colors.surfaceElevated)
