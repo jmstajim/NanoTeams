@@ -321,6 +321,82 @@ final class QuickCaptureModeResolutionTests: NTMSOrchestratorTestBase {
             XCTFail("Supervisor question should take priority over .running state")
         }
     }
+
+    // MARK: - refreshPanelIfVisible + forceNewTaskMode
+
+    /// Regression: after `showNewTask()` set `forceNewTaskMode = true` and the user
+    /// then selects a task in the sidebar, `refreshPanelIfVisible` must cancel the
+    /// flag so the panel reflects the newly-selected task instead of staying stuck
+    /// on the new-task form.
+    func testRefresh_switchingToTask_cancelsForceNewTaskMode() async {
+        await sut.openWorkFolder(tempDir)
+        guard let taskID = await sut.createTask(title: "T", supervisorTask: "G") else {
+            XCTFail("Failed to create task"); return
+        }
+        await sut.switchTask(to: taskID)
+        sut.engineState[taskID] = .running
+
+        controller.isTaskSelected = true
+        controller._testForceNewTaskMode = true
+        controller._testLastRefreshedTaskID = nil
+        controller._testIsPanelVisible = true
+        defer { controller._testIsPanelVisible = false }
+
+        controller.refreshPanelIfVisible()
+
+        XCTAssertFalse(controller._testForceNewTaskMode,
+                       "Navigating into a task should cancel force-new-task mode")
+        if case .taskWorking = controller._testResolveMode() { /* pass */ } else {
+            XCTFail("Expected .taskWorking after force flag cleared")
+        }
+    }
+
+    /// Navigating to Watchtower (`activeTaskID == nil`) must NOT cancel
+    /// `forceNewTaskMode` — the new-task form should remain visible after
+    /// `showNewTask()` posts `.navigateToWatchtower`.
+    func testRefresh_switchingToWatchtower_preservesForceNewTaskMode() async {
+        await sut.openWorkFolder(tempDir)
+        // Deselect any active task → activeTaskID becomes nil
+        await sut.switchTask(to: nil)
+
+        controller.isTaskSelected = false
+        controller._testForceNewTaskMode = true
+        controller._testLastRefreshedTaskID = 42  // Pretend we were on some task before
+        controller._testIsPanelVisible = true
+        defer { controller._testIsPanelVisible = false }
+
+        controller.refreshPanelIfVisible()
+
+        XCTAssertTrue(controller._testForceNewTaskMode,
+                      "Navigating to Watchtower must preserve force-new-task mode")
+        if case .overlay = controller._testResolveMode() { /* pass */ } else {
+            XCTFail("Expected .overlay while force-new-task mode is preserved on Watchtower")
+        }
+    }
+
+    /// Regression: the `taskChanged` part of the guard matters. If a refresh
+    /// fires while the user is on the same task as last refresh (same taskID,
+    /// `taskChanged == false`), `forceNewTaskMode` must survive — otherwise
+    /// any passive refresh (engine-state tick, status change) would wipe the
+    /// flag the user just set via `showNewTask()` on that same task.
+    func testRefresh_sameTaskID_preservesForceNewTaskMode() async {
+        await sut.openWorkFolder(tempDir)
+        guard let taskID = await sut.createTask(title: "T", supervisorTask: "G") else {
+            XCTFail("Failed to create task"); return
+        }
+        await sut.switchTask(to: taskID)
+
+        controller.isTaskSelected = true
+        controller._testForceNewTaskMode = true
+        controller._testLastRefreshedTaskID = taskID  // Same task as before → taskChanged=false
+        controller._testIsPanelVisible = true
+        defer { controller._testIsPanelVisible = false }
+
+        controller.refreshPanelIfVisible()
+
+        XCTAssertTrue(controller._testForceNewTaskMode,
+                      "Refresh on the same task must preserve force-new-task mode")
+    }
 }
 
 // MARK: - Answer Mode Transition Tests

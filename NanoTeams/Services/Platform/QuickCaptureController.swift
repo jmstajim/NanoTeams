@@ -113,6 +113,7 @@ final class QuickCaptureController {
     func showNewTask() {
         if formState.isInAnswerMode { formState.exitAnswerMode() }
         forceNewTaskMode = true
+        NotificationCenter.default.post(name: .navigateToWatchtower, object: nil)
         if isPanelVisible {
             currentVisualMode = .newTask
             updatePanelContent()
@@ -182,13 +183,21 @@ final class QuickCaptureController {
     /// Rebuilds panel content if visible and mode or active task has changed.
     func refreshPanelIfVisible() {
         guard isPanelVisible else { return }
-        let resolvedMode = resolveMode()
-        let newVisualMode = QuickCaptureVisualMode(resolvedMode)
 
         // Detect task switch: even if visual mode is the same, the payload/context may differ
         let currentTaskID = store?.activeTaskID
         let taskChanged = currentTaskID != lastRefreshedTaskID
         lastRefreshedTaskID = currentTaskID
+
+        // Navigating INTO a specific task cancels force-new-task mode — the panel should
+        // reflect that task's state. Watchtower (currentTaskID == nil) preserves the flag
+        // so the new-task form stays visible after `showNewTask()`.
+        if taskChanged, currentTaskID != nil {
+            forceNewTaskMode = false
+        }
+
+        let resolvedMode = resolveMode()
+        let newVisualMode = QuickCaptureVisualMode(resolvedMode)
 
         if newVisualMode != currentVisualMode || taskChanged {
             let needsAnswerMode = newVisualMode == .answer
@@ -458,6 +467,14 @@ final class QuickCaptureController {
     var _testForceNewTaskMode: Bool {
         get { forceNewTaskMode }
         set { forceNewTaskMode = newValue }
+    }
+    var _testIsPanelVisible: Bool {
+        get { isPanelVisible }
+        set { isPanelVisible = newValue }
+    }
+    var _testLastRefreshedTaskID: Int? {
+        get { lastRefreshedTaskID }
+        set { lastRefreshedTaskID = newValue }
     }
     #endif
     nonisolated deinit {}
