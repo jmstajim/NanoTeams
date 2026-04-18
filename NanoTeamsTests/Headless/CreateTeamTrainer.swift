@@ -74,7 +74,7 @@ final class CreateTeamTrainer {
             if case .success = result.outcome { return result }
             lastResult = result
         }
-        return lastResult ?? failedCaseResult(kase: kase, timeout: timeout)
+        return lastResult ?? failedCaseResult(kase: kase)
     }
 
     private func runOneAttempt(
@@ -143,7 +143,7 @@ final class CreateTeamTrainer {
         )
     }
 
-    private func failedCaseResult(kase: CreateTeamTrainerCase, timeout: TimeInterval) -> TrainerCaseResult {
+    private func failedCaseResult(kase: CreateTeamTrainerCase) -> TrainerCaseResult {
         TrainerCaseResult(
             tag: kase.tag,
             task: kase.task,

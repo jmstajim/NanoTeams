@@ -26,9 +26,17 @@ final class ToolCallCache {
     private var callCounts: [String: Int] = [:]
     private var lastScratchpadContentHash: Int?
 
+    /// Canonicalize at every ingress point so cache, invalidation, and the
+    /// loop-detector fingerprints treat `repo_browser.read_file`,
+    /// `functions.read_file`, and `read_file` as one and the same call.
+    private func canonical(_ toolName: String) -> String {
+        ToolRegistry.resolveToolName(toolName)
+    }
+
     // MARK: - Recording
 
     func record(toolName: String, argumentsJSON: String, resultJSON: String, isError: Bool) {
+        let toolName = canonical(toolName)
         if toolName == ToolNames.updateScratchpad, !isError {
             if let dict = ToolCallDataUtils.parseJSON(argumentsJSON),
                let content = resolveContentString(dict) {
@@ -66,6 +74,7 @@ final class ToolCallCache {
     // MARK: - Cache Invalidation
 
     func invalidateCacheAfterWrite(toolName: String, affectedPath: String? = nil) {
+        let toolName = canonical(toolName)
         let fileReadTools = ToolHandlerRegistry.fileReadTools
         let fileWriteTools = ToolHandlerRegistry.fileWriteTools
         let gitReadTools = ToolHandlerRegistry.gitReadTools
@@ -103,11 +112,13 @@ final class ToolCallCache {
     }
 
     func wasAlreadyCalled(toolName: String, argumentsJSON: String) -> TrackedCall? {
+        let toolName = canonical(toolName)
         let argSummary = ToolCallSummarizer.summarizeArguments(toolName: toolName, json: argumentsJSON)
         return calls.first { $0.toolName == toolName && $0.argumentsSummary == argSummary && $0.wasSuccessful }
     }
 
     func getCachedResultIfRedundant(toolName: String, argumentsJSON: String) -> String? {
+        let toolName = canonical(toolName)
         guard Self.cacheableTools.contains(toolName) else { return nil }
         guard let cached = wasAlreadyCalled(toolName: toolName, argumentsJSON: argumentsJSON) else { return nil }
 

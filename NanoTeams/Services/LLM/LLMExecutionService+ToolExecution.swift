@@ -38,18 +38,13 @@ extension LLMExecutionService {
         var rejectedResults: [Int: ToolExecutionResult] = [:]
 
         for (idx, call) in resolvedToolCalls.enumerated() {
-            let rawName = call.name.trimmingCharacters(in: .whitespacesAndNewlines)
-            // Resolve tool name aliases (e.g., "grep" → "search") before authorization
-            let name = ToolRegistry.defaultAliases[rawName.lowercased()] ?? rawName
+            // Normalize before authorization; call.name stays as-emitted for display / history.
+            let name = ToolRegistry.resolveToolName(call.name)
 
             // Reject tool calls not in the role's allowed set
             if !allowedToolNames.contains(name) {
-                rejectedResults[idx] = ToolExecutionResult(
-                    providerID: call.providerID ?? UUID().uuidString,
-                    toolName: call.name,
-                    argumentsJSON: call.argumentsJSON,
-                    outputJSON: #"{"error":"tool_not_authorized","tool":""# + name + #""}"#,
-                    isError: true
+                rejectedResults[idx] = Self.makeToolNotAuthorizedResult(
+                    call: call, canonicalName: name, scope: "for this role"
                 )
                 continue
             }
@@ -87,4 +82,21 @@ extension LLMExecutionService {
         return ToolExecutionBatch(results: results, cachedIndices: Set(cachedResults.keys))
     }
 
+    /// Builds a `tool_not_authorized` error result. `call.name` is preserved as-emitted
+    /// for display; `canonicalName` goes into the error envelope's `tool` field. `scope`
+    /// disambiguates executor ("for this role") vs meeting ("in this meeting").
+    static func makeToolNotAuthorizedResult(
+        call: StepToolCall,
+        canonicalName: String,
+        scope: String
+    ) -> ToolExecutionResult {
+        let msg = "Tool '\(call.name)' is not available \(scope). Use only tools listed in your system prompt."
+        return ToolExecutionResult(
+            providerID: call.providerID ?? UUID().uuidString,
+            toolName: call.name,
+            argumentsJSON: call.argumentsJSON,
+            outputJSON: #"{"error":"tool_not_authorized","tool":""# + canonicalName + #"","message":""# + msg + #""}"#,
+            isError: true
+        )
+    }
 }

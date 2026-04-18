@@ -34,9 +34,6 @@ extension LLMExecutionService {
                     guard let stepIndex = task.runs[runIndex].steps.firstIndex(where: { $0.id == stepID })
                     else { return }
 
-                    if status == .done {
-                        task.runs[runIndex].steps[stepIndex].workNotes = clean
-                    }
                     task.runs[runIndex].steps[stepIndex].messages.append(
                         StepMessage(
                             role: task.runs[runIndex].steps[stepIndex].role,

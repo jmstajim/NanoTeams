@@ -168,13 +168,16 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertFalse(resultExcluded.contains("Product Requirements"), "Excluded artifact should not appear in context")
     }
 
-    func testBuildPipelineContext_includesWorkNotes() {
+    /// Scratchpad is private to the authoring role — downstream roles get the
+    /// finished artifact, not the author's planning trace. This test locks in
+    /// that exclusion.
+    func testBuildPipelineContext_excludesScratchpad() {
         let step0 = StepExecution(
             id: "test_step",
             role: .productManager,
             title: "PM Step",
             status: .done,
-            workNotes: "Important consideration: latency requirements"
+            scratchpad: "1. Draft requirements\n2. Review with UX"
         )
         let step1 = StepExecution(id: "test_step", role: .softwareEngineer, title: "Engineer Step")
         let run = Run(id: 0, steps: [step0, step1])
@@ -185,8 +188,9 @@ final class PromptBuilderTests: XCTestCase {
             artifactReader: { _ in nil }
         )
 
-        XCTAssertTrue(result.contains("Work notes:"), "Should include work notes header")
-        XCTAssertTrue(result.contains("Important consideration: latency requirements"), "Should include work notes content")
+        XCTAssertFalse(result.contains("Scratchpad"),
+                       "Downstream roles must not see upstream role's scratchpad")
+        XCTAssertFalse(result.contains("Draft requirements"))
     }
 
     func testBuildPipelineContext_includesSupervisorQA() {
@@ -410,6 +414,58 @@ final class PromptBuilderTests: XCTestCase {
             userMessages.contains(where: { $0.content == "Please focus on mobile experience." }),
             "Should include the Supervisor's message content as user role"
         )
+    }
+
+    // MARK: - {workFolderContext} placement
+
+    /// Work folder context lives inside the system prompt (see `{workFolderContext}`
+    /// placeholder) so it persists in the stateful response chain. A regression
+    /// would re-broadcast it as a separate `.user` message on every continuation,
+    /// doubling tokens on long-running steps.
+    func testBuildChatMessages_workFolderContext_goesIntoSystemPromptNotUserMessage() {
+        let wf = WorkFolderProjection(
+            state: WorkFolderState(name: "PlacementProbe"),
+            settings: ProjectSettings(description: "Unique description string for placement check"),
+            teams: []
+        )
+        let context = makeContext(workFolder: wf)
+
+        let messages = PromptBuilder.buildChatMessages(context: context, tools: [])
+
+        let systemMessage = messages.first { $0.role == .system }
+        XCTAssertNotNil(systemMessage)
+        XCTAssertTrue(systemMessage?.content?.contains("PlacementProbe") == true,
+                       "Work folder name must appear in the system prompt")
+        XCTAssertTrue(systemMessage?.content?.contains("Unique description string for placement check") == true,
+                       "Work folder description must appear in the system prompt")
+
+        let userMessagesWithWorkFolderHeader = messages.filter { msg in
+            msg.role == .user && msg.content?.contains("Work folder context:") == true
+        }
+        XCTAssertTrue(userMessagesWithWorkFolderHeader.isEmpty,
+                      "Work folder context must not be re-broadcast as a user message")
+    }
+
+    // MARK: - buildContextAwarenessGuidance branches
+
+    func testBuildContextAwarenessGuidance_withFileReadTools_includesResourceTracking() {
+        let guidance = PromptBuilder.buildContextAwarenessGuidance(hasFileReadTools: true)
+
+        XCTAssertTrue(guidance.contains("<§R1§>"),
+                      "file-read roles must get the tag legend")
+        XCTAssertTrue(guidance.contains("MEMORIES"),
+                      "file-read roles must be pointed at the MEMORIES index")
+    }
+
+    func testBuildContextAwarenessGuidance_withoutFileReadTools_omitsResourceTracking() {
+        let guidance = PromptBuilder.buildContextAwarenessGuidance(hasFileReadTools: false)
+
+        XCTAssertFalse(guidance.contains("<§R1§>"),
+                       "non-file-reading roles must not see the tag legend")
+        XCTAssertFalse(guidance.contains("MEMORIES"),
+                       "non-file-reading roles must not be told about MEMORIES — they never produce tags")
+        XCTAssertFalse(guidance.isEmpty,
+                       "the Supervisor-task-awareness sentence still runs for every role")
     }
 
     // MARK: - getRequiredArtifactNames (Round 2 regression)

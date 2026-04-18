@@ -217,7 +217,7 @@ final class StepExecutionServiceTests: XCTestCase {
         var step2 = makeStep(id: step2ID, status: .done)
         step2.messages = [StepMessage(role: .tpm, content: "Done")]
         var step3 = makeStep(id: step3ID, status: .running)
-        step3.workNotes = "Some notes"
+        step3.scratchpad = "Some notes"
 
         var task = makeTask(withSteps: [step1, step2, step3])
 
@@ -235,7 +235,7 @@ final class StepExecutionServiceTests: XCTestCase {
 
         // Step3 reset
         XCTAssertEqual(task.runs[0].steps[2].status, .pending)
-        XCTAssertNil(task.runs[0].steps[2].workNotes)
+        XCTAssertNil(task.runs[0].steps[2].scratchpad)
     }
 
     func testRedoStep_clearsAllStepData() {
@@ -244,7 +244,7 @@ final class StepExecutionServiceTests: XCTestCase {
         step.messages = [StepMessage(role: .productManager, content: "Message")]
         step.artifacts = [Artifact(name: "Art")]
         step.toolCalls = [StepToolCall(name: "tool", argumentsJSON: "{}")]
-        step.workNotes = "Notes"
+        step.scratchpad = "Notes"
         step.needsSupervisorInput = true
         step.supervisorQuestion = "Question?"
         step.supervisorAnswer = "Answer"
@@ -258,7 +258,7 @@ final class StepExecutionServiceTests: XCTestCase {
         XCTAssertTrue(resetStep.messages.isEmpty)
         XCTAssertTrue(resetStep.artifacts.isEmpty)
         XCTAssertTrue(resetStep.toolCalls.isEmpty)
-        XCTAssertNil(resetStep.workNotes)
+        XCTAssertNil(resetStep.scratchpad)
         XCTAssertFalse(resetStep.needsSupervisorInput)
         XCTAssertNil(resetStep.supervisorQuestion)
         XCTAssertNil(resetStep.supervisorAnswer)

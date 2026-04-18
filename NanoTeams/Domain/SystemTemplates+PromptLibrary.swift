@@ -16,6 +16,8 @@ extension SystemTemplates {
         {teamDescription}
         Your position: {positionContext}.
 
+        {workFolderContext}
+
         {roleGuidance}
 
         {contextAwareness}
@@ -137,6 +139,8 @@ extension SystemTemplates {
         {teamDescription}
         Your perspective: {positionContext}.
 
+        {workFolderContext}
+
         {roleGuidance}
 
         {contextAwareness}
@@ -197,6 +201,8 @@ extension SystemTemplates {
         Team: {teamRoles}.
         {teamDescription}
         {positionContext}
+
+        {workFolderContext}
 
         {roleGuidance}
 

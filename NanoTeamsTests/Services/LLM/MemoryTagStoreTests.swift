@@ -396,18 +396,19 @@ final class MemoryTagStoreTests: XCTestCase {
 
         let memories = sut.generateMemories(version: 1)
 
-        XCTAssertTrue(memories.contains("=== MEMORIES v1 ==="))
-        XCTAssertTrue(memories.contains("<§R1§>"))
-        XCTAssertTrue(memories.contains("<§E1§>"))
-        XCTAssertTrue(memories.contains("=== END MEMORIES ==="))
+        XCTAssertNotNil(memories)
+        XCTAssertTrue(memories?.contains("=== MEMORIES v1 ===") == true)
+        XCTAssertTrue(memories?.contains("<§R1§>") == true)
+        XCTAssertTrue(memories?.contains("<§E1§>") == true)
+        XCTAssertTrue(memories?.contains("=== END MEMORIES ===") == true)
     }
 
     func testGenerateMemories_WithPlanTag() {
         sut.registerPlanUpdate(content: "1. Step 1\n2. Step 2", iteration: 1)
         let memories = sut.generateMemories(version: 1)
-        XCTAssertTrue(memories.contains("<§P1§>"))
-        XCTAssertTrue(memories.contains("CURRENT"))
-        XCTAssertTrue(memories.contains("plan"))
+        XCTAssertTrue(memories?.contains("<§P1§>") == true)
+        XCTAssertTrue(memories?.contains("CURRENT") == true)
+        XCTAssertTrue(memories?.contains("plan") == true)
     }
 
     func testGenerateMemories_ShowsCorrectStatuses() {
@@ -424,8 +425,15 @@ final class MemoryTagStoreTests: XCTestCase {
         let memories = sut.generateMemories(version: 3)
 
         // R1 should be OUTDATED or REPLACED, E1 should be CURRENT, R2 should be CURRENT
-        XCTAssertTrue(memories.contains("OUTDATED") || memories.contains("REPLACED"))
-        XCTAssertTrue(memories.contains("CURRENT"))
+        XCTAssertTrue(memories?.contains("OUTDATED") == true || memories?.contains("REPLACED") == true)
+        XCTAssertTrue(memories?.contains("CURRENT") == true)
+    }
+
+    /// `generateMemories` returns nil when nothing has been tracked yet — the
+    /// caller uses this to short-circuit the MEMORIES injection so an empty
+    /// header/footer doesn't appear in every iteration of a no-file-reads role.
+    func testGenerateMemories_emptyStore_returnsNil() {
+        XCTAssertNil(sut.generateMemories(version: 1))
     }
 
     // MARK: - Cross-tool Interactions

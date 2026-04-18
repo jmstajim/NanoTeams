@@ -525,12 +525,9 @@ extension NTMSOrchestrator: LLMExecutionDelegate {}
             await llmExecutionService._testFinishStepWithWarning(stepID: stepID, warning: warning)
         }
 
+        // periphery:ignore - used in #if DEBUG inside SidebarView.swift #Preview at line 477
         func _setActiveTaskID(_ id: Int?) {
             activeTaskID = id
-        }
-
-        func _testHasGenerationTask(taskID: Int) -> Bool {
-            teamGenerationTasks[taskID] != nil
         }
 }
 #endif

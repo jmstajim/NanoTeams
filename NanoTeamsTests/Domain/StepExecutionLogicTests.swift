@@ -19,7 +19,6 @@ final class StepExecutionLogicTests: XCTestCase {
         XCTAssertTrue(step.messages.isEmpty)
         XCTAssertTrue(step.artifacts.isEmpty)
         XCTAssertTrue(step.toolCalls.isEmpty)
-        XCTAssertNil(step.workNotes)
         XCTAssertFalse(step.needsSupervisorInput)
         XCTAssertNil(step.supervisorQuestion)
         XCTAssertNil(step.supervisorAnswer)
@@ -37,7 +36,6 @@ final class StepExecutionLogicTests: XCTestCase {
             messages: [StepMessage(role: .softwareEngineer, content: "Working")],
             artifacts: [],
             toolCalls: [StepToolCall(name: "read_file", argumentsJSON: "{}")],
-            workNotes: "Some notes",
             needsSupervisorInput: true,
             supervisorQuestion: "What should I do?",
             supervisorAnswer: "Do this",
@@ -51,7 +49,6 @@ final class StepExecutionLogicTests: XCTestCase {
         XCTAssertEqual(step.status, .running)
         XCTAssertEqual(step.messages.count, 1)
         XCTAssertEqual(step.toolCalls.count, 1)
-        XCTAssertEqual(step.workNotes, "Some notes")
         XCTAssertTrue(step.needsSupervisorInput)
         XCTAssertEqual(step.supervisorQuestion, "What should I do?")
         XCTAssertEqual(step.supervisorAnswer, "Do this")
@@ -476,28 +473,6 @@ final class StepExecutionLogicTests: XCTestCase {
         XCTAssertEqual(step.expectedArtifacts.count, 2)
         XCTAssertTrue(step.expectedArtifacts.contains("Engineering Notes"))
         XCTAssertTrue(step.expectedArtifacts.contains("Build Diagnostics"))
-    }
-
-    // MARK: - WorkNotes Tests
-
-    func testWorkNotesInitiallyNil() {
-        let step = StepExecution(id: "test_step", role: .softwareEngineer, title: "Engineer")
-        XCTAssertNil(step.workNotes)
-    }
-
-    func testWorkNotesCanBeSet() {
-        var step = StepExecution(id: "test_step", role: .softwareEngineer, title: "Engineer")
-        step.workNotes = "These are my work notes for this step."
-
-        XCTAssertEqual(step.workNotes, "These are my work notes for this step.")
-    }
-
-    func testWorkNotesCanBeCleared() {
-        var step = StepExecution(id: "test_step", role: .softwareEngineer, title: "Engineer", workNotes: "Initial notes")
-        XCTAssertNotNil(step.workNotes)
-
-        step.workNotes = nil
-        XCTAssertNil(step.workNotes)
     }
 
     // MARK: - Timestamps Tests

@@ -41,6 +41,11 @@ final class LLMExecutionService {
         var memoriesMessageIndex: Int?
         /// Memories version counter (increments on each update).
         var memoriesVersion: Int = 0
+        /// Normalized body (version header stripped) of the last MEMORIES block
+        /// injected in stateful mode — skip the append when unchanged (prior
+        /// block is still in the server chain). Stored as a string rather than
+        /// `hashValue` to eliminate the (small but silent) collision risk.
+        var lastMemoriesFingerprint: String?
         /// Saved original system prompt (to restore after planning phase).
         var originalSystemPrompt: String?
         /// Whether this step has already received the planning→implementation transition.
@@ -55,6 +60,7 @@ final class LLMExecutionService {
             planMessageIndex = nil
             memoriesMessageIndex = nil
             memoriesVersion = 0
+            lastMemoriesFingerprint = nil
             originalSystemPrompt = nil
             planningTransitionDone = false
             finishRequested = false
@@ -176,9 +182,11 @@ final class LLMExecutionService {
         networkLogger: NetworkLogger? = nil,
         toolObserver: (([StepToolCall], [ToolExecutionResult]) -> Void)? = nil
     ) async throws -> LLMStepStop {
-        guard delegate != nil else { return .toolFailure(message: "Delegate not available") }
+        guard let delegate else { return .toolFailure(message: "Delegate not available") }
 
-        // 1. Resolve team and role definition
+        // Refresh the task snapshot so every downstream read this iteration sees
+        // the state just committed through `delegate.mutateTask`.
+        let task = Self.refreshedTaskSnapshot(task, delegate: delegate)
         let resolvedTeam = resolveTeam(task: task)
         let step = task.runs[runIndex].steps[stepIndex]
         let roleDefinition = resolvedTeam?.findRole(byIdentifier: step.effectiveRoleID)
@@ -208,7 +216,20 @@ final class LLMExecutionService {
             let systemMessages = conversationMessages.filter { $0.role == .system }
             let newMessages = Array(conversationMessages[(lastAssistantIdx + 1)...]
                 .filter { $0.role != .system })
-            messagesToSend = systemMessages + newMessages
+            // Defense-in-depth: if no new user/tool message would be sent, the API rejects the
+            // request with HTTP 400 ("input must not be an empty string"). Fall back to a fresh
+            // stateless turn rather than firing a guaranteed-bad request.
+            let hasNonEmptyContent = newMessages.contains { msg in
+                let content = msg.content ?? ""
+                return !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || msg.imageContent?.isEmpty == false
+            }
+            if !hasNonEmptyContent {
+                session = nil
+                messagesToSend = conversationMessages
+            } else {
+                messagesToSend = systemMessages + newMessages
+            }
         } else {
             messagesToSend = conversationMessages
         }
@@ -333,6 +354,13 @@ final class LLMExecutionService {
     }
 
     // MARK: - Shared Utilities
+
+    /// Latest task state from the delegate, with fallback to the passed snapshot.
+    /// Called at iteration start so fields mutated by `delegate.mutateTask` in
+    /// prior iterations (scratchpad, supervisor answer, role statuses) are visible.
+    static func refreshedTaskSnapshot(_ task: NTMSTask, delegate: LLMExecutionDelegate) -> NTMSTask {
+        delegate.loadedTask(task.id) ?? task
+    }
 
     /// Resolves the team for a task (prefers preferredTeamID, falls back to activeTeam).
     func resolveTeam(task: NTMSTask) -> Team? {

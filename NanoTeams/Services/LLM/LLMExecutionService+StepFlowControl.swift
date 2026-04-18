@@ -3,6 +3,17 @@ import Foundation
 /// Extension for step flow control: no-tool-call handling and planning phase management.
 extension LLMExecutionService {
 
+    /// True when the step has a pending supervisor-feedback revision. Reads the
+    /// freshest task from the delegate so mid-iteration mutations are observed.
+    func isStepInRevision(stepID: String) -> Bool {
+        guard let delegate, let tid = taskIDForStep(stepID),
+              let t = delegate.loadedTask(tid),
+              let ri = t.runs.indices.last,
+              let s = t.runs[ri].steps.first(where: { $0.id == stepID })
+        else { return false }
+        return s.revisionComment != nil
+    }
+
     // MARK: - No-Tool-Call Handling
 
     /// Handles the case where the LLM produced no tool calls.
@@ -11,7 +22,7 @@ extension LLMExecutionService {
     func handleNoToolCalls(
         stepID: String,
         result: StreamingResult,
-        roleForMessage _: Role,
+        roleForMessage: Role,
         task _: NTMSTask,
         runIndex _: Int,
         stepIndex _: Int,
@@ -19,6 +30,40 @@ extension LLMExecutionService {
         roleDefinition: TeamRoleDefinition?,
         conversationMessages: inout [ChatMessage]
     ) async -> LLMStepStop {
+        // Loop detection runs first — once the supervisor is asked (or the nudge
+        // fires), the other branches are moot. Skipped during revision because
+        // the supervisor is already driving.
+        if !isStepInRevision(stepID: stepID) {
+            switch ConversationRepairService.detectMessageLoop(conversationMessages: conversationMessages) {
+            case .refusalLoop(let count, let sample):
+                let snippet = String(sample.prefix(300))
+                let question = """
+                Role \(roleForMessage.displayName) emitted \(count) consecutive refusal messages without \
+                calling any tools. The model appears stuck — please advise how to proceed (answer the \
+                underlying need, provide explicit instructions, or mark the step failed).
+
+                Last message excerpt:
+                \(snippet)
+                """
+                await setNeedsSupervisorInput(stepID: stepID, question: question, sessionID: nil)
+                return .needsSupervisorInput(question: question)
+
+            case .repetitiveNonTool(let count):
+                let retryMessage = """
+                Your last \(count) responses were near-identical and contained no tool calls. \
+                If you've finished your work, call create_artifact to submit your deliverable. \
+                If you're blocked, call ask_supervisor with a specific question. \
+                Do not repeat this response again — take a concrete action.
+                """
+                conversationMessages.append(ChatMessage(role: .user, content: retryMessage))
+                await appendLLMMessage(stepID: stepID, role: .user, content: retryMessage)
+                return .continueLoop
+
+            case .noLoop:
+                break
+            }
+        }
+
         // Harmony markers were detected but parsing failed — the model attempted a tool
         // call with broken JSON (most commonly a missing closing brace). Give targeted
         // feedback so it can self-correct. Must be checked BEFORE the generic "only tokens"
@@ -47,11 +92,28 @@ extension LLMExecutionService {
             return .continueLoop
         }
 
-        // If still in planning phase (update_scratchpad not called), proceed to implementation
-        // instead of completing the step. The LLM produced text without calling the planning tool —
-        // transition to the full system prompt with role guidance and all tools.
+        // Planning phase fallback: the model emitted prose instead of calling
+        // update_scratchpad. Persist the prose as the implicit plan so the next
+        // iteration's applyPlanningPhase sees a non-nil scratchpad and transitions
+        // to implementation. The user nudge is required — without it, the next
+        // stateful continuation would send `{"input":""}` and LM Studio rejects
+        // with HTTP 400.
         if let systemMsg = conversationMessages.first(where: { $0.role == .system }),
            systemMsg.content?.contains("PLANNING PHASE") == true {
+            let plan = cleanedContent.isEmpty ? "(no plan provided)" : cleanedContent
+            if let tid = taskIDForStep(stepID), let delegate {
+                _ = await delegate.mutateTask(taskID: tid) { task in
+                    guard let runIndex = task.runs.indices.last,
+                          let stepIndex = task.runs[runIndex].steps.firstIndex(where: { $0.id == stepID })
+                    else { return }
+                    if task.runs[runIndex].steps[stepIndex].scratchpad == nil {
+                        task.runs[runIndex].steps[stepIndex].scratchpad = plan
+                    }
+                }
+            }
+            let nudge = "Plan recorded from your text response. Now proceeding to IMPLEMENTATION PHASE — execute your plan using your full toolset."
+            conversationMessages.append(ChatMessage(role: .user, content: nudge))
+            await appendLLMMessage(stepID: stepID, role: .user, content: nudge)
             return .continueLoop
         }
 
@@ -64,26 +126,17 @@ extension LLMExecutionService {
                     return artifactStop
                 }
 
-                // Check if in revision mode — use a different nudge message
-                let isRevision: Bool = {
-                    guard let delegate, let tid = taskIDForStep(stepID),
-                          let t = delegate.loadedTask(tid),
-                          let ri = t.runs.indices.last,
-                          let s = t.runs[ri].steps.first(where: { $0.id == stepID })
-                    else { return false }
-                    return s.revisionComment != nil
-                }()
-
-                if isRevision {
+                if isStepInRevision(stepID: stepID) {
                     let retryMessage = "Please address the supervisor's feedback and submit updated artifacts via create_artifact."
                     conversationMessages.append(ChatMessage(role: .user, content: retryMessage))
                     await appendLLMMessage(stepID: stepID, role: .user, content: retryMessage)
                     return .continueLoop
                 }
 
-                // Missing artifacts — retry
-                let names = expected.joined(separator: ", ")
-                let retryMessage = "You haven't submitted all expected artifacts yet. Missing deliverables: \(names). Call create_artifact(name, content) for each."
+                // Missing artifacts — retry. Names must be quoted and verbatim;
+                // extensions / prefixes / rewordings cause name-resolution misses.
+                let quoted = expected.map { "\"\($0)\"" }.joined(separator: ", ")
+                let retryMessage = "You haven't submitted all expected artifacts yet. Missing deliverables: \(quoted). Call create_artifact(name=\"<exact name from quotes>\", content=\"...\") for each. Do NOT add file extensions (.md), prefixes, or rewordings — use the quoted name verbatim."
                 conversationMessages.append(ChatMessage(role: .user, content: retryMessage))
                 await appendLLMMessage(stepID: stepID, role: .user, content: retryMessage)
                 return .continueLoop

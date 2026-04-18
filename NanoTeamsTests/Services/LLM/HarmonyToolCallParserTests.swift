@@ -177,6 +177,86 @@ final class HarmonyToolCallParserTests: XCTestCase {
         }
     }
 
+    // MARK: - Reserved Channel Name Filter (Run 6 regression)
+
+    /// Run 6 evidence: Code Reviewer emitted `<|call|>commentary { case add = "+" ... }<|end|>`
+    /// where `commentary` is a Harmony channel name, not a tool. CallMarkerStrategy extracted
+    /// the identifier literally and produced `name="commentary"` → tool_not_authorized.
+    func testCallMarker_rejectsReservedChannelNameAsTool() {
+        let input = "<|call|>commentary { \"content\": \"hello\" }<|end|>"
+        let calls = CallMarkerStrategy().parse(from: input)
+        XCTAssertTrue(
+            calls.isEmpty || !calls.contains { $0.name.lowercased() == "commentary" },
+            "Reserved channel name 'commentary' must not leak as a tool name")
+    }
+
+    func testCallMarker_rejectsAllReservedChannelNames() {
+        for reserved in ["commentary", "analysis", "final", "thinking"] {
+            let input = "<|call|>\(reserved) {}<|end|>"
+            let calls = CallMarkerStrategy().parse(from: input)
+            XCTAssertFalse(
+                calls.contains { $0.name.lowercased() == reserved },
+                "'\(reserved)' must not be accepted as a tool name")
+        }
+    }
+
+    /// Explicit `to=X` target is unaffected: if a model routes
+    /// `<|channel|>commentary to=read_file<|message|>{...}`, `read_file` is a
+    /// legit tool and must still be dispatched.
+    func testChannelMarker_toPathBypassesReservedFilter() {
+        let input = "<|channel|>commentary to=read_file<|message|>{\"path\":\"f.txt\"}"
+        let calls = ChannelMarkerStrategy().parse(from: input)
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(calls.first?.name, "read_file")
+    }
+
+    /// `<|constrain|>` fallback: if it extracts a reserved channel name, reject.
+    func testChannelMarker_constrainFallbackRejectsReservedName() {
+        // No `to=`; `<|constrain|>commentary` would otherwise pick "commentary" as tool name.
+        let input = "<|channel|>final <|constrain|>commentary<|message|>{}"
+        let calls = ChannelMarkerStrategy().parse(from: input)
+        XCTAssertTrue(
+            calls.isEmpty || !calls.contains { $0.name.lowercased() == "commentary" },
+            "Reserved channel name via <|constrain|> fallback must be rejected")
+    }
+
+    /// JSON-shape parse must also apply the reserved-name guard. Earlier versions
+    /// only filtered the bare-identifier path in `CallMarkerStrategy`; a model
+    /// emitting `<|call|>{"name":"commentary","arguments":{...}}<|end|>` would
+    /// leak through.
+    func testCallMarker_jsonShape_rejectsReservedChannelNameAsTool() {
+        let input = #"<|call|>{"name":"commentary","arguments":{"text":"hello"}}<|end|>"#
+        let calls = CallMarkerStrategy().parse(from: input)
+        XCTAssertFalse(
+            calls.contains { $0.name.lowercased() == "commentary" },
+            "JSON-shape reserved channel name must be rejected alongside bare identifier")
+    }
+
+    func testParseToolCallFromJSON_rejectsAllReservedChannelNames() {
+        for reserved in ["commentary", "analysis", "final", "thinking"] {
+            let json = #"{"name":"\#(reserved)","arguments":{}}"#
+            XCTAssertNil(
+                ToolCallParsingHelpers.parseToolCallFromJSON(json),
+                "'\(reserved)' in JSON `name` field must not produce a tool call")
+        }
+    }
+
+    /// When a reserved name is followed by a legitimate `<|call|>read_file{...}<|end|>`
+    /// block in the same message, the parser must not abort — advancing past the
+    /// rejected block preserves the second call.
+    func testCallMarker_afterReservedName_recoversLegitimateCall() {
+        let input = """
+        <|call|>commentary { "content": "junk" }<|end|>\
+        <|call|>read_file {"path":"a.txt"}<|end|>
+        """
+        let calls = CallMarkerStrategy().parse(from: input)
+        XCTAssertTrue(
+            calls.contains { $0.name == "read_file" },
+            "Legitimate read_file call after a rejected reserved-name block must survive parsing")
+        XCTAssertFalse(calls.contains { $0.name.lowercased() == "commentary" })
+    }
+
+
     func testRobustnessWithRandomSpecialCharacters() {
         let parser = HarmonyToolCallParser()
 

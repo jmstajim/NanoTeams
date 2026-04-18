@@ -41,7 +41,7 @@ final class ToolRuntime {
     private func executeOne(context: ToolExecutionContext, call: StepToolCall)
         -> ToolExecutionResult
     {
-        let name = call.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = ToolRegistry.resolveToolName(call.name)
         let rawArgs = call.argumentsJSON
 
         let baseRecord = ToolCallLogRecord(
@@ -49,21 +49,23 @@ final class ToolRuntime {
             taskID: context.taskID,
             runID: context.runID,
             roleID: context.roleID,
-            toolName: name,
+            toolName: call.name,
             argumentsJSON: rawArgs,
             resultJSON: nil,
             errorMessage: nil
         )
 
-        // Resolve providerID: use from call or generate UUID for strict OpenAI compliance
         let providerID = call.providerID ?? UUID().uuidString
 
         guard let handler = registry.handler(for: name) else {
+            let hint = name == call.name
+                ? "No handler for '\(call.name)'. Check the tool list in your system prompt."
+                : "No handler for '\(call.name)' (resolved to '\(name)'). Check the tool list in your system prompt."
             let result = ToolExecutionResult(
                 providerID: providerID,
-                toolName: name,
+                toolName: call.name,
                 argumentsJSON: rawArgs,
-                outputJSON: toolErrorJSON(type: "tool_not_found", message: nil),
+                outputJSON: toolErrorJSON(type: "tool_not_found", message: hint),
                 isError: true
             )
             logger?.append(baseRecord.withResult(result: result))
@@ -71,7 +73,8 @@ final class ToolRuntime {
         }
 
         do {
-            let args = try parseAndNormalizeArguments(rawArgs)
+            let rawParsedArgs = try parseAndNormalizeArguments(rawArgs)
+            let args = unwrapReentrantEnvelope(rawParsedArgs, expectedToolName: name)
             var result = try handler(context, args)
             result.providerID = providerID
             logger?.append(baseRecord.withResult(result: result))
@@ -80,7 +83,7 @@ final class ToolRuntime {
             let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             let result = ToolExecutionResult(
                 providerID: providerID,
-                toolName: name,
+                toolName: call.name,
                 argumentsJSON: rawArgs,
                 outputJSON: toolErrorJSON(type: "execution_failed", message: message),
                 isError: true

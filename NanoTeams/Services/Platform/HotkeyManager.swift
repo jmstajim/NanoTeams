@@ -7,7 +7,6 @@ import Foundation
 @MainActor
 protocol HotkeyManager: AnyObject {
     func register(id: UInt32, keyCode: UInt32, modifiers: UInt32, handler: @escaping () -> Void)
-    func unregister(id: UInt32)
 }
 
 extension GlobalHotkeyManager: HotkeyManager {}

@@ -298,7 +298,10 @@ final class NativeLMStudioClientTests: XCTestCase {
         XCTAssertFalse(request.input.contains("Previous assistant response"))
     }
 
-    func testStatefulSystemAlwaysInSystemPrompt() throws {
+    /// When `omitSystemPromptOnContinuation = false` is explicitly passed, the
+    /// stateful continuation still ships the system_prompt. (Production default
+    /// is now `true`; this case exists for opt-in callers.)
+    func testStatefulSystemInSystemPrompt_whenOmitDisabled() throws {
         let session = LLMSession(responseID: "resp_4")
         let messages: [ChatMessage] = [
             ChatMessage(role: .system, content: "You are an engineer."),
@@ -309,7 +312,8 @@ final class NativeLMStudioClientTests: XCTestCase {
             config: makeConfig(),
             messages: messages,
             tools: [],
-            session: session
+            session: session,
+            omitSystemPromptOnContinuation: false
         )
 
         XCTAssertEqual(request.systemPrompt, "You are an engineer.")
@@ -402,11 +406,14 @@ final class NativeLMStudioClientTests: XCTestCase {
             ChatMessage(role: .user, content: "Hello"),
         ]
 
+        // Opt out of the default omit so we can verify all snake_case keys are
+        // present in the encoded payload.
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(maxTokens: 4096),
             messages: messages,
             tools: [],
-            session: session
+            session: session,
+            omitSystemPromptOnContinuation: false
         )
 
         let dict = try encodeToDict(request)
@@ -552,8 +559,9 @@ final class NativeLMStudioClientTests: XCTestCase {
 
     // MARK: - Stateful Invariants
 
-    func testStatefulInvariant_SystemSentByDefault() throws {
-        // With default omitSystemPromptOnContinuation=false, system_prompt is always sent.
+    func testStatefulInvariant_SystemOmittedByDefault() throws {
+        // Production default: on stateful continuations system_prompt is omitted
+        // (server persists it in the response chain, so resending would cost tokens).
         let session = LLMSession(responseID: "resp_x")
         let messages: [ChatMessage] = [
             ChatMessage(role: .system, content: "Be concise."),
@@ -567,7 +575,7 @@ final class NativeLMStudioClientTests: XCTestCase {
             session: session
         )
 
-        XCTAssertEqual(request.systemPrompt, "Be concise.")
+        XCTAssertNil(request.systemPrompt, "Stateful default must omit system_prompt")
         XCTAssertNotNil(request.previousResponseID)
     }
 

@@ -24,14 +24,6 @@ private func makeWorkerRole(
     )
 }
 
-private func makeObserverRole(id: String, name: String) -> TeamRoleDefinition {
-    TeamRoleDefinition(
-        id: id, name: name, prompt: "", toolIDs: [],
-        usePlanningPhase: false,
-        dependencies: RoleDependencies(requiredArtifacts: [], producesArtifacts: [])
-    )
-}
-
 private func makeTeamWith(
     roles: [TeamRoleDefinition],
     acceptanceMode: AcceptanceMode = .finalOnly,

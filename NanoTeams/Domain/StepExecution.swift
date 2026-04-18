@@ -21,9 +21,6 @@ struct StepExecution: Codable, Identifiable, Hashable {
     /// Structured tool calls captured from OpenAI-compatible responses.
     var toolCalls: [StepToolCall]
 
-    /// Optional free-form notes for this step (e.g. Work Notes tool output).
-    var workNotes: String?
-
     /// LLM-managed scratchpad for planning and tracking progress within a step.
     /// Updated via the update_scratchpad tool. Uses markdown with ~~strikethrough~~ for completed items.
     var scratchpad: String?
@@ -76,7 +73,6 @@ struct StepExecution: Codable, Identifiable, Hashable {
         messages: [StepMessage] = [],
         artifacts: [Artifact] = [],
         toolCalls: [StepToolCall] = [],
-        workNotes: String? = nil,
         scratchpad: String? = nil,
         consultations: [TeammateConsultation] = [],
         meetingIDs: [UUID] = [],
@@ -102,7 +98,6 @@ struct StepExecution: Codable, Identifiable, Hashable {
         self.messages = messages
         self.artifacts = artifacts
         self.toolCalls = toolCalls
-        self.workNotes = workNotes
         self.scratchpad = scratchpad
         self.consultations = consultations
         self.meetingIDs = meetingIDs
@@ -130,7 +125,6 @@ struct StepExecution: Codable, Identifiable, Hashable {
         case messages
         case artifacts
         case toolCalls
-        case workNotes
         case scratchpad
         case consultations
         case meetingIDs
@@ -159,7 +153,6 @@ struct StepExecution: Codable, Identifiable, Hashable {
         self.messages = try c.decodeIfPresent([StepMessage].self, forKey: .messages) ?? []
         self.artifacts = try c.decodeIfPresent([Artifact].self, forKey: .artifacts) ?? []
         self.toolCalls = try c.decodeIfPresent([StepToolCall].self, forKey: .toolCalls) ?? []
-        self.workNotes = try c.decodeIfPresent(String.self, forKey: .workNotes)
         self.scratchpad = try c.decodeIfPresent(String.self, forKey: .scratchpad)
         self.consultations = try c.decodeIfPresent([TeammateConsultation].self, forKey: .consultations) ?? []
         self.meetingIDs = try c.decodeIfPresent([UUID].self, forKey: .meetingIDs) ?? []
@@ -189,7 +182,6 @@ struct StepExecution: Codable, Identifiable, Hashable {
         try c.encode(messages, forKey: .messages)
         try c.encode(artifacts, forKey: .artifacts)
         try c.encode(toolCalls, forKey: .toolCalls)
-        try c.encodeIfPresent(workNotes, forKey: .workNotes)
         try c.encodeIfPresent(scratchpad, forKey: .scratchpad)
         try c.encode(consultations, forKey: .consultations)
         try c.encode(meetingIDs, forKey: .meetingIDs)
@@ -248,7 +240,6 @@ struct StepExecution: Codable, Identifiable, Hashable {
         } ?? []
         artifacts = []
         toolCalls = []
-        workNotes = nil
         scratchpad = nil
         consultations = []
         meetingIDs = []

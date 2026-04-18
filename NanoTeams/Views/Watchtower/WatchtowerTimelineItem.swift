@@ -7,16 +7,6 @@ enum TimelineEventType {
     case started
     case completed
     case failed
-
-    private static let colorMap: [TimelineEventType: Color] = [
-        .started: Colors.info,
-        .completed: Colors.success,
-        .failed: Colors.error,
-    ]
-
-    var color: Color {
-        Self.colorMap[self] ?? Colors.info
-    }
 }
 
 // MARK: - Timeline Event

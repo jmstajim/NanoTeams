@@ -196,6 +196,7 @@ private struct ColorPreviewItem: Identifiable {
     var id: String { name }
 }
 
+// periphery:ignore - used in #Preview macros (color catalog)
 private struct ColorPreviewSection: Identifiable {
     let title: String
     let items: [ColorPreviewItem]
@@ -204,6 +205,7 @@ private struct ColorPreviewSection: Identifiable {
 }
 
 private extension Colors {
+    // periphery:ignore - used in #Preview macros (color catalog)
     static let previewSections: [ColorPreviewSection] = [
         ColorPreviewSection(
             title: "Status",
@@ -282,6 +284,7 @@ private extension Colors {
     ]
 }
 
+// periphery:ignore - used in #Preview macros (color catalog)
 private struct ColorsCatalogPreview: View {
     private let columns = [
         GridItem(.adaptive(minimum: 92, maximum: 120), spacing: Spacing.s)
@@ -311,6 +314,7 @@ private struct ColorsCatalogPreview: View {
     }
 }
 
+// periphery:ignore - used in #Preview macros (color catalog)
 private struct ColorPreviewCard: View {
     let item: ColorPreviewItem
 

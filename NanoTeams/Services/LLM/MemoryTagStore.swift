@@ -185,7 +185,12 @@ extension MemoryTagStore {
 extension MemoryTagStore {
 
     /// Generate Memories index showing all tags and their current statuses.
-    func generateMemories(version: Int) -> String {
+    /// Returns nil when there are no tracked entries — injecting a bare
+    /// header/footer every iteration is pure noise for roles that never
+    /// invoked a tag-producing tool.
+    func generateMemories(version: Int) -> String? {
+        guard !entries.isEmpty else { return nil }
+
         var lines: [String] = ["=== MEMORIES v\(version) ==="]
 
         let grouped = Dictionary(grouping: entries.values) { $0.resource }

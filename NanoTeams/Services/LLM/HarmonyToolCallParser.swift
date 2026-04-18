@@ -41,7 +41,8 @@ struct CallMarkerStrategy: ToolCallParsingStrategy {
                 }
             }
 
-            if let (name, nameEnd) = ToolCallParsingHelpers.extractIdentifier(in: tail, from: idx) {
+            if let (name, nameEnd) = ToolCallParsingHelpers.extractIdentifier(in: tail, from: idx),
+               !ChannelMarkerStrategy.reservedChannelNames.contains(name.lowercased()) {
                 let argsIdx = ToolCallParsingHelpers.skipWhitespace(in: tail, from: nameEnd)
                 if argsIdx < tail.endIndex, tail[argsIdx] == "{" {
                     if let (jsonText, endIdx) = ToolCallParsingHelpers.extractJSONBracedValue(
@@ -58,7 +59,12 @@ struct CallMarkerStrategy: ToolCallParsingStrategy {
                 }
             }
 
-            break
+            // This `<|call|>` couldn't be extracted (reserved channel name,
+            // malformed JSON, missing identifier). Advance past it so subsequent
+            // legitimate `<|call|>TOOL{...}<|end|>` blocks in the same message
+            // can still be parsed instead of dropping the rest.
+            cursor = ToolCallParsingHelpers.advanceCursor(
+                in: tail, from: idx, endMarker: Self.endMarker)
         }
 
         return results
@@ -150,6 +156,10 @@ struct ChannelMarkerStrategy: ToolCallParsingStrategy {
         "json", "text", "markdown", "xml", "html", "yaml",
     ]
 
+    fileprivate static var reservedChannelNames: Set<String> {
+        ToolCallParsingHelpers.reservedChannelNames
+    }
+
     func parse(from text: String) -> [StepToolCall] {
         guard text.contains(Self.channelMarker) else { return [] }
 
@@ -190,7 +200,9 @@ struct ChannelMarkerStrategy: ToolCallParsingStrategy {
                 if let (candidate, end) = ToolCallParsingHelpers.extractIdentifier(
                     in: text[afterConstrain...], from: afterConstrain)
                 {
-                    if !Self.constrainFormatKeywords.contains(candidate.lowercased()) {
+                    let lowered = candidate.lowercased()
+                    if !Self.constrainFormatKeywords.contains(lowered),
+                       !Self.reservedChannelNames.contains(lowered) {
                         toolName = candidate
                         nameEnd = end
                     }

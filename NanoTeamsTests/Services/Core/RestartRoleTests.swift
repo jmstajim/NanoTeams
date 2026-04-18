@@ -67,7 +67,6 @@ final class RestartRoleTests: NTMSOrchestratorTestBase {
             messages: [StepMessage(role: .softwareEngineer, content: "Working")],
             artifacts: [Artifact(name: "Engineering Notes")],
             toolCalls: [StepToolCall(name: "read_file", argumentsJSON: "{}", resultJSON: "ok")],
-            workNotes: "Some notes",
             scratchpad: "Plan here",
             consultations: [],
             meetingIDs: [UUID()],
@@ -84,7 +83,6 @@ final class RestartRoleTests: NTMSOrchestratorTestBase {
         XCTAssertTrue(updatedStep?.messages.isEmpty ?? false)
         XCTAssertTrue(updatedStep?.artifacts.isEmpty ?? false)
         XCTAssertTrue(updatedStep?.toolCalls.isEmpty ?? false)
-        XCTAssertNil(updatedStep?.workNotes)
         XCTAssertNil(updatedStep?.scratchpad)
         XCTAssertTrue(updatedStep?.consultations.isEmpty ?? false)
         XCTAssertTrue(updatedStep?.meetingIDs.isEmpty ?? false)

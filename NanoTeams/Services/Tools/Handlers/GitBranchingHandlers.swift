@@ -9,6 +9,9 @@ enum GitErrorClassifier {
     static func classify(
         stderr: String, toolName: String, args: [String: Any], subject: String
     ) -> ToolExecutionResult? {
+        if isNotARepository(stderr: stderr) {
+            return notARepositoryError(toolName: toolName, args: args)
+        }
         if stderr.contains("already exists") {
             return makeErrorResult(
                 toolName: toolName, args: args,
@@ -28,6 +31,24 @@ enum GitErrorClassifier {
             )
         }
         return nil
+    }
+
+    /// True when stderr indicates the working folder isn't a git repo. Anchored
+    /// on git's canonical prefix `fatal: not a git repository` to avoid
+    /// false-positives if a user commit message happens to contain the phrase
+    /// — `git_commit` passes stdout through the classifier too.
+    static func isNotARepository(stderr: String) -> Bool {
+        stderr.contains("fatal: not a git repository")
+    }
+
+    /// Helpful error envelope for non-git folders. Tells the model to skip git operations
+    /// and continue with the actual work.
+    static func notARepositoryError(toolName: String, args: [String: Any]) -> ToolExecutionResult {
+        makeErrorResult(
+            toolName: toolName, args: args,
+            code: .commandFailed,
+            message: "This work folder is not a git repository. Skip all git_* tools for this run — this folder isn't under version control. Continue with file edits, builds, and tests; submit your deliverables when done."
+        )
     }
 }
 
@@ -57,7 +78,7 @@ struct GitCheckoutTool: ToolHandler {
         Self(workFolderRoot: dependencies.workFolderRoot)
     }
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let branch = try requiredString(args, "branch")
             let create = optionalBool(args, "create", default: false)
@@ -129,7 +150,7 @@ struct GitMergeTool: ToolHandler {
         Self(workFolderRoot: dependencies.workFolderRoot)
     }
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let branch = try requiredString(args, "branch")
             let noFf = optionalBool(args, "no_ff", default: false)
@@ -200,7 +221,7 @@ struct GitBranchTool: ToolHandler {
         Self(workFolderRoot: dependencies.workFolderRoot)
     }
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let action = try requiredString(args, "action")
             let name = try requiredString(args, "name")

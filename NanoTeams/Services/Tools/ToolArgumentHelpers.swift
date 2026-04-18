@@ -1,5 +1,38 @@
 import Foundation
 
+// MARK: - Reentrant Envelope Unwrap
+
+/// Unwraps self-referential tool call envelopes.
+///
+/// When the Harmony parser already extracted a tool name, some models still
+/// emit the full envelope at the args level:
+/// `{"name": "<toolName>", "arguments": {...real args...}}`.
+/// A handler dispatched for `<toolName>` would then take the literal `name`
+/// key as a user-supplied argument (Run 6 created an artifact literally named
+/// "create_artifact" this way).
+///
+/// If outer `name` (a String) equals `expectedToolName` AND `arguments`
+/// (if present) is a dict, return the inner dict. Extra outer keys are
+/// tolerated — the outer envelope is malformed anyway.
+///
+/// Otherwise return `args` unchanged. Applied once per call at the
+/// ToolRuntime dispatch boundary before the per-handler `handle(...)`.
+func unwrapReentrantEnvelope(_ args: [String: Any], expectedToolName: String) -> [String: Any] {
+    guard let outerName = args["name"] as? String,
+          let inner = args["arguments"] as? [String: Any]
+    else {
+        return args
+    }
+    // Canonicalize both sides — the outer `name` often mirrors the LLM's
+    // raw emission (`functions.create_artifact`, `repo_browser.read_file`),
+    // while `expectedToolName` is the dispatched canonical name. A strict
+    // `==` would miss the prefixed form and pass the outer envelope through.
+    let outerCanonical = ToolRegistry.resolveToolName(outerName)
+    let expectedCanonical = ToolRegistry.resolveToolName(expectedToolName)
+    guard outerCanonical == expectedCanonical else { return args }
+    return inner
+}
+
 // MARK: - Argument Extraction Helpers
 
 func requiredString(_ args: [String: Any], _ key: String) throws -> String {

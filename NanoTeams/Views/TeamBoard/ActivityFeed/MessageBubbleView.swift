@@ -224,6 +224,7 @@ struct MessageBubbleView: View {
     .onAppear { expanded.insert(thinkingMsgID) }
 }
 
+// periphery:ignore - used in #Preview macros
 @ViewBuilder
 private func messageBubblePreviewSectionLabel(_ text: String) -> some View {
     Text(text)

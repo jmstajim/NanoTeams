@@ -159,9 +159,12 @@ extension LLMExecutionService {
                 )
                 let speakerConfig = meetingConfigResolver(speaker)
                 let speakerTools = MeetingCoordinator.filterMeetingTools(
-                    Self.filterForDefaultStorage(
-                        toolSchemas(for: speaker, team: team),
-                        isDefaultStorage: isDefaultStorage
+                    Self.filterForGitAvailability(
+                        Self.filterForDefaultStorage(
+                            toolSchemas(for: speaker, team: team),
+                            isDefaultStorage: isDefaultStorage
+                        ),
+                        workFolderRoot: workFolderRoot
                     )
                 )
 

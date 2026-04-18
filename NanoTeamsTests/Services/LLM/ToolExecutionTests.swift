@@ -306,9 +306,17 @@ final class ToolExecutionTests: XCTestCase {
 
     // MARK: - injectMemories
 
+    /// Seed one plan tag so `generateMemories` returns non-nil content;
+    /// otherwise the injection short-circuits (as of the empty-store optimization).
+    private func seededMemoryStore() -> MemoryTagStore {
+        let store = MemoryTagStore()
+        store.registerPlanUpdate(content: "1. Draft plan", iteration: 1)
+        return store
+    }
+
     func testInjectMemories_stateful_appendsMessage() async {
         let stepID = "test_step"
-        let memoryStore = MemoryTagStore()
+        let memoryStore = seededMemoryStore()
         let session = LLMSession(responseID: "test-session")
         var messages: [ChatMessage] = []
 
@@ -327,9 +335,52 @@ final class ToolExecutionTests: XCTestCase {
         XCTAssertTrue(messages[0].content?.contains("MEMORIES") ?? false)
     }
 
+    /// Stateful dedup — same memory content in two successive injections
+    /// produces only one appended message. The prior block is already in the
+    /// server's response chain.
+    func testInjectMemories_stateful_dedupesUnchangedContent() async {
+        let stepID = "test_step"
+        let memoryStore = seededMemoryStore()
+        let session = LLMSession(responseID: "test-session")
+        var messages: [ChatMessage] = []
+
+        service._testRegisterStepTask(stepID: stepID, taskID: Int())
+        setupDelegateWithTask(stepID: stepID)
+
+        await service.injectMemories(
+            stepID: stepID, memoryStore: memoryStore,
+            session: session, conversationMessages: &messages
+        )
+        await service.injectMemories(
+            stepID: stepID, memoryStore: memoryStore,
+            session: session, conversationMessages: &messages
+        )
+
+        XCTAssertEqual(messages.count, 1,
+                       "Identical MEMORIES content must not be appended twice on stateful continuation")
+    }
+
+    func testInjectMemories_emptyStore_doesNotInject() async {
+        let stepID = "test_step"
+        let memoryStore = MemoryTagStore()   // empty — no tags
+        let session = LLMSession(responseID: "test-session")
+        var messages: [ChatMessage] = []
+
+        service._testRegisterStepTask(stepID: stepID, taskID: Int())
+        setupDelegateWithTask(stepID: stepID)
+
+        await service.injectMemories(
+            stepID: stepID, memoryStore: memoryStore,
+            session: session, conversationMessages: &messages
+        )
+
+        XCTAssertEqual(messages.count, 0,
+                       "Empty MemoryTagStore must not inject a bare header/footer block")
+    }
+
     func testInjectMemories_stateless_replacesInPlace() async {
         let stepID = "test_step"
-        let memoryStore = MemoryTagStore()
+        let memoryStore = seededMemoryStore()
         var messages: [ChatMessage] = [
             ChatMessage(role: .user, content: "Old memories placeholder")
         ]
@@ -352,7 +403,7 @@ final class ToolExecutionTests: XCTestCase {
 
     func testInjectMemories_stateless_firstCall_appendsAndTracksIndex() async {
         let stepID = "test_step"
-        let memoryStore = MemoryTagStore()
+        let memoryStore = seededMemoryStore()
         var messages: [ChatMessage] = [
             ChatMessage(role: .system, content: "System prompt"),
             ChatMessage(role: .user, content: "User message"),

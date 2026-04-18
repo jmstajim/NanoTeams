@@ -908,18 +908,20 @@ final class LLMExecutionServiceStepCompletionTests: XCTestCase {
         await service.completeStepWithWarning(stepID: stepID, warning: "Test warning")
     }
 
-    func testCompleteStepWithWarningUpdatesTaskNotes() async {
+    func testCompleteStepWithWarningAppendsWarningMessage() async throws {
         let task = createTestTaskWithStep()
         mockDelegate.taskToMutate = task
         let stepID = task.runs[0].steps[0].id
 
         await service.completeStepWithWarning(stepID: stepID, warning: "My warning message")
 
-        // The mock delegate stores the mutated task
-        if let updatedTask = mockDelegate.taskToMutate {
-            let step = updatedTask.runs[0].steps[0]
-            XCTAssertEqual(step.workNotes, "My warning message")
-        }
+        let updatedTask = try XCTUnwrap(mockDelegate.taskToMutate)
+        let step = updatedTask.runs[0].steps[0]
+        XCTAssertTrue(step.messages.contains {
+            $0.role == step.role
+                && $0.content.hasPrefix("LLM warning:")
+                && $0.content.contains("My warning message")
+        })
     }
 
     // MARK: - completeStepFailure Tests

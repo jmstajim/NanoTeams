@@ -94,6 +94,29 @@ final class ToolRegistry {
         ]
     }()
 
+    /// Provider / training-set prefixes some models prepend to tool names.
+    /// Known examples: `openai/gpt-oss-*` emits `functions.*` (Harmony protocol)
+    /// and `repo_browser.*` (reflecting Anthropic's Code-Execution tool namespace
+    /// that leaked into training data). Stripped before alias lookup and dispatch.
+    static let knownToolNamePrefixes: [String] = ["repo_browser.", "functions."]
+
+    /// Canonicalize a raw tool name emitted by an LLM: trim whitespace, strip a
+    /// known provider prefix (`repo_browser.`, `functions.`), then apply the
+    /// common-hallucination alias map. Returns the canonical handler name.
+    ///
+    /// Used at every dispatch boundary — executor authorization, runtime
+    /// lookup, and meeting-tool filtering — so behavior is identical regardless
+    /// of which surface the LLM hit.
+    static func resolveToolName(_ raw: String) -> String {
+        var name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = name.lowercased()
+        for prefix in knownToolNamePrefixes where lower.hasPrefix(prefix) {
+            name = String(name.dropFirst(prefix.count))
+            break
+        }
+        return defaultAliases[name.lowercased()] ?? name
+    }
+
     /// List of all registered tool names
     var registeredToolNames: [String] {
         Array(handlers.keys)

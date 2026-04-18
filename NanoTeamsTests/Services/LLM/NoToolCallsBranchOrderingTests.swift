@@ -190,6 +190,61 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
         )
     }
 
+    // MARK: - Planning Phase No-Tool-Call (regression EA190834)
+
+    /// Regression: when an LLM in planning phase responds with prose instead of calling
+    /// `update_scratchpad`, the prior implementation returned `.continueLoop` without
+    /// appending any user message. The next iteration's stateful slice produced an empty
+    /// `newMessages` array → `{"input":""}` → HTTP 400 from LM Studio. Code Reviewer hit
+    /// this 6+ times in run EA190834 (seen as repeated "input must not be an empty string"
+    /// retries against the same `previous_response_id`).
+    ///
+    /// Fix: persist the assistant text as the implicit plan (so applyPlanningPhase
+    /// transitions to implementation on the next iteration) and append a user nudge so
+    /// the stateful continuation has non-empty input.
+    func testPlanningPhaseNoToolCall_appendsUserNudgeAndPersistsScratchpad() async {
+        let planningPrompt = """
+        You are Software Engineer.
+
+        PLANNING PHASE
+        ==============
+        Call update_scratchpad with your plan.
+        """
+        var messages: [ChatMessage] = [
+            ChatMessage(role: .system, content: planningPrompt),
+            ChatMessage(role: .user, content: "Build a calculator")
+        ]
+        let stop = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "I'll start by reading the requirements then writing the evaluator.",
+            sawHarmonyMarker: false,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages
+        )
+        guard case .continueLoop = stop else {
+            XCTFail("Expected .continueLoop, got \(stop)")
+            return
+        }
+        // CRITICAL: a user message MUST be appended so the next stateful continuation
+        // produces non-empty `input`.
+        let userMessages = messages.filter { $0.role == .user }
+        XCTAssertEqual(userMessages.count, 2, "Expected original user + new nudge")
+        let nudge = userMessages.last?.content ?? ""
+        XCTAssertTrue(
+            nudge.contains("IMPLEMENTATION PHASE"),
+            "Expected implementation-phase nudge, got: \(nudge)"
+        )
+
+        // Scratchpad must be persisted so applyPlanningPhase transitions on the next iteration.
+        let scratchpad = mockDelegate.taskToMutate?.runs[0].steps[0].scratchpad
+        XCTAssertNotNil(scratchpad, "Expected scratchpad to be set from assistant text")
+        XCTAssertTrue(
+            scratchpad?.contains("evaluator") == true,
+            "Scratchpad should contain the assistant's text, got: \(scratchpad ?? "nil")"
+        )
+    }
+
     func testProducingRoleWithoutHarmonyMarker_sendsMissingArtifactsNudge() async {
         // Negative of the previous test: same producing role, but no harmony marker
         // and the content is plain text. Should fall through to the producing-role
@@ -213,6 +268,32 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
         XCTAssertTrue(
             retry.contains("Missing deliverables") && retry.contains("Code Review"),
             "Expected producing-role artifact-missing nudge, got: \(retry)"
+        )
+    }
+
+    /// Regression EA190834: UX Designer made up alias names ("CalculatorDesignSpec.md",
+    /// "DesignSpec.md", "design_spec.md") chasing the missing-deliverables nudge because
+    /// the message didn't show the exact name the system expected. Quote the names verbatim
+    /// and forbid extensions/rewordings.
+    func testMissingArtifactsNudge_quotesNameAndForbidsExtensions() async {
+        let role = makeProducingRole(artifactName: "Design Spec")
+        var messages: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "Here's the design...",
+            sawHarmonyMarker: false,
+            task: task,
+            roleDefinition: role,
+            conversationMessages: &messages
+        )
+        let retry = messages[0].content ?? ""
+        XCTAssertTrue(
+            retry.contains(#""Design Spec""#),
+            "Nudge must quote the exact artifact name; got: \(retry)"
+        )
+        XCTAssertTrue(
+            retry.lowercased().contains("do not add file extensions"),
+            "Nudge must forbid extensions; got: \(retry)"
         )
     }
 }

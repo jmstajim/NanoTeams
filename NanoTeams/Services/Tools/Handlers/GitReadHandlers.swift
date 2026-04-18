@@ -22,11 +22,14 @@ struct GitStatusTool: ToolHandler {
         Self(workFolderRoot: dependencies.workFolderRoot)
     }
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let result = try ProcessRunner.runGit(["status", "--porcelain=v1", "-b"], in: workFolderRoot)
 
             guard result.success else {
+                if GitErrorClassifier.isNotARepository(stderr: result.stderr) {
+                    return GitErrorClassifier.notARepositoryError(toolName: Self.name, args: args)
+                }
                 return makeErrorResult(
                     toolName: Self.name, args: args,
                     code: .commandFailed,
@@ -106,7 +109,7 @@ struct GitBranchListTool: ToolHandler {
         Self(workFolderRoot: dependencies.workFolderRoot)
     }
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let all = optionalBool(args, "all", default: false)
 
@@ -118,6 +121,9 @@ struct GitBranchListTool: ToolHandler {
             let result = try ProcessRunner.runGit(gitArgs, in: workFolderRoot)
 
             guard result.success else {
+                if GitErrorClassifier.isNotARepository(stderr: result.stderr) {
+                    return GitErrorClassifier.notARepositoryError(toolName: Self.name, args: args)
+                }
                 return makeErrorResult(
                     toolName: Self.name, args: args,
                     code: .commandFailed, message: result.stderr
@@ -192,7 +198,7 @@ struct GitLogTool: ToolHandler {
         Self(workFolderRoot: dependencies.workFolderRoot)
     }
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let maxCount = optionalInt(args, "max") ?? 20
             let oneline = optionalBool(args, "oneline", default: true)
@@ -214,6 +220,9 @@ struct GitLogTool: ToolHandler {
             let result = try ProcessRunner.runGit(gitArgs, in: workFolderRoot)
 
             guard result.success else {
+                if GitErrorClassifier.isNotARepository(stderr: result.stderr) {
+                    return GitErrorClassifier.notARepositoryError(toolName: Self.name, args: args)
+                }
                 return makeErrorResult(
                     toolName: Self.name, args: args,
                     code: .commandFailed, message: result.stderr
@@ -264,7 +273,7 @@ struct GitDiffTool: ToolHandler {
     static let name = TN.gitDiff
     static let schema = ToolSchema(
         name: TN.gitDiff,
-        description: "Show git diff.",
+        description: "Show git diff. Result includes `diff`, `files_changed`, and `untracked_files` (new files not yet `git add`-ed — these are NOT in `diff`; read them with `read_file` to see their contents).",
         parameters: JS.object(
             properties: [
                 "cached": JS.boolean("Show staged changes"),
@@ -285,7 +294,7 @@ struct GitDiffTool: ToolHandler {
         Self(workFolderRoot: dependencies.workFolderRoot)
     }
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let cached = optionalBool(args, "cached", default: false)
             let paths = optionalStringArray(args, "paths")
@@ -304,6 +313,9 @@ struct GitDiffTool: ToolHandler {
             let result = try ProcessRunner.runGit(gitArgs, in: workFolderRoot)
 
             guard result.success else {
+                if GitErrorClassifier.isNotARepository(stderr: result.stderr) {
+                    return GitErrorClassifier.notARepositoryError(toolName: Self.name, args: args)
+                }
                 return makeErrorResult(
                     toolName: Self.name, args: args,
                     code: .commandFailed, message: result.stderr
@@ -317,15 +329,43 @@ struct GitDiffTool: ToolHandler {
 
             let filesChanged = lines.filter { $0.hasPrefix("diff --git") }.count
 
+            // `git diff` reports tracked changes only; list untracked working-tree files so
+            // reviewers don't miss brand-new files the engineer hasn't `git add`-ed yet.
+            // Skip when `cached` (staging-only view) — staged content is always tracked.
+            // Scope by `paths` when provided so the field still reflects the caller's query.
+            var untracked: [String] = []
+            var warnings: [String] = []
+            if !cached {
+                var probeArgs = ["ls-files", "--others", "--exclude-standard"]
+                if let paths = paths, !paths.isEmpty {
+                    probeArgs.append("--")
+                    probeArgs.append(contentsOf: paths)
+                }
+                do {
+                    let others = try ProcessRunner.runGit(probeArgs, in: workFolderRoot)
+                    if others.success {
+                        untracked = others.stdout
+                            .split(separator: "\n", omittingEmptySubsequences: true)
+                            .map(String.init)
+                    } else {
+                        let detail = others.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                        warnings.append("untracked_files probe failed: \(detail.isEmpty ? "non-zero exit" : detail)")
+                    }
+                } catch {
+                    warnings.append("untracked_files probe failed: \(error.localizedDescription)")
+                }
+            }
+
             struct DiffData: Codable {
                 var diff: String
                 var files_changed: Int
+                var untracked_files: [String]
             }
 
             return makeSuccessResult(
                 toolName: Self.name, args: args,
-                data: DiffData(diff: diff, files_changed: filesChanged),
-                meta: ToolResultMeta(truncated: truncated)
+                data: DiffData(diff: diff, files_changed: filesChanged, untracked_files: untracked),
+                meta: ToolResultMeta(truncated: truncated, warnings: warnings)
             )
         }
     }

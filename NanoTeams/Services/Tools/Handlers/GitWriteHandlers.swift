@@ -27,7 +27,7 @@ struct GitAddTool: ToolHandler {
         Self(workFolderRoot: dependencies.workFolderRoot)
     }
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let paths: [String]
             if let p = try? requiredStringArray(args, "paths") {
@@ -44,6 +44,9 @@ struct GitAddTool: ToolHandler {
             let result = try ProcessRunner.runGit(gitArgs, in: workFolderRoot)
 
             guard result.success else {
+                if GitErrorClassifier.isNotARepository(stderr: result.stderr) {
+                    return GitErrorClassifier.notARepositoryError(toolName: Self.name, args: args)
+                }
                 return makeErrorResult(
                     toolName: Self.name, args: args,
                     code: .commandFailed,
@@ -88,7 +91,7 @@ struct GitCommitTool: ToolHandler {
         Self(workFolderRoot: dependencies.workFolderRoot)
     }
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let message = try requiredString(args, "message")
             let amend = optionalBool(args, "amend", default: false)
@@ -102,6 +105,9 @@ struct GitCommitTool: ToolHandler {
 
             guard result.success else {
                 let errorMsg = result.stderr + result.stdout
+                if GitErrorClassifier.isNotARepository(stderr: errorMsg) {
+                    return GitErrorClassifier.notARepositoryError(toolName: Self.name, args: args)
+                }
                 if errorMsg.contains("nothing to commit") {
                     return makeErrorResult(
                         toolName: Self.name, args: args,
@@ -157,7 +163,7 @@ struct GitPullTool: ToolHandler {
         Self(workFolderRoot: dependencies.workFolderRoot)
     }
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let remote = optionalString(args, "remote") ?? "origin"
             let branch = optionalString(args, "branch")
@@ -241,7 +247,7 @@ struct GitStashTool: ToolHandler {
         Self(workFolderRoot: dependencies.workFolderRoot)
     }
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let action = try requiredString(args, "action")
             let message = optionalString(args, "message")

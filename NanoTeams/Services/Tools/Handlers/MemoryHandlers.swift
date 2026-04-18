@@ -26,7 +26,7 @@ struct UpdateScratchpadTool: ToolHandler {
         Self()
     }
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             guard let content = resolveContentString(args) else {
                 throw ToolArgumentError.missingRequired("content")

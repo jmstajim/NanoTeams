@@ -377,27 +377,6 @@ final class TaskMutationServiceTests: XCTestCase {
         XCTAssertTrue(step?.supervisorAnswerAttachmentPaths.isEmpty ?? false)
     }
 
-    // MARK: - updateWorkNotes Tests
-
-    func testUpdateWorkNotes_setsNotes() throws {
-        var (task, stepID) = try createTaskWithStep()
-
-        TaskMutationService.updateWorkNotes("Work notes content", stepID: stepID, in: &task)
-
-        let step = task.runs.last?.steps.first { $0.id == stepID }
-        XCTAssertEqual(step?.workNotes, "Work notes content")
-    }
-
-    func testUpdateWorkNotes_clearsNotes() throws {
-        var (task, stepID) = try createTaskWithStep()
-
-        TaskMutationService.updateWorkNotes("Initial notes", stepID: stepID, in: &task)
-        TaskMutationService.updateWorkNotes(nil, stepID: stepID, in: &task)
-
-        let step = task.runs.last?.steps.first { $0.id == stepID }
-        XCTAssertNil(step?.workNotes)
-    }
-
     // MARK: - appendLLMMessage Tests
 
     func testAppendLLMMessage_addsToConversation() throws {

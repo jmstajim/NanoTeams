@@ -132,35 +132,51 @@ extension LLMExecutionService {
     // MARK: - Artifact Name Resolution
 
     /// Matches an LLM-provided artifact name to the closest expected artifact.
-    /// LLMs often embellish names (e.g., "Design Spec – Calculator", "Calculator: Design Spec").
-    /// Uses slugified prefix/contains matching. Prefers prefix match over contains match.
+    /// LLMs often embellish names — adding camelCase ("CalculatorDesignSpec.md"),
+    /// punctuation ("Design Spec — Calculator"), reordering ("Calculator: Design Spec"),
+    /// or appending file extensions (".md", ".markdown", ".txt").
+    /// Strategy: strip extensions, then try four passes on the slugified form (longest
+    /// candidate first to avoid short-name shadowing), falling back to a compact form
+    /// (alphanumeric-only, no separators) so "DesignSpec" matches "design_spec".
     static func resolveArtifactName(_ name: String, expectedArtifacts: [String]) -> String {
         // Exact match — fast path
         if expectedArtifacts.contains(name) { return name }
 
-        let slugifiedName = Artifact.slugify(name)
+        let strippedName = Self.stripArtifactExtension(name)
+        let slugifiedName = Artifact.slugify(strippedName)
+        let compactInput = strippedName.lowercased().filter { $0.isLetter || $0.isNumber }
 
-        // Pre-compute slugs sorted by length descending (longest first = most specific match)
-        let slugged = expectedArtifacts
-            .map { (original: $0, slug: Artifact.slugify($0)) }
+        // Pre-compute candidates sorted by length descending (longest first = most specific match)
+        struct Candidate {
+            let original: String
+            let slug: String
+            let compact: String
+        }
+        let candidates: [Candidate] = expectedArtifacts
+            .map { Candidate(
+                original: $0,
+                slug: Artifact.slugify($0),
+                compact: $0.lowercased().filter { $0.isLetter || $0.isNumber }
+            )}
             .sorted { $0.slug.count > $1.slug.count }
 
-        // Pass 1: prefix match (stronger signal — "Design Spec – Calculator")
-        for entry in slugged {
-            if slugifiedName.hasPrefix(entry.slug) {
-                return entry.original
-            }
-        }
+        // Pass 1: prefix match on slug ("Design Spec – Calculator" → "design_spec_calculator" starts with "design_spec")
+        for c in candidates where slugifiedName.hasPrefix(c.slug) { return c.original }
+        // Pass 2: contains match on slug ("Calculator: Design Spec" → contains "design_spec")
+        for c in candidates where slugifiedName.contains(c.slug) { return c.original }
+        // Pass 3: compact contains ("CalculatorDesignSpec.md" → "calculatordesignspec" contains "designspec")
+        for c in candidates where !c.compact.isEmpty && compactInput.contains(c.compact) { return c.original }
 
-        // Pass 2: contains match (weaker — "Calculator: Design Spec")
-        // Longest slug first prevents short names (e.g., "Code") from shadowing
-        // longer ones (e.g., "Code Review").
-        for entry in slugged {
-            if slugifiedName.contains(entry.slug) {
-                return entry.original
-            }
-        }
+        return name
+    }
 
+    /// Strips a single common artifact file extension (case-insensitive).
+    static func stripArtifactExtension(_ name: String) -> String {
+        let knownExtensions = [".markdown", ".docx", ".html", ".json", ".pdf", ".rtf", ".txt", ".md"]
+        let lowered = name.lowercased()
+        for ext in knownExtensions where lowered.hasSuffix(ext) {
+            return String(name.dropLast(ext.count))
+        }
         return name
     }
 

@@ -9,7 +9,7 @@ extension NativeLMStudioClient {
         messages: [ChatMessage],
         tools: [ToolSchema],
         session: LLMSession?,
-        omitSystemPromptOnContinuation: Bool = false
+        omitSystemPromptOnContinuation: Bool = true
     ) -> NativeChatRequest {
         // Extract system prompt
         let systemMessages = messages.filter { $0.role == .system }

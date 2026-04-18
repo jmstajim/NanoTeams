@@ -3,18 +3,10 @@ import Foundation
 /// Constants for document format reading and export.
 enum DocumentConstants {
 
-    /// Extensions readable via textutil CLI.
-    static let textutilExtensions: Set<String> = [
-        "docx", "doc", "rtf", "rtfd", "odt", "html", "htm", "wordml", "webarchive",
-    ]
-
     /// All document extensions that `DocumentTextExtractor` can convert to plain text.
     static let supportedReadExtensions: Set<String> = [
         "pdf", "docx", "doc", "rtf", "rtfd", "odt", "html", "htm", "xlsx", "pptx",
     ]
-
-    /// Formats available for artifact export via `create_artifact(format:)`.
-    static let supportedWriteFormats: Set<String> = ["pdf", "rtf", "docx"]
 
     // MARK: - Limits
 

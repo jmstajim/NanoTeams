@@ -30,19 +30,34 @@ enum MeetingToolExecutor {
         {
             if Task.isCancelled { throw CancellationError() }
 
-            // Filter to only execute tools in the allowed meeting tool list (resolve aliases)
-            let validCalls = currentResult.resolvedToolCalls.filter {
-                let resolved = ToolRegistry.defaultAliases[$0.name.lowercased()] ?? $0.name
-                return allowedToolNames.contains(resolved)
+            // Partition into valid vs rejected, using the shared resolver so
+            // provider prefixes and aliases are handled uniformly with the main
+            // executor / runtime. Rejected calls get a `tool_not_authorized`
+            // envelope fed back to the follow-up turn — silently dropping them
+            // (the prior behavior) stalled meetings when a participant emitted
+            // only disallowed tools.
+            var validCalls: [StepToolCall] = []
+            var rejectedResults: [ToolExecutionResult] = []
+            for call in currentResult.resolvedToolCalls {
+                let canonical = ToolRegistry.resolveToolName(call.name)
+                if allowedToolNames.contains(canonical) {
+                    validCalls.append(call)
+                } else {
+                    rejectedResults.append(LLMExecutionService.makeToolNotAuthorizedResult(
+                        call: call, canonicalName: canonical, scope: "in this meeting"
+                    ))
+                }
             }
-            if validCalls.isEmpty { break }
+
+            if validCalls.isEmpty && rejectedResults.isEmpty { break }
 
             iteration += 1
 
-            // Execute tool calls
-            let toolResults = runtime.executeAll(context: toolContext, toolCalls: validCalls)
+            // Execute valid tool calls; rejected results already built above
+            let freshResults = runtime.executeAll(context: toolContext, toolCalls: validCalls)
+            let toolResults = freshResults + rejectedResults
 
-            // Record tool summaries
+            // Record tool summaries for both executed and rejected calls
             for result in toolResults {
                 collectedToolSummaries.append(MeetingToolSummary(
                     toolName: result.toolName,
@@ -59,11 +74,15 @@ enum MeetingToolExecutor {
                 context: meetingContext
             )
 
-            // Add the assistant's response that contained tool calls
+            // Feed back every call the model made — both executed and rejected
+            // — so the LLM sees why a tool was blocked and can self-correct.
+            let allCalls = validCalls + currentResult.resolvedToolCalls.filter { call in
+                !allowedToolNames.contains(ToolRegistry.resolveToolName(call.name))
+            }
             followUpMessages.append(ChatMessage(
                 role: .assistant,
                 content: currentResult.content.isEmpty ? nil : currentResult.content,
-                toolCalls: validCalls.map { call in
+                toolCalls: allCalls.map { call in
                     ChatToolCall(
                         id: call.providerID ?? call.id.uuidString,
                         name: call.name,
@@ -72,8 +91,9 @@ enum MeetingToolExecutor {
                 }
             ))
 
-            // Add tool results
-            for (call, result) in zip(validCalls, toolResults) {
+            // Add tool results — pair by position (allCalls order matches
+            // validCalls + rejectedCalls, and toolResults matches that order)
+            for (call, result) in zip(allCalls, toolResults) {
                 followUpMessages.append(ChatMessage(
                     role: .tool,
                     content: result.outputJSON,

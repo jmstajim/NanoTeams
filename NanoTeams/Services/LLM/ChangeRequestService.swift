@@ -38,7 +38,7 @@ enum ChangeRequestService {
     /// Validates a change request. Returns an error message string on failure, `nil` on success.
     static func validateChangeRequest(
         targetRoleID: String,
-        requestingRole: Role,
+        requestingRole _: Role,
         team: Team?,
         teamSettings: TeamSettings,
         run: Run

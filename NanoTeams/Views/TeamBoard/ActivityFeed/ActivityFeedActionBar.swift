@@ -275,6 +275,7 @@ struct ActivityFeedActionBar: View {
     .background(Colors.surfacePrimary)
 }
 
+// periphery:ignore - used in #Preview macros above
 private func previewSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
     VStack(alignment: .leading, spacing: 4) {
         Text(title)

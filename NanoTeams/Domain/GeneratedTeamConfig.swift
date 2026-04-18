@@ -156,7 +156,7 @@ struct GeneratedTeamConfig: Codable, Hashable {
             for name in role.producesArtifacts where !seen.contains(name) {
                 decodedArtifacts.append(ArtifactConfig(
                     name: name,
-                    description: Self.derivedDescription(producedBy: role, artifactName: name),
+                    description: Self.derivedDescription(producedBy: role),
                     icon: nil
                 ))
                 seen.insert(name)
@@ -286,7 +286,7 @@ struct GeneratedTeamConfig: Codable, Hashable {
     /// First sentence (or first 80 chars) of a producing role's prompt — used as
     /// a default description for auto-synthesized artifact stubs. Matches the
     /// language the role is written in.
-    static func derivedDescription(producedBy role: RoleConfig, artifactName: String) -> String {
+    static func derivedDescription(producedBy role: RoleConfig) -> String {
         let prompt = role.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else { return "" }
         // Cut at first sentence terminator if present in the first 200 chars.

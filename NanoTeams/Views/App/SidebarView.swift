@@ -433,6 +433,7 @@ struct SidebarView: View {
 
 // MARK: - Preview Helpers
 
+// periphery:ignore - used in #Preview macros below
 private func makePreviewStore(
     folder: URL? = nil,
     engineRunning: Bool = false,
@@ -457,14 +458,17 @@ private func makePreviewStore(
     return s
 }
 
+// periphery:ignore - used in #Preview macros below
 private func makeFilteredTaskState() -> TaskManagementState {
     let s = TaskManagementState()
     s.taskFilter = .running
     return s
 }
 
+// periphery:ignore - used in #Preview macros below
 private let previewTaskIDs: (Int, Int, Int) = (1, 2, 3)
 
+// periphery:ignore - used in #Preview macros below
 private func makePreviewStoreWithTasks() -> NTMSOrchestrator {
     let (idA, idB, idC) = previewTaskIDs
     let tasks = [

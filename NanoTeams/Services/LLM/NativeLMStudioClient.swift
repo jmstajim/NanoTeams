@@ -52,8 +52,7 @@ struct NativeLMStudioClient: LLMClient {
                         config: config,
                         messages: messages,
                         tools: tools,
-                        session: session,
-                        omitSystemPromptOnContinuation: true
+                        session: session
                     )
 
                     let bodyData = try JSONCoderFactory.makeWireEncoder().encode(payload)

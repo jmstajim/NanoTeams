@@ -2,6 +2,7 @@ import SwiftUI
 
 // MARK: - Preview Helpers
 
+// periphery:ignore - used in #Preview macros across TeamBoard view files
 private enum TeamBoardPreviewData {
     static let team = TeamTemplateFactory.faang()
     static let workFolder = WorkFolderProjection(

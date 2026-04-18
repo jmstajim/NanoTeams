@@ -124,7 +124,7 @@ final class SupervisorAutoAnswerServiceTests: XCTestCase {
 
     func testPipelineContextBuilding_includesPreviousSteps() {
         var step1 = makeStep(role: .productManager, status: .done)
-        step1.workNotes = "Important note from PO"
+        step1.scratchpad = "Important note from PO"
         let step2 = makeStep(role: .tpm, status: .running)
         let run = Run(id: 0, steps: [step1, step2])
 
@@ -135,8 +135,9 @@ final class SupervisorAutoAnswerServiceTests: XCTestCase {
         )
 
         XCTAssertTrue(context.contains("Product Manager"))
-        XCTAssertTrue(context.contains("Important note from PO"))
         XCTAssertTrue(context.contains("Step 1"))
+        // scratchpad stays private to the authoring role — not injected downstream.
+        XCTAssertFalse(context.contains("Important note from PO"))
     }
 
     func testPipelineContextBuilding_includesSupervisorQA() {

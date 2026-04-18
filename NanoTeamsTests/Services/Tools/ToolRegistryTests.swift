@@ -235,6 +235,104 @@ final class ToolRegistryTests: XCTestCase {
         XCTAssertEqual(registry.canonicalName(for: "creat_artifact"), "create_artifact")
         XCTAssertNotNil(registry.handler(for: registry.canonicalName(for: "creat_artifact")))
     }
+
+    // MARK: - resolveToolName (prefix + alias canonicalization)
+
+    /// Regression — Run 9 (2026-04-18). `openai/gpt-oss-20b` emitted
+    /// `repo_browser.list_files` / `.search` / `.request_changes`. Previously the
+    /// executor lowercased-and-aliased but never stripped the prefix, so every
+    /// prefixed call came back as `tool_not_authorized`. Single canonicalization
+    /// point now handles it uniformly across the main executor, runtime dispatch,
+    /// and meeting-tool filtering.
+    func testResolveToolName_stripsRepoBrowserPrefix() {
+        XCTAssertEqual(ToolRegistry.resolveToolName("repo_browser.list_files"), "list_files")
+        XCTAssertEqual(ToolRegistry.resolveToolName("repo_browser.search"), "search")
+        XCTAssertEqual(ToolRegistry.resolveToolName("repo_browser.request_changes"), "request_changes")
+    }
+
+    func testResolveToolName_stripsFunctionsPrefix() {
+        // Harmony protocol (gpt-oss, other OpenAI-aligned models) emits `functions.X`.
+        XCTAssertEqual(ToolRegistry.resolveToolName("functions.write_file"), "write_file")
+        XCTAssertEqual(ToolRegistry.resolveToolName("functions.create_artifact"), "create_artifact")
+    }
+
+    func testResolveToolName_caseInsensitivePrefix() {
+        XCTAssertEqual(ToolRegistry.resolveToolName("Repo_Browser.search"), "search")
+        XCTAssertEqual(ToolRegistry.resolveToolName("FUNCTIONS.read_file"), "read_file")
+    }
+
+    func testResolveToolName_stripsWhitespaceBeforePrefixCheck() {
+        XCTAssertEqual(ToolRegistry.resolveToolName("  repo_browser.search  "), "search")
+    }
+
+    func testResolveToolName_stripsPrefixThenAppliesAlias() {
+        // After stripping `repo_browser.`, `grep` aliases to `search`.
+        XCTAssertEqual(ToolRegistry.resolveToolName("repo_browser.grep"), ToolNames.search)
+        // After stripping `functions.`, `touch` aliases to `write_file`.
+        XCTAssertEqual(ToolRegistry.resolveToolName("functions.touch"), ToolNames.writeFile)
+    }
+
+    func testResolveToolName_bareNameAppliesAliasOnly() {
+        XCTAssertEqual(ToolRegistry.resolveToolName("grep"), ToolNames.search)
+        XCTAssertEqual(ToolRegistry.resolveToolName("ls"), ToolNames.listFiles)
+    }
+
+    func testResolveToolName_canonicalNameUnchanged() {
+        // Already-canonical names must pass through untouched (no accidental rewrite).
+        XCTAssertEqual(ToolRegistry.resolveToolName("write_file"), "write_file")
+        XCTAssertEqual(ToolRegistry.resolveToolName("create_artifact"), "create_artifact")
+        XCTAssertEqual(ToolRegistry.resolveToolName("ask_supervisor"), "ask_supervisor")
+    }
+
+    func testResolveToolName_unknownNameReturnedTrimmed() {
+        // No prefix, no alias — preserves the name (lets the runtime report tool_not_found).
+        XCTAssertEqual(ToolRegistry.resolveToolName("  totally_made_up  "), "totally_made_up")
+    }
+
+    /// `_repo_browser.search` is NOT prefixed — the `repo_browser.` segment
+    /// is a substring, not a prefix. Stripping here would be a bug: the model
+    /// might be legitimately emitting an unknown tool and deserves a
+    /// tool_not_found signal with the raw name intact.
+    func testResolveToolName_substringNotPrefix_isPreserved() {
+        XCTAssertEqual(ToolRegistry.resolveToolName("my_repo_browser.search"), "my_repo_browser.search")
+        XCTAssertEqual(ToolRegistry.resolveToolName("xrepo_browser.search"), "xrepo_browser.search")
+        XCTAssertEqual(ToolRegistry.resolveToolName("xfunctions.write_file"), "xfunctions.write_file")
+    }
+
+    /// Empty suffix after the prefix (`repo_browser.`) must return the empty
+    /// string (unchanged by aliases). The resulting `""` is an invalid handler
+    /// name that `ToolRuntime` will reject as `tool_not_found` — never silently
+    /// dispatched to something else.
+    func testResolveToolName_emptyAfterPrefix_returnsEmpty() {
+        XCTAssertEqual(ToolRegistry.resolveToolName("repo_browser."), "")
+        XCTAssertEqual(ToolRegistry.resolveToolName("functions."), "")
+    }
+
+    func testResolveToolName_onlyFirstMatchingPrefixStripped() {
+        // Safety: never strip more than one prefix. A name like
+        // `repo_browser.functions.search` is a bug we want to surface, not silently
+        // rewrite all the way down to `search`.
+        XCTAssertEqual(
+            ToolRegistry.resolveToolName("repo_browser.functions.search"),
+            "functions.search"
+        )
+    }
+
+    /// End-to-end through `handler(for:)`: register a handler under the canonical
+    /// name, then look it up via a `repo_browser.` prefix. Proves the runtime
+    /// dispatch path resolves the prefix.
+    func testHandler_dispatchesAfterPrefixStrip() {
+        var callCount = 0
+        registry.register(name: "search") { _, _ in
+            callCount += 1
+            return ToolExecutionResult(toolName: "search", argumentsJSON: "{}", outputJSON: "{}", isError: false)
+        }
+        let resolved = ToolRegistry.resolveToolName("repo_browser.search")
+        let handler = registry.handler(for: resolved)
+        XCTAssertNotNil(handler, "Handler must be found after prefix strip")
+        _ = try? handler?(context, [:])
+        XCTAssertEqual(callCount, 1)
+    }
 }
 
 // MARK: - ToolExecutionContext Tests

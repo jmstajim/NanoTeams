@@ -26,6 +26,10 @@ final class ArtifactCaptureTests: XCTestCase {
 
         let updatedStep = try XCTUnwrap(store.activeTask?.runs.last?.steps.first(where: { $0.id == engineerStep.id }))
         XCTAssertEqual(updatedStep.status, .done)
-        XCTAssertEqual(updatedStep.workNotes, "Tool loop iteration limit reached.")
+        XCTAssertTrue(updatedStep.messages.contains {
+            $0.role == updatedStep.role
+                && $0.content.hasPrefix("LLM warning:")
+                && $0.content.contains("Tool loop iteration limit reached.")
+        })
     }
 }

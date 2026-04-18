@@ -50,7 +50,8 @@ extension PromptBuilder {
 
         // Resolve template
         let template = team?.systemPromptTemplate ?? SystemTemplates.genericTemplate
-        let contextAwareness = buildContextAwarenessGuidance()
+        let hasFileReadTools = !Set(toolNames).isDisjoint(with: ToolHandlerRegistry.fileReadTools)
+        let contextAwareness = buildContextAwarenessGuidance(hasFileReadTools: hasFileReadTools)
 
         let placeholders: [String: String] = [
             "roleName": roleDefinition.name,
@@ -61,6 +62,7 @@ extension PromptBuilder {
             "positionContext": positionContext,
             "roleGuidance": roleGuidance,
             "contextAwareness": contextAwareness,
+            "workFolderContext": "(work folder details appear here at runtime)",
             "toolList": toolList,
             "expectedArtifacts": expectedArtifactsLine,
             "artifactInstructions": artifactInstructionsBlock,
@@ -125,7 +127,8 @@ extension PromptBuilder {
         let teamDescriptionLine = buildTeamDescriptionLine(team: team)
 
         let template = team?.systemPromptTemplate ?? SystemTemplates.genericTemplate
-        let contextAwareness = buildContextAwarenessGuidance()
+        let hasFileReadTools = !Set(toolNames).isDisjoint(with: ToolHandlerRegistry.fileReadTools)
+        let contextAwareness = buildContextAwarenessGuidance(hasFileReadTools: hasFileReadTools)
 
         let placeholders: [String: String] = [
             "roleName": roleDefinition.name,
@@ -136,6 +139,7 @@ extension PromptBuilder {
             "positionContext": positionContext,
             "roleGuidance": roleGuidance,
             "contextAwareness": contextAwareness,
+            "workFolderContext": "(work folder details appear here at runtime)",
             "toolList": toolList,
             "expectedArtifacts": expectedArtifactsLine,
             "artifactInstructions": artifactInstructionsBlock,

@@ -6,8 +6,11 @@ extension LLMExecutionService {
 
     // MARK: - Memories Injection
 
-    /// Injects Memories index into the conversation to keep the LLM oriented about
-    /// tool result tags, file states, and scratchpad progress.
+    /// Injects the Memories index into the conversation. Skipped when the store
+    /// is empty (no tag-producing tools were called yet) and, in stateful mode,
+    /// when the content hasn't changed since the last injection — the prior
+    /// block is already in the server's response chain, so re-sending it just
+    /// bloats the conversation with N stale copies on long steps.
     func injectMemories(
         stepID: String,
         memoryStore: MemoryTagStore,
@@ -16,16 +19,20 @@ extension LLMExecutionService {
     ) async {
         let nextVersion = (executionStates[stepID]?.memoriesVersion ?? 0) + 1
         executionStates[stepID]?.memoriesVersion = nextVersion
-        let version = nextVersion
 
-        let memories = memoryStore.generateMemories(version: version)
+        guard let memories = memoryStore.generateMemories(version: nextVersion) else { return }
 
         if session != nil {
-            // Stateful: always append (can't modify messages on server)
+            // Stateful: dedup — the prior block is already in the server chain.
+            // Fingerprint skips the version header so bumping `v1`→`v2` alone
+            // doesn't count as a change; only real entry changes trigger an append.
+            let fingerprint = memories.split(separator: "\n").dropFirst().joined(separator: "\n")
+            if executionStates[stepID]?.lastMemoriesFingerprint == fingerprint { return }
+            executionStates[stepID]?.lastMemoriesFingerprint = fingerprint
             conversationMessages.append(ChatMessage(role: .user, content: memories))
             await appendLLMMessage(stepID: stepID, role: .user, content: memories)
         } else {
-            // Stateless: rebuild in-place
+            // Stateless: rebuild in-place so there's only ever one block.
             if let existingIndex = executionStates[stepID]?.memoriesMessageIndex,
                existingIndex < conversationMessages.count {
                 conversationMessages[existingIndex] = ChatMessage(role: .user, content: memories)

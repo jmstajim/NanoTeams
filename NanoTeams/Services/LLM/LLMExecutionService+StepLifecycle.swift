@@ -40,9 +40,12 @@ extension LLMExecutionService {
 
         let client = clientFactory()
         let supervisorMode = resolvedTeam?.settings.supervisorMode ?? .manual
-        let tools = Self.filterForDefaultStorage(
-            toolSchemas(for: roleForMessage, team: resolvedTeam),
-            isDefaultStorage: isDefaultStorage
+        let tools = Self.filterForGitAvailability(
+            Self.filterForDefaultStorage(
+                toolSchemas(for: roleForMessage, team: resolvedTeam),
+                isDefaultStorage: isDefaultStorage
+            ),
+            workFolderRoot: workFolderRoot
         )
 
         let paths = NTMSPaths(workFolderRoot: workFolderRoot)
@@ -200,6 +203,7 @@ extension LLMExecutionService {
                         print("[DEBUG] \(retryNote)")
                         await appendLLMMessage(stepID: stepID, role: .assistant, content: retryNote)
                         ConversationRepairService.repairConversationIfNeeded(&conversation)
+                        ConversationRepairService.collapseRedundantAssistantTextRuns(&conversation)
                         try await Task.sleep(nanoseconds: LLMConstants.llmRetryDelaySeconds * 1_000_000_000)
                         continue
                     }

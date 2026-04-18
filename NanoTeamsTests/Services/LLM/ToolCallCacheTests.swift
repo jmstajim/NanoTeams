@@ -93,4 +93,22 @@ final class ToolCallCacheRound3Tests: XCTestCase {
         let cached = sut.getCachedResultIfRedundant(toolName: TN.writeFile, argumentsJSON: args)
         XCTAssertNil(cached, "write_file is not cacheable")
     }
+
+    // MARK: - Prefix canonicalization at cache boundary
+
+    /// The cache canonicalizes tool names on ingress so a model alternating
+    /// `functions.read_file` and `read_file` still benefits from dedup, path
+    /// invalidation, and the loop detector.
+    func testCache_canonicalizesProviderPrefix() {
+        let args = "{\"path\":\"/foo.swift\"}"
+        sut.record(toolName: "functions.\(TN.readFile)", argumentsJSON: args, resultJSON: "{\"ok\":true}", isError: false)
+
+        // Lookup via the bare name must hit the recorded entry.
+        XCTAssertNotNil(sut.getCachedResultIfRedundant(toolName: TN.readFile, argumentsJSON: args))
+        XCTAssertNotNil(sut.wasAlreadyCalled(toolName: TN.readFile, argumentsJSON: args))
+
+        // And vice versa: record bare, look up prefixed.
+        sut.record(toolName: TN.readFile, argumentsJSON: "{\"path\":\"/bar.swift\"}", resultJSON: "{\"ok\":true}", isError: false)
+        XCTAssertNotNil(sut.wasAlreadyCalled(toolName: "repo_browser.\(TN.readFile)", argumentsJSON: "{\"path\":\"/bar.swift\"}"))
+    }
 }

@@ -177,4 +177,102 @@ final class ToolArgumentHelpersTests: XCTestCase {
     func testResolveContentString_emptyArgs_returnsNil() {
         XCTAssertNil(resolveContentString([:]))
     }
+
+    // MARK: - unwrapReentrantEnvelope (Run 6 regression)
+
+    /// Run 6 evidence: CR emitted `create_artifact` with
+    /// `{"name":"create_artifact","arguments":{"name":"CalculatorDemo.zip","content":"…"}}`.
+    /// Handler took outer `name="create_artifact"` as the artifact name.
+    /// Unwrap must return inner args so the handler sees `name="CalculatorDemo.zip"`.
+    func testUnwrap_selfReferentialEnvelope_returnsInner() {
+        let args: [String: Any] = [
+            "name": "create_artifact",
+            "arguments": [
+                "name": "Code Review",
+                "content": "# Review\n- issue 1",
+            ] as [String: Any],
+        ]
+        let unwrapped = unwrapReentrantEnvelope(args, expectedToolName: "create_artifact")
+        XCTAssertEqual(unwrapped["name"] as? String, "Code Review")
+        XCTAssertEqual(unwrapped["content"] as? String, "# Review\n- issue 1")
+    }
+
+    /// Outer name that doesn't match the dispatched tool name — leave alone.
+    func testUnwrap_outerNameMismatch_returnsOriginal() {
+        let args: [String: Any] = [
+            "name": "different_tool",
+            "arguments": ["path": "foo.txt"] as [String: Any],
+        ]
+        let unwrapped = unwrapReentrantEnvelope(args, expectedToolName: "create_artifact")
+        XCTAssertEqual(unwrapped["name"] as? String, "different_tool")
+        XCTAssertNotNil(unwrapped["arguments"])
+    }
+
+    /// No `arguments` key — leave alone (normal `create_artifact` call with outer `name`).
+    func testUnwrap_noArgumentsKey_returnsOriginal() {
+        let args: [String: Any] = [
+            "name": "create_artifact",
+            "content": "# Review",
+        ]
+        let unwrapped = unwrapReentrantEnvelope(args, expectedToolName: "create_artifact")
+        XCTAssertEqual(unwrapped["name"] as? String, "create_artifact")
+        XCTAssertEqual(unwrapped["content"] as? String, "# Review")
+    }
+
+    /// Normal tool args (no `name` key) — pass through untouched.
+    func testUnwrap_normalArgs_returnsOriginal() {
+        let args: [String: Any] = [
+            "content": "hi",
+            "format": "md",
+        ]
+        let unwrapped = unwrapReentrantEnvelope(args, expectedToolName: "create_artifact")
+        XCTAssertEqual(unwrapped["content"] as? String, "hi")
+        XCTAssertEqual(unwrapped["format"] as? String, "md")
+    }
+
+    /// Extra outer keys must not block unwrap — the envelope is malformed anyway.
+    func testUnwrap_extraOuterKeys_stillUnwraps() {
+        let args: [String: Any] = [
+            "name": "create_artifact",
+            "arguments": ["name": "Plan", "content": "..."] as [String: Any],
+            "_extra": "junk",
+        ]
+        let unwrapped = unwrapReentrantEnvelope(args, expectedToolName: "create_artifact")
+        XCTAssertEqual(unwrapped["name"] as? String, "Plan")
+        XCTAssertNil(unwrapped["_extra"], "Inner dict must not carry outer extra keys")
+    }
+
+    /// Outer `name` carrying a provider prefix (`functions.create_artifact`) must
+    /// still unwrap when the dispatched tool is the bare `create_artifact`.
+    /// Without canonicalizing both sides this would fail — mirroring the Run 6 bug
+    /// in its namespaced form.
+    func testUnwrap_prefixedOuterName_unwrapsToInner() {
+        let args: [String: Any] = [
+            "name": "functions.create_artifact",
+            "arguments": ["name": "Plan", "content": "…"] as [String: Any],
+        ]
+        let unwrapped = unwrapReentrantEnvelope(args, expectedToolName: "create_artifact")
+        XCTAssertEqual(unwrapped["name"] as? String, "Plan",
+                       "Prefixed outer name must canonicalize and unwrap to inner dict")
+    }
+
+    func testUnwrap_repoBrowserPrefix_unwrapsToInner() {
+        let args: [String: Any] = [
+            "name": "repo_browser.create_artifact",
+            "arguments": ["name": "Spec", "content": "…"] as [String: Any],
+        ]
+        let unwrapped = unwrapReentrantEnvelope(args, expectedToolName: "create_artifact")
+        XCTAssertEqual(unwrapped["name"] as? String, "Spec")
+    }
+
+    /// Defense-in-depth: even when BOTH sides happen to be prefixed, canonicalization
+    /// makes them match rather than forcing a string-equality miss.
+    func testUnwrap_bothSidesPrefixed_unwraps() {
+        let args: [String: Any] = [
+            "name": "functions.create_artifact",
+            "arguments": ["name": "Doc"] as [String: Any],
+        ]
+        let unwrapped = unwrapReentrantEnvelope(args, expectedToolName: "repo_browser.create_artifact")
+        XCTAssertEqual(unwrapped["name"] as? String, "Doc")
+    }
 }

@@ -27,10 +27,26 @@ struct CreateArtifactTool: ToolHandler {
         Self()
     }
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    /// Accepted `format` values. `markdown`/`md` are no-op pass-throughs
+    /// (markdown is the primary artifact body); the other three map to
+    /// `DocumentTextExtractor.ExportFormat` for optional binary side-cars.
+    private static let allowedFormats: Set<String> = [
+        "markdown", "md", "pdf", "rtf", "docx",
+    ]
+
+    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let name = try requiredString(args, "name")
             let content = resolveContentString(args, excludeKeys: ["name"]) ?? ""
+
+            if let format = optionalString(args, "format"),
+               !Self.allowedFormats.contains(format.lowercased()) {
+                return makeErrorResult(
+                    toolName: Self.name, args: args,
+                    code: .invalidArgs,
+                    message: "Unsupported format '\(format)'. Supported: markdown, pdf, rtf, docx. Omit for markdown."
+                )
+            }
 
             return ToolExecutionResult(
                 toolName: Self.name,

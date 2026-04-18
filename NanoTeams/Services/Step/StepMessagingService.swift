@@ -1,6 +1,6 @@
 import Foundation
 
-/// Service for managing step messaging operations (Supervisor comments, answers, work notes).
+/// Service for managing step messaging operations (Supervisor comments, answers).
 enum StepMessagingService {
     static func setSupervisorCommentForNext(stepID: String, comment: String, in task: inout NTMSTask) {
         guard let location = task.locateStepInLatestRun(stepID: stepID) else { return }

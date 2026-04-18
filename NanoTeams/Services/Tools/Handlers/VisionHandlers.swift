@@ -29,7 +29,7 @@ struct AnalyzeImageTool: ToolHandler {
         Self(resolver: dependencies.resolver, fileManager: dependencies.fileManager)
     }
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let path = try requiredString(args, "path")
             let prompt = try requiredString(args, "prompt")

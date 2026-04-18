@@ -22,7 +22,7 @@ struct RunXcodebuildTool: ToolHandler {
         Self(workFolderRoot: dependencies.workFolderRoot)
     }
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             guard let xcodeRef = XcodeBuildRunner.findProject(in: workFolderRoot) else {
                 return makeErrorResult(
@@ -126,7 +126,7 @@ struct RunXcodetestsTool: ToolHandler {
         Self(workFolderRoot: dependencies.workFolderRoot)
     }
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             guard let xcodeRef = XcodeBuildRunner.findProject(in: workFolderRoot) else {
                 return makeErrorResult(

@@ -44,11 +44,15 @@ struct PromptBuilder {
             teamArtifacts: context.activeTeam?.artifacts ?? []
         )
 
-        // Build context awareness guidance (prevent wasteful searches)
-        let contextAwareness = buildContextAwarenessGuidance()
+        // Build context awareness guidance. The resource-tracking sentence is
+        // only emitted when the role can actually produce tagged tool results.
+        let toolNameSet = Set(toolNames)
+        let hasFileReadTools = !toolNameSet.isDisjoint(with: ToolHandlerRegistry.fileReadTools)
+        let contextAwareness = buildContextAwarenessGuidance(hasFileReadTools: hasFileReadTools)
 
         // Resolve system prompt from team template
         let template = context.activeTeam?.systemPromptTemplate ?? SystemTemplates.genericTemplate
+        let workFolderContext = buildWorkFolderContextMessage(workFolder: context.workFolder) ?? ""
         let placeholders: [String: String] = [
             "roleName": context.roleDefinition?.name ?? step.role.displayName,
             "teamName": context.activeTeam?.name ?? "(unknown team)",
@@ -58,6 +62,7 @@ struct PromptBuilder {
             "positionContext": positionContext,
             "roleGuidance": roleGuidance,
             "contextAwareness": contextAwareness,
+            "workFolderContext": workFolderContext,
             "toolList": toolList,
             "expectedArtifacts": expectedArtifactsLine,
             "artifactInstructions": artifactInstructionsBlock,
@@ -96,12 +101,9 @@ struct PromptBuilder {
             messages.append(ChatMessage(role: .user, content: requiredSection))
         }
 
-        // 3. Work folder context
-        if let projectContext = buildWorkFolderContextMessage(workFolder: context.workFolder),
-            !projectContext.isEmpty
-        {
-            messages.append(ChatMessage(role: .user, content: projectContext))
-        }
+        // Work folder context is now in the system prompt (see `{workFolderContext}`
+        // placeholder) so it persists in the stateful response chain instead of
+        // being re-broadcast to every role as a user message.
 
         // 4. Pipeline context from prior steps (excluding already-shown required artifacts)
         if stepIndex > 0 {
@@ -119,9 +121,12 @@ struct PromptBuilder {
 
         // 5. Supervisor Q/A context — inject as assistant tool call + tool result pair
         // so the LLM recognizes it already asked and continues from the answer.
-        if let question = step.supervisorQuestion, !question.isEmpty,
-           let answer = step.effectiveSupervisorAnswer, !answer.isEmpty {
-            // Simulate the ask_supervisor tool call + result pattern
+        let hasAnsweredSupervisorQuestion =
+            (step.supervisorQuestion?.isEmpty == false)
+            && (step.effectiveSupervisorAnswer?.isEmpty == false)
+        if hasAnsweredSupervisorQuestion,
+           let question = step.supervisorQuestion,
+           let answer = step.effectiveSupervisorAnswer {
             messages.append(ChatMessage(
                 role: .assistant,
                 content: "ask_supervisor: \(question)"))
@@ -134,7 +139,7 @@ struct PromptBuilder {
                 content: "Supervisor question (pending): \(question)"))
         }
 
-        // 6. Step messages as conversation history
+        // 6. Step messages as conversation history.
         for message in step.messages.sorted(by: { $0.createdAt < $1.createdAt }) {
             let messageRole = (message.role == .supervisor) ? "user" : "assistant"
             messages.append(ChatMessage(role: MessageRole(rawValue: messageRole) ?? .user, content: message.content))
@@ -163,31 +168,20 @@ struct PromptBuilder {
         return SystemTemplates.roles[role.baseID]?.prompt ?? ""
     }
 
-    /// Builds context awareness guidance to prevent wasteful file searches
-    static func buildContextAwarenessGuidance() -> String {
-        return """
-CONTEXT AWARENESS:
-- Supervisor Task: Provided in this message above — do NOT search work folder files for it
-- Prior artifacts: Provided in 'Context from previous steps' — do NOT re-read these files
-- Team context: Other roles' work is injected — do NOT search for team information
-- Use search/read_lines ONLY to find SPECIFIC implementation files or code patterns mentioned in requirements
-- NEVER do exploratory searches for requirements, tasks, or team context you already have
-
-RESOURCE TRACKING:
-Tool results get tags (<§R1§>, <§E3§>, <§B1§>) to avoid re-reading unchanged content.
-- Unchanged repeat read → compact ref {"status":"unchanged","ref":"<§R1§>"} — content is at that tag earlier in conversation. Do NOT re-read.
-- Changed file → full new content with new tag. Old tag becomes OUTDATED.
-- "=== MEMORIES ===" at end of conversation = freshness index. CURRENT = valid, OUTDATED = stale.
-- If a tag is CURRENT, trust it. Do NOT re-read "just to confirm".
-
-EFFICIENCY RULES (to avoid thinking overhead):
-1. If Supervisor task is clear and specific, act on it directly — do NOT overthink scope or ask "should I do X?"
-2. If you have all the context you need, proceed immediately — do NOT debate with yourself
-3. Do NOT re-read or re-summarize prior artifacts you already have inline
-4. Avoid meta-analysis of your own role — e.g., "Should I write a PRD?" → just write appropriately
-5. If previous role already made a decision, build on it — do NOT second-guess or redo their work
-6. Ask clarifying questions ONLY if genuinely ambiguous, not to avoid responsibility
-"""
+    /// Builds context-awareness guidance for the system prompt. Kept short on
+    /// purpose — verbose self-help rules are ignored by small models and waste
+    /// tokens across every fresh chain. The resource-tracking half is only
+    /// injected when the role actually has file-read tools that produce tags.
+    static func buildContextAwarenessGuidance(hasFileReadTools: Bool) -> String {
+        var parts = [
+            "The Supervisor Task and upstream artifacts are already in the conversation — act on them directly, don't re-search or re-summarize.",
+        ]
+        if hasFileReadTools {
+            parts.append(
+                "Tool results carry tags: <§R1§> reads, <§E1§> edits, <§W1§> writes, <§B1§> builds, <§G1§> git, <§P1§> plans. The MEMORIES index at the end of the conversation marks stale entries — trust CURRENT tags, don't re-read unchanged content."
+            )
+        }
+        return parts.joined(separator: "\n")
     }
 
 }

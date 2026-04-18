@@ -46,6 +46,59 @@ final class ConversationRepairServiceTests: XCTestCase {
         XCTAssertEqual(messages.count, originalCount, "Healthy conversation should not be modified")
     }
 
+    // MARK: - collapseRedundantAssistantTextRuns (regression EA190834)
+
+    /// Regression: Code Reviewer in run EA190834 produced 4-5 near-identical "All tasks
+    /// complete..." prose dumps in succession. After each HTTP 400 retry, the conversation
+    /// was rebuilt stateless including ALL prior text dumps, ballooning input tokens 1k → 13k.
+    /// Collapse keeps only the most recent text-only assistant turn from any run of them.
+    func testCollapse_replacesConsecutiveTextOnlyAssistantTurns() {
+        var messages: [ChatMessage] = [
+            ChatMessage(role: .system, content: "system"),
+            ChatMessage(role: .user, content: "do work"),
+            ChatMessage(role: .assistant, content: "first pass thoughts"),
+            ChatMessage(role: .assistant, content: "second pass thoughts"),
+            ChatMessage(role: .assistant, content: "third pass thoughts"),
+            ChatMessage(role: .user, content: "ok"),
+        ]
+        ConversationRepairService.collapseRedundantAssistantTextRuns(&messages)
+        XCTAssertEqual(messages.count, 4, "Three consecutive text-only assistants should collapse to one")
+        XCTAssertEqual(messages[2].role, .assistant)
+        XCTAssertEqual(messages[2].content, "third pass thoughts", "Should keep most recent")
+    }
+
+    func testCollapse_preservesAssistantWithToolCalls() {
+        let toolCall = ChatToolCall(id: "tc1", name: "read_file", argumentsJSON: "{}")
+        var messages: [ChatMessage] = [
+            ChatMessage(role: .assistant, content: "thinking", toolCalls: [toolCall]),
+            ChatMessage(role: .assistant, content: "more text"),
+        ]
+        let original = messages
+        ConversationRepairService.collapseRedundantAssistantTextRuns(&messages)
+        XCTAssertEqual(messages.count, original.count, "Tool-call assistant must not be collapsed")
+        XCTAssertEqual(messages[0].toolCalls?.count, 1)
+    }
+
+    func testCollapse_preservesNonAdjacentAssistants() {
+        var messages: [ChatMessage] = [
+            ChatMessage(role: .assistant, content: "A"),
+            ChatMessage(role: .user, content: "Q"),
+            ChatMessage(role: .assistant, content: "B"),
+        ]
+        ConversationRepairService.collapseRedundantAssistantTextRuns(&messages)
+        XCTAssertEqual(messages.count, 3, "Non-adjacent assistants must both survive")
+    }
+
+    func testCollapse_emptyAndSingleMessageNoop() {
+        var empty: [ChatMessage] = []
+        ConversationRepairService.collapseRedundantAssistantTextRuns(&empty)
+        XCTAssertTrue(empty.isEmpty)
+
+        var single: [ChatMessage] = [ChatMessage(role: .assistant, content: "alone")]
+        ConversationRepairService.collapseRedundantAssistantTextRuns(&single)
+        XCTAssertEqual(single.count, 1)
+    }
+
     // MARK: - cleanHarmonyTokens
 
     func testCleanHarmonyTokens_stripsChannelAndConstrain() {

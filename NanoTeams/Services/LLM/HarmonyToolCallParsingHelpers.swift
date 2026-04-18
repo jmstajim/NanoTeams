@@ -145,6 +145,14 @@ enum ToolCallParsingHelpers {
         return nil
     }
 
+    /// Harmony channel names that must never surface as tool names. Reserved-name
+    /// leaks happened when the model emitted `<|channel|>commentary<|message|>{...}`
+    /// without a `to=functions.X` routing — the bare channel name would otherwise
+    /// be dispatched as a tool (Run 6).
+    static let reservedChannelNames: Set<String> = [
+        "commentary", "analysis", "final", "thinking",
+    ]
+
     static func parseToolCallFromJSON(_ jsonText: String) -> StepToolCall? {
         let sanitized = JSONUtilities.sanitizeJSONControlCharacters(jsonText)
         guard let data = sanitized.data(using: .utf8) else { return nil }
@@ -156,14 +164,21 @@ enum ToolCallParsingHelpers {
 
         let providerID = stringValue(dict["id"]) ?? stringValue(dict["call_id"])
 
-        if let name = stringValue(dict["name"]) {
+        // Reserved-name guard applies to every shape below, not just the bare-identifier
+        // path in `CallMarkerStrategy`. Without this, `{"name":"commentary",...}`
+        // would bypass the marker-level filter and reach dispatch as a tool call.
+        func acceptingName(_ name: String) -> String? {
+            reservedChannelNames.contains(name.lowercased()) ? nil : name
+        }
+
+        if let name = stringValue(dict["name"]).flatMap(acceptingName) {
             let args = dict["arguments"] ?? dict["args"] ?? dict["parameters"] ?? dict["params"]
             return StepToolCall(
                 providerID: providerID, name: name, argumentsJSON: normalizeArgumentsJSON(args))
         }
 
-        if let toolName = stringValue(dict["tool_name"]) ?? stringValue(dict["tool"])
-            ?? stringValue(dict["function_name"])
+        if let toolName = (stringValue(dict["tool_name"]) ?? stringValue(dict["tool"])
+            ?? stringValue(dict["function_name"])).flatMap(acceptingName)
         {
             let args = dict["arguments"] ?? dict["args"] ?? dict["parameters"] ?? dict["params"]
             return StepToolCall(
@@ -171,7 +186,7 @@ enum ToolCallParsingHelpers {
         }
 
         if let fnDictAny = dict["function"] as? [String: Any],
-            let fnName = stringValue(fnDictAny["name"])
+            let fnName = stringValue(fnDictAny["name"]).flatMap(acceptingName)
         {
             let argsAny = fnDictAny["arguments"] ?? fnDictAny["args"]
             return StepToolCall(

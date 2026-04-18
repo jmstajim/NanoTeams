@@ -187,7 +187,7 @@ final class StepExecutionServiceExtendedTests: XCTestCase {
         step2.messages = [StepMessage(role: .techLead, content: "Step 2 done")]
 
         var step3 = makeStep(id: step3ID, role: .softwareEngineer, status: .running)
-        step3.workNotes = "Working on implementation"
+        step3.scratchpad = "Working on implementation"
 
         var step4 = makeStep(id: step4ID, role: .codeReviewer, status: .pending)
 
@@ -207,7 +207,7 @@ final class StepExecutionServiceExtendedTests: XCTestCase {
 
         // Step3 reset
         XCTAssertEqual(task.runs[0].steps[2].status, .pending)
-        XCTAssertNil(task.runs[0].steps[2].workNotes)
+        XCTAssertNil(task.runs[0].steps[2].scratchpad)
 
         // Step4 reset
         XCTAssertEqual(task.runs[0].steps[3].status, .pending)
@@ -219,7 +219,7 @@ final class StepExecutionServiceExtendedTests: XCTestCase {
         step.messages = [StepMessage(role: .productManager, content: "Message")]
         step.artifacts = [Artifact(name: "Artifact")]
         step.toolCalls = [StepToolCall(name: "read_file", argumentsJSON: "{\"path\": \"/tmp/file.txt\"}")]
-        step.workNotes = "Some work notes"
+        step.scratchpad = "Some scratchpad notes"
         step.needsSupervisorInput = true
         step.supervisorQuestion = "What should I do next?"
         step.supervisorAnswer = "Proceed with the plan"
@@ -233,7 +233,7 @@ final class StepExecutionServiceExtendedTests: XCTestCase {
         XCTAssertTrue(resetStep.messages.isEmpty, "messages should be cleared")
         XCTAssertTrue(resetStep.artifacts.isEmpty, "artifacts should be cleared")
         XCTAssertTrue(resetStep.toolCalls.isEmpty, "toolCalls should be cleared")
-        XCTAssertNil(resetStep.workNotes, "workNotes should be nil")
+        XCTAssertNil(resetStep.scratchpad, "scratchpad should be nil")
         XCTAssertFalse(resetStep.needsSupervisorInput, "needsSupervisorInput should be false")
         XCTAssertNil(resetStep.supervisorQuestion, "supervisorQuestion should be nil")
         XCTAssertNil(resetStep.supervisorAnswer, "supervisorAnswer should be nil")

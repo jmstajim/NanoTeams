@@ -53,8 +53,12 @@ struct ToolSelectionView: View {
         hints[tn.analyzeImage] = isVisionConfigured
             ? "Vision model configured"
             : "Requires vision model"
+        let gitTools = ToolHandlerRegistry.gitReadTools.union(ToolHandlerRegistry.gitWriteTools)
         for tool in ToolHandlerRegistry.defaultStorageBlocked {
-            hints[tool] = "Requires work folder"
+            // Git tools need the work folder to be an actual git repo (not just any
+            // folder) — `LLMExecutionService.filterForGitAvailability` strips them
+            // at runtime when `.git` is missing. Reflect that precondition in the UI.
+            hints[tool] = gitTools.contains(tool) ? "Requires git repo" : "Requires work folder"
         }
         return hints
     }

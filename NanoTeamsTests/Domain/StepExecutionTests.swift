@@ -22,7 +22,6 @@ final class StepExecutionTests: XCTestCase {
             messages: [StepMessage(role: .supervisor, content: "Old message")],
             artifacts: [Artifact(name: "Code", icon: "doc", mimeType: "text/plain", description: "")],
             toolCalls: [StepToolCall(name: "read_file", argumentsJSON: "{}")],
-            workNotes: "Some notes",
             scratchpad: "## Plan\n- step 1",
             consultations: [
                 TeammateConsultation(
@@ -58,7 +57,6 @@ final class StepExecutionTests: XCTestCase {
         XCTAssertTrue(step.messages.isEmpty)
         XCTAssertTrue(step.artifacts.isEmpty)
         XCTAssertTrue(step.toolCalls.isEmpty)
-        XCTAssertNil(step.workNotes)
         XCTAssertNil(step.scratchpad)
         XCTAssertTrue(step.consultations.isEmpty)
         XCTAssertTrue(step.meetingIDs.isEmpty)

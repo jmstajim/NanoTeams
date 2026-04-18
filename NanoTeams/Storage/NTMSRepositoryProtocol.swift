@@ -23,6 +23,7 @@ protocol TaskRepository {
     func createTask(at workFolderRoot: URL, title: String, supervisorTask: String, preferredTeamID: NTMSID?) throws -> WorkFolderContext
     func setActiveTask(at workFolderRoot: URL, taskID: Int?) throws -> WorkFolderContext
     func deleteTask(at workFolderRoot: URL, taskID: Int) throws -> WorkFolderContext
+    // periphery:ignore - test-only API; production must use updateTaskOnly (CLAUDE.md invariant #6)
     func updateTask(at workFolderRoot: URL, task: NTMSTask) throws -> WorkFolderContext
     func loadTask(at workFolderRoot: URL, taskID: Int) throws -> NTMSTask
     func updateTaskOnly(at workFolderRoot: URL, task: NTMSTask) throws

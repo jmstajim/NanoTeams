@@ -93,7 +93,6 @@ final class StepStatusTests: XCTestCase {
         XCTAssertTrue(step.messages.isEmpty)
         XCTAssertTrue(step.artifacts.isEmpty)
         XCTAssertTrue(step.toolCalls.isEmpty)
-        XCTAssertNil(step.workNotes)
         XCTAssertFalse(step.needsSupervisorInput)
         XCTAssertNil(step.supervisorQuestion)
         XCTAssertNil(step.supervisorAnswer)
@@ -120,7 +119,6 @@ final class StepStatusTests: XCTestCase {
             messages: [message],
             artifacts: [artifact],
             toolCalls: [toolCall],
-            workNotes: "Some notes",
             needsSupervisorInput: true,
             supervisorQuestion: "What should I test?",
             supervisorAnswer: "Test everything",
@@ -137,7 +135,6 @@ final class StepStatusTests: XCTestCase {
         XCTAssertEqual(step.messages.count, 1)
         XCTAssertEqual(step.artifacts.count, 1)
         XCTAssertEqual(step.toolCalls.count, 1)
-        XCTAssertEqual(step.workNotes, "Some notes")
         XCTAssertTrue(step.needsSupervisorInput)
         XCTAssertEqual(step.supervisorQuestion, "What should I test?")
         XCTAssertEqual(step.supervisorAnswer, "Test everything")
@@ -151,7 +148,7 @@ final class StepStatusTests: XCTestCase {
             role: .uxDesigner,
             title: "Design UI",
             status: .done,
-            workNotes: "Design completed"
+            scratchpad: "Design completed"
         )
 
         let encoder = JSONEncoder()
@@ -166,7 +163,7 @@ final class StepStatusTests: XCTestCase {
         XCTAssertEqual(decoded.role, original.role)
         XCTAssertEqual(decoded.title, original.title)
         XCTAssertEqual(decoded.status, original.status)
-        XCTAssertEqual(decoded.workNotes, original.workNotes)
+        XCTAssertEqual(decoded.scratchpad, original.scratchpad)
     }
 
     func testStepExecutionDecodeWithMissingOptionals() throws {

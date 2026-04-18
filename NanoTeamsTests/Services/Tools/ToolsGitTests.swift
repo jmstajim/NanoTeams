@@ -256,6 +256,71 @@ final class ToolsGitTests: XCTestCase {
         XCTAssertTrue(results[0].outputJSON.contains("diff_test.txt"))
     }
 
+    /// Run 12 regression: Code Reviewer called `git_diff`, saw only `.aicorp/*` legacy
+    /// deletions in the tracked diff, and wrote a factually wrong review claiming SWE's
+    /// calculator files didn't exist — they were untracked. `git_diff` must expose
+    /// untracked files so downstream reviewers aren't blind to them.
+    func testGitDiff_includesUntrackedFilesInResult() throws {
+        // Seed a committed file so the repo has history
+        try "seed".write(to: tempDir.appendingPathComponent("seed.txt"), atomically: true, encoding: .utf8)
+        _ = try runGitCommand(["add", "seed.txt"])
+        _ = try runGitCommand(["commit", "-m", "Initial"])
+
+        // Add an untracked file (never `git add`-ed) — what SWE's new files looked like in Run 12
+        try "brand new".write(to: tempDir.appendingPathComponent("NewCalculator.swift"), atomically: true, encoding: .utf8)
+
+        let call = StepToolCall(name: "git_diff", argumentsJSON: "{}")
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError)
+        let out = results[0].outputJSON
+        XCTAssertTrue(out.contains("untracked_files"), "result envelope should include untracked_files: \(out)")
+        XCTAssertTrue(out.contains("NewCalculator.swift"), "untracked file should be surfaced: \(out)")
+    }
+
+    /// With `paths` scope, the untracked probe scopes to those same paths so the
+    /// `untracked_files` field still reflects the caller's query. Untracked files
+    /// under the scoped path must appear; untracked files outside must not.
+    func testGitDiff_withPathsScope_scopesUntrackedProbe() throws {
+        try "seed".write(to: tempDir.appendingPathComponent("seed.txt"), atomically: true, encoding: .utf8)
+        _ = try runGitCommand(["add", "seed.txt"])
+        _ = try runGitCommand(["commit", "-m", "Initial"])
+
+        let subdir = tempDir.appendingPathComponent("subdir")
+        try FileManager.default.createDirectory(at: subdir, withIntermediateDirectories: true)
+        try "inside".write(to: subdir.appendingPathComponent("InsideScope.swift"), atomically: true, encoding: .utf8)
+        try "outside".write(to: tempDir.appendingPathComponent("OutsideScope.swift"), atomically: true, encoding: .utf8)
+
+        let call = StepToolCall(name: "git_diff", argumentsJSON: "{\"paths\": [\"subdir\"]}")
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError)
+        let out = results[0].outputJSON
+        XCTAssertTrue(out.contains("untracked_files"), "envelope must include untracked_files: \(out)")
+        XCTAssertTrue(out.contains("InsideScope.swift"),
+                      "untracked file under scoped path must be surfaced: \(out)")
+        XCTAssertFalse(out.contains("OutsideScope.swift"),
+                       "untracked file outside the scoped path must not leak: \(out)")
+    }
+
+    /// When `cached:true`, the user wants a staging-only view — untracked files would
+    /// be confusing and double-counted. Skip the `ls-files --others` probe entirely.
+    func testGitDiff_cached_omitsUntrackedListing() throws {
+        try "seed".write(to: tempDir.appendingPathComponent("seed.txt"), atomically: true, encoding: .utf8)
+        _ = try runGitCommand(["add", "seed.txt"])
+        _ = try runGitCommand(["commit", "-m", "Initial"])
+
+        try "brand new".write(to: tempDir.appendingPathComponent("Untracked.swift"), atomically: true, encoding: .utf8)
+
+        let call = StepToolCall(name: "git_diff", argumentsJSON: "{\"cached\": true}")
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError)
+        let out = results[0].outputJSON
+        // Key shows up (empty array), but the untracked filename must NOT leak
+        XCTAssertFalse(out.contains("Untracked.swift"), "cached diff must not list untracked files: \(out)")
+    }
+
     func testGitDiff_stagedChanges() throws {
         try "Original".write(to: tempDir.appendingPathComponent("staged.txt"), atomically: true, encoding: .utf8)
         _ = try runGitCommand(["add", "staged.txt"])
@@ -457,5 +522,89 @@ final class ToolsGitTests: XCTestCase {
         // Verify branch was deleted
         let branchOutput = try runGitCommand(["branch"])
         XCTAssertFalse(branchOutput.contains("to-delete"))
+    }
+
+    // MARK: - Not-a-repository handling (regression EA190834)
+
+    /// Regression: Software Engineer in run EA190834 called `git_add` on a non-git folder
+    /// (Sandbox/faang has no `.git`). The raw `fatal: not a git repository` stderr was
+    /// surfaced to the model with no actionable guidance, and the SWE gave up — never
+    /// finished UI components. The classifier now returns a helpful message telling the
+    /// model to skip git operations and continue with the task.
+    func testGitErrorClassifier_isNotARepository_detectsCanonicalStderr() {
+        XCTAssertTrue(GitErrorClassifier.isNotARepository(
+            stderr: "fatal: not a git repository (or any of the parent directories): .git\n"
+        ))
+        XCTAssertFalse(GitErrorClassifier.isNotARepository(
+            stderr: "fatal: pathspec 'foo' did not match any files\n"
+        ))
+        XCTAssertFalse(GitErrorClassifier.isNotARepository(stderr: ""))
+    }
+
+    /// Anchor check: a user commit message that legitimately contains the phrase
+    /// "not a git repository" (e.g. a commit describing a bug fix) must not be
+    /// misclassified. `git_commit` passes `stdout + stderr` through the
+    /// classifier, so stdout leakage is the real risk.
+    func testGitErrorClassifier_isNotARepository_ignoresPhraseInCommitMessage() {
+        XCTAssertFalse(GitErrorClassifier.isNotARepository(
+            stderr: "[main abc1234] fix: handle case when working dir is not a git repository\n"
+        ))
+        XCTAssertFalse(GitErrorClassifier.isNotARepository(
+            stderr: "Updated README to explain that not a git repository errors are actionable.\n"
+        ))
+    }
+
+    func testGitErrorClassifier_notARepositoryError_hasActionableGuidance() {
+        let result = GitErrorClassifier.notARepositoryError(
+            toolName: ToolNames.gitAdd,
+            args: [:]
+        )
+        XCTAssertTrue(result.isError)
+        let lower = result.outputJSON.lowercased()
+        XCTAssertTrue(
+            lower.contains("not a git repository") || lower.contains("skip git"),
+            "Expected actionable guidance, got: \(result.outputJSON)"
+        )
+        XCTAssertTrue(
+            lower.contains("continue") || lower.contains("submit"),
+            "Expected encouragement to continue, got: \(result.outputJSON)"
+        )
+    }
+
+    func testGitAdd_inNonRepoFolder_returnsActionableError() throws {
+        // Create a fresh non-git folder (don't init).
+        let nonRepoDir = fileManager.temporaryDirectory
+            .appendingPathComponent("nonrepo-\(UUID().uuidString)", isDirectory: true)
+            .standardizedFileURL
+        try fileManager.createDirectory(at: nonRepoDir, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: nonRepoDir) }
+
+        let paths = NTMSPaths(workFolderRoot: nonRepoDir)
+        try fileManager.createDirectory(at: paths.nanoteamsDir, withIntermediateDirectories: true)
+        let (_, nonRepoRuntime) = ToolRegistry.defaultRegistry(
+            workFolderRoot: nonRepoDir,
+            toolCallsLogURL: paths.toolCallsJSONL(taskID: 0, runID: 0)
+        )
+        let nonRepoContext = ToolExecutionContext(
+            workFolderRoot: nonRepoDir, taskID: 0, runID: 0, roleID: "test_role"
+        )
+        try "x".write(to: nonRepoDir.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+
+        let call = StepToolCall(
+            name: ToolNames.gitAdd,
+            argumentsJSON: #"{"paths":["a.txt"]}"#
+        )
+        let results = nonRepoRuntime.executeAll(context: nonRepoContext, toolCalls: [call])
+
+        XCTAssertEqual(results.count, 1)
+        XCTAssertTrue(results[0].isError)
+        XCTAssertTrue(
+            results[0].outputJSON.lowercased().contains("not a git repository"),
+            "Expected actionable not-a-repo message, got: \(results[0].outputJSON)"
+        )
+        XCTAssertFalse(
+            results[0].outputJSON.contains("fatal:"),
+            "Should not surface raw git stderr to the model: \(results[0].outputJSON)"
+        )
     }
 }

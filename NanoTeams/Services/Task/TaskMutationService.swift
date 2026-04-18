@@ -209,17 +209,6 @@ enum TaskMutationService {
         task.runs[location.runIndex].steps[location.stepIndex].updatedAt = MonotonicClock.shared.now()
     }
 
-    /// Updates work notes for a step.
-    /// - Parameters:
-    ///   - notes: The work notes.
-    ///   - stepID: The step ID.
-    ///   - task: The task to mutate.
-    static func updateWorkNotes(_ notes: String?, stepID: String, in task: inout NTMSTask) {
-        guard let location = task.locateStepInLatestRun(stepID: stepID) else { return }
-        task.runs[location.runIndex].steps[location.stepIndex].workNotes = notes
-        task.runs[location.runIndex].steps[location.stepIndex].updatedAt = MonotonicClock.shared.now()
-    }
-
     /// Appends an LLM message to the conversation history.
     /// - Parameters:
     ///   - message: The LLM message.

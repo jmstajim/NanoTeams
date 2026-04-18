@@ -31,7 +31,7 @@ struct ReadFileTool: ToolHandler {
         Self(resolver: dependencies.resolver, fileManager: dependencies.fileManager)
     }
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let path = try requiredString(args, "path")
             let maxBytes = optionalInt(args, "max_bytes") ?? 200_000
@@ -143,7 +143,7 @@ struct ReadLinesTool: ToolHandler {
         Self(resolver: dependencies.resolver, fileManager: dependencies.fileManager)
     }
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let path = try requiredString(args, "path")
             let startLine = try requiredInt(args, "start_line")
@@ -260,7 +260,7 @@ struct ListFilesTool: ToolHandler {
         Self(resolver: dependencies.resolver, fileManager: dependencies.fileManager, internalDir: dependencies.internalDir)
     }
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let path = optionalString(args, "path") ?? "."
             let depth = optionalInt(args, "depth") ?? 1
@@ -367,7 +367,7 @@ struct SearchTool: ToolHandler {
         Self(resolver: dependencies.resolver, fileManager: dependencies.fileManager, workFolderRoot: dependencies.workFolderRoot, internalDir: dependencies.internalDir)
     }
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let query = try requiredString(args, "query")
             let mode = optionalString(args, "mode") ?? "substring"

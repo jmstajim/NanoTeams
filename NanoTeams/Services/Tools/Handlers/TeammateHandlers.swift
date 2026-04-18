@@ -123,7 +123,7 @@ struct AskTeammateTool: ToolHandler {
         Self()
     }
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let teammate = try requiredString(args, "teammate")
             let question = try requiredString(args, "question")
@@ -163,7 +163,7 @@ struct RequestTeamMeetingTool: ToolHandler {
         Self()
     }
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let topic = try requiredString(args, "topic")
             let participants: [String]
@@ -218,7 +218,7 @@ struct ConcludeMeetingTool: ToolHandler {
         Self()
     }
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let decision = try requiredString(args, "decision")
             let rationale = optionalString(args, "rationale")
@@ -269,7 +269,7 @@ struct RequestChangesTool: ToolHandler {
         Self()
     }
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let targetRole = try requiredString(args, "target_role")
             let changes = try requiredString(args, "changes")

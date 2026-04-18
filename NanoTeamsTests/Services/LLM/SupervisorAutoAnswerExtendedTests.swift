@@ -6,13 +6,10 @@ import XCTest
 /// around context building, artifact reading, and multi-run tasks.
 final class SupervisorAutoAnswerExtendedTests: XCTestCase {
 
-    // MARK: - Context Truncation Tests
+    // MARK: - Connection Error Fallback
 
-    func testGenerateAnswer_TruncatesLongContext() async {
-        // Create a step with very long work notes to produce a long context
-        var step1 = makeStep(role: .productManager, status: .done)
-        let longContent = String(repeating: "A", count: ArtifactConstants.maxDescriptionChars + 1000)
-        step1.workNotes = longContent
+    func testGenerateAnswer_ReturnsFallbackOnConnectionError() async {
+        let step1 = makeStep(role: .productManager, status: .done)
         let step2 = makeStep(role: .tpm, status: .running)
         let run = Run(id: 0, steps: [step1, step2])
         let task = NTMSTask(id: 0, title: "Test", supervisorTask: "Goal", runs: [run])
@@ -23,7 +20,6 @@ final class SupervisorAutoAnswerExtendedTests: XCTestCase {
             modelName: "test-model"
         )
 
-        // Will fall back to fallbackAnswer because the server is unreachable
         let answer = await SupervisorAutoAnswerService.generateAnswer(
             question: "Test question",
             task: task,
@@ -34,7 +30,6 @@ final class SupervisorAutoAnswerExtendedTests: XCTestCase {
             artifactReader: { _ in nil }
         )
 
-        // Should return fallback due to connection error
         XCTAssertEqual(answer, SupervisorAutoAnswerService.fallbackAnswer)
     }
 

@@ -13,7 +13,6 @@ import XCTest
 @MainActor
 final class MutateWorkFolderDiffTests: NTMSOrchestratorTestBase {
 
-    private var fm: FileManager { .default }
     private var paths: NTMSPaths { NTMSPaths(workFolderRoot: tempDir) }
 
     /// Snapshots raw content of the three split files. Content comparison is

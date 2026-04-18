@@ -128,4 +128,22 @@ extension LLMExecutionService {
         let blocked = ToolHandlerRegistry.defaultStorageBlocked
         return tools.filter { !blocked.contains($0.name) }
     }
+
+    /// True when `<workFolderRoot>/.git` exists (dir or worktree/submodule file).
+    /// Does not walk upward: git tools always run with `workFolderRoot` as `cwd`.
+    static func isGitRepository(at workFolderRoot: URL, fileManager: FileManager = .default) -> Bool {
+        fileManager.fileExists(atPath: workFolderRoot.appendingPathComponent(".git").path)
+    }
+
+    /// Strips git tools from schemas when the work folder isn't a git repository.
+    /// `GitErrorClassifier.notARepositoryError` remains as a runtime fallback.
+    static func filterForGitAvailability(
+        _ tools: [ToolSchema],
+        workFolderRoot: URL,
+        fileManager: FileManager = .default
+    ) -> [ToolSchema] {
+        if isGitRepository(at: workFolderRoot, fileManager: fileManager) { return tools }
+        let gitTools = ToolHandlerRegistry.gitReadTools.union(ToolHandlerRegistry.gitWriteTools)
+        return tools.filter { !gitTools.contains($0.name) }
+    }
 }

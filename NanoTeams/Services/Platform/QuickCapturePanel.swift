@@ -132,6 +132,7 @@ final class QuickCapturePanel: NSPanel {
 
 // MARK: - Previews
 
+// periphery:ignore - used in #Preview macros below
 @MainActor
 private enum QuickCapturePanelPreview {
     static func makeStore() -> NTMSOrchestrator {

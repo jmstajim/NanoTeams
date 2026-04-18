@@ -39,20 +39,6 @@ extension PromptBuilder {
                 lines.append("Supervisor A: \(a)")
             }
 
-            if let workNotes = step.workNotes,
-                !workNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            {
-                lines.append("Work notes:")
-                lines.append(workNotes)
-            }
-
-            if let scratchpad = step.scratchpad,
-                !scratchpad.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            {
-                lines.append("Scratchpad (working notes):")
-                lines.append(scratchpad)
-            }
-
             // Filter out artifacts that are already shown as required artifacts
             let artifactsToShow = step.artifacts.filter { !excludeArtifactNames.contains($0.name) }
             if !artifactsToShow.isEmpty {

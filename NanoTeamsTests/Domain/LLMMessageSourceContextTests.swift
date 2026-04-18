@@ -202,7 +202,6 @@ final class LLMMessageSourceContextTests: XCTestCase {
         XCTAssertTrue(decoded.consultations.isEmpty)
         XCTAssertTrue(decoded.meetingIDs.isEmpty)
         XCTAssertTrue(decoded.llmConversation.isEmpty)
-        XCTAssertNil(decoded.workNotes)
         XCTAssertNil(decoded.scratchpad)
         XCTAssertFalse(decoded.needsSupervisorInput)
     }

@@ -40,6 +40,128 @@ enum ConversationRepairService {
         )
     }
 
+    /// Collapse runs of consecutive assistant text-only turns (no tool calls) by keeping only
+    /// the most recent. After repeated HTTP 400 retries the conversation can accumulate several
+    /// near-identical "All tasks complete..." prose dumps that explode token counts on the next
+    /// stateless rebuild (regression: Code Reviewer in run EA190834 ballooned 1k → 13k input
+    /// tokens). Use after `repairConversationIfNeeded` and before re-streaming.
+    static func collapseRedundantAssistantTextRuns(_ messages: inout [ChatMessage]) {
+        guard messages.count >= 2 else { return }
+        var compacted: [ChatMessage] = []
+        compacted.reserveCapacity(messages.count)
+        for msg in messages {
+            let isTextOnlyAssistant = msg.role == .assistant
+                && (msg.toolCalls?.isEmpty ?? true)
+                && !(msg.content?.isEmpty ?? true)
+            if isTextOnlyAssistant,
+               let prev = compacted.last,
+               prev.role == .assistant,
+               prev.toolCalls?.isEmpty ?? true,
+               !(prev.content?.isEmpty ?? true) {
+                // Replace prior text-only assistant with this newer one
+                compacted[compacted.count - 1] = msg
+            } else {
+                compacted.append(msg)
+            }
+        }
+        messages = compacted
+    }
+
+    // MARK: - Message-Level Loop Detection
+
+    /// Outcome of scanning recent assistant messages for loop patterns.
+    enum MessageLoopOutcome: Equatable {
+        case noLoop
+        /// Assistant is stuck refusing in a loop (matches refusal-pattern regex).
+        /// `count` is how many recent refusals were detected.
+        /// Escalate to supervisor — the program has no way to un-stick the model.
+        case refusalLoop(count: Int, sample: String)
+        /// Assistant emits near-identical non-refusal responses without tool calls.
+        /// Single-shot nudge; escalate if it repeats next iteration.
+        case repetitiveNonTool(count: Int)
+    }
+
+    /// Regex detecting the "I can't do this in this environment" refusal family.
+    /// Case-insensitive, tolerates the curly apostrophe `’`. Pattern is the source
+    /// of truth — do not restate its clauses in prose (they will drift).
+    private static let refusalPatternRegex: NSRegularExpression? = {
+        let pattern = #"(?i)\b(i['’]?m sorry|i can(?:not|['’]?t)|i do(?:n['’]?t| not) have|unable to|do(?:es)?(?:n['’]?t| not) allow|(?:no|don['’]?t have) permission|don['’]?t have (?:access|the ability)|do(?:es)?(?:n['’]?t| not) permit)\b"#
+        return try? NSRegularExpression(pattern: pattern, options: [])
+    }()
+
+    /// Detects a message-level loop at the conversation tail.
+    ///
+    /// Two patterns are caught:
+    /// 1. **Refusal loop**: the last `window` consecutive no-tool-call assistant
+    ///    messages all match the refusal regex — escalate to supervisor.
+    /// 2. **Repetitive non-tool**: identical normalized fingerprints without
+    ///    matching the refusal pattern — single-shot nudge.
+    ///
+    /// Otherwise `.noLoop`. Messages with nil/empty content are skipped.
+    /// Window default is 3: 2 is too noisy (models say "I'm sorry" mid-progress),
+    /// 3 is a real pattern.
+    static func detectMessageLoop(
+        conversationMessages: [ChatMessage],
+        window: Int = 3
+    ) -> MessageLoopOutcome {
+        guard window >= 2 else { return .noLoop }
+
+        // Collect recent text-only assistant messages (no tool calls, non-empty content).
+        var recent: [String] = []
+        for msg in conversationMessages.reversed() {
+            guard msg.role == .assistant,
+                  (msg.toolCalls?.isEmpty ?? true),
+                  let content = msg.content, !content.isEmpty
+            else { continue }
+            recent.append(content)
+            if recent.count >= window { break }
+        }
+
+        guard recent.count >= window else { return .noLoop }
+
+        // Check refusal-loop first: all last N messages matching the refusal pattern.
+        // Byte-identical fingerprints NOT required — refusals paraphrase but stay semantically fixed.
+        if recent.allSatisfy({ isRefusalContent($0) }) {
+            return .refusalLoop(count: recent.count, sample: recent[0])
+        }
+
+        // Non-refusal repetition needs byte-identical fingerprints; a single-shot
+        // nudge is enough for "ok, continuing" × N style stalls.
+        let fingerprints = recent.map { normalizeForLoopFingerprint($0) }
+        let first = fingerprints[0]
+        guard !first.isEmpty, fingerprints.allSatisfy({ $0 == first }) else {
+            return .noLoop
+        }
+        return .repetitiveNonTool(count: recent.count)
+    }
+
+    /// Cheap, stable fingerprint for loop detection: lowercased + whitespace-collapsed
+    /// + first 200 chars of the content. Two refusals that differ only in trailing
+    /// whitespace/punctuation still fingerprint identically.
+    static func normalizeForLoopFingerprint(_ content: String) -> String {
+        let lowered = content.lowercased()
+        let trimmed = lowered.trimmingCharacters(in: .whitespacesAndNewlines)
+        let collapsed: String
+        if let regex = try? NSRegularExpression(pattern: #"\s+"#, options: []) {
+            collapsed = regex.stringByReplacingMatches(
+                in: trimmed,
+                range: NSRange(trimmed.startIndex..., in: trimmed),
+                withTemplate: " "
+            )
+        } else {
+            collapsed = trimmed
+        }
+        return String(collapsed.prefix(200))
+    }
+
+    /// True when content matches a refusal pattern. Public so the step-flow
+    /// caller can also classify a single message when composing its escalation question.
+    static func isRefusalContent(_ content: String) -> Bool {
+        guard let regex = refusalPatternRegex else { return false }
+        let range = NSRange(content.startIndex..., in: content)
+        return regex.firstMatch(in: content, options: [], range: range) != nil
+    }
+
     // MARK: - Harmony Token Cleaning
 
     /// Clean Harmony/model control tokens from content before persisting.

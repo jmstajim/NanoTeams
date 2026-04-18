@@ -21,20 +21,10 @@ struct WorkFolderProjection: Hashable {
 
     var id: UUID { state.id }
     var name: String { state.name }
-    var createdAt: Date { state.createdAt }
-    var updatedAt: Date {
-        get { state.updatedAt }
-        set { state.updatedAt = newValue }
-    }
 
     var activeTeamID: NTMSID? {
         get { state.activeTeamID }
         set { state.activeTeamID = newValue }
-    }
-
-    var activeTaskID: Int? {
-        get { state.activeTaskID }
-        set { state.activeTaskID = newValue }
     }
 
     // MARK: - Active team lookup

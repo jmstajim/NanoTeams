@@ -29,7 +29,7 @@ struct WriteFileTool: ToolHandler {
         Self(resolver: dependencies.resolver, fileManager: dependencies.fileManager)
     }
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let path = try requiredString(args, "path")
             let content = try requiredString(args, "content")
@@ -106,7 +106,7 @@ struct EditFileTool: ToolHandler {
         Self(resolver: dependencies.resolver, fileManager: dependencies.fileManager)
     }
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let path = try requiredString(args, "path")
             let oldText = try requiredString(args, "old_text")
@@ -238,7 +238,7 @@ struct DeleteFileTool: ToolHandler {
         Self(resolver: dependencies.resolver, fileManager: dependencies.fileManager)
     }
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let path = try requiredString(args, "path")
             let mustExist = optionalBool(args, "must_exist", default: true)
