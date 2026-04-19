@@ -54,8 +54,19 @@ struct WorkFolderProjection: Hashable {
     }
 
     /// Remove a team by ID (cannot remove the last team).
+    ///
+    /// If the team is built from a template (non-nil, non-"generated" `templateID`),
+    /// the templateID is appended to `state.deletedTeamTemplateIDs` so subsequent
+    /// `migrateIfNeeded` passes won't resurrect it as a "missing bootstrap template".
     mutating func removeTeam(_ teamID: NTMSID) {
         guard teams.count > 1 else { return }
+        if let team = teams.first(where: { $0.id == teamID }),
+           let tid = team.templateID,
+           tid != "generated",
+           !state.deletedTeamTemplateIDs.contains(tid)
+        {
+            state.deletedTeamTemplateIDs.append(tid)
+        }
         teams.removeAll { $0.id == teamID }
         if state.activeTeamID == teamID {
             state.activeTeamID = teams.first?.id

@@ -8,8 +8,8 @@ import Foundation
 /// emit the full envelope at the args level:
 /// `{"name": "<toolName>", "arguments": {...real args...}}`.
 /// A handler dispatched for `<toolName>` would then take the literal `name`
-/// key as a user-supplied argument (Run 6 created an artifact literally named
-/// "create_artifact" this way).
+/// key as a user-supplied argument — without this guard, `create_artifact`
+/// could be invoked with the literal artifact name "create_artifact".
 ///
 /// If outer `name` (a String) equals `expectedToolName` AND `arguments`
 /// (if present) is a dict, return the inner dict. Extra outer keys are

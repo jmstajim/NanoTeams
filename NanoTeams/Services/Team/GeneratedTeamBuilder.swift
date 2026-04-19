@@ -135,6 +135,22 @@ enum GeneratedTeamBuilder {
         build(from: config).team
     }
 
+    /// Applies user-forced generation defaults on top of a built team. Any `nil`
+    /// argument means "Auto" — leave whatever value the LLM chose (or the builder
+    /// fallback) intact. Used by settings-driven overrides in `Generate Team`.
+    static func applyForcedDefaults(
+        to result: BuildResult,
+        supervisorMode: SupervisorMode?,
+        acceptanceMode: AcceptanceMode?
+    ) -> BuildResult {
+        guard supervisorMode != nil || acceptanceMode != nil else { return result }
+        var team = result.team
+        if let sm = supervisorMode { team.settings.supervisorMode = sm }
+        if let am = acceptanceMode { team.settings.defaultAcceptanceMode = am }
+        team.updatedAt = MonotonicClock.shared.now()
+        return BuildResult(team: team, warnings: result.warnings)
+    }
+
     /// Seeds role statuses for a newly generated team into an existing run.
     /// Preserves existing entries (e.g. the Supervisor's pre-set `.done` status from
     /// `runTeamGeneration`).

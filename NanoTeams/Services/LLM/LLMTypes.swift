@@ -28,7 +28,10 @@ enum LLMProvider: String, Codable, Hashable, CaseIterable, Identifiable {
     }
 
     var defaultMaxTokens: Int {
-        0   // Server decides
+        // 0 = "server decides" (LM Studio forwards nil max_tokens → no cap).
+        // Runaway thinking on local models is cappable via Settings → Generation
+        // → Response Limit (UI renders 0 as "Unlimited" and supports 1–128k).
+        0
     }
 }
 
@@ -40,19 +43,24 @@ struct LLMConfig: Hashable {
     var modelName: String
     var maxTokens: Int
     var temperature: Double?
+    /// Streaming HTTP request timeout in seconds. `0` = no timeout (wait indefinitely).
+    /// Minimum effective value is 1s; values below 1 other than 0 are clamped up.
+    var requestTimeoutSeconds: Int
 
     init(
         provider: LLMProvider = .lmStudio,
         baseURLString: String? = nil,
         modelName: String? = nil,
         maxTokens: Int? = nil,
-        temperature: Double? = nil
+        temperature: Double? = nil,
+        requestTimeoutSeconds: Int? = nil
     ) {
         self.provider = provider
         self.baseURLString = baseURLString ?? provider.defaultBaseURL
         self.modelName = modelName ?? provider.defaultModel
         self.maxTokens = maxTokens ?? provider.defaultMaxTokens
         self.temperature = temperature
+        self.requestTimeoutSeconds = requestTimeoutSeconds ?? LLMConstants.defaultLLMRequestTimeoutSeconds
     }
 }
 

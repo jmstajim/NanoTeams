@@ -29,7 +29,7 @@ struct HelpSettingsView: View {
 
             Section("About") {
                 LabeledContent("Version") {
-                    Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")
+                    Text(AppVersion.current)
                         .foregroundStyle(.secondary)
                 }
                 LabeledContent("Build") {

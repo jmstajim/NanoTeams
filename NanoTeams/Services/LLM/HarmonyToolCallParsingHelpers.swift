@@ -52,7 +52,8 @@ enum ToolCallParsingHelpers {
     /// Maximum imbalance we are willing to repair via synthetic closers in
     /// `extractJSONBracedValue`. Tool-call envelopes nest at most ~3 levels
     /// (call object → `arguments` → one nested value), so imbalance beyond
-    /// this bound signals truly garbled input rather than the known qwen bug.
+    /// this bound signals truly garbled input rather than a missing trailing
+    /// brace some models emit consistently.
     static let maxSalvageDepth = 3
 
     static func extractJSONBracedValue(in s: Substring, from index: String.Index) -> (
@@ -104,11 +105,12 @@ enum ToolCallParsingHelpers {
             end = s.index(after: end)
         }
 
-        // Walker reached end with unbalanced braces. Some models (e.g. qwen3.5-4b-mlx)
-        // emit `<|call|>{"name":"X","arguments":{…}<|end|>` — missing the outer `}`.
-        // Salvage by truncating at the last `}`/`]` we saw (any depth) and padding with
-        // synthetic closers. `maxSalvageDepth` guards against truly garbled input;
-        // `lastCloseEnd != nil` guards against input with no observed structure.
+        // Walker reached end with unbalanced braces. Some models emit
+        // `<|call|>{"name":"X","arguments":{…}<|end|>` — missing the outer `}`.
+        // Salvage by truncating at the last `}`/`]` we saw (any depth) and padding
+        // with synthetic closers. `maxSalvageDepth` guards against truly garbled
+        // input; `lastCloseEnd != nil` guards against input with no observed
+        // structure.
         if !inString, depth > 0, depth <= Self.maxSalvageDepth, let truncate = lastCloseEnd {
             let salvaged = String(s[i..<truncate]) + String(repeating: "}", count: depth)
             return (salvaged, truncate)
@@ -145,10 +147,9 @@ enum ToolCallParsingHelpers {
         return nil
     }
 
-    /// Harmony channel names that must never surface as tool names. Reserved-name
-    /// leaks happened when the model emitted `<|channel|>commentary<|message|>{...}`
-    /// without a `to=functions.X` routing — the bare channel name would otherwise
-    /// be dispatched as a tool (Run 6).
+    /// Harmony channel names that must never surface as tool names. Without
+    /// this guard, `<|channel|>commentary<|message|>{...}` (no `to=functions.X`
+    /// routing) would dispatch the channel name as a tool.
     static let reservedChannelNames: Set<String> = [
         "commentary", "analysis", "final", "thinking",
     ]
@@ -194,7 +195,56 @@ enum ToolCallParsingHelpers {
             )
         }
 
+        // Shape-based fallback: some models emit `{"arguments":{…}}` without a
+        // top-level tool name — the `name` field lives inside `arguments` as a
+        // tool parameter (e.g. artifact name for create_artifact). Infer the
+        // tool from the argument signature when it's unambiguous.
+        if let inferred = inferToolNameFromShape(dict) {
+            return StepToolCall(
+                providerID: providerID,
+                name: inferred.name,
+                argumentsJSON: normalizeArgumentsJSON(inferred.arguments))
+        }
+
         return nil
+    }
+
+    /// Fallback tool-name inference when no top-level identifier is present.
+    /// Conservative: only fires on an unambiguous argument signature. Today this
+    /// recognises `create_artifact` wrapped as `{"arguments":{…}}` — a pattern
+    /// some local models produce when the top-level envelope is stripped.
+    ///
+    /// Returns `(toolName, unwrappedArguments)` on success — the caller serialises
+    /// `unwrappedArguments` as the StepToolCall's `argumentsJSON`.
+    static func inferToolNameFromShape(_ dict: [String: Any]) -> (name: String, arguments: Any?)? {
+        if let inner = dict["arguments"] as? [String: Any],
+           let name = recognizeToolFromArguments(inner) {
+            return (name: name, arguments: inner)
+        }
+        return nil
+    }
+
+    /// Keys that unambiguously belong to a non-`create_artifact` tool. If any
+    /// match, inference refuses to guess — the caller falls through to the
+    /// generic "name missing" nudge rather than dispatching a wrong tool.
+    private static let keysExclusiveToOtherTools: Set<String> = [
+        "path", "old_text", "new_text",                 // file tools
+        "question", "teammate",                         // supervisor / consultation
+        "query",                                        // search
+        "scheme",                                       // xcodebuild
+        "topic", "participants",                        // request_team_meeting
+        "target_role", "changes", "reasoning",          // request_changes
+        "image_path", "prompt",                         // analyze_image
+    ]
+
+    private static func recognizeToolFromArguments(_ args: [String: Any]) -> String? {
+        let keys = Set(args.keys)
+        guard keys.isDisjoint(with: keysExclusiveToOtherTools) else { return nil }
+        // Require BOTH of create_artifact's mandatory fields. `format` alone is
+        // too generic — any future tool that accepts it would silently be
+        // dispatched as create_artifact.
+        guard keys.contains("name"), keys.contains("content") else { return nil }
+        return "create_artifact"
     }
 
     private static func normalizeArgumentsJSON(_ value: Any?) -> String {
@@ -213,5 +263,59 @@ enum ToolCallParsingHelpers {
         guard let any else { return nil }
         if let s = any as? String, !s.isEmpty { return s }
         return nil
+    }
+
+    // MARK: - Nudge Classification
+
+    /// Classifies *why* a Harmony-markered response produced no parsed tool call.
+    /// The step-flow-control nudge uses this to choose a retry message that
+    /// actually names the defect, instead of always blaming "malformed JSON".
+    enum HarmonyCallIssue: Equatable {
+        /// Markers were seen (e.g. `<|channel|>`) but no `<|call|>{…}<|end|>` block
+        /// was present, or the block's JSON couldn't be parsed at all.
+        case malformedJSON
+        /// JSON between `<|call|>…<|end|>` parsed fine but lacked a top-level tool
+        /// name. `inferredToolName` is non-nil when shape inference recognises the
+        /// payload — used to craft a concrete retry example for the model.
+        case missingToolName(inferredToolName: String?)
+    }
+
+    /// Scans the assistant's text for the first `<|call|>…<|end|>` block and
+    /// reports the nature of the parse failure. Safe to call on responses where
+    /// only `<|channel|>` markers appear (returns `.malformedJSON`).
+    static func classifyHarmonyCallIssue(in text: String) -> HarmonyCallIssue {
+        let callMarker = CallMarkerStrategy.callMarker
+        guard let callRange = text.range(of: callMarker) else { return .malformedJSON }
+
+        let tail = text[callRange.upperBound...]
+        let jsonStart = skipWhitespace(in: tail, from: tail.startIndex)
+        guard jsonStart < tail.endIndex, tail[jsonStart] == "{" else {
+            return .malformedJSON
+        }
+        guard let (jsonText, _) = extractJSONBracedValue(in: tail, from: jsonStart) else {
+            return .malformedJSON
+        }
+        let sanitized = JSONUtilities.sanitizeJSONControlCharacters(jsonText)
+        guard let data = sanitized.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data, options: []),
+              let dict = object as? [String: Any]
+        else {
+            return .malformedJSON
+        }
+
+        // If any recognised tool-name field is present, the parser should have
+        // succeeded — either the name was reserved (e.g. `commentary`) or something
+        // novel tripped us. Fall back to the generic nudge rather than claiming
+        // "missing name" falsely.
+        let hasTopLevelName = stringValue(dict["name"]) != nil
+            || stringValue(dict["tool_name"]) != nil
+            || stringValue(dict["tool"]) != nil
+            || stringValue(dict["function_name"]) != nil
+            || (dict["function"] as? [String: Any]).flatMap { stringValue($0["name"]) } != nil
+        if hasTopLevelName {
+            return .malformedJSON
+        }
+
+        return .missingToolName(inferredToolName: inferToolNameFromShape(dict)?.name)
     }
 }

@@ -26,7 +26,7 @@ extension NTMSRepository {
         let state: WorkFolderState = try loadOrRecoverFile(
             at: paths.workFolderJSON,
             default: WorkFolderState(
-                schemaVersion: 5,
+                schemaVersion: 6,
                 id: UUID(),
                 name: workFolderRoot.lastPathComponent
             )
@@ -49,7 +49,7 @@ extension NTMSRepository {
            !teamsFile.teams.contains(where: { $0.id == activeID })
         {
             repairedState.activeTeamID = nil
-            try? store.write(repairedState, to: paths.workFolderJSON)
+            try store.write(repairedState, to: paths.workFolderJSON)
         }
 
         // Empty teams array (from a corrupt-then-defaulted teams.json whose
@@ -58,7 +58,7 @@ extension NTMSRepository {
         // to work with.
         if teamsFile.teams.isEmpty {
             teamsFile.teams = Team.defaultTeams
-            try? store.write(teamsFile, to: paths.teamsJSON)
+            try store.write(teamsFile, to: paths.teamsJSON)
         }
 
         return (repairedState, settings, teamsFile)
@@ -66,7 +66,7 @@ extension NTMSRepository {
 
     /// Loads a single JSON file, recovering from missing/corrupt states in place.
     /// See `loadOrRecoverFiles` for the policy.
-    private func loadOrRecoverFile<T: Codable>(
+    func loadOrRecoverFile<T: Codable>(
         at url: URL,
         default defaultValue: @autoclosure () -> T
     ) throws -> T {
@@ -100,28 +100,81 @@ extension NTMSRepository {
         }
     }
 
-    /// Ensures all bootstrap teams are present and system role dependencies are synced.
-    /// Writes only `teams.json` when changes are made.
-    func migrateIfNeeded(teamsFile: inout TeamsFile, paths: NTMSPaths) throws {
-        var needsWrite = false
+    /// Ensures all bootstrap teams are present, system role dependencies are synced,
+    /// and bundled content is reconciled on app version bumps.
+    ///
+    /// Writes only the files that actually changed — `teams.json`, `tools.json`,
+    /// `workfolder.json` — each at most once per invocation.
+    ///
+    /// Responsibilities:
+    /// 1. Append any bundled template that is neither present in the stored teams
+    ///    nor in `state.deletedTeamTemplateIDs` (tombstone respect).
+    /// 2. Run the legacy `syncSystemRoleDependencies` pass (additive `requiredArtifacts`,
+    ///    unconditional `producesArtifacts`) as a narrow safety net.
+    /// 3. If `AppVersion.current > state.lastAppliedAppVersion`, run the
+    ///    full reconcile via `applyBundledContentUpdates` (roles / prompt templates
+    ///    / settings / team structure / tools). Teams with running roles are deferred.
+    /// 4. Update `state.lastAppliedAppVersion` only when no teams were deferred.
+    @discardableResult
+    func migrateIfNeeded(
+        teamsFile: inout TeamsFile,
+        state: inout WorkFolderState,
+        paths: NTMSPaths
+    ) throws -> [NTMSID] {
+        var teamsNeedsWrite = false
+        var deferredTeamIDs: [NTMSID] = []
 
+        // 1. Append bundled templates the user hasn't tombstoned.
         let existingTemplateIDs = Set(teamsFile.teams.compactMap(\.templateID))
+        let tombstoned = Set(state.deletedTeamTemplateIDs)
         let missingBootstrap = Team.defaultTeams.filter { bootstrap in
             guard let tid = bootstrap.templateID else { return false }
-            return !existingTemplateIDs.contains(tid)
+            return !existingTemplateIDs.contains(tid) && !tombstoned.contains(tid)
         }
         if !missingBootstrap.isEmpty {
             teamsFile.teams.append(contentsOf: missingBootstrap)
-            needsWrite = true
+            teamsNeedsWrite = true
         }
 
+        // 2. Legacy additive sync (kept as a narrow safety net — full reconcile
+        //    below covers the same ground but only fires on version bump).
         if syncSystemRoleDependencies(teams: &teamsFile.teams) {
-            needsWrite = true
+            teamsNeedsWrite = true
         }
 
-        if needsWrite {
+        // 3. Version-bump reconcile — overwrites scalar role fields, prompt
+        //    templates, team settings, additively adds missing system roles and
+        //    system artifacts, and re-syncs built-in tools.
+        let currentAppVersion = AppVersion.current
+        var stateNeedsWrite = false
+        if AppVersion.shouldReconcile(from: state.lastAppliedAppVersion, to: currentAppVersion) {
+            var tools = try loadToolDefinitions(paths: paths)
+            let result = applyBundledContentUpdates(
+                teams: &teamsFile.teams,
+                tools: &tools,
+                paths: paths
+            )
+            if result.touched { teamsNeedsWrite = true }
+            if result.toolsTouched { try store.write(tools, to: paths.toolsJSON) }
+            if result.deferred.isEmpty {
+                // All teams reconciled — safe to record the new watermark.
+                state.lastAppliedAppVersion = currentAppVersion
+                state.updatedAt = MonotonicClock.shared.now()
+                stateNeedsWrite = true
+            } else {
+                deferredTeamIDs = result.deferred
+            }
+            // Otherwise leave `lastAppliedAppVersion` unchanged; next open retries.
+        }
+
+        if teamsNeedsWrite {
             try store.write(teamsFile, to: paths.teamsJSON)
         }
+        if stateNeedsWrite {
+            try store.write(state, to: paths.workFolderJSON)
+        }
+
+        return deferredTeamIDs
     }
 
     func bootstrapIfNeeded(paths: NTMSPaths, workFolderRoot: URL) throws {
@@ -143,7 +196,7 @@ extension NTMSRepository {
         }
 
         let stateDefault = WorkFolderState(
-            schemaVersion: 5,
+            schemaVersion: 6,
             id: UUID(),
             name: workFolderRoot.lastPathComponent
         )

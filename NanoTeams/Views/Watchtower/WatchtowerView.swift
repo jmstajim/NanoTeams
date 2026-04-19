@@ -7,6 +7,7 @@ struct WatchtowerView: View {
     @Environment(NTMSOrchestrator.self) var store
     @Environment(OrchestratorEngineState.self) var engineState
     @Environment(StoreConfiguration.self) var config
+    @Environment(AppUpdateState.self) var appUpdateState
     var taskState: TaskManagementState
     @Binding var navigationSelection: MainLayoutView.NavigationItem?
     @Binding var clearedUpToDate: Date?
@@ -23,6 +24,19 @@ struct WatchtowerView: View {
 
                 // Quick actions section
                 quickActionsSection
+
+                if let release = appUpdateState.availableRelease {
+                    WatchtowerAppUpdateCard(
+                        release: release,
+                        onUpdate: {
+                            NSWorkspace.shared.open(release.htmlURL)
+                        },
+                        onSkip: {
+                            appUpdateState.skip(release.tag)
+                        }
+                    )
+                    .transition(.scale(scale: 0.95, anchor: .center).combined(with: .opacity))
+                }
 
                 // Notification banners (from all loaded tasks)
                 if !cachedNotifications.isEmpty {
@@ -333,9 +347,11 @@ struct WatchtowerView: View {
 
 #Preview {
     @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var appUpdateState = AppUpdateState(config: StoreConfiguration())
     WatchtowerView(taskState: TaskManagementState(), navigationSelection: .constant(.watchtower), clearedUpToDate: .constant(nil))
         .environment(store)
         .environment(store.engineState)
-        .environment(StoreConfiguration())
+        .environment(store.configuration)
+        .environment(appUpdateState)
         .frame(width: 600, height: 700)
 }

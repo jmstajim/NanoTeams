@@ -40,6 +40,12 @@ struct RoleEditorLLMTab: View {
                             Text(model).tag(model)
                         }
                     }
+
+                    if let fetchError = editorState.llmModelFetchError {
+                        Text(fetchError)
+                            .font(.caption)
+                            .foregroundStyle(Colors.error)
+                    }
                 }
             } header: {
                 Text("LLM Override")
@@ -61,10 +67,13 @@ struct RoleEditorLLMTab: View {
             provider: .lmStudio,
             baseURLString: editorState.llmBaseURL.isEmpty ? nil : editorState.llmBaseURL
         )
+        editorState.llmModelFetchError = nil
         do {
             editorState.availableModels = try await client.fetchModels(config: fetchConfig, visionOnly: false)
         } catch {
-            // Keep existing list if fetch fails
+            // Existing list is preserved; surface the reason so the user knows
+            // why the picker didn't refresh after editing the URL.
+            editorState.llmModelFetchError = "Could not fetch models: \(error.localizedDescription)"
         }
     }
 }

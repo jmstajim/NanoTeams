@@ -145,8 +145,8 @@ struct GeneratedTeamConfig: Codable, Hashable {
         var decodedSupervisorRequires = try c.decodeIfPresent([String].self, forKey: .supervisorRequires) ?? []
 
         // Auto-synthesize artifacts from role outputs when the top-level list is
-        // missing/incomplete. Some models (qwen3.5-9b-mlx) drop the `artifacts`
-        // field entirely, leaving every `produces_artifacts` entry as an orphan.
+        // missing/incomplete. Some models drop the `artifacts` field entirely,
+        // leaving every `produces_artifacts` entry as an orphan.
         // Stub description borrows the first sentence of the producing role's
         // prompt — keeps the language matched to the rest of the team and gives
         // the supervisor at least some context about what the artifact contains.
@@ -187,13 +187,12 @@ struct GeneratedTeamConfig: Codable, Hashable {
         // Auto-rewrite phantom inputs to the implicit Supervisor Task. Two variants:
         //   1. Translation aliasing — non-English models emit a translated
         //      `"Supervisor Task"` (e.g. Russian → "Задача Супервизора") which
-        //      isn't declared in `artifacts[]`. Captured on qwen session 5.
-        //   2. Declared-but-unproduced artifact — the model declares `Workflow
-        //      Audit` in `artifacts[]` AND as a consumer's `requires_artifacts`,
-        //      but NO role produces it. Previously slipped past the rewrite
-        //      because the artifact WAS declared; at runtime the consuming role
-        //      would stall forever. Observed on `vague-short` (gemma session 8)
-        //      and `non-engineering-production` (session 9).
+        //      isn't declared in `artifacts[]`.
+        //   2. Declared-but-unproduced artifact — the model declares an artifact
+        //      AND lists it as a consumer's `requires_artifacts`, but NO role
+        //      produces it. Previously slipped past the rewrite because the
+        //      artifact WAS declared; at runtime the consuming role would stall
+        //      forever.
         // Narrowing `producers` to "roles only" (not declared artifacts) catches
         // both cases with the same rule: if no role actually produces this name,
         // the consumer can't wait for it, so redirect to the Supervisor brief.

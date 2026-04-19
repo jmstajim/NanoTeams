@@ -161,4 +161,39 @@ enum TeamGraphLayoutCalculator {
 
         return TeamGraphLayout(nodePositions: positions)
     }
+
+    /// Preserve existing node positions for roles already in `existing.nodePositions`;
+    /// compute auto-positions for any role missing from the layout. Used by the
+    /// version-bump reconcile pass so newly-added system roles get sensible
+    /// placement without disturbing positions the user may have dragged manually.
+    ///
+    /// - Roles absent from `roles` have their stored positions discarded (clean-up).
+    /// - Newly-added roles are placed via `autoLayout(for:)` and merged into the
+    ///   existing positions. If the new role already has a position, it's kept.
+    static func mergeLayout(existing: TeamGraphLayout, roles: [TeamRoleDefinition]) -> TeamGraphLayout {
+        let existingIDs = Set(existing.nodePositions.map(\.roleID))
+        let roleIDs = Set(roles.map(\.id))
+        let missingIDs = roleIDs.subtracting(existingIDs)
+
+        // Fast path: nothing missing, nothing stale — return existing verbatim.
+        let staleIDs = existingIDs.subtracting(roleIDs)
+        if missingIDs.isEmpty && staleIDs.isEmpty {
+            return existing
+        }
+
+        var merged = existing
+        // Drop positions for roles that no longer exist.
+        merged.nodePositions.removeAll { !roleIDs.contains($0.roleID) }
+
+        guard !missingIDs.isEmpty else { return merged }
+
+        // Compute auto-positions for the full role set, then keep only the
+        // entries for missing roles. This respects dependency depth for new
+        // arrivals without rewriting positions of pre-existing nodes.
+        let fullAuto = autoLayout(for: roles)
+        for pos in fullAuto.nodePositions where missingIDs.contains(pos.roleID) {
+            merged.nodePositions.append(pos)
+        }
+        return merged
+    }
 }

@@ -65,12 +65,28 @@ extension LLMExecutionService {
         }
 
         // Harmony markers were detected but parsing failed — the model attempted a tool
-        // call with broken JSON (most commonly a missing closing brace). Give targeted
-        // feedback so it can self-correct. Must be checked BEFORE the generic "only tokens"
-        // branch: the pre-marker text is usually just whitespace, which would otherwise
-        // match the tokens-only case and send a misleading retry message.
+        // call the parser couldn't extract. Classify *why*: broken JSON vs. valid JSON
+        // without a top-level `name` (the `{"arguments":{…}}` shape some models emit).
+        // Sending the wrong nudge burns retries on a defect the model can't fix.
+        // Must be checked BEFORE the generic "only tokens" branch — pre-marker text is
+        // usually whitespace that would otherwise match tokens-only and send an
+        // unrelated retry.
         if result.sawHarmonyMarker {
-            let retryMessage = "Your previous tool call had malformed JSON and could not be parsed (e.g. a missing closing brace `}`, an unescaped quote inside a string, or a trailing comma). Retry with valid JSON, e.g. `<|call|>{\"name\":\"TOOL_NAME\",\"arguments\":{…}}<|end|>` — note the two closing braces before `<|end|>`."
+            let issue = ToolCallParsingHelpers.classifyHarmonyCallIssue(in: result.assistantContent)
+            let retryMessage: String
+            switch issue {
+            case .missingToolName(let inferredToolName):
+                let example = inferredToolName ?? "TOOL_NAME"
+                retryMessage = """
+                Your tool call JSON parsed, but it is missing the top-level `name` field. \
+                The top-level `name` identifies the tool to call (e.g. "create_artifact", \
+                "write_file", "ask_supervisor"); the `name` inside `arguments` is a tool \
+                *parameter* (e.g. the artifact name for create_artifact). Retry with:
+                `<|call|>{"name":"\(example)","arguments":{…}}<|end|>`
+                """
+            case .malformedJSON:
+                retryMessage = "Your previous tool call had malformed JSON and could not be parsed (e.g. a missing closing brace `}`, an unescaped quote inside a string, or a trailing comma). Retry with valid JSON, e.g. `<|call|>{\"name\":\"TOOL_NAME\",\"arguments\":{…}}<|end|>` — note the two closing braces before `<|end|>`."
+            }
             conversationMessages.append(
                 ChatMessage(role: .user, content: retryMessage)
             )
@@ -178,6 +194,11 @@ extension LLMExecutionService {
                 executionStates[stepID]?.originalSystemPrompt = systemMsg.content
             }
 
+            // Planning-phase prompt intentionally omits an inline tool-call example:
+            // `buildToolSchemaSection` already appends a single `## Tool Calling`
+            // block (with the Harmony format + a concrete example) to every system
+            // prompt, and a second inline example in a different syntax produces
+            // mixed-format output on smaller models.
             let planningSystemPrompt = """
             You are \(roleForMessage.displayName).
 
@@ -185,15 +206,11 @@ extension LLMExecutionService {
             ==============
             Before starting work, create your plan.
 
-            Call update_scratchpad(content: "...") with a numbered list of steps you will take.
-
-            Example:
-            update_scratchpad(content: \"\"\"
+            Call `update_scratchpad` with a numbered list of steps you will take, for example:
             1. Review the requirements
             2. Research relevant context
             3. Create an outline
             4. Produce the deliverable
-            \"\"\")
 
             This is the only tool available now. After you create your plan, you will have access to all your tools.
             """

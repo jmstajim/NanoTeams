@@ -56,6 +56,12 @@ extension NTMSOrchestrator {
             if let activeTask = self.activeTask, let lastRun = activeTask.runs.last {
                 syncEngineStateFromRun(taskID: activeTask.id, run: lastRun)
             }
+
+            if !snapshot.deferredReconcileTeamIDs.isEmpty {
+                let count = snapshot.deferredReconcileTeamIDs.count
+                let noun = count == 1 ? "team" : "teams"
+                lastInfoMessage = "Bundled updates deferred for \(count) \(noun) — will retry on next open."
+            }
         } catch {
             self.lastErrorMessage = error.localizedDescription
         }

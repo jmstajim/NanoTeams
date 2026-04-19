@@ -19,7 +19,8 @@ extension LLMExecutionService {
             baseURLString: override.baseURLString ?? globalConfig.baseURLString,
             modelName: override.modelName ?? globalConfig.modelName,
             maxTokens: override.maxTokens ?? globalConfig.maxTokens,
-            temperature: override.temperature ?? globalConfig.temperature
+            temperature: override.temperature ?? globalConfig.temperature,
+            requestTimeoutSeconds: globalConfig.requestTimeoutSeconds
         )
     }
 

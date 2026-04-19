@@ -20,15 +20,26 @@ struct WorkFolderState: Codable, Hashable {
     var updatedAt: Date
     var activeTeamID: NTMSID?
     var activeTaskID: Int?
+    /// App version (CFBundleShortVersionString) at the time this folder was last
+    /// reconciled against bundled content. Empty string means reconcile has never
+    /// run for this folder. Compared to current app version to decide if
+    /// `applyBundledContentUpdates` should execute on open.
+    var lastAppliedAppVersion: String
+    /// Template IDs that the user explicitly deleted. Prevents bootstrap from
+    /// re-adding these on next open and prevents version-bump reconcile from
+    /// resurrecting them. Cleared by "Restore Default Teams".
+    var deletedTeamTemplateIDs: [String]
 
     init(
-        schemaVersion: Int = 5,
+        schemaVersion: Int = 6,
         id: UUID = UUID(),
         name: String,
         createdAt: Date = MonotonicClock.shared.now(),
         updatedAt: Date = MonotonicClock.shared.now(),
         activeTeamID: NTMSID? = nil,
-        activeTaskID: Int? = nil
+        activeTaskID: Int? = nil,
+        lastAppliedAppVersion: String = "",
+        deletedTeamTemplateIDs: [String] = []
     ) {
         self.schemaVersion = schemaVersion
         self.id = id
@@ -37,6 +48,8 @@ struct WorkFolderState: Codable, Hashable {
         self.updatedAt = updatedAt
         self.activeTeamID = activeTeamID
         self.activeTaskID = activeTaskID
+        self.lastAppliedAppVersion = lastAppliedAppVersion
+        self.deletedTeamTemplateIDs = deletedTeamTemplateIDs
     }
 
     // Forward-compatible decoding: any missing field falls back to a sensible
@@ -51,6 +64,8 @@ struct WorkFolderState: Codable, Hashable {
         self.updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? MonotonicClock.shared.now()
         self.activeTeamID = try c.decodeIfPresent(NTMSID.self, forKey: .activeTeamID)
         self.activeTaskID = try c.decodeIfPresent(Int.self, forKey: .activeTaskID)
+        self.lastAppliedAppVersion = try c.decodeIfPresent(String.self, forKey: .lastAppliedAppVersion) ?? ""
+        self.deletedTeamTemplateIDs = try c.decodeIfPresent([String].self, forKey: .deletedTeamTemplateIDs) ?? []
     }
 }
 

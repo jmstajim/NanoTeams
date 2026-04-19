@@ -67,9 +67,19 @@ extension NTMSOrchestrator {
         // 2. Call TeamGenerationService in the background.
         let generationResult: Result<GeneratedTeamBuilder.BuildResult, Error>
         do {
-            let buildResult = try await TeamGenerationService.generate(
+            let effectiveConfig = LLMExecutionService.buildEffectiveConfig(
+                globalConfig: globalLLMConfig,
+                roleOverride: configuration.teamGenLLMOverride
+            )
+            let raw = try await TeamGenerationService.generate(
                 taskDescription: taskDescription,
-                config: globalLLMConfig
+                config: effectiveConfig,
+                systemPrompt: configuration.teamGenSystemPromptOrNil
+            )
+            let buildResult = GeneratedTeamBuilder.applyForcedDefaults(
+                to: raw,
+                supervisorMode: configuration.teamGenForcedSupervisorMode,
+                acceptanceMode: configuration.teamGenForcedAcceptanceMode
             )
             generationResult = .success(buildResult)
         } catch {

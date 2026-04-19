@@ -47,6 +47,12 @@ struct NativeLMStudioClient: LLMClient {
                     var request = URLRequest(url: url)
                     request.httpMethod = "POST"
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    // Reasoning/MoE models can spend minutes producing the first token on
+                    // large prompts. URLRequest's 60s default would otherwise cause the
+                    // request to time out before any content arrives. 0 = wait indefinitely.
+                    request.timeoutInterval = config.requestTimeoutSeconds > 0
+                        ? TimeInterval(config.requestTimeoutSeconds)
+                        : TimeInterval(Int32.max)
 
                     let payload = Self.buildRequest(
                         config: config,

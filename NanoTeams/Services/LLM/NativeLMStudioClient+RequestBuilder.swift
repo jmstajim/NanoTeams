@@ -105,8 +105,20 @@ extension NativeLMStudioClient {
 
     private static func buildToolSchemaSection(tools: [ToolSchema]) -> String {
         var block = "## Tool Calling\n\n"
-        block += "Call tools using this format:\n"
+        block += "Call tools using this Harmony format:\n"
         block += "<|call|>{\"name\":\"TOOL_NAME\",\"arguments\":{...}}<|end|>\n\n"
+        // Concrete example resolves a dual-`name` confusion: when a tool's
+        // parameter is also called `name` (create_artifact.name = artifact
+        // name), some models drop the outer `name` and emit
+        // `{"arguments":{"name":...}}` by itself. Showing both levels filled
+        // in pins the distinction.
+        block += "Example:\n"
+        block += "<|call|>{\"name\":\"create_artifact\","
+        block += "\"arguments\":{\"name\":\"Product Requirements\","
+        block += "\"content\":\"...\",\"format\":\"markdown\"}}<|end|>\n\n"
+        block += "The top-level `name` is the tool id. "
+        block += "If a tool parameter is also called `name`, it goes inside `arguments` — "
+        block += "the top-level `name` must always be the tool id, never the parameter value.\n\n"
         block += "### Available Tools\n\n"
 
         let encoder = JSONCoderFactory.makeDisplayEncoder()

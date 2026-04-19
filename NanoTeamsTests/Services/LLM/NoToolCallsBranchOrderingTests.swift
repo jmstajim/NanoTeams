@@ -271,6 +271,66 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
         )
     }
 
+    // MARK: - Missing Tool Name Nudge (Run 13 regression)
+
+    /// Run 13: `qwen3.6-35b-a3b-nvfp4` emitted `<|call|>{"arguments":{…}}<|end|>`
+    /// with syntactically valid JSON but no top-level `name`. The old nudge said
+    /// "malformed JSON" and pointed at braces/quotes/commas — the model had no
+    /// idea how to fix a problem it didn't have, and looped. The new nudge must
+    /// identify "missing top-level `name`" specifically and show the inferred
+    /// tool in the retry example so the model can self-correct.
+    func testHarmonyMarkerMissingToolName_sendsSpecificNudgeWithInferredTool() async {
+        let qwenResponse = "[reasoning]\nI will create the artifact now.\n[/reasoning]\n\n<|call|>{\"arguments\":{\"content\":\"PRD\",\"format\":\"markdown\",\"name\":\"Product Requirements\"}}<|end|>"
+        var messages: [ChatMessage] = []
+        let stop = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: qwenResponse,
+            sawHarmonyMarker: true,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages
+        )
+        guard case .continueLoop = stop else {
+            XCTFail("Expected .continueLoop, got \(stop)")
+            return
+        }
+        XCTAssertEqual(messages.count, 1)
+        let retry = messages[0].content ?? ""
+        XCTAssertTrue(
+            retry.contains("missing the top-level `name` field"),
+            "Expected missing-tool-name nudge, got: \(retry)"
+        )
+        XCTAssertTrue(
+            retry.contains("create_artifact"),
+            "Inferred tool name must appear in the retry example, got: \(retry)"
+        )
+        XCTAssertFalse(
+            retry.contains("missing closing brace"),
+            "Must NOT blame 'malformed JSON' when the JSON parsed fine"
+        )
+    }
+
+    /// Ambiguous argument shape (no `format`, not recognisable as any specific tool):
+    /// the classifier still reports `.missingToolName` but with no inferred tool —
+    /// the nudge uses the generic `TOOL_NAME` placeholder.
+    func testHarmonyMarkerMissingToolName_unknownShape_usesPlaceholder() async {
+        var messages: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "<|call|>{\"arguments\":{\"foo\":\"bar\"}}<|end|>",
+            sawHarmonyMarker: true,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages
+        )
+        let retry = messages[0].content ?? ""
+        XCTAssertTrue(retry.contains("missing the top-level `name` field"))
+        XCTAssertTrue(
+            retry.contains("TOOL_NAME"),
+            "Generic placeholder must appear when no inference succeeded, got: \(retry)"
+        )
+    }
+
     /// Regression EA190834: UX Designer made up alias names ("CalculatorDesignSpec.md",
     /// "DesignSpec.md", "design_spec.md") chasing the missing-deliverables nudge because
     /// the message didn't show the exact name the system expected. Quote the names verbatim

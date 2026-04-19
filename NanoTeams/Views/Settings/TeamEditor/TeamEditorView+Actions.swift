@@ -38,9 +38,19 @@ extension TeamEditorView {
     /// `lastErrorMessage` after the workfolder mutate) as a sheet error.
     func handleGenerateTeam(taskDescription: String) async -> String? {
         do {
-            let buildResult = try await TeamGenerationService.generate(
+            let effectiveConfig = LLMExecutionService.buildEffectiveConfig(
+                globalConfig: store.globalLLMConfig,
+                roleOverride: store.configuration.teamGenLLMOverride
+            )
+            let raw = try await TeamGenerationService.generate(
                 taskDescription: taskDescription,
-                config: store.globalLLMConfig
+                config: effectiveConfig,
+                systemPrompt: store.configuration.teamGenSystemPromptOrNil
+            )
+            let buildResult = GeneratedTeamBuilder.applyForcedDefaults(
+                to: raw,
+                supervisorMode: store.configuration.teamGenForcedSupervisorMode,
+                acceptanceMode: store.configuration.teamGenForcedAcceptanceMode
             )
             let team = buildResult.team
             let priorError = store.lastErrorMessage
@@ -82,10 +92,10 @@ extension TeamEditorView {
 
         Task {
             await store.mutateWorkFolder { project in
-                project.teams.removeAll { $0.id == team.id }
-                if let firstTeam = project.teams.first {
-                    project.activeTeamID = firstTeam.id
-                }
+                // Routing through `removeTeam` records the template tombstone so
+                // subsequent `migrateIfNeeded` passes don't resurrect this team
+                // on the next open or on version bump.
+                project.removeTeam(team.id)
             }
         }
     }
@@ -102,6 +112,13 @@ extension TeamEditorView {
                     } else {
                         project.teams.append(defaultTeam)
                     }
+                }
+                // Restore erases all tombstones so users can explicitly undo any
+                // prior deletions (team/role/artifact) they may have made.
+                project.state.deletedTeamTemplateIDs = []
+                for i in project.teams.indices {
+                    project.teams[i].deletedSystemRoleIDs = []
+                    project.teams[i].deletedSystemArtifactIDs = []
                 }
             }
         }

@@ -12,14 +12,18 @@ struct SettingsView: View {
         case workFolder = "Work Folder"
         case general = "General"
         case teams = "Teams"
+        case generateTeam = "Generate Team"
         case tools = "Tools"
         case help = "Help"
+        case updates = "Updates"
 
         var id: String { rawValue }
 
         private static let iconMap: [SettingsTab: String] = [
             .llm: "brain", .workFolder: "folder", .general: "gearshape",
-            .teams: "rectangle.3.group", .tools: "wrench.and.screwdriver", .help: "questionmark.circle",
+            .teams: "rectangle.3.group", .generateTeam: "wand.and.stars",
+            .tools: "wrench.and.screwdriver", .help: "questionmark.circle",
+            .updates: "sparkles",
         ]
 
         var icon: String { Self.iconMap[self] ?? "questionmark" }
@@ -46,9 +50,9 @@ struct SettingsView: View {
 
     private var settingsSidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
-            settingsSection("Configuration", tabs: [.llm, .workFolder, .general])
-            settingsSection("Team", tabs: [.teams, .tools])
-            settingsSection("Support", tabs: [.help])
+            settingsSection("Configuration", tabs: [.general, .llm, .workFolder])
+            settingsSection("Team", tabs: [.teams, .generateTeam, .tools])
+            settingsSection("Support", tabs: [.help, .updates])
             Spacer()
         }
         .padding(.top, Spacing.standard)
@@ -90,12 +94,18 @@ struct SettingsView: View {
         case .teams:
             TeamEditorView()
                 .navigationTitle(SettingsTab.teams.rawValue)
+        case .generateTeam:
+            GenerateTeamSettingsView()
+                .navigationTitle(SettingsTab.generateTeam.rawValue)
         case .tools:
             ToolDefinitionEditorView()
                 .navigationTitle(SettingsTab.tools.rawValue)
         case .help:
             HelpSettingsView()
                 .navigationTitle(SettingsTab.help.rawValue)
+        case .updates:
+            UpdatesSettingsView()
+                .navigationTitle(SettingsTab.updates.rawValue)
         }
     }
 

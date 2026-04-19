@@ -16,6 +16,39 @@ protocol ConfigurationStorage {
 
 extension UserDefaults: ConfigurationStorage {}
 
+// MARK: - App Update Check Interval
+
+/// User-selected cadence for the background "is there a newer NanoTeams release?"
+/// check. The user-initiated "Check for Updates" button bypasses this entirely
+/// — `force == true` always fires the network call regardless of the setting.
+enum AppUpdateCheckInterval: String, CaseIterable, Identifiable, Codable, Hashable {
+    case daily, weekly, biweekly, monthly, never
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .daily: return "Daily"
+        case .weekly: return "Weekly"
+        case .biweekly: return "Every 2 weeks"
+        case .monthly: return "Monthly"
+        case .never: return "Never"
+        }
+    }
+
+    /// `nil` means background checks are disabled; the user can still trigger
+    /// a forced check from the Updates settings tab.
+    var seconds: TimeInterval? {
+        switch self {
+        case .daily: return 86_400
+        case .weekly: return 7 * 86_400
+        case .biweekly: return 14 * 86_400
+        case .monthly: return 30 * 86_400
+        case .never: return nil
+        }
+    }
+}
+
 // MARK: - Store Configuration
 
 /// Manages UserDefaults-backed configuration settings for the store.
@@ -137,7 +170,8 @@ final class StoreConfiguration {
             provider: llmProvider,
             baseURLString: visionBaseURLString.isEmpty ? llmBaseURLString : visionBaseURLString,
             modelName: visionModelName,
-            maxTokens: visionMaxTokens
+            maxTokens: visionMaxTokens,
+            requestTimeoutSeconds: llmRequestTimeoutSeconds
         )
     }
 
@@ -153,6 +187,116 @@ final class StoreConfiguration {
         }
     }
 
+    /// Streaming HTTP request timeout in seconds. 0 = no timeout (wait indefinitely).
+    /// Applied to every streaming LLM call.
+    var llmRequestTimeoutSeconds: Int {
+        didSet {
+            if llmRequestTimeoutSeconds < 0 {
+                llmRequestTimeoutSeconds = 0
+                return
+            }
+            storage.set(llmRequestTimeoutSeconds, forKey: Keys.llmRequestTimeoutSeconds)
+        }
+    }
+
+    // MARK: - Team Generation
+
+    /// Per-team-generation LLM override. nil = use global config.
+    var teamGenLLMOverride: LLMOverride? {
+        didSet {
+            if let o = teamGenLLMOverride, !o.isEmpty,
+               let data = try? JSONCoderFactory.makePersistenceEncoder().encode(o) {
+                storage.set(data, forKey: Keys.teamGenLLMOverride)
+            } else {
+                storage.removeObject(forKey: Keys.teamGenLLMOverride)
+            }
+        }
+    }
+
+    /// Custom system prompt for team generation. Empty = use built-in default.
+    var teamGenSystemPrompt: String {
+        didSet {
+            if teamGenSystemPrompt.isEmpty {
+                storage.removeObject(forKey: Keys.teamGenSystemPrompt)
+            } else {
+                storage.set(teamGenSystemPrompt, forKey: Keys.teamGenSystemPrompt)
+            }
+        }
+    }
+
+    /// Trimmed prompt or nil when empty — passed to `TeamGenerationService.generate`.
+    var teamGenSystemPromptOrNil: String? {
+        let t = teamGenSystemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? nil : t
+    }
+
+    /// Forced supervisor mode applied post-generation. nil = use whatever the LLM chose.
+    var teamGenForcedSupervisorMode: SupervisorMode? {
+        didSet {
+            if let v = teamGenForcedSupervisorMode {
+                storage.set(v.rawValue, forKey: Keys.teamGenForcedSupervisorMode)
+            } else {
+                storage.removeObject(forKey: Keys.teamGenForcedSupervisorMode)
+            }
+        }
+    }
+
+    /// Forced acceptance mode applied post-generation. nil = use whatever the LLM chose.
+    var teamGenForcedAcceptanceMode: AcceptanceMode? {
+        didSet {
+            if let v = teamGenForcedAcceptanceMode {
+                storage.set(v.rawValue, forKey: Keys.teamGenForcedAcceptanceMode)
+            } else {
+                storage.removeObject(forKey: Keys.teamGenForcedAcceptanceMode)
+            }
+        }
+    }
+
+    // MARK: - App Update
+
+    /// Timestamp of the last successful GitHub releases check. Used to throttle
+    /// the weekly automatic refresh; nil means "never checked".
+    var lastAppUpdateCheckAt: Date? {
+        didSet {
+            if let date = lastAppUpdateCheckAt {
+                storage.set(date, forKey: Keys.lastAppUpdateCheckAt)
+            } else {
+                storage.removeObject(forKey: Keys.lastAppUpdateCheckAt)
+            }
+        }
+    }
+
+    /// Release tags the user dismissed via the Watchtower app-update card.
+    var skippedAppUpdateTags: Set<String> {
+        didSet {
+            storage.set(Array(skippedAppUpdateTags), forKey: Keys.skippedAppUpdateTags)
+        }
+    }
+
+    /// Last successfully-fetched release payload, persisted so the Watchtower
+    /// card re-appears on relaunch within the weekly throttle window (otherwise
+    /// `refresh()` skips the network call and `availableRelease` stays nil).
+    /// Cleared when the user skips the tag or when the check yields no newer
+    /// release.
+    var cachedAppUpdateRelease: AppUpdateChecker.Release? {
+        didSet {
+            if let release = cachedAppUpdateRelease,
+               let data = try? JSONCoderFactory.makePersistenceEncoder().encode(release)
+            {
+                storage.set(data, forKey: Keys.cachedAppUpdateRelease)
+            } else {
+                storage.removeObject(forKey: Keys.cachedAppUpdateRelease)
+            }
+        }
+    }
+
+    /// User-selected cadence for the background app-update probe.
+    var appUpdateCheckInterval: AppUpdateCheckInterval {
+        didSet {
+            storage.set(appUpdateCheckInterval.rawValue, forKey: Keys.appUpdateCheckInterval)
+        }
+    }
+
     private enum Keys {
         static let llmProvider = "llmProvider"
         static let llmBaseURL = UserDefaultsKeys.llmBaseURL
@@ -164,6 +308,7 @@ final class StoreConfiguration {
         static let artifactsExpandedByDefault = UserDefaultsKeys.artifactsExpandedByDefault
         static let debugModeEnabled = UserDefaultsKeys.debugModeEnabled
         static let maxLLMRetries = UserDefaultsKeys.maxLLMRetries
+        static let llmRequestTimeoutSeconds = UserDefaultsKeys.llmRequestTimeoutSeconds
         static let timelineClearedUpToDate = UserDefaultsKeys.timelineClearedUpToDate
         static let visionModelName = UserDefaultsKeys.visionModelName
         static let visionBaseURL = UserDefaultsKeys.visionBaseURL
@@ -173,6 +318,14 @@ final class StoreConfiguration {
         static let embedFilesInPrompt = UserDefaultsKeys.quickCaptureEmbedFiles
         static let loggingEnabled = UserDefaultsKeys.loggingEnabled
         static let sidebarTaskFilter = UserDefaultsKeys.sidebarTaskFilter
+        static let teamGenLLMOverride = UserDefaultsKeys.teamGenLLMOverride
+        static let teamGenSystemPrompt = UserDefaultsKeys.teamGenSystemPrompt
+        static let teamGenForcedSupervisorMode = UserDefaultsKeys.teamGenForcedSupervisorMode
+        static let teamGenForcedAcceptanceMode = UserDefaultsKeys.teamGenForcedAcceptanceMode
+        static let lastAppUpdateCheckAt = UserDefaultsKeys.lastAppUpdateCheckAt
+        static let skippedAppUpdateTags = UserDefaultsKeys.skippedAppUpdateTags
+        static let cachedAppUpdateRelease = UserDefaultsKeys.cachedAppUpdateRelease
+        static let appUpdateCheckInterval = UserDefaultsKeys.appUpdateCheckInterval
     }
 
     init(storage: any ConfigurationStorage = UserDefaults.standard) {
@@ -194,12 +347,37 @@ final class StoreConfiguration {
         self.sidebarTaskFilter = storage.string(forKey: Keys.sidebarTaskFilter)
             .flatMap(TaskFilter.init(rawValue:)) ?? .all
         self.maxLLMRetries = (storage.object(forKey: Keys.maxLLMRetries) as? Int) ?? LLMConstants.defaultMaxLLMRetries
+        self.llmRequestTimeoutSeconds = (storage.object(forKey: Keys.llmRequestTimeoutSeconds) as? Int) ?? LLMConstants.defaultLLMRequestTimeoutSeconds
         self.timelineClearedUpToDate = storage.object(forKey: Keys.timelineClearedUpToDate) as? Date
         self.visionModelName = storage.string(forKey: Keys.visionModelName) ?? ""
         self.visionBaseURLString = storage.string(forKey: Keys.visionBaseURL) ?? ""
         self.visionMaxTokens = (storage.object(forKey: Keys.visionMaxTokens) as? Int) ?? 0
         let rawIDs = (storage.object(forKey: Keys.dismissedNotificationIDs) as? [String]) ?? []
         self.dismissedNotificationIDs = Set(rawIDs)
+        if let data = storage.data(forKey: Keys.teamGenLLMOverride),
+           let decoded = try? JSONCoderFactory.makeDateDecoder().decode(LLMOverride.self, from: data),
+           !decoded.isEmpty {
+            self.teamGenLLMOverride = decoded
+        } else {
+            self.teamGenLLMOverride = nil
+        }
+        self.teamGenSystemPrompt = storage.string(forKey: Keys.teamGenSystemPrompt) ?? ""
+        self.teamGenForcedSupervisorMode = storage.string(forKey: Keys.teamGenForcedSupervisorMode)
+            .flatMap(SupervisorMode.init(rawValue:))
+        self.teamGenForcedAcceptanceMode = storage.string(forKey: Keys.teamGenForcedAcceptanceMode)
+            .flatMap(AcceptanceMode.init(rawValue:))
+        self.lastAppUpdateCheckAt = storage.object(forKey: Keys.lastAppUpdateCheckAt) as? Date
+        let rawSkippedTags = (storage.object(forKey: Keys.skippedAppUpdateTags) as? [String]) ?? []
+        self.skippedAppUpdateTags = Set(rawSkippedTags)
+        if let data = storage.data(forKey: Keys.cachedAppUpdateRelease),
+           let decoded = try? JSONCoderFactory.makeDateDecoder().decode(AppUpdateChecker.Release.self, from: data)
+        {
+            self.cachedAppUpdateRelease = decoded
+        } else {
+            self.cachedAppUpdateRelease = nil
+        }
+        self.appUpdateCheckInterval = storage.string(forKey: Keys.appUpdateCheckInterval)
+            .flatMap(AppUpdateCheckInterval.init(rawValue:)) ?? .weekly
     }
 
     // MARK: - Reset
@@ -218,11 +396,20 @@ final class StoreConfiguration {
         storage.removeObject(forKey: Keys.debugModeEnabled)
         storage.removeObject(forKey: Keys.loggingEnabled)
         storage.removeObject(forKey: Keys.maxLLMRetries)
+        storage.removeObject(forKey: Keys.llmRequestTimeoutSeconds)
         storage.removeObject(forKey: Keys.visionModelName)
         storage.removeObject(forKey: Keys.visionBaseURL)
         storage.removeObject(forKey: Keys.visionMaxTokens)
         storage.removeObject(forKey: Keys.dismissedNotificationIDs)
         storage.removeObject(forKey: Keys.sidebarTaskFilter)
+        storage.removeObject(forKey: Keys.teamGenLLMOverride)
+        storage.removeObject(forKey: Keys.teamGenSystemPrompt)
+        storage.removeObject(forKey: Keys.teamGenForcedSupervisorMode)
+        storage.removeObject(forKey: Keys.teamGenForcedAcceptanceMode)
+        storage.removeObject(forKey: Keys.lastAppUpdateCheckAt)
+        storage.removeObject(forKey: Keys.skippedAppUpdateTags)
+        storage.removeObject(forKey: Keys.cachedAppUpdateRelease)
+        storage.removeObject(forKey: Keys.appUpdateCheckInterval)
 
         let provider = LLMProvider.lmStudio
         llmProvider = provider
@@ -238,11 +425,20 @@ final class StoreConfiguration {
         debugModeEnabled = false
         loggingEnabled = false
         maxLLMRetries = LLMConstants.defaultMaxLLMRetries
+        llmRequestTimeoutSeconds = LLMConstants.defaultLLMRequestTimeoutSeconds
         visionModelName = ""
         visionBaseURLString = ""
         visionMaxTokens = 0
         dismissedNotificationIDs = []
         sidebarTaskFilter = .all
+        teamGenLLMOverride = nil
+        teamGenSystemPrompt = ""
+        teamGenForcedSupervisorMode = nil
+        teamGenForcedAcceptanceMode = nil
+        lastAppUpdateCheckAt = nil
+        skippedAppUpdateTags = []
+        cachedAppUpdateRelease = nil
+        appUpdateCheckInterval = .weekly
     }
 
     // MARK: - Work Folder Path
@@ -273,7 +469,8 @@ final class StoreConfiguration {
             baseURLString: llmBaseURLString,
             modelName: llmModelName,
             maxTokens: llmMaxTokens,
-            temperature: llmTemperature
+            temperature: llmTemperature,
+            requestTimeoutSeconds: llmRequestTimeoutSeconds
         )
     }
     nonisolated deinit {}

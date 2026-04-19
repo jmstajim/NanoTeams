@@ -299,7 +299,7 @@ final class AtomicJSONStoreTests: XCTestCase {
         let loaded = try store.read(WorkFolderState.self, from: testURL)
         XCTAssertEqual(loaded.name, state.name)
         XCTAssertEqual(loaded.activeTaskID, state.activeTaskID)
-        XCTAssertEqual(loaded.schemaVersion, 5)
+        XCTAssertEqual(loaded.schemaVersion, 6)
     }
 
     func testWriteAndReadProjectSettings() throws {

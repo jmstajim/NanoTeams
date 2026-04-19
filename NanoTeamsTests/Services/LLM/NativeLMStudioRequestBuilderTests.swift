@@ -75,6 +75,39 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
         XCTAssertTrue(request.systemPrompt!.contains("Read a file"))
     }
 
+    /// Run 13 regression: the tool-calling block must show a concrete example
+    /// with the dual-`name` pattern (top-level = tool id, inner = parameter)
+    /// so small models don't collapse both into one field. Pinning the structure
+    /// rather than exact wording so future tweaks stay possible.
+    func testBuildRequest_toolSchema_containsConcreteDualNameExample() {
+        let config = LLMConfig(provider: .lmStudio, baseURLString: "http://localhost:1234", modelName: "test-model")
+        let messages = [ChatMessage(role: .system, content: "Base prompt.")]
+        let tools = [
+            ToolSchema(name: "create_artifact", description: "Submit an artifact",
+                       parameters: .object(properties: [:])),
+        ]
+        let request = NativeLMStudioClient.buildRequest(
+            config: config, messages: messages, tools: tools, session: nil
+        )
+        let prompt = request.systemPrompt ?? ""
+        // Must show the example with `create_artifact` at top-level AND `name` inside arguments —
+        // both levels filled in — so the dual-`name` distinction is visible at a glance.
+        XCTAssertTrue(
+            prompt.contains("\"name\":\"create_artifact\""),
+            "Tool-calling example must show the top-level tool id literally, got:\n\(prompt)"
+        )
+        XCTAssertTrue(
+            prompt.contains("\"arguments\""),
+            "Tool-calling example must show `arguments` wrapper"
+        )
+        // A short explanation of top-level vs. inner `name` must accompany the example.
+        XCTAssertTrue(
+            prompt.lowercased().contains("top-level `name`") ||
+            prompt.lowercased().contains("top-level name"),
+            "Tool-calling block must explain that the top-level `name` is the tool id"
+        )
+    }
+
     func testBuildRequest_emptyTools_noToolSection() {
         let config = LLMConfig(provider: .lmStudio, baseURLString: "http://localhost:1234", modelName: "test-model")
         let messages = [

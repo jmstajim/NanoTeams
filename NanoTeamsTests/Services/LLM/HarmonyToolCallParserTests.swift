@@ -257,6 +257,107 @@ final class HarmonyToolCallParserTests: XCTestCase {
     }
 
 
+    // MARK: - Shape Inference for Missing Tool Name (Run 13 regression)
+
+    /// Run 13 evidence: `qwen3.6-35b-a3b-nvfp4` emitted
+    /// `<|call|>{"arguments":{"content":"…","format":"markdown","name":"Product Requirements"}}<|end|>`
+    /// — valid JSON but no top-level tool name. The `name` inside `arguments` is the
+    /// artifact name (a create_artifact parameter), not the tool identifier.
+    /// Shape inference on `format` recognises this unambiguously as create_artifact.
+    func testCallMarker_inferCreateArtifact_fromArgumentsWithFormat() {
+        let input = "<|call|>{\"arguments\":{\"content\":\"# Calc\\nBasic arithmetic\",\"format\":\"markdown\",\"name\":\"Product Requirements\"}}<|end|>"
+        let calls = CallMarkerStrategy().parse(from: input)
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(calls.first?.name, "create_artifact")
+        let args = calls.first?.argumentsJSON ?? ""
+        XCTAssertTrue(args.contains("\"name\":\"Product Requirements\""))
+        XCTAssertTrue(args.contains("\"content\":\"# Calc\\nBasic arithmetic\""))
+        XCTAssertTrue(args.contains("\"format\":\"markdown\""))
+    }
+
+    /// `format` is optional in the create_artifact schema. When Qwen omits it, the
+    /// fallback (both required fields present, no conflicting keys) still matches.
+    func testCallMarker_inferCreateArtifact_fromNameAndContentWithoutFormat() {
+        let input = "<|call|>{\"arguments\":{\"name\":\"Design Spec\",\"content\":\"Layout details\"}}<|end|>"
+        let calls = CallMarkerStrategy().parse(from: input)
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(calls.first?.name, "create_artifact")
+    }
+
+    /// Shape inference must NOT fire when the argument shape collides with another
+    /// tool. `{name, content, path}` could be misread as create_artifact + spurious
+    /// `path`, but the exclusive-key guard rejects it — `path` belongs to file tools.
+    func testCallMarker_inferToolShape_rejectsConflictingKeys() {
+        let input = "<|call|>{\"arguments\":{\"name\":\"X\",\"content\":\"Y\",\"path\":\"/tmp/f.md\"}}<|end|>"
+        let calls = CallMarkerStrategy().parse(from: input)
+        XCTAssertTrue(
+            calls.isEmpty,
+            "Ambiguous shape with both create_artifact (name+content) and file-tool (path) keys must not be inferred")
+    }
+
+    /// Plain write_file-shape arguments (without format, without name) must not be
+    /// misidentified as create_artifact. Inference stays conservative.
+    func testCallMarker_inferToolShape_doesNotInferWriteFile() {
+        let input = "<|call|>{\"arguments\":{\"path\":\"a.swift\",\"content\":\"print()\"}}<|end|>"
+        let calls = CallMarkerStrategy().parse(from: input)
+        XCTAssertTrue(
+            calls.isEmpty,
+            "write_file-shaped arguments must not be auto-inferred — keep inference limited to the one signal we've validated")
+    }
+
+    /// Regression: `format` alone must NOT infer create_artifact. If a future tool
+    /// adds a `format` parameter, inference would silently dispatch it as
+    /// create_artifact. The guard requires BOTH required create_artifact fields
+    /// (name + content) so that this kind of schema collision can't happen.
+    func testCallMarker_inferToolShape_rejectsFormatOnly() {
+        let input = "<|call|>{\"arguments\":{\"format\":\"markdown\"}}<|end|>"
+        let calls = CallMarkerStrategy().parse(from: input)
+        XCTAssertTrue(
+            calls.isEmpty,
+            "`format` alone must not be sufficient to infer create_artifact — would collide with any future tool adding a format param")
+    }
+
+    // MARK: - Harmony Call Issue Classifier (Run 13)
+
+    func testClassifyHarmonyCallIssue_missingToolName_qwenShape() {
+        let text = "reasoning blah\n\n<|call|>{\"arguments\":{\"content\":\"x\",\"format\":\"markdown\",\"name\":\"PR\"}}<|end|>"
+        let issue = ToolCallParsingHelpers.classifyHarmonyCallIssue(in: text)
+        guard case .missingToolName(let inferred) = issue else {
+            XCTFail("Expected .missingToolName, got \(issue)")
+            return
+        }
+        XCTAssertEqual(inferred, "create_artifact")
+    }
+
+    func testClassifyHarmonyCallIssue_missingToolName_noInferencePossible() {
+        // No `format`, and `content` is missing (so the name+content create_artifact
+        // fallback doesn't match either). Classifier still reports `.missingToolName`
+        // but with a nil inferred name so the nudge uses the generic placeholder.
+        let text = "<|call|>{\"arguments\":{\"foo\":\"bar\"}}<|end|>"
+        let issue = ToolCallParsingHelpers.classifyHarmonyCallIssue(in: text)
+        guard case .missingToolName(let inferred) = issue else {
+            XCTFail("Expected .missingToolName, got \(issue)")
+            return
+        }
+        XCTAssertNil(inferred)
+    }
+
+    func testClassifyHarmonyCallIssue_malformedJSON() {
+        // Unbalanced brace beyond salvage depth — parser gives up, classifier too.
+        let text = "<|call|>{\"arguments\":{\"foo\":{\"bar\":{\"baz\":{<|end|>"
+        let issue = ToolCallParsingHelpers.classifyHarmonyCallIssue(in: text)
+        XCTAssertEqual(issue, .malformedJSON)
+    }
+
+    func testClassifyHarmonyCallIssue_validToolName_reportsMalformed() {
+        // The call WOULD have parsed successfully. If we got here (handleNoToolCalls
+        // only runs when parsing produced nothing), the failure is elsewhere — fall
+        // back to the generic malformed message rather than falsely claim "missing name".
+        let text = "<|call|>{\"name\":\"read_file\",\"arguments\":{\"path\":\"x\"}}<|end|>"
+        let issue = ToolCallParsingHelpers.classifyHarmonyCallIssue(in: text)
+        XCTAssertEqual(issue, .malformedJSON)
+    }
+
     func testRobustnessWithRandomSpecialCharacters() {
         let parser = HarmonyToolCallParser()
 

@@ -40,10 +40,13 @@ struct NTMSRepository {
         let paths = try preparePaths(at: workFolderRoot)
 
         var (state, settings, teamsFile) = try loadOrRecoverFiles(paths: paths, workFolderRoot: workFolderRoot)
-        try migrateIfNeeded(teamsFile: &teamsFile, paths: paths)
+        let deferredReconcile = try migrateIfNeeded(teamsFile: &teamsFile, state: &state, paths: paths)
 
         let toolDefinitions = try loadToolDefinitions(paths: paths)
-        var tasksIndex = try store.read(TasksIndex.self, from: paths.tasksIndexJSON)
+        var tasksIndex: TasksIndex = try loadOrRecoverFile(
+            at: paths.tasksIndexJSON,
+            default: TasksIndex()
+        )
 
         var activeTask: NTMSTask?
         if let activeID = state.activeTaskID {
@@ -78,7 +81,8 @@ struct NTMSRepository {
             tasksIndex: tasksIndex,
             toolDefinitions: toolDefinitions,
             activeTaskID: state.activeTaskID,
-            activeTask: activeTask
+            activeTask: activeTask,
+            deferredReconcileTeamIDs: deferredReconcile
         )
     }
 
@@ -200,19 +204,15 @@ struct NTMSRepository {
         return index.tasks.first?.id
     }
 
+    /// Loads tool definitions from `tools.json`. Does NOT merge with bundled
+    /// defaults — that reconcile happens in `migrateIfNeeded` (on version bump)
+    /// and in `updateTools` (explicit user save). Seeds defaults only when the
+    /// file is missing (fresh bootstrap).
     func loadToolDefinitions(paths: NTMSPaths) throws -> [ToolDefinitionRecord] {
-        if !fileManager.fileExists(atPath: paths.toolsJSON.path) {
-            let defaults = ToolDefinitionRecord.defaultDefinitions()
-            try store.write(defaults, to: paths.toolsJSON)
-            return defaults
-        }
-
-        let stored = try store.read([ToolDefinitionRecord].self, from: paths.toolsJSON)
-        let merged = ToolDefinitionRecord.mergeWithDefaults(existing: stored)
-        if merged != stored {
-            try store.write(merged, to: paths.toolsJSON)
-        }
-        return merged
+        try loadOrRecoverFile(
+            at: paths.toolsJSON,
+            default: ToolDefinitionRecord.defaultDefinitions()
+        )
     }
 
     func resetWorkFolderSettings(at workFolderRoot: URL) throws -> WorkFolderContext {

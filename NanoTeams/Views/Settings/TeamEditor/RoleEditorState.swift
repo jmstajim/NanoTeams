@@ -38,6 +38,10 @@ struct RoleEditorState {
     var overrideMaxTokens: Int = 0
     var overrideTemperature: Double? = nil
     var availableModels: [String] = []
+    /// Populated when the override-model fetch fails. Cleared on every fetch
+    /// attempt; rendered in the LLM tab so the user knows why the picker is
+    /// stale instead of seeing nothing change.
+    var llmModelFetchError: String?
     var roleIconColor: String = "#FFFFFF"
     var roleIconBackground: String = "#007AFF"
     var activeSection: RoleSection = .general

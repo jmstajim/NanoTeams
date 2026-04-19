@@ -18,27 +18,51 @@ extension Notification.Name {
 
 @main
 struct NanoTeamsApp: App {
-    @State private var store = NTMSOrchestrator(repository: NTMSRepository())
+    /// True when the process is hosted by XCTest — skip heavy init to avoid crashes on CI.
+    private static let isRunningTests = NSClassFromString("XCTestCase") != nil
+
+    @State private var store: NTMSOrchestrator
     @State private var folderAccess = FolderAccessManager()
     @State private var llmStatusMonitor = LLMStatusMonitor()
+    @State private var appUpdateState: AppUpdateState
     @AppStorage(UserDefaultsKeys.appAppearance) private var appAppearance: AppAppearance = .system
+
+    init() {
+        // Explicit init so `AppUpdateState` can share the same `StoreConfiguration`
+        // instance that `NTMSOrchestrator` owns. SwiftUI's `@State` default-value
+        // initializers can't reference each other, so we build both here and
+        // inject via `State(initialValue:)`.
+        let orchestrator = NTMSOrchestrator(repository: NTMSRepository())
+        _store = State(initialValue: orchestrator)
+        _appUpdateState = State(initialValue: AppUpdateState(config: orchestrator.configuration))
+    }
 
     var body: some Scene {
         WindowGroup {
-            MainLayoutView()
-                .environment(store)
-                .environment(store.engineState)
-                .environment(store.configuration)
-                .environment(store.streamingPreviewManager)
-                .environment(folderAccess)
-                .environment(llmStatusMonitor)
-                .preferredColorScheme(appAppearance.colorScheme)
-                .onAppear {
-                    QuickCaptureController.shared.setup(store: store)
-                    llmStatusMonitor.startMonitoring(
-                        baseURLProvider: { store.configuration.llmBaseURLString }
-                    )
-                }
+            if Self.isRunningTests {
+                Color.clear
+            } else {
+                MainLayoutView()
+                    .environment(store)
+                    .environment(store.engineState)
+                    .environment(store.configuration)
+                    .environment(store.streamingPreviewManager)
+                    .environment(folderAccess)
+                    .environment(llmStatusMonitor)
+                    .environment(appUpdateState)
+                    .preferredColorScheme(appAppearance.colorScheme)
+                    .onAppear {
+                        QuickCaptureController.shared.setup(store: store)
+                        llmStatusMonitor.startMonitoring(
+                            baseURLProvider: { store.configuration.llmBaseURLString }
+                        )
+                    }
+                    .task {
+                        // Background GitHub releases probe — 24h throttled.
+                        // Silent on failure so offline users don't see banners.
+                        await appUpdateState.refresh()
+                    }
+            }
         }
         .defaultSize(
             width: WindowLayout.mainDefaultWidth,
@@ -120,6 +144,7 @@ struct NanoTeamsApp: App {
                 .environment(store.engineState)
                 .environment(store.configuration)
                 .environment(store.streamingPreviewManager)
+                .environment(appUpdateState)
         }
         .defaultSize(width: 1000, height: 700)
         .restorationBehavior(.disabled)

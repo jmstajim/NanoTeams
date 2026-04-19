@@ -46,6 +46,16 @@ struct Team: Codable, Identifiable {
     /// Visual layout of the team graph
     var graphLayout: TeamGraphLayout
 
+    /// System role IDs (`TeamRoleDefinition.systemRoleID`) that the user has
+    /// explicitly deleted from this team. Prevents version-bump reconcile from
+    /// resurrecting them. Cleared by "Restore Default Teams".
+    var deletedSystemRoleIDs: [String]
+
+    /// System artifact IDs (`TeamArtifact.id`) that the user has explicitly deleted
+    /// from this team. Prevents version-bump reconcile from resurrecting them.
+    /// Cleared by "Restore Default Teams".
+    var deletedSystemArtifactIDs: [String]
+
     // MARK: - Initialization
 
     init(
@@ -61,7 +71,9 @@ struct Team: Codable, Identifiable {
         roles: [TeamRoleDefinition],
         artifacts: [TeamArtifact],
         settings: TeamSettings,
-        graphLayout: TeamGraphLayout
+        graphLayout: TeamGraphLayout,
+        deletedSystemRoleIDs: [String] = [],
+        deletedSystemArtifactIDs: [String] = []
     ) {
         self.id = id ?? NTMSID.from(name: name)
         self.createdAt = createdAt
@@ -76,6 +88,8 @@ struct Team: Codable, Identifiable {
         self.artifacts = artifacts
         self.settings = settings
         self.graphLayout = graphLayout
+        self.deletedSystemRoleIDs = deletedSystemRoleIDs
+        self.deletedSystemArtifactIDs = deletedSystemArtifactIDs
     }
 
     /// Convenience initializer for tests: creates minimal team with empty roles/artifacts and default settings
@@ -105,6 +119,8 @@ struct Team: Codable, Identifiable {
         case artifacts
         case settings
         case graphLayout
+        case deletedSystemRoleIDs
+        case deletedSystemArtifactIDs
     }
 
     init(from decoder: Decoder) throws {
@@ -125,6 +141,8 @@ struct Team: Codable, Identifiable {
         self.artifacts = try c.decode([TeamArtifact].self, forKey: .artifacts)
         self.settings = try c.decodeIfPresent(TeamSettings.self, forKey: .settings) ?? .default
         self.graphLayout = try c.decodeIfPresent(TeamGraphLayout.self, forKey: .graphLayout) ?? .default
+        self.deletedSystemRoleIDs = try c.decodeIfPresent([String].self, forKey: .deletedSystemRoleIDs) ?? []
+        self.deletedSystemArtifactIDs = try c.decodeIfPresent([String].self, forKey: .deletedSystemArtifactIDs) ?? []
     }
 
     // MARK: - Computed Properties
@@ -209,7 +227,18 @@ struct Team: Codable, Identifiable {
     }
 
     /// Remove a role from the team, cleaning up all references.
+    ///
+    /// If the removed role is a system role (`isSystemRole == true` with a non-nil
+    /// `systemRoleID`), its `systemRoleID` is appended to `deletedSystemRoleIDs`
+    /// so subsequent version-bump reconciles won't resurrect it.
     mutating func removeRole(_ roleID: String) {
+        if let removed = roles.first(where: { $0.id == roleID }),
+           removed.isSystemRole,
+           let sid = removed.systemRoleID,
+           !deletedSystemRoleIDs.contains(sid)
+        {
+            deletedSystemRoleIDs.append(sid)
+        }
         roles.removeAll(where: { $0.id == roleID })
         graphLayout.hiddenRoleIDs.remove(roleID)
         graphLayout.nodePositions.removeAll(where: { $0.roleID == roleID })
@@ -248,8 +277,18 @@ struct Team: Codable, Identifiable {
         updatedAt = MonotonicClock.shared.now()
     }
 
-    /// Remove an artifact from the team
+    /// Remove an artifact from the team.
+    ///
+    /// If the removed artifact is a system artifact (`isSystemArtifact == true`),
+    /// its `id` is appended to `deletedSystemArtifactIDs` so subsequent
+    /// version-bump reconciles won't resurrect it.
     mutating func removeArtifact(_ artifactID: String) {
+        if let removed = artifacts.first(where: { $0.id == artifactID }),
+           removed.isSystemArtifact,
+           !deletedSystemArtifactIDs.contains(removed.id)
+        {
+            deletedSystemArtifactIDs.append(removed.id)
+        }
         artifacts.removeAll(where: { $0.id == artifactID })
         updatedAt = MonotonicClock.shared.now()
     }

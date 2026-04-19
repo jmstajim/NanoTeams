@@ -57,10 +57,12 @@ enum TeamGenerationService {
     static func generate(
         taskDescription: String,
         config: LLMConfig,
-        client: any LLMClient = LLMClientRouter()
+        client: any LLMClient = LLMClientRouter(),
+        systemPrompt: String? = nil
     ) async throws -> GeneratedTeamBuilder.BuildResult {
         let outcome = await generateWithDiagnostics(
-            taskDescription: taskDescription, config: config, client: client
+            taskDescription: taskDescription, config: config, client: client,
+            systemPrompt: systemPrompt
         )
         return try outcome.result.get()
     }
@@ -69,15 +71,16 @@ enum TeamGenerationService {
     ///
     /// `firstContentDeadlineSeconds` bounds how long we wait for the FIRST piece
     /// of content or tool-call delta before assuming the model is stuck in a
-    /// reasoning loop (observed on qwen3.5-35b-a3b with open-ended prompts: 19k+
-    /// `reasoning_content` tokens, empty `content`). Once any token of
+    /// reasoning loop (some models emit thousands of `reasoning_content` tokens
+    /// with empty `content` on open-ended prompts). Once any token of
     /// `content`/`tool_calls` arrives the deadline stops applying and the stream
     /// runs to completion. `nil` (default) disables the deadline entirely.
     static func generateWithDiagnostics(
         taskDescription: String,
         config: LLMConfig,
         client: any LLMClient = LLMClientRouter(),
-        firstContentDeadlineSeconds: Double? = nil
+        firstContentDeadlineSeconds: Double? = nil,
+        systemPrompt: String? = nil
     ) async -> GenerationOutcome {
         let startedAt = Date()
         var diagnostics = GenerationDiagnostics(
@@ -90,7 +93,7 @@ enum TeamGenerationService {
         )
 
         let messages: [ChatMessage] = [
-            ChatMessage(role: .system, content: Self.systemPrompt),
+            ChatMessage(role: .system, content: systemPrompt ?? Self.defaultSystemPrompt),
             ChatMessage(role: .user, content: """
                 Task:
                 \(taskDescription)
@@ -451,10 +454,10 @@ enum TeamGenerationService {
         return nil
     }
 
-    /// Repairs the `"string"}]` → `"string"]}]` pattern observed on
-    /// qwen3.5-35b-a3b, where the model drops the inner array's closing `]`
-    /// and jumps straight to the outer object-close `}` and array-close `]`.
-    /// Insert the missing `]` between the string and the `}`.
+    /// Repairs the `"string"}]` → `"string"]}]` pattern: some models drop the
+    /// inner array's closing `]` and jump straight to the outer object-close
+    /// `}` and array-close `]`. Insert the missing `]` between the string and
+    /// the `}`.
     ///
     /// The substring `"}]` also appears LEGITIMATELY when closing an array of
     /// objects whose last field has a string value (`[{"a":"b"}]`). Blanket
@@ -557,7 +560,9 @@ enum TeamGenerationService {
 
     // MARK: - System Prompt
 
-    private static let systemPrompt: String = """
+    /// Built-in default system prompt. Settings can read this to seed the
+    /// custom-prompt editor.
+    static let defaultSystemPrompt: String = """
         You are an expert team architect. Analyze the user's task and design the optimal team to execute it.
 
         YOU MUST CALL THE create_team TOOL with the complete team configuration. Do NOT reply with plain text, prose, or explanations. Your ONLY output is a single create_team tool call.
