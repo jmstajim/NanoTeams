@@ -198,12 +198,15 @@ final class AppUpdateStateTests: XCTestCase {
             body: "Cached release"
         )
 
-        let relaunched = AppUpdateState(
+        // Reassign `sut` (class field) instead of a `let` — creating a
+        // `@MainActor` class as a test-local variable triggers `abort()` on
+        // some toolchains (see CLAUDE.md setUp/tearDown notes).
+        sut = AppUpdateState(
             checker: AppUpdateChecker(session: mock),
             config: config
         )
 
-        XCTAssertEqual(relaunched.availableRelease?.tag, "v999.0.0",
+        XCTAssertEqual(sut.availableRelease?.tag, "v999.0.0",
                        "init must hydrate from cache so the card survives a relaunch")
     }
 
@@ -218,18 +221,18 @@ final class AppUpdateStateTests: XCTestCase {
             body: ""
         )
 
-        let relaunched = AppUpdateState(
+        sut = AppUpdateState(
             checker: AppUpdateChecker(session: mock),
             config: config
         )
 
-        XCTAssertNil(relaunched.availableRelease,
+        XCTAssertNil(sut.availableRelease,
                      "skipped tag must not surface in Watchtower view")
-        XCTAssertEqual(relaunched.latestRelease?.tag, "v999.0.0",
+        XCTAssertEqual(sut.latestRelease?.tag, "v999.0.0",
                        "raw payload must remain available to the Updates tab")
         XCTAssertNotNil(config.cachedAppUpdateRelease,
                         "cache survives so the Updates tab can show the release after a relaunch")
-        XCTAssertTrue(relaunched.isLatestSkipped)
+        XCTAssertTrue(sut.isLatestSkipped)
     }
 
     /// A cached release whose tag equals `AppVersion.current` is hydrated as
@@ -242,14 +245,14 @@ final class AppUpdateStateTests: XCTestCase {
             body: ""
         )
 
-        let relaunched = AppUpdateState(
+        sut = AppUpdateState(
             checker: AppUpdateChecker(session: mock),
             config: config
         )
 
-        XCTAssertNil(relaunched.availableRelease,
+        XCTAssertNil(sut.availableRelease,
                      "current==latest must not produce an update banner")
-        XCTAssertFalse(relaunched.hasNewerRelease,
+        XCTAssertFalse(sut.hasNewerRelease,
                        "current==latest must not flag as newer")
     }
 
