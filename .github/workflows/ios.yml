@@ -37,6 +37,8 @@ jobs:
           CODE_SIGNING_ALLOWED=NO
 
       - name: Test
+        id: test
+        continue-on-error: true
         run: >
           xcodebuild test-without-building
           -project NanoTeams.xcodeproj
@@ -48,3 +50,53 @@ jobs:
           CODE_SIGN_IDENTITY=""
           CODE_SIGNING_REQUIRED=NO
           CODE_SIGNING_ALLOWED=NO
+
+      # Locates the .xcresult bundle once so downstream steps can print
+      # assertion messages AND upload the bundle as an artifact. Runs even
+      # on success so a green run still uploads the result for inspection.
+      - name: Locate xcresult
+        id: xcresult
+        if: always()
+        run: |
+          set -uo pipefail
+          path=$(ls -td "$HOME"/Library/Developer/Xcode/DerivedData/NanoTeams-*/Logs/Test/*.xcresult 2>/dev/null | head -1 || true)
+          echo "path=$path" >> "$GITHUB_OUTPUT"
+          if [ -n "$path" ]; then echo "Found: $path"; else echo "No .xcresult found"; fi
+
+      # xcodebuild CLI strips XCTAssert failure descriptions — they only live
+      # inside the .xcresult bundle. Walk the tree and print every failed
+      # Test Case with its Failure Message children so the cause is visible
+      # directly in the Actions log. Exits non-zero to propagate the test
+      # failure through `continue-on-error`.
+      - name: Print failed tests
+        if: steps.test.outcome == 'failure'
+        run: |
+          set -uo pipefail
+          XCRESULT="${{ steps.xcresult.outputs.path }}"
+          if [ -z "$XCRESULT" ]; then
+            echo "::error::Test step failed but no .xcresult was produced."
+            exit 1
+          fi
+          echo "::group::Failed tests (from $XCRESULT)"
+          xcrun xcresulttool get test-results tests --path "$XCRESULT" \
+            | jq -r '
+                def walk($path):
+                  (.name // "") as $n
+                  | (if $n == "" then $path else $path + [$n] end) as $p
+                  | ( if .nodeType == "Test Case" and .result == "Failed"
+                      then "\n❌ " + ($p | join(" / ")),
+                           (.children[]? | select(.nodeType == "Failure Message") | "   " + (.name // ""))
+                      else empty end ),
+                    (.children[]? | walk($p));
+                .testNodes[] | walk([])'
+          echo "::endgroup::"
+          exit 1
+
+      - name: Upload xcresult bundle
+        if: always() && steps.xcresult.outputs.path != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcresult-${{ github.run_id }}
+          path: ${{ steps.xcresult.outputs.path }}
+          if-no-files-found: warn
+          retention-days: 14
