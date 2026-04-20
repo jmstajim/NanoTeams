@@ -4,6 +4,7 @@ import SwiftUI
 
 struct RoleEditorToolsTab: View {
     @Binding var editorState: RoleEditorState
+    let isMeetingCoordinator: Bool
     @Environment(StoreConfiguration.self) private var config
 
     private var isNonProducingNonObserver: Bool {
@@ -16,6 +17,7 @@ struct RoleEditorToolsTab: View {
             selectedTools: $editorState.selectedTools,
             producedArtifacts: editorState.producedArtifacts,
             isNonProducingNonObserver: isNonProducingNonObserver,
+            isMeetingCoordinator: isMeetingCoordinator,
             isVisionConfigured: config.isVisionConfigured
         )
     }
@@ -29,7 +31,7 @@ struct RoleEditorToolsTab: View {
         return s
     }()
 
-    RoleEditorToolsTab(editorState: $editorState)
+    RoleEditorToolsTab(editorState: $editorState, isMeetingCoordinator: false)
         .environment(StoreConfiguration())
         .frame(width: 500, height: 500)
         .background(Colors.surfacePrimary)

@@ -129,9 +129,7 @@ struct RoleEditorDependenciesTab: View {
                 .font(.caption)
                 .foregroundStyle(Colors.artifact)
             } else if !editorState.requiredArtifacts.isEmpty {
-                Label(team.isChatMode
-                      ? "Chat role \u{2014} works continuously, no deliverables."
-                      : "Advisory role \u{2014} works continuously until Supervisor finishes it, no deliverables.",
+                Label("Chat role \u{2014} responds continuously; no deliverables.",
                       systemImage: "info.circle")
                 .font(.caption)
                 .foregroundStyle(Colors.teal)

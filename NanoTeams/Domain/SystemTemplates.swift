@@ -69,6 +69,7 @@ enum SystemTemplates {
         ("teamRoles", "Team Roles", "role"),
         ("stepInfo", "Step Info", "context"),
         ("positionContext", "Position Context", "context"),
+        ("workFolderContext", "Work Folder Context", "context"),
         ("roleGuidance", "Role Guidance", "context"),
         ("toolList", "Tool List", "tools"),
         ("expectedArtifacts", "Expected Artifacts", "artifacts"),

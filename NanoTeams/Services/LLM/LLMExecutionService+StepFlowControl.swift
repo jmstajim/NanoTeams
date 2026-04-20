@@ -30,6 +30,52 @@ extension LLMExecutionService {
         roleDefinition: TeamRoleDefinition?,
         conversationMessages: inout [ChatMessage]
     ) async -> LLMStepStop {
+        // Thinking-drift detection: the model produced a long reasoning trace with
+        // no tool call and no user-visible content. First occurrence → targeted
+        // nudge. Second consecutive → escalate to supervisor. The counter is kept
+        // in executionStates and reset whenever tool calls execute.
+        // Skipped during revision — supervisor is already driving.
+        let assistantTrimmedLen = result.assistantContent.trimmingCharacters(in: .whitespacesAndNewlines).count
+        let thinkingTrimmedLen = result.thinkingContent.trimmingCharacters(in: .whitespacesAndNewlines).count
+        let isDrift = ConversationRepairService.isThinkingDrift(
+            thinkingLength: thinkingTrimmedLen,
+            contentLength: assistantTrimmedLen,
+            toolCallCount: result.resolvedToolCalls.count
+        )
+        if isDrift, !isStepInRevision(stepID: stepID) {
+            let newCount = (executionStates[stepID]?.consecutiveDriftTurnCount ?? 0) + 1
+            executionStates[stepID]?.consecutiveDriftTurnCount = newCount
+            if newCount >= 2 {
+                // Reset so a post-supervisor restart starts clean.
+                executionStates[stepID]?.consecutiveDriftTurnCount = 0
+                let question = """
+                Role \(roleForMessage.displayName) produced two consecutive long reasoning \
+                responses (~\(thinkingTrimmedLen / 1000)k characters of internal thinking \
+                last turn) without calling any tool. The model is reasoning instead of acting \
+                — please advise how to proceed (clarify the task, give an explicit next step, \
+                or mark the step failed).
+                """
+                await setNeedsSupervisorInput(stepID: stepID, question: question, sessionID: nil)
+                return .needsSupervisorInput(question: question)
+            }
+            let nudge = """
+            Your previous response had ~\(thinkingTrimmedLen / 1000)k characters of internal \
+            reasoning but no tool call. Internal reasoning is not a tool call — it cannot write \
+            files, read anything, or submit artifacts. Take one concrete action now by calling \
+            a tool (e.g. `write_file`, `read_lines`, `create_artifact`, or `ask_supervisor` if \
+            you genuinely need input). Keep reasoning brief next turn.
+            """
+            conversationMessages.append(ChatMessage(role: .user, content: nudge))
+            await appendLLMMessage(stepID: stepID, role: .user, content: nudge)
+            return .continueLoop
+        } else {
+            // Reset on EITHER non-drift turn (model produced content) OR drift-during-
+            // revision (the supervisor is already driving via the revision flow; an
+            // accumulated counter from before the revision shouldn't pre-trigger a
+            // post-revision escalation on the very first new drift turn).
+            executionStates[stepID]?.consecutiveDriftTurnCount = 0
+        }
+
         // Loop detection runs first — once the supervisor is asked (or the nudge
         // fires), the other branches are moot. Skipped during revision because
         // the supervisor is already driving.

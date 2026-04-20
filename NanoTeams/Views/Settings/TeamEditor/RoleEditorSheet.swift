@@ -21,6 +21,15 @@ struct RoleEditorSheet: View {
         return false
     }
 
+    /// True if editing the team's Meeting Coordinator — used to show
+    /// `conclude_meeting` as auto-injected in the Tools tab.
+    private var isEditingMeetingCoordinator: Bool {
+        if case .edit(let role) = mode {
+            return team.settings.meetingCoordinatorRoleID == role.id
+        }
+        return false
+    }
+
     /// Sections available for the current role (Supervisor only sees General + Dependencies)
     private var availableSections: [RoleSection] {
         if isEditingSupervisor {
@@ -88,7 +97,7 @@ struct RoleEditorSheet: View {
         case .prompt:
             RoleEditorPromptTab(editorState: $editorState, mode: mode, toolDefinitions: store.toolDefinitions, team: team)
         case .tools:
-            RoleEditorToolsTab(editorState: $editorState)
+            RoleEditorToolsTab(editorState: $editorState, isMeetingCoordinator: isEditingMeetingCoordinator)
         case .dependencies:
             RoleEditorDependenciesTab(editorState: $editorState, isEditingSupervisor: isEditingSupervisor, team: $team)
         case .llm:

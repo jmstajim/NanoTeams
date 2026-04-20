@@ -83,7 +83,7 @@ enum TeamTemplateFactory {
             typealias TN = ToolNames
             // SWE depends on Supervisor Task directly and has no teammate tools
             roles[1].toolIDs = [
-                TN.readLines, TN.writeFile, TN.editFile, TN.deleteFile,
+                TN.readFile, TN.readLines, TN.writeFile, TN.editFile, TN.deleteFile,
                 TN.listFiles, TN.search, TN.updateScratchpad,
                 TN.gitAdd, TN.gitCommit,
                 TN.runXcodebuild, TN.runXcodetests,

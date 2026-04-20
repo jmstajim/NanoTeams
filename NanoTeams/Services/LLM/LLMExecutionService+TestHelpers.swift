@@ -120,11 +120,12 @@ extension LLMExecutionService {
         sawHarmonyMarker: Bool,
         task: NTMSTask,
         roleDefinition: TeamRoleDefinition?,
-        conversationMessages: inout [ChatMessage]
+        conversationMessages: inout [ChatMessage],
+        thinkingContent: String = ""
     ) async -> LLMStepStop {
         let streamResult = StreamingResult(
             assistantContent: assistantContent,
-            thinkingContent: "",
+            thinkingContent: thinkingContent,
             resolvedToolCalls: [],
             sawHarmonyMarker: sawHarmonyMarker,
             harmonyBuffer: ""
@@ -140,6 +141,19 @@ extension LLMExecutionService {
             roleDefinition: roleDefinition,
             conversationMessages: &conversationMessages
         )
+    }
+
+    /// Reads the current drift counter for a step (for integration tests).
+    func _testDriftCounter(stepID: String) -> Int {
+        executionStates[stepID]?.consecutiveDriftTurnCount ?? -1
+    }
+
+    /// Mirrors the production drift-counter reset that happens just before
+    /// `executeToolCalls` runs (the model is acting, not just reasoning). Used by
+    /// tests to simulate "tool call ran between two drift turns" without spinning
+    /// up the full streaming + tool-execution pipeline.
+    func _testResetDriftCounter(stepID: String) {
+        executionStates[stepID]?.consecutiveDriftTurnCount = 0
     }
 
     func _testPropagateAmendmentDownstream(

@@ -597,6 +597,118 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
         XCTAssertTrue(ToolHandlerRegistry.unavailableToRoles.contains(ToolNames.createTeam))
     }
 
+    // MARK: - conclude_meeting auto-inject for Meeting Coordinator
+    //
+    // Regression: `conclude_meeting` was previously granted only via the `pmOnlyToolIDs`
+    // fallback group, which meant it was effectively hardcoded to PM (and `theAgreeable`)
+    // and only applied when a role had NO team config. In FAANG where the coordinator is
+    // TPM, nobody could actually call `conclude_meeting` because the role templates
+    // carried their own toolIDs (bypassing fallback). Fix: auto-inject at dispatch time
+    // for whichever role `team.settings.meetingCoordinatorRoleID` points to.
+
+    func testToolSchemas_autoInjectsConcludeMeetingForCoordinator() {
+        let service = LLMExecutionService(repository: NTMSRepository())
+        let delegate = MockLLMExecutionDelegate()
+        service.attach(delegate: delegate)
+
+        let coordinator = TeamRoleDefinition(
+            id: "coord_role",
+            name: "Coordinator",
+            prompt: "p",
+            toolIDs: [ToolNames.askTeammate, ToolNames.requestTeamMeeting],
+            usePlanningPhase: false,
+            dependencies: RoleDependencies()
+        )
+        let other = TeamRoleDefinition(
+            id: "other_role",
+            name: "Other",
+            prompt: "p",
+            toolIDs: [ToolNames.askTeammate, ToolNames.requestTeamMeeting],
+            usePlanningPhase: false,
+            dependencies: RoleDependencies()
+        )
+        let team = Team(
+            name: "T",
+            roles: [coordinator, other],
+            artifacts: [],
+            settings: TeamSettings(meetingCoordinatorRoleID: "coord_role"),
+            graphLayout: TeamGraphLayout()
+        )
+
+        let coordSchemas = service.toolSchemas(for: .custom(id: "coord_role"), team: team)
+        let otherSchemas = service.toolSchemas(for: .custom(id: "other_role"), team: team)
+
+        XCTAssertTrue(
+            coordSchemas.contains(where: { $0.name == ToolNames.concludeMeeting }),
+            "conclude_meeting MUST be auto-injected for the meeting coordinator role"
+        )
+        XCTAssertFalse(
+            otherSchemas.contains(where: { $0.name == ToolNames.concludeMeeting }),
+            "conclude_meeting must NOT leak to non-coordinator roles"
+        )
+    }
+
+    // Dedup guard: if coordinator role ALREADY has conclude_meeting in toolIDs
+    // (legitimate config that could come from team templates or LLM-generated
+    // teams), the auto-inject must NOT add a second copy. Duplicate tool schemas
+    // would either be rejected by the LM Studio API or silently confuse the model.
+    func testToolSchemas_concludeMeetingInCoordinatorToolIDs_notDuplicated() {
+        let service = LLMExecutionService(repository: NTMSRepository())
+        let delegate = MockLLMExecutionDelegate()
+        service.attach(delegate: delegate)
+
+        let coordinator = TeamRoleDefinition(
+            id: "coord_role",
+            name: "Coordinator",
+            prompt: "p",
+            toolIDs: [ToolNames.concludeMeeting, ToolNames.askTeammate],
+            usePlanningPhase: false,
+            dependencies: RoleDependencies()
+        )
+        let team = Team(
+            name: "T",
+            roles: [coordinator],
+            artifacts: [],
+            settings: TeamSettings(meetingCoordinatorRoleID: "coord_role"),
+            graphLayout: TeamGraphLayout()
+        )
+
+        let schemas = service.toolSchemas(for: .custom(id: "coord_role"), team: team)
+        let concludeCount = schemas.filter { $0.name == ToolNames.concludeMeeting }.count
+        XCTAssertEqual(
+            concludeCount, 1,
+            "conclude_meeting must appear exactly once even when both explicit toolIDs and auto-inject would grant it. Got \(concludeCount) copies."
+        )
+    }
+
+    func testToolSchemas_noConcludeMeetingWhenNoCoordinatorConfigured() {
+        let service = LLMExecutionService(repository: NTMSRepository())
+        let delegate = MockLLMExecutionDelegate()
+        service.attach(delegate: delegate)
+
+        let role = TeamRoleDefinition(
+            id: "r1",
+            name: "R1",
+            prompt: "p",
+            toolIDs: [ToolNames.askTeammate, ToolNames.requestTeamMeeting],
+            usePlanningPhase: false,
+            dependencies: RoleDependencies()
+        )
+        let team = Team(
+            name: "T",
+            roles: [role],
+            artifacts: [],
+            settings: TeamSettings(meetingCoordinatorRoleID: nil),
+            graphLayout: TeamGraphLayout()
+        )
+
+        let schemas = service.toolSchemas(for: .custom(id: "r1"), team: team)
+        XCTAssertFalse(
+            schemas.contains(where: { $0.name == ToolNames.concludeMeeting }),
+            "No coordinator configured → conclude_meeting must not be granted to anyone"
+        )
+    }
+
     func testUnavailableToRoles_doesNotContainNormalTools() {
         // Sanity: make sure we didn't accidentally exclude useful tools.
         let normalTools = ["read_file", "write_file", "git_status", "ask_supervisor", "create_artifact"]

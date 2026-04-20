@@ -52,6 +52,19 @@ final class LLMExecutionService {
         var planningTransitionDone: Bool = false
         /// Whether Supervisor requested graceful finish (advisory roles).
         var finishRequested: Bool = false
+        /// Count of consecutive "thinking drift" no-tool-call turns. A drift turn is one
+        /// where the model emitted a long `thinking` trace (reasoning about the task)
+        /// but no `content` and no tool calls. First drift → targeted nudge; second
+        /// consecutive drift → escalate to supervisor.
+        ///
+        /// Reset on three paths so the counter can never carry stale state across
+        /// productive activity:
+        /// 1. Tool calls about to execute — the model is acting (`runOneLLMToolIteration`).
+        /// 2. Non-drift no-tool-call turn (`handleNoToolCalls` else-branch) — the model
+        ///    produced content even if no tool, so it's not silently reasoning.
+        /// 3. After supervisor escalation — fresh start once the supervisor responds.
+        /// Also cleared on `cleanup()`.
+        var consecutiveDriftTurnCount: Int = 0
 
         /// Cancels the running task and resets all fields to defaults.
         mutating func cleanup() {
@@ -64,6 +77,7 @@ final class LLMExecutionService {
             originalSystemPrompt = nil
             planningTransitionDone = false
             finishRequested = false
+            consecutiveDriftTurnCount = 0
         }
     }
 
@@ -276,6 +290,8 @@ final class LLMExecutionService {
         }
 
         // 5. Execute tool calls (with caching + authorization)
+        // Reset drift counter: the model is acting, not just reasoning.
+        executionStates[stepID]?.consecutiveDriftTurnCount = 0
         let allowedToolNames = Set(toolsForIteration.map(\.name))
         let batch = executeToolCalls(
             resolvedToolCalls: streamResult.resolvedToolCalls,

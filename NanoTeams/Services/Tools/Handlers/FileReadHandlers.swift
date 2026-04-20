@@ -123,12 +123,12 @@ struct ReadLinesTool: ToolHandler {
     static let name = TN.readLines
     static let schema = ToolSchema(
         name: TN.readLines,
-        description: "Read specific lines from a file. Use for large files instead of read_file.",
+        description: "Read specific lines from a file. Use for large files instead of read_file. Pass end_line=0 or any negative value (e.g. -1) to read through end of file.",
         parameters: JS.object(
             properties: [
                 "path": JS.string("Relative path to file"),
                 "start_line": JS.integer("Start line number (1-based)"),
-                "end_line": JS.integer("End line number (1-based)"),
+                "end_line": JS.integer("End line number (1-based, inclusive). Use 0 or -1 to read through end of file."),
             ],
             required: ["path", "start_line", "end_line"]
         )
@@ -157,10 +157,15 @@ struct ReadLinesTool: ToolHandler {
                 )
             }
 
-            guard endLine >= startLine else {
+            // end_line <= 0 is a Unix-style "read to EOF" sentinel (qwen, deepseek, etc.
+            // routinely emit -1). Positive but < start_line is still an error, with a
+            // message that teaches the sentinel so the model can self-correct.
+            let readToEOF = endLine <= 0
+            if !readToEOF && endLine < startLine {
                 return makeErrorResult(
                     toolName: Self.name, args: args,
-                    code: .invalidArgs, message: "end_line must be >= start_line"
+                    code: .invalidArgs,
+                    message: "end_line (\(endLine)) must be >= start_line (\(startLine)). To read through end of file, pass end_line=0 or -1."
                 )
             }
 
@@ -197,7 +202,7 @@ struct ReadLinesTool: ToolHandler {
                 )
             }
 
-            let actualEndLine = min(endLine, totalLines)
+            let actualEndLine = readToEOF ? totalLines : min(endLine, totalLines)
             let selectedLines = Array(allLines[(startLine - 1)..<actualEndLine])
 
             let resultContent: String

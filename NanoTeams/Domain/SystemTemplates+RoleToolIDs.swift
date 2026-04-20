@@ -25,9 +25,8 @@ extension SystemTemplates {
     private static let teammateToolIDs: Set<String> = [
         TN.askTeammate, TN.requestTeamMeeting,
     ]
-    private static let pmOnlyToolIDs: Set<String> = [
-        TN.concludeMeeting,
-    ]
+    // conclude_meeting is auto-injected at runtime for the team's Meeting Coordinator
+    // (see `LLMExecutionService+ToolResolution.toolSchemas`). No static grant needed.
     private static let changeRequestToolIDs: Set<String> = [
         TN.requestChanges,
     ]
@@ -43,8 +42,8 @@ extension SystemTemplates {
     static let fallbackToolIDs: [String: Set<String>] = [
         "supervisor": [],
         "softwareEngineer": readOnlyTools.union(engineerOnlyTools).union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs).union(visionToolIDs),
-        "productManager": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(pmOnlyToolIDs).union(supervisorToolIDs),
-        "theAgreeable": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(pmOnlyToolIDs).union(supervisorToolIDs),
+        "productManager": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs),
+        "theAgreeable": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs),
         "tpm": teammateToolIDs.union(changeRequestToolIDs).union(supervisorToolIDs),
         "techLead": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs),
         "codeReviewer": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(changeRequestToolIDs).union(visionToolIDs).union(supervisorToolIDs),

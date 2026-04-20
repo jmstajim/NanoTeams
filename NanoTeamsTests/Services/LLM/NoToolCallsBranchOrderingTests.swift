@@ -356,4 +356,219 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
             "Nudge must forbid extensions; got: \(retry)"
         )
     }
+
+    // MARK: - Thinking-Drift Escalation (Run 13 regression)
+
+    /// Run 13 symptom: qwen3.5-35b-a3b SWE emitted a 61,630-char `thinking`
+    /// trace with empty `content` and zero tool calls, consuming 215s on a
+    /// single turn. Pre-fix: no detector, nothing stopped it.
+    /// Post-fix: first drift → targeted single-shot nudge, drift counter becomes 1.
+    func testFirstThinkingDrift_sendsTargetedNudgeAndIncrementsCounter() async {
+        let hugeThinking = String(repeating: "a", count: 20_000)
+        var messages: [ChatMessage] = []
+        XCTAssertEqual(service._testDriftCounter(stepID: stepID), 0)
+
+        let stop = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "",
+            sawHarmonyMarker: false,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            thinkingContent: hugeThinking
+        )
+        guard case .continueLoop = stop else {
+            XCTFail("First drift should continue loop with nudge, got \(stop)")
+            return
+        }
+        XCTAssertEqual(messages.count, 1)
+        let nudge = messages[0].content ?? ""
+        XCTAssertTrue(
+            nudge.contains("Internal reasoning is not a tool call"),
+            "Expected drift-specific nudge, got: \(nudge)"
+        )
+        XCTAssertTrue(
+            nudge.contains("20k characters"),
+            "Nudge should report approximate thinking length, got: \(nudge)"
+        )
+        XCTAssertEqual(service._testDriftCounter(stepID: stepID), 1)
+    }
+
+    /// Second consecutive drift escalates to the supervisor. The engine has no
+    /// way to un-stick a model that reasons without acting twice in a row after
+    /// being nudged once.
+    func testSecondThinkingDrift_escalatesToSupervisor() async {
+        let hugeThinking = String(repeating: "b", count: 15_000)
+        var messages: [ChatMessage] = []
+
+        // First drift: nudge, counter → 1
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "",
+            sawHarmonyMarker: false,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            thinkingContent: hugeThinking
+        )
+        XCTAssertEqual(service._testDriftCounter(stepID: stepID), 1)
+
+        // Second drift: escalate
+        var messages2: [ChatMessage] = []
+        let stop = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "",
+            sawHarmonyMarker: false,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages2,
+            thinkingContent: hugeThinking
+        )
+        guard case .needsSupervisorInput(let question) = stop else {
+            XCTFail("Second drift should escalate, got \(stop)")
+            return
+        }
+        XCTAssertTrue(
+            question.contains("reasoning instead of acting"),
+            "Escalation should describe the drift pattern, got: \(question)"
+        )
+        XCTAssertTrue(
+            question.contains("two consecutive"),
+            "Escalation should mention the consecutive trigger, got: \(question)"
+        )
+        // Counter reset so a supervisor-driven restart starts clean.
+        XCTAssertEqual(service._testDriftCounter(stepID: stepID), 0)
+    }
+
+    /// Short thinking (below threshold) must not trip drift detection — falls
+    /// through to the existing branches. Using a producing role so we can see
+    /// the artifact-missing nudge instead of the drift nudge.
+    func testShortThinking_doesNotTripDriftDetector() async {
+        let role = makeProducingRole(artifactName: "Design Spec")
+        var messages: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "",
+            sawHarmonyMarker: false,
+            task: task,
+            roleDefinition: role,
+            conversationMessages: &messages,
+            thinkingContent: String(repeating: "c", count: 1_000)
+        )
+        let retry = messages[0].content ?? ""
+        XCTAssertFalse(
+            retry.contains("Internal reasoning is not a tool call"),
+            "Short thinking must not trip drift; got: \(retry)"
+        )
+        XCTAssertTrue(
+            retry.contains("Missing deliverables"),
+            "Short thinking + producing role should fall through to artifact nudge; got: \(retry)"
+        )
+        XCTAssertEqual(service._testDriftCounter(stepID: stepID), 0)
+    }
+
+    /// Long thinking AND user-visible content is not drift — model is at least
+    /// surfacing something. Falls through to other branches.
+    func testLongThinkingWithContent_doesNotTripDriftDetector() async {
+        let role = makeProducingRole(artifactName: "Design Spec")
+        var messages: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "Here is my draft of the design spec body.",
+            sawHarmonyMarker: false,
+            task: task,
+            roleDefinition: role,
+            conversationMessages: &messages,
+            thinkingContent: String(repeating: "d", count: 20_000)
+        )
+        let retry = messages[0].content ?? ""
+        XCTAssertFalse(
+            retry.contains("Internal reasoning is not a tool call"),
+            "Drift should require empty content; got: \(retry)"
+        )
+        XCTAssertEqual(service._testDriftCounter(stepID: stepID), 0)
+    }
+
+    // After a tool call executes between two drift turns, the second drift must
+    // start fresh (counter=1 → nudge), not pre-armed (counter=2 → escalate).
+    // Production reset point: `LLMExecutionService.swift:286` immediately before
+    // `executeToolCalls`. Without this reset, a model alternating between
+    // reasoning-heavy turns and productive tool calls would prematurely escalate
+    // to the supervisor on its second drift even though it had been making
+    // progress in between.
+    func testDriftCounter_resetAfterToolExecution_secondDriftIsNudge() async {
+        let huge = String(repeating: "a", count: 15_000)
+        var messages: [ChatMessage] = []
+
+        // First drift → counter = 1, nudge.
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID, assistantContent: "", sawHarmonyMarker: false,
+            task: task, roleDefinition: nil,
+            conversationMessages: &messages, thinkingContent: huge
+        )
+        XCTAssertEqual(service._testDriftCounter(stepID: stepID), 1)
+
+        // Simulate tool-call execution between drifts.
+        service._testResetDriftCounter(stepID: stepID)
+        XCTAssertEqual(service._testDriftCounter(stepID: stepID), 0)
+
+        // Second drift after reset → counter = 1 again, NUDGE not escalation.
+        var messages2: [ChatMessage] = []
+        let stop = await service._testHandleNoToolCalls(
+            stepID: stepID, assistantContent: "", sawHarmonyMarker: false,
+            task: task, roleDefinition: nil,
+            conversationMessages: &messages2, thinkingContent: huge
+        )
+        guard case .continueLoop = stop else {
+            XCTFail("After reset, second drift must nudge (continueLoop), not escalate. Got \(stop)")
+            return
+        }
+        XCTAssertEqual(service._testDriftCounter(stepID: stepID), 1)
+        XCTAssertTrue(
+            (messages2[0].content ?? "").contains("Internal reasoning is not a tool call"),
+            "Should send drift nudge, not escalation message"
+        )
+    }
+
+    // Drift detector is gated on `!isStepInRevision`. When revision is active, the
+    // supervisor is already driving the model — letting drift escalate again would
+    // create a recursion (escalate → supervisor responds → drift fires → escalate).
+    // The revision-mode drift turn must also reset any pre-revision counter so a
+    // post-revision drift sequence starts fresh.
+    func testDriftDetector_skippedDuringRevision_counterReset() async {
+        let role = makeProducingRole(artifactName: "Design Spec")
+        let huge = String(repeating: "b", count: 20_000)
+
+        // Pre-arm the counter to simulate a drift that happened before revision.
+        var pre: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID, assistantContent: "", sawHarmonyMarker: false,
+            task: task, roleDefinition: role,
+            conversationMessages: &pre, thinkingContent: huge
+        )
+        XCTAssertEqual(service._testDriftCounter(stepID: stepID), 1)
+
+        // Now activate revision on the step.
+        mockDelegate.taskToMutate?.runs[0].steps[0].revisionComment = "Please redo X"
+
+        // Drift turn during revision → must NOT escalate, must NOT increment.
+        var messages: [ChatMessage] = []
+        let stop = await service._testHandleNoToolCalls(
+            stepID: stepID, assistantContent: "", sawHarmonyMarker: false,
+            task: task, roleDefinition: role,
+            conversationMessages: &messages, thinkingContent: huge
+        )
+        if case .needsSupervisorInput = stop {
+            XCTFail("Drift during revision must NOT trigger supervisor escalation")
+            return
+        }
+        XCTAssertEqual(
+            service._testDriftCounter(stepID: stepID), 0,
+            "Counter must reset on revision-mode drift to prevent post-revision pre-arming"
+        )
+        XCTAssertFalse(
+            (messages.first?.content ?? "").contains("Internal reasoning is not a tool call"),
+            "Drift nudge must not be sent during revision"
+        )
+    }
 }

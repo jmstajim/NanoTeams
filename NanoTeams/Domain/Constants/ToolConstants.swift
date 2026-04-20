@@ -27,8 +27,10 @@ enum ToolConstants {
                                     TN.gitCheckout, TN.gitMerge, TN.gitLog, TN.gitDiff, TN.gitStash, TN.gitBranch]),
         ToolCategoryDisplay(id: "build", name: "Build", icon: "hammer.fill",
                             tools: [TN.runXcodebuild, TN.runXcodetests]),
+        // conclude_meeting is auto-injected for the Meeting Coordinator (see `toolSchemas`)
+        // and shown in the Auto-injected UI section — not manually selectable.
         ToolCategoryDisplay(id: "collaboration", name: "Collaboration", icon: "bubble.left.and.bubble.right.fill",
-                            tools: [TN.askTeammate, TN.requestTeamMeeting, TN.concludeMeeting, TN.requestChanges]),
+                            tools: [TN.askTeammate, TN.requestTeamMeeting, TN.requestChanges]),
         ToolCategoryDisplay(id: "memory", name: "Memory", icon: "brain.head.profile",
                             tools: [TN.updateScratchpad]),
         ToolCategoryDisplay(id: "supervisor", name: "Supervisor", icon: "crown.fill",

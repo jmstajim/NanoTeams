@@ -105,14 +105,16 @@ struct PromptBuilder {
         // placeholder) so it persists in the stateful response chain instead of
         // being re-broadcast to every role as a user message.
 
-        // 4. Pipeline context from prior steps (excluding already-shown required artifacts)
+        // 4. Pipeline context from prior steps (excluding already-shown required artifacts,
+        //    and skipping in-progress parallel branches that aren't dependencies for this role).
         if stepIndex > 0 {
             let excludeNames = Set(requiredArtifacts.map { $0.name })
             let pipelineContext = buildPipelineContext(
                 run: run,
                 upToStepIndex: stepIndex,
                 artifactReader: context.artifactReader,
-                excludeArtifactNames: excludeNames
+                excludeArtifactNames: excludeNames,
+                requiredArtifactNames: excludeNames
             )
             if !pipelineContext.isEmpty {
                 messages.append(ChatMessage(role: .user, content: pipelineContext))

@@ -200,7 +200,7 @@ struct ConcludeMeetingTool: ToolHandler {
     static let name = TN.concludeMeeting
     static let schema = ToolSchema(
         name: TN.concludeMeeting,
-        description: "Conclude a team meeting with decisions and next steps. Only the meeting coordinator (PM) should use this.",
+        description: "Conclude a team meeting with decisions and next steps. Auto-granted only to the team's Meeting Coordinator (configured per team) — call this to finalize the current meeting.",
         parameters: JS.object(
             properties: [
                 "decision": JS.string("Summary of the decision reached"),

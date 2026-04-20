@@ -8,13 +8,12 @@ struct ToolSelectionView: View {
     @Binding var selectedTools: Set<String>
     let producedArtifacts: [String]
     let isNonProducingNonObserver: Bool
+    let isMeetingCoordinator: Bool
     let isVisionConfigured: Bool
     @State private var searchText: String = ""
     @State private var showDescriptions: Bool = false
 
     private let toolCategories = ToolConstants.displayCategories
-
-    private static let lockedTools: Set<String> = [ToolNames.askSupervisor]
 
     private var toolDescriptions: [String: String] {
         Dictionary(
@@ -45,6 +44,7 @@ struct ToolSelectionView: View {
         let query = searchText.lowercased()
         return ToolNames.createArtifact.contains(query)
             || ToolNames.askSupervisor.contains(query)
+            || ToolNames.concludeMeeting.contains(query)
     }
 
     private var toolHints: [String: String] {
@@ -91,7 +91,7 @@ struct ToolSelectionView: View {
                 Button {
                     let all = Set(allToolNames)
                     if selectedTools == all {
-                        selectedTools = Self.lockedTools
+                        selectedTools = []
                     } else {
                         selectedTools = all
                     }
@@ -118,7 +118,8 @@ struct ToolSelectionView: View {
                         if showAutoInjected {
                             AutoInjectedToolsSection(
                                 producedArtifacts: producedArtifacts,
-                                isNonProducingNonObserver: isNonProducingNonObserver
+                                isNonProducingNonObserver: isNonProducingNonObserver,
+                                isMeetingCoordinator: isMeetingCoordinator
                             )
                         }
 
@@ -128,7 +129,6 @@ struct ToolSelectionView: View {
                                 icon: category.icon,
                                 tools: category.tools,
                                 selectedTools: $selectedTools,
-                                lockedTools: Self.lockedTools,
                                 toolHints: toolHints,
                                 toolDescriptions: toolDescriptions,
                                 showDescriptions: showDescriptions
@@ -140,11 +140,6 @@ struct ToolSelectionView: View {
                 }
             }
         }
-        .onAppear {
-            for tool in Self.lockedTools {
-                selectedTools.insert(tool)
-            }
-        }
     }
 }
 
@@ -153,48 +148,61 @@ struct ToolSelectionView: View {
 private struct AutoInjectedToolsSection: View {
     let producedArtifacts: [String]
     let isNonProducingNonObserver: Bool
+    let isMeetingCoordinator: Bool
 
     private var isCreateArtifactActive: Bool { !producedArtifacts.isEmpty }
 
+    /// Only active auto-injections render — an inactive row (empty circle) was confusing
+    /// because it looked identical to a tool the user could toggle on. Auto-injection
+    /// semantics are: either the system adds it, or it does not apply to this role.
+    private var hasAnyActiveInjection: Bool {
+        isCreateArtifactActive || isNonProducingNonObserver || isMeetingCoordinator
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Header
-            HStack(spacing: Spacing.xs) {
-                Image(systemName: "bolt.fill")
-                    .font(.caption2)
-                    .foregroundStyle(Colors.warning)
-                Text("Auto-injected")
-                    .font(.caption)
-                    .fontWeight(.medium)
-                    .foregroundStyle(.secondary)
+        if hasAnyActiveInjection {
+            VStack(alignment: .leading, spacing: 0) {
+                // Header
+                HStack(spacing: Spacing.xs) {
+                    Image(systemName: "bolt.fill")
+                        .font(.caption2)
+                        .foregroundStyle(Colors.warning)
+                    Text("Auto-injected")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, Spacing.s)
+                .padding(.top, Spacing.m)
+                .padding(.bottom, Spacing.xs)
+
+                if isCreateArtifactActive {
+                    autoInjectedRow(
+                        toolName: ToolNames.createArtifact,
+                        hint: "produces: \(producedArtifacts.joined(separator: ", "))"
+                    )
+                }
+                if isNonProducingNonObserver {
+                    autoInjectedRow(
+                        toolName: ToolNames.askSupervisor,
+                        hint: "Role has no output artifacts"
+                    )
+                }
+                if isMeetingCoordinator {
+                    autoInjectedRow(
+                        toolName: ToolNames.concludeMeeting,
+                        hint: "Role is the team's Meeting Coordinator"
+                    )
+                }
             }
-            .padding(.horizontal, Spacing.s)
-            .padding(.top, Spacing.m)
-            .padding(.bottom, Spacing.xs)
-
-            // create_artifact row
-            autoInjectedRow(
-                toolName: ToolNames.createArtifact,
-                isActive: isCreateArtifactActive,
-                activeHint: "produces: \(producedArtifacts.joined(separator: ", "))",
-                inactiveHint: "Active when role produces artifacts"
-            )
-
-            // ask_supervisor row
-            autoInjectedRow(
-                toolName: ToolNames.askSupervisor,
-                isActive: isNonProducingNonObserver,
-                activeHint: "Role has no output artifacts",
-                inactiveHint: "Active when role has no output artifacts"
-            )
         }
     }
 
-    private func autoInjectedRow(toolName: String, isActive: Bool, activeHint: String, inactiveHint: String) -> some View {
+    private func autoInjectedRow(toolName: String, hint: String) -> some View {
         HStack(spacing: Spacing.s) {
-            Image(systemName: isActive ? "checkmark.circle.fill" : "circle")
+            Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 14))
-                .foregroundStyle(isActive ? Colors.success : Colors.textTertiary)
+                .foregroundStyle(Colors.success)
                 .frame(width: 16)
 
             Text(toolName)
@@ -209,7 +217,7 @@ private struct AutoInjectedToolsSection: View {
 
             Spacer()
 
-            Text(isActive ? activeHint : inactiveHint)
+            Text(hint)
                 .font(.caption2)
                 .foregroundStyle(Colors.textTertiary)
                 .lineLimit(1)
@@ -226,7 +234,6 @@ private struct ToolCategorySection: View {
     let icon: String
     let tools: [String]
     @Binding var selectedTools: Set<String>
-    var lockedTools: Set<String> = []
     var toolHints: [String: String] = [:]
     var toolDescriptions: [String: String] = [:]
     var showDescriptions: Bool = false
@@ -235,19 +242,14 @@ private struct ToolCategorySection: View {
         tools.filter { selectedTools.contains($0) }.count
     }
 
-    private var unlockedTools: [String] {
-        tools.filter { !lockedTools.contains($0) }
-    }
-
-    private var allUnlockedSelected: Bool {
-        unlockedTools.allSatisfy { selectedTools.contains($0) }
+    private var allSelected: Bool {
+        tools.allSatisfy { selectedTools.contains($0) }
     }
 
     private func toolBinding(for tool: String) -> Binding<Bool> {
         Binding(
             get: { selectedTools.contains(tool) },
             set: { isSelected in
-                if lockedTools.contains(tool) { return }
                 if isSelected { selectedTools.insert(tool) }
                 else { selectedTools.remove(tool) }
             }
@@ -270,15 +272,15 @@ private struct ToolCategorySection: View {
 
                 Spacer()
 
-                if !unlockedTools.isEmpty {
+                if !tools.isEmpty {
                     Button {
-                        if allUnlockedSelected {
-                            for tool in unlockedTools { selectedTools.remove(tool) }
+                        if allSelected {
+                            for tool in tools { selectedTools.remove(tool) }
                         } else {
-                            for tool in unlockedTools { selectedTools.insert(tool) }
+                            for tool in tools { selectedTools.insert(tool) }
                         }
                     } label: {
-                        Text(allUnlockedSelected ? "Clear" : "All")
+                        Text(allSelected ? "Clear" : "All")
                             .font(.caption2)
                     }
                     .buttonStyle(.plain)
@@ -300,7 +302,6 @@ private struct ToolCategorySection: View {
                     ToolRow(
                         name: tool,
                         isSelected: toolBinding(for: tool),
-                        isLocked: lockedTools.contains(tool),
                         hint: toolHints[tool],
                         description: showDescriptions ? toolDescriptions[tool] : nil
                     )
@@ -317,7 +318,6 @@ private struct ToolCategorySection: View {
 private struct ToolRow: View {
     let name: String
     @Binding var isSelected: Bool
-    var isLocked: Bool = false
     let hint: String?
     let description: String?
     @State private var isHovered = false
@@ -327,15 +327,15 @@ private struct ToolRow: View {
             isSelected.toggle()
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: Spacing.s) {
-                Image(systemName: isLocked || isSelected ? "checkmark.circle.fill" : "circle")
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 13))
-                    .foregroundStyle(isLocked ? Colors.success : (isSelected ? Colors.accent : Colors.textTertiary))
+                    .foregroundStyle(isSelected ? Colors.accent : Colors.textTertiary)
                     .frame(width: 16, alignment: .center)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(name)
                         .font(.system(.callout, design: .monospaced))
-                        .foregroundStyle(isLocked || isSelected ? .primary : .secondary)
+                        .foregroundStyle(isSelected ? .primary : .secondary)
 
                     if let description {
                         Text(description)
@@ -345,18 +345,9 @@ private struct ToolRow: View {
                     }
                 }
 
-                if isLocked {
-                    Text("Required")
-                        .font(.system(size: 9, weight: .semibold))
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 2)
-                        .background(Capsule(style: .continuous).fill(Colors.successTint))
-                        .foregroundStyle(Colors.success)
-                }
-
                 Spacer(minLength: 0)
 
-                if let hint, !isLocked {
+                if let hint {
                     Text(hint)
                         .font(.caption2)
                         .foregroundStyle(Colors.textTertiary)
@@ -369,8 +360,7 @@ private struct ToolRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(isLocked)
-        .background(isHovered && !isLocked ? Colors.surfaceHover : .clear)
+        .background(isHovered ? Colors.surfaceHover : .clear)
         .trackHover($isHovered)
     }
 }
@@ -388,6 +378,7 @@ private struct ToolRow: View {
         selectedTools: $selected,
         producedArtifacts: ["Engineering Notes"],
         isNonProducingNonObserver: false,
+        isMeetingCoordinator: false,
         isVisionConfigured: true
     )
     .frame(width: 460, height: 600)
@@ -399,6 +390,7 @@ private struct ToolRow: View {
         selectedTools: $selected,
         producedArtifacts: [],
         isNonProducingNonObserver: true,
+        isMeetingCoordinator: false,
         isVisionConfigured: false
     )
     .frame(width: 460, height: 600)
@@ -413,6 +405,7 @@ private struct ToolRow: View {
         selectedTools: $selected,
         producedArtifacts: ["Product Requirements", "Design Spec"],
         isNonProducingNonObserver: false,
+        isMeetingCoordinator: false,
         isVisionConfigured: true
     )
     .frame(width: 460, height: 600)
@@ -428,6 +421,7 @@ private struct ToolRow: View {
         selectedTools: $selected,
         producedArtifacts: [],
         isNonProducingNonObserver: true,
+        isMeetingCoordinator: false,
         isVisionConfigured: false
     )
     .frame(width: 460, height: 600)

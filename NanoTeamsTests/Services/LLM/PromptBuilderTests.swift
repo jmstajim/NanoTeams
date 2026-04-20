@@ -193,6 +193,177 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertFalse(result.contains("Draft requirements"))
     }
 
+    // Regression for Run 14: UX Researcher drifted 67k+76k chars of thinking
+    // reasoning about `Step 1 — Product Manager: Product Requirements — Status: running`
+    // (parallel branch, not a dependency for UXR). With the filter active, in-progress
+    // parallel steps whose artifacts aren't required by the current role are omitted.
+    func testBuildPipelineContext_filter_inProgressNonDependency_omitted() {
+        // Step 0: parallel PM still running; its artifact is NOT required by the current role.
+        let pmStep = StepExecution(
+            id: "pm_step",
+            role: .productManager,
+            title: "Product Requirements",
+            status: .running,
+            artifacts: [Artifact(name: "Product Requirements")]
+        )
+        let uxrStep = StepExecution(id: "uxr_step", role: .uxResearcher, title: "UXR Step")
+        let run = Run(id: 0, steps: [pmStep, uxrStep])
+
+        // With filter: PM's in-progress step is skipped (UXR doesn't require "Product Requirements").
+        let filtered = PromptBuilder.buildPipelineContext(
+            run: run,
+            upToStepIndex: 1,
+            artifactReader: { _ in nil },
+            requiredArtifactNames: ["Supervisor Task"]
+        )
+        XCTAssertFalse(
+            filtered.contains("Product Manager"),
+            "In-progress non-dependency step must be omitted. Got: \(filtered)"
+        )
+
+        // Without filter (legacy / supervisor auto-answer path): PM still appears.
+        let unfiltered = PromptBuilder.buildPipelineContext(
+            run: run,
+            upToStepIndex: 1,
+            artifactReader: { _ in nil }
+        )
+        XCTAssertTrue(
+            unfiltered.contains("Product Manager"),
+            "No filter passed (nil) must preserve legacy behavior. Got: \(unfiltered)"
+        )
+    }
+
+    // Done steps are always shown regardless of dependency — their artifacts
+    // might be useful context even if not strictly required.
+    func testBuildPipelineContext_filter_doneNonDependency_stillShown() {
+        let pmStep = StepExecution(
+            id: "pm_step",
+            role: .productManager,
+            title: "Product Requirements",
+            status: .done,
+            artifacts: [Artifact(name: "Product Requirements")]
+        )
+        let uxrStep = StepExecution(id: "uxr_step", role: .uxResearcher, title: "UXR Step")
+        let run = Run(id: 0, steps: [pmStep, uxrStep])
+
+        let result = PromptBuilder.buildPipelineContext(
+            run: run,
+            upToStepIndex: 1,
+            artifactReader: { _ in nil },
+            requiredArtifactNames: ["Supervisor Task"]
+        )
+        XCTAssertTrue(
+            result.contains("Product Manager"),
+            "Done steps must still be shown even if non-dependency. Got: \(result)"
+        )
+    }
+
+    // Supervisor is always shown: its Supervisor Task is the universal entry-point
+    // context. Filtering would strip the task brief — do not regress.
+    func testBuildPipelineContext_filter_supervisorAlwaysShown() {
+        let supervisorStep = StepExecution(
+            id: "supervisor_step",
+            role: .supervisor,
+            title: "Supervisor",
+            status: .running,
+            artifacts: [Artifact(name: "Supervisor Task")]
+        )
+        let uxrStep = StepExecution(id: "uxr_step", role: .uxResearcher, title: "UXR Step")
+        let run = Run(id: 0, steps: [supervisorStep, uxrStep])
+
+        let result = PromptBuilder.buildPipelineContext(
+            run: run,
+            upToStepIndex: 1,
+            artifactReader: { _ in "task content" },
+            requiredArtifactNames: []  // empty — nothing required, but supervisor stays
+        )
+        XCTAssertTrue(
+            result.contains("Supervisor"),
+            "Supervisor step must always appear. Got: \(result)"
+        )
+    }
+
+    // Regression: failed / blocked upstream MUST always reach the downstream role,
+    // even when not a strict dependency. Silently dropping a failed parallel step
+    // would hide real run problems from later roles. Only `.pending` / `.running`
+    // count as "in flight noise" — `.failed`, `.needsSupervisorInput`, `.paused`,
+    // `.needsApproval` are blocked / terminal and remain visible.
+    func testBuildPipelineContext_filter_failedNonDependency_stillShown() {
+        let pmStep = StepExecution(
+            id: "pm_step",
+            role: .productManager,
+            title: "Product Requirements",
+            status: .failed,
+            artifacts: []  // failed before producing the artifact
+        )
+        let uxrStep = StepExecution(id: "uxr_step", role: .uxResearcher, title: "UXR Step")
+        let run = Run(id: 0, steps: [pmStep, uxrStep])
+
+        let result = PromptBuilder.buildPipelineContext(
+            run: run,
+            upToStepIndex: 1,
+            artifactReader: { _ in nil },
+            requiredArtifactNames: ["Supervisor Task"]  // UXR doesn't depend on PR
+        )
+        XCTAssertTrue(
+            result.contains("Product Manager"),
+            "Failed steps must always be shown so downstream sees real upstream problems. Got: \(result)"
+        )
+        XCTAssertTrue(
+            result.contains("failed"),
+            "Status line must surface the failure. Got: \(result)"
+        )
+    }
+
+    // Same invariant for blocked statuses that are neither in-flight nor done.
+    func testBuildPipelineContext_filter_needsSupervisorInputNonDependency_stillShown() {
+        let pmStep = StepExecution(
+            id: "pm_step",
+            role: .productManager,
+            title: "Product Requirements",
+            status: .needsSupervisorInput,
+            artifacts: []
+        )
+        let uxrStep = StepExecution(id: "uxr_step", role: .uxResearcher, title: "UXR Step")
+        let run = Run(id: 0, steps: [pmStep, uxrStep])
+
+        let result = PromptBuilder.buildPipelineContext(
+            run: run,
+            upToStepIndex: 1,
+            artifactReader: { _ in nil },
+            requiredArtifactNames: ["Supervisor Task"]
+        )
+        XCTAssertTrue(
+            result.contains("Product Manager"),
+            "needsSupervisorInput steps must remain visible to downstream roles. Got: \(result)"
+        )
+    }
+
+    // In-progress step is shown when it DOES produce a required artifact
+    // (e.g. downstream role waiting on upstream in-progress work).
+    func testBuildPipelineContext_filter_inProgressDependency_shown() {
+        let pmStep = StepExecution(
+            id: "pm_step",
+            role: .productManager,
+            title: "Product Requirements",
+            status: .running,
+            artifacts: [Artifact(name: "Product Requirements")]
+        )
+        let tlStep = StepExecution(id: "tl_step", role: .techLead, title: "TL Step")
+        let run = Run(id: 0, steps: [pmStep, tlStep])
+
+        let result = PromptBuilder.buildPipelineContext(
+            run: run,
+            upToStepIndex: 1,
+            artifactReader: { _ in nil },
+            requiredArtifactNames: ["Product Requirements"]  // TL requires PR
+        )
+        XCTAssertTrue(
+            result.contains("Product Manager"),
+            "In-progress dependency step must be shown. Got: \(result)"
+        )
+    }
+
     func testBuildPipelineContext_includesSupervisorQA() {
         let step0 = StepExecution(
             id: "test_step",

@@ -162,6 +162,28 @@ enum ConversationRepairService {
         return regex.firstMatch(in: content, options: [], range: range) != nil
     }
 
+    // MARK: - Thinking-Drift Detection
+
+    /// Threshold for `thinking` content length that signals "reasoning without acting."
+    /// Derived from Run 13 (qwen3.5-35b-a3b): a 61,630-char thinking trace with no tool
+    /// call consumed 215s and timed out the run. gpt-oss-20b typically emits <5,000
+    /// chars of thinking; 10,000 catches runaway reasoning without false-positives on
+    /// models that routinely reason briefly.
+    static let thinkingDriftLengthThreshold: Int = 10_000
+
+    /// True when the latest streaming turn is a "thinking-drift" pattern: long
+    /// `thinking` trace, empty `content`, no tool calls. Pure predicate — no state.
+    /// Callers maintain a consecutive-drift counter themselves.
+    static func isThinkingDrift(
+        thinkingLength: Int,
+        contentLength: Int,
+        toolCallCount: Int
+    ) -> Bool {
+        thinkingLength >= thinkingDriftLengthThreshold
+            && contentLength == 0
+            && toolCallCount == 0
+    }
+
     // MARK: - Harmony Token Cleaning
 
     /// Clean Harmony/model control tokens from content before persisting.

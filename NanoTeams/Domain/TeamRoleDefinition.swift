@@ -150,9 +150,13 @@ enum RoleCompletionType: String, Codable {
     /// Role has no artifact inputs or outputs — engine skips it (participates via meetings only).
     case observer
 
+    // Display label: `.advisory` is rendered as "Chat" in the UI — the "advisory"
+    // concept was internal jargon; externally these roles are just continuously-responding
+    // chat participants with no deliverables. The enum case name stays for backward-
+    // compat with persisted team JSON and callers that switch on it.
     private static let displayLabelMap: [RoleCompletionType: String] = [
         .producing: "Producing",
-        .advisory: "Advisory",
+        .advisory: "Chat",
         .observer: "Observer",
     ]
 
@@ -205,7 +209,8 @@ extension TeamRoleDefinition {
         dependencies.producesArtifacts.isEmpty && !isObserver && !isSupervisor
     }
 
-    /// Display label for the role's completion type (e.g. "Producing", "Advisory", "Observer").
+    /// Display label for the role's completion type (e.g. "Producing", "Chat", "Observer").
+    /// Note: the underlying enum case for "Chat" is `.advisory` (see `RoleCompletionType`).
     var completionTypeDisplayLabel: String { completionType.displayLabel }
 
     /// Human-readable summary of artifact dependencies (e.g. "Needs: Plan → produces: Code").

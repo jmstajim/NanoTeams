@@ -119,4 +119,53 @@ final class ConversationRepairServiceTests: XCTestCase {
         XCTAssertTrue(result.contains("Hello"))
         XCTAssertTrue(result.contains("world"))
     }
+
+    // MARK: - isThinkingDrift
+
+    // Regression for Run 13: qwen3.5-35b-a3b SWE step emitted a ~61,630-char
+    // thinking trace with empty content and no tool call, consuming 215s and
+    // timing out the run. The predicate fires on that exact shape.
+    func testIsThinkingDrift_hugeThinkingEmptyContentNoToolCalls_returnsTrue() {
+        XCTAssertTrue(ConversationRepairService.isThinkingDrift(
+            thinkingLength: 61_630,
+            contentLength: 0,
+            toolCallCount: 0
+        ))
+    }
+
+    func testIsThinkingDrift_atThreshold_returnsTrue() {
+        XCTAssertTrue(ConversationRepairService.isThinkingDrift(
+            thinkingLength: ConversationRepairService.thinkingDriftLengthThreshold,
+            contentLength: 0,
+            toolCallCount: 0
+        ))
+    }
+
+    func testIsThinkingDrift_belowThreshold_returnsFalse() {
+        XCTAssertFalse(ConversationRepairService.isThinkingDrift(
+            thinkingLength: 5_000,
+            contentLength: 0,
+            toolCallCount: 0
+        ))
+    }
+
+    func testIsThinkingDrift_contentPresent_returnsFalse() {
+        // Long thinking alongside any user-visible content is not "drift" —
+        // other branches (refusal, repetitive-non-tool) can classify it.
+        XCTAssertFalse(ConversationRepairService.isThinkingDrift(
+            thinkingLength: 50_000,
+            contentLength: 42,
+            toolCallCount: 0
+        ))
+    }
+
+    func testIsThinkingDrift_hasToolCall_returnsFalse() {
+        // A tool call IS a concrete action — never classify as drift even if
+        // thinking is long.
+        XCTAssertFalse(ConversationRepairService.isThinkingDrift(
+            thinkingLength: 80_000,
+            contentLength: 0,
+            toolCallCount: 1
+        ))
+    }
 }

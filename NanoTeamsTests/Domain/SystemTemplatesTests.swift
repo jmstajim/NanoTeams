@@ -429,7 +429,7 @@ final class SystemTemplatesTests: XCTestCase {
         let keys = Set(SystemTemplates.systemPromptPlaceholders.map { $0.key })
         let expectedKeys: Set<String> = [
             "roleName", "teamName", "teamDescription", "teamRoles",
-            "stepInfo", "positionContext", "roleGuidance",
+            "stepInfo", "positionContext", "workFolderContext", "roleGuidance",
             "toolList",
             "expectedArtifacts", "artifactInstructions",
             "contextAwareness",

@@ -156,6 +156,71 @@ final class ToolsFileSystemTests: XCTestCase {
         let results = runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError)
+        // Error message must teach the EOF sentinel so the model can self-correct.
+        XCTAssertTrue(
+            results[0].outputJSON.contains("end_line=0 or -1"),
+            "Error should teach the EOF sentinel. Got: \(results[0].outputJSON)"
+        )
+    }
+
+    // Regression for Run 13: qwen3.5-35b-a3b emitted `end_line: -1` intending "to EOF"
+    // and got stuck retrying the same failing call. Non-positive end_line is now a
+    // valid "read through end of file" sentinel.
+    func testReadFileRange_endLineMinusOne_readsThroughEOF() throws {
+        let content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5"
+        let filePath = tempDir.appendingPathComponent("eof_neg.txt")
+        try content.write(to: filePath, atomically: true, encoding: .utf8)
+
+        let call = StepToolCall(
+            name: "read_lines",
+            argumentsJSON: "{\"path\": \"eof_neg.txt\", \"start_line\": 2, \"end_line\": -1}"
+        )
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError, "end_line=-1 should read to EOF, not error. Got: \(results[0].outputJSON)")
+        XCTAssertTrue(results[0].outputJSON.contains("Line 2"))
+        XCTAssertTrue(results[0].outputJSON.contains("Line 5"))
+        // Reported end_line reflects the actual last line, not the sentinel.
+        XCTAssertTrue(results[0].outputJSON.contains("\"end_line\":5") || results[0].outputJSON.contains("\"end_line\": 5"))
+    }
+
+    func testReadFileRange_endLineZero_readsThroughEOF() throws {
+        let content = "A\nB\nC"
+        let filePath = tempDir.appendingPathComponent("eof_zero.txt")
+        try content.write(to: filePath, atomically: true, encoding: .utf8)
+
+        let call = StepToolCall(
+            name: "read_lines",
+            argumentsJSON: "{\"path\": \"eof_zero.txt\", \"start_line\": 1, \"end_line\": 0}"
+        )
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError)
+        XCTAssertTrue(results[0].outputJSON.contains("A"))
+        XCTAssertTrue(results[0].outputJSON.contains("C"))
+    }
+
+    // Boundary: model passes EOF sentinel with a `start_line` that's already past
+    // EOF (file shorter than expected). Must NOT crash on the slice
+    // `allLines[(startLine-1)..<actualEndLine]` (which would fault if
+    // startLine-1 > actualEndLine). Expected: clean rangeOutOfBounds error.
+    func testReadFileRange_startLinePastEOF_withEOFSentinel_returnsRangeError() throws {
+        let content = "Line 1\nLine 2\nLine 3"  // 3 lines
+        let filePath = tempDir.appendingPathComponent("short_file.txt")
+        try content.write(to: filePath, atomically: true, encoding: .utf8)
+
+        let call = StepToolCall(
+            name: "read_lines",
+            argumentsJSON: "{\"path\": \"short_file.txt\", \"start_line\": 10, \"end_line\": -1}"
+        )
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertTrue(results[0].isError, "start_line past EOF must error, not return empty content")
+        XCTAssertTrue(
+            results[0].outputJSON.lowercased().contains("range") ||
+            results[0].outputJSON.contains("exceeds file length"),
+            "Error must indicate range/length issue. Got: \(results[0].outputJSON)"
+        )
     }
 
     // MARK: - write_file Tests
