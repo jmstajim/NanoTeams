@@ -188,7 +188,7 @@ final class AppUpdateStateTests: XCTestCase {
                        "successful fetch must write the cache so relaunch can hydrate")
     }
 
-    func testInit_hydratesAvailableReleaseFromCache() {
+    func testInit_hydratesAvailableReleaseFromCache() async {
         // Simulate: first launch found a release → second launch before the
         // weekly window throttle expires. Without hydration, `availableRelease` would
         // stay nil because `refresh()` short-circuits on the throttle.
@@ -198,9 +198,11 @@ final class AppUpdateStateTests: XCTestCase {
             body: "Cached release"
         )
 
-        // Reassign `sut` (class field) instead of a `let` — creating a
-        // `@MainActor` class as a test-local variable triggers `abort()` on
-        // some toolchains (see CLAUDE.md setUp/tearDown notes).
+        // `async` here is load-bearing: on Xcode 26.3 / Swift 6, sync methods
+        // on a `@MainActor` XCTestCase enter through a path that doesn't
+        // re-establish main-actor isolation — constructing a `@MainActor`
+        // class in the body aborts. `async` forces a main-actor hop first.
+        // See CLAUDE.md "Common API pitfalls when writing tests".
         sut = AppUpdateState(
             checker: AppUpdateChecker(session: mock),
             config: config
@@ -213,7 +215,7 @@ final class AppUpdateStateTests: XCTestCase {
     /// Skipped tag must hide the Watchtower view (`availableRelease`) but the
     /// raw payload (`latestRelease`) and persisted cache must remain intact so
     /// the Updates settings tab can still surface it.
-    func testInit_skippedTag_hidesAvailableButKeepsLatest() {
+    func testInit_skippedTag_hidesAvailableButKeepsLatest() async {
         config.skippedAppUpdateTags.insert("v999.0.0")
         config.cachedAppUpdateRelease = AppUpdateChecker.Release(
             tag: "v999.0.0",
@@ -238,7 +240,7 @@ final class AppUpdateStateTests: XCTestCase {
     /// A cached release whose tag equals `AppVersion.current` is hydrated as
     /// `latestRelease` but `hasNewerRelease` correctly reports `false` — no
     /// "Update Now" button shows in the Updates tab.
-    func testInit_cachedSameVersion_hasNewerReleaseFalse() {
+    func testInit_cachedSameVersion_hasNewerReleaseFalse() async {
         config.cachedAppUpdateRelease = AppUpdateChecker.Release(
             tag: AppVersion.current,
             htmlURL: URL(string: "https://example.com/r")!,
