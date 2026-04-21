@@ -21,6 +21,11 @@ final class QuickCaptureController {
 
     weak var store: NTMSOrchestrator?
 
+    /// NSPanel hosts its own SwiftUI tree; the main WindowGroup's
+    /// `.environment(...)` chain does not reach it, so the canonical
+    /// `DictationService` is injected here and re-applied in `buildFormView`.
+    @ObservationIgnored weak var dictation: DictationService?
+
     @ObservationIgnored private let hotkeyManager: any HotkeyManager
     @ObservationIgnored private let modeCoordinator: any QuickCaptureModeCoordinator
 
@@ -77,8 +82,9 @@ final class QuickCaptureController {
     // MARK: - Setup
 
     /// Registers global hotkeys. Call once from NanoTeamsApp on appear.
-    func setup(store: NTMSOrchestrator) {
+    func setup(store: NTMSOrchestrator, dictation: DictationService) {
         self.store = store
+        self.dictation = dictation
         guard !didSetupHotkeys else { return }
         didSetupHotkeys = true
 
@@ -439,6 +445,10 @@ final class QuickCaptureController {
             }
         }
 
+        guard let dictation else {
+            preconditionFailure("QuickCaptureController.setup(store:dictation:) must run before the panel is shown.")
+        }
+
         let formView = QuickCaptureFormView(
             mode: currentMode,
             formState: formState,
@@ -448,6 +458,7 @@ final class QuickCaptureController {
         .environment(store)
         .environment(store.configuration)
         .environment(store.streamingPreviewManager)
+        .environment(dictation)
 
         panel.setContent(formView)
     }

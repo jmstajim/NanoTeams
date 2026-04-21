@@ -8,6 +8,8 @@ struct RevisionSheet: View {
     @Binding var isPresented: Bool
     let onSubmit: () -> Void
 
+    @Environment(DictationService.self) private var dictation
+
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.l) {
             SheetHeader(
@@ -29,6 +31,7 @@ struct RevisionSheet: View {
 
             HStack {
                 Button("Cancel") {
+                    dictation.stop()
                     comment = ""
                     isPresented = false
                 }
@@ -36,10 +39,16 @@ struct RevisionSheet: View {
 
                 Spacer()
 
+                DictationMicButton(text: $comment)
+
                 Button("Submit Feedback") {
-                    onSubmit()
-                    comment = ""
-                    isPresented = false
+                    // Flush pending dictation so the final transcript lands
+                    // in `comment` before `onSubmit` reads it upstream.
+                    dictation.flushAndThen {
+                        onSubmit()
+                        comment = ""
+                        isPresented = false
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
@@ -60,6 +69,7 @@ struct RevisionSheet: View {
         isPresented: $isPresented,
         onSubmit: {}
     )
+    .environment(DictationService())
 }
 
 #Preview("With Feedback") {
@@ -71,6 +81,7 @@ struct RevisionSheet: View {
         isPresented: $isPresented,
         onSubmit: {}
     )
+    .environment(DictationService())
 }
 
 #Preview("Disabled Submit") {
@@ -82,4 +93,5 @@ struct RevisionSheet: View {
         isPresented: $isPresented,
         onSubmit: {}
     )
+    .environment(DictationService())
 }

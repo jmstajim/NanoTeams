@@ -11,6 +11,7 @@ import UniformTypeIdentifiers
 /// - `NewTeamSheet.swift` — new team creation sheet + template card
 struct TeamEditorView: View {
     @Environment(NTMSOrchestrator.self) var store
+    @Environment(DictationService.self) private var dictation
 
     @State private var selectedTab: EditorTab = .team
     @State private var showingNewTeamSheet = false
@@ -133,6 +134,9 @@ struct TeamEditorView: View {
             GenerateTeamSheet { taskDescription in
                 await handleGenerateTeam(taskDescription: taskDescription)
             }
+            // Re-inject — SwiftUI has historically dropped `@Observable`
+            // environment values when presenting sheets on macOS.
+            .environment(dictation)
         }
         .alert("Delete Team", isPresented: $showingDeleteConfirmation) {
             Button("Cancel", role: .cancel) {}

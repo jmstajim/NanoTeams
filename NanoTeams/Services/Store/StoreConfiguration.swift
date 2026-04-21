@@ -297,6 +297,19 @@ final class StoreConfiguration {
         }
     }
 
+    // MARK: - Dictation
+
+    /// Locale identifiers the user explicitly enabled for dictation. Empty
+    /// means "fall back to `Locale.preferredLanguages`" — the default for
+    /// users who haven't opened the Dictation settings tab yet. Only the
+    /// intersection with installed on-device models is actually used at
+    /// runtime; this array just expresses user intent.
+    var dictationLocaleIdentifiers: [String] {
+        didSet {
+            storage.set(dictationLocaleIdentifiers, forKey: Keys.dictationLocales)
+        }
+    }
+
     private enum Keys {
         static let llmProvider = "llmProvider"
         static let llmBaseURL = UserDefaultsKeys.llmBaseURL
@@ -326,6 +339,7 @@ final class StoreConfiguration {
         static let skippedAppUpdateTags = UserDefaultsKeys.skippedAppUpdateTags
         static let cachedAppUpdateRelease = UserDefaultsKeys.cachedAppUpdateRelease
         static let appUpdateCheckInterval = UserDefaultsKeys.appUpdateCheckInterval
+        static let dictationLocales = UserDefaultsKeys.dictationLocales
     }
 
     init(storage: any ConfigurationStorage = UserDefaults.standard) {
@@ -378,6 +392,7 @@ final class StoreConfiguration {
         }
         self.appUpdateCheckInterval = storage.string(forKey: Keys.appUpdateCheckInterval)
             .flatMap(AppUpdateCheckInterval.init(rawValue:)) ?? .weekly
+        self.dictationLocaleIdentifiers = (storage.object(forKey: Keys.dictationLocales) as? [String]) ?? []
     }
 
     // MARK: - Reset
@@ -410,6 +425,7 @@ final class StoreConfiguration {
         storage.removeObject(forKey: Keys.skippedAppUpdateTags)
         storage.removeObject(forKey: Keys.cachedAppUpdateRelease)
         storage.removeObject(forKey: Keys.appUpdateCheckInterval)
+        storage.removeObject(forKey: Keys.dictationLocales)
 
         let provider = LLMProvider.lmStudio
         llmProvider = provider
@@ -439,6 +455,7 @@ final class StoreConfiguration {
         skippedAppUpdateTags = []
         cachedAppUpdateRelease = nil
         appUpdateCheckInterval = .weekly
+        dictationLocaleIdentifiers = []
     }
 
     // MARK: - Work Folder Path

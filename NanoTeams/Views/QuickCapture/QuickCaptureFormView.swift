@@ -45,6 +45,7 @@ struct QuickCaptureFormView: View {
     @Environment(NTMSOrchestrator.self) private var store
     @Environment(StoreConfiguration.self) private var config
     @Environment(StreamingPreviewManager.self) private var streamingManager
+    @Environment(DictationService.self) private var dictation
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isShowingFilePicker = false
     @FocusState private var focusedField: Field?
@@ -169,7 +170,7 @@ struct QuickCaptureFormView: View {
                 placeholder: "Type your answer...",
                 canSubmit: canSubmit,
                 isSubmitting: false,
-                onSubmit: onSubmit,
+                onSubmit: handleSubmit,
                 onStageAttachment: { url in store.stageAttachment(url: url, draftID: activeDraftID) },
                 onRemoveAttachment: { attachment in store.removeStagedAttachment(attachment) },
                 filePickerBinding: $isShowingFilePicker
@@ -230,7 +231,7 @@ struct QuickCaptureFormView: View {
                 .layoutPriority(1)
             Spacer(minLength: 0)
             Button {
-                onCancel()
+                handleCancel()
             } label: {
                 Image(systemName: "xmark")
                     .font(.caption2.weight(.semibold))
@@ -480,7 +481,7 @@ struct QuickCaptureFormView: View {
                 .enterSendsMessage(
                     config.enterSendsMessage,
                     canSubmit: canSubmit,
-                    onSubmit: onSubmit
+                    onSubmit: handleSubmit
                 )
         }
     }
@@ -565,8 +566,10 @@ struct QuickCaptureFormView: View {
 
             Spacer()
 
+            DictationMicButton(text: $formState.supervisorTask)
+
             Button {
-                onSubmit()
+                handleSubmit()
             } label: {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.title2)
@@ -576,11 +579,17 @@ struct QuickCaptureFormView: View {
             .disabled(!canSubmit)
         }
         .background {
-            Button("", action: onCancel)
+            Button("", action: handleCancel)
                 .keyboardShortcut(.cancelAction)
                 .hidden()
         }
     }
+
+    // Flushes any pending dictation (so the last spoken words land before
+    // submit) and cancels it on Escape (so the mic doesn't keep recording
+    // after the panel closes).
+    private func handleSubmit() { dictation.flushAndThen(onSubmit) }
+    private func handleCancel() { dictation.flushAndThen(onCancel) }
 
     // MARK: - Settings Menu
 

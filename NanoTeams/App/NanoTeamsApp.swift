@@ -24,17 +24,21 @@ struct NanoTeamsApp: App {
     @State private var store: NTMSOrchestrator
     @State private var folderAccess = FolderAccessManager()
     @State private var llmStatusMonitor = LLMStatusMonitor()
+    @State private var dictation: DictationService
     @State private var appUpdateState: AppUpdateState
     @AppStorage(UserDefaultsKeys.appAppearance) private var appAppearance: AppAppearance = .system
 
     init() {
-        // Explicit init so `AppUpdateState` can share the same `StoreConfiguration`
-        // instance that `NTMSOrchestrator` owns. SwiftUI's `@State` default-value
-        // initializers can't reference each other, so we build both here and
-        // inject via `State(initialValue:)`.
+        // Explicit init so dependents share the same `StoreConfiguration` /
+        // orchestrator reference. SwiftUI's `@State` default-value initializers
+        // can't reference each other, so we build them here and inject via
+        // `State(initialValue:)`.
         let orchestrator = NTMSOrchestrator(repository: NTMSRepository())
         _store = State(initialValue: orchestrator)
         _appUpdateState = State(initialValue: AppUpdateState(config: orchestrator.configuration))
+        _dictation = State(initialValue: DictationService(
+            onErrorSurfaced: { message in orchestrator.lastErrorMessage = message }
+        ))
     }
 
     var body: some Scene {
@@ -49,10 +53,16 @@ struct NanoTeamsApp: App {
                     .environment(store.streamingPreviewManager)
                     .environment(folderAccess)
                     .environment(llmStatusMonitor)
+                    .environment(dictation)
                     .environment(appUpdateState)
                     .preferredColorScheme(appAppearance.colorScheme)
                     .onAppear {
-                        QuickCaptureController.shared.setup(store: store)
+                        QuickCaptureController.shared.setup(store: store, dictation: dictation)
+                        dictation.userSelectedLocalesProvider = {
+                            store.configuration.dictationLocaleIdentifiers.map {
+                                Locale(identifier: $0)
+                            }
+                        }
                         llmStatusMonitor.startMonitoring(
                             baseURLProvider: { store.configuration.llmBaseURLString }
                         )
@@ -144,6 +154,7 @@ struct NanoTeamsApp: App {
                 .environment(store.engineState)
                 .environment(store.configuration)
                 .environment(store.streamingPreviewManager)
+                .environment(dictation)
                 .environment(appUpdateState)
         }
         .defaultSize(width: 1000, height: 700)

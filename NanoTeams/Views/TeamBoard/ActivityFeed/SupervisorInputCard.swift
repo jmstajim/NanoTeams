@@ -181,5 +181,6 @@ struct SupervisorInputCard: View {
     .frame(width: 300)
     .background(Colors.surfacePrimary)
     .environment(StoreConfiguration())
+    .environment(DictationService())
 }
 

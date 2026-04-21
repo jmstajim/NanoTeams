@@ -3,6 +3,7 @@ import SwiftUI
 /// Sheet for entering a task description before generating a team with AI.
 struct GenerateTeamSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(DictationService.self) private var dictation
 
     /// Callback invoked with the task description. Returns nil on success, an error message on failure.
     let onGenerate: (String) async -> String?
@@ -30,7 +31,7 @@ struct GenerateTeamSheet: View {
         .background(Colors.surfaceBackground)
         .task { isFocused = true }
         .background {
-            Button("", action: { if !isGenerating { dismiss() } })
+            Button("", action: { if !isGenerating { cancel() } })
                 .keyboardShortcut(.cancelAction)
                 .hidden()
         }
@@ -85,7 +86,7 @@ struct GenerateTeamSheet: View {
             Spacer()
 
             Button {
-                dismiss()
+                cancel()
             } label: {
                 Text("Cancel")
                     .font(.subheadline)
@@ -95,6 +96,8 @@ struct GenerateTeamSheet: View {
             }
             .buttonStyle(.plain)
             .disabled(isGenerating)
+
+            DictationMicButton(text: $taskDescription)
 
             Button {
                 submit()
@@ -122,21 +125,28 @@ struct GenerateTeamSheet: View {
         }
     }
 
-    private func submit() {
-        let text = taskDescription.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isGenerating else { return }
-        errorMessage = nil
-        isGenerating = true
+    private func cancel() {
+        dictation.stop()
+        dismiss()
+    }
 
-        Task {
-            // Always reset the in-flight flag before returning, even on cancellation,
-            // so the sheet's button doesn't remain stuck in "Generating…".
-            defer { isGenerating = false }
-            let error = await onGenerate(text)
-            if let error {
-                errorMessage = error
-            } else {
-                dismiss()
+    private func submit() {
+        // Flush pending dictation so the last spoken words land in
+        // `taskDescription` before we read it.
+        dictation.flushAndThen {
+            let text = taskDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty, !isGenerating else { return }
+            errorMessage = nil
+            isGenerating = true
+
+            Task {
+                defer { isGenerating = false }
+                let error = await onGenerate(text)
+                if let error {
+                    errorMessage = error
+                } else {
+                    dismiss()
+                }
             }
         }
     }
@@ -144,4 +154,5 @@ struct GenerateTeamSheet: View {
 
 #Preview("Generate Team Sheet") {
     GenerateTeamSheet(onGenerate: { _ in nil })
+        .environment(DictationService())
 }

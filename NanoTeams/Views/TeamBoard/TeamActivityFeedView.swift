@@ -42,6 +42,7 @@ struct TeamActivityFeedView: View {
     @Environment(NTMSOrchestrator.self) private var store
     @Environment(StoreConfiguration.self) private var config
     @Environment(StreamingPreviewManager.self) private var streamingManager
+    @Environment(DictationService.self) private var dictation
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var viewModel = TeamActivityFeedViewModel()
@@ -265,6 +266,9 @@ struct TeamActivityFeedView: View {
                     onRequestChanges?(roleID, revisionComment)
                 }
             }
+            // Re-inject — SwiftUI has historically dropped `@Observable`
+            // environment values when presenting sheets on macOS.
+            .environment(dictation)
         }
     }
 

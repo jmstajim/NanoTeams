@@ -36,4 +36,7 @@ enum UserDefaultsKeys {
     static let skippedAppUpdateTags = "NanoTeams.appUpdate.skippedTags.v1"
     static let cachedAppUpdateRelease = "NanoTeams.appUpdate.cachedRelease.v1"
     static let appUpdateCheckInterval = "NanoTeams.appUpdate.checkInterval.v1"
+    /// Locale identifiers the user opted into for dictation (array of strings).
+    /// Empty = fall back to `Locale.preferredLanguages`.
+    static let dictationLocales = "NanoTeams.dictation.locales.v1"
 }

@@ -28,6 +28,7 @@ struct SupervisorAnswerComposer<SettingsMenu: View>: View {
     @ViewBuilder var settingsMenu: SettingsMenu
 
     @Environment(StoreConfiguration.self) private var config
+    @Environment(DictationService.self) private var dictation
     @State private var isDropTargeted = false
     @State private var quickLookURL: URL?
     @State private var popoverClipIndex: Int?
@@ -71,7 +72,7 @@ struct SupervisorAnswerComposer<SettingsMenu: View>: View {
                     config.enterSendsMessage,
                     canSubmit: canSubmit,
                     isSubmitting: isSubmitting,
-                    onSubmit: onSubmit
+                    onSubmit: handleSubmit
                 )
 
             if hasAttachments {
@@ -100,8 +101,10 @@ struct SupervisorAnswerComposer<SettingsMenu: View>: View {
 
                 Spacer()
 
+                DictationMicButton(text: $text)
+
                 Button {
-                    onSubmit()
+                    handleSubmit()
                 } label: {
                     if isSubmitting {
                         NTMSLoader(.small)
@@ -283,6 +286,9 @@ struct SupervisorAnswerComposer<SettingsMenu: View>: View {
     }
 
     // MARK: - Helpers
+
+    // Flushes dictation so the last spoken words land before submit.
+    private func handleSubmit() { dictation.flushAndThen(onSubmit) }
 
     private func stageURLs(_ urls: [URL]) {
         for url in urls {
