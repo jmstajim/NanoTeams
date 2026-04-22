@@ -6,12 +6,23 @@ import XCTest
 /// API (`allLocales`, `status`, `install`, `uninstall`) is a thin wrapper
 /// around Apple's `AssetInventory` / `DictationTranscriber` — not
 /// unit-testable without a real on-device model, which is environment-dependent.
-@available(macOS 26, iOS 26, visionOS 26, *)
 final class DictationModelCatalogTests: XCTestCase {
+
+    /// `DictationModelCatalog` is gated at `@available(macOS 26+)` because it
+    /// depends on `AssetInventory` / `DictationTranscriber`. Our deployment
+    /// target is macOS 15, so the test binary still runs on older CI — but
+    /// touching those weakly-linked symbols segfaults. Call this at the top
+    /// of every test that touches the catalog.
+    private func skipIfUnavailable() throws {
+        guard #unavailable(macOS 26, iOS 26, visionOS 26) else { return }
+        throw XCTSkip("DictationModelCatalog requires macOS 26+.")
+    }
 
     // MARK: - ModelInfo.displayName
 
-    func testDisplayName_knownLocale_returnsLocalizedName() {
+    func testDisplayName_knownLocale_returnsLocalizedName() throws {
+        try skipIfUnavailable()
+        guard #available(macOS 26, iOS 26, visionOS 26, *) else { return }
         let info = DictationModelCatalog.ModelInfo(
             locale: Locale(identifier: "en_US"),
             status: .installed
@@ -22,19 +33,21 @@ final class DictationModelCatalogTests: XCTestCase {
         XCTAssertFalse(info.displayName.isEmpty)
     }
 
-    func testDisplayName_unknownLocale_fallsBackToIdentifier() {
+    func testDisplayName_unknownLocale_fallsBackToIdentifier() throws {
+        try skipIfUnavailable()
+        guard #available(macOS 26, iOS 26, visionOS 26, *) else { return }
         let info = DictationModelCatalog.ModelInfo(
             locale: Locale(identifier: "xx_ZZ"),
             status: .installed
         )
-        // When the system can't localize the identifier, `displayName` must
-        // not return nil/empty — it falls back to the raw id.
         XCTAssertFalse(info.displayName.isEmpty)
     }
 
     // MARK: - ModelInfo identity
 
-    func testId_equalsLocaleIdentifier() {
+    func testId_equalsLocaleIdentifier() throws {
+        try skipIfUnavailable()
+        guard #available(macOS 26, iOS 26, visionOS 26, *) else { return }
         let info = DictationModelCatalog.ModelInfo(
             locale: Locale(identifier: "ru_RU"),
             status: .installed
@@ -42,7 +55,9 @@ final class DictationModelCatalogTests: XCTestCase {
         XCTAssertEqual(info.id, "ru_RU")
     }
 
-    func testHashable_sameLocaleAndStatus_areEqual() {
+    func testHashable_sameLocaleAndStatus_areEqual() throws {
+        try skipIfUnavailable()
+        guard #available(macOS 26, iOS 26, visionOS 26, *) else { return }
         let a = DictationModelCatalog.ModelInfo(
             locale: Locale(identifier: "en_US"),
             status: .installed
@@ -54,7 +69,9 @@ final class DictationModelCatalogTests: XCTestCase {
         XCTAssertEqual(a, b)
     }
 
-    func testHashable_differentStatus_areNotEqual() {
+    func testHashable_differentStatus_areNotEqual() throws {
+        try skipIfUnavailable()
+        guard #available(macOS 26, iOS 26, visionOS 26, *) else { return }
         let installed = DictationModelCatalog.ModelInfo(
             locale: Locale(identifier: "en_US"),
             status: .installed
@@ -68,15 +85,12 @@ final class DictationModelCatalogTests: XCTestCase {
 
     // MARK: - install — unsupported locale
 
-    /// Apple's `assetInstallationRequest(supporting:)` throws
-    /// `SFSpeechErrorDomain Code=15 "Unable to reserve unsupported locale"`
-    /// for locales with no on-device module. The settings view surfaces this
-    /// via `lastErrorMessage`. The test pins that:
-    ///   1. The throw isn't silently swallowed.
-    ///   2. The error isn't a `CancellationError` (important — our cancel
-    ///      path catches that type distinctly, and misclassifying Apple's
-    ///      unsupported-locale error as cancel would hide a real problem).
-    func testInstall_unsupportedLocale_throwsNonCancellationError() async {
+    /// Pins that Apple's unsupported-locale error isn't swallowed or
+    /// misclassified as `CancellationError` (our cancel path catches that
+    /// distinctly, so blurring the two would hide real failures).
+    func testInstall_unsupportedLocale_throwsNonCancellationError() async throws {
+        try skipIfUnavailable()
+        guard #available(macOS 26, iOS 26, visionOS 26, *) else { return }
         let fake = Locale(identifier: "xx_ZZ")
         do {
             try await DictationModelCatalog.install(locale: fake)
@@ -91,11 +105,9 @@ final class DictationModelCatalogTests: XCTestCase {
 
     // MARK: - uninstall — non-reserved locale
 
-    /// Releasing a locale that was never reserved is safe — Apple returns
-    /// `false` but does not throw. The settings view calls `uninstall`
-    /// unconditionally when the user hits Cancel, so the idempotent-on-empty
-    /// behavior matters.
-    func testUninstall_unreservedLocale_returnsFalse() async {
+    func testUninstall_unreservedLocale_returnsFalse() async throws {
+        try skipIfUnavailable()
+        guard #available(macOS 26, iOS 26, visionOS 26, *) else { return }
         let fake = Locale(identifier: "xx_ZZ")
         let released = await DictationModelCatalog.uninstall(locale: fake)
         XCTAssertFalse(released)

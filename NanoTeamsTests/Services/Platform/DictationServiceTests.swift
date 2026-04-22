@@ -356,8 +356,10 @@ final class DictationServiceTests: XCTestCase {
 
     // MARK: - Engine integration (via fake)
 
-    @available(macOS 26, iOS 26, visionOS 26, *)
-    func testEngineError_callsSurfaceErrorAndStops() async {
+    func testEngineError_callsSurfaceErrorAndStops() async throws {
+        guard #available(macOS 26, iOS 26, visionOS 26, *) else {
+            throw XCTSkip("DictationEngineProtocol requires macOS 26+.")
+        }
         var received: [String] = []
         let service = DictationService(onErrorSurfaced: { received.append($0) })
         let fake = FakeDictationEngine(locales: [Locale(identifier: "en_US")])
@@ -373,8 +375,10 @@ final class DictationServiceTests: XCTestCase {
         XCTAssertEqual(received, ["converter blew up"])
     }
 
-    @available(macOS 26, iOS 26, visionOS 26, *)
-    func testEngineUpdates_flowIntoTranscript() async {
+    func testEngineUpdates_flowIntoTranscript() async throws {
+        guard #available(macOS 26, iOS 26, visionOS 26, *) else {
+            throw XCTSkip("DictationEngineProtocol requires macOS 26+.")
+        }
         let service = DictationService()
         let fake = FakeDictationEngine(locales: [Locale(identifier: "en_US"), Locale(identifier: "ru_RU")])
         service._testInstallEngine(fake, ownerID: UUID())
@@ -386,8 +390,10 @@ final class DictationServiceTests: XCTestCase {
         XCTAssertEqual(service.transcript, "привет как дела сегодня", "leader selection picks the longer transcript")
     }
 
-    @available(macOS 26, iOS 26, visionOS 26, *)
-    func testStop_invokesEngineStop() async {
+    func testStop_invokesEngineStop() async throws {
+        guard #available(macOS 26, iOS 26, visionOS 26, *) else {
+            throw XCTSkip("DictationEngineProtocol requires macOS 26+.")
+        }
         let service = DictationService()
         let fake = FakeDictationEngine(locales: [Locale(identifier: "en_US")])
         service._testInstallEngine(fake, ownerID: UUID())
