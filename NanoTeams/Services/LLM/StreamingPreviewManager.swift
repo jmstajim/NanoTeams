@@ -83,6 +83,26 @@ final class StreamingPreviewManager {
         if isNew { structuralVersion &+= 1 }
     }
 
+    /// Replaces the preview content for a step in one shot.
+    ///
+    /// Used to rewind when a Harmony tool-call marker is detected mid-flush, so
+    /// partial prefixes like `<` or `<|` don't linger on screen after the
+    /// streaming service has already decided they belong to a tool-call envelope.
+    func replaceContent(stepID: String, messageID: UUID, role: Role, content: String) {
+        if var message = previews[stepID] {
+            message.content = content
+            previews[stepID] = message
+            return
+        }
+        // No preview yet — only create one if rewinding to non-empty content,
+        // so a marker at position 0 doesn't materialize an empty bubble.
+        guard !content.isEmpty else { return }
+        previews[stepID] = StepMessage(
+            id: messageID, createdAt: MonotonicClock.shared.now(),
+            role: role, content: content)
+        structuralVersion &+= 1
+    }
+
     /// Appends thinking content to the streaming preview for a step.
     func appendThinking(stepID: String, content: String) {
         guard !content.isEmpty else { return }

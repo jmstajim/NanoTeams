@@ -220,6 +220,21 @@ final class LLMExecutionService {
         // (NativeLMStudioClient omits system_prompt on stateful continuations).
         if resetSession { session = nil }
 
+        // 2a. Consume any queued Supervisor message targeted at this role (or the
+        // untargeted Team queue). Appends a user turn to `conversationMessages`
+        // for this iteration's request. Skipped on iteration-1 continuation paths
+        // (see `injectQueuedSupervisorMessage` for the stateful-chain rationale).
+        if let taskID = taskIDForStep(stepID) {
+            await injectQueuedSupervisorMessage(
+                stepID: stepID,
+                taskID: taskID,
+                roleID: step.effectiveRoleID,
+                iterationNumber: iterationNumber,
+                session: session,
+                conversationMessages: &conversationMessages
+            )
+        }
+
         // 2. Determine messages to send: if session is active, only new messages since last call
         let messagesToSend: [ChatMessage]
         if session != nil,

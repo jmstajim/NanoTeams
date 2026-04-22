@@ -16,6 +16,7 @@ struct ActivityPanelView: View {
     var onReviewTask: (() -> Void)? = nil
     let onRequestChanges: (String, String) -> Void
     var onRestartRole: ((String, String) -> Void)? = nil
+    var onCorrectRole: ((String, String) -> Void)? = nil
     var isPaused: Bool = false
     var meetingParticipants: Set<String> = []
 
@@ -32,6 +33,7 @@ struct ActivityPanelView: View {
                         selectedRoleID = nil
                     },
                     onRestart: isReadOnly ? nil : onRestartRole,
+                    onCorrect: isReadOnly ? nil : onCorrectRole,
                     isReadOnly: isReadOnly
                 )
                 Divider()
@@ -44,6 +46,7 @@ struct ActivityPanelView: View {
                 producedArtifacts: producedArtifacts,
                 isFinalReviewStage: isFinalReviewStage,
                 isChatMode: isChatMode,
+                isReadOnly: isReadOnly,
                 filterRoleID: selectedRoleID,
                 onSelectRole: { roleID in
                     selectedRoleID = roleID

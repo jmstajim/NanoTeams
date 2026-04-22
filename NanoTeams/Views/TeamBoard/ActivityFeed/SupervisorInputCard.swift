@@ -99,7 +99,7 @@ struct SupervisorInputCard: View {
     // MARK: - Answer input
 
     private var answerInput: some View {
-        SupervisorAnswerComposer(
+        MessageComposer(
             text: $answerText,
             attachments: $answerAttachments,
             placeholder: "Type your answer...",

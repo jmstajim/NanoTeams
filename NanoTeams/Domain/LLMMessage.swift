@@ -8,15 +8,26 @@ enum MessageSourceContext: String, Codable {
     case meeting
     case changeRequest
     case supervisorAnswer
+    /// Unsolicited Supervisor message injected mid-iteration from the queued-chat
+    /// pipeline (see `NTMSOrchestrator.consumeQueuedSupervisorMessage`). Distinct
+    /// from `.supervisorAnswer` — those are paired with `ask_supervisor` tool calls
+    /// and rendered separately by `ActivityFeedBuilder`.
+    case supervisorMessage
 
     private static let displayLabelMap: [MessageSourceContext: String] = [
         .consultation: "consultation",
         .meeting: "meeting",
         .changeRequest: "change request",
         .supervisorAnswer: "supervisor answer",
+        .supervisorMessage: "message",
     ]
 
     var displayLabel: String { Self.displayLabelMap[self] ?? rawValue }
+
+    /// Shared attribution marker prepended to queued Supervisor turns. Single
+    /// source of truth so the write side (`NTMSOrchestrator.consumeQueuedSupervisorMessage`)
+    /// and the read side (`LLMMessage.displayContent`) can't drift on rename.
+    static let supervisorMessagePrefix = "Supervisor:\n"
 }
 
 // MARK: - LLM Role
@@ -62,10 +73,35 @@ struct LLMMessage: Codable, Identifiable, Hashable {
     /// Display label for the message's source context (e.g. "(consultation)", "(input)").
     /// Returns nil for regular assistant/system messages without special context.
     var sourceContextDisplayLabel: String? {
+        // `.supervisorMessage` is rendered with bubble styling matching the
+        // initial Supervisor task brief — the avatar + role name already convey
+        // the context, so no secondary "(message)" label.
+        if sourceContext == .supervisorMessage { return nil }
         if let ctx = sourceContext { return ctx.displayLabel }
         if role == .user && sourceRole == nil { return "input" }
         if sourceRole != nil { return "consultation" }
         return nil
+    }
+
+    /// Content ready for rendering in the activity feed. For `.supervisorMessage`
+    /// turns, strips the leading attribution marker (`MessageSourceContext.supervisorMessagePrefix`)
+    /// — it's there so the LLM can identify the speaker when the turn lands in a
+    /// combined `input` string alongside tool results and memory blocks, but the
+    /// bubble already shows the role name above, so the prefix is redundant UI noise.
+    ///
+    /// Also accepts the legacy single-line `"Supervisor: "` form so messages
+    /// persisted by earlier builds still render cleanly after upgrade.
+    var displayContent: String {
+        guard sourceContext == .supervisorMessage else { return content }
+        let multiline = MessageSourceContext.supervisorMessagePrefix
+        if content.hasPrefix(multiline) {
+            return String(content.dropFirst(multiline.count))
+        }
+        let inline = "Supervisor: "
+        if content.hasPrefix(inline) {
+            return String(content.dropFirst(inline.count))
+        }
+        return content
     }
 
     init(from decoder: Decoder) throws {

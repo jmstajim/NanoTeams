@@ -136,7 +136,14 @@ struct MainLayoutView: View {
             }
         }
         .onChange(of: engineState.taskEngineStates) {
-            QuickCaptureController.shared.refreshPanelIfVisible()
+            // Single handler: refreshes the panel + drives queue flush. The controller
+            // owns both concerns so the wiring is testable without mounting the view.
+            QuickCaptureController.shared.handleEngineStateChanged()
+        }
+        .onChange(of: store.activeTask?.closedAt) { _, newValue in
+            QuickCaptureController.shared.handleActiveTaskClosedAtChanged(
+                newValue: newValue, taskID: store.activeTaskID
+            )
         }
     }
 

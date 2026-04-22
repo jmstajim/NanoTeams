@@ -436,7 +436,7 @@ final class QuickCaptureAnswerModeTests: XCTestCase {
         super.tearDown()
     }
 
-    func testEnterAnswerMode_savesGoalAndClearsIt() {
+    func testEnterAnswerMode_savesGoalAndCarriesTextAsInitialAnswer() {
         sut.formState.supervisorTask = "My task description"
         let payload = makePayload()
 
@@ -444,14 +444,17 @@ final class QuickCaptureAnswerModeTests: XCTestCase {
 
         XCTAssertTrue(sut._testIsInAnswerMode)
         XCTAssertEqual(sut._testSavedSupervisorTask, "My task description")
-        XCTAssertEqual(sut.formState.supervisorTask, "")
+        // Typed text is kept as the initial answer — the chat-working queue composer
+        // shares this field, so clearing would silently discard the user's message.
+        XCTAssertEqual(sut.formState.supervisorTask, "My task description")
         XCTAssertEqual(sut.formState.pendingAnswer?.question, "Test question?")
     }
 
     func testExitAnswerMode_restoresGoal() {
         sut.formState.supervisorTask = "Original goal"
         sut._testEnterAnswerMode(.supervisorAnswer(payload: makePayload()))
-        XCTAssertEqual(sut.formState.supervisorTask, "")
+        // Carried over as initial answer — not cleared.
+        XCTAssertEqual(sut.formState.supervisorTask, "Original goal")
 
         sut._testExitAnswerMode()
 

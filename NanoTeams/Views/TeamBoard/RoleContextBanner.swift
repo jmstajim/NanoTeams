@@ -12,12 +12,15 @@ struct RoleContextBanner: View {
     var isPaused: Bool = false
     let onDeselect: () -> Void
     var onRestart: ((String, String) -> Void)? = nil
+    var onCorrect: ((String, String) -> Void)? = nil
     let isReadOnly: Bool
 
     @State private var showConsultations = false
     @State private var showScratchpad = false
     @State private var isShowingRestartSheet = false
     @State private var restartComment = ""
+    @State private var isShowingCorrectSheet = false
+    @State private var correctComment = ""
 
     // MARK: - Derived State
 
@@ -119,6 +122,20 @@ struct RoleContextBanner: View {
                 onRestart?(roleID, restartComment)
             }
         }
+        .sheet(isPresented: $isShowingCorrectSheet) {
+            CorrectRoleSheet(
+                roleName: roleDefinitions.roleName(for: roleID),
+                comment: $correctComment,
+                isPresented: $isShowingCorrectSheet
+            ) {
+                onCorrect?(roleID, correctComment)
+            }
+        }
+    }
+
+    /// True when a Correct action makes sense: task paused and the role's step is paused too.
+    private var canCorrect: Bool {
+        isPaused && selectedStep?.status == .paused
     }
 
     // MARK: - Primary Row
@@ -142,6 +159,19 @@ struct RoleContextBanner: View {
             Spacer()
 
             HStack(spacing: Spacing.xs) {
+                if !isReadOnly, onCorrect != nil, canCorrect {
+                    Button {
+                        isShowingCorrectSheet = true
+                    } label: {
+                        Image(systemName: "arrow.uturn.backward.circle")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Correct role")
+                    .accessibilityLabel("Correct role")
+                }
+
                 if !isReadOnly, onRestart != nil, roleStatus.canRestart {
                     Button {
                         isShowingRestartSheet = true

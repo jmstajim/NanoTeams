@@ -2,20 +2,24 @@ import QuickLook
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Unified supervisor answer input used by all answer surfaces:
-/// ActivityFeed (`SupervisorInputCard`), Watchtower banner, and QuickCapture overlay/sheet.
+/// Unified message/answer composer used by all four message-entry surfaces:
+/// ActivityFeed (`SupervisorInputCard`), Watchtower banner, QuickCapture answer mode,
+/// and QuickCapture task creation.
 ///
 /// Layout:
 /// ```
 /// ┌──────────────────────────────────┐
-/// │ TextField("Send a message...")   │
-/// ├──────────────────────────────────┤
 /// │ [clips + attachment cards]       │
+/// ├──────────────────────────────────┤
+/// │ TextField("Send a message...")   │
 /// ├──────────────────────────────────┤
 /// │ (+)  (⚙)              (↑ send)  │
 /// └──────────────────────────────────┘
 /// ```
-struct SupervisorAnswerComposer<SettingsMenu: View>: View {
+///
+/// During an active file drag the entire composer is tinted with a subtle accent
+/// background + solid accent border. Content stays fully visible — no modal label.
+struct MessageComposer<SettingsMenu: View>: View {
     @Binding var text: String
     @Binding var attachments: [StagedAttachment]
     var clips: Binding<[String]>?
@@ -25,6 +29,19 @@ struct SupervisorAnswerComposer<SettingsMenu: View>: View {
     var onSubmit: () -> Void
     var onStageAttachment: (URL) -> StagedAttachment?
     var onRemoveAttachment: (StagedAttachment) -> Void
+
+    /// File picker state — owned by the Composer by default.
+    /// Parents that need to control the file picker externally (e.g., NSPanel)
+    /// can pass a binding via `filePickerBinding`.
+    var filePickerBinding: Binding<Bool>?
+
+    /// When true, the composer grabs focus on appear via `.task`. Default false so
+    /// answer-mode surfaces (which show a question first) don't steal the cursor.
+    var autofocusOnAppear: Bool = false
+
+    // Declared last so QuickCapture's trailing-closure call sites bind to
+    // `settingsMenu` via SE-0286 forward-scan. Other surfaces use the
+    // `EmbedFilesSettingsButton<EmptyView>` convenience init below.
     @ViewBuilder var settingsMenu: SettingsMenu
 
     @Environment(StoreConfiguration.self) private var config
@@ -33,12 +50,8 @@ struct SupervisorAnswerComposer<SettingsMenu: View>: View {
     @State private var quickLookURL: URL?
     @State private var popoverClipIndex: Int?
     @State private var importErrorMessage: String?
-
-    /// File picker state — owned by the Composer by default.
-    /// Parents that need to control the file picker externally (e.g., NSPanel)
-    /// can pass a binding via `filePickerBinding`.
+    @FocusState private var internalFocus: Bool
     @State private var internalShowingFilePicker = false
-    var filePickerBinding: Binding<Bool>?
 
     private var isShowingFilePicker: Binding<Bool> {
         filePickerBinding ?? $internalShowingFilePicker
@@ -53,12 +66,51 @@ struct SupervisorAnswerComposer<SettingsMenu: View>: View {
     }
 
     var body: some View {
+        // Only install the composer's own `.fileImporter` when no external binding
+        // was supplied. When the parent owns the picker (QuickCapture inside an
+        // NSPanel — nested `.fileImporter` does not fire there), the parent installs
+        // its own importer against the same binding. Installing both would double-stage
+        // every selected file.
+        Group {
+            if filePickerBinding == nil {
+                composerBody.fileImporter(
+                    isPresented: $internalShowingFilePicker,
+                    allowedContentTypes: [.item],
+                    allowsMultipleSelection: true
+                ) { result in
+                    switch result {
+                    case .success(let urls):
+                        stageURLs(urls)
+                    case .failure(let error):
+                        appendImportError(error.localizedDescription)
+                    }
+                }
+            } else {
+                composerBody
+            }
+        }
+        .alert("File Import Error", isPresented: Binding(
+            get: { importErrorMessage != nil },
+            set: { if !$0 { importErrorMessage = nil } }
+        )) {
+            Button("OK") { importErrorMessage = nil }
+        } message: {
+            if let msg = importErrorMessage { Text(msg) }
+        }
+        .quickLookPreview($quickLookURL)
+    }
+
+    private var composerBody: some View {
         VStack(alignment: .leading, spacing: Spacing.xs) {
+            if hasAttachments {
+                attachmentGrid
+            }
+
             TextField(placeholder, text: $text, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(.body)
-                .lineLimit(1...10)
-                .accessibilityLabel("Answer to supervisor question")
+                .lineLimit(1...6)
+                .accessibilityLabel("Message input")
                 .padding(Spacing.s)
                 .background(
                     RoundedRectangle.squircle(CornerRadius.small)
@@ -68,16 +120,13 @@ struct SupervisorAnswerComposer<SettingsMenu: View>: View {
                     RoundedRectangle.squircle(CornerRadius.small)
                         .strokeBorder(Colors.borderSubtle, lineWidth: 0.5)
                 )
+                .focused($internalFocus)
                 .enterSendsMessage(
                     config.enterSendsMessage,
                     canSubmit: canSubmit,
                     isSubmitting: isSubmitting,
                     onSubmit: handleSubmit
                 )
-
-            if hasAttachments {
-                attachmentGrid
-            }
 
             HStack {
                 Button {
@@ -103,19 +152,11 @@ struct SupervisorAnswerComposer<SettingsMenu: View>: View {
 
                 DictationMicButton(text: $text)
 
-                Button {
-                    handleSubmit()
-                } label: {
-                    if isSubmitting {
-                        NTMSLoader(.small)
-                    } else {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.title2)
-                            .foregroundStyle(!canSubmit ? Colors.textTertiary : Colors.accent)
-                    }
-                }
-                .buttonStyle(.plain)
-                .disabled(!canSubmit || isSubmitting)
+                MessageSendButton(
+                    canSubmit: canSubmit,
+                    isSubmitting: isSubmitting,
+                    onSubmit: handleSubmit
+                )
             }
         }
         .dropDestination(for: URL.self) { urls, _ in
@@ -128,47 +169,38 @@ struct SupervisorAnswerComposer<SettingsMenu: View>: View {
         .overlay {
             if isDropTargeted {
                 RoundedRectangle.squircle(CornerRadius.small)
-                    .strokeBorder(
-                        Colors.accent,
-                        style: StrokeStyle(lineWidth: 1.5, dash: [6, 4])
-                    )
-                    .background(
-                        RoundedRectangle.squircle(CornerRadius.small)
-                            .fill(Colors.accentTint)
-                    )
-                    .overlay {
-                        HStack(spacing: Spacing.s) {
-                            Image(systemName: "arrow.down.doc")
-                                .foregroundStyle(.tertiary)
-                            Text("Drop files here")
-                                .font(.subheadline)
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
+                    .fill(Colors.accentTint)
                     .allowsHitTesting(false)
             }
         }
-        .fileImporter(
-            isPresented: isShowingFilePicker,
-            allowedContentTypes: [.item],
-            allowsMultipleSelection: true
-        ) { result in
-            switch result {
-            case .success(let urls):
-                stageURLs(urls)
-            case .failure(let error):
-                importErrorMessage = error.localizedDescription
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle.squircle(CornerRadius.small)
+                    .strokeBorder(Colors.accent, lineWidth: 1.5)
+                    .allowsHitTesting(false)
             }
         }
-        .alert("File Import Error", isPresented: Binding(
-            get: { importErrorMessage != nil },
-            set: { if !$0 { importErrorMessage = nil } }
-        )) {
-            Button("OK") { importErrorMessage = nil }
-        } message: {
-            if let msg = importErrorMessage { Text(msg) }
+        .overlay {
+            if isDropTargeted {
+                HStack(spacing: Spacing.xs) {
+                    Image(systemName: "arrow.down.doc")
+                    Text("Drop to attach")
+                }
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(Colors.accent)
+                .padding(.horizontal, Spacing.m)
+                .padding(.vertical, Spacing.xs)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(Colors.surfaceElevated)
+                )
+                .allowsHitTesting(false)
+            }
         }
-        .quickLookPreview($quickLookURL)
+        .animation(Animations.quick, value: isDropTargeted)
+        .task {
+            if autofocusOnAppear { internalFocus = true }
+        }
     }
 
     // MARK: - Attachment Grid
@@ -287,18 +319,43 @@ struct SupervisorAnswerComposer<SettingsMenu: View>: View {
 
     // MARK: - Helpers
 
-    // Flushes dictation so the last spoken words land before submit.
     private func handleSubmit() { dictation.flushAndThen(onSubmit) }
 
     private func stageURLs(_ urls: [URL]) {
+        var rejectedNames: [String] = []
         for url in urls {
+            // Directories can't be staged — reject explicitly so the drop doesn't
+            // look successful while producing nothing in the attachment grid.
+            if url.hasDirectoryPath {
+                rejectedNames.append(url.lastPathComponent)
+                continue
+            }
             let didAccess = url.startAccessingSecurityScopedResource()
             defer {
                 if didAccess { url.stopAccessingSecurityScopedResource() }
             }
-            if let attachment = onStageAttachment(url), !attachments.contains(attachment) {
+            guard let attachment = onStageAttachment(url) else {
+                // `onStageAttachment` already set `lastErrorMessage` on the store for
+                // the specific failure; collect the filename so we can aggregate a
+                // single banner covering the whole batch.
+                rejectedNames.append(url.lastPathComponent)
+                continue
+            }
+            if !attachments.contains(attachment) {
                 attachments.append(attachment)
             }
+        }
+        if !rejectedNames.isEmpty {
+            appendImportError("Could not attach: \(rejectedNames.joined(separator: ", "))")
+        }
+    }
+
+    // Aggregates so a second failure doesn't silently overwrite the first.
+    private func appendImportError(_ message: String) {
+        if let existing = importErrorMessage, !existing.isEmpty {
+            importErrorMessage = existing + "\n" + message
+        } else {
+            importErrorMessage = message
         }
     }
 }
@@ -339,7 +396,7 @@ extension EmbedFilesSettingsButton where Extra == EmptyView {
     }
 }
 
-extension SupervisorAnswerComposer where SettingsMenu == EmbedFilesSettingsButton<EmptyView> {
+extension MessageComposer where SettingsMenu == EmbedFilesSettingsButton<EmptyView> {
     /// Convenience init with the default embed-files settings button.
     init(
         text: Binding<String>,
@@ -350,7 +407,8 @@ extension SupervisorAnswerComposer where SettingsMenu == EmbedFilesSettingsButto
         isSubmitting: Bool = false,
         onSubmit: @escaping () -> Void,
         onStageAttachment: @escaping (URL) -> StagedAttachment?,
-        onRemoveAttachment: @escaping (StagedAttachment) -> Void
+        onRemoveAttachment: @escaping (StagedAttachment) -> Void,
+        autofocusOnAppear: Bool = false
     ) {
         self._text = text
         self._attachments = attachments
@@ -361,6 +419,7 @@ extension SupervisorAnswerComposer where SettingsMenu == EmbedFilesSettingsButto
         self.onSubmit = onSubmit
         self.onStageAttachment = onStageAttachment
         self.onRemoveAttachment = onRemoveAttachment
+        self.autofocusOnAppear = autofocusOnAppear
         self.settingsMenu = EmbedFilesSettingsButton()
     }
 }

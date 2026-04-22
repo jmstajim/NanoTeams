@@ -47,7 +47,9 @@ enum ActivityFeedBuilder {
             let artifactContents: Set<String> = debugModeEnabled ? [] : (stepArtifactContentCache[step.id] ?? [])
 
             for msg in step.llmConversation where msg.role != .system && msg.role != .tool {
-                let hasThinking = msg.thinking.map { !$0.isEmpty } ?? false
+                let hasThinking = msg.thinking.map {
+                    !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                } ?? false
                 let isActivelyStreaming = isStreaming(msg.id)
                 if msg.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     && !hasThinking && !isActivelyStreaming

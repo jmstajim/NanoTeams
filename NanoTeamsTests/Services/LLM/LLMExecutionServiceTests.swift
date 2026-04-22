@@ -16,6 +16,7 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     // Tracking calls for verification
     var beginStreamingCalls: [(String, UUID, Role, Int)] = []
     var appendStreamingPreviewCalls: [(String, UUID, Role, String)] = []
+    var replaceStreamingPreviewCalls: [(String, UUID, Role, String)] = []
     var appendStreamingThinkingCalls: [(String, String)] = []
     var commitStreamingCalls: [(String, Int, String, String?)] = []
     var clearStreamingPreviewCalls: [String] = []
@@ -44,6 +45,10 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
 
     func appendStreamingPreview(stepID: String, messageID: UUID, role: Role, content: String) {
         appendStreamingPreviewCalls.append((stepID, messageID, role, content))
+    }
+
+    func replaceStreamingPreview(stepID: String, messageID: UUID, role: Role, content: String) {
+        replaceStreamingPreviewCalls.append((stepID, messageID, role, content))
     }
 
     func appendStreamingThinking(stepID: String, content: String) {
@@ -75,6 +80,37 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
 
     func clearActiveMeetingParticipants(for taskID: Int) {
         clearMeetingParticipantsCalls.append(taskID)
+    }
+
+    // MARK: - Queued Supervisor Messages
+
+    /// Scripted queue. Each entry is a (taskID, roleID?, content) triple — `roleID: nil`
+    /// represents an untargeted (Team) message. Messages are popped in FIFO order with
+    /// role-targeted entries preferred over untargeted ones (matches the real
+    /// `NTMSOrchestrator.consumeQueuedSupervisorMessage` priority rules).
+    var scriptedQueuedMessages: [(taskID: Int, roleID: String?, content: String)] = []
+    /// Records every `consumeQueuedSupervisorMessage` delivery (taskID, roleID, stepID, content).
+    var consumedQueuedMessages: [(Int, String, String, String)] = []
+
+    func consumeQueuedSupervisorMessage(
+        taskID: Int,
+        roleID: String,
+        stepID: String
+    ) async -> String? {
+        let roleMatchIdx = scriptedQueuedMessages.firstIndex {
+            $0.taskID == taskID && $0.roleID == roleID
+        }
+        let untargetedMatchIdx = scriptedQueuedMessages.firstIndex {
+            $0.taskID == taskID && $0.roleID == nil
+        }
+        let idx: Int
+        if let roleMatchIdx { idx = roleMatchIdx }
+        else if let untargetedMatchIdx { idx = untargetedMatchIdx }
+        else { return nil }
+
+        let entry = scriptedQueuedMessages.remove(at: idx)
+        consumedQueuedMessages.append((taskID, roleID, stepID, entry.content))
+        return entry.content
     }
 }
 
@@ -1948,5 +1984,142 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         XCTAssertEqual(result.assistantContent, "Here is my answer.")
         XCTAssertTrue(result.sawHarmonyMarker)
         XCTAssertFalse(result.assistantContent.contains("{"))
+    }
+
+    // MARK: - Preview Rewind (regression for stray `<` in activity feed)
+
+    /// When a large first delta flushes a partial marker prefix to the UI
+    /// preview (`<`, `<|`, etc.) and the completing bytes arrive in the next
+    /// delta, the marker branch must rewind the preview to the pre-marker
+    /// text via `replaceStreamingPreview` — otherwise the fragment lingers on
+    /// screen until the next commit (observed: Personal Assistant bubble
+    /// stuck displaying `<`).
+    func testHarmonyMarker_rewindsStreamingPreview_whenSplitAcrossDeltas() async throws {
+        let longPrefix = String(repeating: "A", count: 210) + "<|ca"
+        mockClient.deltas = [
+            StreamEvent(contentDelta: longPrefix),
+            StreamEvent(contentDelta: "ll|>{\"name\":\"ask_supervisor\"}<|end|>")
+        ]
+
+        _ = try await service.performStreamingCall(
+            stepID: stepID, roleForMessage: .softwareEngineer,
+            client: mockClient, config: LLMConfig(),
+            tools: [], conversationMessages: [], session: nil,
+            networkLogger: nil
+        )
+
+        // The marker branch must issue exactly one rewind with the pre-marker text.
+        XCTAssertEqual(mockDelegate.replaceStreamingPreviewCalls.count, 1)
+        let rewound = mockDelegate.replaceStreamingPreviewCalls[0].3
+        XCTAssertEqual(rewound, String(repeating: "A", count: 210))
+        XCTAssertFalse(rewound.contains("<"))
+    }
+
+    /// Channel marker split across deltas — same rewind must happen.
+    func testChannelMarker_rewindsStreamingPreview_whenSplitAcrossDeltas() async throws {
+        // Leading content long enough to force a flush, ending with a partial
+        // channel marker prefix that is not a complete `<|...|>` token.
+        let longPrefix = String(repeating: "B", count: 210) + "<|chan"
+        mockClient.deltas = [
+            StreamEvent(contentDelta: longPrefix),
+            StreamEvent(contentDelta: "nel|>commentary to=ask_supervisor<|message|>{\"question\":\"Hi\"}")
+        ]
+
+        _ = try await service.performStreamingCall(
+            stepID: stepID, roleForMessage: .softwareEngineer,
+            client: mockClient, config: LLMConfig(),
+            tools: [], conversationMessages: [], session: nil,
+            networkLogger: nil
+        )
+
+        XCTAssertEqual(mockDelegate.replaceStreamingPreviewCalls.count, 1)
+        let rewound = mockDelegate.replaceStreamingPreviewCalls[0].3
+        XCTAssertEqual(rewound, String(repeating: "B", count: 210))
+    }
+
+    /// Marker at the very beginning of the first delta — rewind to empty string
+    /// so the preview doesn't even briefly materialize any of the tool-call
+    /// envelope. The single-delta zero-preamble shape exercises the
+    /// `content.isEmpty` guard in `StreamingPreviewManager.replaceContent`.
+    func testHarmonyMarker_rewindsStreamingPreview_toEmpty_whenMarkerAtStart() async throws {
+        mockClient.deltas = [
+            StreamEvent(contentDelta: "<|call|>{\"name\":\"ask_supervisor\",\"arguments\":{}}<|end|>")
+        ]
+
+        _ = try await service.performStreamingCall(
+            stepID: stepID, roleForMessage: .softwareEngineer,
+            client: mockClient, config: LLMConfig(),
+            tools: [], conversationMessages: [], session: nil,
+            networkLogger: nil
+        )
+
+        // Rewind must be called once with empty content (marker at position 0).
+        XCTAssertEqual(mockDelegate.replaceStreamingPreviewCalls.count, 1)
+        XCTAssertEqual(mockDelegate.replaceStreamingPreviewCalls[0].3, "")
+    }
+
+    /// Whitespace-only `thinkingDelta` (e.g. an empty `[reasoning]\n\n[/reasoning]`
+    /// block emitted by some models) must commit as `nil`, not a lone `\n` —
+    /// otherwise the UI shows a Thinking disclosure that expands to nothing.
+    func testWhitespaceOnlyThinking_commitsAsNil() async throws {
+        mockClient.deltas = [
+            StreamEvent(thinkingDelta: "\n"),
+            StreamEvent(thinkingDelta: "\n\n"),
+            StreamEvent(contentDelta: "<|call|>{\"name\":\"ask_supervisor\",\"arguments\":{}}<|end|>")
+        ]
+
+        _ = try await service.performStreamingCall(
+            stepID: stepID, roleForMessage: .softwareEngineer,
+            client: mockClient, config: LLMConfig(),
+            tools: [], conversationMessages: [], session: nil,
+            networkLogger: nil
+        )
+
+        XCTAssertEqual(mockDelegate.commitStreamingCalls.count, 1)
+        XCTAssertNil(mockDelegate.commitStreamingCalls[0].3,
+                     "Whitespace-only thinking must be dropped, not persisted")
+    }
+
+    /// Real (non-whitespace) thinking must be preserved verbatim, including
+    /// leading/trailing newlines inside the reasoning body.
+    func testNonWhitespaceThinking_commitsPreservingFormatting() async throws {
+        let reasoning = "\nThe user wants a poem.\n"
+        mockClient.deltas = [
+            StreamEvent(thinkingDelta: reasoning),
+            StreamEvent(contentDelta: "<|call|>{\"name\":\"ask_supervisor\",\"arguments\":{}}<|end|>")
+        ]
+
+        _ = try await service.performStreamingCall(
+            stepID: stepID, roleForMessage: .softwareEngineer,
+            client: mockClient, config: LLMConfig(),
+            tools: [], conversationMessages: [], session: nil,
+            networkLogger: nil
+        )
+
+        XCTAssertEqual(mockDelegate.commitStreamingCalls.count, 1)
+        XCTAssertEqual(mockDelegate.commitStreamingCalls[0].3, reasoning)
+    }
+
+    /// Commit must also be clean — the preview ends up empty-or-prefix after
+    /// rewind, and the final commit replaces that with the trimmed accumulated
+    /// pre-marker content. This pins the contract that the three buffers
+    /// (local accumulator, pending UI, live preview) stay in sync.
+    func testHarmonyMarker_commitAndRewindAgree() async throws {
+        let longPrefix = String(repeating: "X", count: 210) + "<"
+        mockClient.deltas = [
+            StreamEvent(contentDelta: longPrefix),
+            StreamEvent(contentDelta: "|call|>{\"name\":\"ask_supervisor\"}<|end|>")
+        ]
+
+        _ = try await service.performStreamingCall(
+            stepID: stepID, roleForMessage: .softwareEngineer,
+            client: mockClient, config: LLMConfig(),
+            tools: [], conversationMessages: [], session: nil,
+            networkLogger: nil
+        )
+
+        let expected = String(repeating: "X", count: 210)
+        XCTAssertEqual(mockDelegate.replaceStreamingPreviewCalls.last?.3, expected)
+        XCTAssertEqual(mockDelegate.commitStreamingCalls.last?.2, expected)
     }
 }

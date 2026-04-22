@@ -37,4 +37,9 @@ extension TeamBoardView {
             )
         }
     }
+
+    func handleCorrectRole(roleID: String, comment: String) {
+        guard let taskID = task?.id else { return }
+        Task { await store.correctRole(taskID: taskID, roleID: roleID, comment: comment) }
+    }
 }

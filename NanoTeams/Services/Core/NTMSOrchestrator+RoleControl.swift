@@ -106,6 +106,87 @@ extension NTMSOrchestrator {
         return true
     }
 
+    /// Supervisor corrects an active role while the task is paused.
+    /// Two branches distinguished by `step.needsSupervisorInput` (set before pause):
+    /// - **Branch A** — step was waiting for Supervisor input when paused. `llmSessionID`
+    ///   was persisted by `setNeedsSupervisorInput`. Route through `answerSupervisorQuestion`
+    ///   with a "Supervisor Feedback: …" prefix so the existing stateful supervisor-
+    ///   continuation path sends the answer via `previous_response_id`. `answerSupervisorQuestion`
+    ///   auto-resumes.
+    /// - **Branch B** — step was mid-stream (`.running`) when paused. Cancellation did
+    ///   not persist the session (`StepLifecycle` only persists on completion paths), so
+    ///   `runStep` will rebuild `fullConversation` from `step.messages` on resume. Append
+    ///   the feedback there and set `revisionComment` as the artifact-completion gate.
+    ///
+    /// In both branches the step's current `status` is `.paused` (set by `pauseStep`).
+    /// The needsSupervisorInput flag disambiguates what it was doing pre-pause.
+    func correctRole(taskID: Int, roleID: String, comment: String) async {
+        guard let state = taskEngineStates[taskID], state == .paused else {
+            lastErrorMessage = "Correct Role requires the task to be paused."
+            return
+        }
+        let trimmed = comment.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            lastErrorMessage = "Correction text cannot be empty."
+            return
+        }
+
+        guard let task = loadedTask(taskID),
+              let run = task.runs.last,
+              let step = run.steps.first(where: {
+                  $0.effectiveRoleID == roleID && $0.status == .paused
+              })
+        else {
+            lastErrorMessage = "Could not apply correction — role is no longer paused or step is missing."
+            return
+        }
+
+        // Branch A: was waiting for Supervisor input. answerSupervisorQuestion handles
+        // the stateful supervisor-continuation path and auto-resumes the run.
+        // We pass no attachments here (the CorrectRoleSheet is text-only), and
+        // `answerSupervisorQuestion` only returns `false` on attachment-finalize
+        // failure — so delivery is effectively infallible on this path. If the
+        // sheet ever grows attachment support, the `@discardableResult` return is
+        // already surfaced via `lastErrorMessage` by `answerSupervisorQuestion`
+        // itself — don't clobber that specific error with a generic message here.
+        if step.needsSupervisorInput {
+            _ = await answerSupervisorQuestion(
+                stepID: step.id, taskID: taskID,
+                answer: "Supervisor Feedback: \(trimmed)"
+            )
+            return
+        }
+
+        // Branch B: mid-stream before pause. Append feedback message + set revisionComment gate.
+        // Re-verify status inside the closure — mutateTask runs async and the step could
+        // have transitioned out of `.paused` between the outer guard and this mutation
+        // (e.g. if resumeRun fired concurrently). `mutateTask` returning true means
+        // "persisted" — NOT "mutation did something" — so we pre-check and fail loudly.
+        let stepIDToMutate = step.id
+        let applied = await mutateTask(taskID: taskID) { task in
+            guard let runIndex = task.runs.indices.last,
+                  let stepIndex = task.runs[runIndex].steps.firstIndex(
+                      where: { $0.id == stepIDToMutate && $0.status == .paused }
+                  )
+            else { return }
+            task.runs[runIndex].steps[stepIndex].messages.append(StepMessage(
+                role: .supervisor,
+                content: "Supervisor Feedback: \(trimmed)"
+            ))
+            task.runs[runIndex].steps[stepIndex].revisionComment = trimmed
+            task.runs[runIndex].steps[stepIndex].updatedAt = MonotonicClock.shared.now()
+            task.runs[runIndex].updatedAt = MonotonicClock.shared.now()
+        }
+        // Verify the mutation actually landed — re-read and look for the appended message.
+        if applied,
+           let updated = loadedTask(taskID)?.runs.last?.steps.first(where: { $0.id == stepIDToMutate }),
+           updated.revisionComment == trimmed {
+            await resumeRun(taskID: taskID)
+        } else {
+            lastErrorMessage = "Correction could not be applied — step state changed."
+        }
+    }
+
     /// Supervisor requests changes for a role, appending feedback and transitioning to `.revisionRequested`.
     func requestRevision(taskID: Int, roleID: String, comment: String) async {
         await mutateTask(taskID: taskID) { task in

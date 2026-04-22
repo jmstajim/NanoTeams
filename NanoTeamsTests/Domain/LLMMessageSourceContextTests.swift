@@ -29,6 +29,97 @@ final class LLMMessageSourceContextTests: XCTestCase {
     func testMessageSourceContext_RawValues() {
         XCTAssertEqual(MessageSourceContext.consultation.rawValue, "consultation")
         XCTAssertEqual(MessageSourceContext.meeting.rawValue, "meeting")
+        XCTAssertEqual(MessageSourceContext.supervisorMessage.rawValue, "supervisorMessage")
+    }
+
+    func testMessageSourceContext_SupervisorMessage_CodableRoundTrip() throws {
+        let original: MessageSourceContext = .supervisorMessage
+        let encoded = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(MessageSourceContext.self, from: encoded)
+        XCTAssertEqual(decoded, .supervisorMessage)
+    }
+
+    func testMessageSourceContext_SupervisorMessage_DisplayLabel() {
+        // The label is surfaced next to the role name in message bubbles.
+        XCTAssertEqual(MessageSourceContext.supervisorMessage.displayLabel, "message")
+    }
+
+    // MARK: - displayContent strip for .supervisorMessage
+
+    func testDisplayContent_stripsMultilineSupervisorHeader() {
+        let msg = LLMMessage(
+            role: .user,
+            content: "Supervisor:\nостановись",
+            sourceRole: .supervisor,
+            sourceContext: .supervisorMessage
+        )
+        XCTAssertEqual(msg.displayContent, "остановись")
+    }
+
+    func testDisplayContent_stripsMultiMessageBatch() {
+        let msg = LLMMessage(
+            role: .user,
+            content: "Supervisor:\nmsg 1\nmsg 2\nmsg 3",
+            sourceRole: .supervisor,
+            sourceContext: .supervisorMessage
+        )
+        XCTAssertEqual(msg.displayContent, "msg 1\nmsg 2\nmsg 3")
+    }
+
+    func testDisplayContent_stripsLegacyInlinePrefix() {
+        // Backward compat: turns persisted by earlier builds used the inline
+        // "Supervisor: " form. Those must still strip cleanly after upgrade.
+        let msg = LLMMessage(
+            role: .user,
+            content: "Supervisor: old-style",
+            sourceRole: .supervisor,
+            sourceContext: .supervisorMessage
+        )
+        XCTAssertEqual(msg.displayContent, "old-style")
+    }
+
+    func testDisplayContent_nonSupervisorMessage_returnsRawContent() {
+        // The strip ONLY applies to `.supervisorMessage`. A regular user turn
+        // whose content happens to start with "Supervisor:" must NOT be stripped.
+        let msg = LLMMessage(
+            role: .user,
+            content: "Supervisor:\nshould not strip",
+            sourceRole: nil,
+            sourceContext: nil
+        )
+        XCTAssertEqual(msg.displayContent, "Supervisor:\nshould not strip")
+    }
+
+    func testDisplayContent_supervisorMessage_withoutPrefix_returnsContentUnchanged() {
+        // Defensive: if somehow a .supervisorMessage landed without the header,
+        // don't mangle its content.
+        let msg = LLMMessage(
+            role: .user,
+            content: "no header here",
+            sourceRole: .supervisor,
+            sourceContext: .supervisorMessage
+        )
+        XCTAssertEqual(msg.displayContent, "no header here")
+    }
+
+    func testLLMMessage_WithSupervisorMessageContext_CodableRoundTrip() throws {
+        // Regression guard for the queued-message injection path: saved tasks must
+        // round-trip LLMMessages carrying `.supervisorMessage` without loss so the
+        // activity feed renders them correctly after app restart.
+        let original = LLMMessage(
+            role: .user,
+            content: "Supervisor: доложи статус",
+            sourceRole: .supervisor,
+            sourceContext: .supervisorMessage
+        )
+
+        let encoded = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(LLMMessage.self, from: encoded)
+
+        XCTAssertEqual(decoded.role, .user)
+        XCTAssertEqual(decoded.sourceRole, .supervisor)
+        XCTAssertEqual(decoded.sourceContext, .supervisorMessage)
+        XCTAssertEqual(decoded.content, "Supervisor: доложи статус")
     }
 
     // MARK: - LLMMessage with sourceContext + sourceRole

@@ -54,6 +54,11 @@ extension NTMSOrchestrator {
     }
 
     // periphery:ignore - protocol conformance (LLMStreamingDelegate)
+    func replaceStreamingPreview(stepID: String, messageID: UUID, role: Role, content: String) {
+        streamingPreviewManager.replaceContent(stepID: stepID, messageID: messageID, role: role, content: content)
+    }
+
+    // periphery:ignore - protocol conformance (LLMStreamingDelegate)
     func appendStreamingThinking(stepID: String, content: String) {
         streamingPreviewManager.appendThinking(stepID: stepID, content: content)
     }

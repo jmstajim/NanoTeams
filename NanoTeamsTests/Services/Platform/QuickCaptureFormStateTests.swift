@@ -40,12 +40,15 @@ final class QuickCaptureFormStateTests: XCTestCase {
 
     // MARK: - Answer Mode Transitions
 
-    func testEnterAnswerMode_savesGoalAndClearsIt() {
+    func testEnterAnswerMode_savesGoalAndCarriesTextAsInitialAnswer() {
         sut.supervisorTask = "My task draft"
         sut.enterAnswerMode(payload: makePayload())
 
         XCTAssertTrue(sut.isInAnswerMode)
-        XCTAssertEqual(sut.supervisorTask, "")
+        // Typed text carries over as the initial answer so chat-working queue drafts
+        // aren't silently wiped when the LLM finally asks a question.
+        XCTAssertEqual(sut.supervisorTask, "My task draft")
+        // Saved copy still tracks the original so `exitAnswerMode` can restore it.
         XCTAssertEqual(sut._testSavedSupervisorTask, "My task draft")
         XCTAssertNotNil(sut.pendingAnswer)
     }
@@ -68,7 +71,8 @@ final class QuickCaptureFormStateTests: XCTestCase {
         sut.supervisorTask = "User's task draft"
         sut.enterAnswerMode(payload: makePayload(question: "First"))
         XCTAssertEqual(sut._testSavedSupervisorTask, "User's task draft")
-        XCTAssertEqual(sut.supervisorTask, "")
+        // Initial entry carries the typed text forward as the starting answer.
+        XCTAssertEqual(sut.supervisorTask, "User's task draft")
 
         // User types an answer, then the active task changes and enterAnswerMode fires again
         sut.supervisorTask = "typing an answer"

@@ -45,6 +45,38 @@ extension LLMExecutionService {
         }
     }
 
+    // MARK: - Queued Supervisor Message Injection
+
+    /// Consumes the next queued Supervisor message targeted at this role (or the
+    /// untargeted Team queue) and appends it to `conversationMessages` as a user
+    /// turn for this iteration's LLM request.
+    ///
+    /// Skipped on iteration 1 with a non-nil session: that combination only
+    /// occurs when a step resumes from a saved session (supervisor/revision
+    /// continuation) and the conversation has no assistant turn to anchor the
+    /// stateful-chain slice against — appending a user message there would send
+    /// through stateless fallback while `session` stays set, causing the server
+    /// to duplicate the response chain.
+    ///
+    /// The delegate performs attachment finalization AND persists the matching
+    /// `LLMMessage` to `step.llmConversation` atomically — we must NOT also call
+    /// `appendLLMMessage` here (double-append).
+    func injectQueuedSupervisorMessage(
+        stepID: String,
+        taskID: Int,
+        roleID: String,
+        iterationNumber: Int,
+        session: LLMSession?,
+        conversationMessages: inout [ChatMessage]
+    ) async {
+        guard iterationNumber > 1 || session == nil else { return }
+        guard let delegate else { return }
+        guard let content = await delegate.consumeQueuedSupervisorMessage(
+            taskID: taskID, roleID: roleID, stepID: stepID
+        ) else { return }
+        conversationMessages.append(ChatMessage(role: .user, content: content))
+    }
+
     // MARK: - Loop Detection
 
     /// Checks for looping patterns and injects a warning message if detected.

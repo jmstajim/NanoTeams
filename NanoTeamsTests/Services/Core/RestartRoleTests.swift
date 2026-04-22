@@ -303,4 +303,61 @@ final class RestartRoleTests: NTMSOrchestratorTestBase {
         XCTAssertEqual(pmMessages.count, 1, "Primary role should have Supervisor comment")
         XCTAssertTrue(sweMessages.isEmpty, "Downstream role should NOT have Supervisor comment")
     }
+
+    // MARK: - Queued-message preservation through restart
+
+    /// Regression guard for the "restartRole preserves queue" invariant
+    /// (plan §7a). `step.reset()` clears `llmSessionID`, so the injection
+    /// hook's `iterationNumber > 1 || session == nil` guard is satisfied on
+    /// iteration 1 of the restarted step, and the queued message delivers
+    /// there. Must not be "fixed" by adding role-level queue cleanup.
+    func testRestartRole_preservesQueuedMessages_deliversOnRestart() async {
+        let formState = QuickCaptureFormState()
+        sut.quickCaptureFormState = formState
+
+        let roleID = "pm-queue-survives"
+        let doneStep = StepExecution(
+            id: roleID,
+            role: .productManager,
+            title: "PM Step",
+            status: .done,
+            completedAt: MonotonicClock.shared.now(),
+            llmConversation: [LLMMessage(role: .assistant, content: "finished")],
+            llmSessionID: "stale-session"
+        )
+        let taskID = await createTaskWithRun(
+            steps: [doneStep],
+            roleStatuses: [roleID: .done]
+        )
+
+        // Queue a message AFTER the role is already done.
+        let queued = QuickCaptureFormState.QueuedChatMessage(
+            text: "доложи статус",
+            attachments: [],
+            clippedTexts: [],
+            targetRoleID: roleID
+        )!
+        formState.appendQueuedMessage(queued, for: taskID)
+
+        await sut.restartRole(taskID: taskID, roleID: roleID, comment: nil)
+
+        // Queue must survive the restart.
+        XCTAssertEqual(formState.queuedMessages(for: taskID).count, 1,
+                       "restartRole must NOT clear the queue — it's the survival vehicle for post-restart delivery")
+        // Reset cleared the stale session so iteration 1 of the restarted step
+        // will pass the injection hook's `session == nil` guard.
+        let step = sut.activeTask?.runs.last?.steps.first(where: { $0.id == roleID })
+        XCTAssertNil(step?.llmSessionID, "reset() must null llmSessionID so the next run starts stateless")
+        XCTAssertEqual(step?.status, .pending)
+
+        // Simulate iteration-1 of the restarted step calling through the delegate.
+        // Real production path is the same method, so this assertion pins end-to-end delivery.
+        let prompt = await sut.consumeQueuedSupervisorMessage(
+            taskID: taskID, roleID: roleID, stepID: roleID
+        )
+        XCTAssertEqual(prompt, "Supervisor:\nдоложи статус",
+                       "Message must deliver on the restarted step with the Supervisor: attribution header")
+        XCTAssertFalse(formState.hasQueuedMessage(for: taskID),
+                       "Queue drained after successful delivery")
+    }
 }

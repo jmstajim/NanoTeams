@@ -13,6 +13,7 @@ struct RoleNodeRuntimeView: View {
     let onSelect: () -> Void
     var onRestart: (() -> Void)? = nil
     var onFinish: (() -> Void)? = nil
+    var onCorrect: (() -> Void)? = nil
     var isAdvisory: Bool = false
     var isPaused: Bool = false
     var isEngineRunning: Bool = true
@@ -23,6 +24,20 @@ struct RoleNodeRuntimeView: View {
     @State private var isHovered = false
 
     private var canRestart: Bool { onRestart != nil && status.canRestart }
+    /// Matches `NTMSOrchestrator.correctRole` acceptance: the orchestrator only
+    /// requires engine `.paused` + a paused step. The role's own status can sit at
+    /// `.working` (normal pause) or `.idle`/`.ready` (post-app-restart recovery),
+    /// so allow any non-terminal role here — the orchestrator re-verifies and
+    /// surfaces errors if the user picks a role that can't actually be corrected.
+    private var canCorrect: Bool {
+        guard onCorrect != nil, isPaused else { return false }
+        switch status {
+        case .idle, .ready, .working, .revisionRequested:
+            return true
+        case .needsAcceptance, .accepted, .done, .failed, .skipped:
+            return false
+        }
+    }
 
     private static let nodeMaxWidth: CGFloat = GraphTokens.nodeMaxWidth
 
@@ -87,8 +102,18 @@ struct RoleNodeRuntimeView: View {
                 Label("View Details", systemImage: "info.circle")
             }
 
-            if canRestart {
+            if canCorrect {
                 Divider()
+
+                Button {
+                    onCorrect?()
+                } label: {
+                    Label("Correct Role…", systemImage: "arrow.uturn.backward.circle")
+                }
+            }
+
+            if canRestart {
+                if !canCorrect { Divider() }
 
                 Button {
                     onRestart?()

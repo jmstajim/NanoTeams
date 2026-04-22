@@ -12,6 +12,7 @@ struct GraphPanelView: View {
     @Binding var selectedRoleID: String?
     var onRestartRole: ((String) -> Void)? = nil
     var onFinishRole: ((String) -> Void)? = nil
+    var onCorrectRole: ((String) -> Void)? = nil
     var onRetryGeneration: (() -> Void)? = nil
     var isChatMode: Bool = false
     var isPaused: Bool = false
@@ -88,6 +89,7 @@ struct GraphPanelView: View {
                 team: activeTeam,
                 onRestartRole: onRestartRole,
                 onFinishRole: onFinishRole,
+                onCorrectRole: onCorrectRole,
                 isChatMode: isChatMode,
                 isPaused: isPaused,
                 isEngineRunning: isEngineRunning,

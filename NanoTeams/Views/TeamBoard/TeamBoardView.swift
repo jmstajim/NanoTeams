@@ -27,6 +27,9 @@ struct TeamBoardView: View {
     @State private var isShowingRestartSheet: Bool = false
     @State var isShowingFinalReviewSheet: Bool = false
     @State private var restartComment: String = ""
+    @State private var correctRoleID: String?
+    @State private var isShowingCorrectSheet: Bool = false
+    @State private var correctComment: String = ""
 
     /// The currently active (latest) run
     var activeRun: Run? {
@@ -143,6 +146,20 @@ struct TeamBoardView: View {
                 }
             }
         }
+        .sheet(isPresented: $isShowingCorrectSheet) {
+            let roleName = correctRoleID.flatMap { rid in
+                resolvedTeam.roles.first(where: { $0.id == rid })?.name
+            } ?? "Role"
+            CorrectRoleSheet(
+                roleName: roleName,
+                comment: $correctComment,
+                isPresented: $isShowingCorrectSheet
+            ) {
+                if let roleID = correctRoleID {
+                    handleCorrectRole(roleID: roleID, comment: correctComment)
+                }
+            }
+        }
         .sheet(isPresented: $isShowingFinalReviewSheet) {
             SupervisorFinalReviewView(
                 task: task,
@@ -216,6 +233,10 @@ struct TeamBoardView: View {
         let finishClosure: ((String) -> Void)? = isHistoricalRun ? nil : { roleID in
             store.finishAdvisoryRole(taskID: task.id, roleID: roleID)
         }
+        let correctClosure: ((String) -> Void)? = isHistoricalRun ? nil : { roleID in
+            correctRoleID = roleID
+            isShowingCorrectSheet = true
+        }
         let retryClosure: (() -> Void)? = isHistoricalRun ? nil : {
             Task { await store.retryTeamGeneration(taskID: task.id) }
         }
@@ -228,6 +249,7 @@ struct TeamBoardView: View {
             selectedRoleID: $selectedRoleID,
             onRestartRole: restartClosure,
             onFinishRole: finishClosure,
+            onCorrectRole: correctClosure,
             onRetryGeneration: retryClosure,
             isChatMode: resolvedTeam.isChatMode,
             isPaused: engineState.taskEngineStates[task.id] == .paused,
@@ -242,6 +264,9 @@ struct TeamBoardView: View {
         let restartClosure: ((String, String) -> Void)? = isHistoricalRun ? nil : { roleID, comment in
             handleRestartRole(roleID: roleID, comment: comment)
         }
+        let correctClosure: ((String, String) -> Void)? = isHistoricalRun ? nil : { roleID, comment in
+            handleCorrectRole(roleID: roleID, comment: comment)
+        }
         return ActivityPanelView(
             run: displayedRun,
             roleDefinitions: resolvedTeam.roles,
@@ -254,6 +279,7 @@ struct TeamBoardView: View {
             onReviewTask: { isShowingFinalReviewSheet = true },
             onRequestChanges: handleRevisionRequest,
             onRestartRole: restartClosure,
+            onCorrectRole: correctClosure,
             isPaused: engineState.taskEngineStates[task.id] == .paused,
             meetingParticipants: engineState.activeMeetingParticipants[task.id] ?? []
         )

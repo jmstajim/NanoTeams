@@ -48,7 +48,6 @@ struct QuickCaptureFormView: View {
     @Environment(DictationService.self) private var dictation
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isShowingFilePicker = false
-    @FocusState private var focusedField: Field?
 
     /// Fixed vertical slot reserved for the streaming preview line in `.taskWorking`.
     /// Scales with Dynamic Type at the `.caption` metric so the preview Text (also
@@ -56,8 +55,6 @@ struct QuickCaptureFormView: View {
     /// grows in lockstep. Must be a stored property — `@ScaledMetric` only works
     /// as a property wrapper.
     @ScaledMetric(relativeTo: .caption) private var previewLineHeight: CGFloat = 18
-
-    private enum Field: Hashable { case supervisorTask }
 
     // MARK: - Mode Derivations
 
@@ -73,6 +70,13 @@ struct QuickCaptureFormView: View {
 
     private var isWorkingMode: Bool {
         if case .taskWorking = mode { return true }
+        return false
+    }
+
+    /// True when the overlay is working on a chat-mode task. Enables the queue composer
+    /// so the user can line up their next message while the LLM is still streaming.
+    private var isChatWorkingMode: Bool {
+        if case .taskWorking(_, let isChatMode) = mode { return isChatMode }
         return false
     }
 
@@ -127,7 +131,11 @@ struct QuickCaptureFormView: View {
         VStack(alignment: .leading, spacing: contentSpacing) {
             header
             if isWorkingMode {
-                taskWorkingBody
+                if isChatWorkingMode, let taskID = store.activeTaskID {
+                    chatWorkingBody(taskID: taskID)
+                } else {
+                    taskWorkingBody
+                }
             } else if answerPayload != nil {
                 answerModeBody
             } else {
@@ -151,9 +159,6 @@ struct QuickCaptureFormView: View {
                 formState.selectedTeamID = store.snapshot?.workFolder.activeTeamID ?? availableTeams.first?.id
             }
         }
-        .task {
-            focusedField = .supervisorTask
-        }
     }
 
     // MARK: - Answer Mode
@@ -163,7 +168,7 @@ struct QuickCaptureFormView: View {
             if let payload = answerPayload {
                 questionText(payload.question)
             }
-            SupervisorAnswerComposer(
+            MessageComposer(
                 text: $formState.supervisorTask,
                 attachments: $formState.answerAttachments,
                 clips: $formState.answerClippedTexts,
@@ -189,18 +194,32 @@ struct QuickCaptureFormView: View {
             if !isSheetMode {
                 Spacer(minLength: 0)
             }
-            taskField
             if isSheetMode {
+                Text(SystemTemplates.supervisorTaskArtifactName)
+                    .font(Typography.subheadlineMedium)
+                    .foregroundStyle(.secondary)
                 teamPicker
             }
-            AttachmentGridView(
-                formState: formState,
-                mode: mode,
-                activeDraftID: activeDraftID,
-                isSheetMode: isSheetMode,
-                onRequestFilePicker: { isShowingFilePicker = true }
-            )
-            actions
+            MessageComposer(
+                text: $formState.supervisorTask,
+                attachments: $formState.attachments,
+                clips: $formState.clippedTexts,
+                placeholder: taskFieldPlaceholder,
+                canSubmit: canSubmit,
+                isSubmitting: false,
+                onSubmit: handleSubmit,
+                onStageAttachment: { url in store.stageAttachment(url: url, draftID: activeDraftID) },
+                onRemoveAttachment: { attachment in store.removeStagedAttachment(attachment) },
+                filePickerBinding: $isShowingFilePicker,
+                autofocusOnAppear: true
+            ) {
+                if !isSheetMode { quickCaptureSettingsMenu }
+            }
+        }
+        .background {
+            Button("", action: handleCancel)
+                .keyboardShortcut(.cancelAction)
+                .hidden()
         }
     }
 
@@ -353,6 +372,80 @@ struct QuickCaptureFormView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// Chat-mode working body: big centered loader always at the top (same visual as
+    /// the non-chat `taskWorkingBody`), with the `MessageComposer` docked at the
+    /// bottom for queueing the next message while the LLM is still streaming. The
+    /// loader region flexes to fill whatever space the composer doesn't consume.
+    /// Submit moves the draft into `formState.queuedChatMessages` and flushes
+    /// automatically when the engine next reaches `.needsSupervisorInput`.
+    private func chatWorkingBody(taskID: Int) -> some View {
+        let previewGap: CGFloat = Spacing.m
+
+        return VStack(spacing: 0) {
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                Color.clear.frame(height: previewLineHeight + previewGap)
+                NTMSLoader(.large)
+                Color.clear.frame(height: previewGap)
+                streamingPreviewLine
+                    .frame(height: previewLineHeight)
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            VStack(alignment: .leading, spacing: Spacing.s) {
+                if formState.hasQueuedMessage(for: taskID) {
+                    queuedBadge(taskID: taskID)
+                }
+
+                MessageComposer(
+                    text: $formState.supervisorTask,
+                    attachments: $formState.answerAttachments,
+                    clips: $formState.answerClippedTexts,
+                    placeholder: formState.hasQueuedMessage(for: taskID)
+                        ? "Replace queued message..."
+                        : "Type to queue a message...",
+                    canSubmit: canSubmit,
+                    isSubmitting: false,
+                    onSubmit: handleSubmit,
+                    onStageAttachment: { url in store.stageAttachment(url: url, draftID: activeDraftID) },
+                    onRemoveAttachment: { attachment in store.removeStagedAttachment(attachment) },
+                    filePickerBinding: $isShowingFilePicker
+                ) {
+                    if !isSheetMode { quickCaptureSettingsMenu }
+                }
+            }
+        }
+    }
+
+    private func queuedBadge(taskID: Int) -> some View {
+        HStack(spacing: Spacing.xs) {
+            Image(systemName: "tray.and.arrow.up")
+                .font(.caption2)
+                .foregroundStyle(Colors.accent)
+            Text("Queued — will send when the team asks for input")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer()
+            Button {
+                QuickCaptureController.shared.discardQueuedChatMessage(taskID: taskID)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .buttonStyle(.plain)
+            .help("Discard the queued message")
+        }
+        .padding(.horizontal, Spacing.s)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle.squircle(CornerRadius.small)
+                .fill(Colors.accentTint)
+        )
+    }
+
     /// Single-line live preview of the currently streaming model content.
     /// Mirrors the activity feed's polling pattern in `TeamActivityFeedView.messageBubble`
     /// (including the reduce-motion rate). Only the Text polls — the loader and layout
@@ -459,33 +552,6 @@ struct QuickCaptureFormView: View {
         }
     }
 
-    // MARK: - Task Field
-
-    private var taskField: some View {
-        VStack(alignment: .leading, spacing: Spacing.xs) {
-            if isSheetMode {
-                Text(SystemTemplates.supervisorTaskArtifactName)
-                    .font(Typography.subheadlineMedium)
-                    .foregroundStyle(.secondary)
-            }
-            TextField(taskFieldPlaceholder, text: $formState.supervisorTask, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(.body)
-                .lineLimit(1...10)
-                .padding(Spacing.s)
-                .background(
-                    RoundedRectangle.squircle(CornerRadius.small)
-                        .fill(Colors.surfaceCard)
-                )
-                .focused($focusedField, equals: .supervisorTask)
-                .enterSendsMessage(
-                    config.enterSendsMessage,
-                    canSubmit: canSubmit,
-                    onSubmit: handleSubmit
-                )
-        }
-    }
-
     private var taskFieldPlaceholder: String {
         if selectedTeam?.isChatMode == true { return "Send a message..." }
         return "Describe your task..."
@@ -543,45 +609,6 @@ struct QuickCaptureFormView: View {
                 )
             }
             .menuStyle(.borderlessButton)
-        }
-    }
-
-    // MARK: - Actions
-
-    private var actions: some View {
-        HStack(spacing: Spacing.m) {
-            Button {
-                isShowingFilePicker = true
-            } label: {
-                Image(systemName: "plus.circle")
-                    .font(.title2)
-                    .foregroundStyle(Colors.accent)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Attach files")
-
-            if !isSheetMode {
-                quickCaptureSettingsMenu
-            }
-
-            Spacer()
-
-            DictationMicButton(text: $formState.supervisorTask)
-
-            Button {
-                handleSubmit()
-            } label: {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(!canSubmit ? Colors.textTertiary : Colors.accent)
-            }
-            .buttonStyle(.plain)
-            .disabled(!canSubmit)
-        }
-        .background {
-            Button("", action: handleCancel)
-                .keyboardShortcut(.cancelAction)
-                .hidden()
         }
     }
 

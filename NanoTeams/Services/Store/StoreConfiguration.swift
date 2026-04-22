@@ -255,7 +255,7 @@ final class StoreConfiguration {
     // MARK: - App Update
 
     /// Timestamp of the last successful GitHub releases check. Used to throttle
-    /// the weekly automatic refresh; nil means "never checked".
+    /// the daily (default) automatic refresh; nil means "never checked".
     var lastAppUpdateCheckAt: Date? {
         didSet {
             if let date = lastAppUpdateCheckAt {
@@ -274,7 +274,7 @@ final class StoreConfiguration {
     }
 
     /// Last successfully-fetched release payload, persisted so the Watchtower
-    /// card re-appears on relaunch within the weekly throttle window (otherwise
+    /// card re-appears on relaunch within the active throttle window (otherwise
     /// `refresh()` skips the network call and `availableRelease` stays nil).
     /// Cleared when the user skips the tag or when the check yields no newer
     /// release.
@@ -391,7 +391,7 @@ final class StoreConfiguration {
             self.cachedAppUpdateRelease = nil
         }
         self.appUpdateCheckInterval = storage.string(forKey: Keys.appUpdateCheckInterval)
-            .flatMap(AppUpdateCheckInterval.init(rawValue:)) ?? .weekly
+            .flatMap(AppUpdateCheckInterval.init(rawValue:)) ?? .daily
         self.dictationLocaleIdentifiers = (storage.object(forKey: Keys.dictationLocales) as? [String]) ?? []
     }
 

@@ -84,6 +84,11 @@ final class NTMSOrchestrator {
     @ObservationIgnored let workFolderManagementService: WorkFolderManagementService
     @ObservationIgnored let engineFactory: @MainActor () -> TeamEngine
     @ObservationIgnored let fileManager: FileManager
+    /// Source of queued Supervisor messages delivered on a role's next LLM iteration.
+    /// Wired by `NanoTeamsApp` after `QuickCaptureController.shared.setup(...)`. Weak
+    /// because `QuickCaptureController` already owns the strong reference to the
+    /// shared form state.
+    @ObservationIgnored weak var quickCaptureFormState: QuickCaptureFormState?
 
     /// Default internal storage used when no real work folder is selected.
     /// Teams like Quest Party and Discussion Club work without a real folder.

@@ -32,7 +32,7 @@ extension WatchtowerNotificationBanner {
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            SupervisorAnswerComposer(
+            MessageComposer(
                 text: $answerText,
                 attachments: $answerAttachments,
                 placeholder: "Type your answer...",

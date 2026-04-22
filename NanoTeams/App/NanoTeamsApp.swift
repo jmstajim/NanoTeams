@@ -58,6 +58,10 @@ struct NanoTeamsApp: App {
                     .preferredColorScheme(appAppearance.colorScheme)
                     .onAppear {
                         QuickCaptureController.shared.setup(store: store, dictation: dictation)
+                        // Bridge the Quick Capture queue into the orchestrator so the
+                        // LLM pipeline can consume queued Supervisor messages on each
+                        // role's next iteration. Weak ref — QCC owns the strong reference.
+                        store.quickCaptureFormState = QuickCaptureController.shared.formState
                         dictation.userSelectedLocalesProvider = {
                             store.configuration.dictationLocaleIdentifiers.map {
                                 Locale(identifier: $0)

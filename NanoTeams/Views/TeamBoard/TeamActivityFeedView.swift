@@ -1,28 +1,5 @@
 import SwiftUI
 
-// MARK: - Banner Scroll Container
-
-/// ScrollView that auto-sizes to content but caps at `maxHeight`.
-private struct BannerScrollContainer<Content: View>: View {
-    let maxHeight: CGFloat
-    @ViewBuilder let content: Content
-
-    @State private var contentHeight: CGFloat = .infinity
-
-    var body: some View {
-        ScrollView {
-            content
-                .onGeometryChange(for: CGFloat.self) { proxy in
-                    proxy.size.height
-                } action: { newHeight in
-                    if abs(newHeight - contentHeight) > 1 { contentHeight = newHeight }
-                }
-        }
-        .scrollBounceBehavior(.basedOnSize)
-        .frame(height: min(contentHeight, maxHeight))
-    }
-}
-
 // MARK: - Team Activity Feed View
 
 /// Unified activity feed showing all team members work chronologically.
@@ -34,12 +11,14 @@ struct TeamActivityFeedView: View {
     let producedArtifacts: Set<String>
     let isFinalReviewStage: Bool
     var isChatMode: Bool = false
+    var isReadOnly: Bool = false
     var filterRoleID: String? = nil
     var onSelectRole: ((String) -> Void)? = nil
     var onReviewTask: (() -> Void)? = nil
     var onRequestChanges: ((String, String) -> Void)? = nil
 
     @Environment(NTMSOrchestrator.self) private var store
+    @Environment(OrchestratorEngineState.self) private var engineStateEnv
     @Environment(StoreConfiguration.self) private var config
     @Environment(StreamingPreviewManager.self) private var streamingManager
     @Environment(DictationService.self) private var dictation
@@ -49,7 +28,6 @@ struct TeamActivityFeedView: View {
     @State private var revisionRoleID: String? = nil
     @State private var revisionComment: String = ""
     @State private var isShowingRevisionSheet: Bool = false
-    @State private var availableHeight: CGFloat = 400
 
     /// Creates a `Binding` into `viewModel.expansion` for a given key path.
     private func expansionBinding<T>(_ keyPath: WritableKeyPath<TeamActivityFeedViewModel.ExpansionState, T>) -> Binding<T> {
@@ -117,59 +95,49 @@ struct TeamActivityFeedView: View {
         !rolesNeedingAcceptance.isEmpty || isFinalReviewStage
     }
 
+    /// Persistent composer is visible on any live (non-historical, non-terminal) run so
+    /// the Supervisor can always send a message. The composer dispatches by recipient:
+    /// `.answer` → `store.answerSupervisorQuestion`; `.team` / `.role` → queue via
+    /// `QuickCaptureController.queueChatMessage`. Corrections to a paused role go
+    /// through `CorrectRoleSheet` on the graph/banner, not through this composer.
+    ///
+    /// Role IDs currently `.working` — used to narrow the composer's "To:" menu.
+    private var workingRoleIDs: Set<String> {
+        guard let statuses = run?.roleStatuses else { return [] }
+        return Set(statuses.compactMap { id, status in status == .working ? id : nil })
+    }
+
+    /// First active supervisor question (only one is ever "live" at a time per the engine
+    /// contract), mapped into the composer's lightweight snapshot type. For team tasks
+    /// `StepExecution.id == roleID`, so `q.stepID` doubles as the asking-role id — the
+    /// `TeamActivityActiveQuestion` type exposes both via a single stored field with a
+    /// computed `askingRoleID`.
+    private var activeQuestionForComposer: TeamActivityActiveQuestion? {
+        guard let q = viewModel.cachedSupervisorQuestions.first else { return nil }
+        return TeamActivityActiveQuestion(
+            stepID: q.stepID,
+            role: q.role,
+            question: q.question
+        )
+    }
+
+    private var shouldShowComposer: Bool {
+        guard !isReadOnly else { return false }
+        guard let taskID = store.activeTaskID else { return false }
+        guard store.activeTask?.closedAt == nil else { return false }
+        switch engineStateEnv[taskID] {
+        case .done, .failed, nil:
+            return false
+        default:
+            return true
+        }
+    }
+
     // MARK: - Supervisor Mode
 
     private var isAutonomousMode: Bool {
         let team = store.resolvedTeam(for: store.activeTask)
         return team.settings.supervisorMode == .autonomous
-    }
-
-    // MARK: - Active Supervisor Questions (cached via recomputeSteps)
-
-    private func supervisorQuestionBanner(maxHeight: CGFloat) -> some View {
-        BannerScrollContainer(maxHeight: maxHeight) {
-            VStack(spacing: Spacing.s) {
-                ForEach(viewModel.cachedSupervisorQuestions, id: \.toolCallID) { q in
-                    let answerBinding = Binding<String>(
-                        get: { viewModel.supervisorAnswerText[q.stepID] ?? "" },
-                        set: { viewModel.supervisorAnswerText[q.stepID] = $0 }
-                    )
-                    let attachmentsBinding = Binding<[StagedAttachment]>(
-                        get: { viewModel.supervisorAnswerAttachments[q.stepID] ?? [] },
-                        set: { viewModel.supervisorAnswerAttachments[q.stepID] = $0 }
-                    )
-                    NotificationItemView(
-                        stepID: q.stepID,
-                        role: q.role,
-                        type: .supervisorInput(
-                            question: q.question, answer: nil,
-                            answerAttachmentPaths: [],
-                            answerClippedTexts: [],
-                            toolCallID: q.toolCallID, thinking: q.thinking
-                        ),
-                        isChatMode: isChatMode,
-                        workFolderURL: store.workFolderURL,
-                        thinkingExpanded: expansionBinding(\.thinking),
-                        answerText: answerBinding,
-                        answerAttachments: attachmentsBinding,
-                        isSubmittingAnswer: viewModel.isSubmittingAnswer.contains(q.stepID),
-                        isAutoAnswering: isAutonomousMode,
-                        onSubmitAnswer: { viewModel.submitSupervisorAnswer(stepID: q.stepID, store: store, embedFiles: config.embedFilesInPrompt) },
-                        onStageAttachment: { url in
-                            let draftUUID = UUID()
-                            return store.stageAttachment(url: url, draftID: draftUUID)
-                        },
-                        onRemoveAttachment: { attachment in
-                            store.removeStagedAttachment(attachment)
-                        }
-                    )
-                }
-            }
-            .padding(.top, Spacing.s)
-            .padding(.bottom, Spacing.l)
-            .padding(.horizontal)
-        }
-        .background(Colors.surfaceCard)
     }
 
     // MARK: - Helpers
@@ -208,9 +176,20 @@ struct TeamActivityFeedView: View {
                     .allowsHitTesting(false)
                 }
             }
+            .frame(maxHeight: .infinity)
 
-            if !viewModel.cachedSupervisorQuestions.isEmpty {
-                supervisorQuestionBanner(maxHeight: availableHeight * 3 / 4)
+            if shouldShowComposer, let taskID = store.activeTaskID {
+                // Single unified input card. The "To:" menu lets the Supervisor choose
+                // between answering the pending question, queuing for the team, or
+                // queuing for a specific working role.
+                TeamActivityComposer(
+                    roleDefinitions: roleDefinitions,
+                    isChatMode: isChatMode,
+                    taskID: taskID,
+                    workingRoleIDs: workingRoleIDs,
+                    activeQuestion: activeQuestionForComposer
+                )
+                .background(Colors.surfaceCard)
             }
 
             if hasActionBarContent {
@@ -233,12 +212,8 @@ struct TeamActivityFeedView: View {
                         producedArtifacts: producedArtifacts
                     )
                 }
+
             }
-        .onGeometryChange(for: CGFloat.self) { proxy in
-            proxy.size.height
-        } action: { newHeight in
-            if abs(newHeight - availableHeight) > 1 { availableHeight = newHeight }
-        }
         .onAppear {
             let context = buildContext()
             // Seed fingerprint + initial synchronous rebuild, then refresh artifact content async.
@@ -532,7 +507,10 @@ struct TeamActivityFeedView: View {
             MessageBubbleView(
                 message: msg, role: role,
                 roleDefinition: findRoleDefinition(for: role),
-                content: msg.content,
+                // `displayContent` strips the "Supervisor:\n" header for
+                // supervisor-injected turns — the role name is already in the
+                // bubble header, so the prefix would duplicate attribution.
+                content: msg.displayContent,
                 thinking: msg.thinking,
                 processingProgress: nil,
                 isStreaming: false,

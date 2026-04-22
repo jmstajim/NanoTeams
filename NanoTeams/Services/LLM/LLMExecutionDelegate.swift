@@ -36,6 +36,29 @@ protocol LLMStateDelegate: TaskMutationDelegate {
     var loggingEnabled: Bool { get }
     /// Loads a task by ID (active or background).
     func loadedTask(_ taskID: Int) -> NTMSTask?
+    /// Atomically consumes the next queued Supervisor message eligible for this
+    /// role on its next LLM iteration. Preference order: messages whose
+    /// `targetRoleID == roleID` (FIFO within tier), then untargeted messages
+    /// (FIFO within tier).
+    ///
+    /// Performs staged-attachment finalization and appends **one**
+    /// `LLMMessage(role: .user, sourceRole: .supervisor, sourceContext:
+    /// .supervisorMessage)` to `step.llmConversation` so the activity feed
+    /// renders the Supervisor bubble. Does NOT append a `StepMessage` —
+    /// `step.messages` has no UI consumer and mid-iteration mutations don't
+    /// feed back into the current run's `fullConversation`.
+    ///
+    /// `restartRole` preserves queued messages: `step.reset()` nulls
+    /// `llmSessionID`, so iteration 1 of the restarted step satisfies the
+    /// injection hook's `iterationNumber > 1 || session == nil` guard and the
+    /// queue is consumed then. Do not "fix" this by adding role-level cleanup.
+    ///
+    /// Returns the final prompt text (already including "--- Attached Files ---"
+    /// / embedded content per `AnswerTextBuilder`) the caller must append to
+    /// the LLM conversation for this iteration. Returns `nil` if no eligible
+    /// message exists OR if attachment finalization fails (in which case the
+    /// message stays queued and `lastErrorMessage` is set).
+    func consumeQueuedSupervisorMessage(taskID: Int, roleID: String, stepID: String) async -> String?
 }
 
 // MARK: - LLMStreamingDelegate
@@ -50,6 +73,10 @@ protocol LLMStreamingDelegate: AnyObject {
     func beginStreaming(stepID: String, messageID: UUID, role: Role, taskID: Int) async
     /// Appends content to the streaming preview for a step.
     func appendStreamingPreview(stepID: String, messageID: UUID, role: Role, content: String)
+    /// Replaces the streaming preview content for a step in one shot.
+    /// Used to rewind the on-screen preview when a Harmony tool-call marker is
+    /// detected mid-flush, so partial prefixes (e.g. `<`, `<|`) don't linger.
+    func replaceStreamingPreview(stepID: String, messageID: UUID, role: Role, content: String)
     /// Appends thinking content to the streaming preview for a step.
     func appendStreamingThinking(stepID: String, content: String)
     /// Commits streaming: updates the pre-created LLMMessage with final content and thinking,

@@ -49,6 +49,10 @@ import Foundation
     func confirmDelete(store: NTMSOrchestrator) async -> Bool {
         guard let id = taskToDelete else { return false }
         let wasActive = store.activeTaskID == id
+        // Drop any queued chat message before the task is gone — prevents leaking
+        // into a reincarnated task ID (sequential IDs don't reuse today, but the
+        // queue is task-scoped either way).
+        QuickCaptureController.shared.discardQueuedChatMessage(taskID: id)
         await store.removeTask(id)
         seenSupervisorInputTaskIDs.remove(id)
         taskToDelete = nil

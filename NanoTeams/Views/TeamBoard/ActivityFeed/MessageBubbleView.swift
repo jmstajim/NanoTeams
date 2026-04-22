@@ -30,7 +30,13 @@ struct MessageBubbleView: View {
     // MARK: - Body
 
     var body: some View {
-        let hasThinkingContent = thinking.map { !$0.isEmpty } ?? false
+        // Treat whitespace-only reasoning as "no thinking" so a disclosure
+        // doesn't render with nothing inside (older persisted messages and
+        // mid-stream previews can hold a lone `\n` if the model emitted an
+        // empty [reasoning] block).
+        let hasThinkingContent = thinking.map {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        } ?? false
         let hasMessageContent = !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
         HStack(alignment: .top, spacing: ActivityCardTokens.cardPadding) {
@@ -72,11 +78,28 @@ struct MessageBubbleView: View {
                 }
 
                 if hasMessageContent {
-                    Text(content)
+                    // Supervisor-injected messages (queued chat delivery) render
+                    // with the same bubble style as the initial-task brief
+                    // (`SupervisorTaskItemView`) — visually consistent with the
+                    // Supervisor's other utterances in the feed.
+                    let contentText = Text(content)
                         .font(.body)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                    if message.sourceContext == .supervisorMessage {
+                        contentText
+                            .padding(ActivityCardTokens.cardPadding)
+                            .background(
+                                RoundedRectangle(
+                                    cornerRadius: ActivityCardTokens.cornerRadius,
+                                    style: .continuous
+                                )
+                                .fill(Colors.surfaceElevated)
+                            )
+                    } else {
+                        contentText
+                    }
                 }
             }
         }

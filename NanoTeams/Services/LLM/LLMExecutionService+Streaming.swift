@@ -85,7 +85,12 @@ extension LLMExecutionService {
             flushPendingUI(force: true)
             if let tid = taskIDForStep(stepID) {
                 let cleanedContent = ModelTokenCleaner.clean(assistantCollected)
-                let thinkingToCommit = thinkingCollected.isEmpty ? nil : thinkingCollected
+                // Drop whitespace-only reasoning (some models emit an empty
+                // `[reasoning]...[/reasoning]` block with just newlines) so we
+                // don't persist a thinking disclosure that expands to nothing.
+                let thinkingToCommit: String? =
+                    thinkingCollected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? nil : thinkingCollected
                 await delegate.commitStreaming(
                     stepID: stepID, taskID: tid,
                     content: cleanedContent, thinking: thinkingToCommit)
@@ -136,7 +141,19 @@ extension LLMExecutionService {
                                 }
                             }
                             if let lower = earliestLower {
-                                assistantCollected = String(uiBuffer[..<lower])
+                                let preMarker = String(uiBuffer[..<lower])
+                                assistantCollected = preMarker
+                                // Rewind the on-screen preview so partial marker
+                                // prefixes (e.g. `<`, `<|`) that were flushed by
+                                // the time/size heuristic don't linger — see
+                                // ModelTokenCleaner.containsModelTokens which only
+                                // strips once both `<|` and `|>` are present.
+                                delegate.replaceStreamingPreview(
+                                    stepID: stepID,
+                                    messageID: streamingMessageID,
+                                    role: roleForMessage,
+                                    content: preMarker
+                                )
                             }
                             pendingUI = ""
                             continue

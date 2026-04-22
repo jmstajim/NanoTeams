@@ -14,6 +14,7 @@ struct TeamGraphView: View {
     var team: Team? = nil
     var onRestartRole: ((String) -> Void)? = nil
     var onFinishRole: ((String) -> Void)? = nil
+    var onCorrectRole: ((String) -> Void)? = nil
     var isChatMode: Bool = false
     var isPaused: Bool = false
     var isEngineRunning: Bool = true
@@ -160,6 +161,9 @@ struct TeamGraphView: View {
                     onFinish: (!isChatMode && (roleDef?.isAdvisory ?? false)) ? onFinishRole.map { callback in
                         { callback(nodePosition.roleID) }
                     } : nil,
+                    onCorrect: onCorrectRole.map { callback in
+                        { callback(nodePosition.roleID) }
+                    },
                     isAdvisory: roleDef?.isAdvisory ?? false,
                     isPaused: isPaused,
                     isEngineRunning: isEngineRunning,
