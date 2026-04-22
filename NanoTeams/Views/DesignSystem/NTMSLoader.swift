@@ -90,12 +90,12 @@ struct NTMSLoader: View {
 
         var lineWidth: CGFloat {
             switch self {
-            case .inline:     return 2
-            case .mini:       return 2.5
-            case .small:      return 3
-            case .regular:    return 3.5
-            case .large:      return 4
-            case .extraLarge: return 4.5
+            case .inline:     return 1
+            case .mini:       return 1
+            case .small:      return 1
+            case .regular:    return 2
+            case .large:      return 2
+            case .extraLarge: return 3
             }
         }
     }
