@@ -436,7 +436,7 @@ final class QuickCaptureAnswerModeTests: XCTestCase {
         super.tearDown()
     }
 
-    func testEnterAnswerMode_savesGoalAndCarriesTextAsInitialAnswer() {
+    func testEnterAnswerMode_savesGoalAndClearsAnswerField() {
         sut.formState.supervisorTask = "My task description"
         let payload = makePayload()
 
@@ -444,17 +444,17 @@ final class QuickCaptureAnswerModeTests: XCTestCase {
 
         XCTAssertTrue(sut._testIsInAnswerMode)
         XCTAssertEqual(sut._testSavedSupervisorTask, "My task description")
-        // Typed text is kept as the initial answer — the chat-working queue composer
-        // shares this field, so clearing would silently discard the user's message.
-        XCTAssertEqual(sut.formState.supervisorTask, "My task description")
+        // Answer field starts empty — user's task draft is preserved via
+        // `savedSupervisorTask` and restored on exit, not leaked into the answer.
+        XCTAssertEqual(sut.formState.supervisorTask, "")
         XCTAssertEqual(sut.formState.pendingAnswer?.question, "Test question?")
     }
 
     func testExitAnswerMode_restoresGoal() {
         sut.formState.supervisorTask = "Original goal"
         sut._testEnterAnswerMode(.supervisorAnswer(payload: makePayload()))
-        // Carried over as initial answer — not cleared.
-        XCTAssertEqual(sut.formState.supervisorTask, "Original goal")
+        // Answer field starts empty on entry.
+        XCTAssertEqual(sut.formState.supervisorTask, "")
 
         sut._testExitAnswerMode()
 
@@ -640,6 +640,10 @@ final class QuickCaptureTeamSelectionTests: NTMSOrchestratorTestBase {
 
     var controller: QuickCaptureController!
 
+    /// Remembered across the test so `tearDown` can restore the real user
+    /// preference after forcing it off in `setUp`.
+    private var savedKeepOpenInChat: Bool!
+
     override func setUp() {
         super.setUp()
         controller = QuickCaptureController.shared
@@ -649,6 +653,14 @@ final class QuickCaptureTeamSelectionTests: NTMSOrchestratorTestBase {
         controller.formState.title = ""
         controller.formState.attachments = []
         controller.formState.clippedTexts = []
+        // The default first team (Personal Assistant) is chat-mode. With the
+        // UserDefaults-backed `keepOpenInChat` defaulting to true on fresh CI
+        // runners, `createTask` would take the keep-open branch that requires
+        // a dictation instance set via `setup(store:dictation:)`. These tests
+        // only verify team resolution, not the panel-content refresh path, so
+        // force the non-chat post-create branch (dismissPanel).
+        savedKeepOpenInChat = controller.keepOpenInChat
+        controller.keepOpenInChat = false
     }
 
     override func tearDown() {
@@ -656,6 +668,8 @@ final class QuickCaptureTeamSelectionTests: NTMSOrchestratorTestBase {
         controller.formState.supervisorTask = ""
         controller.formState.title = ""
         controller.store = nil
+        controller.keepOpenInChat = savedKeepOpenInChat
+        savedKeepOpenInChat = nil
         controller = nil
         super.tearDown()
     }

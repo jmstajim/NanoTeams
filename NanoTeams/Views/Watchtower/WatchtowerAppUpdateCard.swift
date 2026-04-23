@@ -62,6 +62,8 @@ struct WatchtowerAppUpdateCard: View {
                     .lineLimit(2)
                     .truncationMode(.tail)
             }
+
+            StarOnGitHubBanner(size: .compact)
         }
         .padding(Spacing.m)
         .background(
@@ -76,7 +78,6 @@ struct WatchtowerAppUpdateCard: View {
 private struct SkipButton: View {
     let onSkip: () -> Void
     @State private var isHovered = false
-    @FocusState private var isFocused: Bool
 
     var body: some View {
         Button {
@@ -84,15 +85,15 @@ private struct SkipButton: View {
         } label: {
             Image(systemName: "xmark")
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(isHovered || isFocused ? .primary : .secondary)
+                .foregroundStyle(isHovered ? .primary : .secondary)
                 .padding(6)
-                .background(Circle().fill(isHovered || isFocused ? Colors.surfaceCard : Colors.surfaceHover))
+                .background(Circle().fill(isHovered ? Colors.surfaceHover : Color.clear))
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        .focusEffectDisabled()
         .accessibilityLabel("Skip this update")
         .help("Skip this version")
-        .focusable()
-        .focused($isFocused)
         .trackHover($isHovered)
     }
 }

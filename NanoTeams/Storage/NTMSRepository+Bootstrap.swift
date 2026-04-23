@@ -40,18 +40,6 @@ extension NTMSRepository {
             default: TeamsFile(schemaVersion: 1, teams: Team.defaultTeams)
         )
 
-        // Cross-file consistency: an activeTeamID that no longer resolves is
-        // meaningless (UI would silently fall back to `teams.first`). Happens
-        // when teams.json was recovered to defaults while workfolder.json was
-        // intact. Clear it so the next state write persists a consistent pair.
-        var repairedState = state
-        if let activeID = repairedState.activeTeamID,
-           !teamsFile.teams.contains(where: { $0.id == activeID })
-        {
-            repairedState.activeTeamID = nil
-            try store.write(repairedState, to: paths.workFolderJSON)
-        }
-
         // Empty teams array (from a corrupt-then-defaulted teams.json whose
         // defaults were themselves empty, or a future migration bug) is a
         // broken invariant: bootstrap fresh defaults so the app has something
@@ -59,6 +47,26 @@ extension NTMSRepository {
         if teamsFile.teams.isEmpty {
             teamsFile.teams = Team.defaultTeams
             try store.write(teamsFile, to: paths.teamsJSON)
+        }
+
+        // Cross-file consistency: activeTeamID must always resolve to a real
+        // team when teams exist. `WorkFolderProjection.activeTeam` already
+        // falls back to `teams.first` when activeTeamID is nil, and
+        // `removeTeam` explicitly sets it to `teams.first?.id` when the active
+        // team is removed — so the invariant "active = teams.first if not
+        // chosen" lives elsewhere in the code, and stored state must agree.
+        // Two repair cases collapsed into one write:
+        //   a) Dangling ID → teams.json was recovered while workfolder.json
+        //      still pointed at a pre-corruption team. Replace with first.
+        //   b) Nil ID with non-empty teams → bootstrap default. Set to first
+        //      so the stored state matches what the UI effectively shows.
+        var repairedState = state
+        let resolvable = repairedState.activeTeamID.map { id in
+            teamsFile.teams.contains(where: { $0.id == id })
+        } ?? false
+        if !resolvable, let firstID = teamsFile.teams.first?.id {
+            repairedState.activeTeamID = firstID
+            try store.write(repairedState, to: paths.workFolderJSON)
         }
 
         return (repairedState, settings, teamsFile)

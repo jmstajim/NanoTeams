@@ -103,13 +103,15 @@ final class QuickCaptureFormState {
     // MARK: - Answer Mode Transitions
 
     /// Enters answer mode: stashes the current `supervisorTask` so it can be restored
-    /// on exit, then either restores a saved per-task answer draft or — if no draft
-    /// exists — carries the current text/attachments/clips over as the initial answer.
-    /// The carry-over matters for chat-working mode: a queue message the user was
-    /// typing (`формState.supervisorTask` shared with the working composer) should
-    /// become the initial answer when the LLM finally asks for input, not get wiped.
+    /// on exit, then either restores a saved per-task answer draft or starts with
+    /// empty answer fields. The old `supervisorTask` content is preserved only via
+    /// `savedSupervisorTask` — it is NOT carried over as the initial answer so a
+    /// new-task draft does not leak into the answer field.
     /// Re-entry is non-destructive — if already in answer mode, only the payload is
-    /// updated so the original `savedSupervisorTask` (the user's task draft) is preserved.
+    /// updated so the original `savedSupervisorTask` (the user's task draft) is
+    /// preserved. When the same-task re-entry finds empty answer fields but a saved
+    /// draft exists (the panel was dismissed via `clearAnswerSession`), the draft's
+    /// clips and attachments are restored so the open/close cycle keeps them intact.
     func enterAnswerMode(payload: SupervisorAnswerPayload) {
         guard !isInAnswerMode else {
             // Task changed while already in answer mode — switch drafts
@@ -117,6 +119,15 @@ final class QuickCaptureFormState {
                 switchAnswerTask(from: oldTaskID, to: payload)
             } else {
                 pendingAnswer = payload
+                // Re-entry after `clearAnswerSession` on panel dismiss: clips and
+                // attachments were cleared but a draft was saved. Restore them so
+                // they persist across open/close cycles. supervisorTask is preserved
+                // by `clearAnswerSession` so it is already correct.
+                if answerAttachments.isEmpty && answerClippedTexts.isEmpty,
+                   let draft = answerDrafts[payload.taskID] {
+                    answerAttachments = draft.attachments
+                    answerClippedTexts = draft.clippedTexts
+                }
             }
             return
         }
@@ -125,9 +136,14 @@ final class QuickCaptureFormState {
             supervisorTask = draft.text
             answerAttachments = draft.attachments
             answerClippedTexts = draft.clippedTexts
+        } else {
+            // Fresh entry for this task — start with empty answer fields. The
+            // old supervisorTask content is in `savedSupervisorTask` and will be
+            // restored on `exitAnswerMode`.
+            supervisorTask = ""
+            answerAttachments = []
+            answerClippedTexts = []
         }
-        // Else: leave supervisorTask / answerAttachments / answerClippedTexts as-is so
-        // anything the user already typed (chat-working queue draft) carries over.
         pendingAnswer = payload
         isInAnswerMode = true
     }

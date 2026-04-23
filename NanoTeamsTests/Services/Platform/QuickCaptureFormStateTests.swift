@@ -40,15 +40,15 @@ final class QuickCaptureFormStateTests: XCTestCase {
 
     // MARK: - Answer Mode Transitions
 
-    func testEnterAnswerMode_savesGoalAndCarriesTextAsInitialAnswer() {
+    func testEnterAnswerMode_savesGoalAndClearsAnswerField() {
         sut.supervisorTask = "My task draft"
         sut.enterAnswerMode(payload: makePayload())
 
         XCTAssertTrue(sut.isInAnswerMode)
-        // Typed text carries over as the initial answer so chat-working queue drafts
-        // aren't silently wiped when the LLM finally asks a question.
-        XCTAssertEqual(sut.supervisorTask, "My task draft")
-        // Saved copy still tracks the original so `exitAnswerMode` can restore it.
+        // Answer field starts empty so the user's task draft does not leak into
+        // the answer. The original text is preserved via `savedSupervisorTask`
+        // and restored on `exitAnswerMode`.
+        XCTAssertEqual(sut.supervisorTask, "")
         XCTAssertEqual(sut._testSavedSupervisorTask, "My task draft")
         XCTAssertNotNil(sut.pendingAnswer)
     }
@@ -71,17 +71,17 @@ final class QuickCaptureFormStateTests: XCTestCase {
         sut.supervisorTask = "User's task draft"
         sut.enterAnswerMode(payload: makePayload(question: "First"))
         XCTAssertEqual(sut._testSavedSupervisorTask, "User's task draft")
-        // Initial entry carries the typed text forward as the starting answer.
-        XCTAssertEqual(sut.supervisorTask, "User's task draft")
+        // Initial entry starts the answer field empty — task draft is stashed.
+        XCTAssertEqual(sut.supervisorTask, "")
 
-        // User types an answer, then the active task changes and enterAnswerMode fires again
+        // User types an answer, then `enterAnswerMode` fires again for the same task
         sut.supervisorTask = "typing an answer"
         sut.enterAnswerMode(payload: makePayload(question: "Second"))
 
         // Saved task must still be the original task draft, NOT the partial answer
         XCTAssertEqual(sut._testSavedSupervisorTask, "User's task draft")
         XCTAssertEqual(sut.pendingAnswer?.question, "Second")
-        // The in-progress answer text stays as-is (new answer for new question)
+        // The in-progress answer text stays as-is — re-entry is non-destructive.
         XCTAssertEqual(sut.supervisorTask, "typing an answer")
     }
 

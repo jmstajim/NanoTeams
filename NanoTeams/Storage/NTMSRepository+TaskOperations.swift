@@ -27,7 +27,11 @@ extension NTMSRepository {
         index.nextTaskID += 1
         try store.write(index, to: paths.tasksIndexJSON)
 
-        var task = NTMSTask(id: taskID, title: title, supervisorTask: supervisorTask, preferredTeamID: preferredTeamID, isChatMode: team.isChatMode)
+        // Capture the resolved team's ID on the task so subsequent active-team
+        // switches don't retroactively re-assign it. Callers that pass nil
+        // (the common UI path) still get a stable pointer to the team that
+        // was active at creation.
+        var task = NTMSTask(id: taskID, title: title, supervisorTask: supervisorTask, preferredTeamID: team.id, isChatMode: team.isChatMode)
         task.status = task.derivedStatusFromActiveRun()
 
         // Create both public and internal task directories.

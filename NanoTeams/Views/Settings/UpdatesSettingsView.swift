@@ -13,6 +13,12 @@ struct UpdatesSettingsView: View {
         @Bindable var bindableConfig = config
 
         Form {
+            Section {
+                StarOnGitHubBanner(size: .regular)
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
+            }
+
             Section("Status") {
                 LabeledContent("Installed") {
                     Text(AppVersion.current)
