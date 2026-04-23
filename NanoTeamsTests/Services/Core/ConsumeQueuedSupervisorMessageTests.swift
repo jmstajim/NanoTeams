@@ -27,6 +27,12 @@ final class ConsumeQueuedSupervisorMessageTests: NTMSOrchestratorTestBase {
         tempDir = tempDir.resolvingSymlinksInPath()
         formState = QuickCaptureFormState()
         sut.quickCaptureFormState = formState
+        // `StoreConfiguration` reads `UserDefaults.standard`, so the value of
+        // `embedFilesInPrompt` leaks from the dev machine into the test. Attachment
+        // tests here assert the `--- Attached Files ---` path-list shape, not the
+        // inline `--- Attached File: <name> ---` embed shape — pin to `false` so
+        // the test is deterministic regardless of the developer's settings.
+        sut.configuration.embedFilesInPrompt = false
     }
 
     override func tearDown() {

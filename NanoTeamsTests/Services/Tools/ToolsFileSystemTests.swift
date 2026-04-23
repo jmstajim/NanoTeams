@@ -878,4 +878,173 @@ final class ToolsFileSystemTests: XCTestCase {
         XCTAssertEqual(newContent, "Hi World\nGoodbye World")
     }
 
+    // MARK: - search diagnostics (C5 + skipped_binary_count)
+
+    func testSearch_rtfdBundleMissingTXTRTF_surfacesInSkippedFiles() throws {
+        // An `.rtfd` directory with no internal `TXT.rtf` must produce an
+        // entry in `skipped_files` — not silent omission.
+        let rtfdURL = tempDir.appendingPathComponent("broken.rtfd", isDirectory: true)
+        try fileManager.createDirectory(at: rtfdURL, withIntermediateDirectories: true)
+        // Create a sibling with the query term so matching machinery still runs.
+        try "needle here".write(
+            to: tempDir.appendingPathComponent("other.txt"),
+            atomically: true, encoding: .utf8
+        )
+
+        let call = StepToolCall(
+            name: "search",
+            argumentsJSON: "{\"query\": \"needle\"}"
+        )
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError)
+        XCTAssertTrue(results[0].outputJSON.contains("skipped_files"),
+                      "missing TXT.rtf must surface via skipped_files: \(results[0].outputJSON)")
+        XCTAssertTrue(results[0].outputJSON.contains("broken.rtfd"),
+                      "skipped_files must name the .rtfd bundle: \(results[0].outputJSON)")
+        XCTAssertTrue(results[0].outputJSON.contains("TXT.rtf"),
+                      "skipped_files reason should mention TXT.rtf: \(results[0].outputJSON)")
+    }
+
+    func testSearch_binaryFiles_counted_notListed() throws {
+        // A PNG-like binary (non-UTF8, unsupported extension) should contribute
+        // to `skipped_binary_count` without polluting `skipped_files`.
+        try "plain text with match".write(
+            to: tempDir.appendingPathComponent("text.txt"),
+            atomically: true, encoding: .utf8
+        )
+        // Bytes that can't decode as UTF-8.
+        let binary = Data([0xFF, 0xFE, 0x00, 0x80, 0x81])
+        try binary.write(to: tempDir.appendingPathComponent("blob.png"))
+
+        let call = StepToolCall(
+            name: "search",
+            argumentsJSON: "{\"query\": \"match\"}"
+        )
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError)
+        XCTAssertTrue(results[0].outputJSON.contains("skipped_binary_count"),
+                      "binary skip must emit aggregate counter: \(results[0].outputJSON)")
+        XCTAssertFalse(results[0].outputJSON.contains("blob.png"),
+                       "binary files must NOT appear in skipped_files: \(results[0].outputJSON)")
+    }
+
+    // MARK: - read_lines directory parity (B4)
+
+    func testReadLines_onPlainDirectory_returnsNotAFileError() throws {
+        let subdir = tempDir.appendingPathComponent("sub", isDirectory: true)
+        try fileManager.createDirectory(at: subdir, withIntermediateDirectories: true)
+
+        let call = StepToolCall(
+            name: "read_lines",
+            argumentsJSON: "{\"path\": \"sub\", \"start_line\": 1, \"end_line\": 10}"
+        )
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertTrue(results[0].isError)
+        XCTAssertTrue(results[0].outputJSON.contains("NOT_A_FILE"),
+                      "plain dir must produce NOT_A_FILE, got: \(results[0].outputJSON)")
+    }
+
+    func testReadLines_onRTFDBundle_readsContent() throws {
+        let rtfdURL = tempDir.appendingPathComponent("note.rtfd", isDirectory: true)
+        try fileManager.createDirectory(at: rtfdURL, withIntermediateDirectories: true)
+        let rtfContent = #"{\rtf1\ansi Line 1\line Line 2\line Line 3}"#
+        try rtfContent.write(
+            to: rtfdURL.appendingPathComponent("TXT.rtf"),
+            atomically: true, encoding: .utf8
+        )
+
+        let call = StepToolCall(
+            name: "read_lines",
+            argumentsJSON: "{\"path\": \"note.rtfd\", \"start_line\": 1, \"end_line\": 0}"
+        )
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError,
+                       "read_lines must accept .rtfd like read_file: \(results[0].outputJSON)")
+    }
+
+    func testReadLines_onMissingFile_stillReturnsFileNotFound() throws {
+        // The new directory guard in B4 must not mask the pre-existing
+        // FILE_NOT_FOUND response for truly missing paths.
+        let call = StepToolCall(
+            name: "read_lines",
+            argumentsJSON: "{\"path\": \"nonexistent.txt\", \"start_line\": 1, \"end_line\": 10}"
+        )
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertTrue(results[0].isError)
+        XCTAssertTrue(results[0].outputJSON.contains("FILE_NOT_FOUND"),
+                      "missing file must still return FILE_NOT_FOUND, not NOT_A_FILE: \(results[0].outputJSON)")
+    }
+
+    func testSearch_rtfdBundleWithValidContent_findsMatches() throws {
+        // Happy-path counterpart to testSearch_rtfdBundleMissingTXTRTF: a
+        // well-formed .rtfd bundle must still participate in search and NOT
+        // appear in skipped_files.
+        let rtfdURL = tempDir.appendingPathComponent("good.rtfd", isDirectory: true)
+        try fileManager.createDirectory(at: rtfdURL, withIntermediateDirectories: true)
+        let rtfContent = #"{\rtf1\ansi This contains the needle we seek}"#
+        try rtfContent.write(
+            to: rtfdURL.appendingPathComponent("TXT.rtf"),
+            atomically: true, encoding: .utf8
+        )
+
+        let call = StepToolCall(
+            name: "search",
+            argumentsJSON: "{\"query\": \"needle\"}"
+        )
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError)
+        XCTAssertTrue(results[0].outputJSON.contains("good.rtfd"),
+                      "valid .rtfd must appear as a match: \(results[0].outputJSON)")
+        XCTAssertFalse(results[0].outputJSON.contains("skipped_files"),
+                       "valid .rtfd must NOT appear in skipped_files: \(results[0].outputJSON)")
+    }
+
+    func testSearch_multipleBinaryFiles_aggregateCountIsExact() throws {
+        // D6 edge case: the counter is an aggregate, not a "saw one" flag.
+        try "needle".write(
+            to: tempDir.appendingPathComponent("match.txt"),
+            atomically: true, encoding: .utf8
+        )
+        // Three non-UTF-8 binary blobs on unsupported extensions.
+        let binary = Data([0xFF, 0xFE, 0x00, 0x80])
+        for name in ["a.png", "b.bin", "c.dat"] {
+            try binary.write(to: tempDir.appendingPathComponent(name))
+        }
+
+        let call = StepToolCall(
+            name: "search",
+            argumentsJSON: "{\"query\": \"needle\"}"
+        )
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError)
+        XCTAssertTrue(results[0].outputJSON.contains("\"skipped_binary_count\" : 3")
+                      || results[0].outputJSON.contains("\"skipped_binary_count\":3"),
+                      "expected aggregate count of 3 binary files, got: \(results[0].outputJSON)")
+    }
+
+    func testSearch_noBinaryFiles_omitsSkippedBinaryCountField() throws {
+        // The field is Optional<Int>? and encoded only when > 0 — guards
+        // against noise on happy-path responses.
+        try "needle text".write(
+            to: tempDir.appendingPathComponent("only.txt"),
+            atomically: true, encoding: .utf8
+        )
+
+        let call = StepToolCall(
+            name: "search",
+            argumentsJSON: "{\"query\": \"needle\"}"
+        )
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError)
+        XCTAssertFalse(results[0].outputJSON.contains("skipped_binary_count"),
+                       "no binaries → field must be absent: \(results[0].outputJSON)")
+    }
 }

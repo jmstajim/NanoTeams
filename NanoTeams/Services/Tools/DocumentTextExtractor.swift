@@ -4,8 +4,19 @@ import AppKit
 
 /// Stateless document text extraction and export.
 ///
-/// **Reading**: PDF (PDFKit), DOCX/DOC/RTF/RTFD/ODT/HTML (textutil), XLSX/PPTX (ZIP+XML).
-/// **Export**: PDF, RTF, DOCX (NSAttributedString).
+/// **Reading**:
+/// - PDF — `PDFKit`
+/// - DOCX / ODT / XLSX / PPTX — `ZIPReader` (in-process) + `XMLParser`
+/// - RTF / RTFD — `NSAttributedString`
+/// - DOC (legacy Word 97-2004 binary) — rejected with failure message
+///
+/// Anything not in `DocumentConstants.supportedReadExtensions` returns `nil`
+/// from `extractText`; callers then read the file as raw UTF-8. This is
+/// intentional for source-like formats (`.html`, `.xml`, `.md`, `.json`,
+/// source code) — callers need verbatim markup for source-editing workflows.
+///
+/// **Export**: PDF, RTF, DOCX (NSAttributedString + NSGraphicsContext, macOS-only
+/// via AppKit; export is not yet iOS-compatible).
 ///
 /// All extract methods return a silent fallback message on failure —
 /// `"[Could not extract text from <filename>: <reason>]"`.
@@ -38,17 +49,43 @@ enum DocumentTextExtractor {
             result = extractXLSX(from: fileURL)
         case "pptx":
             result = extractPPTX(from: fileURL)
+        case "docx":
+            result = extractDOCX(from: fileURL)
+        case "odt":
+            result = extractODT(from: fileURL)
+        case "rtf":
+            result = extractRTF(from: fileURL)
+        case "rtfd":
+            result = extractRTFD(from: fileURL)
+        case "doc":
+            result = extractDOC(from: fileURL)
         default:
-            // DOCX, DOC, RTF, RTFD, ODT, HTML, HTM
-            result = extractViaTextutil(from: fileURL)
+            result = failureMessage(fileURL, reason: "unhandled format: .\(ext)")
         }
 
-        // Enforce extraction size limit
-        let maxChars = DocumentConstants.maxExtractionChars
-        if result.count > maxChars {
-            return String(result.prefix(maxChars)) + "\n\n... (truncated at \(maxChars) characters)"
+        let maxBytes = DocumentConstants.maxExtractionBytes
+        if result.utf8.count > maxBytes {
+            let head = truncateToUTF8Bytes(result, maxBytes: maxBytes)
+            return head + "\n\n... (truncated at \(maxBytes) bytes)"
         }
         return result
+    }
+
+    /// Truncates `s` to at most `maxBytes` UTF-8 bytes, snapping back to the
+    /// last valid Character boundary. Without the Character-boundary snap, a
+    /// mid-grapheme cut can produce a `String` that re-encodes longer than
+    /// the cap (`String(Substring)` reinstates the cluster) — defeating the
+    /// whole point of the byte budget.
+    static func truncateToUTF8Bytes(_ s: String, maxBytes: Int) -> String {
+        if s.utf8.count <= maxBytes { return s }
+        guard maxBytes > 0 else { return "" }
+        var end = s.utf8.index(s.utf8.startIndex, offsetBy: maxBytes)
+        while end > s.utf8.startIndex,
+              String.Index(end, within: s) == nil
+        {
+            end = s.utf8.index(before: end)
+        }
+        return String(s.utf8[..<end]) ?? ""
     }
 
     // MARK: - Export
@@ -82,7 +119,6 @@ enum DocumentTextExtractor {
         let textContainer = NSTextContainer(size: textContainerSize)
         layoutManager.addTextContainer(textContainer)
 
-        // Force layout
         layoutManager.ensureLayout(for: textContainer)
         let usedRect = layoutManager.usedRect(for: textContainer)
 
@@ -101,7 +137,6 @@ enum DocumentTextExtractor {
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = nsContext
 
-        // Draw text
         let glyphRange = layoutManager.glyphRange(for: textContainer)
         let origin = CGPoint(x: textInset.width, y: mediaBox.height - textInset.height - usedRect.height)
         layoutManager.drawGlyphs(forGlyphRange: glyphRange, at: origin)
@@ -131,56 +166,142 @@ enum DocumentTextExtractor {
         return joined.isEmpty ? failureMessage(url, reason: "PDF has no selectable text") : joined
     }
 
-    // MARK: - Private: textutil
+    // MARK: - Private: DOC (legacy Word 97-2004 binary — rejected)
 
-    private static func extractViaTextutil(from url: URL) -> String {
+    /// Legacy `.doc` binary format has no pure-Swift reader. Reject with an
+    /// actionable message — users can re-save as `.docx`.
+    private static func extractDOC(from url: URL) -> String {
+        failureMessage(url, reason: "legacy .doc binary format not supported — save as .docx")
+    }
+
+    // MARK: - Private: DOCX (Office Open XML)
+
+    /// Reads `word/document.xml` from the DOCX package and concatenates text
+    /// from `<w:t>` elements, with paragraph boundaries (`<w:p>`) becoming
+    /// newlines. Pure Swift via `ZIPReader` + `XMLParser`.
+    private static func extractDOCX(from url: URL) -> String {
+        let data: Data?
         do {
-            let result = try ProcessRunner.run(
-                executable: DocumentConstants.textutilPath,
-                arguments: ["-convert", "txt", "-stdout", url.path],
-                currentDirectory: nil,
-                timeout: DocumentConstants.textutilTimeout
-            )
-            let text = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-            if result.success, !text.isEmpty {
-                return text
-            }
-            let reason = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-            return failureMessage(url, reason: reason.isEmpty ? "textutil returned empty output" : reason)
+            data = try ZIPReader.readEntry(named: "word/document.xml", from: url)
         } catch {
-            return failureMessage(url, reason: error.localizedDescription)
+            return failureMessage(url, reason: String(describing: error))
         }
+        guard let docXML = data else {
+            return failureMessage(url, reason: "word/document.xml missing")
+        }
+        let text = DOCXTextCollector.collect(data: docXML)
+        return text.isEmpty ? failureMessage(url, reason: "DOCX contains no text") : text
+    }
+
+    // MARK: - Private: ODT (OpenDocument Text)
+
+    /// Reads `content.xml` from the ODT package and concatenates text from
+    /// `<text:p>` / `<text:h>` / `<text:span>` elements, with paragraph and
+    /// heading boundaries becoming newlines.
+    private static func extractODT(from url: URL) -> String {
+        let data: Data?
+        do {
+            data = try ZIPReader.readEntry(named: "content.xml", from: url)
+        } catch {
+            return failureMessage(url, reason: String(describing: error))
+        }
+        guard let contentXML = data else {
+            return failureMessage(url, reason: "content.xml missing")
+        }
+        let text = ODTTextCollector.collect(data: contentXML)
+        return text.isEmpty ? failureMessage(url, reason: "ODT contains no text") : text
+    }
+
+    // MARK: - Private: RTF / RTFD / HTML (via NSAttributedString)
+
+    /// `NSAttributedString` treats `.documentType` as a hint, not an assertion:
+    /// pointing its RTF path at an HTML/plaintext file silently succeeds. The
+    /// `documentAttributes` out-pointer surfaces the type the parser actually
+    /// picked so we can reject mismatches instead of returning decoded non-RTF.
+    private static func extractRTF(from url: URL) -> String {
+        do {
+            var attrs: NSDictionary?
+            let attr = try NSAttributedString(
+                url: url,
+                options: [.documentType: NSAttributedString.DocumentType.rtf],
+                documentAttributes: &attrs
+            )
+            if let detected = attrs?[NSAttributedString.DocumentAttributeKey.documentType] as? String,
+               detected != NSAttributedString.DocumentType.rtf.rawValue
+            {
+                return failureMessage(url, reason: "file is not valid RTF (detected: \(detected))")
+            }
+            let text = attr.string.trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? failureMessage(url, reason: "RTF contains no text") : text
+        } catch {
+            return failureMessage(url, reason: "could not read RTF: \(error.localizedDescription)")
+        }
+    }
+
+    /// RTFD is a package directory (`foo.rtfd/` + `TXT.rtf` + resources).
+    /// Read `TXT.rtf` inside and delegate to `extractRTF`. Fail if absent.
+    private static func extractRTFD(from url: URL) -> String {
+        let internalRTF = url.appendingPathComponent("TXT.rtf")
+        guard FileManager.default.fileExists(atPath: internalRTF.path) else {
+            return failureMessage(url, reason: "RTFD package missing TXT.rtf")
+        }
+        return extractRTF(from: internalRTF)
     }
 
     // MARK: - Private: XLSX
 
     private static func extractXLSX(from url: URL) -> String {
-        lastZIPError = nil
+        // Collect ALL errors — later iterations must not mask earlier ones.
+        // Even when sections parse successfully, a sharedStrings failure is
+        // surfaced as a warning (string cells will show as integer indices).
+        var errors: [String] = []
+        var sharedStringsFailed = false
 
-        // 1. Shared strings table
+        // 1. Shared strings table (optional — some spreadsheets have only inline strings)
         let sharedStrings: [String]
-        if let ssData = extractZIPEntry(url, entry: "xl/sharedStrings.xml") {
-            sharedStrings = SharedStringsParser.parse(data: ssData)
-        } else {
+        do {
+            if let ssData = try ZIPReader.readEntry(named: "xl/sharedStrings.xml", from: url) {
+                sharedStrings = SharedStringsParser.parse(data: ssData)
+            } else {
+                sharedStrings = []
+            }
+        } catch {
+            errors.append("shared strings: \(error)")
+            sharedStringsFailed = true
             sharedStrings = []
         }
 
         // 2. List sheets
-        let entries = listZIPEntries(url)
-        let sheetEntries = entries
+        let entryNames: [String]
+        do {
+            entryNames = try ZIPReader.listEntries(at: url).map(\.name)
+        } catch {
+            return failureMessage(url, reason: String(describing: error))
+        }
+        let sheetEntries = entryNames
             .filter { $0.hasPrefix("xl/worksheets/sheet") && $0.hasSuffix(".xml") }
             .sorted()
 
         guard !sheetEntries.isEmpty else {
-            let reason = lastZIPError ?? "no worksheet data found"
+            let reason = errors.isEmpty ? "no worksheet data found" : errors.joined(separator: "; ")
             return failureMessage(url, reason: reason)
         }
 
         // 3. Parse each sheet into markdown table
         var sections: [String] = []
         for (index, entry) in sheetEntries.enumerated() {
-            guard let data = extractZIPEntry(url, entry: entry) else { continue }
-            let rows = XLSXSheetParser.parse(data: data, sharedStrings: sharedStrings)
+            let data: Data?
+            do {
+                data = try ZIPReader.readEntry(named: entry, from: url)
+            } catch {
+                errors.append("sheet \(index + 1): \(error)")
+                continue
+            }
+            guard let sheetData = data else {
+                errors.append("sheet \(index + 1): listed in archive but entry body missing")
+                continue
+            }
+            let rows = XLSXSheetParser.parse(data: sheetData, sharedStrings: sharedStrings)
             guard !rows.isEmpty else { continue }
 
             let header = "### Sheet \(index + 1)"
@@ -188,30 +309,49 @@ enum DocumentTextExtractor {
             sections.append(header + "\n\n" + table)
         }
 
-        return sections.isEmpty
-            ? failureMessage(url, reason: "empty spreadsheet")
-            : sections.joined(separator: "\n\n")
+        if sections.isEmpty {
+            let reason = errors.isEmpty ? "empty spreadsheet" : errors.joined(separator: "; ")
+            return failureMessage(url, reason: reason)
+        }
+
+        // Some content extracted, but shared strings failed — warn the reader
+        // that string cells may render as integer indices instead of text.
+        if sharedStringsFailed {
+            let warning = "[Warning: shared string table unreadable — string cells may show as integer indices]"
+            return warning + "\n\n" + sections.joined(separator: "\n\n")
+        }
+        return sections.joined(separator: "\n\n")
     }
 
     // MARK: - Private: PPTX
 
     private static func extractPPTX(from url: URL) -> String {
-        lastZIPError = nil
-
-        let entries = listZIPEntries(url)
-        let slideEntries = entries
+        let entryNames: [String]
+        do {
+            entryNames = try ZIPReader.listEntries(at: url).map(\.name)
+        } catch {
+            return failureMessage(url, reason: String(describing: error))
+        }
+        let slideEntries = entryNames
             .filter { $0.hasPrefix("ppt/slides/slide") && $0.hasSuffix(".xml") }
             .sorted { slideNumber($0) < slideNumber($1) }
 
         guard !slideEntries.isEmpty else {
-            let reason = lastZIPError ?? "no slide content found"
-            return failureMessage(url, reason: reason)
+            return failureMessage(url, reason: "no slide content found")
         }
 
         var sections: [String] = []
+        var capturedError: String?
         for (index, entry) in slideEntries.prefix(DocumentConstants.maxPPTXSlides).enumerated() {
-            guard let data = extractZIPEntry(url, entry: entry) else { continue }
-            let texts = XMLTextCollector.collect(data: data, tagName: "a:t")
+            let data: Data?
+            do {
+                data = try ZIPReader.readEntry(named: entry, from: url)
+            } catch {
+                capturedError = String(describing: error)
+                continue
+            }
+            guard let slideData = data else { continue }
+            let texts = XMLTextCollector.collect(data: slideData, tagName: "a:t")
             let joined = texts
                 .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
                 .joined(separator: " ")
@@ -220,9 +360,10 @@ enum DocumentTextExtractor {
             }
         }
 
-        return sections.isEmpty
-            ? failureMessage(url, reason: "no text content in slides")
-            : sections.joined(separator: "\n\n")
+        if sections.isEmpty {
+            return failureMessage(url, reason: capturedError ?? "no text content in slides")
+        }
+        return sections.joined(separator: "\n\n")
     }
 
     /// Extract slide number from path like "ppt/slides/slide12.xml" → 12.
@@ -230,73 +371,6 @@ enum DocumentTextExtractor {
         let name = (path as NSString).lastPathComponent
         let digits = name.filter(\.isNumber)
         return Int(digits) ?? 0
-    }
-
-    // MARK: - Private: ZIP Helpers
-
-    /// Last error from ZIP operations — set when extractZIPEntry/listZIPEntries fail.
-    /// Used by callers to include diagnostics in failure messages instead of generic "empty" text.
-    private static var lastZIPError: String?
-
-    /// Extract a single entry from a ZIP archive as raw Data.
-    /// Uses a temp file to avoid the ProcessRunner String→Data round-trip
-    /// that would silently drop non-ASCII content.
-    private static func extractZIPEntry(_ zipURL: URL, entry: String) -> Data? {
-        let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ntms_zip_\(UUID().uuidString)", isDirectory: true)
-
-        do {
-            try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        } catch {
-            lastZIPError = "could not create temp directory: \(error.localizedDescription)"
-            return nil
-        }
-        defer { try? FileManager.default.removeItem(at: tempDir) }
-
-        do {
-            let result = try ProcessRunner.run(
-                executable: DocumentConstants.unzipPath,
-                arguments: ["-o", "-d", tempDir.path, zipURL.path, entry],
-                currentDirectory: nil,
-                timeout: DocumentConstants.unzipTimeout
-            )
-            guard result.success else {
-                lastZIPError = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-                return nil
-            }
-        } catch {
-            lastZIPError = error.localizedDescription
-            return nil
-        }
-
-        let extractedFile = tempDir.appendingPathComponent(entry)
-        return try? Data(contentsOf: extractedFile)
-    }
-
-    /// List all file entries in a ZIP archive. Uses `unzip -Z1` for clean one-path-per-line output.
-    private static func listZIPEntries(_ zipURL: URL) -> [String] {
-        let result: ProcessRunner.Result
-        do {
-            result = try ProcessRunner.run(
-                executable: DocumentConstants.unzipPath,
-                arguments: ["-Z1", zipURL.path],
-                currentDirectory: nil,
-                timeout: DocumentConstants.unzipTimeout
-            )
-        } catch {
-            lastZIPError = error.localizedDescription
-            return []
-        }
-
-        guard result.success else {
-            lastZIPError = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-            return []
-        }
-
-        return result.stdout
-            .components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && !$0.hasSuffix("/") }
     }
 
     // MARK: - Private: Markdown Table Formatter
@@ -427,6 +501,8 @@ private final class XLSXSheetParser: NSObject, XMLParserDelegate {
     private var inValue = false
     private var inInlineString = false
     private var inlineText = ""
+    private var inInlineT = false
+    private var currentInlineT = ""
 
     private init(sharedStrings: [String]) { self.sharedStrings = sharedStrings; super.init() }
 
@@ -454,7 +530,8 @@ private final class XLSXSheetParser: NSObject, XMLParserDelegate {
         case "is":
             inInlineString = true
         case "t" where inInlineString:
-            inlineText = ""
+            inInlineT = true
+            currentInlineT = ""
         default:
             break
         }
@@ -469,6 +546,9 @@ private final class XLSXSheetParser: NSObject, XMLParserDelegate {
             inValue = false
         case "is":
             inInlineString = false
+        case "t" where inInlineT:
+            inlineText += currentInlineT
+            inInlineT = false
         case "c":
             if cellType == "inlineStr" {
                 currentRow.append(inlineText)
@@ -486,6 +566,145 @@ private final class XLSXSheetParser: NSObject, XMLParserDelegate {
 
     func parser(_ parser: XMLParser, foundCharacters string: String) {
         if inValue { cellValue += string }
-        if inInlineString { inlineText += string }
+        if inInlineT { currentInlineT += string }
+    }
+}
+
+/// Parses DOCX `word/document.xml` into plain text.
+/// Joins `<w:t>` contents; `<w:p>` boundaries emit `"\n"`. `<w:br/>` emits
+/// a newline inside a paragraph. Ignores drawings and everything outside `<w:t>`.
+private final class DOCXTextCollector: NSObject, XMLParserDelegate {
+    private var accumulator = ""
+    private var inText = false
+    private var runBuffer = ""
+
+    /// Returns extracted plain text. If XML parsing failed mid-document,
+    /// surfaces a warning marker — even when no text was collected. Returning
+    /// `""` on parse failure would make the caller emit the generic
+    /// "DOCX contains no text" message, indistinguishable from a truly
+    /// blank document.
+    static func collect(data: Data) -> String {
+        let collector = DOCXTextCollector()
+        let parser = XMLParser(data: data)
+        parser.delegate = collector
+        let parsed = parser.parse()
+        if !parsed { collector.accumulator += collector.runBuffer }
+        let text = collector.accumulator.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !parsed {
+            let reason = parser.parserError?.localizedDescription ?? "malformed XML"
+            let warning = "[Warning: XML parse stopped early — \(reason); content may be truncated]"
+            return text.isEmpty ? warning : text + "\n\n" + warning
+        }
+        return text
+    }
+
+    func parser(
+        _ parser: XMLParser, didStartElement elementName: String,
+        namespaceURI: String?, qualifiedName: String?, attributes: [String: String] = [:]
+    ) {
+        if elementName == "w:t" {
+            inText = true
+            runBuffer = ""
+        }
+    }
+
+    func parser(
+        _ parser: XMLParser, didEndElement elementName: String,
+        namespaceURI: String?, qualifiedName: String?
+    ) {
+        switch elementName {
+        case "w:t":
+            accumulator += runBuffer
+            inText = false
+        case "w:p":
+            accumulator += "\n"
+        case "w:br":
+            // Soft line break inside a paragraph (Shift+Enter in Word).
+            accumulator += runBuffer
+            runBuffer = ""
+            accumulator += "\n"
+        default:
+            break
+        }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        if inText { runBuffer += string }
+    }
+}
+
+/// Parses ODT `content.xml` into plain text.
+///
+/// Joins `<text:span>` contents inline; `<text:p>` and `<text:h>` boundaries
+/// emit `"\n"`. Text inside `<office:annotation>`, `<text:tracked-changes>`,
+/// `<text:notes-configuration>`, and similar metadata wrappers is suppressed
+/// — their child `<text:p>` elements would otherwise mix revision/annotation
+/// content into the main body.
+private final class ODTTextCollector: NSObject, XMLParserDelegate {
+    private var accumulator = ""
+    private var textDepth = 0         // > 0 inside text:p / text:h / text:span
+    private var suppressionDepth = 0  // > 0 inside annotation / tracked-changes / notes metadata
+
+    /// Tags whose subtree must not contribute to the extracted body text —
+    /// includes the text:p children they wrap.
+    private static let suppressionTags: Set<String> = [
+        "office:annotation",
+        "office:annotation-end",
+        "text:tracked-changes",
+        "text:notes-configuration",
+        "text:note-citation",
+    ]
+    private static let textTags: Set<String> = [
+        "text:p", "text:h", "text:span",
+    ]
+
+    static func collect(data: Data) -> String {
+        let collector = ODTTextCollector()
+        let parser = XMLParser(data: data)
+        parser.delegate = collector
+        let parsed = parser.parse()
+        let text = collector.accumulator.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !parsed {
+            let reason = parser.parserError?.localizedDescription ?? "malformed XML"
+            let warning = "[Warning: XML parse stopped early — \(reason); content may be truncated]"
+            return text.isEmpty ? warning : text + "\n\n" + warning
+        }
+        return text
+    }
+
+    func parser(
+        _ parser: XMLParser, didStartElement elementName: String,
+        namespaceURI: String?, qualifiedName: String?, attributes: [String: String] = [:]
+    ) {
+        if Self.suppressionTags.contains(elementName) {
+            suppressionDepth += 1
+        } else if Self.textTags.contains(elementName) {
+            textDepth += 1
+        }
+    }
+
+    func parser(
+        _ parser: XMLParser, didEndElement elementName: String,
+        namespaceURI: String?, qualifiedName: String?
+    ) {
+        if Self.suppressionTags.contains(elementName) {
+            if suppressionDepth > 0 { suppressionDepth -= 1 }
+            return
+        }
+        switch elementName {
+        case "text:p", "text:h":
+            if textDepth > 0 { textDepth -= 1 }
+            if suppressionDepth == 0 { accumulator += "\n" }
+        case "text:span":
+            if textDepth > 0 { textDepth -= 1 }
+        default:
+            break
+        }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        if textDepth > 0 && suppressionDepth == 0 {
+            accumulator += string
+        }
     }
 }

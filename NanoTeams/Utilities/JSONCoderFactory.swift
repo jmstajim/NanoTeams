@@ -4,12 +4,48 @@ import Foundation
 /// Eliminates duplication of dateEncodingStrategy/outputFormatting setup across 12+ files.
 enum JSONCoderFactory {
 
+    // MARK: - ISO 8601 formatters
+
+    /// ISO 8601 with fractional seconds (e.g. `2026-04-23T14:30:00.123Z`).
+    /// Preserves the millisecond spacing produced by `MonotonicClock`, so persisted
+    /// timestamps don't collapse to the same second on save and scramble ordering
+    /// (e.g. activity feed messages/tool calls interleaving) after reload.
+    private static let fractionalFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    /// Plain ISO 8601, second precision — used for backward-compatible decoding
+    /// of pre-fix task.json files that were written with the default `.iso8601` strategy.
+    private static let plainFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
+    private static let dateEncodingStrategy: JSONEncoder.DateEncodingStrategy = .custom { date, encoder in
+        var container = encoder.singleValueContainer()
+        try container.encode(fractionalFormatter.string(from: date))
+    }
+
+    private static let dateDecodingStrategy: JSONDecoder.DateDecodingStrategy = .custom { decoder in
+        let container = try decoder.singleValueContainer()
+        let string = try container.decode(String.self)
+        if let date = fractionalFormatter.date(from: string) { return date }
+        if let date = plainFormatter.date(from: string) { return date }
+        throw DecodingError.dataCorruptedError(
+            in: container,
+            debugDescription: "Invalid ISO 8601 date string: \(string)"
+        )
+    }
+
     /// Persistence encoder: prettyPrinted + sortedKeys + withoutEscapingSlashes + ISO 8601 dates.
     /// Used by: AtomicJSONStore, NetworkLogger.
     static func makePersistenceEncoder() -> JSONEncoder {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        encoder.dateEncodingStrategy = .iso8601
+        encoder.dateEncodingStrategy = dateEncodingStrategy
         return encoder
     }
 
@@ -18,7 +54,7 @@ enum JSONCoderFactory {
     static func makeExportEncoder() -> JSONEncoder {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
+        encoder.dateEncodingStrategy = dateEncodingStrategy
         return encoder
     }
 
@@ -27,7 +63,7 @@ enum JSONCoderFactory {
     static func makeJSONLEncoder() -> JSONEncoder {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.withoutEscapingSlashes]
-        encoder.dateEncodingStrategy = .iso8601
+        encoder.dateEncodingStrategy = dateEncodingStrategy
         return encoder
     }
 
@@ -53,11 +89,12 @@ enum JSONCoderFactory {
         JSONDecoder()
     }
 
-    /// ISO 8601 decoder for persistence and export data.
+    /// ISO 8601 decoder for persistence and export data. Accepts both fractional-
+    /// seconds format (new) and second-precision (pre-fix files already on disk).
     /// Used by: AtomicJSONStore, NetworkLogger, TeamImportExportService.
     static func makeDateDecoder() -> JSONDecoder {
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = dateDecodingStrategy
         return decoder
     }
 

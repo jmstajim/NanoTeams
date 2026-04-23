@@ -13,7 +13,7 @@ struct ReadFileTool: ToolHandler {
     static let name = TN.readFile
     static let schema = ToolSchema(
         name: TN.readFile,
-        description: "Read file content. Supports PDF, DOCX, DOC, RTF, ODT, HTML, XLSX, PPTX — text is extracted automatically.",
+        description: "Read file content. Returns plain text files verbatim (source code, .html, .xml, .md, .json, etc.) and auto-extracts PDF/DOCX/RTF/RTFD/ODT/XLSX/PPTX to plain text.",
         parameters: JS.object(
             properties: [
                 "path": JS.string("Relative path to file"),
@@ -52,7 +52,9 @@ struct ReadFileTool: ToolHandler {
                 )
             }
 
-            guard !isDir.boolValue else {
+            // RTFD is a file-bundle directory — treat as a single document.
+            let isRTFDBundle = isDir.boolValue && fileURL.pathExtension.lowercased() == "rtfd"
+            guard !isDir.boolValue || isRTFDBundle else {
                 return makeErrorResult(
                     toolName: Self.name, args: args,
                     code: .notAFile, message: "Path is a directory: \(path)",
@@ -71,9 +73,8 @@ struct ReadFileTool: ToolHandler {
                 var encoding: String
             }
 
-            // Document format auto-detection: extract text from PDF/DOCX/XLSX/etc.
             if let extracted = DocumentTextExtractor.extractText(from: fileURL) {
-                // Extraction failure → error result (avoids polluting MemoryTagStore/ToolCallCache)
+                // Extraction failure → error result (avoids polluting MemoryTagStore/ToolCallCache).
                 if DocumentTextExtractor.isFailureMessage(extracted) {
                     return makeErrorResult(
                         toolName: Self.name, args: args,
@@ -84,7 +85,7 @@ struct ReadFileTool: ToolHandler {
                 let byteCount = extracted.utf8.count
                 let truncated = byteCount > maxBytes
                 let content = truncated
-                    ? String(extracted.utf8.prefix(maxBytes)) ?? String(extracted.prefix(maxBytes))
+                    ? DocumentTextExtractor.truncateToUTF8Bytes(extracted, maxBytes: maxBytes)
                     : extracted
                 return makeSuccessResult(
                     toolName: Self.name, args: args,
@@ -157,9 +158,9 @@ struct ReadLinesTool: ToolHandler {
                 )
             }
 
-            // end_line <= 0 is a Unix-style "read to EOF" sentinel (qwen, deepseek, etc.
-            // routinely emit -1). Positive but < start_line is still an error, with a
-            // message that teaches the sentinel so the model can self-correct.
+            // end_line <= 0 is a Unix-style "read to EOF" sentinel (some models
+            // routinely emit -1). Positive but < start_line is still an error,
+            // with a message that teaches the sentinel so the model can self-correct.
             let readToEOF = endLine <= 0
             if !readToEOF && endLine < startLine {
                 return makeErrorResult(
@@ -171,14 +172,27 @@ struct ReadLinesTool: ToolHandler {
 
             let fileURL = try resolver.resolveFileURL(relativePath: path)
 
-            guard fileManager.fileExists(atPath: fileURL.path) else {
+            var isDir: ObjCBool = false
+            guard fileManager.fileExists(atPath: fileURL.path, isDirectory: &isDir) else {
                 return makeErrorResult(
                     toolName: Self.name, args: args,
                     code: .fileNotFound, message: "File not found: \(path)"
                 )
             }
 
-            // Document format auto-detection for line reading
+            let isRTFDBundle = isDir.boolValue && fileURL.pathExtension.lowercased() == "rtfd"
+            if isDir.boolValue && !isRTFDBundle {
+                return makeErrorResult(
+                    toolName: Self.name, args: args,
+                    code: .notAFile, message: "Path is a directory: \(path)",
+                    next: NextHint(
+                        suggested_cmd: TN.listFiles,
+                        suggested_args: ["path": path],
+                        reason: "List directory contents"
+                    )
+                )
+            }
+
             let content: String
             if let extracted = DocumentTextExtractor.extractText(from: fileURL) {
                 if DocumentTextExtractor.isFailureMessage(extracted) {
@@ -351,7 +365,7 @@ struct SearchTool: ToolHandler {
     static let name = TN.search
     static let schema = ToolSchema(
         name: TN.search,
-        description: "Search for text in the work folder. Returns matching lines with file paths.",
+        description: "Search for text across the work folder. Reads plain text (including .html/.xml/.md source) plus PDF/DOCX/RTF/RTFD/ODT/XLSX/PPTX (auto-extracted to plain text). Returns matching lines with file paths. Narrow with file_glob for large doc-heavy folders.",
         parameters: JS.object(
             properties: [
                 "query": JS.string("Search query (substring match)"),
@@ -406,11 +420,47 @@ struct SearchTool: ToolHandler {
 
             var matches: [SearchMatch] = []
             var totalMatchLines = 0
+            // Track files that could not be indexed so the LLM/user can see
+            // WHY a match might be missing, instead of interpreting silence as
+            // "no documents matched".
+            var skipped: [SkippedFile] = []
+            // Aggregate counter for files silently skipped under the "too noisy
+            // to list individually" rule below — lets the LLM tell "empty scope"
+            // from "scope had N unreadable binaries".
+            var skippedBinaryCount = 0
 
             func searchFile(at url: URL, relativePath: String) {
                 guard matches.count < maxResults && totalMatchLines < maxMatchLines else { return }
 
-                guard let content = try? String(contentsOf: url, encoding: .utf8) else { return }
+                let content: String
+                let ext = url.pathExtension.lowercased()
+                if DocumentTextExtractor.isSupported(extension: ext) {
+                    guard let extracted = DocumentTextExtractor.extractText(from: url) else {
+                        // isSupported promised a known format; a nil return means
+                        // the document type was supported on paper but the file
+                        // itself wasn't actually openable as that type.
+                        skipped.append(SkippedFile(
+                            path: relativePath,
+                            reason: "document extractor could not open file as .\(ext)"
+                        ))
+                        return
+                    }
+                    if DocumentTextExtractor.isFailureMessage(extracted) {
+                        skipped.append(SkippedFile(path: relativePath, reason: extracted))
+                        return
+                    }
+                    content = extracted
+                } else {
+                    guard let utf8 = try? String(contentsOf: url, encoding: .utf8) else {
+                        // Binary-or-non-UTF8 file on an unsupported extension —
+                        // intentionally NOT added to `skipped` (too noisy; every
+                        // `.png`/`.o` in the tree would show up). Counted so the
+                        // LLM can tell "empty scope" from "scope had N binaries".
+                        skippedBinaryCount += 1
+                        return
+                    }
+                    content = utf8
+                }
                 let lines = content.components(separatedBy: .newlines)
 
                 for (idx, line) in lines.enumerated() {
@@ -472,6 +522,12 @@ struct SearchTool: ToolHandler {
                     var isDir: ObjCBool = false
                     guard fm.fileExists(atPath: itemURL.path, isDirectory: &isDir) else { continue }
 
+                    // RTFD is a file-bundle directory — treat as a single document.
+                    if isDir.boolValue && name.hasSuffix(".rtfd") {
+                        searchFile(at: itemURL, relativePath: itemPath)
+                        continue
+                    }
+
                     if isDir.boolValue {
                         searchDirectory(at: itemURL, relativePath: itemPath)
                     } else {
@@ -513,11 +569,19 @@ struct SearchTool: ToolHandler {
                 var query: String
                 var matches: [SearchMatch]
                 var count: Int
+                var skipped_files: [SkippedFile]?
+                var skipped_binary_count: Int?
             }
 
             return makeSuccessResult(
                 toolName: Self.name, args: args,
-                data: SearchData(query: query, matches: matches, count: matches.count),
+                data: SearchData(
+                    query: query,
+                    matches: matches,
+                    count: matches.count,
+                    skipped_files: skipped.isEmpty ? nil : skipped,
+                    skipped_binary_count: skippedBinaryCount > 0 ? skippedBinaryCount : nil
+                ),
                 meta: ToolResultMeta(truncated: truncated)
             )
         }

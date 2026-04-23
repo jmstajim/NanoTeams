@@ -60,6 +60,13 @@ struct SearchMatch: Codable {
     var context_after: [LineRef]?
 }
 
+/// A file the search traversal encountered but could not index.
+/// Surfaced so the LLM/user can tell "no hits" from "file was unreadable".
+struct SkippedFile: Codable {
+    var path: String
+    var reason: String
+}
+
 // MARK: - Git Data Types
 
 struct GitPathStatus: Codable {

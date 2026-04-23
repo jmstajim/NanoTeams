@@ -17,7 +17,8 @@ final class JSONCoderFactoryTests: XCTestCase {
         let wrapper = DateWrapper(date: Date(timeIntervalSince1970: 0))
         let data = try encoder.encode(wrapper)
         let json = String(data: data, encoding: .utf8)!
-        XCTAssertTrue(json.contains("1970-01-01T00:00:00Z"), "Expected ISO 8601 date, got: \(json)")
+        // Fractional-seconds precision preserves MonotonicClock's ms ordering through roundtrip.
+        XCTAssertTrue(json.contains("1970-01-01T00:00:00.000Z"), "Expected ISO 8601 date with fractional seconds, got: \(json)")
     }
 
     // MARK: - Export Encoder
@@ -34,7 +35,7 @@ final class JSONCoderFactoryTests: XCTestCase {
         let wrapper = DateWrapper(date: Date(timeIntervalSince1970: 0))
         let data = try encoder.encode(wrapper)
         let json = String(data: data, encoding: .utf8)!
-        XCTAssertTrue(json.contains("1970-01-01T00:00:00Z"), "Expected ISO 8601 date, got: \(json)")
+        XCTAssertTrue(json.contains("1970-01-01T00:00:00.000Z"), "Expected ISO 8601 date with fractional seconds, got: \(json)")
     }
 
     // MARK: - JSONL Encoder
@@ -50,7 +51,7 @@ final class JSONCoderFactoryTests: XCTestCase {
         let wrapper = DateWrapper(date: Date(timeIntervalSince1970: 0))
         let data = try encoder.encode(wrapper)
         let json = String(data: data, encoding: .utf8)!
-        XCTAssertTrue(json.contains("1970-01-01T00:00:00Z"), "Expected ISO 8601 date, got: \(json)")
+        XCTAssertTrue(json.contains("1970-01-01T00:00:00.000Z"), "Expected ISO 8601 date with fractional seconds, got: \(json)")
     }
 
     // MARK: - Date Decoder
@@ -61,6 +62,28 @@ final class JSONCoderFactoryTests: XCTestCase {
         let decoder = JSONCoderFactory.makeDateDecoder()
         let wrapper = try decoder.decode(DateWrapper.self, from: data)
         XCTAssertEqual(wrapper.date.timeIntervalSince1970, 0, accuracy: 1)
+    }
+
+    /// Pins the backward-compatibility fallback: pre-fractional-seconds files
+    /// on disk (written before JSONCoderFactory switched to fractional output)
+    /// must still decode. If someone removes `plainFormatter` from the custom
+    /// decoding strategy, this test fails and task.json loading breaks for
+    /// existing installations.
+    func testDateDecoderDecodesLegacySecondPrecisionFormat() throws {
+        let json = #"{"date":"2020-06-15T12:34:56Z"}"#  // no fractional seconds
+        let data = json.data(using: .utf8)!
+        let decoder = JSONCoderFactory.makeDateDecoder()
+        let wrapper = try decoder.decode(DateWrapper.self, from: data)
+        // Expected: 2020-06-15 12:34:56 UTC = 1592224496
+        XCTAssertEqual(wrapper.date.timeIntervalSince1970, 1_592_224_496, accuracy: 1)
+    }
+
+    func testDateDecoderDecodesFractionalSecondsFormat() throws {
+        let json = #"{"date":"2020-06-15T12:34:56.789Z"}"#
+        let data = json.data(using: .utf8)!
+        let decoder = JSONCoderFactory.makeDateDecoder()
+        let wrapper = try decoder.decode(DateWrapper.self, from: data)
+        XCTAssertEqual(wrapper.date.timeIntervalSince1970, 1_592_224_496.789, accuracy: 0.01)
     }
 
     // MARK: - Roundtrip
