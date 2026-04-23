@@ -8,7 +8,7 @@
 [![License](https://img.shields.io/github/license/jmstajim/NanoTeams?color=5F87D9&style=flat-square)](LICENSE)
 [![Download](https://img.shields.io/badge/Download-NanoTeams.app.zip-35BE81?style=flat-square)](https://github.com/jmstajim/NanoTeams/releases/latest/download/NanoTeams.app.zip)
 
-**Native macOS app for AI agent teams and chat powered by local LLMs.** No cloud. No API keys. No telemetry. Your data stays on your Mac.
+**Agentic chat and multi-role AI teams for macOS.** Start a chat or hand a task to a team of specialized AI roles — they read your files, produce artifacts, consult each other, and report back when done. Generate teams on demand from a one-line description, attach documents, clip text from any app, dictate hands-free, queue messages to working roles without pausing them. Everything runs on-device — LLMs through LM Studio, dictation through Apple's built-in speech engine. No cloud, no API keys, zero telemetry.
 
 <img width="640" height="604" alt="NanoTeams — AI agent teams for local LLMs on macOS" src="https://github.com/user-attachments/assets/aaf71be6-a72f-4f5d-bf77-47d015985f0e" />
 
@@ -77,8 +77,17 @@ Create tasks and let a team of specialized AI roles collaborate. Each role has i
 
 <img width="640" height="453" alt="NanoTeams — activity feed with AI role messages and tool calls" src="https://github.com/user-attachments/assets/34f55b17-31d8-48d3-b3cb-c191a3f673fb" />
 
+### AI Team Generation
+Describe a task in one line and an LLM designs a custom team for it — roles, artifacts, prompts, dependencies, and hierarchy. The *Generate Team* settings tab lets you customize the meta-model, system prompt, and defaults used whenever a team is generated.
+
 ### 28 Built-in Tools
 Sandboxed tool system: file operations, git, Xcode build & test, team collaboration (`ask_teammate`, `request_team_meeting`, `request_changes`), artifact creation, supervisor Q&A, persistent memory, and image analysis.
+
+### Documents In & Out
+Roles read PDF, DOCX, RTF, XLSX, PPTX, ODT, and HTML files directly — no manual conversion to plain text. Generated artifacts can be exported to PDF, Word, or RTF. Document handling is pure-Swift.
+
+### Universal Search
+Search across PDFs, Word documents, spreadsheets, slides, OpenDocument files, HTML, source code, and plain text — all from a single tool call. Results are capped to keep agent context clean and prevent search-result poisoning.
 
 ### Per-Role LLM & Vision Configuration
 Assign different local models to different roles in the same team — a fast small model for the PM, a powerful coding model for the Engineer, a vision-capable model for image analysis. Each role can have its own base URL, model, max tokens, and temperature.
@@ -90,8 +99,14 @@ Two global hotkeys work from any app:
 
 <img width="441" height="455" alt="NanoTeams — Quick Capture overlay for creating tasks from any app" src="https://github.com/user-attachments/assets/48c6ac05-ff5f-49b8-9131-424a5b4f7acd" />
 
+### Private Voice Dictation
+Hands-free input via Apple's `SpeechAnalyzer` and `DictationTranscriber` — fully on-device, multilingual, and offline. Available in Quick Capture, Supervisor answers, and revision feedback. Requires macOS 26+.
+
 ### Team Meetings & Change Requests
 Roles consult each other for quick Q&A, hold multi-participant meetings with turn-based dialogue and voting, and request peer-to-peer revisions. Code Reviewer can request changes from the Engineer — the system creates a voting meeting, tallies votes, and re-executes with full context if approved.
+
+### Supervisor Message Queue
+Send guidance to working roles without pausing them. The unified Team Composer has a *To:* selector for targeting a specific role or the whole team, with consistent input across the Activity Feed, Watchtower, and Quick Capture. The *Correct Role* action lets you adjust a paused role's direction while preserving its progress so far.
 
 ### Artifact Dependency Pipeline
 Roles produce and consume named artifacts (requirements, design specs, plans). Execution order is automatically determined from dependencies — no manual sequencing. A visual team graph shows the flow in real-time.
