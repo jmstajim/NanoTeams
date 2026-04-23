@@ -46,8 +46,7 @@ final class BuildDiagnosticsPersistenceTests: XCTestCase {
         XCTAssertEqual(rel, paths.relativePathWithinNanoteams(for: jsonURL))
 
         let data = try Data(contentsOf: jsonURL)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        let decoder = JSONCoderFactory.makeDateDecoder()
         let decoded = try decoder.decode(BuildDiagnosticsPersisted.self, from: data)
 
         XCTAssertEqual(decoded.schemaVersion, diagnostics.schemaVersion)

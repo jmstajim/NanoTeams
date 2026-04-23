@@ -93,8 +93,7 @@ final class NetworkLoggerTests: XCTestCase {
         logger.append(record)
 
         let data = try Data(contentsOf: logURL)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        let decoder = JSONCoderFactory.makeDateDecoder()
         let decoded = try decoder.decode([NetworkLogRecord].self, from: data)
         XCTAssertEqual(decoded.count, 1)
     }
@@ -134,8 +133,7 @@ final class NetworkLoggerTests: XCTestCase {
         logger.append(response)
 
         let data = try Data(contentsOf: logURL)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        let decoder = JSONCoderFactory.makeDateDecoder()
         let decoded = try decoder.decode([NetworkLogRecord].self, from: data)
         XCTAssertEqual(decoded.count, 2)
         XCTAssertEqual(decoded[0].direction, .request)
@@ -246,8 +244,7 @@ final class NetworkLoggerTests: XCTestCase {
         wait(for: [expectation], timeout: 5.0)
 
         let data = try Data(contentsOf: logURL)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        let decoder = JSONCoderFactory.makeDateDecoder()
         let decoded = try decoder.decode([NetworkLogRecord].self, from: data)
         XCTAssertEqual(decoded.count, 10)
     }

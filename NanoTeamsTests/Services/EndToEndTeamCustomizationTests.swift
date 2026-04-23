@@ -285,8 +285,7 @@ final class EndToEndTeamCustomizationTests: XCTestCase {
         let exportedData = try TeamImportExportService.exportRole(role)
 
         // Verify export data is valid JSON
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        let decoder = JSONCoderFactory.makeDateDecoder()
         let exportFormat = try decoder.decode(RoleExportFormat.self, from: exportedData)
         XCTAssertEqual(exportFormat.version, 1)
         XCTAssertEqual(exportFormat.role.name, "Backend Engineer")
@@ -364,8 +363,7 @@ final class EndToEndTeamCustomizationTests: XCTestCase {
         let exportedData = try TeamImportExportService.exportArtifact(artifact)
 
         // Verify export data
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        let decoder = JSONCoderFactory.makeDateDecoder()
         let exportFormat = try decoder.decode(ArtifactExportFormat.self, from: exportedData)
         XCTAssertEqual(exportFormat.version, 1)
         XCTAssertEqual(exportFormat.artifact.name, "Performance Metrics")
@@ -454,8 +452,7 @@ final class EndToEndTeamCustomizationTests: XCTestCase {
         let exportedData = try TeamImportExportService.exportTeam(team)
 
         // Verify export
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        let decoder = JSONCoderFactory.makeDateDecoder()
         let exportFormat = try decoder.decode(TeamExportFormat.self, from: exportedData)
         XCTAssertEqual(exportFormat.version, 1)
         XCTAssertEqual(exportFormat.team.name, "DevOps Team")

@@ -31,8 +31,7 @@ final class TeamImportExportServiceTests: XCTestCase {
         XCTAssertFalse(data.isEmpty)
 
         // Decode the export format to verify structure
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        let decoder = JSONCoderFactory.makeDateDecoder()
         let exportFormat = try decoder.decode(RoleExportFormat.self, from: data)
 
         XCTAssertEqual(exportFormat.version, 1)
@@ -184,8 +183,7 @@ final class TeamImportExportServiceTests: XCTestCase {
         let data = try TeamImportExportService.exportArtifact(artifact)
         XCTAssertFalse(data.isEmpty)
 
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        let decoder = JSONCoderFactory.makeDateDecoder()
         let exportFormat = try decoder.decode(ArtifactExportFormat.self, from: data)
 
         XCTAssertEqual(exportFormat.version, 1)
@@ -287,8 +285,7 @@ final class TeamImportExportServiceTests: XCTestCase {
         let data = try TeamImportExportService.exportTeam(team)
         XCTAssertFalse(data.isEmpty)
 
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        let decoder = JSONCoderFactory.makeDateDecoder()
         let exportFormat = try decoder.decode(TeamExportFormat.self, from: data)
 
         XCTAssertEqual(exportFormat.version, 1)
