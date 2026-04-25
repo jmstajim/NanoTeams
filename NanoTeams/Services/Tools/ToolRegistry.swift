@@ -17,6 +17,75 @@ enum ToolSignal: Hashable {
     case artifact(name: String, content: String, format: String?)
     case visionAnalysis(imagePath: String, prompt: String)
     case teamCreation(config: GeneratedTeamConfig)
+    case expandedSearch(ExpandedSearchPayload)
+}
+
+/// Payload for a `expand: true` call on `SearchTool`. Threaded through
+/// `ToolSignal.expandedSearch` so the processor gets every argument the handler
+/// parsed, without 8 positional fields on the enum case. `mode` is stored as
+/// the strongly-typed enum so the processor doesn't re-parse a raw string.
+///
+/// Invariants enforced by the throwing init:
+/// - `query` must be non-empty after trimming (empty queries would reach the
+///   executor and never match anything — the LLM gets nothing back and
+///   can't tell why).
+/// - Numeric fields (`maxResults`, context lines, `maxMatchLines`) are
+///   clamped to sane ranges so a misbehaving LLM that emits `Int.max` or
+///   negative values can't crash the executor budget math.
+/// - `paths` is normalized: empty arrays collapse to `nil` so consumers
+///   don't have to branch on both "unset" and "set but empty".
+struct ExpandedSearchPayload: Hashable {
+    let query: String
+    let mode: SearchMode
+    let paths: [String]?
+    let fileGlob: String?
+    let contextBefore: Int
+    let contextAfter: Int
+    let maxResults: Int
+    let maxMatchLines: Int
+
+    /// Upper bound on `maxResults` — the LLM shouldn't need more; the round-
+    /// robin fan-out budget math stays sane; memory stays bounded.
+    static let maxAllowedResults = 1000
+    /// Upper bound on `contextBefore`/`contextAfter` — a handful of lines
+    /// either side is all any sensible review flow needs; wider only bloats
+    /// the envelope.
+    static let maxAllowedContextLines = 100
+    /// Upper bound on `maxMatchLines` — protects the truncation accounting
+    /// from overflow.
+    static let maxAllowedMatchLines = 100_000
+
+    enum ValidationError: Error, Equatable {
+        case emptyQuery
+    }
+
+    init(
+        query: String,
+        mode: SearchMode,
+        paths: [String]?,
+        fileGlob: String?,
+        contextBefore: Int,
+        contextAfter: Int,
+        maxResults: Int,
+        maxMatchLines: Int
+    ) throws {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw ValidationError.emptyQuery }
+        self.query = query  // preserve original casing/spacing for display
+        self.mode = mode
+        // Normalize empty arrays to nil so the consumer switches on one
+        // shape, not two.
+        if let paths, !paths.isEmpty {
+            self.paths = paths
+        } else {
+            self.paths = nil
+        }
+        self.fileGlob = fileGlob
+        self.contextBefore = max(0, min(contextBefore, Self.maxAllowedContextLines))
+        self.contextAfter = max(0, min(contextAfter, Self.maxAllowedContextLines))
+        self.maxResults = max(1, min(maxResults, Self.maxAllowedResults))
+        self.maxMatchLines = max(1, min(maxMatchLines, Self.maxAllowedMatchLines))
+    }
 }
 
 struct ToolExecutionResult: Hashable {
@@ -102,11 +171,8 @@ final class ToolRegistry {
 
     /// Canonicalize a raw tool name emitted by an LLM: trim whitespace, strip a
     /// known provider prefix (`repo_browser.`, `functions.`), then apply the
-    /// common-hallucination alias map. Returns the canonical handler name.
-    ///
-    /// Used at every dispatch boundary — executor authorization, runtime
-    /// lookup, and meeting-tool filtering — so behavior is identical regardless
-    /// of which surface the LLM hit.
+    /// common-hallucination alias map. Apply at every dispatch boundary so
+    /// name resolution is consistent.
     static func resolveToolName(_ raw: String) -> String {
         var name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = name.lowercased()

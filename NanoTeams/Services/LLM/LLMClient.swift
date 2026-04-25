@@ -52,9 +52,21 @@ protocol LLMClient: Sendable {
     /// Not all providers may support this.
     /// - Parameter visionOnly: When `true`, returns only vision-capable models.
     func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String]
+
+    /// Fetch available *embedding* models from the provider. Used by the
+    /// broad-search semantic-expansion card which needs to let the user
+    /// pick from LM Studio's embedding family (e.g. `nomic-embed-text-v1.5`).
+    /// Default implementation returns `[]` so test doubles don't break —
+    /// real clients (`NativeLMStudioClient`, `LLMClientRouter`) override.
+    func fetchEmbeddingModels(config: LLMConfig) async throws -> [String]
 }
 
 extension LLMClient {
+    /// Default: no embedding-model listing. Test doubles inherit this so
+    /// production use of `fetchEmbeddingModels` doesn't force every mock to
+    /// implement it.
+    func fetchEmbeddingModels(config _: LLMConfig) async throws -> [String] { [] }
+
     /// Convenience overload without roleName — existing callers don't need to change.
     func streamChat(
         config: LLMConfig,

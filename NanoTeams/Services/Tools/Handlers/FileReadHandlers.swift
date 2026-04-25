@@ -2,7 +2,8 @@ import Foundation
 
 /// Names skipped by `list_files` and `search` directory traversal.
 /// Allows useful dotfiles (.gitignore, .env, .eslintrc) while filtering noise.
-private let listFilesSkippedNames: Set<String> = [".DS_Store", ".git", ".svn", ".hg", ".build"]
+/// Shared with `SearchIndexService` via `WalkSkipRules.skipped`.
+private let listFilesSkippedNames: Set<String> = WalkSkipRules.skipped
 
 private typealias TN = ToolNames
 private typealias JS = JSONSchema
@@ -370,6 +371,7 @@ struct SearchTool: ToolHandler {
             properties: [
                 "query": JS.string("Search query (substring match)"),
                 "max_results": JS.integer("Max number of results"),
+                "expand": JS.boolean("Broaden the query with synonyms, translations, and camelCase/snake_case variants before searching. Useful when you don't know the exact tokens the codebase uses."),
             ],
             required: ["query"]
         )
@@ -381,7 +383,7 @@ struct SearchTool: ToolHandler {
     let workFolderRoot: URL
     let internalDir: URL?
 
-    
+
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self {
         Self(resolver: dependencies.resolver, fileManager: dependencies.fileManager, workFolderRoot: dependencies.workFolderRoot, internalDir: dependencies.internalDir)
     }
@@ -389,181 +391,58 @@ struct SearchTool: ToolHandler {
     func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let query = try requiredString(args, "query")
-            let mode = optionalString(args, "mode") ?? "substring"
+            let mode = SearchMode(raw: optionalString(args, "mode"))
             let paths = optionalStringArray(args, "paths")
             let fileGlob = optionalString(args, "file_glob")
             let maxResults = optionalInt(args, "max_results") ?? 20
             let contextBefore = optionalInt(args, "context_before") ?? 0
             let contextAfter = optionalInt(args, "context_after") ?? 0
             let maxMatchLines = optionalInt(args, "max_match_lines") ?? 40
+            let expand = optionalBool(args, "expand", default: false)
 
-            let fm = fileManager
-            let workFolderRoot = self.workFolderRoot
-            let internalDir = self.internalDir
-
-            var searchDirs: [URL] = []
-            if let paths = paths, !paths.isEmpty {
-                for p in paths {
-                    let url = try resolver.resolveFileURL(relativePath: p)
-                    searchDirs.append(url)
-                }
-            } else {
-                searchDirs = [workFolderRoot]
+            // Expanded-search mode: hand off to the processor via a signal.
+            // Body of the final result is produced in `appendExpandedSearchResult`.
+            // Payload init throws on empty query and clamps out-of-range
+            // numerics — `ToolErrorHandler.execute` turns the throw into a
+            // standard error envelope for the LLM.
+            if expand {
+                let payload = try ExpandedSearchPayload(
+                    query: query,
+                    mode: mode,
+                    paths: paths,
+                    fileGlob: fileGlob,
+                    contextBefore: contextBefore,
+                    contextAfter: contextAfter,
+                    maxResults: maxResults,
+                    maxMatchLines: maxMatchLines
+                )
+                return ToolExecutionResult(
+                    toolName: Self.name,
+                    argumentsJSON: encodeArgsToJSON(args),
+                    outputJSON: makeSuccessEnvelope(
+                        data: ["query": query, "status": "expanding"]
+                    ),
+                    isError: false,
+                    signal: .expandedSearch(payload)
+                )
             }
 
-            let regex: NSRegularExpression?
-            if mode == "regex" {
-                regex = try? NSRegularExpression(pattern: query, options: [])
-            } else {
-                regex = nil
-            }
-
-            var matches: [SearchMatch] = []
-            var totalMatchLines = 0
-            // Track files that could not be indexed so the LLM/user can see
-            // WHY a match might be missing, instead of interpreting silence as
-            // "no documents matched".
-            var skipped: [SkippedFile] = []
-            // Aggregate counter for files silently skipped under the "too noisy
-            // to list individually" rule below — lets the LLM tell "empty scope"
-            // from "scope had N unreadable binaries".
-            var skippedBinaryCount = 0
-
-            func searchFile(at url: URL, relativePath: String) {
-                guard matches.count < maxResults && totalMatchLines < maxMatchLines else { return }
-
-                let content: String
-                let ext = url.pathExtension.lowercased()
-                if DocumentTextExtractor.isSupported(extension: ext) {
-                    guard let extracted = DocumentTextExtractor.extractText(from: url) else {
-                        // isSupported promised a known format; a nil return means
-                        // the document type was supported on paper but the file
-                        // itself wasn't actually openable as that type.
-                        skipped.append(SkippedFile(
-                            path: relativePath,
-                            reason: "document extractor could not open file as .\(ext)"
-                        ))
-                        return
-                    }
-                    if DocumentTextExtractor.isFailureMessage(extracted) {
-                        skipped.append(SkippedFile(path: relativePath, reason: extracted))
-                        return
-                    }
-                    content = extracted
-                } else {
-                    guard let utf8 = try? String(contentsOf: url, encoding: .utf8) else {
-                        // Binary-or-non-UTF8 file on an unsupported extension —
-                        // intentionally NOT added to `skipped` (too noisy; every
-                        // `.png`/`.o` in the tree would show up). Counted so the
-                        // LLM can tell "empty scope" from "scope had N binaries".
-                        skippedBinaryCount += 1
-                        return
-                    }
-                    content = utf8
-                }
-                let lines = content.components(separatedBy: .newlines)
-
-                for (idx, line) in lines.enumerated() {
-                    guard matches.count < maxResults && totalMatchLines < maxMatchLines else { return }
-
-                    let found: Bool
-                    if let regex = regex {
-                        let range = NSRange(line.startIndex..., in: line)
-                        found = regex.firstMatch(in: line, options: [], range: range) != nil
-                    } else {
-                        found = line.localizedCaseInsensitiveContains(query)
-                    }
-
-                    if found {
-                        var contextBeforeLines: [LineRef]?
-                        var contextAfterLines: [LineRef]?
-
-                        if contextBefore > 0 {
-                            let startIdx = max(0, idx - contextBefore)
-                            contextBeforeLines = (startIdx..<idx).map { i in
-                                LineRef(line: i + 1, text: lines[i])
-                            }
-                        }
-
-                        if contextAfter > 0 {
-                            let endIdx = min(lines.count, idx + contextAfter + 1)
-                            contextAfterLines = ((idx + 1)..<endIdx).map { i in
-                                LineRef(line: i + 1, text: lines[i])
-                            }
-                        }
-
-                        matches.append(
-                            SearchMatch(
-                                path: relativePath,
-                                line: idx + 1,
-                                text: line,
-                                context_before: contextBeforeLines,
-                                context_after: contextAfterLines
-                            ))
-                        totalMatchLines +=
-                            1 + (contextBeforeLines?.count ?? 0) + (contextAfterLines?.count ?? 0)
-                    }
-                }
-            }
-
-            func searchDirectory(at url: URL, relativePath: String) {
-                guard matches.count < maxResults && totalMatchLines < maxMatchLines else { return }
-
-                guard let contents = try? fm.contentsOfDirectory(atPath: url.path) else { return }
-
-                for name in contents.sorted() {
-                    guard matches.count < maxResults && totalMatchLines < maxMatchLines else { return }
-                    guard !listFilesSkippedNames.contains(name) else { continue }
-
-                    let itemURL = url.appendingPathComponent(name)
-                    if let internalDir, SandboxPathResolver.isWithin(candidate: itemURL, container: internalDir) { continue }
-                    let itemPath = relativePath.isEmpty ? name : "\(relativePath)/\(name)"
-
-                    var isDir: ObjCBool = false
-                    guard fm.fileExists(atPath: itemURL.path, isDirectory: &isDir) else { continue }
-
-                    // RTFD is a file-bundle directory — treat as a single document.
-                    if isDir.boolValue && name.hasSuffix(".rtfd") {
-                        searchFile(at: itemURL, relativePath: itemPath)
-                        continue
-                    }
-
-                    if isDir.boolValue {
-                        searchDirectory(at: itemURL, relativePath: itemPath)
-                    } else {
-                        if let glob = fileGlob {
-                            let escaped = NSRegularExpression.escapedPattern(for: glob)
-                            let pattern = escaped.replacingOccurrences(of: "\\*", with: ".*")
-                            if let regex = try? NSRegularExpression(
-                                pattern: "^\(pattern)$", options: [])
-                            {
-                                let range = NSRange(name.startIndex..., in: name)
-                                if regex.firstMatch(in: name, options: [], range: range) == nil {
-                                    continue
-                                }
-                            }
-                        }
-                        searchFile(at: itemURL, relativePath: itemPath)
-                    }
-                }
-            }
-
-            for dir in searchDirs {
-                var isDir: ObjCBool = false
-                if fm.fileExists(atPath: dir.path, isDirectory: &isDir) {
-                    if isDir.boolValue {
-                        let rel = dir.path.replacingOccurrences(
-                            of: workFolderRoot.path + "/", with: "")
-                        searchDirectory(at: dir, relativePath: rel == dir.path ? "" : rel)
-                    } else {
-                        let rel = dir.path.replacingOccurrences(
-                            of: workFolderRoot.path + "/", with: "")
-                        searchFile(at: dir, relativePath: rel)
-                    }
-                }
-            }
-
-            let truncated = matches.count >= maxResults || totalMatchLines >= maxMatchLines
+            // Plain search path: delegate to SearchExecutor.
+            let output = try SearchExecutor.run(SearchExecutorInput(
+                workFolderRoot: workFolderRoot,
+                resolver: resolver,
+                fileManager: fileManager,
+                queries: [query],
+                mode: mode,
+                paths: paths,
+                fileGlob: fileGlob,
+                contextBefore: contextBefore,
+                contextAfter: contextAfter,
+                maxResults: maxResults,
+                maxMatchLines: maxMatchLines,
+                constrainToFiles: nil,
+                internalDir: internalDir
+            ))
 
             struct SearchData: Codable {
                 var query: String
@@ -577,12 +456,12 @@ struct SearchTool: ToolHandler {
                 toolName: Self.name, args: args,
                 data: SearchData(
                     query: query,
-                    matches: matches,
-                    count: matches.count,
-                    skipped_files: skipped.isEmpty ? nil : skipped,
-                    skipped_binary_count: skippedBinaryCount > 0 ? skippedBinaryCount : nil
+                    matches: output.matches,
+                    count: output.matches.count,
+                    skipped_files: output.skipped.isEmpty ? nil : output.skipped,
+                    skipped_binary_count: output.skippedBinaryCount > 0 ? output.skippedBinaryCount : nil
                 ),
-                meta: ToolResultMeta(truncated: truncated)
+                meta: ToolResultMeta(truncated: output.truncated)
             )
         }
     }

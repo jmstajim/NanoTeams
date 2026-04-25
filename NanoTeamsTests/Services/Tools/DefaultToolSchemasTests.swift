@@ -514,8 +514,8 @@ final class DefaultToolSchemasTests: XCTestCase {
         XCTAssertEqual(propertyNames(for: "delete_file").count, 2)
     }
 
-    func testSearchProjectHasTwoProperties() {
-        XCTAssertEqual(propertyNames(for: "search").count, 2)
+    func testSearchProjectHasThreeProperties() {
+        XCTAssertEqual(propertyNames(for: "search").count, 3)
     }
 
     func testGitCommitHasTwoProperties() {
@@ -569,7 +569,7 @@ final class DefaultToolSchemasTests: XCTestCase {
     func testSearchProjectPropertyNames() {
         XCTAssertEqual(
             propertyNames(for: "search"),
-            ["query", "max_results"])
+            ["query", "max_results", "expand"])
     }
 
     func testGitBranchPropertyNames() {

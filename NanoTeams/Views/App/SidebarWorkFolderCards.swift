@@ -99,6 +99,17 @@ extension SidebarView {
                         } label: {
                             Label("Reveal in Finder", systemImage: "arrow.right.circle")
                         }
+                        if let coordinator = store.searchIndexCoordinator {
+                            Button {
+                                Task { await coordinator.rebuild() }
+                            } label: {
+                                Label(
+                                    coordinator.isBuilding ? "Rebuilding Index…" : "Rebuild Search Index",
+                                    systemImage: "arrow.clockwise"
+                                )
+                            }
+                            .disabled(coordinator.isBuilding)
+                        }
                         Divider()
                         let recents = recentProjects.prefix(5)
                         if !recents.isEmpty {
@@ -135,6 +146,25 @@ extension SidebarView {
                     .buttonStyle(.plain)
                     .help("Work Folder Settings")
                 }
+            }
+
+            // Broad search indexing pill — visible only while the coordinator is
+            // actively rebuilding. Tap to jump to the Advanced settings tab.
+            if store.searchIndexCoordinator?.isBuilding == true {
+                Button {
+                    selectedSettingsTab = .advanced
+                    openWindow(id: "settings")
+                } label: {
+                    HStack(spacing: Spacing.xs) {
+                        NTMSLoader(.mini)
+                            .frame(width: 12, height: 12)
+                        Text("Indexing…")
+                            .font(Typography.caption)
+                    }
+                    .foregroundStyle(Colors.accent)
+                }
+                .buttonStyle(.plain)
+                .help("Rebuilding expanded-search index")
             }
 
             // Description or generate button

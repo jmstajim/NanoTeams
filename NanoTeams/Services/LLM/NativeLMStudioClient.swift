@@ -183,6 +183,34 @@ struct NativeLMStudioClient: LLMClient {
     }
 
     func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] {
+        try await fetchModelsMatching(
+            config: config,
+            nativeFilter: { info in
+                let isLLM = info.type == nil || info.type == "llm"
+                let visionOK = !visionOnly || info.capabilities?.vision == true
+                return isLLM && visionOK
+            }
+        )
+    }
+
+    func fetchEmbeddingModels(config: LLMConfig) async throws -> [String] {
+        // LM Studio reports embedding models with `type == "embeddings"`
+        // (with the trailing `s`). Older builds emit `"embedding"` (singular)
+        // so match both. OpenAI-compatible fallback has no type metadata and
+        // returns the full list — acceptable degraded behavior there because
+        // the user can still type a known embedding model name manually.
+        try await fetchModelsMatching(
+            config: config,
+            nativeFilter: { info in info.type == "embeddings" || info.type == "embedding" }
+        )
+    }
+
+    /// Shared GET `/api/v1/models` + decode. `nativeFilter` runs against the
+    /// native response; the OpenAI fallback returns everything (no type info).
+    private func fetchModelsMatching(
+        config: LLMConfig,
+        nativeFilter: (NativeModelListResponse.NativeModelInfo) -> Bool
+    ) async throws -> [String] {
         guard let baseURL = URL(string: config.baseURLString) else {
             throw LLMClientError.invalidBaseURL(config.baseURLString)
         }
@@ -207,8 +235,7 @@ struct NativeLMStudioClient: LLMClient {
         // Try LM Studio native format first: { "models": [{ "key": "...", "type": "llm" }] }
         if let native = try? decoder.decode(NativeModelListResponse.self, from: data) {
             return native.models
-                .filter { $0.type == nil || $0.type == "llm" }
-                .filter { !visionOnly || $0.capabilities?.vision == true }
+                .filter(nativeFilter)
                 .map(\.key)
                 .sorted()
         }

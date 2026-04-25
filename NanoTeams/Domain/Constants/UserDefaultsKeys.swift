@@ -39,4 +39,8 @@ enum UserDefaultsKeys {
     /// Locale identifiers the user opted into for dictation (array of strings).
     /// Empty = fall back to `Locale.preferredLanguages`.
     static let dictationLocales = "NanoTeams.dictation.locales.v1"
+    static let expandedSearchEnabled = "NanoTeams.search.expandedSearchEnabled.v1"
+    static let expandedSearchEmbeddingConfig = "NanoTeams.search.expandedSearchEmbeddingConfig.v1"
+    static let expandedSearchPerTokenThreshold = "NanoTeams.search.expandedSearchPerTokenThreshold.v1"
+    static let expandedSearchPhraseThreshold = "NanoTeams.search.expandedSearchPhraseThreshold.v1"
 }

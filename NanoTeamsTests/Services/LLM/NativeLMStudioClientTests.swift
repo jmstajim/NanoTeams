@@ -655,6 +655,69 @@ final class NativeLMStudioClientTests: XCTestCase {
         }
     }
 
+    // MARK: - fetchEmbeddingModels filter
+
+    /// `fetchEmbeddingModels` must return only entries whose LM Studio native
+    /// `type` is `"embeddings"` (plural, what current LM Studio emits) or
+    /// `"embedding"` (older builds). Everything else — `llm`, `vlm`, or
+    /// unspecified — must be excluded so the Semantic-Expansion dropdown
+    /// doesn't show chat models.
+    func testFetchEmbeddingModels_filtersToEmbeddingTypeOnly() async throws {
+        let body = #"""
+        {
+          "models": [
+            { "key": "openai/gpt-oss-20b",                "type": "llm" },
+            { "key": "text-embedding-nomic-embed-text-v1.5", "type": "embeddings" },
+            { "key": "qwen/qwen3-vl-8b",                  "type": "vlm", "capabilities": { "vision": true } },
+            { "key": "legacy-embed",                       "type": "embedding" },
+            { "key": "unlabeled-thing" }
+          ]
+        }
+        """#
+        let stubSession = StubNetworkSession(
+            response: HTTPURLResponse(
+                url: URL(string: "http://localhost:1234/api/v1/models")!,
+                statusCode: 200, httpVersion: nil, headerFields: nil
+            )!,
+            data: Data(body.utf8)
+        )
+        let client = NativeLMStudioClient(session: stubSession)
+        let config = makeConfig()
+
+        let embeddings = try await client.fetchEmbeddingModels(config: config)
+
+        XCTAssertEqual(
+            embeddings.sorted(),
+            ["legacy-embed", "text-embedding-nomic-embed-text-v1.5"],
+            "Only `embedding`/`embeddings` types must land in the picker."
+        )
+    }
+
+    /// Symmetric pin: `fetchModels(visionOnly: false)` must NOT return
+    /// embedding models — chat-model pickers shouldn't show them.
+    func testFetchModels_excludesEmbeddingModels() async throws {
+        let body = #"""
+        {
+          "models": [
+            { "key": "openai/gpt-oss-20b",                "type": "llm" },
+            { "key": "text-embedding-nomic-embed-text-v1.5", "type": "embeddings" }
+          ]
+        }
+        """#
+        let stubSession = StubNetworkSession(
+            response: HTTPURLResponse(
+                url: URL(string: "http://localhost:1234/api/v1/models")!,
+                statusCode: 200, httpVersion: nil, headerFields: nil
+            )!,
+            data: Data(body.utf8)
+        )
+        let client = NativeLMStudioClient(session: stubSession)
+        let config = makeConfig()
+
+        let llms = try await client.fetchModels(config: config, visionOnly: false)
+        XCTAssertEqual(llms, ["openai/gpt-oss-20b"])
+    }
+
     // MARK: - LM Studio Requires No Credentials
 
     func testLMStudioConnectsWithoutCredentials() async {
@@ -801,5 +864,28 @@ final class NativeLMStudioClientTests: XCTestCase {
         )
 
         XCTAssertEqual(request.systemPrompt, "You are an engineer.")
+    }
+}
+
+// MARK: - StubNetworkSession
+
+/// Minimal `NetworkSession` double that replays a canned `(Data, URLResponse)`
+/// for any request. Used for deterministic fetchModels filter tests.
+private final class StubNetworkSession: NetworkSession, @unchecked Sendable {
+    let response: URLResponse
+    let data: Data
+
+    init(response: URLResponse, data: Data) {
+        self.response = response
+        self.data = data
+    }
+
+    func sessionData(for _: URLRequest) async throws -> (Data, URLResponse) {
+        (data, response)
+    }
+
+    func sessionBytes(for _: URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse) {
+        // Not exercised by the embedding-filter tests — trap on unexpected use.
+        fatalError("StubNetworkSession.sessionBytes not supported")
     }
 }

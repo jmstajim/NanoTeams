@@ -59,6 +59,29 @@ protocol LLMStateDelegate: TaskMutationDelegate {
     /// message exists OR if attachment finalization fails (in which case the
     /// message stays queued and `lastErrorMessage` is set).
     func consumeQueuedSupervisorMessage(taskID: Int, roleID: String, stepID: String) async -> String?
+
+    // MARK: - Expanded Search
+
+    /// Gates the `expand` branch on `SearchTool`. When `false`, the
+    /// processor falls back to a plain search with an informational envelope
+    /// marker so the LLM can see it isn't running in broad mode.
+    var expandedSearchEnabled: Bool { get }
+    /// True when a user-selected work folder is open (as opposed to default
+    /// internal storage in Application Support). Broad-search indexing is only
+    /// meaningful against a real project folder — the processor uses this to
+    /// distinguish "architecturally unsupported" from "coordinator returned
+    /// nil despite a real folder (true bug)" in the envelope's error reason.
+    var hasRealWorkFolder: Bool { get }
+    /// Blocks until the currently-running token-index build completes (if any),
+    /// then returns the current search index. Returns `nil` when no work folder
+    /// is open / the coordinator isn't configured.
+    func awaitSearchIndex() async -> SearchIndex?
+    /// Expands a `expand` query via the semantic vector index. Returns a
+    /// `ExpansionResult` whose `terms` are vocab tokens cosine-close to
+    /// the query (per-token + whole-phrase), plus canonical strings for
+    /// transient errors / unavailability. The caller surfaces these into the
+    /// `expand` envelope (`expanded_terms`, `expansion_error`).
+    func expandSearchQuery(query: String, tokens: [String]) async -> VocabVectorIndexService.ExpansionResult
 }
 
 // MARK: - LLMStreamingDelegate

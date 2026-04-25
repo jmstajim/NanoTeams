@@ -12,6 +12,7 @@ struct SettingsView: View {
         case workFolder = "Work Folder"
         case general = "General"
         case dictation = "Dictation"
+        case advanced = "Advanced"
         case teams = "Teams"
         case generateTeam = "Generate Team"
         case tools = "Tools"
@@ -22,7 +23,8 @@ struct SettingsView: View {
 
         private static let iconMap: [SettingsTab: String] = [
             .llm: "brain", .workFolder: "folder", .general: "gearshape",
-            .dictation: "mic", .teams: "rectangle.3.group",
+            .dictation: "mic", .advanced: "slider.horizontal.3",
+            .teams: "rectangle.3.group",
             .generateTeam: "wand.and.stars",
             .tools: "wrench.and.screwdriver", .help: "questionmark.circle",
             .updates: "sparkles",
@@ -52,7 +54,7 @@ struct SettingsView: View {
 
     private var settingsSidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
-            settingsSection("Configuration", tabs: [.general, .llm, .workFolder, .dictation])
+            settingsSection("Configuration", tabs: [.general, .llm, .workFolder, .dictation, .advanced])
             settingsSection("Team", tabs: [.teams, .generateTeam, .tools])
             settingsSection("Support", tabs: [.help, .updates])
             Spacer()
@@ -96,6 +98,9 @@ struct SettingsView: View {
         case .dictation:
             DictationSettingsView()
                 .navigationTitle(SettingsTab.dictation.rawValue)
+        case .advanced:
+            AdvancedSettingsView()
+                .navigationTitle(SettingsTab.advanced.rawValue)
         case .teams:
             TeamEditorView()
                 .navigationTitle(SettingsTab.teams.rawValue)

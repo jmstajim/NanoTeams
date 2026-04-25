@@ -33,4 +33,8 @@ struct LLMClientRouter: LLMClient {
     func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] {
         try await nativeClient.fetchModels(config: config, visionOnly: visionOnly)
     }
+
+    func fetchEmbeddingModels(config: LLMConfig) async throws -> [String] {
+        try await nativeClient.fetchEmbeddingModels(config: config)
+    }
 }

@@ -297,6 +297,56 @@ final class StoreConfiguration {
         }
     }
 
+    // MARK: - Expanded Search
+
+    /// Gates the expanded-search feature: when true, `search(expand: true)`
+    /// calls through to the semantic vector index (per-token + whole-phrase
+    /// embeddings) intersected with the token posting index; when false, it
+    /// falls back to a plain search. Proactive indexing (and the on-disk
+    /// `search_index.json`, `vocab_vectors.*`) is also gated on this flag.
+    var expandedSearchEnabled: Bool {
+        didSet { storage.set(expandedSearchEnabled, forKey: Keys.expandedSearchEnabled) }
+    }
+
+    /// Per-expanded-search embedding-model config. `nil` = use the default
+    /// (`EmbeddingConfig.defaultNomicLMStudio`). Powers the offline vector
+    /// index build AND the query-time whole-phrase expansion call.
+    var expandedSearchEmbeddingConfig: EmbeddingConfig? {
+        didSet {
+            if let config = expandedSearchEmbeddingConfig,
+               let data = try? JSONCoderFactory.makePersistenceEncoder().encode(config) {
+                storage.set(data, forKey: Keys.expandedSearchEmbeddingConfig)
+            } else {
+                storage.removeObject(forKey: Keys.expandedSearchEmbeddingConfig)
+            }
+        }
+    }
+
+    /// Effective embedding config — user override or the built-in default.
+    var effectiveEmbeddingConfig: EmbeddingConfig {
+        expandedSearchEmbeddingConfig ?? .defaultNomicLMStudio
+    }
+
+    /// Cosine threshold for per-token vector expansion (queries that have at
+    /// least one token already in the vocab). 0.0-1.0. Higher = stricter.
+    var expandedSearchPerTokenThreshold: Double {
+        didSet {
+            storage.set(expandedSearchPerTokenThreshold,
+                        forKey: Keys.expandedSearchPerTokenThreshold)
+        }
+    }
+
+    /// Cosine threshold for whole-phrase expansion (multi-word or OOV queries
+    /// that fire one /v1/embeddings round-trip). Typically lower than
+    /// `expandedSearchPerTokenThreshold` because a phrase vector is a noisier
+    /// signal than a specific token's stored vector.
+    var expandedSearchPhraseThreshold: Double {
+        didSet {
+            storage.set(expandedSearchPhraseThreshold,
+                        forKey: Keys.expandedSearchPhraseThreshold)
+        }
+    }
+
     // MARK: - Dictation
 
     /// Locale identifiers the user explicitly enabled for dictation. Empty
@@ -340,6 +390,10 @@ final class StoreConfiguration {
         static let cachedAppUpdateRelease = UserDefaultsKeys.cachedAppUpdateRelease
         static let appUpdateCheckInterval = UserDefaultsKeys.appUpdateCheckInterval
         static let dictationLocales = UserDefaultsKeys.dictationLocales
+        static let expandedSearchEnabled = UserDefaultsKeys.expandedSearchEnabled
+        static let expandedSearchEmbeddingConfig = UserDefaultsKeys.expandedSearchEmbeddingConfig
+        static let expandedSearchPerTokenThreshold = UserDefaultsKeys.expandedSearchPerTokenThreshold
+        static let expandedSearchPhraseThreshold = UserDefaultsKeys.expandedSearchPhraseThreshold
     }
 
     init(storage: any ConfigurationStorage = UserDefaults.standard) {
@@ -393,6 +447,20 @@ final class StoreConfiguration {
         self.appUpdateCheckInterval = storage.string(forKey: Keys.appUpdateCheckInterval)
             .flatMap(AppUpdateCheckInterval.init(rawValue:)) ?? .daily
         self.dictationLocaleIdentifiers = (storage.object(forKey: Keys.dictationLocales) as? [String]) ?? []
+        self.expandedSearchEnabled = storage.bool(forKey: Keys.expandedSearchEnabled)
+        if let data = storage.data(forKey: Keys.expandedSearchEmbeddingConfig),
+           let decoded = try? JSONCoderFactory.makeDateDecoder().decode(EmbeddingConfig.self, from: data) {
+            self.expandedSearchEmbeddingConfig = decoded
+        } else {
+            self.expandedSearchEmbeddingConfig = nil
+        }
+        // Defaults tuned from the plan. Kept as `Double` (`UserDefaults` has
+        // first-class `double(forKey:)`) but applied as `Float` at the vector
+        // site — Accelerate and nomic both use Float32.
+        self.expandedSearchPerTokenThreshold =
+            (storage.object(forKey: Keys.expandedSearchPerTokenThreshold) as? Double) ?? 0.75
+        self.expandedSearchPhraseThreshold =
+            (storage.object(forKey: Keys.expandedSearchPhraseThreshold) as? Double) ?? 0.70
     }
 
     // MARK: - Reset
@@ -426,6 +494,10 @@ final class StoreConfiguration {
         storage.removeObject(forKey: Keys.cachedAppUpdateRelease)
         storage.removeObject(forKey: Keys.appUpdateCheckInterval)
         storage.removeObject(forKey: Keys.dictationLocales)
+        storage.removeObject(forKey: Keys.expandedSearchEnabled)
+        storage.removeObject(forKey: Keys.expandedSearchEmbeddingConfig)
+        storage.removeObject(forKey: Keys.expandedSearchPerTokenThreshold)
+        storage.removeObject(forKey: Keys.expandedSearchPhraseThreshold)
 
         let provider = LLMProvider.lmStudio
         llmProvider = provider
@@ -456,6 +528,10 @@ final class StoreConfiguration {
         cachedAppUpdateRelease = nil
         appUpdateCheckInterval = .weekly
         dictationLocaleIdentifiers = []
+        expandedSearchEnabled = false
+        expandedSearchEmbeddingConfig = nil
+        expandedSearchPerTokenThreshold = 0.75
+        expandedSearchPhraseThreshold = 0.70
     }
 
     // MARK: - Work Folder Path

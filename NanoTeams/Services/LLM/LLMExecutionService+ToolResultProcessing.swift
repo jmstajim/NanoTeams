@@ -42,9 +42,23 @@ extension LLMExecutionService {
             await updateToolCallResult(stepID: stepID, toolCallID: call.id, result: result)
         }
 
-        // Record tool calls to memory
+        // Record tool calls to memory.
+        //
+        // `.expandedSearch` and `.visionAnalysis` results carry an interim
+        // `{"status":"expanding"}` / `{"status":"analyzing"}` placeholder
+        // at this point — their envelopes get rewritten asynchronously by
+        // `appendExpandedSearchResult` / `appendVisionResult`. We skip them
+        // here and let those finalizers record the real result into the
+        // cache; otherwise a subsequent identical call would dedup against
+        // the placeholder and the LLM would be served junk.
         for (idx, (call, result)) in zip(resolvedToolCalls, results).enumerated() {
             if !cachedIndices.contains(idx) {
+                switch result.signal {
+                case .expandedSearch, .visionAnalysis:
+                    continue
+                default:
+                    break
+                }
                 memory.record(
                     toolName: call.name,
                     argumentsJSON: call.argumentsJSON,
@@ -78,7 +92,19 @@ extension LLMExecutionService {
                     client: client,
                     config: config,
                     networkLogger: networkLogger,
-                    conversationMessages: &conversationMessages
+                    conversationMessages: &conversationMessages,
+                    memory: memory
+                )
+            case .expandedSearch:
+                let toolCallID = resolvedToolCalls[idx].id
+                await appendExpandedSearchResult(
+                    result: result,
+                    toolCallID: toolCallID,
+                    stepID: stepID,
+                    client: client,
+                    networkLogger: networkLogger,
+                    conversationMessages: &conversationMessages,
+                    memory: memory
                 )
             case .teamCreation:
                 // create_team is invoked exclusively by TeamGenerationService, not via

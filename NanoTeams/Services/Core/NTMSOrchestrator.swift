@@ -53,6 +53,52 @@ final class NTMSOrchestrator {
         configuration.loggingEnabled
     }
 
+    // periphery:ignore - protocol conformance (LLMStateDelegate)
+    var expandedSearchEnabled: Bool {
+        configuration.expandedSearchEnabled
+    }
+
+    // periphery:ignore - protocol conformance (LLMStateDelegate)
+    func awaitSearchIndex() async -> SearchIndex? {
+        guard let coordinator = searchIndexCoordinator else { return nil }
+        return await coordinator.awaitIndex()
+    }
+
+    // periphery:ignore - protocol conformance (LLMStateDelegate)
+    func expandSearchQuery(
+        query: String,
+        tokens: [String]
+    ) async -> VocabVectorIndexService.ExpansionResult {
+        guard let coordinator = searchIndexCoordinator else {
+            return .unavailable(reason: VocabVectorIndexService.reasonMissing)
+        }
+        return await coordinator.vectorIndex.expand(
+            query: query,
+            tokens: tokens,
+            config: configuration.effectiveEmbeddingConfig,
+            perTokenThreshold: Float(configuration.expandedSearchPerTokenThreshold),
+            phraseThreshold: Float(configuration.expandedSearchPhraseThreshold)
+        )
+    }
+
+    /// Coordinator that owns the search index + FS watcher. Populated on work
+    /// folder open when `configuration.expandedSearchEnabled == true`. `nil` when
+    /// feature is off or no folder is open.
+    ///
+    /// Views DO observe this identity change — `AdvancedSettingsView` passes
+    /// `store.searchIndexCoordinator` into the status cards, and
+    /// `SidebarWorkFolderCards` reads `store.searchIndexCoordinator?.isBuilding`.
+    /// `@ObservationIgnored` would freeze the cards at their initial nil
+    /// snapshot so enabling the toggle would not refresh them.
+    var searchIndexCoordinator: SearchIndexCoordinator?
+
+    /// Serial pipeline for expanded-search toggle events. Each enqueued task
+    /// awaits the prior one so three rapid detached-Task clicks from
+    /// `ExpandedSearchToggleCard.onChanged` can't interleave inside
+    /// `applyExpandedSearchSettingChange`, which would produce a non-deterministic
+    /// final state. See `onExpandedSearchSettingChanged` in +WorkFolderManagement.
+    @ObservationIgnored var pendingExpandedSearchToggle: Task<Void, Never>?
+
     /// All tasks currently in memory (active + background).
     var allLoadedTasks: [NTMSTask] {
         var tasks: [NTMSTask] = []

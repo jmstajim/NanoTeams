@@ -30,6 +30,7 @@ extension NTMSOrchestrator {
     func openWorkFolder(_ url: URL) async {
         stopAllEngines()
         llmExecutionService.cancelAllExecutions()
+        await tearDownSearchIndexCoordinator()
         workFolderURL = url
 
         do {
@@ -62,8 +63,112 @@ extension NTMSOrchestrator {
                 let noun = count == 1 ? "team" : "teams"
                 lastInfoMessage = "Bundled updates deferred for \(count) \(noun) — will retry on next open."
             }
+
+            // Spin up the search index coordinator if expanded search is enabled.
+            await setUpSearchIndexCoordinatorIfEnabled()
         } catch {
             self.lastErrorMessage = error.localizedDescription
+        }
+    }
+
+    // MARK: - Search Index Coordinator Lifecycle
+
+    /// Creates a coordinator bound to the current work folder (if expanded search
+    /// is enabled) and kicks off an initial ensure-fresh pass.
+    ///
+    /// Skipped for default internal storage (Application Support) — that
+    /// directory holds NanoTeams's own metadata for template/chat teams
+    /// without a real project, and indexing it just surfaces bookkeeping
+    /// files. Broad search only makes sense against a user-selected project.
+    ///
+    /// Idempotent: repeated calls with a coordinator already installed return
+    /// early WITHOUT creating a second one. The install-after-await guard
+    /// also protects against a concurrent caller entering during our
+    /// `coordinator.start()` await — if someone else won the race, we tear
+    /// down the one we built before returning so no FSEventStream is orphaned.
+    func setUpSearchIndexCoordinatorIfEnabled() async {
+        guard configuration.expandedSearchEnabled,
+              hasRealWorkFolder,
+              let url = workFolderURL,
+              searchIndexCoordinator == nil else { return }
+
+        let paths = NTMSPaths(workFolderRoot: url)
+        // MainActor-isolated provider: the closure runs on the same actor as
+        // `configuration` (the orchestrator), so reads are safe. Snapshot
+        // happens on each rebuild call — settings changes take effect on
+        // the next build without re-creating the coordinator.
+        let config = configuration
+        let coordinator = SearchIndexCoordinator(
+            workFolderRoot: url,
+            internalDir: paths.internalDir,
+            embeddingConfigProvider: { @MainActor [weak config] in
+                config?.effectiveEmbeddingConfig ?? .defaultNomicLMStudio
+            },
+            fileManager: fileManager
+        )
+        // `start()` awaits — a concurrent caller could install a coordinator
+        // in the meantime. Install AFTER start so the observed ordering is
+        // "create → start → publish", never "publish with a half-initialized
+        // watcher".
+        await coordinator.start()
+
+        if searchIndexCoordinator != nil {
+            // Lost the race — tear down the one we built before returning.
+            await coordinator.stop()
+            return
+        }
+        searchIndexCoordinator = coordinator
+    }
+
+    /// Shuts down the coordinator (stops the FS watcher, cancels in-flight
+    /// builds). Does NOT delete the on-disk index so re-opening the folder
+    /// reuses the cached build when the signature still matches.
+    func tearDownSearchIndexCoordinator() async {
+        guard let coordinator = searchIndexCoordinator else { return }
+        await coordinator.stop()
+        searchIndexCoordinator = nil
+    }
+
+    /// Hook: user toggled the "Expanded Search" setting. Creates or destroys the
+    /// coordinator and (on disable) deletes the on-disk `search_index.json`.
+    ///
+    /// When the user enables expanded search while on default internal storage
+    /// (no real project folder), `setUpSearchIndexCoordinatorIfEnabled` is a
+    /// no-op — broadcast an info message so the toggle's "ON" state doesn't
+    /// silently contradict the index-status card reading "disabled".
+    ///
+    /// Rapid toggle sequencing: `ExpandedSearchToggleCard.onChanged` spawns a
+    /// detached `Task { await ... }` per click, so three rapid clicks race
+    /// without inline awaits. We chain them through `pendingExpandedSearchToggle`
+    /// so the effects apply in FIFO click order — otherwise the final state
+    /// could disagree with the last click.
+    func onExpandedSearchSettingChanged() async {
+        let prior = pendingExpandedSearchToggle
+        let myTask = Task { [weak self] in
+            _ = await prior?.value
+            guard let self else { return }
+            await self.applyExpandedSearchSettingChange()
+        }
+        pendingExpandedSearchToggle = myTask
+        _ = await myTask.value
+        if pendingExpandedSearchToggle == myTask {
+            pendingExpandedSearchToggle = nil
+        }
+    }
+
+    private func applyExpandedSearchSettingChange() async {
+        if configuration.expandedSearchEnabled {
+            if searchIndexCoordinator == nil {
+                await setUpSearchIndexCoordinatorIfEnabled()
+                if searchIndexCoordinator == nil, !hasRealWorkFolder {
+                    lastInfoMessage = "Expanded Search needs an open project folder — default storage isn't indexed."
+                }
+            }
+        } else {
+            if let coordinator = searchIndexCoordinator {
+                await coordinator.clear()
+                searchIndexCoordinator = nil
+            }
         }
     }
 
@@ -81,6 +186,10 @@ extension NTMSOrchestrator {
     func resetAllData() async {
         stopAllEngines()
         llmExecutionService.cancelAllExecutions()
+        // Tear down BEFORE deleting the .nanoteams tree — otherwise the FS
+        // watcher can fire against the half-deleted folder and kick off a
+        // rebuild that races the re-bootstrap.
+        await tearDownSearchIndexCoordinator()
         configuration.lastOpenedWorkFolderPath = nil
 
         let defaultURL = Self.defaultStorageURL

@@ -12,6 +12,30 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     var maxLLMRetries: Int = 0
     var visionLLMConfig: LLMConfig?
     var loggingEnabled: Bool = false
+    var expandedSearchEnabled: Bool = false
+    /// Scripted for tests — defaults to `true` so real-folder paths exercise.
+    /// Flip to `false` to simulate default-storage expanded-search on real folder.
+    var hasRealWorkFolder: Bool = true
+    /// Scripted index used by `awaitSearchIndex`. Tests install it directly.
+    var scriptedSearchIndex: SearchIndex?
+    var awaitSearchIndexCallCount: Int = 0
+    /// Scripted expansion returned by `expandSearchQuery`. Tests install it
+    /// directly — default is empty (unchanged posting-intersection behaviour).
+    var scriptedExpansion: VocabVectorIndexService.ExpansionResult = .empty
+    var expandSearchQueryCallCount: Int = 0
+
+    func awaitSearchIndex() async -> SearchIndex? {
+        awaitSearchIndexCallCount += 1
+        return scriptedSearchIndex
+    }
+
+    func expandSearchQuery(
+        query: String,
+        tokens: [String]
+    ) async -> VocabVectorIndexService.ExpansionResult {
+        expandSearchQueryCallCount += 1
+        return scriptedExpansion
+    }
 
     // Tracking calls for verification
     var beginStreamingCalls: [(String, UUID, Role, Int)] = []
