@@ -1,5 +1,7 @@
 import SwiftUI
 
+#if DEBUG
+
 // MARK: - Preview Helpers
 
 // periphery:ignore - used in #Preview macros across TeamBoard view files
@@ -1080,3 +1082,5 @@ private enum TeamBoardPreviewData {
         .environment(dictation)
         .frame(width: 400, height: 700)
 }
+
+#endif
