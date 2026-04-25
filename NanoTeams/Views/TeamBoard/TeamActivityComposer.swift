@@ -19,29 +19,17 @@ struct TeamActivityActiveQuestion: Equatable {
 
 // MARK: - Team Activity Composer
 
-/// Persistent composer rendered in the same visual slot as the active
-/// `ask_supervisor` card. Replaces the passive question banner with a single
-/// unified input: the Supervisor always sees one card, and the **"To:"** menu
-/// lets them choose between **Answer [the asking role]**, **Team (queue)**,
-/// or **queue for a specific working role**.
+/// Persistent composer in the same visual slot as the active `ask_supervisor`
+/// card. The "To:" chip row routes submission to one of two recipients:
 ///
-/// ### Recipient → Action (engine-state-independent)
+/// | Recipient | Action |
+/// |---|---|
+/// | `.answer(stepID)` | `store.answerSupervisorQuestion(stepID:…)` |
+/// | `.role(id)` | `QuickCaptureController.queueChatMessage(targetRoleID: id)` |
 ///
-/// | Recipient | Action | Failure mode |
-/// |---|---|---|
-/// | `.answer(stepID)` | `store.answerSupervisorQuestion(stepID:…)` | Attachment finalize failure only |
-/// | `.team` | `QuickCaptureController.queueChatMessage(targetRoleID: nil)` | Empty payload rejected |
-/// | `.role(id)` | `QuickCaptureController.queueChatMessage(targetRoleID: id)` | Empty payload rejected |
-///
-/// This composer does NOT invoke `NTMSOrchestrator.correctRole` — that flow lives
-/// on `RoleContextBanner` / `RoleNodeRuntimeView` via `CorrectRoleSheet`, which is
-/// the correct path for mid-pause interventions that need conversation-preserving
-/// continuation. The composer's `.role` / `.team` queue is a softer tool: queued
-/// messages are consumed at the **top of the role's next `runOneLLMToolIteration`**
-/// — the model sees them on its next request, no `ask_supervisor` required. If
-/// the role is already `.needsSupervisorInput`, the older
-/// `QuickCaptureController.flushQueuedChatMessage` path handles delivery via
-/// `answerSupervisorQuestion` as a backstop.
+/// `.role` queues are consumed at the top of the role's next
+/// `runOneLLMToolIteration`. For mid-pause conversation-preserving correction
+/// use `CorrectRoleSheet` (calls `NTMSOrchestrator.correctRole`) instead.
 struct TeamActivityComposer: View {
     let roleDefinitions: [TeamRoleDefinition]
     let isChatMode: Bool
@@ -49,14 +37,15 @@ struct TeamActivityComposer: View {
     /// Role IDs currently `.working` — only these are valid queue targets.
     /// Supervisor cannot message an idle / done / failed role through this composer.
     let workingRoleIDs: Set<String>
-    /// When present, the "To:" menu offers an **Answer** option for this question
-    /// and the question text is previewed in the card header.
+    /// When present, surfaces an **Answer** chip and previews the question header.
     let activeQuestion: TeamActivityActiveQuestion?
+    /// Hard cap on overall composer height; the TextField scrolls internally past this.
+    let maxHeight: CGFloat
 
     @State private var text: String = ""
     @State private var attachments: [StagedAttachment] = []
     @State private var clippedTexts: [String] = []
-    /// Selected recipient. `nil` = auto (Answer if question pending, else Team/queue).
+    /// `nil` = auto (first chip wins via `resolveEffectiveRecipient`); else explicit pick.
     @State private var selectedRecipient: Recipient? = nil
     /// Intrinsic height of the question preview content — used both to decide whether
     /// to draw the "more below" fade hint when the text overflows the cap, and to
@@ -64,6 +53,10 @@ struct TeamActivityComposer: View {
     /// `ScrollView` greedily filling the 140pt cap). Seeded with `.infinity` so the
     /// first render doesn't flash at zero height (CLAUDE.md #18).
     @State private var questionContentHeight: CGFloat = .infinity
+    /// Tracks which chip the cursor is hovering over (Spotify-style hover feedback).
+    @State private var hoveredChipRecipient: Recipient? = nil
+    /// Whether the question preview card is collapsed to a single header line.
+    @State private var isQuestionCollapsed: Bool = false
 
     @Environment(NTMSOrchestrator.self) private var store
     @Environment(StoreConfiguration.self) private var config
@@ -72,16 +65,15 @@ struct TeamActivityComposer: View {
 
     // MARK: - Recipient
 
-    /// The compile-enforced invariant: `.answer` cannot exist without a step id.
-    /// This replaces a runtime `guard let q = activeQuestion else { error }` and
-    /// makes "answer without a question" unrepresentable at the type level.
+    /// `.answer` cannot exist without a step id — answering without a question is unrepresentable.
     enum Recipient: Hashable {
-        case answer(stepID: String)  // Reply to the active question identified by step id.
-        case team                    // Queue a message for next `.needsSupervisorInput` (any role).
-        case role(id: String)        // Queue a message targeted at a specific working role.
+        case answer(stepID: String)
+        case role(id: String)
     }
 
-    private var effectiveRecipient: Recipient {
+    /// `nil` when there's no usable recipient (no question, no working role, no
+    /// candidate). The chip row collapses and `canSubmit` is `false` in that state.
+    private var effectiveRecipient: Recipient? {
         Self.resolveEffectiveRecipient(
             selected: selectedRecipient,
             activeQuestion: activeQuestion,
@@ -115,23 +107,13 @@ struct TeamActivityComposer: View {
 
     // MARK: - Derived
 
-    private var avatarIcon: String {
-        switch effectiveRecipient {
-        case .answer:
-            return activeQuestion.map { roleIcon($0.askingRoleID) } ?? "person.3.fill"
-        case .team:
-            return "person.3.fill"
-        case .role(let id):
-            return roleIcon(id)
-        }
-    }
-
-    private var cardTint: Color { Colors.accent }
-
     private var canSubmit: Bool {
-        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || !attachments.isEmpty
-            || !clippedTexts.isEmpty
+        Self.computeCanSubmit(
+            text: text,
+            hasAttachments: !attachments.isEmpty,
+            hasClips: !clippedTexts.isEmpty,
+            effectiveRecipient: effectiveRecipient
+        )
     }
 
     private var queuedMessages: [QuickCaptureFormState.QueuedChatMessage] {
@@ -142,61 +124,61 @@ struct TeamActivityComposer: View {
         switch effectiveRecipient {
         case .answer:
             return "Answer…"
-        case .team:
-            if activeQuestion != nil { return "Queue a message instead…" }
-            // No one is currently working → "queue" has no target. Treat it as a
-            // plain message that will land whenever the team next needs input.
-            if selectableRoles.isEmpty {
-                return isChatMode ? "Send a message…" : "Send a message to the team…"
-            }
-            return isChatMode ? "Type your message…" : "Queue a message for the team…"
         case .role(let id):
             // If the role isn't currently working, there's no queue to wait on.
             let isWorking = workingRoleIDs.contains(id)
             return isWorking
                 ? "Queue a message for \(roleName(id))…"
                 : "Send a message to \(roleName(id))…"
+        case nil:
+            return "No active recipient — wait for a role to start working…"
         }
     }
 
     // MARK: - Body
 
     var body: some View {
-        HStack(alignment: .top, spacing: ActivityCardTokens.cardPadding) {
-            ActivityFeedIconAvatar(icon: avatarIcon, color: cardTint)
+        contentColumn
+            .padding(.horizontal, Spacing.standard)
+            .padding(.vertical, Spacing.s)
+    }
 
-            VStack(alignment: .leading, spacing: ActivityCardTokens.contentSpacing) {
-                recipientChipRow
+    private var contentColumn: some View {
+        VStack(alignment: .leading, spacing: Spacing.s) {
+            recipientChipRow
 
-                VStack(alignment: .leading, spacing: Spacing.s) {
-                    if let q = activeQuestion {
-                        questionPreview(q)
-                            .padding(.bottom, Spacing.xs)
-                    }
-                    if !queuedMessages.isEmpty {
-                        queuedList
-                    }
-                    MessageComposer(
-                        text: $text,
-                        attachments: $attachments,
-                        clips: $clippedTexts,
-                        placeholder: placeholderText,
-                        canSubmit: canSubmit,
-                        isSubmitting: false,
-                        onSubmit: handleSubmit,
-                        onStageAttachment: { url in store.stageAttachment(url: url, draftID: UUID()) },
-                        onRemoveAttachment: { staged in store.removeStagedAttachment(staged) }
-                    )
-                }
-                .padding(ActivityCardTokens.cardPadding)
-                .background(
-                    RoundedRectangle(cornerRadius: ActivityCardTokens.cornerRadius, style: .continuous)
-                        .fill(cardTint.opacity(ActivityCardTokens.backgroundOpacity))
-                )
+            if let q = activeQuestion, case .answer = effectiveRecipient {
+                questionPreviewCard(q)
             }
+
+            if !queuedMessages.isEmpty {
+                queuedList
+            }
+            MessageComposer(
+                text: $text,
+                attachments: $attachments,
+                clips: $clippedTexts,
+                placeholder: placeholderText,
+                canSubmit: canSubmit,
+                isSubmitting: false,
+                onSubmit: handleSubmit,
+                onStageAttachment: { url in store.stageAttachment(url: url, draftID: UUID()) },
+                onRemoveAttachment: { staged in store.removeStagedAttachment(staged) },
+                textFieldLineLimit: 1...6
+            )
         }
-        .padding(.horizontal, Spacing.standard)
-        .padding(.vertical, Spacing.s)
+        // When the chip the user previously tapped disappears (e.g. Answer chip
+        // after answering, role chip after the role finishes), clear the explicit
+        // selection so `resolveEffectiveRecipient`'s auto-resolution kicks back in.
+        // Without this the placeholder/avatar/submit reflect a stale selection.
+        .onChange(of: chipOptionsComputed.map(\.recipient)) { _, recipients in
+            selectedRecipient = Self.sanitizeSelection(
+                selected: selectedRecipient, availableRecipients: recipients
+            )
+            hoveredChipRecipient = Self.sanitizeSelection(
+                selected: hoveredChipRecipient, availableRecipients: recipients
+            )
+        }
     }
 
     // MARK: - Recipient Chips (Spotify-style horizontal pill row)
@@ -209,54 +191,80 @@ struct TeamActivityComposer: View {
         )
     }
 
+    @ViewBuilder
     private var recipientChipRow: some View {
-        HStack(spacing: Spacing.xs) {
-            Text("To")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.trailing, 2)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: Spacing.xs) {
-                    ForEach(chipOptionsComputed) { option in
-                        chip(for: option)
+        if !chipOptionsComputed.isEmpty {
+            HStack(spacing: Spacing.xs) {
+                Text("To")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Colors.textTertiary)
+                    .padding(.trailing, Spacing.xxs)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: Spacing.xs) {
+                        ForEach(chipOptionsComputed) { option in
+                            chip(for: option)
+                        }
                     }
+                    .padding(.vertical, Spacing.xxs)
                 }
-                .padding(.vertical, 2)
-            }
-            .mask(
-                // Fade the trailing edge so users get a visual hint that the row scrolls.
-                LinearGradient(
-                    stops: [
-                        .init(color: .black, location: 0),
-                        .init(color: .black, location: 0.92),
-                        .init(color: .clear, location: 1)
-                    ],
-                    startPoint: .leading,
-                    endPoint: .trailing
+                .mask(
+                    LinearGradient(
+                        stops: [
+                            .init(color: .black, location: 0),
+                            .init(color: .black, location: 0.92),
+                            .init(color: .clear, location: 1)
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
                 )
-            )
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func chip(for option: ChipOption) -> some View {
         let isSelected = effectiveRecipient == option.recipient
+        let isHovered = hoveredChipRecipient == option.recipient
+        let isWorkingRole: Bool = {
+            if case .role(let id) = option.recipient { return workingRoleIDs.contains(id) }
+            return false
+        }()
+        // Answer chip uses the asking role's tint; others use accent.
+        let selectedFill: Color = {
+            if case .answer(let stepID) = option.recipient,
+               let roleDef = roleDefinitions.first(where: { $0.id == stepID }) {
+                return roleDef.resolvedTintColor
+            }
+            return Colors.accent
+        }()
+        let chipFill: Color = isSelected
+            ? selectedFill
+            : (isHovered ? Colors.surfaceHover : Colors.surfaceElevated)
+
         return Button {
-            selectedRecipient = option.recipient
+            withAnimation(Animations.quick) {
+                selectedRecipient = option.recipient
+            }
         } label: {
-            HStack(spacing: 4) {
+            HStack(spacing: Spacing.xxs) {
+                if isWorkingRole && !isSelected {
+                    Circle()
+                        .fill(Colors.success)
+                        .frame(width: 5, height: 5)
+                }
                 Image(systemName: option.icon)
                     .font(.caption2.weight(.semibold))
                 Text(option.label)
                     .font(.caption.weight(.semibold))
                     .lineLimit(1)
             }
-            .foregroundStyle(isSelected ? Color.white : Colors.textPrimary)
-            .padding(.horizontal, Spacing.s)
-            .padding(.vertical, 5)
+            .foregroundStyle(isSelected ? Colors.textOnAccent : Colors.textPrimary)
+            .padding(.horizontal, Spacing.s - 2)
+            .padding(.vertical, Spacing.xs)
             .background(
                 Capsule(style: .continuous)
-                    .fill(isSelected ? cardTint : Colors.surfaceElevated)
+                    .fill(chipFill)
             )
             .overlay(
                 Capsule(style: .continuous)
@@ -265,76 +273,97 @@ struct TeamActivityComposer: View {
                         lineWidth: 0.5
                     )
             )
+            .scaleEffect(isHovered && !isSelected ? 1.02 : 1.0)
         }
         .buttonStyle(.plain)
+        .onHover { hovering in
+            hoveredChipRecipient = hovering ? option.recipient : nil
+        }
+        .animationWithReduceMotion(Animations.quick, value: isSelected)
+        .animationWithReduceMotion(Animations.quick, value: isHovered)
         .accessibilityLabel(option.label)
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 
-    private func questionPreview(_ q: TeamActivityActiveQuestion) -> some View {
-        let maxPreviewHeight: CGFloat = 140
-        // Cap the preview at ~6 lines — long questions (e.g. a whole poem) would
-        // otherwise grow the composer until the textfield + send button slide off
-        // the bottom of the window. Beyond the cap the text becomes scrollable and
-        // a fade-out gradient hints at the cut-off content below.
-        return ScrollView {
-            HStack(alignment: .top, spacing: Spacing.xs) {
-                Image(systemName: "questionmark.bubble.fill")
-                    .font(.body)
-                    .foregroundStyle(cardTint)
-                Text("\(roleName(q.askingRoleID)) asks: \(q.question)")
-                    .font(.body)
-                    .foregroundStyle(Colors.textPrimary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+    private func questionPreviewCard(_ q: TeamActivityActiveQuestion) -> some View {
+        let askingColor = roleDefinitions.first(where: { $0.id == q.askingRoleID })?.resolvedTintColor ?? Colors.accent
+        let chromeOverhead: CGFloat = 120
+        let maxPreviewHeight: CGFloat = maxHeight.isFinite ? max(80, maxHeight - chromeOverhead) : 200
+
+        return VStack(alignment: .leading, spacing: 0) {
+            // Header: role icon + "Role asks:" + collapse chevron
+            Button {
+                withAnimation(Animations.spring) {
+                    isQuestionCollapsed.toggle()
+                }
+            } label: {
+                HStack(spacing: Spacing.xs) {
+                    Image(systemName: roleIcon(q.askingRoleID))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(askingColor)
+                    Text("\(roleName(q.askingRoleID)) asks:")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(askingColor)
+                    if isQuestionCollapsed {
+                        Text(q.question)
+                            .font(.caption)
+                            .foregroundStyle(Colors.textSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Colors.textTertiary)
+                        .rotationEffect(.degrees(isQuestionCollapsed ? 0 : 90))
+                }
+                .contentShape(Rectangle())
             }
-            .padding(.trailing, Spacing.m)
-            .padding(.top, Spacing.xs)
-            // Extra bottom padding pushes the last line above the fade band. The
-            // `.mask` gradient below fades the bottom ~12% of the frame for the
-            // "more below" affordance — without this gutter, tall questions get
-            // their last visible line rendered through the fade.
-            .padding(.bottom, Spacing.m)
-            .onGeometryChange(for: CGFloat.self) { proxy in
-                proxy.size.height
-            } action: { newHeight in
-                questionContentHeight = newHeight
+            .buttonStyle(.plain)
+            .padding(.horizontal, Spacing.s)
+            .padding(.vertical, Spacing.xs + 2)
+
+            // Body: question text (hidden when collapsed)
+            if !isQuestionCollapsed {
+                ScrollView {
+                    Text(q.question)
+                        .font(.callout)
+                        .foregroundStyle(Colors.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, Spacing.s)
+                        .padding(.top, Spacing.xxs)
+                        .padding(.bottom, Spacing.s)
+                        .onGeometryChange(for: CGFloat.self) { proxy in
+                            proxy.size.height
+                        } action: { newHeight in
+                            questionContentHeight = newHeight
+                        }
+                }
+                .frame(height: min(questionContentHeight, maxPreviewHeight))
+                .mask {
+                    if questionContentHeight > maxPreviewHeight {
+                        LinearGradient(
+                            stops: [
+                                .init(color: .black, location: 0),
+                                .init(color: .black, location: 0.88),
+                                .init(color: .clear, location: 1)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    } else {
+                        Rectangle()
+                    }
+                }
             }
         }
-        // Shrink to content for short questions; cap at maxPreviewHeight for long ones.
-        // ScrollView is greedy by default — `.frame(maxHeight:)` alone would always fill
-        // the cap regardless of content size.
-        .frame(height: min(questionContentHeight, maxPreviewHeight))
-        .mask {
-            if questionContentHeight > maxPreviewHeight {
-                // Asymmetric fade — small hint at the top (content above) and a
-                // bigger one at the bottom where the cut-off is more prominent.
-                LinearGradient(
-                    stops: [
-                        .init(color: .clear, location: 0),
-                        .init(color: .black, location: 0.04),
-                        .init(color: .black, location: 0.88),
-                        .init(color: .clear, location: 1)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            } else {
-                Rectangle()
-            }
-        }
-        .overlay(alignment: .bottomTrailing) {
-            if questionContentHeight > maxPreviewHeight {
-                Image(systemName: "chevron.down")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(cardTint)
-                    .padding(4)
-                    .background(Circle().fill(Colors.surfaceElevated))
-                    .padding(4)
-                    .allowsHitTesting(false)
-            }
-        }
+        .background(
+            RoundedRectangle.squircle(CornerRadius.small)
+                .fill(Colors.surfaceElevated)
+        )
+        .clipShape(RoundedRectangle.squircle(CornerRadius.small))
     }
 
     /// Lists every queued message with its recipient and first-line preview. Each row
@@ -342,11 +371,16 @@ struct TeamActivityComposer: View {
     /// whole queue. Uses `QueuedChatMessage.id` (UUID) for `ForEach` identity — this
     /// is the stable-id requirement from CLAUDE.md #22 (never use array index as id).
     private var queuedList: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: Spacing.xxs) {
             ForEach(queuedMessages) { message in
                 queuedRow(message: message)
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .leading).combined(with: .opacity),
+                        removal: .move(edge: .trailing).combined(with: .opacity)
+                    ))
             }
         }
+        .animation(Animations.spring, value: queuedMessages.map(\.id))
     }
 
     private func queuedRow(message: QuickCaptureFormState.QueuedChatMessage) -> some View {
@@ -367,34 +401,36 @@ struct TeamActivityComposer: View {
         return HStack(spacing: Spacing.xs) {
             Image(systemName: "tray.and.arrow.up")
                 .font(.caption2)
-                .foregroundStyle(cardTint)
+                .foregroundStyle(Colors.textTertiary)
             Text("To \(recipient):")
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(cardTint)
+                .foregroundStyle(Colors.textSecondary)
             Text(preview)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Colors.textTertiary)
                 .lineLimit(1)
                 .truncationMode(.tail)
-            Spacer(minLength: Spacing.xs)
+            Spacer(minLength: Spacing.xxs)
             Button {
-                QuickCaptureController.shared.formState.removeQueuedMessage(
-                    withID: message.id, for: taskID
-                )
+                withAnimation(Animations.spring) {
+                    QuickCaptureController.shared.formState.removeQueuedMessage(
+                        withID: message.id, for: taskID
+                    )
+                }
             } label: {
                 Image(systemName: "xmark")
                     .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Colors.textTertiary)
             }
             .buttonStyle(.plain)
             .help("Discard this queued message")
             .accessibilityLabel("Discard queued message to \(recipient)")
         }
-        .padding(.horizontal, Spacing.s)
-        .padding(.vertical, 4)
+        .padding(.horizontal, Spacing.s - 2)
+        .padding(.vertical, Spacing.xxs)
         .background(
             RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous)
-                .fill(cardTint.opacity(0.12))
+                .fill(Colors.surfaceElevated)
         )
     }
 
@@ -430,22 +466,6 @@ struct TeamActivityComposer: View {
                 // (specific — e.g. attachment finalize error). Don't clobber it with a
                 // generic message here.
             }
-        case .team:
-            // Queue the message for delivery when the team next needs supervisor input.
-            // Works in both chat and non-chat modes — on terminal engine states
-            // `tryFlushQueuedMessages` surfaces `lastInfoMessage` with a count so the
-            // user isn't silently stranded.
-            let queued = QuickCaptureController.shared.queueChatMessage(
-                text: text, attachments: attachments, clippedTexts: clippedTexts, taskID: taskID
-            )
-            if queued {
-                clearComposer()
-                if activeQuestion == nil {
-                    // Without a pending question, nothing visibly changes after queueing.
-                    // Tell the user their message is queued so they don't think it vanished.
-                    store.lastInfoMessage = "Queued for Team — will deliver on the next request."
-                }
-            }
         case .role(let id):
             // Queue a message narrowed to a specific working role — delivered when THAT
             // role reaches `.needsSupervisorInput`. For stronger interventions
@@ -460,6 +480,9 @@ struct TeamActivityComposer: View {
                 clearComposer()
                 store.lastInfoMessage = "Queued for \(roleName(id)) — will deliver on the next request."
             }
+        case nil:
+            // unreachable: canSubmit gates nil
+            assertionFailure("handleSubmit invoked with nil recipient — canSubmit should have gated")
         }
     }
 
@@ -483,27 +506,53 @@ struct TeamActivityComposer: View {
 
 extension TeamActivityComposer {
     /// Auto-selects the effective recipient when the user hasn't explicitly chosen one.
-    /// Priority order (documented separately because the chain is non-obvious):
+    /// Priority order matches the chip row's left-to-right order, so "the first chip
+    /// is always selected" holds when there is no explicit pick:
     /// 1. Explicit selection wins.
-    /// 2. If a question is pending → `.answer(stepID:)`.
-    /// 3. If exactly one role is `.working` → that role (spares a lonely "Team" chip).
-    /// 4. If there's exactly one candidate role total (e.g. a one-role team) → that role.
-    /// 5. Otherwise `.team`.
+    /// 2. If a question is pending → `.answer(stepID:)` (Answer chip is first in the row).
+    /// 3. Otherwise the first selectable (working) role — matches the next chip in the row.
+    /// 4. Otherwise the first candidate role — matches the single-candidate fallback chip.
+    /// 5. Otherwise `nil` — no chip exists, the chip row collapses, `canSubmit` is false.
     static func resolveEffectiveRecipient(
         selected: Recipient?,
         activeQuestion: TeamActivityActiveQuestion?,
         selectableRoles: [TeamRoleDefinition],
         candidateRoles: [TeamRoleDefinition]
-    ) -> Recipient {
+    ) -> Recipient? {
         if let explicit = selected { return explicit }
         if let q = activeQuestion { return .answer(stepID: q.stepID) }
-        if selectableRoles.count == 1, let only = selectableRoles.first {
-            return .role(id: only.id)
-        }
-        if candidateRoles.count == 1, let only = candidateRoles.first {
-            return .role(id: only.id)
-        }
-        return .team
+        if let first = selectableRoles.first { return .role(id: first.id) }
+        if let first = candidateRoles.first { return .role(id: first.id) }
+        return nil
+    }
+
+    /// Pure submit-gate. The composer can submit when there is content (text,
+    /// attachment, or clip) AND there is a recipient to deliver to. `nil` recipient
+    /// means no chip is selectable (no question, no working role, no candidate) —
+    /// submission is blocked.
+    static func computeCanSubmit(
+        text: String,
+        hasAttachments: Bool,
+        hasClips: Bool,
+        effectiveRecipient: Recipient?
+    ) -> Bool {
+        guard effectiveRecipient != nil else { return false }
+        let hasContent = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || hasAttachments
+            || hasClips
+        return hasContent
+    }
+
+    /// Drops a stale chip selection: if the previously-selected chip is no longer
+    /// in the available chip row (e.g. Answer chip after answering, role chip after
+    /// the role finishes), return `nil` so the resolver's auto-resolution kicks back
+    /// in. Returns the input unchanged when it's still valid (or already nil).
+    static func sanitizeSelection(
+        selected: Recipient?,
+        availableRecipients: [Recipient]
+    ) -> Recipient? {
+        guard let sel = selected else { return nil }
+        return availableRecipients.contains(sel) ? sel : nil
     }
 
     /// Currently-working, non-supervisor, non-observer roles, excluding the role
@@ -535,11 +584,9 @@ extension TeamActivityComposer {
         }
     }
 
-    /// Ordered chip options: Answer (if question pending) first, then Team (only if
-    /// there are 2+ selectable roles to disambiguate between), then every working
-    /// role. Falls back to a single role chip for one-role teams, and to a generic
-    /// Team chip when nothing else is available — the composer always has at least
-    /// one valid recipient.
+    /// Ordered chips: Answer (if pending), then one per working role, with a
+    /// single-candidate fallback for idle one-role teams. Returns `[]` when no
+    /// recipient exists — the chip row collapses and `canSubmit` is false.
     static func computeChipOptions(
         roles: [TeamRoleDefinition],
         workingRoleIDs: Set<String>,
@@ -560,27 +607,16 @@ extension TeamActivityComposer {
                 icon: "arrowshape.turn.up.left.fill"
             ))
         }
-        // Hide the Team chip with 0 or 1 selectable role:
-        // - 0 roles: no one to queue for — Team would have no target.
-        // - 1 role: Team and the role's own chip deliver to the same target — redundant.
-        if selectable.count >= 2 {
-            options.append(.init(recipient: .team, label: "Team", icon: "person.3.fill"))
-        }
         for role in selectable {
             options.append(.init(recipient: .role(id: role.id), label: role.name, icon: role.icon))
         }
         // Fallback for single-role teams whose one role is idle: surface that role's
-        // chip by name instead of an ambiguous "Team" that would misname the target.
+        // chip by name so the composer still has a recipient between chat turns.
         let alreadyHasRoleChip = options.contains {
             if case .role = $0.recipient { return true } else { return false }
         }
         if !alreadyHasRoleChip, candidates.count == 1, let only = candidates.first {
             options.append(.init(recipient: .role(id: only.id), label: only.name, icon: only.icon))
-        }
-        // Final fallback: no question, no working role, and 0 or 2+ candidates — keep a
-        // generic Team chip so the composer always has at least one valid recipient.
-        if options.isEmpty {
-            options.append(.init(recipient: .team, label: "Team", icon: "person.3.fill"))
         }
         return options
     }
@@ -591,36 +627,56 @@ extension TeamActivityComposer {
 #Preview("Composer — no pending question (chat)") {
     @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     @Previewable @State var config = StoreConfiguration()
+    @Previewable @State var dictation = DictationService()
     TeamActivityComposer(
         roleDefinitions: Team.default.roles,
         isChatMode: true,
         taskID: 0,
         workingRoleIDs: Set(Team.default.roles.map(\.id)),
-        activeQuestion: nil
+        activeQuestion: nil,
+        maxHeight: .infinity
     )
     .environment(store)
     .environment(config)
+    .environment(dictation)
     .frame(width: 500)
     .background(Colors.surfacePrimary)
 }
 
-#Preview("Composer — pending question") {
+#Preview("Composer — queued messages") {
     @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     @Previewable @State var config = StoreConfiguration()
-    let pmRole = Team.default.roles.first(where: { $0.name == "Product Manager" })!
+    @Previewable @State var dictation = DictationService()
+    let roles = Team.default.roles
+    let sweID = roles.first(where: { $0.name == "Software Engineer" })?.id
+    let taskID = 42
     TeamActivityComposer(
-        roleDefinitions: Team.default.roles,
+        roleDefinitions: roles,
         isChatMode: false,
-        taskID: 0,
-        workingRoleIDs: Set(Team.default.roles.map(\.id)),
-        activeQuestion: TeamActivityActiveQuestion(
-            stepID: pmRole.id,
-            role: .productManager,
-            question: "Should I prioritize mobile or web for v1?"
-        )
+        taskID: taskID,
+        workingRoleIDs: Set(roles.map(\.id)),
+        activeQuestion: nil,
+        maxHeight: .infinity
     )
     .environment(store)
     .environment(config)
+    .environment(dictation)
     .frame(width: 500)
     .background(Colors.surfacePrimary)
+    .onAppear {
+        let fs = QuickCaptureController.shared.formState
+        if let m = QuickCaptureFormState.QueuedChatMessage(
+            text: "Focus on the login flow first, skip the admin panel",
+            attachments: [], clippedTexts: []
+        ) { fs.appendQueuedMessage(m, for: taskID) }
+        if let m = QuickCaptureFormState.QueuedChatMessage(
+            text: "Use the existing auth service, don't build a new one",
+            attachments: [], clippedTexts: [], targetRoleID: sweID
+        ) { fs.appendQueuedMessage(m, for: taskID) }
+        if let m = QuickCaptureFormState.QueuedChatMessage(
+            text: "Remember to check the error handling edge cases",
+            attachments: [], clippedTexts: []
+        ) { fs.appendQueuedMessage(m, for: taskID) }
+    }
 }
+

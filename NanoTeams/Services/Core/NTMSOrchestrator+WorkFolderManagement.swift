@@ -53,9 +53,10 @@ extension NTMSOrchestrator {
 
             apply(snapshot)
 
-            // Sync engine state from the run so UI shows Resume button after restart
-            if let activeTask = self.activeTask, let lastRun = activeTask.runs.last {
-                syncEngineStateFromRun(taskID: activeTask.id, run: lastRun)
+            // Pass the whole task so chat-mode awareness in
+            // `derivedStatusFromActiveRun` participates.
+            if let activeTask = self.activeTask {
+                syncEngineStateFromRun(taskID: activeTask.id, task: activeTask)
             }
 
             if !snapshot.deferredReconcileTeamIDs.isEmpty {

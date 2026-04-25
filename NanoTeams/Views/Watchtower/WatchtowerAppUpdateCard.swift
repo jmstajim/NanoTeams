@@ -2,19 +2,15 @@ import SwiftUI
 
 // MARK: - Watchtower App Update Card
 
-/// Card shown on the Watchtower when `AppUpdateState.availableRelease` is
-/// non-nil. Click `Update` → opens the GitHub release page in the default
-/// browser (we don't auto-install; install flow is manual per the plan's
-/// "safe, native" constraint). Click X → records the tag in
-/// `StoreConfiguration.skippedAppUpdateTags`.
-///
-/// Visual style mirrors `WatchtowerNotificationBanner` (colored tint + header
-/// row + dismiss) so the card sits naturally alongside other Watchtower
-/// notifications.
+/// Watchtower card surfaced when `AppUpdateState.availableRelease` is non-nil.
+/// Update → opens the GitHub release page (no auto-install). X → records the
+/// tag in `StoreConfiguration.skippedAppUpdateTags`.
 struct WatchtowerAppUpdateCard: View {
     let release: AppUpdateChecker.Release
     let onUpdate: () -> Void
     let onSkip: () -> Void
+
+    @State private var isUpdateHovered = false
 
     /// Pure — exposed for testing the CRLF / whitespace handling.
     static func trimmedBodyLines(_ body: String) -> [String] {
@@ -29,45 +25,66 @@ struct WatchtowerAppUpdateCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.s) {
+        VStack(alignment: .leading, spacing: Spacing.standard) {
             HStack(spacing: Spacing.s) {
                 Image(systemName: "sparkles")
-                    .font(.subheadline)
+                    .font(.title3)
                     .foregroundStyle(Colors.accent)
+                    .symbolEffect(.pulse)
 
-                Text("Update available: \(release.tag)")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
+                VStack(alignment: .leading, spacing: Spacing.xxs) {
+                    Text("Update available")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Colors.textPrimary)
+
+                    Text(release.tag)
+                        .font(.caption.monospaced().weight(.medium))
+                        .foregroundStyle(Colors.accent)
+                }
 
                 Spacer()
 
                 Button {
                     onUpdate()
                 } label: {
-                    Text("Update")
-                        .font(.caption.weight(.semibold))
+                    HStack(spacing: Spacing.xs) {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.caption)
+                        Text("Update")
+                            .font(Typography.captionSemibold)
+                    }
+                    .foregroundStyle(Colors.textOnAccent)
+                    .padding(.horizontal, Spacing.m)
+                    .padding(.vertical, Spacing.xs)
+                    .background(Capsule(style: .continuous).fill(Colors.accent))
+                    .scaleEffect(isUpdateHovered ? 1.03 : 1.0)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
+                .buttonStyle(.plain)
+                .trackHover($isUpdateHovered)
+                .animation(Animations.quick, value: isUpdateHovered)
 
                 SkipButton(onSkip: onSkip)
             }
 
             if !trimmedBodyLines.isEmpty {
-                // Two-line teaser from the release notes — full notes live on
-                // the GitHub page the Update button opens.
                 Text(trimmedBodyLines.prefix(2).joined(separator: "\n"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(Typography.caption)
+                    .foregroundStyle(Colors.textSecondary)
                     .lineLimit(2)
                     .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
+
+            Rectangle()
+                .fill(Colors.accentBorder)
+                .frame(height: 1)
+                .padding(.horizontal, Spacing.xs)
 
             StarOnGitHubBanner(size: .compact)
         }
-        .padding(Spacing.m)
+        .padding(Spacing.standard)
         .background(
-            RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
+            RoundedRectangle.squircle(CornerRadius.medium)
                 .fill(Colors.accentTint)
         )
     }
@@ -84,10 +101,12 @@ private struct SkipButton: View {
             onSkip()
         } label: {
             Image(systemName: "xmark")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(isHovered ? .primary : .secondary)
-                .padding(6)
-                .background(Circle().fill(isHovered ? Colors.surfaceHover : Color.clear))
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(isHovered ? Colors.textPrimary : Colors.textTertiary)
+                .frame(width: 24, height: 24)
+                .background(
+                    Circle().fill(isHovered ? Colors.surfaceHover : Color.clear)
+                )
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
@@ -95,12 +114,14 @@ private struct SkipButton: View {
         .accessibilityLabel("Skip this update")
         .help("Skip this version")
         .trackHover($isHovered)
+        .animation(Animations.quick, value: isHovered)
     }
 }
 
 // MARK: - Preview
 
 #Preview("App Update Card") {
+    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     VStack(spacing: Spacing.m) {
         WatchtowerAppUpdateCard(
             release: .init(
@@ -115,4 +136,5 @@ private struct SkipButton: View {
     .padding()
     .frame(width: 600)
     .background(Colors.surfacePrimary)
+    .environment(store)
 }

@@ -47,6 +47,11 @@ extension TeamEditorView {
                 config: effectiveConfig,
                 systemPrompt: store.configuration.teamGenSystemPromptOrNil
             )
+            // Skip the install if the sheet was cancelled while we were
+            // awaiting the LLM. Without this, an in-flight generation that
+            // completes after `cancel()` would mutate the work folder and
+            // surface a team the user explicitly rejected.
+            if Task.isCancelled { return nil }
             let buildResult = GeneratedTeamBuilder.applyForcedDefaults(
                 to: raw,
                 supervisorMode: store.configuration.teamGenForcedSupervisorMode,

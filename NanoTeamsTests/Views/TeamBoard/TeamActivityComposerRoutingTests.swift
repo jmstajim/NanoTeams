@@ -62,13 +62,14 @@ final class TeamActivityComposerRoutingTests: XCTestCase {
 
     func testResolveEffectiveRecipient_explicitSelectionWins() {
         let pm = normalRole(id: "pm", name: "PM")
+        let tl = normalRole(id: "tl", name: "TL")
         let result = TeamActivityComposer.resolveEffectiveRecipient(
-            selected: .team,
+            selected: .role(id: "tl"),
             activeQuestion: question(stepID: "sw"),   // would normally force .answer
             selectableRoles: [pm],                    // would normally force .role(pm)
-            candidateRoles: [pm]
+            candidateRoles: [pm, tl]
         )
-        XCTAssertEqual(result, .team,
+        XCTAssertEqual(result, .role(id: "tl"),
                        "Explicit selectedRecipient must override every auto-resolution")
     }
 
@@ -90,7 +91,7 @@ final class TeamActivityComposerRoutingTests: XCTestCase {
             selectableRoles: [pm], candidateRoles: [pm]
         )
         XCTAssertEqual(result, .role(id: "pm"),
-                       "One working role → auto-pick it instead of showing a lonely Team chip")
+                       "One working role → auto-pick it as the only viable recipient")
     }
 
     func testResolveEffectiveRecipient_singleCandidateNotWorking_returnsThatRole() {
@@ -105,23 +106,41 @@ final class TeamActivityComposerRoutingTests: XCTestCase {
                        "Single-role team fallback: surface the role even when idle")
     }
 
-    func testResolveEffectiveRecipient_multipleRolesNoQuestion_returnsTeam() {
+    func testResolveEffectiveRecipient_multipleWorkingRoles_picksFirst() {
         let a = normalRole(id: "a")
         let b = normalRole(id: "b")
         let result = TeamActivityComposer.resolveEffectiveRecipient(
             selected: nil, activeQuestion: nil,
             selectableRoles: [a, b], candidateRoles: [a, b]
         )
-        XCTAssertEqual(result, .team)
+        // The first chip in the row must always be auto-selected when one exists —
+        // there's no "no-recipient" state when chips are present. User can tap any
+        // other chip to override.
+        XCTAssertEqual(result, .role(id: "a"))
     }
 
-    func testResolveEffectiveRecipient_noRoles_noQuestion_fallsBackToTeam() {
+    func testResolveEffectiveRecipient_multipleCandidatesNotWorking_picksFirstCandidate() {
+        let a = normalRole(id: "a")
+        let b = normalRole(id: "b")
+        let result = TeamActivityComposer.resolveEffectiveRecipient(
+            selected: nil, activeQuestion: nil,
+            selectableRoles: [],          // none working
+            candidateRoles: [a, b]        // but candidates exist
+        )
+        // No chip is rendered for this state today (the single-candidate fallback
+        // only fires for exactly 1 candidate), so this branch is defensive — but
+        // if a chip ever becomes visible here, it must match the resolver's pick.
+        XCTAssertEqual(result, .role(id: "a"))
+    }
+
+    func testResolveEffectiveRecipient_noRoles_noQuestion_returnsNil() {
         let result = TeamActivityComposer.resolveEffectiveRecipient(
             selected: nil, activeQuestion: nil,
             selectableRoles: [], candidateRoles: []
         )
-        XCTAssertEqual(result, .team,
-                       "Final fallback: Team so the composer always has a recipient")
+        // No chip is emittable in this state — `nil` means the chip row collapses
+        // and `canSubmit` is false. There is no broadcast/Team recipient anymore.
+        XCTAssertNil(result)
     }
 
     // MARK: - computeSelectableRoles — filter invariants
@@ -198,23 +217,23 @@ final class TeamActivityComposerRoutingTests: XCTestCase {
                        "With 1 selectable role, Team + role chips would deliver to the same place → show only the role chip")
     }
 
-    func testComputeChipOptions_zeroRoles_zeroCandidates_fallsBackToTeam() {
+    func testComputeChipOptions_zeroRoles_zeroCandidates_returnsEmpty() {
         let options = TeamActivityComposer.computeChipOptions(
             roles: [], workingRoleIDs: [], activeQuestion: nil
         )
-        XCTAssertEqual(options.map(\.recipient), [.team],
-                       "Final fallback: a generic Team chip so the composer always has at least one recipient")
+        XCTAssertTrue(options.isEmpty,
+                      "Nothing to target → no chips. The chip row collapses and submit is disabled.")
     }
 
-    func testComputeChipOptions_multipleSelectable_includesTeamChipAtMiddle() {
+    func testComputeChipOptions_multipleSelectable_omitsTeamChip() {
         let pm = normalRole(id: "pm", name: "PM")
         let tl = normalRole(id: "tl", name: "TL")
         let options = TeamActivityComposer.computeChipOptions(
             roles: [pm, tl], workingRoleIDs: ["pm", "tl"], activeQuestion: nil
         )
-        // Expected order: Team, then each role chip.
+        // Every queue must name a recipient — no Team broadcast chip is emitted.
         XCTAssertEqual(options.map(\.recipient),
-                       [.team, .role(id: "pm"), .role(id: "tl")])
+                       [.role(id: "pm"), .role(id: "tl")])
     }
 
     func testComputeChipOptions_singleRoleTeamIdle_surfacesRoleChip_notTeam() {
@@ -241,6 +260,107 @@ final class TeamActivityComposerRoutingTests: XCTestCase {
         // Expected: Answer PM, then TL (no Team because only 1 selectable after exclusion).
         let recipients = options.map(\.recipient)
         XCTAssertEqual(recipients, [.answer(stepID: "pm"), .role(id: "tl")])
+    }
+
+    // MARK: - computeCanSubmit — content gate + nil-recipient block
+
+    func testComputeCanSubmit_emptyContent_returnsFalse() {
+        XCTAssertFalse(TeamActivityComposer.computeCanSubmit(
+            text: "", hasAttachments: false, hasClips: false,
+            effectiveRecipient: .role(id: "pm")
+        ))
+    }
+
+    func testComputeCanSubmit_whitespaceOnlyText_returnsFalse() {
+        XCTAssertFalse(TeamActivityComposer.computeCanSubmit(
+            text: "   \n\t  ", hasAttachments: false, hasClips: false,
+            effectiveRecipient: .role(id: "pm")
+        ))
+    }
+
+    func testComputeCanSubmit_textOnly_returnsTrue() {
+        XCTAssertTrue(TeamActivityComposer.computeCanSubmit(
+            text: "hi", hasAttachments: false, hasClips: false,
+            effectiveRecipient: .role(id: "pm")
+        ))
+    }
+
+    func testComputeCanSubmit_attachmentOnly_returnsTrue() {
+        XCTAssertTrue(TeamActivityComposer.computeCanSubmit(
+            text: "", hasAttachments: true, hasClips: false,
+            effectiveRecipient: .role(id: "pm")
+        ))
+    }
+
+    func testComputeCanSubmit_clipOnly_returnsTrue() {
+        XCTAssertTrue(TeamActivityComposer.computeCanSubmit(
+            text: "", hasAttachments: false, hasClips: true,
+            effectiveRecipient: .role(id: "pm")
+        ))
+    }
+
+    func testComputeCanSubmit_nilRecipientWithContent_returnsFalse() {
+        // The disabled-recipient state: resolver returned nil because there was no
+        // question and no working/candidate role. Even with content, submit must be
+        // blocked — there's nowhere to send.
+        XCTAssertFalse(TeamActivityComposer.computeCanSubmit(
+            text: "queued from idle state", hasAttachments: true, hasClips: true,
+            effectiveRecipient: nil
+        ))
+    }
+
+    func testComputeCanSubmit_answerRecipient_alwaysAllowedWithContent() {
+        XCTAssertTrue(TeamActivityComposer.computeCanSubmit(
+            text: "answer", hasAttachments: false, hasClips: false,
+            effectiveRecipient: .answer(stepID: "pm")
+        ))
+    }
+
+    // MARK: - sanitizeSelection — stale chip cleanup
+
+    func testSanitizeSelection_nilStaysNil() {
+        XCTAssertNil(TeamActivityComposer.sanitizeSelection(
+            selected: nil, availableRecipients: [.role(id: "pm")]
+        ))
+    }
+
+    func testSanitizeSelection_validSelectionPassesThrough() {
+        let result = TeamActivityComposer.sanitizeSelection(
+            selected: .role(id: "pm"),
+            availableRecipients: [.role(id: "pm"), .role(id: "tl")]
+        )
+        XCTAssertEqual(result, .role(id: "pm"))
+    }
+
+    func testSanitizeSelection_staleAnswerSelectionDropped() {
+        // Scenario: Supervisor selected "Answer PM", answered, activeQuestion went
+        // nil. Without cleanup, `selectedRecipient = .answer("pm")` would persist
+        // and resolver-explicit-wins keeps the placeholder/avatar/submit pointed at
+        // a non-existent question.
+        let result = TeamActivityComposer.sanitizeSelection(
+            selected: .answer(stepID: "pm"),
+            availableRecipients: [.role(id: "pm"), .role(id: "tl")]
+        )
+        XCTAssertNil(result, "Answer chip is no longer in the row → drop the selection")
+    }
+
+    func testSanitizeSelection_staleRoleSelectionDropped() {
+        // Scenario: Supervisor selected role TL, then TL completed and is no longer
+        // in workingRoleIDs. The chip vanished — drop the selection.
+        let result = TeamActivityComposer.sanitizeSelection(
+            selected: .role(id: "tl"),
+            availableRecipients: [.role(id: "pm")]
+        )
+        XCTAssertNil(result)
+    }
+
+    func testSanitizeSelection_emptyAvailableDropsEverything() {
+        XCTAssertNil(TeamActivityComposer.sanitizeSelection(
+            selected: .answer(stepID: "pm"), availableRecipients: []
+        ))
+        XCTAssertNil(TeamActivityComposer.sanitizeSelection(
+            selected: .role(id: "pm"), availableRecipients: []
+        ))
     }
 
     // MARK: - TeamActivityActiveQuestion — invariant

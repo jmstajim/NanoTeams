@@ -486,4 +486,33 @@ final class TeamGraphAutoLayoutTests: XCTestCase {
         // Observers only — should still get positions
         XCTAssertEqual(layout.nodePositions.count, 2)
     }
+
+    // MARK: - Cycle Safety
+
+    func testAutoLayout_cyclicArtifactDependency_doesNotCrash() {
+        // Regression: LLM-generated teams (under reasoning=medium) sometimes
+        // produce cyclic artifact dependencies — role A produces X requiring Y,
+        // role B produces Y requiring X. Without the cycle guard in `depth(of:)`,
+        // recursion blew the stack with EXC_BAD_ACCESS / SIGSEGV.
+        let roles = [
+            makeRole(id: "supervisor", name: "Supervisor", isSupervisor: true, produces: ["Supervisor Task"]),
+            makeRole(id: "A", name: "Role A", requires: ["Y"], produces: ["X"]),
+            makeRole(id: "B", name: "Role B", requires: ["X"], produces: ["Y"]),
+        ]
+        let layout = TeamGraphLayout.autoLayout(for: roles)
+        XCTAssertEqual(layout.nodePositions.count, 3, "All roles must get a position even with a cycle")
+        XCTAssertNotNil(layout.position(for: "A"))
+        XCTAssertNotNil(layout.position(for: "B"))
+        XCTAssertNotNil(layout.position(for: "supervisor"))
+    }
+
+    func testAutoLayout_selfReferencingRole_doesNotCrash() {
+        // Self-cycle: role requires the artifact it produces.
+        let roles = [
+            makeRole(id: "supervisor", name: "Supervisor", isSupervisor: true, produces: ["Supervisor Task"]),
+            makeRole(id: "self", name: "Self Loop", requires: ["Self Output"], produces: ["Self Output"]),
+        ]
+        let layout = TeamGraphLayout.autoLayout(for: roles)
+        XCTAssertEqual(layout.nodePositions.count, 2)
+    }
 }

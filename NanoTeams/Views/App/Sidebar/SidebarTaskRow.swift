@@ -45,7 +45,7 @@ struct SidebarTaskRow: View {
         Image(systemName: statusIcon)
             .font(Typography.caption2)
             .foregroundStyle(statusColor)
-            .symbolEffect(.pulse, options: .repeating, isActive: task.status == .running && !task.hasUnreadInput)
+            .symbolEffect(.pulse, options: .repeating, isActive: task.isEngineRunning && !task.hasUnreadInput)
     }
 
     private var statusLabelView: some View {
@@ -112,11 +112,11 @@ private extension Date {
 #Preview("Task Row — All States") {
     VStack(alignment: .leading, spacing: 0) {
         SidebarTaskRow(
-            task: SidebarTaskItem(id: 0, title: "Implement sorting algorithms", status: .running, updatedAt: Date()),
+            task: SidebarTaskItem(id: 0, title: "Implement sorting algorithms", status: .running, updatedAt: Date(), isEngineRunning: true),
             isActive: true
         )
         SidebarTaskRow(
-            task: SidebarTaskItem(id: 0, title: "Refactor auth module", status: .running, updatedAt: Date()),
+            task: SidebarTaskItem(id: 0, title: "Refactor auth module", status: .running, updatedAt: Date(), isEngineRunning: true),
             isActive: false
         )
         SidebarTaskRow(
@@ -153,7 +153,7 @@ private extension Date {
 #Preview("Task Row — Selected vs Normal") {
     VStack(alignment: .leading, spacing: Spacing.xxs) {
         SidebarTaskRow(
-            task: SidebarTaskItem(id: 0, title: "Selected task (active)", status: .running, updatedAt: Date()),
+            task: SidebarTaskItem(id: 0, title: "Selected task (active)", status: .running, updatedAt: Date(), isEngineRunning: true),
             isActive: true,
             isSelected: true
         )
@@ -163,7 +163,7 @@ private extension Date {
             isSelected: true
         )
         SidebarTaskRow(
-            task: SidebarTaskItem(id: 0, title: "Normal task", status: .running, updatedAt: Date()),
+            task: SidebarTaskItem(id: 0, title: "Normal task", status: .running, updatedAt: Date(), isEngineRunning: true),
             isActive: false,
             isSelected: false
         )
@@ -186,7 +186,8 @@ private extension Date {
                 id: 0,
                 title: "Implement comprehensive user authentication system with OAuth2 and JWT token refresh",
                 status: .running,
-                updatedAt: Date()
+                updatedAt: Date(),
+                isEngineRunning: true
             ),
             isActive: true,
             isSelected: true
@@ -210,7 +211,7 @@ private extension Date {
 #Preview("Task Row — Time Variations") {
     VStack(alignment: .leading, spacing: 0) {
         SidebarTaskRow(
-            task: SidebarTaskItem(id: 0, title: "Just created", status: .running, updatedAt: Date()),
+            task: SidebarTaskItem(id: 0, title: "Just created", status: .running, updatedAt: Date(), isEngineRunning: true),
             isActive: false
         )
         SidebarTaskRow(

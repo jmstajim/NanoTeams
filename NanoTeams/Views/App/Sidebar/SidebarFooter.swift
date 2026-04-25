@@ -5,6 +5,7 @@ import SwiftUI
 /// Now-playing-bar style footer: settings on left, LLM status pill on right.
 struct SidebarFooter: View {
     @Environment(\.openWindow) private var openWindow
+    @Environment(NTMSOrchestrator.self) private var store
 
     var body: some View {
         VStack(spacing: 0) {
@@ -29,12 +30,49 @@ struct SidebarFooter: View {
 
                 Spacer(minLength: 0)
 
+                ExpandedSearchStatusIndicator()
                 LLMStatusIndicator()
             }
             .padding(.horizontal, Spacing.m)
             .padding(.vertical, Spacing.s)
+            .animation(Animations.smooth, value: store.searchIndexCoordinator?.isBuilding)
+            .animation(Animations.smooth, value: store.searchIndexCoordinator?.isBuildingVectorIndex)
         }
         .background(Colors.surfaceBackground)
+    }
+}
+
+/// Expanded-search index rebuild indicator. Visible only while the coordinator
+/// is rebuilding the token index or the vocab vector index. Tapping opens
+/// Settings → Advanced.
+struct ExpandedSearchStatusIndicator: View {
+    @Environment(\.openWindow) private var openWindow
+    @Environment(NTMSOrchestrator.self) private var store
+    @AppStorage(UserDefaultsKeys.selectedSettingsTab)
+    private var selectedSettingsTab: SettingsView.SettingsTab = .llm
+
+    var body: some View {
+        if let coordinator = store.searchIndexCoordinator,
+           coordinator.isBuilding || coordinator.isBuildingVectorIndex {
+            Button {
+                selectedSettingsTab = .advanced
+                openWindow(id: "settings")
+            } label: {
+                Text("Indexing")
+                    .font(Typography.caption)
+                    .foregroundStyle(Colors.accent)
+                    .padding(.horizontal, Spacing.s)
+                    .padding(.vertical, Spacing.xs)
+                    .background(
+                        Capsule(style: .continuous).fill(Colors.accentTint)
+                    )
+                    .contentShape(Capsule(style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .help("Rebuilding expanded-search index — click to open settings")
+            .accessibilityLabel("Expanded search index rebuilding")
+            .transition(.opacity.combined(with: .scale(scale: 0.95)))
+        }
     }
 }
 
@@ -76,7 +114,9 @@ struct LLMStatusIndicator: View {
 
 #Preview("Footer — LLM Online") {
     @Previewable @State var monitor = LLMStatusMonitor()
+    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     SidebarFooter()
         .environment(monitor)
+        .environment(store)
         .frame(width: 260)
 }

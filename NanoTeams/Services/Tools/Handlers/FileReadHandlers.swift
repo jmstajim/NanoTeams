@@ -371,7 +371,7 @@ struct SearchTool: ToolHandler {
             properties: [
                 "query": JS.string("Search query (substring match)"),
                 "max_results": JS.integer("Max number of results"),
-                "expand": JS.boolean("Broaden the query with synonyms, translations, and camelCase/snake_case variants before searching. Useful when you don't know the exact tokens the codebase uses."),
+                "expand": JS.boolean("Broaden the query via a local vocab vector index — surfaces synonyms, cross-language translations (e.g. Russian↔English), and camelCase/snake_case variants of each token. SET TO TRUE whenever any of these holds: (1) the query is in a different language than the codebase, (2) you don't know the project's exact naming for the concept, (3) a previous plain search returned 0 or very few hits. Always retry with expand=true before falling back to list_files/read_file or escalating to ask_supervisor."),
             ],
             required: ["query"]
         )

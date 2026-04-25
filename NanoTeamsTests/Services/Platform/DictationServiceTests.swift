@@ -176,41 +176,30 @@ final class DictationServiceTests: XCTestCase {
     private let de = Locale(identifier: "de_DE")
     private let fr = Locale(identifier: "fr_FR")
 
-    func testResolveLocales_userSelection_takesPrecedenceOverFallback() async {
-        let resolved = DictationService.resolveLocales(
-            userSelection: [ru],
-            fallback: [en, de, fr]
-        )
+    func testResolveLocales_returnsUserSelection() async {
+        let resolved = DictationService.resolveLocales(userSelection: [ru])
         XCTAssertEqual(resolved.map(\.identifier), ["ru_RU"])
     }
 
-    func testResolveLocales_emptyUserSelection_fallsBackToPreferredLanguages() async {
-        let resolved = DictationService.resolveLocales(
-            userSelection: [],
-            fallback: [en, ru]
-        )
-        XCTAssertEqual(resolved.map(\.identifier), ["en_US", "ru_RU"])
+    func testResolveLocales_emptyUserSelection_returnsEmpty() async {
+        // Contract: empty selection → empty. The mic button gates on
+        // `hasUserSelectedLocales` and routes to Settings → Dictation
+        // instead of starting a session.
+        let resolved = DictationService.resolveLocales(userSelection: [])
+        XCTAssertTrue(resolved.isEmpty)
     }
 
     func testResolveLocales_capsToMaxConcurrentRecognizers() async {
         let many = [en, ru, de, fr, Locale(identifier: "es_ES"), Locale(identifier: "it_IT")]
-        let resolved = DictationService.resolveLocales(userSelection: many, fallback: [])
+        let resolved = DictationService.resolveLocales(userSelection: many)
         XCTAssertEqual(resolved.count, DictationService.maxConcurrentRecognizers)
         XCTAssertEqual(resolved.map(\.identifier), ["en_US", "ru_RU", "de_DE"])
     }
 
     func testResolveLocales_preservesInputOrder() async {
         // Selection order matters — it's the stable tie-breaker for the leader.
-        let resolved = DictationService.resolveLocales(
-            userSelection: [ru, en],
-            fallback: []
-        )
+        let resolved = DictationService.resolveLocales(userSelection: [ru, en])
         XCTAssertEqual(resolved.map(\.identifier), ["ru_RU", "en_US"])
-    }
-
-    func testResolveLocales_bothEmpty_returnsEmpty() async {
-        let resolved = DictationService.resolveLocales(userSelection: [], fallback: [])
-        XCTAssertTrue(resolved.isEmpty)
     }
 
     // MARK: - pickLeaderTranscript — core behavior
@@ -278,6 +267,20 @@ final class DictationServiceTests: XCTestCase {
         let result = sut.userSelectedLocalesProvider?() ?? []
         XCTAssertEqual(invocationCount, 1)
         XCTAssertEqual(result.map(\.identifier), ["ru_RU"])
+    }
+
+    func testHasUserSelectedLocales_falseWhenProviderNil() async {
+        XCTAssertFalse(sut.hasUserSelectedLocales)
+    }
+
+    func testHasUserSelectedLocales_falseWhenProviderEmpty() async {
+        sut.userSelectedLocalesProvider = { [] }
+        XCTAssertFalse(sut.hasUserSelectedLocales)
+    }
+
+    func testHasUserSelectedLocales_trueWhenProviderHasLocales() async {
+        sut.userSelectedLocalesProvider = { [Locale(identifier: "ru_RU")] }
+        XCTAssertTrue(sut.hasUserSelectedLocales)
     }
 
     // MARK: - Authorization matrix
@@ -435,6 +438,45 @@ final class DictationServiceTests: XCTestCase {
             XCTAssertNil(sut.activeOwnerID)
             XCTAssertTrue(sut.activeLocales.isEmpty)
         }
+    }
+
+    // MARK: - Start with empty locale selection (C2)
+
+    func testStart_withEmptyUserSelection_surfacesErrorAndDoesNotStart() async throws {
+        guard #available(macOS 26, iOS 26, visionOS 26, *) else {
+            throw XCTSkip("Dictation requires macOS 26+")
+        }
+        // Pre-fix: startEngine would create a DictationEngine and call
+        // engine.start(locales: []) — the UI showed "listening" with no
+        // transcript and no banner. Programmatic callers (anything that
+        // bypasses DictationMicButton.handleTap) reproduced the silent path.
+        let fake = FakeAuthProvider(status: .authorized)
+        var received: [String] = []
+        let service = DictationService(
+            onErrorSurfaced: { received.append($0) },
+            authProvider: fake
+        )
+        service.userSelectedLocalesProvider = { [] }
+
+        await service.start(ownerID: UUID())
+
+        XCTAssertFalse(service.isListening, "engine must not start when no locales selected")
+        XCTAssertNotNil(service.lastErrorMessage, "empty selection must surface an error")
+        XCTAssertEqual(received.count, 1, "error must reach the injected presenter")
+    }
+
+    func testStart_withNilProvider_surfacesErrorAndDoesNotStart() async throws {
+        guard #available(macOS 26, iOS 26, visionOS 26, *) else {
+            throw XCTSkip("Dictation requires macOS 26+")
+        }
+        let fake = FakeAuthProvider(status: .authorized)
+        let service = DictationService(authProvider: fake)
+        // userSelectedLocalesProvider is nil by default — same contract as empty.
+
+        await service.start(ownerID: UUID())
+
+        XCTAssertFalse(service.isListening)
+        XCTAssertNotNil(service.lastErrorMessage)
     }
 
     // MARK: - Toggle

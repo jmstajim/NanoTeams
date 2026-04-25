@@ -148,25 +148,6 @@ extension SidebarView {
                 }
             }
 
-            // Broad search indexing pill — visible only while the coordinator is
-            // actively rebuilding. Tap to jump to the Advanced settings tab.
-            if store.searchIndexCoordinator?.isBuilding == true {
-                Button {
-                    selectedSettingsTab = .advanced
-                    openWindow(id: "settings")
-                } label: {
-                    HStack(spacing: Spacing.xs) {
-                        NTMSLoader(.mini)
-                            .frame(width: 12, height: 12)
-                        Text("Indexing…")
-                            .font(Typography.caption)
-                    }
-                    .foregroundStyle(Colors.accent)
-                }
-                .buttonStyle(.plain)
-                .help("Rebuilding expanded-search index")
-            }
-
             // Description or generate button
             if hasDescription {
                 Text(store.workFolder?.settings.description ?? "")

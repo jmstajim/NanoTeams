@@ -6,6 +6,8 @@ import SwiftUI
     @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var engineState = OrchestratorEngineState()
+    @Previewable @State var dictation = DictationService()
     TeamActivityFeedView(
         run: nil,
         roleDefinitions: Team.default.roles,
@@ -16,7 +18,9 @@ import SwiftUI
     .environment(store)
     .environment(config)
     .environment(streaming)
-    .frame(width: 500, height: 500)
+    .environment(engineState)
+    .environment(dictation)
+    .frame(width: 400, height: 700)
     .background(Colors.surfacePrimary)
 }
 
@@ -24,6 +28,8 @@ import SwiftUI
     @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var engineState = OrchestratorEngineState()
+    @Previewable @State var dictation = DictationService()
     let team = Team.default
     let tlRole = team.roles.first(where: { $0.name == "Tech Lead" })!
     let step = StepExecution(
@@ -70,7 +76,9 @@ import SwiftUI
     .environment(store)
     .environment(config)
     .environment(streaming)
-    .frame(width: 500, height: 600)
+    .environment(engineState)
+    .environment(dictation)
+    .frame(width: 400, height: 700)
     .background(Colors.surfacePrimary)
 }
 
@@ -78,6 +86,8 @@ import SwiftUI
     @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var engineState = OrchestratorEngineState()
+    @Previewable @State var dictation = DictationService()
     let team = Team.default
     let sweRole = team.roles.first(where: { $0.name == "Software Engineer" })!
     let step = StepExecution(
@@ -124,7 +134,9 @@ import SwiftUI
     .environment(store)
     .environment(config)
     .environment(streaming)
-    .frame(width: 500, height: 700)
+    .environment(engineState)
+    .environment(dictation)
+    .frame(width: 400, height: 700)
     .background(Colors.surfacePrimary)
 }
 
@@ -132,6 +144,8 @@ import SwiftUI
     @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var engineState = OrchestratorEngineState()
+    @Previewable @State var dictation = DictationService()
     let team = Team.default
     let crRole = team.roles.first(where: { $0.name == "Code Reviewer" })!
     let pmRole = team.roles.first(where: { $0.name == "Product Manager" })!
@@ -178,7 +192,9 @@ import SwiftUI
     .environment(store)
     .environment(config)
     .environment(streaming)
-    .frame(width: 500, height: 600)
+    .environment(engineState)
+    .environment(dictation)
+    .frame(width: 400, height: 700)
     .background(Colors.surfacePrimary)
 }
 
@@ -186,6 +202,8 @@ import SwiftUI
     @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var engineState = OrchestratorEngineState()
+    @Previewable @State var dictation = DictationService()
     let team = Team.default
     let sweRole = team.roles.first(where: { $0.name == "Software Engineer" })!
     let askCallID = UUID()
@@ -215,7 +233,9 @@ import SwiftUI
     .environment(store)
     .environment(config)
     .environment(streaming)
-    .frame(width: 500, height: 600)
+    .environment(engineState)
+    .environment(dictation)
+    .frame(width: 400, height: 700)
     .background(Colors.surfacePrimary)
 }
 
@@ -223,6 +243,8 @@ import SwiftUI
     @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var engineState = OrchestratorEngineState()
+    @Previewable @State var dictation = DictationService()
     let team = Team.default
     let tpmRole = team.roles.first(where: { $0.name == "TPM" })!
     let step = StepExecution(
@@ -247,7 +269,9 @@ import SwiftUI
     .environment(store)
     .environment(config)
     .environment(streaming)
-    .frame(width: 500, height: 600)
+    .environment(engineState)
+    .environment(dictation)
+    .frame(width: 400, height: 700)
     .background(Colors.surfacePrimary)
 }
 
@@ -255,6 +279,8 @@ import SwiftUI
     @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var engineState = OrchestratorEngineState()
+    @Previewable @State var dictation = DictationService()
     let team = Team.default
     let pmRole = team.roles.first(where: { $0.name == "Product Manager" })!
     let sweRole = team.roles.first(where: { $0.name == "Software Engineer" })!
@@ -295,7 +321,9 @@ import SwiftUI
     .environment(store)
     .environment(config)
     .environment(streaming)
-    .frame(width: 500, height: 700)
+    .environment(engineState)
+    .environment(dictation)
+    .frame(width: 400, height: 700)
     .background(Colors.surfacePrimary)
 }
 
@@ -303,6 +331,8 @@ import SwiftUI
     @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var engineState = OrchestratorEngineState()
+    @Previewable @State var dictation = DictationService()
     let team = Team.default
     let pmRole = team.roles.first(where: { $0.name == "Product Manager" })!
     let sweRole = team.roles.first(where: { $0.name == "Software Engineer" })!
@@ -342,7 +372,9 @@ import SwiftUI
     .environment(store)
     .environment(config)
     .environment(streaming)
-    .frame(width: 500, height: 400)
+    .environment(engineState)
+    .environment(dictation)
+    .frame(width: 400, height: 700)
     .background(Colors.surfacePrimary)
 }
 
@@ -350,6 +382,8 @@ import SwiftUI
     @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var engineState = OrchestratorEngineState()
+    @Previewable @State var dictation = DictationService()
     let team = Team.default
     let pmRole = team.roles.first(where: { $0.name == "Product Manager" })!
     let step = StepExecution(
@@ -376,7 +410,9 @@ import SwiftUI
     .environment(store)
     .environment(config)
     .environment(streaming)
-    .frame(width: 500, height: 500)
+    .environment(engineState)
+    .environment(dictation)
+    .frame(width: 400, height: 700)
     .background(Colors.surfacePrimary)
 }
 
@@ -384,6 +420,8 @@ import SwiftUI
     @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var engineState = OrchestratorEngineState()
+    @Previewable @State var dictation = DictationService()
     let team = Team.default
     let pmRole = team.roles.first(where: { $0.name == "Product Manager" })!
     let tlRole = team.roles.first(where: { $0.name == "Tech Lead" })!
@@ -455,7 +493,9 @@ import SwiftUI
     .environment(store)
     .environment(config)
     .environment(streaming)
-    .frame(width: 500, height: 700)
+    .environment(engineState)
+    .environment(dictation)
+    .frame(width: 400, height: 700)
     .background(Colors.surfacePrimary)
 }
 
@@ -463,6 +503,8 @@ import SwiftUI
     @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var engineState = OrchestratorEngineState()
+    @Previewable @State var dictation = DictationService()
     let team = Team.default
     let pmRole = team.roles.first(where: { $0.name == "Product Manager" })!
     let sweRole = team.roles.first(where: { $0.name == "Software Engineer" })!
@@ -520,7 +562,9 @@ import SwiftUI
     .environment(store)
     .environment(config)
     .environment(streaming)
-    .frame(width: 500, height: 600)
+    .environment(engineState)
+    .environment(dictation)
+    .frame(width: 400, height: 700)
     .background(Colors.surfacePrimary)
 }
 
@@ -528,6 +572,8 @@ import SwiftUI
     @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var engineState = OrchestratorEngineState()
+    @Previewable @State var dictation = DictationService()
     let team = Team.default
     let sweRole = team.roles.first(where: { $0.name == "Software Engineer" })!
     let step = StepExecution(
@@ -555,7 +601,9 @@ import SwiftUI
     .environment(store)
     .environment(config)
     .environment(streaming)
-    .frame(width: 500, height: 500)
+    .environment(engineState)
+    .environment(dictation)
+    .frame(width: 400, height: 700)
     .background(Colors.surfacePrimary)
 }
 // MARK: - Loaders & Activity Indicators Preview
@@ -564,6 +612,8 @@ import SwiftUI
     @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var engineState = OrchestratorEngineState()
+    @Previewable @State var dictation = DictationService()
     let team = Team.default
     let pmRole = team.roles.first(where: { $0.name == "Product Manager" })!
     let tlRole = team.roles.first(where: { $0.name == "Tech Lead" })!
@@ -705,6 +755,8 @@ import SwiftUI
     .environment(store)
     .environment(config)
     .environment(streaming)
-    .frame(width: 550, height: 800)
+    .environment(engineState)
+    .environment(dictation)
+    .frame(width: 400, height: 700)
     .background(Colors.surfacePrimary)
 }

@@ -1031,4 +1031,84 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         XCTAssertFalse(resumeableStates.contains(.needsSupervisorInput),
             "needsSupervisorInput should NOT be resumeable — it's already active")
     }
+
+    // MARK: - shouldShowComposer (chat-mode visibility regression)
+    //
+    // Pure-logic tests for the static helper extracted from TeamActivityFeedView.
+    // The bug: chat-mode tasks whose engine state seeded as .done after restart
+    // (e.g. Personal Assistant whose only step is the auto-completed Supervisor
+    // Task) hid the composer because the previous switch returned false on .done.
+    // Fix: chat-mode tasks always show the composer until explicitly closed.
+
+    func testShouldShowComposer_chatMode_engineDone_visible() {
+        XCTAssertTrue(TeamActivityFeedView.shouldShowComposer(
+            isReadOnly: false, activeTaskID: 1, closedAt: nil,
+            isChatMode: true, engineState: .done))
+    }
+
+    /// Even in chat mode, a truly failed engine means the user can't continue —
+    /// hiding the composer prevents the misleading "type to retry" affordance.
+    func testShouldShowComposer_chatMode_engineFailed_hidden() {
+        XCTAssertFalse(TeamActivityFeedView.shouldShowComposer(
+            isReadOnly: false, activeTaskID: 1, closedAt: nil,
+            isChatMode: true, engineState: .failed))
+    }
+
+    func testShouldShowComposer_chatMode_enginePaused_visible() {
+        XCTAssertTrue(TeamActivityFeedView.shouldShowComposer(
+            isReadOnly: false, activeTaskID: 1, closedAt: nil,
+            isChatMode: true, engineState: .paused))
+    }
+
+    func testShouldShowComposer_chatMode_engineNil_visible() {
+        XCTAssertTrue(TeamActivityFeedView.shouldShowComposer(
+            isReadOnly: false, activeTaskID: 1, closedAt: nil,
+            isChatMode: true, engineState: nil))
+    }
+
+    func testShouldShowComposer_chatMode_closedAtSet_hidden() {
+        XCTAssertFalse(TeamActivityFeedView.shouldShowComposer(
+            isReadOnly: false, activeTaskID: 1, closedAt: Date(),
+            isChatMode: true, engineState: .paused))
+    }
+
+    func testShouldShowComposer_nonChat_engineDone_hidden() {
+        XCTAssertFalse(TeamActivityFeedView.shouldShowComposer(
+            isReadOnly: false, activeTaskID: 1, closedAt: nil,
+            isChatMode: false, engineState: .done))
+    }
+
+    func testShouldShowComposer_nonChat_enginePaused_visible() {
+        XCTAssertTrue(TeamActivityFeedView.shouldShowComposer(
+            isReadOnly: false, activeTaskID: 1, closedAt: nil,
+            isChatMode: false, engineState: .paused))
+    }
+
+    func testShouldShowComposer_nonChat_engineFailed_hidden() {
+        XCTAssertFalse(TeamActivityFeedView.shouldShowComposer(
+            isReadOnly: false, activeTaskID: 1, closedAt: nil,
+            isChatMode: false, engineState: .failed))
+    }
+
+    func testShouldShowComposer_nonChat_engineNil_hidden() {
+        XCTAssertFalse(TeamActivityFeedView.shouldShowComposer(
+            isReadOnly: false, activeTaskID: 1, closedAt: nil,
+            isChatMode: false, engineState: nil))
+    }
+
+    func testShouldShowComposer_readOnly_alwaysHidden() {
+        // read-only wins over chat-mode
+        XCTAssertFalse(TeamActivityFeedView.shouldShowComposer(
+            isReadOnly: true, activeTaskID: 1, closedAt: nil,
+            isChatMode: true, engineState: .paused))
+        XCTAssertFalse(TeamActivityFeedView.shouldShowComposer(
+            isReadOnly: true, activeTaskID: 1, closedAt: nil,
+            isChatMode: false, engineState: .running))
+    }
+
+    func testShouldShowComposer_noActiveTask_hidden() {
+        XCTAssertFalse(TeamActivityFeedView.shouldShowComposer(
+            isReadOnly: false, activeTaskID: nil, closedAt: nil,
+            isChatMode: true, engineState: .paused))
+    }
 }

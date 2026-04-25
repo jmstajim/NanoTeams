@@ -2,91 +2,138 @@ import SwiftUI
 
 // MARK: - Updates Settings View
 
-/// Dedicated tab for app-update status + cadence configuration. Always shows
-/// the latest fetched release (regardless of skip status) so the user can
-/// install even after dismissing the Watchtower banner.
+/// Tab for app-update status + cadence configuration. Always surfaces the
+/// latest fetched release regardless of skip status.
 struct UpdatesSettingsView: View {
     @Environment(AppUpdateState.self) private var appUpdateState
     @Environment(StoreConfiguration.self) private var config
+    @Environment(NTMSOrchestrator.self) private var store
 
     var body: some View {
         @Bindable var bindableConfig = config
 
-        Form {
-            Section {
+        ScrollView {
+            VStack(spacing: Spacing.xl) {
                 StarOnGitHubBanner(size: .regular)
-                    .listRowInsets(EdgeInsets())
-                    .listRowBackground(Color.clear)
+
+                versionStatusCard
+
+                backgroundCheckCard(interval: $bindableConfig.appUpdateCheckInterval)
             }
-
-            Section("Status") {
-                LabeledContent("Installed") {
-                    Text(AppVersion.current)
-                        .foregroundStyle(.secondary)
-                }
-                LabeledContent("Latest") {
-                    if let latest = appUpdateState.latestRelease {
-                        Text(latest.tag)
-                            .foregroundStyle(.secondary)
-                    } else if appUpdateState.lastCheckedAt == nil {
-                        Text("Not checked yet")
-                            .foregroundStyle(.tertiary)
-                    } else {
-                        Text("Unknown")
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-                if let last = appUpdateState.lastCheckedAt {
-                    LabeledContent("Last checked") {
-                        Text(last.formatted(.relative(presentation: .named)))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                statusLine
-
-                actionRow
-            }
-
-            Section {
-                Picker("Check automatically", selection: $bindableConfig.appUpdateCheckInterval) {
-                    ForEach(AppUpdateCheckInterval.allCases) { option in
-                        Text(option.displayName).tag(option)
-                    }
-                }
-                .pickerStyle(.menu)
-            } header: {
-                Text("Background Check")
-            } footer: {
-                Text("The user-initiated \"Check for Updates\" button always queries GitHub regardless of this setting.")
-            }
+            .padding(Spacing.l)
         }
-        .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    // MARK: - Version Status Card
+
+    private var versionStatusCard: some View {
+        SettingsCard(header: "Version", systemImage: "info.circle") {
+            HStack {
+                Text("Installed")
+                    .font(Typography.subheadline)
+                    .foregroundStyle(Colors.textSecondary)
+                Spacer()
+                Text(AppVersion.current)
+                    .font(.callout.monospaced().weight(.medium))
+                    .foregroundStyle(Colors.textPrimary)
+            }
+
+            HStack {
+                Text("Latest")
+                    .font(Typography.subheadline)
+                    .foregroundStyle(Colors.textSecondary)
+                Spacer()
+                latestVersionLabel
+            }
+
+            if let last = appUpdateState.lastCheckedAt {
+                HStack {
+                    Text("Last checked")
+                        .font(Typography.subheadline)
+                        .foregroundStyle(Colors.textSecondary)
+                    Spacer()
+                    Text(last.formatted(.relative(presentation: .named)))
+                        .font(Typography.caption)
+                        .foregroundStyle(Colors.textTertiary)
+                }
+            }
+
+            statusLine
+
+            actionRow
+        }
+    }
+
+    @ViewBuilder
+    private var latestVersionLabel: some View {
+        if let latest = appUpdateState.latestRelease {
+            Text(latest.tag)
+                .font(.callout.monospaced().weight(.medium))
+                .foregroundStyle(appUpdateState.hasNewerRelease ? Colors.accent : Colors.textPrimary)
+        } else if appUpdateState.lastCheckedAt == nil {
+            Text("Not checked yet")
+                .font(Typography.caption)
+                .foregroundStyle(Colors.textTertiary)
+        } else {
+            Text("Unknown")
+                .font(Typography.caption)
+                .foregroundStyle(Colors.textTertiary)
+        }
     }
 
     @ViewBuilder
     private var statusLine: some View {
         if let failure = appUpdateState.lastCheckFailure {
-            Label(failure, systemImage: "exclamationmark.triangle.fill")
-                .font(.caption)
-                .foregroundStyle(Colors.error)
+            HStack(spacing: Spacing.s) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(Colors.error)
+                Text(failure)
+                    .font(Typography.caption)
+                    .foregroundStyle(Colors.error)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(Spacing.s)
+            .background(
+                RoundedRectangle.squircle(CornerRadius.small)
+                    .fill(Colors.errorTint)
+            )
         } else if appUpdateState.hasNewerRelease, let latest = appUpdateState.latestRelease {
-            VStack(alignment: .leading, spacing: Spacing.xxs) {
-                Label("New version \(latest.tag) is available.", systemImage: "sparkles")
-                    .font(.callout.weight(.medium))
-                    .foregroundStyle(Colors.accent)
+            VStack(alignment: .leading, spacing: Spacing.xs) {
+                HStack(spacing: Spacing.s) {
+                    Image(systemName: "sparkles")
+                        .foregroundStyle(Colors.accent)
+                    Text("New version \(latest.tag) is available")
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(Colors.accent)
+                }
                 if appUpdateState.isLatestSkipped {
                     Text("Previously dismissed in the Watchtower banner.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(Typography.caption)
+                        .foregroundStyle(Colors.textTertiary)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(Spacing.s)
+            .background(
+                RoundedRectangle.squircle(CornerRadius.small)
+                    .fill(Colors.accentTint)
+            )
         } else if appUpdateState.lastCheckedAt != nil, !appUpdateState.isChecking {
-            Label("You're on the latest version.", systemImage: "checkmark.circle.fill")
-                .font(.callout)
-                .foregroundStyle(Colors.success)
+            HStack(spacing: Spacing.s) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(Colors.success)
+                Text("You're on the latest version")
+                    .font(Typography.subheadline)
+                    .foregroundStyle(Colors.success)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(Spacing.s)
+            .background(
+                RoundedRectangle.squircle(CornerRadius.small)
+                    .fill(Colors.successTint)
+            )
         }
     }
 
@@ -94,35 +141,54 @@ struct UpdatesSettingsView: View {
     private var actionRow: some View {
         HStack(spacing: Spacing.s) {
             if let latest = appUpdateState.latestRelease, appUpdateState.hasNewerRelease {
-                Button("Update Now") {
-                    NSWorkspace.shared.open(latest.htmlURL)
+                Button {
+                    URLOpener.open(latest.htmlURL) { store.lastErrorMessage = $0 }
+                } label: {
+                    HStack(spacing: Spacing.xs) {
+                        Image(systemName: "arrow.down.circle.fill")
+                        Text("Update Now")
+                    }
+                    .font(Typography.captionSemibold)
+                    .foregroundStyle(Colors.textOnAccent)
+                    .padding(.horizontal, Spacing.m)
+                    .padding(.vertical, Spacing.xs)
+                    .background(Capsule(style: .continuous).fill(Colors.accent))
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.regular)
+                .buttonStyle(.plain)
 
                 if appUpdateState.isLatestSkipped {
-                    Button("Show in Watchtower") {
+                    SettingsPillButton(title: "Show in Watchtower", icon: "eye") {
                         appUpdateState.unskip(latest.tag)
                     }
-                    .controlSize(.regular)
                 }
             }
 
             Spacer()
 
-            Button {
+            SettingsPillButton(
+                title: appUpdateState.isChecking ? "Checking…" : "Check for Updates",
+                icon: "arrow.clockwise",
+                isLoading: appUpdateState.isChecking
+            ) {
                 Task { await appUpdateState.refresh(force: true) }
-            } label: {
-                if appUpdateState.isChecking {
-                    HStack(spacing: Spacing.xxs) {
-                        ProgressView().controlSize(.small)
-                        Text("Checking…")
-                    }
-                } else {
-                    Text("Check for Updates")
+            }
+        }
+    }
+
+    // MARK: - Background Check Card
+
+    private func backgroundCheckCard(interval: Binding<AppUpdateCheckInterval>) -> some View {
+        SettingsCard(
+            header: "Background Check",
+            systemImage: "clock",
+            footer: "The \"Check for Updates\" button always queries GitHub regardless of this setting."
+        ) {
+            Picker("Check automatically", selection: interval) {
+                ForEach(AppUpdateCheckInterval.allCases) { option in
+                    Text(option.displayName).tag(option)
                 }
             }
-            .disabled(appUpdateState.isChecking)
+            .pickerStyle(.menu)
         }
     }
 }
@@ -130,8 +196,11 @@ struct UpdatesSettingsView: View {
 #Preview {
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var appUpdateState = AppUpdateState(config: StoreConfiguration())
+    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     UpdatesSettingsView()
         .environment(appUpdateState)
         .environment(config)
-        .frame(width: 500, height: 500)
+        .environment(store)
+        .frame(width: 500, height: 600)
+        .background(Colors.surfacePrimary)
 }

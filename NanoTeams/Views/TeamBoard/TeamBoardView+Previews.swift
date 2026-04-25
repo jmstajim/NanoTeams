@@ -101,8 +101,38 @@ private enum TeamBoardPreviewData {
             activeTask: task
         )
         store.activeTask = task
+        store._setActiveTaskID(task.id)
         return store
     }
+
+    /// Long multi-paragraph question for the "ask_supervisor — large" preview.
+    /// Lifted out of the preview block because `@Previewable` items must come
+    /// first, and a `let longQuestion` declaration above the previewables
+    /// breaks the macro contract.
+    static let largeAskSupervisorQuestion: String = """
+    I need direction on the v1 scope before we cut the design spec. \
+    The team has been debating between three rough directions and I want to \
+    make sure we lock the right one before UX Researcher and UX Designer \
+    invest a full sprint each.
+
+    Option A — mobile-first iOS app with a thin web admin for the operator \
+    side. Pros: matches what we see in user research (87% of taps are mobile), \
+    we can ship a TestFlight build to design partners by the end of the month, \
+    and the team has the most experience here. Cons: web admin still needs \
+    auth + role mgmt + audit log, which is non-trivial.
+
+    Option B — responsive web for everyone, no native app in v1. Pros: single \
+    codebase, fastest to ship, easiest to iterate. Cons: PWA push notifications \
+    are still flaky on iOS, and the camera/AR features in the design spec \
+    require native APIs we'd have to defer.
+
+    Option C — hybrid: native iOS for end-users, web for operators, share a \
+    GraphQL backend. Pros: each surface gets the right tooling. Cons: ~30% \
+    more frontend work, and we'd need to hire a second iOS engineer.
+
+    Which direction should I take, and do you want me to write up a one-pager \
+    on the trade-offs before I commit?
+    """
 }
 
 // MARK: - Previews
@@ -112,12 +142,14 @@ private enum TeamBoardPreviewData {
     @Previewable @State var engineState = OrchestratorEngineState()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var dictation = DictationService()
     TeamBoardView(workFolder: nil as WorkFolderProjection?)
         .environment(store)
         .environment(engineState)
         .environment(config)
         .environment(streaming)
-        .frame(width: 800, height: 600)
+        .environment(dictation)
+        .frame(width: 400, height: 700)
 }
 
 #Preview("Running") {
@@ -167,6 +199,7 @@ private enum TeamBoardPreviewData {
     @Previewable @State var engineState = OrchestratorEngineState()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var dictation = DictationService()
 
     let _ = engineState[TeamBoardPreviewData.taskID] = .running
 
@@ -175,7 +208,8 @@ private enum TeamBoardPreviewData {
         .environment(engineState)
         .environment(config)
         .environment(streaming)
-        .frame(width: 800, height: 600)
+        .environment(dictation)
+        .frame(width: 400, height: 700)
 }
 
 #Preview("Paused") {
@@ -204,6 +238,7 @@ private enum TeamBoardPreviewData {
     @Previewable @State var engineState = OrchestratorEngineState()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var dictation = DictationService()
 
     let _ = engineState[TeamBoardPreviewData.taskID] = .paused
 
@@ -212,7 +247,8 @@ private enum TeamBoardPreviewData {
         .environment(engineState)
         .environment(config)
         .environment(streaming)
-        .frame(width: 800, height: 600)
+        .environment(dictation)
+        .frame(width: 400, height: 700)
 }
 
 #Preview("Needs Acceptance") {
@@ -242,6 +278,7 @@ private enum TeamBoardPreviewData {
     @Previewable @State var engineState = OrchestratorEngineState()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var dictation = DictationService()
 
     let _ = engineState[TeamBoardPreviewData.taskID] = .running
 
@@ -250,7 +287,8 @@ private enum TeamBoardPreviewData {
         .environment(engineState)
         .environment(config)
         .environment(streaming)
-        .frame(width: 800, height: 600)
+        .environment(dictation)
+        .frame(width: 400, height: 700)
 }
 
 #Preview("Supervisor Input") {
@@ -280,6 +318,7 @@ private enum TeamBoardPreviewData {
     @Previewable @State var engineState = OrchestratorEngineState()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var dictation = DictationService()
 
     let _ = engineState[TeamBoardPreviewData.taskID] = .needsSupervisorInput
 
@@ -288,7 +327,86 @@ private enum TeamBoardPreviewData {
         .environment(engineState)
         .environment(config)
         .environment(streaming)
-        .frame(width: 800, height: 600)
+        .environment(dictation)
+        .frame(width: 400, height: 700)
+}
+
+#Preview("ask_supervisor — small") {
+    @Previewable @State var store = TeamBoardPreviewData.configuredStore(
+        task: TeamBoardPreviewData.task(
+            status: .needsSupervisorInput,
+            roleStatuses: TeamBoardPreviewData.statuses(overrides: [
+                "supervisor": .done,
+                "productManager": .working,
+                "techLead": .working,
+            ]),
+            steps: [
+                TeamBoardPreviewData.step(
+                    "productManager",
+                    status: .needsSupervisorInput,
+                    toolCalls: [
+                        StepToolCall(name: ToolNames.askSupervisor, argumentsJSON: "", resultJSON: "")
+                    ],
+                    supervisorQuestion: """
+                    Mobile or web first?
+
+                    And which color palette should I use for the dark mode toggle — system default or our brand colors?
+                    """
+                ),
+            ]
+        )
+    )
+    @Previewable @State var engineState = OrchestratorEngineState()
+    @Previewable @State var config = StoreConfiguration()
+    @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var dictation = DictationService()
+
+    let _ = engineState[TeamBoardPreviewData.taskID] = .needsSupervisorInput
+
+    TeamBoardView(workFolder: TeamBoardPreviewData.workFolder)
+        .environment(store)
+        .environment(engineState)
+        .environment(config)
+        .environment(streaming)
+        .environment(dictation)
+        .frame(width: 400, height: 700)
+}
+
+#Preview("ask_supervisor — large") {
+    @Previewable @State var store = TeamBoardPreviewData.configuredStore(
+        task: TeamBoardPreviewData.task(
+            status: .needsSupervisorInput,
+            roleStatuses: TeamBoardPreviewData.statuses(overrides: [
+                "supervisor": .done,
+                "productManager": .working,
+                "techLead": .working,
+            ]),
+            steps: [
+                TeamBoardPreviewData.step(
+                    "productManager",
+                    status: .needsSupervisorInput,
+                    toolCalls: [
+                        StepToolCall(name: ToolNames.askSupervisor, argumentsJSON: "", resultJSON: "")
+                    ],
+                    supervisorQuestion: TeamBoardPreviewData.largeAskSupervisorQuestion
+                ),
+            ]
+        )
+    )
+    @Previewable @State var engineState = OrchestratorEngineState()
+    @Previewable @State var config = StoreConfiguration()
+    @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var dictation = DictationService()
+
+    let _ = engineState[TeamBoardPreviewData.taskID] = .needsSupervisorInput
+
+    TeamBoardView(workFolder: TeamBoardPreviewData.workFolder)
+        .environment(store)
+        .environment(engineState)
+        .environment(config)
+        .environment(streaming)
+        .environment(dictation)
+        .frame(width: 400, height: 700)
 }
 
 #Preview("Failed Role") {
@@ -317,6 +435,7 @@ private enum TeamBoardPreviewData {
     @Previewable @State var engineState = OrchestratorEngineState()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var dictation = DictationService()
 
     let _ = engineState[TeamBoardPreviewData.taskID] = .failed
 
@@ -325,7 +444,8 @@ private enum TeamBoardPreviewData {
         .environment(engineState)
         .environment(config)
         .environment(streaming)
-        .frame(width: 800, height: 600)
+        .environment(dictation)
+        .frame(width: 400, height: 700)
 }
 
 #Preview("All Done — Review") {
@@ -361,6 +481,7 @@ private enum TeamBoardPreviewData {
     @Previewable @State var engineState = OrchestratorEngineState()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var dictation = DictationService()
 
     let _ = engineState[TeamBoardPreviewData.taskID] = .done
 
@@ -369,7 +490,8 @@ private enum TeamBoardPreviewData {
         .environment(engineState)
         .environment(config)
         .environment(streaming)
-        .frame(width: 800, height: 600)
+        .environment(dictation)
+        .frame(width: 400, height: 700)
 }
 
 #Preview("Meeting — Pending") {
@@ -405,6 +527,7 @@ private enum TeamBoardPreviewData {
     @Previewable @State var engineState = OrchestratorEngineState()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var dictation = DictationService()
 
     let _ = engineState[TeamBoardPreviewData.taskID] = .running
 
@@ -413,7 +536,8 @@ private enum TeamBoardPreviewData {
         .environment(engineState)
         .environment(config)
         .environment(streaming)
-        .frame(width: 800, height: 600)
+        .environment(dictation)
+        .frame(width: 400, height: 700)
 }
 
 #Preview("Meeting — In Progress") {
@@ -469,6 +593,7 @@ private enum TeamBoardPreviewData {
     @Previewable @State var engineState = OrchestratorEngineState()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var dictation = DictationService()
 
     let _ = {
         engineState[TeamBoardPreviewData.taskID] = .running
@@ -484,7 +609,8 @@ private enum TeamBoardPreviewData {
         .environment(engineState)
         .environment(config)
         .environment(streaming)
-        .frame(width: 800, height: 600)
+        .environment(dictation)
+        .frame(width: 400, height: 700)
 }
 
 #Preview("Meeting — Completed") {
@@ -545,6 +671,7 @@ private enum TeamBoardPreviewData {
     @Previewable @State var engineState = OrchestratorEngineState()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var dictation = DictationService()
 
     let _ = engineState[TeamBoardPreviewData.taskID] = .running
 
@@ -553,7 +680,8 @@ private enum TeamBoardPreviewData {
         .environment(engineState)
         .environment(config)
         .environment(streaming)
-        .frame(width: 800, height: 600)
+        .environment(dictation)
+        .frame(width: 400, height: 700)
 }
 
 #Preview("Meeting — Escalated") {
@@ -607,6 +735,7 @@ private enum TeamBoardPreviewData {
     @Previewable @State var engineState = OrchestratorEngineState()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var dictation = DictationService()
 
     let _ = engineState[TeamBoardPreviewData.taskID] = .needsSupervisorInput
 
@@ -615,7 +744,8 @@ private enum TeamBoardPreviewData {
         .environment(engineState)
         .environment(config)
         .environment(streaming)
-        .frame(width: 800, height: 600)
+        .environment(dictation)
+        .frame(width: 400, height: 700)
 }
 
 #Preview("Meeting — Cancelled") {
@@ -657,6 +787,7 @@ private enum TeamBoardPreviewData {
     @Previewable @State var engineState = OrchestratorEngineState()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var dictation = DictationService()
 
     let _ = engineState[TeamBoardPreviewData.taskID] = .running
 
@@ -665,7 +796,8 @@ private enum TeamBoardPreviewData {
         .environment(engineState)
         .environment(config)
         .environment(streaming)
-        .frame(width: 800, height: 600)
+        .environment(dictation)
+        .frame(width: 400, height: 700)
 }
 
 #Preview("Meeting — Multiple Meetings") {
@@ -746,6 +878,7 @@ private enum TeamBoardPreviewData {
     @Previewable @State var engineState = OrchestratorEngineState()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var dictation = DictationService()
 
     let _ = engineState[TeamBoardPreviewData.taskID] = .running
 
@@ -754,7 +887,8 @@ private enum TeamBoardPreviewData {
         .environment(engineState)
         .environment(config)
         .environment(streaming)
-        .frame(width: 800, height: 600)
+        .environment(dictation)
+        .frame(width: 400, height: 700)
 }
 
 #Preview("Role Selected") {
@@ -884,6 +1018,7 @@ private enum TeamBoardPreviewData {
     @Previewable @State var engineState = OrchestratorEngineState()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var dictation = DictationService()
 
     let _ = engineState[TeamBoardPreviewData.taskID] = .running
 
@@ -894,7 +1029,8 @@ private enum TeamBoardPreviewData {
         .environment(engineState)
         .environment(config)
         .environment(streaming)
-        .frame(width: 900, height: 700)
+        .environment(dictation)
+        .frame(width: 400, height: 700)
 }
 
 #Preview("Chat Mode") {
@@ -926,11 +1062,13 @@ private enum TeamBoardPreviewData {
         let s = NTMSOrchestrator(repository: NTMSRepository())
         s.snapshot = WorkFolderContext(projection: chatWF, tasksIndex: TasksIndex(), toolDefinitions: [], activeTaskID: task.id, activeTask: task)
         s.activeTask = task
+        s._setActiveTaskID(task.id)
         return s
     }()
     @Previewable @State var engineState = OrchestratorEngineState()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var dictation = DictationService()
 
     let _ = engineState[TeamBoardPreviewData.taskID] = .running
 
@@ -939,5 +1077,6 @@ private enum TeamBoardPreviewData {
         .environment(engineState)
         .environment(config)
         .environment(streaming)
-        .frame(width: 800, height: 600)
+        .environment(dictation)
+        .frame(width: 400, height: 700)
 }

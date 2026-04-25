@@ -1,11 +1,14 @@
 import SwiftUI
 
-/// Language auto-detection follows the user's keyboard layouts
-/// (`InputSourceLanguages`); there's no manual picker.
+/// Mic button bound to the shared `DictationService`. Routes the user to
+/// Settings → Dictation when no language is configured.
 struct DictationMicButton: View {
 
     @Binding var text: String
     @Environment(DictationService.self) private var dictation
+    @Environment(\.openWindow) private var openWindow
+    @AppStorage(UserDefaultsKeys.selectedSettingsTab)
+    private var selectedSettingsTab: SettingsView.SettingsTab = .llm
 
     @State private var ownerID = UUID()
     @State private var anchorOffset: Int?
@@ -29,9 +32,7 @@ struct DictationMicButton: View {
     }
 
     var body: some View {
-        Button {
-            Task { await dictation.toggle(ownerID: ownerID) }
-        } label: {
+        Button(action: handleTap) {
             Image(systemName: isListeningHere ? "mic.circle.fill" : "mic.circle")
                 .font(.title2)
                 .foregroundStyle(iconTint)
@@ -55,6 +56,20 @@ struct DictationMicButton: View {
                 anchorOffset = nil
                 lastPartialLength = 0
             }
+        }
+    }
+
+    // MARK: - Tap handling
+
+    /// listening → stop · no language → open Settings → Dictation · else → start.
+    private func handleTap() {
+        if isListeningHere {
+            Task { await dictation.toggle(ownerID: ownerID) }
+        } else if !dictation.hasUserSelectedLocales {
+            selectedSettingsTab = .dictation
+            openWindow(id: "settings")
+        } else {
+            Task { await dictation.toggle(ownerID: ownerID) }
         }
     }
 
@@ -87,6 +102,9 @@ struct DictationMicButton: View {
         if !isAvailable { return "Dictation requires macOS 26 or later." }
         if let error = dictation.lastErrorMessage { return error }
         if isListeningHere { return "Tap to stop dictation" }
+        if !dictation.hasUserSelectedLocales {
+            return "No dictation language selected — tap to choose one in Settings"
+        }
         if dictation.activeLocales.isEmpty { return "Tap to dictate" }
         let codes = dictation.activeLocales
             .map { $0.identifier.replacingOccurrences(of: "_", with: "-") }

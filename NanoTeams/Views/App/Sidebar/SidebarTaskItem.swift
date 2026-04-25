@@ -7,4 +7,5 @@ struct SidebarTaskItem: Identifiable {
     let updatedAt: Date
     var isChatMode: Bool = false
     var hasUnreadInput: Bool = false
+    var isEngineRunning: Bool = false
 }

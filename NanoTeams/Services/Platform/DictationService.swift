@@ -49,10 +49,12 @@ struct SystemMicrophoneAuthorizationProvider: MicrophoneAuthorizationProvider {
 /// - **One active session** across the whole app. `AVAudioEngine` owns the single
 ///   hardware input node. Two simultaneous dictation surfaces can't share it, so
 ///   taps are funneled through `activeOwnerID`.
-/// - **Languages follow keyboard layouts**: every `start()` re-reads
-///   `InputSourceLanguages.currentSpeechLocales()` and spawns one
-///   `DictationTranscriber` per supported locale (capped to
-///   `maxConcurrentRecognizers`).
+/// - **Languages are explicit**: every `start()` reads the user's chosen
+///   languages from `userSelectedLocalesProvider` (wired to the Dictation
+///   settings tab) and spawns one `DictationTranscriber` per supported
+///   locale (capped to `maxConcurrentRecognizers`). When the provider
+///   returns empty, the engine receives no locales — the mic button is
+///   responsible for routing the user to Settings before this point.
 /// - **Lazy**: no AVFoundation / Speech APIs are touched in `init()` — the mic
 ///   permission prompt appears only on the first `toggle()`/`start()` call.
 /// - Older macOS (< 26): `start()` surfaces a friendly error. The service
@@ -113,12 +115,16 @@ final class DictationService {
     /// model is downloading) would kick off a parallel engine and duplicate
     /// every subsequent update.
     private var isStartingUp: Bool = false
-    /// Resolves the user-chosen locale list. Set once at app startup; lets
-    /// the service honor "Dictation Languages" selection from settings
-    /// without introducing a direct `StoreConfiguration` dependency.
-    /// When `nil` or returns an empty array, falls back to
-    /// `InputSourceLanguages.currentSpeechLocales()` (system preferred languages).
+    /// Resolves the user-chosen locale list. Wired at app startup to avoid a
+    /// direct `StoreConfiguration` dependency. `nil` or empty → `start()` errors.
     var userSelectedLocalesProvider: (() -> [Locale])?
+
+    /// `true` iff `userSelectedLocalesProvider` returns at least one locale.
+    /// Lets the mic button decide between "start dictation" and "send the
+    /// user to Settings" without re-implementing the provider plumbing.
+    var hasUserSelectedLocales: Bool {
+        !(userSelectedLocalesProvider?() ?? []).isEmpty
+    }
 
     /// Wired at construction to a global error presenter so dictation
     /// failures don't only reach the mic button's tooltip.
@@ -240,12 +246,20 @@ final class DictationService {
 
     @available(macOS 26, iOS 26, visionOS 26, *)
     private func startEngine(ownerID: UUID) async {
-        guard await requestAuthorization() else { return }
-
         let capped = Self.resolveLocales(
-            userSelection: userSelectedLocalesProvider?() ?? [],
-            fallback: InputSourceLanguages.currentSpeechLocales()
+            userSelection: userSelectedLocalesProvider?() ?? []
         )
+
+        // Surface the empty-locale state BEFORE prompting for mic permission —
+        // asking the user to grant the mic just to fail with a different error
+        // is a worse UX. Programmatic callers (anything that bypasses
+        // DictationMicButton.handleTap) hit this path too.
+        guard !capped.isEmpty else {
+            surfaceError("No dictation language selected. Choose one in Settings → Dictation.")
+            return
+        }
+
+        guard await requestAuthorization() else { return }
 
         let engine = DictationEngine()
         engine.onUpdate = { [weak self] update in
@@ -297,12 +311,10 @@ final class DictationService {
         transcript = Self.pickLeaderTranscript(transcripts: slotTranscripts)
     }
 
-    /// Pure helper: picks the locale list to drive the engine. User selection
-    /// from settings takes precedence; if unset, the system's preferred
-    /// languages serve as fallback. Capped to `maxConcurrentRecognizers`.
-    static func resolveLocales(userSelection: [Locale], fallback: [Locale]) -> [Locale] {
-        let base = userSelection.isEmpty ? fallback : userSelection
-        return Array(base.prefix(maxConcurrentRecognizers))
+    /// Caps user-selected locales to `maxConcurrentRecognizers`. Empty input
+    /// yields empty (no implicit fallback by design — `startEngine` errors).
+    static func resolveLocales(userSelection: [Locale]) -> [Locale] {
+        Array(userSelection.prefix(maxConcurrentRecognizers))
     }
 
     /// Returns the longest non-empty transcript across active slots. On

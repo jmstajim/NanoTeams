@@ -29,7 +29,7 @@ struct WatchtowerView: View {
                     WatchtowerAppUpdateCard(
                         release: release,
                         onUpdate: {
-                            NSWorkspace.shared.open(release.htmlURL)
+                            URLOpener.open(release.htmlURL) { store.lastErrorMessage = $0 }
                         },
                         onSkip: {
                             appUpdateState.skip(release.tag)

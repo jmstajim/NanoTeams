@@ -38,9 +38,7 @@ extension NTMSOrchestrator {
                 try? repository.updateTaskOnly(at: url, task: task)
             }
             snapshot?.loadedTasks[taskID] = task
-            if let lastRun = task.runs.last {
-                syncEngineStateFromRun(taskID: taskID, run: lastRun)
-            }
+            syncEngineStateFromRun(taskID: taskID, task: task)
         } catch {
             self.lastErrorMessage = error.localizedDescription
         }

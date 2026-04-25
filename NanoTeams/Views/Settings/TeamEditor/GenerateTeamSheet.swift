@@ -11,6 +11,7 @@ struct GenerateTeamSheet: View {
     @State private var taskDescription = ""
     @State private var isGenerating = false
     @State private var errorMessage: String?
+    @State private var generationTask: Task<Void, Never>?
     @FocusState private var isFocused: Bool
 
     private var canSubmit: Bool {
@@ -31,7 +32,7 @@ struct GenerateTeamSheet: View {
         .background(Colors.surfaceBackground)
         .task { isFocused = true }
         .background {
-            Button("", action: { if !isGenerating { cancel() } })
+            Button("", action: cancel)
                 .keyboardShortcut(.cancelAction)
                 .hidden()
         }
@@ -95,7 +96,6 @@ struct GenerateTeamSheet: View {
                     .padding(.vertical, Spacing.s)
             }
             .buttonStyle(.plain)
-            .disabled(isGenerating)
 
             DictationMicButton(text: $taskDescription)
 
@@ -108,13 +108,13 @@ struct GenerateTeamSheet: View {
                     }
                     Text(isGenerating ? "Generating…" : "Generate")
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(canSubmit || isGenerating ? Colors.textOnAccent : Colors.textTertiary)
+                        .foregroundStyle(isGenerating ? Colors.textSecondary : (canSubmit ? Colors.textOnAccent : Colors.textTertiary))
                 }
                 .padding(.horizontal, Spacing.standard)
                 .padding(.vertical, Spacing.s)
                 .background(
                     Capsule()
-                        .fill(canSubmit || isGenerating ? Colors.accent : Colors.surfaceElevated)
+                        .fill(isGenerating ? Colors.surfaceElevated : (canSubmit ? Colors.accent : Colors.surfaceElevated))
                 )
             }
             .buttonStyle(.plain)
@@ -126,22 +126,49 @@ struct GenerateTeamSheet: View {
     }
 
     private func cancel() {
+        // `isGenerating = false` doubles as a sentinel read by the
+        // `flushAndThen` closure in `submit()` — if cancel fires during the
+        // dictation flush before `generationTask` is assigned, the closure
+        // bails and never starts the request.
+        generationTask?.cancel()
+        generationTask = nil
+        isGenerating = false
         dictation.stop()
         dismiss()
     }
 
     private func submit() {
+        let text = taskDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !isGenerating else { return }
+        errorMessage = nil
+        isGenerating = true
+
         // Flush pending dictation so the last spoken words land in
         // `taskDescription` before we read it.
         dictation.flushAndThen {
-            let text = taskDescription.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty, !isGenerating else { return }
-            errorMessage = nil
-            isGenerating = true
+            guard isGenerating else {
+                print("[GenerateTeamSheet] Submit aborted: cancelled during dictation flush")
+                return
+            }
+            let finalText = taskDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !finalText.isEmpty else {
+                isGenerating = false
+                errorMessage = "Description is empty after dictation flushed. Please type or speak it again."
+                return
+            }
 
-            Task {
-                defer { isGenerating = false }
-                let error = await onGenerate(text)
+            generationTask = Task {
+                defer {
+                    isGenerating = false
+                    generationTask = nil
+                }
+                let error = await onGenerate(finalText)
+                if Task.isCancelled {
+                    if let error {
+                        print("[GenerateTeamSheet] Dropping error after cancel: \(error)")
+                    }
+                    return
+                }
                 if let error {
                     errorMessage = error
                 } else {

@@ -22,7 +22,7 @@ enum DictationModelCatalog {
     }
 
     /// Returns all locales supported by `DictationTranscriber` on this device
-    /// along with their install status. Sorted by localized display name.
+    /// along with their install status, sorted via `sortByInstalledFirst`.
     static func allLocales() async -> [ModelInfo] {
         let locales = await DictationTranscriber.supportedLocales
         var infos: [ModelInfo] = []
@@ -30,7 +30,19 @@ enum DictationModelCatalog {
             let status = await status(for: locale)
             infos.append(ModelInfo(locale: locale, status: status))
         }
-        return infos.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+        return sortByInstalledFirst(infos)
+    }
+
+    /// Pure sort: installed locales first (keeps the user's actual choices
+    /// above dozens of "Not installed" rows), then everything else;
+    /// alphabetical by localized display name within each group.
+    static func sortByInstalledFirst(_ infos: [ModelInfo]) -> [ModelInfo] {
+        infos.sorted { lhs, rhs in
+            let lhsRank = (lhs.status == .installed) ? 0 : 1
+            let rhsRank = (rhs.status == .installed) ? 0 : 1
+            if lhsRank != rhsRank { return lhsRank < rhsRank }
+            return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+        }
     }
 
     /// Fetches the current install status for a single locale.

@@ -693,6 +693,46 @@ final class NativeLMStudioClientTests: XCTestCase {
         )
     }
 
+    /// Wire-format defensive pin: LM Studio can list the same model twice
+    /// (same `key`, surfaced from multiple storage paths or slots). The picker
+    /// uses `ForEach(id: \.self)`, so duplicates trigger SwiftUI's
+    /// "ID occurs multiple times" warning and a nondeterministic checkmark
+    /// position. The client must collapse them before they reach the UI.
+    func testFetchEmbeddingModels_dedupesDuplicateKeys() async throws {
+        let body = #"""
+        {
+          "models": [
+            { "key": "text-embedding-nomic-embed-text-v1.5",               "type": "embeddings" },
+            { "key": "text-embedding-granite-embedding-278m-multilingual", "type": "embeddings" },
+            { "key": "text-embedding-nomic-embed-text-v1.5",               "type": "embeddings" }
+          ]
+        }
+        """#
+        let stubSession = StubNetworkSession(
+            response: HTTPURLResponse(
+                url: URL(string: "http://localhost:1234/api/v1/models")!,
+                statusCode: 200, httpVersion: nil, headerFields: nil
+            )!,
+            data: Data(body.utf8)
+        )
+        let client = NativeLMStudioClient(session: stubSession)
+        let config = makeConfig()
+
+        let result = try await client.fetchEmbeddingModels(config: config)
+
+        XCTAssertEqual(
+            result.count, 2,
+            "Duplicate `key` entries must be collapsed before reaching the picker."
+        )
+        XCTAssertEqual(
+            Set(result),
+            [
+                "text-embedding-nomic-embed-text-v1.5",
+                "text-embedding-granite-embedding-278m-multilingual",
+            ]
+        )
+    }
+
     /// Symmetric pin: `fetchModels(visionOnly: false)` must NOT return
     /// embedding models — chat-model pickers shouldn't show them.
     func testFetchModels_excludesEmbeddingModels() async throws {
@@ -716,6 +756,76 @@ final class NativeLMStudioClientTests: XCTestCase {
 
         let llms = try await client.fetchModels(config: config, visionOnly: false)
         XCTAssertEqual(llms, ["openai/gpt-oss-20b"])
+    }
+
+    /// Dedup must apply on the OpenAI-compatible fallback path too. The native
+    /// decoder rejects `{"object":"list","data":[...]}` (no `models` key),
+    /// so this exercises the second branch of `fetchModelsMatching`. Without
+    /// dedup, an upstream proxy that reports the same model under several
+    /// IDs surfaces all of them in the picker.
+    func testFetchEmbeddingModels_openAIFallback_dedupesDuplicateIDs() async throws {
+        let body = #"""
+        {
+          "object": "list",
+          "data": [
+            { "id": "text-embedding-3-small", "object": "model" },
+            { "id": "text-embedding-3-large", "object": "model" },
+            { "id": "text-embedding-3-small", "object": "model" }
+          ]
+        }
+        """#
+        let stubSession = StubNetworkSession(
+            response: HTTPURLResponse(
+                url: URL(string: "http://localhost:1234/api/v1/models")!,
+                statusCode: 200, httpVersion: nil, headerFields: nil
+            )!,
+            data: Data(body.utf8)
+        )
+        let client = NativeLMStudioClient(session: stubSession)
+        let config = makeConfig()
+
+        let result = try await client.fetchEmbeddingModels(config: config)
+
+        XCTAssertEqual(result.count, 2,
+            "OpenAI-format duplicates must be collapsed before reaching the picker.")
+        XCTAssertEqual(
+            Set(result),
+            ["text-embedding-3-small", "text-embedding-3-large"]
+        )
+    }
+
+    /// Symmetric to `testFetchEmbeddingModels_dedupesDuplicateKeys`: the chat
+    /// picker shares the same `fetchModelsMatching` helper, so duplicates from
+    /// the LM Studio response must collapse there too. Pinned separately
+    /// because it's a different public surface (`fetchModels(visionOnly:)`)
+    /// — a future refactor that splits the helper would catch this fast.
+    func testFetchModels_dedupesDuplicateKeys() async throws {
+        let body = #"""
+        {
+          "models": [
+            { "key": "openai/gpt-oss-20b",       "type": "llm" },
+            { "key": "ibm/granite-4-micro",      "type": "llm" },
+            { "key": "openai/gpt-oss-20b",       "type": "llm" }
+          ]
+        }
+        """#
+        let stubSession = StubNetworkSession(
+            response: HTTPURLResponse(
+                url: URL(string: "http://localhost:1234/api/v1/models")!,
+                statusCode: 200, httpVersion: nil, headerFields: nil
+            )!,
+            data: Data(body.utf8)
+        )
+        let client = NativeLMStudioClient(session: stubSession)
+        let config = makeConfig()
+
+        let result = try await client.fetchModels(config: config, visionOnly: false)
+
+        XCTAssertEqual(result.count, 2)
+        XCTAssertEqual(
+            Set(result),
+            ["openai/gpt-oss-20b", "ibm/granite-4-micro"]
+        )
     }
 
     // MARK: - LM Studio Requires No Credentials

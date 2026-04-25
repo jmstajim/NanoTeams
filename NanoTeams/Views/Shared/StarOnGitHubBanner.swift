@@ -7,9 +7,9 @@ import SwiftUI
 /// on the right. Tapping the CTA opens the repo.
 ///
 /// Two size variants:
-/// - `.regular` — callout font, `accentTintStrong` rounded rectangle background
-///   (Settings → Updates, stands alone above the Form sections).
-/// - `.compact` — caption font, no background (sits inside the Watchtower card
+/// - `.regular` — standalone card with accent-gradient background
+///   (Settings → Updates, stands alone above the sections).
+/// - `.compact` — inline row, no background (sits inside the Watchtower card
 ///   which already has its own accent tint).
 struct StarOnGitHubBanner: View {
     enum Size {
@@ -18,89 +18,89 @@ struct StarOnGitHubBanner: View {
     }
 
     let size: Size
+    @Environment(NTMSOrchestrator.self) private var store
+    @State private var isHovered = false
 
     init(size: Size = .regular) {
         self.size = size
     }
 
     var body: some View {
-        HStack(spacing: innerSpacing) {
-            Text("⭐ Your stars motivate me to keep going — thanks!")
-                .font(messageFont)
-                .foregroundStyle(messageColor)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        HStack(spacing: Spacing.m) {
+            HStack(spacing: Spacing.s) {
+                Text("⭐")
+                    .font(size == .regular ? .title3 : .callout)
+
+                VStack(alignment: .leading, spacing: Spacing.xxs) {
+                    Text("Your stars motivate me to keep going")
+                        .font(titleFont)
+                        .foregroundStyle(Colors.textPrimary)
+                    if size == .regular {
+                        Text("Thank you for supporting NanoTeams!")
+                            .font(Typography.caption)
+                            .foregroundStyle(Colors.textSecondary)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             Button {
-                NSWorkspace.shared.open(AppURLs.githubRepository)
+                URLOpener.open(AppURLs.githubRepository) { store.lastErrorMessage = $0 }
             } label: {
-                Text("Star on GitHub")
-                    .font(ctaFont)
-                    .foregroundStyle(Colors.textOnAccent)
-                    .padding(.horizontal, ctaHorizontalPadding)
-                    .padding(.vertical, ctaVerticalPadding)
-                    .background(Capsule(style: .continuous).fill(Colors.accent))
+                HStack(spacing: Spacing.xs) {
+                    Image(systemName: "star.fill")
+                        .font(.caption2)
+                    Text("Star on GitHub")
+                        .font(ctaFont)
+                }
+                .foregroundStyle(Colors.textPrimary)
+                .padding(.horizontal, ctaHorizontalPadding)
+                .padding(.vertical, ctaVerticalPadding)
+                .background(Capsule(style: .continuous).fill(Colors.gold))
+                .scaleEffect(isHovered ? 1.03 : 1.0)
             }
             .buttonStyle(.plain)
+            .trackHover($isHovered)
+            .animation(Animations.quick, value: isHovered)
         }
-        .padding(.horizontal, outerHorizontalPadding)
-        .padding(.vertical, outerVerticalPadding)
+        .padding(.horizontal, outerPadding)
+        .padding(.vertical, outerPadding)
         .background(backgroundShape)
     }
 
     // MARK: - Per-size styling
 
-    private var innerSpacing: CGFloat {
+    private var titleFont: Font {
         switch size {
-        case .regular: Spacing.m
-        case .compact: Spacing.s
-        }
-    }
-
-    private var messageFont: Font {
-        switch size {
-        case .regular: .callout
-        case .compact: .caption
-        }
-    }
-
-    private var messageColor: Color {
-        switch size {
-        case .regular: .primary
-        case .compact: .secondary
+        case .regular: .callout.weight(.medium)
+        case .compact: Typography.caption
         }
     }
 
     private var ctaFont: Font {
         switch size {
-        case .regular: .caption.weight(.bold)
+        case .regular: Typography.captionSemibold
         case .compact: .caption2.weight(.bold)
         }
     }
 
     private var ctaHorizontalPadding: CGFloat {
         switch size {
-        case .regular: Spacing.m
-        case .compact: Spacing.s
+        case .regular: Spacing.standard
+        case .compact: Spacing.m
         }
     }
 
     private var ctaVerticalPadding: CGFloat {
         switch size {
-        case .regular: Spacing.xs
-        case .compact: Spacing.xxs
-        }
-    }
-
-    private var outerHorizontalPadding: CGFloat {
-        switch size {
-        case .regular: Spacing.m
-        case .compact: 0
-        }
-    }
-
-    private var outerVerticalPadding: CGFloat {
-        switch size {
         case .regular: Spacing.s
+        case .compact: Spacing.xs
+        }
+    }
+
+    private var outerPadding: CGFloat {
+        switch size {
+        case .regular: Spacing.standard
         case .compact: 0
         }
     }
@@ -109,7 +109,7 @@ struct StarOnGitHubBanner: View {
     private var backgroundShape: some View {
         switch size {
         case .regular:
-            RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
+            RoundedRectangle.squircle(CornerRadius.medium)
                 .fill(Colors.accentTintStrong)
         case .compact:
             Color.clear
@@ -120,6 +120,7 @@ struct StarOnGitHubBanner: View {
 // MARK: - Preview
 
 #Preview("Star on GitHub Banner") {
+    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     VStack(spacing: Spacing.l) {
         StarOnGitHubBanner(size: .regular)
         StarOnGitHubBanner(size: .compact)
@@ -127,4 +128,5 @@ struct StarOnGitHubBanner: View {
     .padding()
     .frame(width: 600)
     .background(Colors.surfacePrimary)
+    .environment(store)
 }

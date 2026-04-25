@@ -8,6 +8,8 @@ enum Animations {
     static let quick = Animation.easeOut(duration: 0.15)
     /// Reduced motion alternative - simple fade
     static let reducedMotion = Animation.easeInOut(duration: 0.2)
+    /// Smooth ease for ambient state transitions (e.g. background indicator visibility).
+    static let smooth = Animation.smooth
 }
 
 // MARK: - Reduce Motion Animation Modifier

@@ -31,8 +31,14 @@ enum TeamGraphLayoutCalculator {
             }
         }
 
-        // Compute depth per role (memoized)
+        // Compute depth per role (memoized).
+        // `inProgress` breaks cycles: if role A's producer chain leads back to A
+        // before A's depth is cached, treat the back-edge as depth 0 contribution
+        // (i.e. don't recurse further). LLM-generated teams can produce cyclic
+        // dependencies (e.g. role A produces X requiring Y, role B produces Y
+        // requiring X). Without the guard, recursion blows the stack.
         var depths: [String: Int] = [:]
+        var inProgress: Set<String> = []
 
         func depth(of role: TeamRoleDefinition) -> Int {
             if let cached = depths[role.id] { return cached }
@@ -40,6 +46,10 @@ enum TeamGraphLayoutCalculator {
                 depths[role.id] = 0
                 return 0
             }
+            if inProgress.contains(role.id) { return 0 }
+            inProgress.insert(role.id)
+            defer { inProgress.remove(role.id) }
+
             let required = role.dependencies.requiredArtifacts
             if required.isEmpty {
                 depths[role.id] = 1

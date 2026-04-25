@@ -1,3 +1,5 @@
+import AppKit
+import Carbon.HIToolbox
 import QuickLook
 import SwiftUI
 import UniformTypeIdentifiers
@@ -39,6 +41,12 @@ struct MessageComposer<SettingsMenu: View>: View {
     /// answer-mode surfaces (which show a question first) don't steal the cursor.
     var autofocusOnAppear: Bool = false
 
+    /// Line-count range for the inner `TextField(axis: .vertical)`. Default `1...6`
+    /// matches the historical cap used by Watchtower / SupervisorInputCard / QuickCapture.
+    /// Surfaces that want the field to grow further (e.g. the activity-feed composer
+    /// constrained by an outer `maxHeight`) can pass a wider range.
+    var textFieldLineLimit: ClosedRange<Int> = 1...6
+
     // Declared last so QuickCapture's trailing-closure call sites bind to
     // `settingsMenu` via SE-0286 forward-scan. Other surfaces use the
     // `EmbedFilesSettingsButton<EmptyView>` convenience init below.
@@ -46,12 +54,17 @@ struct MessageComposer<SettingsMenu: View>: View {
 
     @Environment(StoreConfiguration.self) private var config
     @Environment(DictationService.self) private var dictation
+    @Environment(\.openWindow) private var openWindow
+    @AppStorage(UserDefaultsKeys.selectedSettingsTab)
+    private var selectedSettingsTab: SettingsView.SettingsTab = .llm
     @State private var isDropTargeted = false
     @State private var quickLookURL: URL?
     @State private var popoverClipIndex: Int?
     @State private var importErrorMessage: String?
     @FocusState private var internalFocus: Bool
     @State private var internalShowingFilePicker = false
+    @State private var pasteMonitorOwnerID = UUID()
+    @State private var hasRegisteredMonitor: Bool = false
 
     private var isShowingFilePicker: Binding<Bool> {
         filePickerBinding ?? $internalShowingFilePicker
@@ -109,7 +122,7 @@ struct MessageComposer<SettingsMenu: View>: View {
             TextField(placeholder, text: $text, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(.body)
-                .lineLimit(1...6)
+                .lineLimit(textFieldLineLimit)
                 .accessibilityLabel("Message input")
                 .padding(Spacing.s)
                 .background(
@@ -201,6 +214,16 @@ struct MessageComposer<SettingsMenu: View>: View {
         .task {
             if autofocusOnAppear { internalFocus = true }
         }
+        .onChange(of: internalFocus) { _, focused in
+            if focused {
+                installPasteMonitor()
+            } else {
+                removePasteMonitor()
+            }
+        }
+        .onDisappear {
+            removePasteMonitor()
+        }
     }
 
     // MARK: - Attachment Grid
@@ -291,12 +314,18 @@ struct MessageComposer<SettingsMenu: View>: View {
                     .onTapGesture { quickLookURL = attachment.url }
                     .overlay(alignment: .bottomLeading) {
                         if isImage && !config.isVisionConfigured {
-                            Image(systemName: "eye.trianglebadge.exclamationmark")
-                                .font(.system(size: 10))
-                                .foregroundStyle(Colors.warning)
-                                .padding(2)
-                                .background(Circle().fill(Colors.surfaceCard))
-                                .help("Enable Vision model in Settings to analyze images")
+                            Button {
+                                selectedSettingsTab = .llm
+                                openWindow(id: "settings")
+                            } label: {
+                                Image(systemName: "eye.trianglebadge.exclamationmark")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(Colors.warning)
+                                    .padding(2)
+                                    .background(Circle().fill(Colors.surfaceCard))
+                            }
+                            .buttonStyle(.plain)
+                            .help("Vision not configured — click to set up")
                         }
                     }
 
@@ -358,6 +387,64 @@ struct MessageComposer<SettingsMenu: View>: View {
             importErrorMessage = message
         }
     }
+
+    // MARK: - Paste Monitor
+
+    /// Local NSEvent monitor is the only way to intercept Cmd+V before the
+    /// TextField's field editor consumes it. Slack-style image+caption: pass
+    /// the event through when the pasteboard also carries text.
+    private func installPasteMonitor() {
+        guard !hasRegisteredMonitor else { return }
+        guard let monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { event in
+            guard event.modifierFlags.contains(.command),
+                  event.keyCode == UInt16(kVK_ANSI_V) else { return event }
+            return handlePasteEvent(event)
+        }) else {
+            #if DEBUG
+            assertionFailure("MessageComposer: NSEvent.addLocalMonitorForEvents returned nil")
+            #endif
+            appendImportError("Paste interception unavailable in this context — drag-and-drop and the + button still work.")
+            return
+        }
+        let ownerID = pasteMonitorOwnerID
+        PasteMonitorRegistry.shared.register(ownerID: ownerID, remove: {
+            NSEvent.removeMonitor(monitor)
+        })
+        hasRegisteredMonitor = true
+    }
+
+    private func removePasteMonitor() {
+        guard hasRegisteredMonitor else { return }
+        PasteMonitorRegistry.shared.release(ownerID: pasteMonitorOwnerID)
+        hasRegisteredMonitor = false
+    }
+
+    private func handlePasteEvent(_ event: NSEvent) -> NSEvent? {
+        let action = MessageComposerPasteHandler.dispatch(pasteboard: NSPasteboard.general)
+        switch action {
+        case .stageFiles(let urls):
+            stageURLs(urls)
+            return nil
+        case .stageImages(let result, let alsoHasText):
+            if !result.failures.isEmpty {
+                appendImportError("Could not paste image: \(result.failures.joined(separator: "; "))")
+            }
+            guard !result.urls.isEmpty else { return event }
+            stageURLs(result.urls)
+            for url in result.urls {
+                do {
+                    try FileManager.default.removeItem(at: url)
+                } catch {
+                    #if DEBUG
+                    print("MessageComposer: paste temp cleanup failed for \(url.lastPathComponent): \(error.localizedDescription)")
+                    #endif
+                }
+            }
+            return alsoHasText ? event : nil
+        case .passThrough:
+            return event
+        }
+    }
 }
 
 // MARK: - Embed Files Settings Button
@@ -408,7 +495,8 @@ extension MessageComposer where SettingsMenu == EmbedFilesSettingsButton<EmptyVi
         onSubmit: @escaping () -> Void,
         onStageAttachment: @escaping (URL) -> StagedAttachment?,
         onRemoveAttachment: @escaping (StagedAttachment) -> Void,
-        autofocusOnAppear: Bool = false
+        autofocusOnAppear: Bool = false,
+        textFieldLineLimit: ClosedRange<Int> = 1...6
     ) {
         self._text = text
         self._attachments = attachments
@@ -420,6 +508,7 @@ extension MessageComposer where SettingsMenu == EmbedFilesSettingsButton<EmptyVi
         self.onStageAttachment = onStageAttachment
         self.onRemoveAttachment = onRemoveAttachment
         self.autofocusOnAppear = autofocusOnAppear
+        self.textFieldLineLimit = textFieldLineLimit
         self.settingsMenu = EmbedFilesSettingsButton()
     }
 }

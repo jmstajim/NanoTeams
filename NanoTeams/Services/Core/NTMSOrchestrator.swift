@@ -263,23 +263,44 @@ final class NTMSOrchestrator {
         teamGenerationInFlight.contains(taskID)
     }
 
-    /// Syncs `taskEngineStates` from the run's derived status when no engine exists.
-    /// Called after loading/recovering a task on app restart so the UI shows
-    /// the correct Resume/Start buttons.
-    func syncEngineStateFromRun(taskID: Int, run: Run) {
+    /// Syncs `taskEngineStates` from the task's derived status when no engine
+    /// exists. Called after loading/recovering a task on app restart so the UI
+    /// shows the correct Resume/Start buttons.
+    ///
+    /// Uses `task.derivedStatusFromActiveRun()` (not `run.derivedStatus()`) so
+    /// the chat-mode override participates: a chat task with all-done steps
+    /// and `closedAt == nil` reports `.running` and seeds engine state to
+    /// `.paused`, instead of misseeded `.done`.
+    func syncEngineStateFromRun(taskID: Int, task: NTMSTask) {
         guard taskEngines[taskID] == nil else { return }
-        switch run.derivedStatus() {
-        case .paused:             engineState[taskID] = .paused
-        case .failed:             engineState[taskID] = .failed
-        case .needsSupervisorInput:      engineState[taskID] = .needsSupervisorInput
-        case .done:               engineState[taskID] = .done
-        case .needsSupervisorAcceptance: engineState[taskID] = .done
-        case .running:
-            if !run.steps.isEmpty {
-                engineState[taskID] = .paused
-            }
-        case .waiting:
-            engineState[taskID] = .paused
+        guard let lastRun = task.runs.last else { return }
+        if let state = Self.mapDerivedStatusToEngineState(
+            task.derivedStatusFromActiveRun(),
+            hasSteps: !lastRun.steps.isEmpty
+        ) {
+            engineState[taskID] = state
+        }
+    }
+
+    /// Pure mapping from a task's derived status to the engine state seeded on
+    /// restart. Returns `nil` to mean "leave engine state unset" (intentional
+    /// no-op for the `.running` + empty-steps case — a half-built run shape).
+    ///
+    /// Extracted as a static helper so every branch (including `.waiting`,
+    /// which is currently unreachable through `derivedStatusFromActiveRun()`
+    /// but kept for `TaskStatus` exhaustiveness) is unit-testable in isolation.
+    static func mapDerivedStatusToEngineState(
+        _ derivedStatus: TaskStatus,
+        hasSteps: Bool
+    ) -> TeamEngineState? {
+        switch derivedStatus {
+        case .paused:                    return .paused
+        case .failed:                    return .failed
+        case .needsSupervisorInput:      return .needsSupervisorInput
+        case .done:                      return .done
+        case .needsSupervisorAcceptance: return .done
+        case .running:                   return hasSteps ? .paused : nil
+        case .waiting:                   return .paused
         }
     }
 

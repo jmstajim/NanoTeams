@@ -28,6 +28,12 @@ struct TeamActivityFeedView: View {
     @State private var revisionRoleID: String? = nil
     @State private var revisionComment: String = ""
     @State private var isShowingRevisionSheet: Bool = false
+    /// Activity-feed pane height, measured live via `onGeometryChange` on the outer
+    /// VStack. Used to cap the docked composer at 2/3 of the visible pane so a long
+    /// answer can grow into the available space without occluding the timeline
+    /// entirely. Seeded with `.infinity` so the first render doesn't clamp the
+    /// composer to zero (CLAUDE.md #18).
+    @State private var paneHeight: CGFloat = .infinity
 
     /// Creates a `Binding` into `viewModel.expansion` for a given key path.
     private func expansionBinding<T>(_ keyPath: WritableKeyPath<TeamActivityFeedViewModel.ExpansionState, T>) -> Binding<T> {
@@ -122,14 +128,35 @@ struct TeamActivityFeedView: View {
     }
 
     private var shouldShowComposer: Bool {
-        guard !isReadOnly else { return false }
-        guard let taskID = store.activeTaskID else { return false }
-        guard store.activeTask?.closedAt == nil else { return false }
-        switch engineStateEnv[taskID] {
-        case .done, .failed, nil:
-            return false
-        default:
-            return true
+        Self.shouldShowComposer(
+            isReadOnly: isReadOnly,
+            activeTaskID: store.activeTaskID,
+            closedAt: store.activeTask?.closedAt,
+            isChatMode: isChatMode,
+            engineState: store.activeTaskID.flatMap { engineStateEnv[$0] }
+        )
+    }
+
+    /// Composer visibility policy. Chat-mode tasks keep the composer alive
+    /// until the engine is genuinely failed or the task is closed — advisory
+    /// roles never self-terminate, and engine state may transiently sit at
+    /// `.done` after restart while the task is still meant to accept input.
+    /// Non-chat tasks gate on engine state (`.done`/`.failed`/`nil` → hide).
+    static func shouldShowComposer(
+        isReadOnly: Bool,
+        activeTaskID: Int?,
+        closedAt: Date?,
+        isChatMode: Bool,
+        engineState: TeamEngineState?
+    ) -> Bool {
+        if isReadOnly { return false }
+        guard activeTaskID != nil else { return false }
+        guard closedAt == nil else { return false }
+        if engineState == .failed { return false }
+        if isChatMode { return true }
+        switch engineState {
+        case .done, nil: return false
+        default:         return true
         }
     }
 
@@ -187,7 +214,8 @@ struct TeamActivityFeedView: View {
                     isChatMode: isChatMode,
                     taskID: taskID,
                     workingRoleIDs: workingRoleIDs,
-                    activeQuestion: activeQuestionForComposer
+                    activeQuestion: activeQuestionForComposer,
+                    maxHeight: paneHeight * 2 / 3
                 )
                 .background(Colors.surfaceCard)
             }
@@ -214,6 +242,11 @@ struct TeamActivityFeedView: View {
                 }
 
             }
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.height
+        } action: { newHeight in
+            paneHeight = newHeight
+        }
         .onAppear {
             let context = buildContext()
             // Seed fingerprint + initial synchronous rebuild, then refresh artifact content async.

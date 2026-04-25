@@ -233,16 +233,27 @@ struct NativeLMStudioClient: LLMClient {
         let decoder = JSONCoderFactory.makeWireDecoder()
 
         // Try LM Studio native format first: { "models": [{ "key": "...", "type": "llm" }] }
-        if let native = try? decoder.decode(NativeModelListResponse.self, from: data) {
+        // `normalizedUnique` collapses duplicate `key`s (LM Studio surfaces the
+        // same model from multiple storage paths/slots), trims whitespace, and
+        // sorts case-insensitively — matches what the picker expects.
+        do {
+            let native = try decoder.decode(NativeModelListResponse.self, from: data)
             return native.models
                 .filter(nativeFilter)
                 .map(\.key)
-                .sorted()
+                .normalizedUnique()
+        } catch {
+            // Native decode failed — likely an LM Studio version mismatch or a
+            // genuine OpenAI-compatible endpoint. Log so future API regressions
+            // are debuggable, then fall through to the OpenAI shape.
+            #if DEBUG
+            print("NativeLMStudioClient: native model-list decode failed (\(error.localizedDescription)) — falling back to OpenAI shape")
+            #endif
         }
 
         // Fallback: OpenAI-compatible format — no capability metadata, return all
         let openAI = try decoder.decode(OpenAIModelListResponse.self, from: data)
-        return openAI.data.map(\.id).sorted()
+        return openAI.data.map(\.id).normalizedUnique()
     }
 
 }

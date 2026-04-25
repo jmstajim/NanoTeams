@@ -138,10 +138,12 @@ struct SidebarView: View {
             let hasUnread = task.isChatMode
                 && task.status == .needsSupervisorInput
                 && !taskState.seenSupervisorInputTaskIDs.contains(task.id)
+            let isEngineRunning = engineState.taskEngineStates[task.id] == .running
             return SidebarTaskItem(
                 id: task.id, title: task.title, status: task.status,
                 updatedAt: task.updatedAt, isChatMode: task.isChatMode,
-                hasUnreadInput: hasUnread
+                hasUnreadInput: hasUnread,
+                isEngineRunning: isEngineRunning
             )
         }
     }

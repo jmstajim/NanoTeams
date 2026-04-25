@@ -182,4 +182,74 @@ final class DictationModelCatalogTests: XCTestCase {
         _ = await task.value
     }
 
+    // MARK: - sortByInstalledFirst (pure helper)
+
+    @available(macOS 26, iOS 26, visionOS 26, *)
+    private func info(_ identifier: String, status: AssetInventory.Status) -> DictationModelCatalog.ModelInfo {
+        DictationModelCatalog.ModelInfo(locale: Locale(identifier: identifier), status: status)
+    }
+
+    func testSortByInstalledFirst_installedComeFirst() throws {
+        try skipIfUnavailable()
+        guard #available(macOS 26, iOS 26, visionOS 26, *) else { return }
+        let infos = [
+            info("en_US", status: .supported),
+            info("ru_RU", status: .installed),
+        ]
+        let sorted = DictationModelCatalog.sortByInstalledFirst(infos)
+        XCTAssertEqual(sorted.map(\.locale.identifier), ["ru_RU", "en_US"])
+    }
+
+    func testSortByInstalledFirst_alphabeticalWithinInstalledGroup() throws {
+        try skipIfUnavailable()
+        guard #available(macOS 26, iOS 26, visionOS 26, *) else { return }
+        let infos = [
+            info("ru_RU", status: .installed),
+            info("de_DE", status: .installed),
+            info("en_US", status: .installed),
+        ]
+        let sorted = DictationModelCatalog.sortByInstalledFirst(infos)
+        let names = sorted.map(\.displayName)
+        XCTAssertEqual(
+            names,
+            names.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending },
+            "installed group must be alphabetical by localized display name"
+        )
+    }
+
+    func testSortByInstalledFirst_mixed_installedFirstThenAlphabetical() throws {
+        try skipIfUnavailable()
+        guard #available(macOS 26, iOS 26, visionOS 26, *) else { return }
+        let infos = [
+            info("ru_RU", status: .supported),
+            info("de_DE", status: .installed),
+            info("en_US", status: .supported),
+            info("fr_FR", status: .installed),
+        ]
+        let sorted = DictationModelCatalog.sortByInstalledFirst(infos)
+
+        XCTAssertEqual(sorted[0].status, .installed)
+        XCTAssertEqual(sorted[1].status, .installed)
+        XCTAssertEqual(sorted[2].status, .supported)
+        XCTAssertEqual(sorted[3].status, .supported)
+
+        let installedNames = sorted.prefix(2).map(\.displayName)
+        XCTAssertEqual(
+            installedNames,
+            installedNames.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        )
+        let supportedNames = sorted.suffix(2).map(\.displayName)
+        XCTAssertEqual(
+            supportedNames,
+            supportedNames.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        )
+    }
+
+    func testSortByInstalledFirst_emptyInput_returnsEmpty() throws {
+        try skipIfUnavailable()
+        guard #available(macOS 26, iOS 26, visionOS 26, *) else { return }
+        let sorted = DictationModelCatalog.sortByInstalledFirst([])
+        XCTAssertTrue(sorted.isEmpty)
+    }
+
 }
