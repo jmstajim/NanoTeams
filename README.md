@@ -38,7 +38,7 @@ Built with **LM Studio's stateful chat API** (`previous_response_id`), so the se
 4. Pick a team — **Coding Assistant** is the default and a good starting point (chat-mode with files, git, and Xcode tools)
 5. Create a task, describe what you need — the team takes it from there
 
-<img width="640" height="633" alt="NanoTeams — create a new task and select a team" src="https://github.com/user-attachments/assets/d4de18bb-7cdd-4d21-8d72-7018136b8700" />
+<img width="1280" height="1107" alt="NanoTeams — create a new task and select a team" src="https://github.com/user-attachments/assets/512ce4a7-34d6-40aa-a8d0-cd9bac47c569" />
 
 ## How It Works
 
@@ -47,8 +47,9 @@ You are the **Supervisor**. You create a task, and a team of AI roles executes i
 For example, with the **FAANG Team**: you describe what you want → PM writes requirements → Tech Lead creates a plan → Engineer implements → Code Reviewer checks the code → SRE verifies production readiness → TPM writes release notes → you review and accept.
 
 Each role can read/write files, use git, build with Xcode, consult other roles, and request team meetings — all within a sandboxed environment limited to your work folder.
+<img width="1280" height="1049" alt="Screenshot 2026-04-27 at 01 31 54 Large" src="https://github.com/user-attachments/assets/ee0db2f5-2ee4-455d-8644-c4e90fdb976b" />
 
-<img width="640" height="491" alt="NanoTeams — team graph showing roles and artifact dependencies" src="https://github.com/user-attachments/assets/59e383b0-9393-4036-92d5-662c431a2d08" />
+<img width="1280" height="1009" alt="NanoTeams — team graph showing roles and artifact dependencies" src="https://github.com/user-attachments/assets/9e75d4c2-4cda-43a9-812b-3abd20ed986d" />
 
 ## How Roles Work
 Every role in a team falls into one of three types — this determines what the role does and how it finishes.
@@ -77,7 +78,7 @@ In the Discussion Club, four personality roles (The Open, The Conscientious, The
 ### Multi-Agent AI Teams
 Create tasks and let a team of specialized AI roles collaborate. Each role has its own system prompt, tool access, and artifact responsibilities. Roles communicate through consultations, team meetings, and change requests.
 
-<img width="640" height="453" alt="NanoTeams — activity feed with AI role messages and tool calls" src="https://github.com/user-attachments/assets/34f55b17-31d8-48d3-b3cb-c191a3f673fb" />
+<img width="1280" height="1049" alt="NanoTeams — activity feed with AI role messages and tool calls" src="https://github.com/user-attachments/assets/93b34c9e-9296-4c5c-9b3b-2e9d7adf576a" />
 
 ### AI Team Generation
 Describe a task in one line and an LLM designs a custom team for it — roles, artifacts, prompts, dependencies, and hierarchy. The *Generate Team* settings tab lets you customize the meta-model, system prompt, and defaults used whenever a team is generated.
@@ -107,7 +108,7 @@ Two global hotkeys work from any app:
 
 Cmd+V in the composer pastes anything from the clipboard — copied files (any kind, including PDFs / DOCX / source files), screenshots and images, or plain text. Files and images are staged as attachments; text drops into the message field.
 
-<img width="441" height="455" alt="NanoTeams — Quick Capture overlay for creating tasks from any app" src="https://github.com/user-attachments/assets/48c6ac05-ff5f-49b8-9131-424a5b4f7acd" />
+<img width="936" height="988" alt="NanoTeams — Quick Capture overlay for creating tasks from any app" src="https://github.com/user-attachments/assets/519e1c86-8bac-40b6-89d0-a5c08827b0b4" />
 
 ### Private Voice Dictation
 Hands-free input via Apple's `SpeechAnalyzer` and `DictationTranscriber` — fully on-device, multilingual, and offline. Available in Quick Capture, Supervisor answers, and revision feedback. Requires macOS 26+.
