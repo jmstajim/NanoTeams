@@ -8,7 +8,7 @@
 [![License](https://img.shields.io/github/license/jmstajim/NanoTeams?color=5F87D9&style=flat-square)](LICENSE)
 [![Download](https://img.shields.io/badge/Download-NanoTeams.app.zip-35BE81?style=flat-square)](https://github.com/jmstajim/NanoTeams/releases/latest/download/NanoTeams.app.zip)
 
-**Agentic chat and multi-role AI teams for macOS.** Start a chat or hand a task to a team of specialized AI roles — they read your files, produce artifacts, consult each other, and report back when done. Generate teams on demand from a one-line description, attach documents, clip text from any app, dictate hands-free, queue messages to working roles without pausing them. Everything runs on-device — LLMs through LM Studio, dictation through Apple's built-in speech engine. No cloud, no API keys, zero telemetry.
+**Coding assistant, agentic chat and multi-role AI teams for macOS.** Start a chat or hand a task to a team of specialized AI roles — they read your files, produce artifacts, consult each other, and report back when done. Generate teams on demand from a one-line description, attach documents, clip text from any app, dictate hands-free, queue messages to working roles without pausing them. Everything runs on-device — LLMs through LM Studio, dictation through Apple's built-in speech engine. No cloud, no API keys, zero telemetry.
 
 <img width="640" height="604" alt="NanoTeams — AI agent teams for local LLMs on macOS" src="https://github.com/user-attachments/assets/aaf71be6-a72f-4f5d-bf77-47d015985f0e" />
 
