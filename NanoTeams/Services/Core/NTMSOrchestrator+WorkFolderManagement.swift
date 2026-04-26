@@ -70,6 +70,12 @@ extension NTMSOrchestrator {
         } catch {
             self.lastErrorMessage = error.localizedDescription
         }
+        // Sync the LM Studio embed-model state to whatever the coordinator
+        // ended up at. Lives outside the do/catch so it runs on both happy
+        // and error paths — if openOrCreateWorkFolder threw, the coordinator
+        // is nil and reconcile will unload anything we had loaded for the
+        // prior folder.
+        await reconcileEmbeddingLifecycle()
     }
 
     // MARK: - Search Index Coordinator Lifecycle
@@ -169,6 +175,73 @@ extension NTMSOrchestrator {
             if let coordinator = searchIndexCoordinator {
                 await coordinator.clear()
                 searchIndexCoordinator = nil
+            }
+        }
+        await reconcileEmbeddingLifecycle()
+    }
+
+    /// User changed the embed-model URL or name in `ExpandedSearchEmbeddingsCard`.
+    /// Chains on the same FIFO sequencer as toggle events so a rapid model swap
+    /// can't interleave with a toggle ON/OFF and leave us with the wrong state.
+    ///
+    /// I7: the `expandedSearchEnabled` guard runs INSIDE the queued task body,
+    /// not before enqueueing — otherwise a config change observed while a
+    /// toggle-OFF is still queued would read the not-yet-applied (stale) value
+    /// and schedule a reconcile that fires after the toggle-OFF has already
+    /// torn down the coordinator.
+    func onExpandedSearchEmbeddingConfigChanged() async {
+        let prior = pendingExpandedSearchToggle
+        let myTask = Task { [weak self] in
+            _ = await prior?.value
+            guard let self else { return }
+            // Read AFTER the prior task drained — this is now the post-FIFO
+            // state, the only state the user actually committed to.
+            guard self.configuration.expandedSearchEnabled else { return }
+            await self.reconcileEmbeddingLifecycle()
+        }
+        pendingExpandedSearchToggle = myTask
+        _ = await myTask.value
+        if pendingExpandedSearchToggle == myTask {
+            pendingExpandedSearchToggle = nil
+        }
+    }
+
+    /// Drives `embeddingLifecycle` toward the desired state: model loaded
+    /// when a coordinator is active. Called from every public lifecycle hook.
+    ///
+    /// I4: this is a *target* state, not an enforced invariant — when
+    /// `ensureLoaded` throws, the coordinator stays installed but
+    /// `embeddingLifecycle.loaded == nil`. The next reconcile retries.
+    ///
+    /// I3: load failures use `lastErrorMessage` (red banner) because the
+    /// user enabled Expanded Search and the feature is now broken — info
+    /// severity is wrong here. I8: unload failures (which `NativeLMStudioClient`
+    /// already swallows for 404 / "no such instance") still surface via
+    /// `lastInfoMessage` so the user knows VRAM may not have been reclaimed.
+    ///
+    /// No "Loading embedding model…" progress banner: the C1 adoption path
+    /// (`listLoadedInstances` ahead of `loadModel`) makes the common case a
+    /// near-instant adopt, and a banner that appears every reconcile is
+    /// noise. If the user's actual first-time download is slow, LM Studio's
+    /// own UI surfaces the download progress.
+    private func reconcileEmbeddingLifecycle() async {
+        if searchIndexCoordinator != nil {
+            let modelName = configuration.effectiveEmbeddingConfig.modelName
+            do {
+                try await embeddingLifecycle.ensureLoaded(configuration.effectiveEmbeddingConfig)
+            } catch {
+                let url = configuration.effectiveEmbeddingConfig.baseURLString
+                lastErrorMessage = "Couldn't load embedding model '\(modelName)': \(error.localizedDescription). Search will fall back to keyword-only matching. Check that LM Studio is running at \(url) and the model is downloaded."
+            }
+        } else {
+            do {
+                try await embeddingLifecycle.ensureUnloaded()
+            } catch {
+                // I8: don't go fully silent — surface as info so the user
+                // knows VRAM may not have been reclaimed. The native client
+                // swallows the common 404/"no such instance" cases, so
+                // anything reaching here is rare and worth a note.
+                lastInfoMessage = "Couldn't unload previous embedding model: \(error.localizedDescription). It may still be loaded on the server; retry from settings or restart LM Studio."
             }
         }
     }

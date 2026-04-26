@@ -37,8 +37,12 @@ struct TeamActivityComposer: View {
     /// Role IDs currently `.working` — only these are valid queue targets.
     /// Supervisor cannot message an idle / done / failed role through this composer.
     let workingRoleIDs: Set<String>
-    /// When present, surfaces an **Answer** chip and previews the question header.
-    let activeQuestion: TeamActivityActiveQuestion?
+    /// One Answer chip is rendered per pending question, in input order. Empty = no
+    /// pending input. Multiple entries are possible whenever the dependency graph
+    /// has parallel branches (CLAUDE.md #45 — TeamEngine starts ready roles
+    /// concurrently). Caller is responsible for ordering; chip-row order mirrors
+    /// this array verbatim.
+    let activeQuestions: [TeamActivityActiveQuestion]
     /// Hard cap on overall composer height; the TextField scrolls internally past this.
     let maxHeight: CGFloat
 
@@ -51,7 +55,10 @@ struct TeamActivityComposer: View {
     /// to draw the "more below" fade hint when the text overflows the cap, and to
     /// shrink the preview frame to content size for short questions (instead of a
     /// `ScrollView` greedily filling the 140pt cap). Seeded with `.infinity` so the
-    /// first render doesn't flash at zero height (CLAUDE.md #18).
+    /// first render doesn't flash at zero height (CLAUDE.md #18). Deliberately NOT
+    /// reset on chip switch: when two questions render at the same intrinsic height,
+    /// `onGeometryChange` does not fire (no value change), and a `.infinity` reseed
+    /// would clamp the frame to `maxPreviewHeight` until the next geometry callback.
     @State private var questionContentHeight: CGFloat = .infinity
     /// Tracks which chip the cursor is hovering over (Spotify-style hover feedback).
     @State private var hoveredChipRecipient: Recipient? = nil
@@ -76,24 +83,30 @@ struct TeamActivityComposer: View {
     private var effectiveRecipient: Recipient? {
         Self.resolveEffectiveRecipient(
             selected: selectedRecipient,
-            activeQuestion: activeQuestion,
+            activeQuestions: activeQuestions,
             selectableRoles: selectableRoles,
             candidateRoles: candidateRoles
         )
+    }
+
+    /// All role IDs currently asking a Supervisor question — excluded from queue-role
+    /// chips so the same role doesn't appear twice (once as Answer, once as queue target).
+    private var askingRoleIDs: Set<String> {
+        Set(activeQuestions.map(\.askingRoleID))
     }
 
     private var selectableRoles: [TeamRoleDefinition] {
         Self.computeSelectableRoles(
             roles: roleDefinitions,
             workingRoleIDs: workingRoleIDs,
-            askingRoleID: activeQuestion?.askingRoleID
+            askingRoleIDs: askingRoleIDs
         )
     }
 
     private var candidateRoles: [TeamRoleDefinition] {
         Self.computeCandidateRoles(
             roles: roleDefinitions,
-            askingRoleID: activeQuestion?.askingRoleID
+            askingRoleIDs: askingRoleIDs
         )
     }
 
@@ -147,7 +160,8 @@ struct TeamActivityComposer: View {
         VStack(alignment: .leading, spacing: Spacing.s) {
             recipientChipRow
 
-            if let q = activeQuestion, case .answer = effectiveRecipient {
+            if case .answer(let stepID) = effectiveRecipient,
+               let q = activeQuestions.first(where: { $0.stepID == stepID }) {
                 questionPreviewCard(q)
             }
 
@@ -167,14 +181,37 @@ struct TeamActivityComposer: View {
                 textFieldLineLimit: 1...6
             )
         }
+        // Lock the recipient on first keystroke. Without this, `selectedRecipient`
+        // stays `nil`, the resolver picks `activeQuestions.first`, and any change to
+        // the leftmost chip (e.g. another role hits `.needsSupervisorInput`, or the
+        // current first question is answered via Watchtower) silently retargets the
+        // half-typed reply to a different role.
+        .onChange(of: text) { oldText, newText in
+            let wasEmpty = oldText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let isEmpty = newText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            if wasEmpty, !isEmpty, selectedRecipient == nil, let auto = effectiveRecipient {
+                selectedRecipient = auto
+            }
+        }
         // When the chip the user previously tapped disappears (e.g. Answer chip
         // after answering, role chip after the role finishes), clear the explicit
         // selection so `resolveEffectiveRecipient`'s auto-resolution kicks back in.
         // Without this the placeholder/avatar/submit reflect a stale selection.
         .onChange(of: chipOptionsComputed.map(\.recipient)) { _, recipients in
-            selectedRecipient = Self.sanitizeSelection(
-                selected: selectedRecipient, availableRecipients: recipients
+            let prior = selectedRecipient
+            let sanitized = Self.sanitizeSelection(
+                selected: prior, availableRecipients: recipients
             )
+            let hasContent = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !attachments.isEmpty
+                || !clippedTexts.isEmpty
+            if Self.shouldClearDraftAfterSelectionLoss(
+                prior: prior, sanitized: sanitized, hasContent: hasContent
+            ) {
+                clearComposer()
+                store.lastInfoMessage = "Your selected recipient is no longer waiting — draft discarded. Pick another recipient and retry."
+            }
+            selectedRecipient = sanitized
             hoveredChipRecipient = Self.sanitizeSelection(
                 selected: hoveredChipRecipient, availableRecipients: recipients
             )
@@ -187,7 +224,7 @@ struct TeamActivityComposer: View {
         Self.computeChipOptions(
             roles: roleDefinitions,
             workingRoleIDs: workingRoleIDs,
-            activeQuestion: activeQuestion
+            activeQuestions: activeQuestions
         )
     }
 
@@ -206,6 +243,10 @@ struct TeamActivityComposer: View {
                         }
                     }
                     .padding(.vertical, Spacing.xxs)
+                    // Lock to intrinsic vertical extent — `HStack` can't wrap, but
+                    // without `.fixedSize` it can be stretched by parent layout pressure
+                    // when the chip count grows. Keeps the row strictly single-line.
+                    .fixedSize(horizontal: false, vertical: true)
                 }
                 .mask(
                     LinearGradient(
@@ -509,18 +550,19 @@ extension TeamActivityComposer {
     /// Priority order matches the chip row's left-to-right order, so "the first chip
     /// is always selected" holds when there is no explicit pick:
     /// 1. Explicit selection wins.
-    /// 2. If a question is pending → `.answer(stepID:)` (Answer chip is first in the row).
+    /// 2. If any question is pending → `.answer(stepID:)` for the FIRST pending question
+    ///    (Answer chips are leftmost in the row, in input order).
     /// 3. Otherwise the first selectable (working) role — matches the next chip in the row.
     /// 4. Otherwise the first candidate role — matches the single-candidate fallback chip.
     /// 5. Otherwise `nil` — no chip exists, the chip row collapses, `canSubmit` is false.
     static func resolveEffectiveRecipient(
         selected: Recipient?,
-        activeQuestion: TeamActivityActiveQuestion?,
+        activeQuestions: [TeamActivityActiveQuestion],
         selectableRoles: [TeamRoleDefinition],
         candidateRoles: [TeamRoleDefinition]
     ) -> Recipient? {
         if let explicit = selected { return explicit }
-        if let q = activeQuestion { return .answer(stepID: q.stepID) }
+        if let q = activeQuestions.first { return .answer(stepID: q.stepID) }
         if let first = selectableRoles.first { return .role(id: first.id) }
         if let first = candidateRoles.first { return .role(id: first.id) }
         return nil
@@ -555,51 +597,64 @@ extension TeamActivityComposer {
         return availableRecipients.contains(sel) ? sel : nil
     }
 
-    /// Currently-working, non-supervisor, non-observer roles, excluding the role
-    /// currently asking a Supervisor question (that role has its own "Answer" chip).
+    /// Whether to discard the draft (text + attachments + clips) after the user's
+    /// explicit recipient selection lost its chip. Triggers only when there was a
+    /// real explicit lock AND a draft AND the lock is now invalid — implicit
+    /// auto-selection (no `selected`) lets `resolveEffectiveRecipient` fall through
+    /// silently because the user never committed to a specific role.
+    static func shouldClearDraftAfterSelectionLoss(
+        prior: Recipient?,
+        sanitized: Recipient?,
+        hasContent: Bool
+    ) -> Bool {
+        prior != nil && sanitized == nil && hasContent
+    }
+
+    /// Currently-working, non-supervisor, non-observer roles, excluding any role
+    /// currently asking a Supervisor question (those roles have their own "Answer" chips).
     /// Only these are valid queue targets — queueing to an idle role would never flush.
     static func computeSelectableRoles(
         roles: [TeamRoleDefinition],
         workingRoleIDs: Set<String>,
-        askingRoleID: String?
+        askingRoleIDs: Set<String>
     ) -> [TeamRoleDefinition] {
         roles.filter {
             !$0.isSupervisor
                 && !$0.isObserver
                 && workingRoleIDs.contains($0.id)
-                && $0.id != askingRoleID
+                && !askingRoleIDs.contains($0.id)
         }
     }
 
-    /// Every non-supervisor, non-observer role in the team, excluding the asker.
+    /// Every non-supervisor, non-observer role in the team, excluding the askers.
     /// Used as a fallback when no role is currently `.working` but we still want
     /// to offer a sensible chip (e.g. a one-role team whose sole role is idle
     /// between chat turns).
     static func computeCandidateRoles(
         roles: [TeamRoleDefinition],
-        askingRoleID: String?
+        askingRoleIDs: Set<String>
     ) -> [TeamRoleDefinition] {
         roles.filter {
-            !$0.isSupervisor && !$0.isObserver && $0.id != askingRoleID
+            !$0.isSupervisor && !$0.isObserver && !askingRoleIDs.contains($0.id)
         }
     }
 
-    /// Ordered chips: Answer (if pending), then one per working role, with a
-    /// single-candidate fallback for idle one-role teams. Returns `[]` when no
-    /// recipient exists — the chip row collapses and `canSubmit` is false.
+    /// Ordered chips: one Answer chip per pending question (in input order), then
+    /// one per working role, with a single-candidate fallback for idle one-role teams.
+    /// Returns `[]` when no recipient exists — the chip row collapses and `canSubmit` is false.
     static func computeChipOptions(
         roles: [TeamRoleDefinition],
         workingRoleIDs: Set<String>,
-        activeQuestion: TeamActivityActiveQuestion?
+        activeQuestions: [TeamActivityActiveQuestion]
     ) -> [ChipOption] {
-        let askingRoleID = activeQuestion?.askingRoleID
+        let askingRoleIDs = Set(activeQuestions.map(\.askingRoleID))
         let selectable = computeSelectableRoles(
-            roles: roles, workingRoleIDs: workingRoleIDs, askingRoleID: askingRoleID
+            roles: roles, workingRoleIDs: workingRoleIDs, askingRoleIDs: askingRoleIDs
         )
-        let candidates = computeCandidateRoles(roles: roles, askingRoleID: askingRoleID)
+        let candidates = computeCandidateRoles(roles: roles, askingRoleIDs: askingRoleIDs)
 
         var options: [ChipOption] = []
-        if let q = activeQuestion {
+        for q in activeQuestions {
             let askingName = roles.first(where: { $0.id == q.askingRoleID })?.name ?? q.askingRoleID
             options.append(.init(
                 recipient: .answer(stepID: q.stepID),
@@ -633,7 +688,7 @@ extension TeamActivityComposer {
         isChatMode: true,
         taskID: 0,
         workingRoleIDs: Set(Team.default.roles.map(\.id)),
-        activeQuestion: nil,
+        activeQuestions: [],
         maxHeight: .infinity
     )
     .environment(store)
@@ -655,7 +710,7 @@ extension TeamActivityComposer {
         isChatMode: false,
         taskID: taskID,
         workingRoleIDs: Set(roles.map(\.id)),
-        activeQuestion: nil,
+        activeQuestions: [],
         maxHeight: .infinity
     )
     .environment(store)

@@ -34,7 +34,6 @@ import Foundation
 ///    `lastErrorMessage` surfaces the condition.
 extension NTMSOrchestrator {
 
-    // periphery:ignore - protocol conformance (LLMStateDelegate)
     func consumeQueuedSupervisorMessage(
         taskID: Int,
         roleID: String,

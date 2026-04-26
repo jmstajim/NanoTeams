@@ -20,6 +20,7 @@ struct TimelineEvent: Identifiable {
     let roleDefinition: TeamRoleDefinition?
     let stepTitle: String
     let eventType: TimelineEventType
+    let isChatMode: Bool
     let timestamp: Date
 
     /// Derive a deterministic UUID from stepID + event type so that the same
@@ -55,8 +56,17 @@ struct TimelineEvent: Identifiable {
         .failed: { "\($0) failed on \($1)" },
     ]
 
+    private static let chatModeFormatMap: [TimelineEventType: (String) -> String] = [
+        .started: { "Chat with \($0) started" },
+        .completed: { "Chat with \($0) ended" },
+        .failed: { "Chat with \($0) failed" },
+    ]
+
     var displayText: String {
-        Self.displayFormatMap[eventType]?(role.displayName, stepTitle) ?? "\(role.displayName) — \(stepTitle)"
+        if isChatMode, let format = Self.chatModeFormatMap[eventType] {
+            return format(role.displayName)
+        }
+        return Self.displayFormatMap[eventType]?(role.displayName, stepTitle) ?? "\(role.displayName) — \(stepTitle)"
     }
 }
 
@@ -131,6 +141,7 @@ struct WatchtowerTimelineItem: View {
                 roleDefinition: nil,
                 stepTitle: "Product Requirements",
                 eventType: .started,
+                isChatMode: false,
                 timestamp: Date().addingTimeInterval(-120)
             ),
             onTap: {}
@@ -145,6 +156,7 @@ struct WatchtowerTimelineItem: View {
                 roleDefinition: nil,
                 stepTitle: "Implementation Plan",
                 eventType: .completed,
+                isChatMode: false,
                 timestamp: Date().addingTimeInterval(-300)
             ),
             onTap: {}
@@ -159,6 +171,7 @@ struct WatchtowerTimelineItem: View {
                 roleDefinition: nil,
                 stepTitle: "Engineering Notes",
                 eventType: .failed,
+                isChatMode: false,
                 timestamp: Date().addingTimeInterval(-600)
             ),
             onTap: {}

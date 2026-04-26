@@ -12,6 +12,7 @@ struct GenerateTeamSheet: View {
     @State private var isGenerating = false
     @State private var errorMessage: String?
     @State private var generationTask: Task<Void, Never>?
+    @State private var idleContentHeight: CGFloat = 332
     @FocusState private var isFocused: Bool
 
     private var canSubmit: Bool {
@@ -19,13 +20,12 @@ struct GenerateTeamSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.m) {
-            header
-            inputField
-            if let errorMessage {
-                errorBanner(errorMessage)
+        Group {
+            if isGenerating {
+                generatingBody
+            } else {
+                idleBody
             }
-            actionBar
         }
         .padding(Spacing.l)
         .frame(width: 380)
@@ -36,19 +36,43 @@ struct GenerateTeamSheet: View {
                 .keyboardShortcut(.cancelAction)
                 .hidden()
         }
+        .animation(Animations.quick, value: isGenerating)
+        .onChange(of: isGenerating) { _, newValue in
+            if !newValue { isFocused = true }
+        }
+    }
+
+    private var idleBody: some View {
+        VStack(alignment: .leading, spacing: Spacing.m) {
+            header
+            inputField
+            if let errorMessage {
+                errorBanner(errorMessage)
+            }
+            actionBar
+        }
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.height
+        } action: { newHeight in
+            idleContentHeight = newHeight
+        }
     }
 
     // MARK: - Header
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: Spacing.xs) {
-            Text("Generate a team")
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(Colors.textPrimary)
+        HStack(alignment: .top, spacing: Spacing.s) {
+            VStack(alignment: .leading, spacing: Spacing.xs) {
+                Text("Generate a team")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(Colors.textPrimary)
 
-            Text("Describe what you need the team for — a task, a project, or a goal.")
-                .font(.caption)
-                .foregroundStyle(Colors.textSecondary)
+                Text("Describe what you need the team for — a task, a project, or a goal.")
+                    .font(.caption)
+                    .foregroundStyle(Colors.textSecondary)
+            }
+            Spacer(minLength: 0)
+            CloseButton(action: cancel)
         }
     }
 
@@ -86,43 +110,53 @@ struct GenerateTeamSheet: View {
         HStack(spacing: Spacing.s) {
             Spacer()
 
-            Button {
-                cancel()
-            } label: {
-                Text("Cancel")
-                    .font(.subheadline)
-                    .foregroundStyle(Colors.textSecondary)
-                    .padding(.horizontal, Spacing.m)
-                    .padding(.vertical, Spacing.s)
-            }
-            .buttonStyle(.plain)
-
             DictationMicButton(text: $taskDescription)
 
             Button {
                 submit()
             } label: {
-                HStack(spacing: 6) {
-                    if isGenerating {
-                        NTMSLoader(.inline)
-                    }
-                    Text(isGenerating ? "Generating…" : "Generate")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(isGenerating ? Colors.textSecondary : (canSubmit ? Colors.textOnAccent : Colors.textTertiary))
-                }
-                .padding(.horizontal, Spacing.standard)
-                .padding(.vertical, Spacing.s)
-                .background(
-                    Capsule()
-                        .fill(isGenerating ? Colors.surfaceElevated : (canSubmit ? Colors.accent : Colors.surfaceElevated))
-                )
+                Text("Generate")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(canSubmit ? Colors.textOnAccent : Colors.textTertiary)
+                    .padding(.horizontal, Spacing.standard)
+                    .padding(.vertical, Spacing.s)
+                    .background(
+                        Capsule()
+                            .fill(canSubmit ? Colors.accent : Colors.surfaceElevated)
+                    )
             }
             .buttonStyle(.plain)
             .keyboardShortcut(.defaultAction)
             .disabled(!canSubmit)
             .animation(Animations.quick, value: canSubmit)
-            .animation(Animations.quick, value: isGenerating)
         }
+    }
+
+    // MARK: - Generating
+
+    private var generatingBody: some View {
+        VStack(spacing: Spacing.m) {
+            Spacer(minLength: 0)
+            NTMSLoader(.large)
+            Text("Generating team…")
+                .font(Typography.captionSemibold)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            capsuleCancelButton
+        }
+        .frame(maxWidth: .infinity, minHeight: idleContentHeight)
+    }
+
+    private var capsuleCancelButton: some View {
+        Button(action: cancel) {
+            Text("Cancel")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Colors.textSecondary)
+                .padding(.horizontal, Spacing.standard)
+                .padding(.vertical, Spacing.s)
+                .background(Capsule().fill(Colors.surfaceElevated))
+        }
+        .buttonStyle(.plain)
     }
 
     private func cancel() {

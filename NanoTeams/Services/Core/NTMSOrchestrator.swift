@@ -53,18 +53,15 @@ final class NTMSOrchestrator {
         configuration.loggingEnabled
     }
 
-    // periphery:ignore - protocol conformance (LLMStateDelegate)
     var expandedSearchEnabled: Bool {
         configuration.expandedSearchEnabled
     }
 
-    // periphery:ignore - protocol conformance (LLMStateDelegate)
     func awaitSearchIndex() async -> SearchIndex? {
         guard let coordinator = searchIndexCoordinator else { return nil }
         return await coordinator.awaitIndex()
     }
 
-    // periphery:ignore - protocol conformance (LLMStateDelegate)
     func expandSearchQuery(
         query: String,
         tokens: [String]
@@ -85,7 +82,7 @@ final class NTMSOrchestrator {
     /// folder open when `configuration.expandedSearchEnabled == true`. `nil` when
     /// feature is off or no folder is open.
     ///
-    /// Views DO observe this identity change — `AdvancedSettingsView` passes
+    /// Views DO observe this identity change — `ExpandedSearchSettingsView` passes
     /// `store.searchIndexCoordinator` into the status cards, and
     /// `SidebarWorkFolderCards` reads `store.searchIndexCoordinator?.isBuilding`.
     /// `@ObservationIgnored` would freeze the cards at their initial nil
@@ -98,6 +95,13 @@ final class NTMSOrchestrator {
     /// `applyExpandedSearchSettingChange`, which would produce a non-deterministic
     /// final state. See `onExpandedSearchSettingChanged` in +WorkFolderManagement.
     @ObservationIgnored var pendingExpandedSearchToggle: Task<Void, Never>?
+
+    /// Manages load/unload of the LM Studio embed model used by Expanded
+    /// Search. Reconciled at the end of every public lifecycle method
+    /// (openWorkFolder, applyExpandedSearchSettingChange, embed-config change)
+    /// so the model loaded in LM Studio tracks `searchIndexCoordinator != nil`.
+    /// Test-injected via init to avoid real network calls in CI.
+    @ObservationIgnored let embeddingLifecycle: EmbeddingModelLifecycleService
 
     /// All tasks currently in memory (active + background).
     var allLoadedTasks: [NTMSTask] {
@@ -159,7 +163,8 @@ final class NTMSOrchestrator {
         engineState: OrchestratorEngineState? = nil,
         streamingPreviewManager: StreamingPreviewManager? = nil,
         configuration: StoreConfiguration? = nil,
-        fileManager: FileManager? = nil
+        fileManager: FileManager? = nil,
+        embeddingLifecycle: EmbeddingModelLifecycleService? = nil
     ) {
         self.repository = repository
         self.llmExecutionService = llmExecutionService ?? LLMExecutionService(repository: repository)
@@ -171,6 +176,7 @@ final class NTMSOrchestrator {
         self.streamingPreviewManager = streamingPreviewManager ?? StreamingPreviewManager()
         self.configuration = configuration ?? StoreConfiguration()
         self.fileManager = fileManager ?? .default
+        self.embeddingLifecycle = embeddingLifecycle ?? EmbeddingModelLifecycleService()
         self.llmExecutionService.attach(delegate: self)
     }
 

@@ -156,6 +156,17 @@ extension LLMExecutionService {
         executionStates[stepID]?.consecutiveDriftTurnCount = 0
     }
 
+    /// Reads the current advisory-no-tool counter for a step (for advisory auto-finish tests).
+    func _testAdvisoryNoToolCounter(stepID: String) -> Int {
+        executionStates[stepID]?.consecutiveAdvisoryNoToolTurns ?? -1
+    }
+
+    /// Mirrors the production advisory-counter reset that happens just before
+    /// `executeToolCalls` runs (counter resets when the model takes a tool action).
+    func _testResetAdvisoryNoToolCounter(stepID: String) {
+        executionStates[stepID]?.consecutiveAdvisoryNoToolTurns = 0
+    }
+
     func _testPropagateAmendmentDownstream(
         taskID: Int,
         sourceRoleID: String,

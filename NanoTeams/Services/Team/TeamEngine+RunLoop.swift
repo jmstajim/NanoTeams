@@ -121,6 +121,17 @@ extension TeamEngine {
                     // Roles in revision - start them
                     await startRevisionRoles(roleStatuses: roleStatuses)
                     continue
+                } else if isChatMode && allRolesComplete(roleStatuses: roleStatuses, roles: teamRoles, isChatMode: false) {
+                    // Chat-mode auto-complete arm: every non-supervisor non-observer role
+                    // has reached a terminal status (advisory auto-finish in autonomous
+                    // mode is the only existing producer). `allRolesComplete(isChatMode:)`
+                    // hard-returns false in chat mode, so we re-call with `false` to use
+                    // the underlying check. Without this arm, the only chat-mode path out
+                    // of this block is the deadlock else, which transitions to `.failed`
+                    // — wrong, since the team genuinely is done.
+                    await markObserversComplete()
+                    transition(to: .done)
+                    return
                 } else {
                     // Deadlock or configuration error
                     let stuckRoles = roleStatuses.filter { !$0.value.isComplete && $0.value != .working }

@@ -9,8 +9,6 @@ import SwiftUI
 /// service intersects the user's selection with currently-installed models.
 struct DictationSettingsView: View {
 
-    @Environment(StoreConfiguration.self) private var config
-
     var body: some View {
         ScrollView {
             VStack(spacing: Spacing.xl) {

@@ -43,7 +43,6 @@ struct QuickCaptureFormView: View {
     let onCancel: () -> Void
 
     @Environment(NTMSOrchestrator.self) private var store
-    @Environment(StoreConfiguration.self) private var config
     @Environment(StreamingPreviewManager.self) private var streamingManager
     @Environment(DictationService.self) private var dictation
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -249,17 +248,7 @@ struct QuickCaptureFormView: View {
             content()
                 .layoutPriority(1)
             Spacer(minLength: 0)
-            Button {
-                handleCancel()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 18, height: 18)
-                    .background(Circle().fill(Colors.surfaceElevated))
-            }
-            .buttonStyle(.plain)
-            .fixedSize()
+            CloseButton(action: handleCancel)
         }
     }
 

@@ -12,6 +12,11 @@ struct ExpandedSearchEmbeddingsCard: View {
     var coordinator: SearchIndexCoordinator?
     var onRebuild: () -> Void
     var onForceFullRebuild: () -> Void
+    /// Fired after the embed-model URL / name has been written to
+    /// `StoreConfiguration`. Wired by `AdvancedSettingsView` to the
+    /// orchestrator's `onExpandedSearchEmbeddingConfigChanged` hook so the
+    /// LM Studio embed model is auto unloaded-then-reloaded.
+    var onConfigChanged: () -> Void = {}
     /// Injected for testability. Defaults to the real router.
     var client: any LLMClient = LLMClientRouter()
 
@@ -182,7 +187,10 @@ struct ExpandedSearchEmbeddingsCard: View {
     private func updateConfig(_ keyPath: WritableKeyPath<OverrideFields, String?>, _ value: String?) {
         var fields = OverrideFields(from: config.expandedSearchEmbeddingConfig)
         fields[keyPath: keyPath] = value
-        config.expandedSearchEmbeddingConfig = fields.build()
+        let next = fields.build()
+        guard next != config.expandedSearchEmbeddingConfig else { return }
+        config.expandedSearchEmbeddingConfig = next
+        onConfigChanged()
     }
 
     // MARK: - Thresholds

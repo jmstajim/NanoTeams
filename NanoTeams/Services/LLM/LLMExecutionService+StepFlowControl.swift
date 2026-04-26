@@ -205,12 +205,113 @@ extension LLMExecutionService {
             }
         }
 
+        // Advisory role under autonomous supervisor — increment the non-productive-turn
+        // counter and auto-finish if threshold is reached.
+        if let stop = await attemptAdvisoryAutoFinish(stepID: stepID, roleDefinition: roleDefinition) {
+            return stop
+        }
+
         // No tool calls and no artifacts to produce — nudge to use tools.
         // Roles never self-terminate here; only artifact completion or Supervisor's "Finish Role" ends a step.
         let retryMessage = "You responded with text but did not call any tools. Use your available tools to continue working. If you need input from the Supervisor, call ask_supervisor."
         conversationMessages.append(ChatMessage(role: .user, content: retryMessage))
         await appendLLMMessage(stepID: stepID, role: .user, content: retryMessage)
         return .continueLoop
+    }
+
+    /// Increments `consecutiveAdvisoryNoToolTurns` and auto-finishes the step if the
+    /// threshold is reached. Called for advisory roles under autonomous supervisor
+    /// mode after any "non-productive" turn — either no tool calls at all, or only
+    /// `ask_supervisor` (which gets auto-answered and so doesn't constitute progress).
+    /// Returns `.completed` when the threshold is reached AND the mutation actually
+    /// landed; `nil` otherwise.
+    ///
+    /// Threshold = 3 leaves room for 2 nudges to recover before terminating.
+    ///
+    /// Important: this path writes `roleStatuses[roleID] = .done` directly, bypassing
+    /// `handleRoleCompleted`. That function would route an `.finalOnly` (default)
+    /// acceptance into `.needsAcceptance`, which the engine's chat-mode arm in the
+    /// `readyRoleIDs.isEmpty` block does NOT exit cleanly — leaving the role at
+    /// `.needsAcceptance` deadlocks into `transition(to: .failed)` with
+    /// "Execution stalled". Setting role.done here mirrors the semantics of
+    /// `NTMSOrchestrator.finishAdvisoryRole` and lets the engine's chat-mode
+    /// all-terminal arm transition to `.done`. Bypass is gated to chat-mode
+    /// teams — non-chat teams (e.g. a custom FAANG variant with an advisory
+    /// role) route through `handleRoleCompleted` so the engine's `.finalOnly`
+    /// acceptance plumbing fires correctly.
+    ///
+    /// CLAUDE.md §7 discipline: `mutateTask`'s `Bool` return only means
+    /// "persisted" — the closure can short-circuit (run/step indices fail to
+    /// resolve after restart/revision) and `mutateTask` still returns true.
+    /// We use a captured `didApply` flag to detect that and refuse to
+    /// announce completion when the mutation didn't actually run.
+    func attemptAdvisoryAutoFinish(
+        stepID: String,
+        roleDefinition: TeamRoleDefinition?
+    ) async -> LLMStepStop? {
+        guard let roleDef = roleDefinition, roleDef.isAdvisory,
+              !isStepInRevision(stepID: stepID),
+              isAutonomousSupervisorMode(stepID: stepID),
+              executionStates[stepID] != nil
+        else { return nil }
+        executionStates[stepID]!.consecutiveAdvisoryNoToolTurns += 1
+        let count = executionStates[stepID]!.consecutiveAdvisoryNoToolTurns
+        guard count >= 3 else { return nil }
+
+        // Hard guard: without a task id and a delegate, the bypass path can't
+        // land at all — falling through and announcing completion would write
+        // a fake assistant message and return `.completed` despite step still
+        // being `.running`. Keep counter incremented (so the next iteration
+        // notices the cap is past) and bail out by returning nil.
+        guard let tid = taskIDForStep(stepID), let delegate else {
+            return nil
+        }
+
+        // Chat-mode-only bypass (I6): direct status writes are safe only when
+        // the engine's chat-mode arm consumes them. Non-chat teams must route
+        // through `handleRoleCompleted` so acceptance/checkpointing plumbing
+        // fires. If we can't determine chat-mode (no team, no task), prefer
+        // safety: don't bypass.
+        let isChatMode = (delegate.loadedTask(tid).flatMap(resolveTeam(task:))?.isChatMode) ?? false
+        guard isChatMode else { return nil }
+
+        // CLAUDE.md §7: capture-flag pattern. `mutateTask == true` only proves
+        // persistence — the closure could have early-returned without applying.
+        var didApply = false
+        let mutated = await delegate.mutateTask(taskID: tid) { task in
+            guard let runIdx = task.runs.indices.last,
+                  let stepIdx = task.runs[runIdx].steps.firstIndex(where: { $0.id == stepID })
+            else { return }
+            let roleID = task.runs[runIdx].steps[stepIdx].effectiveRoleID
+            task.runs[runIdx].steps[stepIdx].status = .done
+            task.runs[runIdx].steps[stepIdx].completedAt = MonotonicClock.shared.now()
+            task.runs[runIdx].roleStatuses[roleID] = .done
+            task.runs[runIdx].updatedAt = MonotonicClock.shared.now()
+            didApply = true
+        }
+        guard mutated, didApply else {
+            // Don't reset the counter — leave it at its current value so a
+            // retry on the next iteration will re-attempt rather than silently
+            // burying the threshold breach. Don't post a "finished" message
+            // either — that would lie about state that didn't change.
+            return nil
+        }
+
+        executionStates[stepID]!.consecutiveAdvisoryNoToolTurns = 0
+        let finishNote = "Advisory role auto-finished after \(count) consecutive turns without productive tool calls."
+        await appendLLMMessage(stepID: stepID, role: .assistant, content: finishNote)
+        return .completed
+    }
+
+    /// Gates the advisory auto-finish path: with a human Supervisor in the loop
+    /// (`.manual`), the role can wait indefinitely for a "Finish Role" click; without
+    /// one (`.autonomous`), it would loop forever once it stops calling tools.
+    private func isAutonomousSupervisorMode(stepID: String) -> Bool {
+        guard let delegate, let tid = taskIDForStep(stepID),
+              let task = delegate.loadedTask(tid),
+              let team = resolveTeam(task: task)
+        else { return false }
+        return team.settings.supervisorMode == .autonomous
     }
 
     // MARK: - Planning Phase

@@ -74,13 +74,26 @@ extension NTMSOrchestrator {
             }
         }
 
+        // Capture whether the closure actually located the step. `mutateTask` itself
+        // returns `true` for "persisted" even when the closure short-circuits
+        // (CLAUDE.md §7), so we relay applied-state via this captured flag.
+        var applied = false
         await mutateTask(taskID: taskID) { task in
-            StepMessagingService.answerSupervisorQuestion(
+            applied = StepMessagingService.answerSupervisorQuestion(
                 stepID: stepID,
                 answer: answer,
                 attachmentPaths: finalPaths,
                 in: &task
             )
+        }
+        guard applied else {
+            // Race scenario: the step was restarted, removed, or rebuilt between when
+            // the composer rendered the Answer chip and when the user submitted. Tell
+            // the Supervisor instead of silently swallowing the draft. The composer
+            // already declines to clear its text on `false` return, so the user can
+            // re-pick a recipient and retry without retyping.
+            lastErrorMessage = "This question is no longer active — the role may have been restarted. Please pick another recipient and try again."
+            return false
         }
 
         let engineState = taskEngineStates[taskID] ?? .pending

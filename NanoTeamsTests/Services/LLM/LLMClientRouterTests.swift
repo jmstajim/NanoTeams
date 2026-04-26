@@ -95,6 +95,36 @@ final class LLMClientRouterTests: XCTestCase {
         XCTAssertNotNil(client)
     }
 
+    // MARK: - Model Lifecycle Routing
+
+    func testLoadModel_lmStudio_routesToNativeClient() async {
+        // Empty baseURL deterministically triggers invalidBaseURL on the
+        // native client — confirms the call reached it.
+        do {
+            _ = try await router.loadModel(modelName: "m", baseURLString: "")
+            XCTFail("Expected throw")
+        } catch let error as LLMClientError {
+            if case .invalidBaseURL = error { /* ok */ } else {
+                XCTFail("Expected invalidBaseURL, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testUnloadModel_lmStudio_routesToNativeClient() async {
+        do {
+            try await router.unloadModel(instanceID: "x", baseURLString: "")
+            XCTFail("Expected throw")
+        } catch let error as LLMClientError {
+            if case .invalidBaseURL = error { /* ok */ } else {
+                XCTFail("Expected invalidBaseURL, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
     func testAllProvidersRouted() async {
         // Verify every LLMProvider case is handled by the router (no fatalError).
         // Each provider should produce a known error rather than crashing.

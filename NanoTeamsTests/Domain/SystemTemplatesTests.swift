@@ -166,6 +166,35 @@ final class SystemTemplatesTests: XCTestCase {
         XCTAssertEqual(startupIDs.first, "softwareEngineer")
     }
 
+    func testCodingAssistantTeamRoleIDs_containsCodingAssistantOnly() {
+        guard let ids = SystemTemplates.teamRoleIDs["codingAssistant"] else {
+            XCTFail("codingAssistant team role IDs must exist")
+            return
+        }
+        XCTAssertEqual(ids.count, 1, "Coding Assistant team should have only 1 role (excluding Supervisor)")
+        XCTAssertEqual(ids.first, "codingAssistant")
+    }
+
+    func testCodingAssistantFactory_seedsExpectedToolKit() {
+        let team = TeamTemplateFactory.codingAssistant()
+        guard let role = team.roles.first(where: { $0.systemRoleID == "codingAssistant" }) else {
+            XCTFail("Coding Assistant role must exist in factory output")
+            return
+        }
+        typealias TN = ToolNames
+        let expected: Set<String> = [
+            TN.readFile, TN.readLines, TN.writeFile, TN.editFile, TN.deleteFile,
+            TN.listFiles, TN.search, TN.updateScratchpad,
+            TN.gitStatus, TN.gitDiff, TN.gitLog, TN.gitBranchList,
+            TN.gitAdd, TN.gitCommit, TN.gitCheckout, TN.gitBranch,
+            TN.gitMerge, TN.gitPull, TN.gitStash,
+            TN.runXcodebuild, TN.runXcodetests,
+            TN.askSupervisor, TN.analyzeImage,
+        ]
+        XCTAssertEqual(Set(role.toolIDs), expected,
+                       "Coding Assistant factory must seed the full coding kit — git, xcode, files, vision, supervisor")
+    }
+
     // MARK: - Default System Template
 
     func testDefaultSystemTemplate_faang_returnsSoftwareTemplate() {
@@ -176,6 +205,11 @@ final class SystemTemplatesTests: XCTestCase {
     func testDefaultSystemTemplate_startup_returnsSoftwareTemplate() {
         let result = SystemTemplates.defaultSystemTemplate(for: "startup")
         XCTAssertEqual(result, SystemTemplates.softwareTemplate)
+    }
+
+    func testDefaultSystemTemplate_codingAssistant_returnsCodingAssistantTemplate() {
+        let result = SystemTemplates.defaultSystemTemplate(for: "codingAssistant")
+        XCTAssertEqual(result, SystemTemplates.codingAssistantTemplate)
     }
 
     func testDefaultSystemTemplate_questParty_returnsQuestPartyTemplate() {
@@ -493,8 +527,8 @@ final class SystemTemplatesTests: XCTestCase {
 
     func testRoleTemplatesCount() {
         XCTAssertEqual(
-            SystemTemplates.roles.count, 20,
-            "Should have 20 built-in role templates"
+            SystemTemplates.roles.count, 21,
+            "Should have 21 built-in role templates"
         )
     }
 

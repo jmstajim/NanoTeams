@@ -33,7 +33,6 @@ protocol DictationEngineProtocol: AnyObject {
     var onUpdate: ((DictationTranscriptUpdate) -> Void)? { get set }
     var onError: ((String) -> Void)? { get set }
     var activeLocales: [Locale] { get }
-    func start(locales: [Locale]) async throws
     func stop()
     func stopAndFlush() async
 }

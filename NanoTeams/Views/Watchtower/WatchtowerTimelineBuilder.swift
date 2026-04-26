@@ -9,6 +9,7 @@ enum WatchtowerTimelineBuilder {
     /// Collect and sort timeline events from a task (newest first).
     static func collectEvents(from task: NTMSTask, roleDefinitions: [TeamRoleDefinition]) -> [TimelineEvent] {
         var events: [TimelineEvent] = []
+        let isChatMode = task.isChatMode
 
         for run in task.runs {
             for step in run.steps {
@@ -23,6 +24,7 @@ enum WatchtowerTimelineBuilder {
                     roleDefinition: roleDef,
                     stepTitle: step.title,
                     eventType: .started,
+                    isChatMode: isChatMode,
                     timestamp: step.createdAt
                 ))
 
@@ -35,6 +37,7 @@ enum WatchtowerTimelineBuilder {
                         roleDefinition: roleDef,
                         stepTitle: step.title,
                         eventType: .completed,
+                        isChatMode: isChatMode,
                         timestamp: step.completedAt ?? step.updatedAt
                     ))
                 } else if step.status == .failed {
@@ -46,6 +49,7 @@ enum WatchtowerTimelineBuilder {
                         roleDefinition: roleDef,
                         stepTitle: step.title,
                         eventType: .failed,
+                        isChatMode: isChatMode,
                         timestamp: step.completedAt ?? step.updatedAt
                     ))
                 }

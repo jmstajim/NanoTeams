@@ -499,8 +499,33 @@ final class TeamModelTests: XCTestCase {
         let wf = WorkFolderProjection(state: WorkFolderState(name: "Test"), settings: .defaults, teams: Team.defaultTeams)
         let names = wf.teams.map(\.name)
 
-        XCTAssertEqual(wf.teams.count, 6)
-        XCTAssertEqual(names, ["Personal Assistant", "FAANG Team", "Engineering Team", "Startup", "Quest Party", "Discussion Club"])
+        XCTAssertEqual(wf.teams.count, 7)
+        XCTAssertEqual(names, ["Coding Assistant", "Personal Assistant", "FAANG Team", "Engineering Team", "Startup", "Quest Party", "Discussion Club"])
+    }
+
+    func testDefaultTeams_codingAssistantIsFirst_byTemplateID() {
+        // Pin order via templateID so a future rename of the display name doesn't
+        // mask an accidental reorder.
+        let templateIDs = Team.defaultTeams.map(\.templateID)
+        XCTAssertEqual(templateIDs.first, "codingAssistant")
+        XCTAssertEqual(templateIDs, ["codingAssistant", "assistant", "faang", "engineering", "startup", "questParty", "discussionClub"])
+    }
+
+    func testTemplateMetadata_codingAssistantIsFirstRealTemplate() {
+        // The picker's metadata array starts with the synthetic "Empty Team" entry,
+        // so the first *real* template must be Coding Assistant.
+        let metadata = TeamTemplateFactory.templateMetadata
+        XCTAssertEqual(metadata.first?.id, "empty")
+        XCTAssertEqual(metadata.dropFirst().first?.id, "codingAssistant")
+    }
+
+    func testCodingAssistantTemplate_supervisorModeIsManual() {
+        // Pinned explicitly in the factory (not relying on the buildTeam default) so
+        // that future changes to TeamSettings or buildTeam defaults can't silently
+        // flip Coding Assistant onto autonomous mode — its chat-mode UX depends on
+        // ask_supervisor blocking for human input.
+        let team = TeamTemplateFactory.codingAssistant()
+        XCTAssertEqual(team.settings.supervisorMode, .manual)
     }
 
     func testProject_AddTeam() {
@@ -884,9 +909,9 @@ final class TeamModelTests: XCTestCase {
 
     func testTeamGraphLayout_BootstrapTeamHasPositions() {
         // Bootstrap teams generate graph layouts with positions for all roles
-        let faangTeam = Team.defaultTeams[0]
-        XCTAssertFalse(faangTeam.graphLayout.nodePositions.isEmpty)
-        XCTAssertEqual(faangTeam.graphLayout.nodePositions.count, faangTeam.roles.count)
+        let firstTeam = Team.defaultTeams[0]
+        XCTAssertFalse(firstTeam.graphLayout.nodePositions.isEmpty)
+        XCTAssertEqual(firstTeam.graphLayout.nodePositions.count, firstTeam.roles.count)
     }
 
     // MARK: - TeamHierarchy Tests
@@ -956,9 +981,9 @@ final class TeamModelTests: XCTestCase {
     }
 
     func testTeamHierarchy_BootstrapTeamHasHierarchy() {
-        // Bootstrap FAANG team has hierarchy built from actual role IDs
-        let faangTeam = Team.defaultTeams[0]
-        XCTAssertFalse(faangTeam.settings.hierarchy.reportsTo.isEmpty)
+        // First bootstrap team has hierarchy built from actual role IDs
+        let firstTeam = Team.defaultTeams[0]
+        XCTAssertFalse(firstTeam.settings.hierarchy.reportsTo.isEmpty)
     }
 
     // MARK: - RoleDependencies via SystemTemplates Tests

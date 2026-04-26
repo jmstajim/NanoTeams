@@ -11,20 +11,13 @@ final class FakeDictationEngine: DictationEngineProtocol {
     var onError: ((String) -> Void)?
     var activeLocales: [Locale]
 
-    private(set) var startCallCount = 0
     private(set) var stopCallCount = 0
     private(set) var stopAndFlushCallCount = 0
-    var startError: Error?
 
     init(locales: [Locale]) {
         self.activeLocales = locales
     }
 
-    func start(locales: [Locale]) async throws {
-        startCallCount += 1
-        activeLocales = locales
-        if let error = startError { throw error }
-    }
     func stop() { stopCallCount += 1 }
     func stopAndFlush() async { stopAndFlushCallCount += 1 }
 

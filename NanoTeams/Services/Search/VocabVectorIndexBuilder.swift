@@ -62,13 +62,7 @@ struct VocabVectorIndexBuilder {
             nearUniversalSkipBelowFileCount: 20
         )
 
-        static let permissive = VocabFilter(
-            minPostingCount: 1,
-            nearUniversalRatio: 1.0,
-            nearUniversalSkipBelowFileCount: 0
-        )
-
-        func accepts(token: String, postingCount: Int, fileCount: Int) -> Bool {
+        func accepts(token _: String, postingCount: Int, fileCount: Int) -> Bool {
             // On tiny corpora every token appears in exactly one file by
             // construction; `minPostingCount: 2` would empty the vocab.
             // Same threshold as the near-universal guard — below it, both

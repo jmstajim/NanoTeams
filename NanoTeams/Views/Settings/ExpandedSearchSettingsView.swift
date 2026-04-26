@@ -1,10 +1,9 @@
 import SwiftUI
 
-/// Settings page for advanced / experimental features. Currently hosts the
-/// broad-search toggle, index status, and semantic-embedding card.
-/// Owns shared state and delegates rendering to the cards under
-/// `AdvancedSettings/`.
-struct AdvancedSettingsView: View {
+/// Settings page for the Expanded Search feature — toggle, index status, and
+/// semantic-embedding configuration. Owns shared state and delegates rendering
+/// to the cards under `AdvancedSettings/`.
+struct ExpandedSearchSettingsView: View {
     @Environment(NTMSOrchestrator.self) var store
     @Environment(StoreConfiguration.self) var config
 
@@ -35,6 +34,9 @@ struct AdvancedSettingsView: View {
                     },
                     onForceFullRebuild: {
                         Task { await store.searchIndexCoordinator?.rebuildVectorIndexFull() }
+                    },
+                    onConfigChanged: {
+                        Task { await store.onExpandedSearchEmbeddingConfigChanged() }
                     }
                 )
             }
@@ -45,9 +47,9 @@ struct AdvancedSettingsView: View {
     }
 }
 
-#Preview("Advanced Settings") {
+#Preview("Expanded Search Settings") {
     @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
-    AdvancedSettingsView()
+    ExpandedSearchSettingsView()
         .environment(store)
         .environment(store.configuration)
         .frame(width: 720, height: 800)

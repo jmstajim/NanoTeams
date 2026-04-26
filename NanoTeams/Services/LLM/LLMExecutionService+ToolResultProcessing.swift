@@ -101,8 +101,6 @@ extension LLMExecutionService {
                     result: result,
                     toolCallID: toolCallID,
                     stepID: stepID,
-                    client: client,
-                    networkLogger: networkLogger,
                     conversationMessages: &conversationMessages,
                     memory: memory
                 )

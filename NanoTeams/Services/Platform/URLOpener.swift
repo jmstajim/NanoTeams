@@ -8,12 +8,6 @@ import Foundation
 /// and nothing happens with no explanation.
 enum URLOpener {
 
-    /// Opens `url`. Returns whether AppKit accepted the request.
-    @discardableResult
-    static func open(_ url: URL) -> Bool {
-        NSWorkspace.shared.open(url)
-    }
-
     /// Opens `url`; routes a generic failure description through `surfacing`
     /// when AppKit refuses. The default message names the URL host so the user
     /// knows what didn't open.

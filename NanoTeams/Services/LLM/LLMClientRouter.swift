@@ -37,4 +37,16 @@ struct LLMClientRouter: LLMClient {
     func fetchEmbeddingModels(config: LLMConfig) async throws -> [String] {
         try await nativeClient.fetchEmbeddingModels(config: config)
     }
+
+    func loadModel(modelName: String, baseURLString: String) async throws -> String {
+        try await nativeClient.loadModel(modelName: modelName, baseURLString: baseURLString)
+    }
+
+    func unloadModel(instanceID: String, baseURLString: String) async throws {
+        try await nativeClient.unloadModel(instanceID: instanceID, baseURLString: baseURLString)
+    }
+
+    func listLoadedInstances(baseURLString: String) async throws -> [LoadedModelInstance] {
+        try await nativeClient.listLoadedInstances(baseURLString: baseURLString)
+    }
 }

@@ -100,7 +100,12 @@ final class ChatModeEngineTests: XCTestCase {
 
     // MARK: - Engine run loop with chat mode team
 
-    func testChatModeTeam_engineDoesNotTransitionToDone() {
+    /// `allRolesComplete(isChatMode:)` returns false in chat mode — so the engine never
+    /// auto-completes via the early `allRolesComplete` check. The chat-mode auto-complete
+    /// arm in the `readyRoleIDs.isEmpty` block is the exit path; full coverage of that
+    /// arm lives in `TeamEngineChatModeAutoCompleteTests`. Here we pin only that with a
+    /// non-terminal role (`.working`), the engine keeps looping and never reaches `.done`.
+    func testChatModeTeam_workingRole_doesNotTransitionToDone() {
         let supervisorRole = makeSupervisorRole(requiredArtifacts: []) // isChatMode = true
         let workerRole = makeWorkerRole(id: "assistant", name: "Assistant")
         let team = makeTeam(roles: [supervisorRole, workerRole])
@@ -109,16 +114,15 @@ final class ChatModeEngineTests: XCTestCase {
         let stepID = "assistant"
         let step = StepExecution(
             id: stepID, role: .custom(id: "assistant"),
-            title: "Chat", status: .done
+            title: "Chat", status: .running
         )
-        let run = Run(id: 0, steps: [step], roleStatuses: ["assistant": .done])
+        let run = Run(id: 0, steps: [step], roleStatuses: ["assistant": .working])
         mockStore.activeTask = NTMSTask(id: 0, title: "Chat", supervisorTask: "Help", runs: [run], isChatMode: true)
         mockStore.producedArtifactNamesResult = ["Supervisor Task"]
-        mockStore.stepStatusResults[stepID] = .done
+        mockStore.stepStatusResults[stepID] = .running
 
-        // Engine should NOT reach .done in chat mode — it should keep looping
-        let doneExpectation = XCTestExpectation(description: "Engine should not reach done")
-        doneExpectation.isInverted = true // We expect this to NOT be fulfilled
+        let doneExpectation = XCTestExpectation(description: "Engine should not reach done with working role")
+        doneExpectation.isInverted = true
         sut.onStateChanged = { state in
             if state == .done { doneExpectation.fulfill() }
         }
@@ -126,7 +130,7 @@ final class ChatModeEngineTests: XCTestCase {
         sut.start()
         wait(for: [doneExpectation], timeout: 1.0)
 
-        XCTAssertNotEqual(sut.state, .done, "Chat mode engine should not reach .done")
+        XCTAssertNotEqual(sut.state, .done, "Chat-mode engine must keep looping while a role is still .working")
     }
 
     func testChatModeTeam_skipsAcceptanceTransition() {

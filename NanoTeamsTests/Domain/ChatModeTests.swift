@@ -363,6 +363,13 @@ final class ChatModeTests: XCTestCase {
         XCTAssertTrue(assistant!.isChatMode, "Personal Assistant should be chat mode")
     }
 
+    func testCodingAssistantTemplate_isChatMode() {
+        let templates = TeamTemplateFactory.allTemplates
+        let coding = templates.first { $0.templateID == "codingAssistant" }
+        XCTAssertNotNil(coding, "Coding Assistant template should exist")
+        XCTAssertTrue(coding!.isChatMode, "Coding Assistant should be chat mode")
+    }
+
     func testQuestPartyTemplate_isChatMode() {
         let templates = TeamTemplateFactory.allTemplates
         let quest = templates.first { $0.templateID == "questParty" }

@@ -60,6 +60,7 @@ extension SystemTemplates {
         "theExtrovert": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs),
         "theNeurotic": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs),
         "assistant": readOnlyTools.union(fileWriteTools).union(memoryToolIDs).union(supervisorToolIDs).union(visionToolIDs),
+        "codingAssistant": readOnlyTools.union(fileWriteTools).union(memoryToolIDs).union(engineerOnlyTools).union(supervisorToolIDs).union(visionToolIDs),
     ]
 
     /// Default fallback tool IDs for roles not in the map (custom roles).

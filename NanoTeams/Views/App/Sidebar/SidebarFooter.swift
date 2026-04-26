@@ -44,7 +44,7 @@ struct SidebarFooter: View {
 
 /// Expanded-search index rebuild indicator. Visible only while the coordinator
 /// is rebuilding the token index or the vocab vector index. Tapping opens
-/// Settings → Advanced.
+/// Settings → Expanded Search.
 struct ExpandedSearchStatusIndicator: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(NTMSOrchestrator.self) private var store
@@ -55,7 +55,7 @@ struct ExpandedSearchStatusIndicator: View {
         if let coordinator = store.searchIndexCoordinator,
            coordinator.isBuilding || coordinator.isBuildingVectorIndex {
             Button {
-                selectedSettingsTab = .advanced
+                selectedSettingsTab = .expandedSearch
                 openWindow(id: "settings")
             } label: {
                 Text("Indexing")

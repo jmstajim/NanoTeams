@@ -174,6 +174,7 @@ enum ToolCallParsingHelpers {
 
         if let name = stringValue(dict["name"]).flatMap(acceptingName) {
             let args = dict["arguments"] ?? dict["args"] ?? dict["parameters"] ?? dict["params"]
+                ?? synthesizeArgumentsFromTopLevel(dict)
             return StepToolCall(
                 providerID: providerID, name: name, argumentsJSON: normalizeArgumentsJSON(args))
         }
@@ -182,6 +183,7 @@ enum ToolCallParsingHelpers {
             ?? stringValue(dict["function_name"])).flatMap(acceptingName)
         {
             let args = dict["arguments"] ?? dict["args"] ?? dict["parameters"] ?? dict["params"]
+                ?? synthesizeArgumentsFromTopLevel(dict)
             return StepToolCall(
                 providerID: providerID, name: toolName, argumentsJSON: normalizeArgumentsJSON(args))
         }
@@ -207,6 +209,47 @@ enum ToolCallParsingHelpers {
         }
 
         return nil
+    }
+
+    /// When a tool call dict has a recognized name but no `arguments`/`args`/`parameters`/
+    /// `params` key, gather all remaining top-level keys (excluding identifier/envelope
+    /// fields) into a synthetic arguments dict.
+    ///
+    /// Handles model variants that emit the spec-violating shape
+    /// `{"name":"X","content":"…"}` instead of the canonical
+    /// `{"name":"X","arguments":{"content":"…"}}`. Observed in `gemma-4-26b-a4b`
+    /// and similar models that emit tool args at the top level: the model puts
+    /// `content` next to `name`, parser without this fallback sees `arguments`
+    /// missing → tool receives empty args → returns `INVALID_ARGS` → model loops
+    /// retrying the same broken format. With this synthesis the call resolves.
+    ///
+    /// Returns nil when there are no promotable keys (so the caller falls back to
+    /// the existing nil-args path, which serialises to "").
+    ///
+    /// Return type is `Any?` (not `[String:Any]?`) so it composes cleanly with
+    /// `dict["arguments"] ?? dict["args"] ?? … ?? synthesizeArgumentsFromTopLevel(dict)`
+    /// in the parser. Mixing `Any?` with `[String:Any]?` in a `??` chain causes Swift
+    /// to wrap the dict-optional as `Any.some(Optional<…>.none)`, which then bypasses
+    /// `normalizeArgumentsJSON`'s nil-guard and falls through to `String(describing:)`
+    /// — producing the literal string `"nil"` as `argumentsJSON`. Keeping the return
+    /// `Any?` avoids that subtle double-wrap.
+    static func synthesizeArgumentsFromTopLevel(_ dict: [String: Any]) -> Any? {
+        // Keys that identify or wrap the call envelope itself — never promote them.
+        // The four args-keys (`arguments`/`args`/`parameters`/`params`) are listed
+        // for completeness even though synthesis only fires when they're absent.
+        // Harmony framing fields (`type`/`channel`/`recipient`/`constrain`) and
+        // OpenAI tool-call envelope fields (`type:"function"`) are also reserved
+        // — promoting them would inject `{"type":"function", ...}` into a
+        // tool's args dict and cause `INVALID_ARGS` rejections or, worse, silent
+        // acceptance of garbage.
+        let reserved: Set<String> = [
+            "name", "tool_name", "tool", "function_name",
+            "id", "call_id", "function",
+            "arguments", "args", "parameters", "params",
+            "type", "channel", "recipient", "constrain",
+        ]
+        let promoted = dict.filter { !reserved.contains($0.key) }
+        return promoted.isEmpty ? nil : promoted
     }
 
     /// Fallback tool-name inference when no top-level identifier is present.

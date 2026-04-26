@@ -526,7 +526,7 @@ final class StoreConfiguration {
         lastAppUpdateCheckAt = nil
         skippedAppUpdateTags = []
         cachedAppUpdateRelease = nil
-        appUpdateCheckInterval = .weekly
+        appUpdateCheckInterval = .daily
         dictationLocaleIdentifiers = []
         expandedSearchEnabled = false
         expandedSearchEmbeddingConfig = nil

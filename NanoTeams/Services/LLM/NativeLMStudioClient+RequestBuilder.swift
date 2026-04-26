@@ -121,14 +121,20 @@ extension NativeLMStudioClient {
         block += "the top-level `name` must always be the tool id, never the parameter value.\n\n"
         block += "### Available Tools\n\n"
 
-        let encoder = JSONCoderFactory.makeDisplayEncoder()
+        // Compact JSON (no pretty-print) — saves ~30-40% of the schema-section bytes
+        // vs `makeDisplayEncoder()`, which is significant: every first-call request
+        // pays the system_prompt cost (15k+ chars when pretty-printed for 22 tools).
+        // `sortedKeys` keeps the output deterministic for prompt caching;
+        // `withoutEscapingSlashes` avoids `\/` noise in any path-like description text.
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
 
         for tool in tools {
             block += "**\(tool.name)**: \(tool.description)\n"
             if let schemaData = try? encoder.encode(tool.parameters),
                let schemaString = String(data: schemaData, encoding: .utf8)
             {
-                block += "Parameters:\n```json\n\(schemaString)\n```\n\n"
+                block += "Parameters: `\(schemaString)`\n\n"
             }
         }
 

@@ -395,6 +395,5 @@ final class DictationService {
     }
 
     var _testPinnedSlotIndex: Int? { pinnedSlotIndex }
-    var _testSlotTranscripts: [String] { slotTranscripts }
     #endif
 }

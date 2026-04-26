@@ -48,6 +48,10 @@ struct TeamActivityFeedView: View {
     /// Lightweight version hash derived from run data counts.
     /// Used by `onChange` to detect structural changes without expensive `Run` equality checks.
     /// Uses Hasher for collision resistance (simple sum is vulnerable to count swaps).
+    /// Note: supervisor-question lifecycle changes (`needsSupervisorInput` / `supervisorAnswer`)
+    /// don't bump this directly — invalidation rides on the subsequent `llmConversation` /
+    /// `toolCalls` append after the role resumes. `TimelineFingerprint` independently
+    /// includes `supervisorInputCount`, so the recompute does pick the answer up.
     private var runDataVersion: Int {
         guard let run else { return 0 }
         var hasher = Hasher()
@@ -113,18 +117,19 @@ struct TeamActivityFeedView: View {
         return Set(statuses.compactMap { id, status in status == .working ? id : nil })
     }
 
-    /// First active supervisor question (only one is ever "live" at a time per the engine
-    /// contract), mapped into the composer's lightweight snapshot type. For team tasks
-    /// `StepExecution.id == roleID`, so `q.stepID` doubles as the asking-role id — the
-    /// `TeamActivityActiveQuestion` type exposes both via a single stored field with a
-    /// computed `askingRoleID`.
-    private var activeQuestionForComposer: TeamActivityActiveQuestion? {
-        guard let q = viewModel.cachedSupervisorQuestions.first else { return nil }
-        return TeamActivityActiveQuestion(
-            stepID: q.stepID,
-            role: q.role,
-            question: q.question
-        )
+    /// All active supervisor questions, mapped into the composer's lightweight snapshot
+    /// type. The engine runs ready roles in parallel (CLAUDE.md #45), so several roles
+    /// can sit in `.needsSupervisorInput` simultaneously — the composer renders one
+    /// Answer chip per entry in input order. For team tasks `StepExecution.id == roleID`,
+    /// so `q.stepID` doubles as the asking-role id (computed via `askingRoleID`).
+    private var activeQuestionsForComposer: [TeamActivityActiveQuestion] {
+        viewModel.cachedSupervisorQuestions.map { q in
+            TeamActivityActiveQuestion(
+                stepID: q.stepID,
+                role: q.role,
+                question: q.question
+            )
+        }
     }
 
     private var shouldShowComposer: Bool {
@@ -214,7 +219,7 @@ struct TeamActivityFeedView: View {
                     isChatMode: isChatMode,
                     taskID: taskID,
                     workingRoleIDs: workingRoleIDs,
-                    activeQuestion: activeQuestionForComposer,
+                    activeQuestions: activeQuestionsForComposer,
                     maxHeight: paneHeight * 2 / 3
                 )
                 .background(Colors.surfaceCard)

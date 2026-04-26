@@ -81,7 +81,7 @@ protocol LLMStateDelegate: TaskMutationDelegate {
     /// the query (per-token + whole-phrase), plus canonical strings for
     /// transient errors / unavailability. The caller surfaces these into the
     /// `expand` envelope (`expanded_terms`, `expansion_error`).
-    func expandSearchQuery(query: String, tokens: [String]) async -> VocabVectorIndexService.ExpansionResult
+    func expandSearchQuery(query _: String, tokens _: [String]) async -> VocabVectorIndexService.ExpansionResult
 }
 
 // MARK: - LLMStreamingDelegate

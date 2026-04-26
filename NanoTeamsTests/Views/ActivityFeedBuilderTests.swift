@@ -497,6 +497,85 @@ final class ActivityFeedBuilderTests: XCTestCase {
         XCTAssertEqual(questions[1].role, .techLead)
     }
 
+    /// Pins FIFO fairness for the leftmost Answer chip: regardless of the order steps
+    /// arrive in (Dictionary iteration of `roleStatuses` is non-deterministic), the
+    /// active questions must be sorted ascending by the `ask_supervisor` timestamp.
+    func testActiveSupervisorQuestions_sortsByAskedAtAscending_regardlessOfInputOrder() {
+        let askLate = makeToolCall(name: TN.askSupervisor, at: date(300), argumentsJSON: #"{"question":"late?"}"#)
+        let stepLate = makeStep(
+            role: .softwareEngineer, toolCalls: [askLate],
+            status: .needsSupervisorInput, needsSupervisorInput: true
+        )
+        let askEarly = makeToolCall(name: TN.askSupervisor, at: date(100), argumentsJSON: #"{"question":"early?"}"#)
+        let stepEarly = makeStep(
+            role: .productManager, toolCalls: [askEarly],
+            status: .needsSupervisorInput, needsSupervisorInput: true
+        )
+        let askMid = makeToolCall(name: TN.askSupervisor, at: date(200), argumentsJSON: #"{"question":"mid?"}"#)
+        let stepMid = makeStep(
+            role: .techLead, toolCalls: [askMid],
+            status: .needsSupervisorInput, needsSupervisorInput: true
+        )
+
+        // Steps deliberately passed out of chronological order.
+        let questions = ActivityFeedBuilder.activeSupervisorQuestions(
+            steps: [stepLate, stepEarly, stepMid]
+        )
+        XCTAssertEqual(questions.map(\.role), [.productManager, .techLead, .softwareEngineer],
+                       "Expected ascending askedAt: early(PM) < mid(TL) < late(SWE)")
+        let timestamps = questions.map(\.askedAt)
+        XCTAssertEqual(timestamps, [date(100), date(200), date(300)])
+    }
+
+    /// `askedAt` must come from the LAST `ask_supervisor` call in the step (the active
+    /// question), not from the first one. Otherwise a role that asked twice unfairly
+    /// holds the leftmost slot using a stale early timestamp.
+    func testActiveSupervisorQuestions_askedAtComesFromLastAskCall() {
+        let firstAsk = makeToolCall(name: TN.askSupervisor, at: date(50), argumentsJSON: #"{"question":"old?"}"#)
+        let lastAsk = makeToolCall(name: TN.askSupervisor, at: date(400), argumentsJSON: #"{"question":"current?"}"#)
+        let step = makeStep(
+            role: .productManager, toolCalls: [firstAsk, lastAsk],
+            status: .needsSupervisorInput, needsSupervisorInput: true
+        )
+
+        let questions = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+        XCTAssertEqual(questions.count, 1)
+        XCTAssertEqual(questions[0].question, "current?",
+                       "Should surface the current (last) question, not the stale first one")
+        XCTAssertEqual(questions[0].askedAt, date(400),
+                       "askedAt must reflect the active question's timestamp, not the original ask")
+    }
+
+    /// When two pending questions share `askedAt` (same `MonotonicClock` tick or
+    /// identical `Date()`), the order must be stable across recomputes — otherwise
+    /// the leftmost Answer chip flips between recomputes and any user typing into
+    /// the auto-selected first chip would silently retarget. We tie-break by `stepID`.
+    func testActiveSupervisorQuestions_tieBreaker_isStableByStepID() {
+        let sameTime = date(100)
+        let askA = makeToolCall(name: TN.askSupervisor, at: sameTime, argumentsJSON: #"{"question":"A?"}"#)
+        let stepA = makeStep(
+            role: .productManager, toolCalls: [askA],
+            status: .needsSupervisorInput, needsSupervisorInput: true
+        )
+        let askB = makeToolCall(name: TN.askSupervisor, at: sameTime, argumentsJSON: #"{"question":"B?"}"#)
+        let stepB = makeStep(
+            role: .techLead, toolCalls: [askB],
+            status: .needsSupervisorInput, needsSupervisorInput: true
+        )
+
+        // PM step id < TL step id alphabetically (`product_manager` < `tech_lead`).
+        let questionsForward = ActivityFeedBuilder.activeSupervisorQuestions(steps: [stepA, stepB])
+        let questionsReverse = ActivityFeedBuilder.activeSupervisorQuestions(steps: [stepB, stepA])
+        XCTAssertEqual(
+            questionsForward.map(\.stepID), questionsReverse.map(\.stepID),
+            "Same-tick questions must produce identical order regardless of input sequence"
+        )
+        XCTAssertEqual(
+            questionsForward.map(\.stepID).sorted(), questionsForward.map(\.stepID),
+            "Tie-breaker should be stepID ascending"
+        )
+    }
+
     // MARK: - 7. Failed Step Notification
 
     func testFailedNotificationAtCompletedAt() {

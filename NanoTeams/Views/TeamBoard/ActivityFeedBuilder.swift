@@ -231,9 +231,18 @@ enum ActivityFeedBuilder {
         let question: String
         let thinking: String?
         let toolCallID: UUID
+        /// Timestamp of the active `ask_supervisor` tool call (i.e. the LAST one in
+        /// the step's tool-call list, not the first — a role can ask twice). Builder
+        /// emits results sorted ascending by this field; UI ordering is the consumer's
+        /// concern (e.g. `TeamActivityComposer.computeChipOptions` preserves order).
+        let askedAt: Date
     }
 
-    /// Extracts active (unanswered) supervisor questions from steps for banner display.
+    /// Extracts active (unanswered) supervisor questions from steps. Result is sorted
+    /// ascending by `askedAt`, with `stepID` as a deterministic tie-breaker — two
+    /// `ask_supervisor` calls landing in the same monotonic tick must produce a stable
+    /// order across recomputes, otherwise the leftmost chip flips and any draft typed
+    /// into the auto-selected recipient would silently retarget on the next refresh.
     static func activeSupervisorQuestions(steps: [StepExecution]) -> [ActiveSupervisorQuestion] {
         var result: [ActiveSupervisorQuestion] = []
         for step in steps where step.needsSupervisorInput && step.supervisorAnswer == nil {
@@ -257,10 +266,14 @@ enum ActivityFeedBuilder {
             result.append(ActiveSupervisorQuestion(
                 stepID: step.id, role: step.role,
                 question: question, thinking: thinking,
-                toolCallID: lastCall.id
+                toolCallID: lastCall.id,
+                askedAt: lastCall.createdAt
             ))
         }
-        return result
+        return result.sorted { lhs, rhs in
+            if lhs.askedAt != rhs.askedAt { return lhs.askedAt < rhs.askedAt }
+            return lhs.stepID < rhs.stepID
+        }
     }
 
     /// Strips the `--- Attached Files ---` section from an answer string.

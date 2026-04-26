@@ -83,11 +83,6 @@ actor SearchIndexService {
         return fresh
     }
 
-    /// Current cached index without triggering a build.
-    func peek() -> SearchIndex? {
-        cached
-    }
-
     /// Last persistence error, if any. Cleared on successful persist. The
     /// coordinator reads this after every build so the Advanced settings
     /// status card can surface disk-write failures to the user.
@@ -157,12 +152,6 @@ actor SearchIndexService {
     func matchesFolder(signature: IndexSignature) -> Bool {
         let fresh = computeFolderSignature()
         return fresh == signature
-    }
-
-    /// Exposed for the coordinator's "ensure fresh" path — it can cheaply
-    /// detect drift by comparing the disk signature to the folder signature.
-    func folderSignature() -> IndexSignature {
-        computeFolderSignature()
     }
 
     // MARK: - Private: Persistence

@@ -25,8 +25,8 @@ final class DomainModelTests: XCTestCase {
         }
     }
 
-    func testBuiltInCases_has20Cases() {
-        XCTAssertEqual(Role.builtInCases.count, 20)
+    func testBuiltInCases_has21Cases() {
+        XCTAssertEqual(Role.builtInCases.count, 21)
     }
 
     func testFromID_builtIn_returnsCorrectRole() {
@@ -56,6 +56,50 @@ final class DomainModelTests: XCTestCase {
     func testCustomRole_displayName_formatsUnderscores() {
         let role = Role.custom(id: "my_role")
         XCTAssertEqual(role.displayName, "My Role")
+    }
+
+    func testCustomRole_displayName_formatsCamelCase() {
+        XCTAssertEqual(Role.custom(id: "codingAssistant").displayName, "Coding Assistant")
+        XCTAssertEqual(Role.custom(id: "camelCase").displayName, "Camel Case")
+        XCTAssertEqual(Role.custom(id: "Mixed_camelCase").displayName, "Mixed Camel Case")
+    }
+
+    func testCustomRole_displayName_preservesAcronymRuns() {
+        // Runs of capitals should not be sliced into single-letter "words".
+        XCTAssertEqual(Role.custom(id: "IOReader").displayName, "IOReader")
+        XCTAssertEqual(Role.custom(id: "TPM").displayName, "TPM")
+    }
+
+    func testCustomRole_displayName_emptyID() {
+        XCTAssertEqual(Role.custom(id: "").displayName, "")
+    }
+
+    /// Edge cases: whitespace-only / underscore-only / single-character ids
+    /// must not crash and must produce sensible (or at worst empty) output.
+    func testCustomRole_displayName_edgeCases() {
+        // Single underscore → split on `_` yields ["", ""] → both fragments
+        // are empty after trimming → joined empty string.
+        XCTAssertEqual(Role.custom(id: "_").displayName, "")
+        // Whitespace-only id is left intact (no split tokens), capitalised first char.
+        XCTAssertEqual(Role.custom(id: " ").displayName, " ")
+        // Single character is a degenerate camelCase split — must not crash.
+        XCTAssertEqual(Role.custom(id: "a").displayName, "A")
+    }
+
+    func testBuiltInRole_codingAssistant_displayName() {
+        // Regression guard: built-in metadata must produce the spaced form, not the
+        // formatted-id fallback used for `.custom`.
+        XCTAssertEqual(Role.codingAssistant.displayName, "Coding Assistant")
+    }
+
+    func testFromDefinition_codingAssistantTemplate_resolvesBuiltIn() {
+        // Fresh roles built from the Coding Assistant template must resolve to the
+        // built-in `.codingAssistant` enum (not `.custom`) so the activity feed shows
+        // "Coding Assistant" via the metadata table, not the camelCase fallback.
+        let template = SystemTemplates.roles["codingAssistant"]!
+        let definition = SystemTemplates.createRole(from: template, teamSeed: "test")
+        XCTAssertEqual(Role.fromDefinition(definition), .codingAssistant)
+        XCTAssertEqual(Role.fromDefinition(definition).displayName, "Coding Assistant")
     }
 
     func testRole_codable_roundTrip_builtIn() throws {

@@ -221,7 +221,7 @@ final class WatchtowerTimelineBuilderTests: XCTestCase {
         let event = TimelineEvent(
             id: UUID(), taskID: Int(), taskTitle: "T",
             role: .productManager, roleDefinition: nil, stepTitle: "Requirements",
-            eventType: .started, timestamp: Date()
+            eventType: .started, isChatMode: false, timestamp: Date()
         )
         XCTAssertTrue(event.displayText.contains("started"))
         XCTAssertTrue(event.displayText.contains("Product Manager"))
@@ -231,7 +231,7 @@ final class WatchtowerTimelineBuilderTests: XCTestCase {
         let event = TimelineEvent(
             id: UUID(), taskID: Int(), taskTitle: "T",
             role: .techLead, roleDefinition: nil, stepTitle: "Plan",
-            eventType: .completed, timestamp: Date()
+            eventType: .completed, isChatMode: false, timestamp: Date()
         )
         XCTAssertTrue(event.displayText.contains("finished"))
     }
@@ -240,8 +240,53 @@ final class WatchtowerTimelineBuilderTests: XCTestCase {
         let event = TimelineEvent(
             id: UUID(), taskID: Int(), taskTitle: "T",
             role: .softwareEngineer, roleDefinition: nil, stepTitle: "Code",
-            eventType: .failed, timestamp: Date()
+            eventType: .failed, isChatMode: false, timestamp: Date()
         )
         XCTAssertTrue(event.displayText.contains("failed"))
+    }
+
+    // MARK: - Chat-mode displayText overrides
+
+    func testDisplayText_chatMode_startedDropsStepTitle() {
+        let event = TimelineEvent(
+            id: UUID(), taskID: Int(), taskTitle: "T",
+            role: .assistant, roleDefinition: nil, stepTitle: "work",
+            eventType: .started, isChatMode: true, timestamp: Date()
+        )
+        XCTAssertEqual(event.displayText, "Chat with Assistant started")
+        XCTAssertFalse(event.displayText.contains("work"))
+    }
+
+    func testDisplayText_chatMode_completed() {
+        let event = TimelineEvent(
+            id: UUID(), taskID: Int(), taskTitle: "T",
+            role: .assistant, roleDefinition: nil, stepTitle: "work",
+            eventType: .completed, isChatMode: true, timestamp: Date()
+        )
+        XCTAssertEqual(event.displayText, "Chat with Assistant ended")
+    }
+
+    func testDisplayText_chatMode_failed() {
+        let event = TimelineEvent(
+            id: UUID(), taskID: Int(), taskTitle: "T",
+            role: .assistant, roleDefinition: nil, stepTitle: "work",
+            eventType: .failed, isChatMode: true, timestamp: Date()
+        )
+        XCTAssertEqual(event.displayText, "Chat with Assistant failed")
+    }
+
+    func testCollectEvents_chatModeTask_propagatesFlag() {
+        let step = makeStep(role: .assistant, title: "work", status: .running, completedAt: nil)
+        let run = Run(id: 0, steps: [step])
+        let task = NTMSTask(
+            id: 0, title: "Chat", supervisorTask: "привет",
+            runs: [run], isChatMode: true
+        )
+
+        let events = WatchtowerTimelineBuilder.collectEvents(from: task, roleDefinitions: [])
+
+        XCTAssertEqual(events.count, 1)
+        XCTAssertTrue(events[0].isChatMode)
+        XCTAssertEqual(events[0].displayText, "Chat with Assistant started")
     }
 }

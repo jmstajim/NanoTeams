@@ -15,12 +15,21 @@ class NTMSOrchestratorTestBase: XCTestCase {
     var sut: NTMSOrchestrator!
     var tempDir: URL!
 
+    /// Recording client behind the orchestrator's `embeddingLifecycle`. Tests
+    /// can inspect `embeddingClient.loadUnloadCalls` for load/unload sequencing
+    /// (filtered view), or `.calls` for the full sequence including the
+    /// adoption-path `listLoadedInstances` calls. Pre-installed here so every
+    /// existing scenario test runs without touching the real LM Studio endpoint.
+    var embeddingClient: RecordingLLMClient!
+
     override func setUp() {
         super.setUp()
         MonotonicClock.shared.reset()
+        embeddingClient = RecordingLLMClient()
         sut = NTMSOrchestrator(
             repository: NTMSRepository(),
-            configuration: StoreConfiguration(storage: InMemoryConfigurationStorage())
+            configuration: StoreConfiguration(storage: InMemoryConfigurationStorage()),
+            embeddingLifecycle: EmbeddingModelLifecycleService(client: embeddingClient)
         )
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -29,6 +38,7 @@ class NTMSOrchestratorTestBase: XCTestCase {
 
     override func tearDown() {
         sut = nil
+        embeddingClient = nil
         if let tempDir {
             try? FileManager.default.removeItem(at: tempDir)
         }

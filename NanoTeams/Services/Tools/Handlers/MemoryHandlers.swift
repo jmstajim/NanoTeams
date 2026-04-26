@@ -9,12 +9,10 @@ struct UpdateScratchpadTool: ToolHandler {
     static let name = TN.updateScratchpad
     static let schema = ToolSchema(
         name: TN.updateScratchpad,
-        description: "Update your working scratchpad with a plan and progress notes. Use ~~strikethrough~~ for completed items. Plan at the START of your step (single call). Then execute all actions. Only update again when marking items ~~strikethrough~~ complete. Each call costs tokens — avoid calling more than twice per step.",
+        description: "Working scratchpad for plan + progress. Markdown numbered list; mark done items with ~~strikethrough~~. Call once at step start to plan, then again only to update progress. Max ~2 calls per step (each call costs tokens).",
         parameters: JS.object(
             properties: [
-                "content": JS.string(
-                    "Full scratchpad content in markdown. Use numbered list with ~~strikethrough~~ for done items. Add notes about findings."
-                ),
+                "content": JS.string("Full scratchpad markdown."),
             ],
             required: ["content"]
         )

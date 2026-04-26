@@ -63,15 +63,12 @@ final class ExpandedSearchProcessorEnvelopeTests: XCTestCase {
         service._testRegisterStepTask(stepID: "step1", taskID: 1)
         mock.expandedSearchEnabled = false
 
-        let stub = StubLLMClient()
         var convo: [ChatMessage] = []
         let result = makeExpandedSearchToolResult()
         await service.appendExpandedSearchResult(
             result: result,
             toolCallID: UUID(),
             stepID: "step1",
-            client: stub,
-            networkLogger: nil,
             conversationMessages: &convo
         )
 
@@ -97,8 +94,6 @@ final class ExpandedSearchProcessorEnvelopeTests: XCTestCase {
             result: result,
             toolCallID: UUID(),
             stepID: "step1",
-            client: StubLLMClient(),
-            networkLogger: nil,
             conversationMessages: &convo
         )
 
@@ -122,8 +117,6 @@ final class ExpandedSearchProcessorEnvelopeTests: XCTestCase {
             result: result,
             toolCallID: UUID(),
             stepID: "step1",
-            client: StubLLMClient(),
-            networkLogger: nil,
             conversationMessages: &convo
         )
 
@@ -143,8 +136,6 @@ final class ExpandedSearchProcessorEnvelopeTests: XCTestCase {
             result: makeExpandedSearchToolResult(),
             toolCallID: UUID(),
             stepID: "step1",
-            client: StubLLMClient(),
-            networkLogger: nil,
             conversationMessages: &convo
         )
 
@@ -161,8 +152,6 @@ final class ExpandedSearchProcessorEnvelopeTests: XCTestCase {
             result: result,
             toolCallID: UUID(),
             stepID: "step1",
-            client: StubLLMClient(),
-            networkLogger: nil,
             conversationMessages: &convo
         )
 
@@ -186,17 +175,11 @@ final class ExpandedSearchProcessorEnvelopeTests: XCTestCase {
             postings: ["other": [0]]
         )
 
-        // Stub LLM returns a synonym that ALSO doesn't exist in postings,
-        // so the union is still empty.
-        let stub = StubLLMClient(content: #"["nothere", "alsonothere"]"#)
-
         var convo: [ChatMessage] = []
         await service.appendExpandedSearchResult(
             result: makeExpandedSearchToolResult(query: "scroll"),
             toolCallID: UUID(),
             stepID: "step1",
-            client: stub,
-            networkLogger: nil,
             conversationMessages: &convo
         )
 
@@ -248,7 +231,6 @@ final class ExpandedSearchProcessorEnvelopeTests: XCTestCase {
         await service.appendExpandedSearchResult(
             result: makeExpandedSearchToolResult(query: "scroll"),
             toolCallID: UUID(), stepID: "step1",
-            client: StubLLMClient(), networkLogger: nil,
             conversationMessages: &convo
         )
 
@@ -274,7 +256,6 @@ final class ExpandedSearchProcessorEnvelopeTests: XCTestCase {
         await service.appendExpandedSearchResult(
             result: makeExpandedSearchToolResult(query: "scroll"),
             toolCallID: UUID(), stepID: "step1",
-            client: StubLLMClient(), networkLogger: nil,
             conversationMessages: &convo
         )
 
@@ -296,7 +277,6 @@ final class ExpandedSearchProcessorEnvelopeTests: XCTestCase {
         await service.appendExpandedSearchResult(
             result: makeExpandedSearchToolResult(query: "scroll"),
             toolCallID: UUID(), stepID: "step1",
-            client: StubLLMClient(), networkLogger: nil,
             conversationMessages: &convo
         )
 
@@ -320,7 +300,6 @@ final class ExpandedSearchProcessorEnvelopeTests: XCTestCase {
         await service.appendExpandedSearchResult(
             result: makeExpandedSearchToolResult(query: "scroll"),
             toolCallID: UUID(), stepID: "step1",
-            client: StubLLMClient(), networkLogger: nil,
             conversationMessages: &convo
         )
 
@@ -369,8 +348,6 @@ final class ExpandedSearchProcessorEnvelopeTests: XCTestCase {
             result: result,
             toolCallID: UUID(),
             stepID: "step1",
-            client: StubLLMClient(),
-            networkLogger: nil,
             conversationMessages: &convo
         )
 
@@ -408,8 +385,6 @@ final class ExpandedSearchProcessorEnvelopeTests: XCTestCase {
             result: result,
             toolCallID: UUID(),
             stepID: "step1",
-            client: StubLLMClient(),
-            networkLogger: nil,
             conversationMessages: &convo
         )
 
@@ -433,8 +408,6 @@ final class ExpandedSearchProcessorEnvelopeTests: XCTestCase {
             result: makeExpandedSearchToolResult(),
             toolCallID: UUID(),
             stepID: "step1",
-            client: StubLLMClient(),
-            networkLogger: nil,
             conversationMessages: &convo
         )
 
@@ -459,8 +432,6 @@ final class ExpandedSearchProcessorEnvelopeTests: XCTestCase {
             result: makeExpandedSearchToolResult(),
             toolCallID: UUID(),
             stepID: "step1",
-            client: StubLLMClient(),
-            networkLogger: nil,
             conversationMessages: &convo
         )
 
@@ -490,8 +461,6 @@ final class ExpandedSearchProcessorEnvelopeTests: XCTestCase {
             result: makeExpandedSearchToolResult(query: "scroll"),
             toolCallID: UUID(),
             stepID: "step1",
-            client: StubLLMClient(),
-            networkLogger: nil,
             conversationMessages: &convo
         )
 
@@ -519,8 +488,6 @@ final class ExpandedSearchProcessorEnvelopeTests: XCTestCase {
             result: makeExpandedSearchToolResult(),
             toolCallID: UUID(),
             stepID: "step1",
-            client: StubLLMClient(),
-            networkLogger: nil,
             conversationMessages: &convo,
             memory: cache
         )
@@ -548,8 +515,6 @@ final class ExpandedSearchProcessorEnvelopeTests: XCTestCase {
             result: makeExpandedSearchToolResult(),
             toolCallID: UUID(),
             stepID: "step1",
-            client: StubLLMClient(),
-            networkLogger: nil,
             conversationMessages: &convo
         )
 
@@ -559,26 +524,3 @@ final class ExpandedSearchProcessorEnvelopeTests: XCTestCase {
     }
 }
 
-// MARK: - StubLLMClient
-
-private struct StubLLMClient: LLMClient {
-    var content: String = #"["scroll", "scrollView"]"#
-
-    func streamChat(
-        config: LLMConfig,
-        messages: [ChatMessage],
-        tools: [ToolSchema],
-        session: LLMSession?,
-        logger: NetworkLogger?,
-        stepID: String?,
-        roleName: String?
-    ) -> AsyncThrowingStream<StreamEvent, Error> {
-        let captured = content
-        return AsyncThrowingStream { continuation in
-            continuation.yield(StreamEvent(contentDelta: captured))
-            continuation.finish()
-        }
-    }
-
-    func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] { [] }
-}

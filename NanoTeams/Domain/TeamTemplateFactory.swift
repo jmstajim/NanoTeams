@@ -17,6 +17,7 @@ enum TeamTemplateFactory {
     /// Ordered list of template metadata including the "Empty Team" entry.
     static let templateMetadata: [TeamTemplateMetadata] = [
         TeamTemplateMetadata(id: "empty", name: "Empty Team", icon: "plus.square.dashed", description: "Start with no roles or artifacts"),
+        TeamTemplateMetadata(id: "codingAssistant", name: "Coding Assistant", icon: "curlybraces", description: "Interactive coding companion with files, git, and Xcode tools"),
         TeamTemplateMetadata(id: "assistant", name: "Personal Assistant", icon: "bubble.left.and.text.bubble.right", description: "Interactive assistant for any task"),
         TeamTemplateMetadata(id: "faang", name: "FAANG Team", icon: "building.2", description: "Full product development pipeline"),
         TeamTemplateMetadata(id: "engineering", name: "Engineering Team", icon: "wrench.and.screwdriver.fill", description: "Lean engineering pipeline"),
@@ -28,7 +29,7 @@ enum TeamTemplateFactory {
     // MARK: - Public API
 
     static var allTemplates: [Team] {
-        [assistant(), faang(), engineering(), startup(), questParty(), discussionClub()]
+        [codingAssistant(), assistant(), faang(), engineering(), startup(), questParty(), discussionClub()]
     }
 
     static func faang() -> Team {
@@ -140,6 +141,34 @@ enum TeamTemplateFactory {
                 TN.readFile, TN.readLines, TN.writeFile, TN.editFile, TN.deleteFile,
                 TN.listFiles, TN.search,
                 TN.updateScratchpad,
+                TN.askSupervisor, TN.analyzeImage,
+            ]
+            roles[1].dependencies.requiredArtifacts = [SystemTemplates.supervisorTaskArtifactName]
+        }
+    }
+
+    static func codingAssistant() -> Team {
+        buildTeam(
+            name: "Coding Assistant",
+            description: "One-on-one coding companion that reads, edits, and ships code via git + Xcode tools through interactive dialog.",
+            templateID: "codingAssistant",
+            roleIDs: ["codingAssistant"],
+            artifactNames: [SystemTemplates.supervisorTaskArtifactName],
+            coordinatorIndex: 1,
+            supervisorRequires: [],
+            supervisorCanBeInvited: true,
+            supervisorMode: .manual
+        ) { roles in
+            typealias TN = ToolNames
+            // Full coding kit: files (read + write) + search + scratchpad + git + xcode + vision + supervisor
+            // NO teammate tools (single-role team has no consultations)
+            roles[1].toolIDs = [
+                TN.readFile, TN.readLines, TN.writeFile, TN.editFile, TN.deleteFile,
+                TN.listFiles, TN.search, TN.updateScratchpad,
+                TN.gitStatus, TN.gitDiff, TN.gitLog, TN.gitBranchList,
+                TN.gitAdd, TN.gitCommit, TN.gitCheckout, TN.gitBranch,
+                TN.gitMerge, TN.gitPull, TN.gitStash,
+                TN.runXcodebuild, TN.runXcodetests,
                 TN.askSupervisor, TN.analyzeImage,
             ]
             roles[1].dependencies.requiredArtifacts = [SystemTemplates.supervisorTaskArtifactName]

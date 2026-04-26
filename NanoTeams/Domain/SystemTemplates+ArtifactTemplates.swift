@@ -128,5 +128,6 @@ extension SystemTemplates {
         "discussionClub": ["theAgreeable", "theOpen", "theConscientious", "theExtrovert", "theNeurotic"],
         "engineering": ["techLead", "softwareEngineer", "codeReviewer", "tpm"],
         "assistant": ["assistant"],
+        "codingAssistant": ["codingAssistant"],
     ]
 }

@@ -33,7 +33,7 @@ struct HeadlessConfig: Codable {
 
     // MARK: - Execution
 
-    /// Team template ID: "startup", "faang", "questParty", "discussionClub".
+    /// Team template ID: "assistant", "codingAssistant", "faang", "engineering", "startup", "questParty", "discussionClub".
     var teamTemplate: String?
 
     /// Timeout in seconds before the run is aborted. Default: 600 (10 min).

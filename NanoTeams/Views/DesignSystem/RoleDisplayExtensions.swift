@@ -27,6 +27,7 @@ extension Role {
         .theExtrovert: Colors.warning,
         .theNeurotic: Colors.purple,
         .assistant: Colors.teal,
+        .codingAssistant: Colors.purple,
     ]
 
     var tintColor: Color {

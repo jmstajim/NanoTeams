@@ -21,10 +21,11 @@ enum Role: Hashable, Codable, Identifiable {
     case theExtrovert
     case theNeurotic
     case assistant
+    case codingAssistant
     case custom(id: String)
 
     static var builtInCases: [Role] {
-        [.supervisor, .productManager, .uxResearcher, .uxDesigner, .techLead, .softwareEngineer, .codeReviewer, .sre, .tpm, .loreMaster, .npcCreator, .encounterArchitect, .rulesArbiter, .questMaster, .theAgreeable, .theOpen, .theConscientious, .theExtrovert, .theNeurotic, .assistant]
+        [.supervisor, .productManager, .uxResearcher, .uxDesigner, .techLead, .softwareEngineer, .codeReviewer, .sre, .tpm, .loreMaster, .npcCreator, .encounterArchitect, .rulesArbiter, .questMaster, .theAgreeable, .theOpen, .theConscientious, .theExtrovert, .theNeurotic, .assistant, .codingAssistant]
     }
 
     /// Single source of truth for all built-in role metadata. Adding a new role case
@@ -55,6 +56,7 @@ enum Role: Hashable, Codable, Identifiable {
         .theExtrovert:     .init(displayName: "The Extrovert",     builtInID: "theExtrovert"),
         .theNeurotic:      .init(displayName: "The Neurotic",      builtInID: "theNeurotic"),
         .assistant:        .init(displayName: "Assistant",          builtInID: "assistant"),
+        .codingAssistant:  .init(displayName: "Coding Assistant",   builtInID: "codingAssistant"),
     ]
 
     /// Reverse lookup: builtInID string → Role. O(1) instead of O(n) scan.
@@ -116,10 +118,41 @@ enum Role: Hashable, Codable, Identifiable {
 
     var displayName: String {
         if case .custom(let id) = self {
-            // Format custom ID nicely: "camelCase" -> "Camel Case"
-            return id.split(separator: "_").map { $0.capitalized }.joined(separator: " ")
+            return Self.formatCustomID(id)
         }
         return Self.metadata[self]?.displayName ?? ""
+    }
+
+    /// Format a custom role id ("codingAssistant", "my_role", "Mixed_camelCase") into a
+    /// display string with spaces between words. Splits on `_` first, then on
+    /// lowercase→uppercase boundaries inside each segment. The first character of every
+    /// resulting word is uppercased; subsequent characters are left intact so acronyms
+    /// (e.g. "IO", "TPM") and PascalCase tokens survive unchanged.
+    private static func formatCustomID(_ id: String) -> String {
+        id.split(separator: "_")
+            .flatMap { splitCamelCase(String($0)) }
+            .map { word -> String in
+                guard let first = word.first else { return "" }
+                return first.uppercased() + word.dropFirst()
+            }
+            .joined(separator: " ")
+    }
+
+    private static func splitCamelCase(_ s: String) -> [String] {
+        guard !s.isEmpty else { return [] }
+        var words: [String] = []
+        var current = ""
+        var previousWasLower = false
+        for ch in s {
+            if ch.isUppercase, previousWasLower, !current.isEmpty {
+                words.append(current)
+                current = ""
+            }
+            current.append(ch)
+            previousWasLower = ch.isLowercase
+        }
+        if !current.isEmpty { words.append(current) }
+        return words
     }
 
     private var storageKey: String {

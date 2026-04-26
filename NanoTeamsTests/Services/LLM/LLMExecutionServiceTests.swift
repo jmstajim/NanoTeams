@@ -30,8 +30,8 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     }
 
     func expandSearchQuery(
-        query: String,
-        tokens: [String]
+        query _: String,
+        tokens _: [String]
     ) async -> VocabVectorIndexService.ExpansionResult {
         expandSearchQueryCallCount += 1
         return scriptedExpansion
@@ -712,6 +712,9 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
     // (legitimate config that could come from team templates or LLM-generated
     // teams), the auto-inject must NOT add a second copy. Duplicate tool schemas
     // would either be rejected by the LM Studio API or silently confuse the model.
+    // Coordinator must also have requestTeamMeeting so the auto-inject branch is
+    // actually exercised under the gating rule (otherwise the auto-inject is
+    // skipped entirely and the dedup guard isn't really tested).
     func testToolSchemas_concludeMeetingInCoordinatorToolIDs_notDuplicated() {
         let service = LLMExecutionService(repository: NTMSRepository())
         let delegate = MockLLMExecutionDelegate()
@@ -721,7 +724,7 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
             id: "coord_role",
             name: "Coordinator",
             prompt: "p",
-            toolIDs: [ToolNames.concludeMeeting, ToolNames.askTeammate],
+            toolIDs: [ToolNames.concludeMeeting, ToolNames.requestTeamMeeting, ToolNames.askTeammate],
             usePlanningPhase: false,
             dependencies: RoleDependencies()
         )
@@ -738,6 +741,68 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
         XCTAssertEqual(
             concludeCount, 1,
             "conclude_meeting must appear exactly once even when both explicit toolIDs and auto-inject would grant it. Got \(concludeCount) copies."
+        )
+    }
+
+    // Regression: previously `conclude_meeting` was auto-injected for any role flagged
+    // as the meeting coordinator, regardless of whether they could actually start
+    // meetings. In single-role chat-mode templates (Coding Assistant), this surfaced
+    // `conclude_meeting` in the role's tool list as "Auto" even though `request_team_meeting`
+    // was unchecked — dead weight the LLM could never use. Fix: gate auto-inject on
+    // the coordinator having `request_team_meeting` in their own toolIDs.
+    func testToolSchemas_noConcludeMeetingWhenCoordinatorLacksRequestTeamMeeting() {
+        let service = LLMExecutionService(repository: NTMSRepository())
+        let delegate = MockLLMExecutionDelegate()
+        service.attach(delegate: delegate)
+
+        let coordinator = TeamRoleDefinition(
+            id: "coord_role",
+            name: "Coordinator",
+            prompt: "p",
+            toolIDs: [ToolNames.askTeammate, ToolNames.readFile],
+            usePlanningPhase: false,
+            dependencies: RoleDependencies()
+        )
+        let team = Team(
+            name: "T",
+            roles: [coordinator],
+            artifacts: [],
+            settings: TeamSettings(meetingCoordinatorRoleID: "coord_role"),
+            graphLayout: TeamGraphLayout()
+        )
+
+        let schemas = service.toolSchemas(for: .custom(id: "coord_role"), team: team)
+        XCTAssertFalse(
+            schemas.contains(where: { $0.name == ToolNames.concludeMeeting }),
+            "conclude_meeting must NOT be auto-injected when the coordinator can't start meetings (no request_team_meeting in toolIDs)"
+        )
+    }
+
+    // Template-level regression: Coding Assistant is single-role chat-mode and does not
+    // grant request_team_meeting to its only role. Even though the role is the team's
+    // meeting coordinator (coordinatorIndex: 1 in the factory), it must NOT see
+    // conclude_meeting in its schemas.
+    func testToolSchemas_codingAssistantTemplate_doesNotGetConcludeMeeting() {
+        let service = LLMExecutionService(repository: NTMSRepository())
+        let delegate = MockLLMExecutionDelegate()
+        service.attach(delegate: delegate)
+
+        let team = TeamTemplateFactory.codingAssistant()
+        guard let coordinatorID = team.settings.meetingCoordinatorRoleID,
+              let coordinatorRole = team.roles.first(where: { $0.id == coordinatorID }) else {
+            XCTFail("Coding Assistant must have a meeting coordinator configured")
+            return
+        }
+
+        XCTAssertFalse(
+            coordinatorRole.toolIDs.contains(ToolNames.requestTeamMeeting),
+            "Precondition: Coding Assistant coordinator must not have request_team_meeting (single-role chat team)"
+        )
+
+        let schemas = service.toolSchemas(for: .custom(id: coordinatorID), team: team)
+        XCTAssertFalse(
+            schemas.contains(where: { $0.name == ToolNames.concludeMeeting }),
+            "conclude_meeting must not appear in Coding Assistant coordinator's schemas — there are no meetings to conclude"
         )
     }
 

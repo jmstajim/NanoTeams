@@ -16,8 +16,6 @@ extension LLMExecutionService {
         result: ToolExecutionResult,
         toolCallID: UUID,
         stepID: String,
-        client: any LLMClient,
-        networkLogger: NetworkLogger?,
         conversationMessages: inout [ChatMessage],
         memory: ToolCallCache? = nil
     ) async {

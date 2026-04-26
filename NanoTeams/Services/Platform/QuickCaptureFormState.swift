@@ -341,7 +341,6 @@ final class QuickCaptureFormState {
     var _testSavedSupervisorTask: String? { savedSupervisorTask }
     var _testAnswerDrafts: [Int: AnswerDraft] { answerDrafts }
     func _testClearAnswerDrafts() { answerDrafts.removeAll() }
-    var _testQueuedChatMessages: [Int: [QueuedChatMessage]] { queuedChatMessages }
     #endif
     nonisolated deinit {}
 }

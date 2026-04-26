@@ -220,6 +220,39 @@ final class EndToEndSupervisorAnswerSubmitTests: NTMSOrchestratorTestBase {
                       "TL still awaits its own answer")
     }
 
+    // MARK: - Scenario 7b: Stale step ID — race between chip render and submit
+
+    /// Reproduces the multi-Answer-chip race: user typed an answer for role A, but
+    /// before they hit Send, role A was restarted (or its step rebuilt for some other
+    /// reason) so the original `stepID` no longer resolves. The submit must NOT silently
+    /// succeed — the user's draft would have evaporated invisibly. Expectation:
+    /// (a) `answerSupervisorQuestion` returns `false`, (b) `lastErrorMessage` carries
+    /// a user-visible explanation, (c) no other step is mutated (in particular, the
+    /// answer is not misrouted to a similarly-named step).
+    func testAnswer_staleStepID_returnsFalseAndSurfacesError() async {
+        await sut.openWorkFolder(tempDir)
+        let id = await sut.createTask(title: "T", supervisorTask: "x")!
+        // Seed a real pending step so the orchestrator has SOMETHING to operate on,
+        // but submit against a different (non-existent) stepID.
+        await seedStepNeedingInput(taskID: id, stepID: "pm", question: "Q?")
+        sut.lastErrorMessage = nil  // baseline
+
+        let ok = await sut.answerSupervisorQuestion(
+            stepID: "ghost-role-id", taskID: id,
+            answer: "I drafted this carefully — must not be silently dropped"
+        )
+
+        XCTAssertFalse(ok, "Submitting against a non-existent step must report failure")
+        XCTAssertNotNil(sut.lastErrorMessage,
+                       "Failure must surface a user-visible banner, not be swallowed")
+        // The other step's answer must not be touched.
+        let pmStep = sut.loadedTask(id)?.runs.last?.steps.first
+        XCTAssertNil(pmStep?.supervisorAnswer,
+                     "An answer with a wrong stepID must not be misrouted to another step")
+        XCTAssertTrue(pmStep?.needsSupervisorInput ?? false,
+                      "PM's pending state must remain untouched")
+    }
+
     // MARK: - Scenario 8: Persisted to disk — survives reopen
 
     func testAnswer_persistsAcrossReopen() async {

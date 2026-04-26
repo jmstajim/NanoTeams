@@ -66,6 +66,26 @@ final class LLMExecutionService {
         /// Also cleared on `cleanup()`.
         var consecutiveDriftTurnCount: Int = 0
 
+        /// Count of consecutive turns by an advisory role (under autonomous supervisor
+        /// mode) that produced no productive activity. A turn is "non-productive" when
+        /// it has either (a) no tool calls at all, or (b) tool calls consisting only of
+        /// `ask_supervisor` — since in autonomous mode that tool is auto-answered and
+        /// thus the model can ping itself in a loop without ever progressing the work.
+        ///
+        /// Advisory roles have no `producesArtifacts` to terminate on, and autonomous
+        /// mode has no human in the loop to escalate to. Without a cap, the role loops
+        /// indefinitely.
+        ///
+        /// Reset paths:
+        /// 1. `cleanup()` — step teardown.
+        /// 2. A turn that contains at least one tool call other than `ask_supervisor`
+        ///    (real productive work). A turn whose only tool is `ask_supervisor`
+        ///    counts as non-productive (auto-answered by the supervisor service)
+        ///    and routes through the same increment path as a no-tool turn.
+        /// 3. Inside the auto-finish branch itself, so a re-entry of the same step
+        ///    (e.g. via `restartRole`) starts clean.
+        var consecutiveAdvisoryNoToolTurns: Int = 0
+
         /// Cancels the running task and resets all fields to defaults.
         mutating func cleanup() {
             runningTask?.cancel()
@@ -78,6 +98,7 @@ final class LLMExecutionService {
             planningTransitionDone = false
             finishRequested = false
             consecutiveDriftTurnCount = 0
+            consecutiveAdvisoryNoToolTurns = 0
         }
     }
 
@@ -307,6 +328,24 @@ final class LLMExecutionService {
         // 5. Execute tool calls (with caching + authorization)
         // Reset drift counter: the model is acting, not just reasoning.
         executionStates[stepID]?.consecutiveDriftTurnCount = 0
+        // Reset advisory no-tool-call counter only when at least one tool call is
+        // *productive*. `ask_supervisor` doesn't qualify under autonomous supervisor
+        // mode — it gets auto-answered, and the model can ping itself in a loop with
+        // it forever without doing any real work. So a turn whose only tool calls are
+        // `ask_supervisor` is treated the same as a no-tool-call turn for the purposes
+        // of the advisory auto-finish safeguard (incremented in `handleNoToolCalls`).
+        let toolNamesThisTurn = Set(streamResult.resolvedToolCalls.map(\.name))
+        let isAskSupervisorOnly = toolNamesThisTurn == [ToolNames.askSupervisor]
+        if isAskSupervisorOnly {
+            // Non-productive turn: ask_supervisor gets auto-answered in autonomous mode,
+            // so the model can ping itself in a loop with it forever. Treat it as a
+            // no-tool-call turn for the advisory auto-finish counter.
+            if let stop = await attemptAdvisoryAutoFinish(stepID: stepID, roleDefinition: roleDefinition) {
+                return stop
+            }
+        } else {
+            executionStates[stepID]?.consecutiveAdvisoryNoToolTurns = 0
+        }
         let allowedToolNames = Set(toolsForIteration.map(\.name))
         let batch = executeToolCalls(
             resolvedToolCalls: streamResult.resolvedToolCalls,

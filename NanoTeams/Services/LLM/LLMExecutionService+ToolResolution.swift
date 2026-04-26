@@ -120,15 +120,14 @@ extension LLMExecutionService {
             }
         }
 
-        // 6. Auto-inject conclude_meeting for the team's Meeting Coordinator.
-        // Previously granted ONLY via the `pmOnlyToolIDs` fallback path, which only fires
-        // when `team?.findRole(byIdentifier:)` returns nil — never the case in production
-        // FAANG / Discussion Club templates. Net effect: pre-fix, NO role in those teams
-        // could call `conclude_meeting` at all. Now dispatched through team settings'
-        // `meetingCoordinatorRoleID` (TPM in FAANG, theAgreeable in Discussion Club).
+        // 6. Auto-inject conclude_meeting for the team's Meeting Coordinator,
+        // but only when the coordinator can actually start meetings
+        // (has request_team_meeting in their toolIDs). Otherwise conclude_meeting
+        // is dead weight — there's nothing to conclude.
         if let roleDefinition, let team,
            let coordinatorID = team.settings.meetingCoordinatorRoleID,
-           coordinatorID == roleDefinition.id {
+           coordinatorID == roleDefinition.id,
+           roleDefinition.toolIDs.contains(tn.requestTeamMeeting) {
             if let concludeTool = allTools.first(where: { $0.name == tn.concludeMeeting }) {
                 if !allowedTools.contains(where: { $0.name == tn.concludeMeeting }) {
                     allowedTools.append(concludeTool)

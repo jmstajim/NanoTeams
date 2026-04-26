@@ -11,8 +11,6 @@ enum PasteboardImageExtractor {
     struct ExtractionResult: Equatable {
         let urls: [URL]
         let failures: [String]
-
-        var isEmpty: Bool { urls.isEmpty && failures.isEmpty }
     }
 
     static func hasImage(_ pasteboard: NSPasteboard = .general) -> Bool {
@@ -24,7 +22,6 @@ enum PasteboardImageExtractor {
     /// and per-image failure messages — never silently drops images.
     static func extractImages(
         _ pasteboard: NSPasteboard = .general,
-        fileManager: FileManager = .default,
         tempRoot: URL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true),
         now: Date = Date()
     ) -> ExtractionResult {

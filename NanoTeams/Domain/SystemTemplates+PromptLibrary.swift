@@ -193,6 +193,18 @@ extension SystemTemplates {
         {toolList}
         """
 
+    // MARK: - Coding Assistant
+
+    static let codingAssistantTemplate = """
+        You are {roleName}, the user's coding assistant.
+
+        {roleGuidance}
+
+        {contextAwareness}
+
+        {toolList}
+        """
+
     // MARK: - Generic (custom teams)
 
     static let genericTemplate = """

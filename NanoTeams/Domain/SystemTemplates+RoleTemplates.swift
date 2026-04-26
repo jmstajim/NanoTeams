@@ -110,5 +110,16 @@ extension SystemTemplates {
         role("assistant", name: "Assistant", icon: "bubble.left.and.text.bubble.right",
              toolIDs: [TN.askSupervisor],
              requires: [supervisorTaskArtifactName]),
+
+        // MARK: Coding Assistant
+        role("codingAssistant", name: "Coding Assistant", icon: "curlybraces",
+             toolIDs: [TN.readFile, TN.readLines, TN.writeFile, TN.editFile, TN.deleteFile,
+                       TN.listFiles, TN.search, TN.updateScratchpad,
+                       TN.gitStatus, TN.gitDiff, TN.gitLog, TN.gitBranchList,
+                       TN.gitAdd, TN.gitCommit, TN.gitCheckout, TN.gitBranch,
+                       TN.gitMerge, TN.gitPull, TN.gitStash,
+                       TN.runXcodebuild, TN.runXcodetests,
+                       TN.askSupervisor, TN.analyzeImage],
+             requires: [supervisorTaskArtifactName]),
     ])
 }

@@ -165,7 +165,7 @@ final class EndToEndPromptPipelineTests: XCTestCase {
         let schemas = ToolHandlerRegistry.allSchemas
         let scratchpad = schemas.first { $0.name == "update_scratchpad" }
         XCTAssertNotNil(scratchpad)
-        XCTAssertTrue(scratchpad!.description.contains("twice per step"),
+        XCTAssertTrue(scratchpad!.description.contains("2 calls per step"),
                       "update_scratchpad description should contain usage limit")
 
         let meeting = schemas.first { $0.name == "request_team_meeting" }
