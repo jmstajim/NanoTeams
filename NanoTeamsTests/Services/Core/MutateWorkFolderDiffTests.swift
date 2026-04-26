@@ -87,12 +87,12 @@ final class MutateWorkFolderDiffTests: NTMSOrchestratorTestBase {
             "A no-op closure must not rewrite any file")
     }
 
-    func testMutateWorkFolder_onlyDescriptionChange_writesOnlySettingsFile() async {
+    func testMutateWorkFolder_onlyContextChange_writesOnlySettingsFile() async {
         await sut.openWorkFolder(tempDir)
         let before = snapshotHashes()
 
         await sut.mutateWorkFolder { proj in
-            proj.settings.description = "new description \(UUID().uuidString)"
+            proj.settings.context = "new description \(UUID().uuidString)"
         }
 
         let after = snapshotHashes()
@@ -129,7 +129,7 @@ final class MutateWorkFolderDiffTests: NTMSOrchestratorTestBase {
         let before = snapshotHashes()
 
         await sut.mutateWorkFolder { proj in
-            proj.settings.description = "dual change \(UUID().uuidString)"
+            proj.settings.context = "dual change \(UUID().uuidString)"
             proj.teams[0].name = "Renamed \(UUID().uuidString)"
         }
 
@@ -151,7 +151,7 @@ final class MutateWorkFolderDiffTests: NTMSOrchestratorTestBase {
 
         await sut.mutateWorkFolder { proj in
             proj.state.activeTeamID = targetID
-            proj.settings.description = "triple \(UUID().uuidString)"
+            proj.settings.context = "triple \(UUID().uuidString)"
             proj.teams[0].name = "Triple \(UUID().uuidString)"
         }
 
@@ -167,10 +167,10 @@ final class MutateWorkFolderDiffTests: NTMSOrchestratorTestBase {
         await sut.openWorkFolder(tempDir)
 
         await sut.mutateWorkFolder { proj in
-            proj.settings.description = "in-memory check"
+            proj.settings.context = "in-memory check"
         }
 
-        XCTAssertEqual(sut.workFolder?.settings.description, "in-memory check",
+        XCTAssertEqual(sut.workFolder?.settings.context, "in-memory check",
             "After mutateWorkFolder, the in-memory projection must reflect the change")
     }
 }

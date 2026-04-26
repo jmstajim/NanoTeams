@@ -60,14 +60,31 @@ protocol LLMStateDelegate: TaskMutationDelegate {
     /// message stays queued and `lastErrorMessage` is set).
     func consumeQueuedSupervisorMessage(taskID: Int, roleID: String, stepID: String) async -> String?
 
-    // MARK: - Expanded Search
+    // MARK: - Exploratory Search
 
-    /// Gates the `expand` branch on `SearchTool`. When `false`, the
+    /// Gates the `exploratory` branch on `SearchTool`. When `false`, the
     /// processor falls back to a plain search with an informational envelope
-    /// marker so the LLM can see it isn't running in broad mode.
-    var expandedSearchEnabled: Bool { get }
+    /// marker so the LLM can see it isn't running in exploratory mode.
+    var exploratorySearchEnabled: Bool { get }
+    /// User preference: when `true`, `search` calls without an explicit
+    /// `exploratory` argument default to exploratory mode. Independent of
+    /// `exploratorySearchEnabled`; if the feature is disabled the processor
+    /// still falls back to plain search.
+    var searchExploratoryByDefault: Bool { get }
+    /// User preference: hard line limit enforced by `read_file`. Files exceeding
+    /// this return an error directing the LLM to use `read_lines`.
+    var readFileMaxLines: Int { get }
+    /// User preference: default `max_results` for `search` when the LLM omits
+    /// the argument.
+    var searchMaxResults: Int { get }
+    /// User preference: default `context_before` for `search` when the LLM
+    /// omits the argument.
+    var searchContextBefore: Int { get }
+    /// User preference: default `context_after` for `search` when the LLM
+    /// omits the argument.
+    var searchContextAfter: Int { get }
     /// True when a user-selected work folder is open (as opposed to default
-    /// internal storage in Application Support). Broad-search indexing is only
+    /// internal storage in Application Support). Exploratory-search indexing is only
     /// meaningful against a real project folder — the processor uses this to
     /// distinguish "architecturally unsupported" from "coordinator returned
     /// nil despite a real folder (true bug)" in the envelope's error reason.
@@ -76,12 +93,20 @@ protocol LLMStateDelegate: TaskMutationDelegate {
     /// then returns the current search index. Returns `nil` when no work folder
     /// is open / the coordinator isn't configured.
     func awaitSearchIndex() async -> SearchIndex?
-    /// Expands a `expand` query via the semantic vector index. Returns a
+    /// Expands an `exploratory` query via the semantic vector index. Returns a
     /// `ExpansionResult` whose `terms` are vocab tokens cosine-close to
     /// the query (per-token + whole-phrase), plus canonical strings for
     /// transient errors / unavailability. The caller surfaces these into the
-    /// `expand` envelope (`expanded_terms`, `expansion_error`).
+    /// `exploratory` envelope (`expanded_terms`, `expansion_error`).
     func expandSearchQuery(query _: String, tokens _: [String]) async -> VocabVectorIndexService.ExpansionResult
+
+    // MARK: - User-Visible Banners
+
+    /// Surface a user-visible info banner. Used by exploratory search to
+    /// notify the Supervisor that a `SearchExecutor` exception fired and the
+    /// branch fell back to plain search — the LLM sees `searchError` in its
+    /// envelope, but without this the human user would have no signal.
+    func setLastInfoMessageForUI(_ message: String)
 }
 
 // MARK: - LLMStreamingDelegate

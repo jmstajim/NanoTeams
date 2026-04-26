@@ -398,4 +398,76 @@ final class QuickCaptureFormStateTests: XCTestCase {
         XCTAssertEqual(sut.supervisorTask, "answer A")
     }
 
+    // MARK: - Capture / Restore Across Chat-Working ↔ Answer Mode
+
+    private func makeStagedAttachment(name: String) throws -> StagedAttachment {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("QCFormStateTests_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent(name, isDirectory: false)
+        try "stub".write(to: url, atomically: true, encoding: .utf8)
+        return try StagedAttachment(url: url, stagedRelativePath: "draft/\(name)")
+    }
+
+    func testCaptureLiveComposerAsAnswerDraft_persistsTextAttachmentsAndClips() throws {
+        let attachment = try makeStagedAttachment(name: "spec.txt")
+        sut.supervisorTask = "queued message"
+        sut.answerAttachments = [attachment]
+        sut.answerClippedTexts = ["clip-1"]
+
+        sut.captureLiveComposerAsAnswerDraft(taskID: 42)
+
+        let draft = sut._testAnswerDrafts[42]
+        XCTAssertEqual(draft?.text, "queued message")
+        XCTAssertEqual(draft?.attachments, [attachment])
+        XCTAssertEqual(draft?.clippedTexts, ["clip-1"])
+    }
+
+    func testCaptureLiveComposerAsAnswerDraft_emptyContent_removesDraft() throws {
+        let attachment = try makeStagedAttachment(name: "stale.txt")
+        // Pre-seed a draft via the existing path
+        sut.supervisorTask = "stale"
+        sut.answerAttachments = [attachment]
+        sut.captureLiveComposerAsAnswerDraft(taskID: 99)
+        XCTAssertNotNil(sut._testAnswerDrafts[99])
+
+        // Clear live fields then capture again — empty content removes the entry
+        sut.supervisorTask = "   "
+        sut.answerAttachments = []
+        sut.answerClippedTexts = []
+        sut.captureLiveComposerAsAnswerDraft(taskID: 99)
+
+        XCTAssertNil(sut._testAnswerDrafts[99])
+    }
+
+    func testRestoreAnswerDraftToLiveFields_loadsSavedDraft() throws {
+        let attachment = try makeStagedAttachment(name: "doc.txt")
+        sut.supervisorTask = "msg"
+        sut.answerAttachments = [attachment]
+        sut.answerClippedTexts = ["c1", "c2"]
+        sut.captureLiveComposerAsAnswerDraft(taskID: 7)
+
+        // Simulate the post-`exitAnswerMode` cleared state
+        sut.supervisorTask = ""
+        sut.answerAttachments = []
+        sut.answerClippedTexts = []
+
+        sut.restoreAnswerDraftToLiveFields(taskID: 7)
+
+        XCTAssertEqual(sut.supervisorTask, "msg")
+        XCTAssertEqual(sut.answerAttachments, [attachment])
+        XCTAssertEqual(sut.answerClippedTexts, ["c1", "c2"])
+    }
+
+    func testRestoreAnswerDraftToLiveFields_noDraft_isNoOp() {
+        sut.supervisorTask = "live"
+        sut.answerClippedTexts = ["c"]
+
+        sut.restoreAnswerDraftToLiveFields(taskID: 1234)
+
+        // Live fields untouched — no draft existed for that taskID
+        XCTAssertEqual(sut.supervisorTask, "live")
+        XCTAssertEqual(sut.answerClippedTexts, ["c"])
+    }
+
 }

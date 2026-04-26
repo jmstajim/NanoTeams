@@ -127,9 +127,10 @@ enum ToolCallSummarizer {
         TN.gitCommit: { _ in "committed" },
         TN.gitMerge: { _ in "merged" },
         TN.readFile: { dict in
-            if let data = dict["data"] as? [String: Any] {
-                let size = (data["size"] as? Int) ?? 0
-                return "\(size) bytes"
+            if let data = dict["data"] as? [String: Any],
+               let end = data["end_line"] as? Int,
+               let total = data["total_lines"] as? Int {
+                return end < total ? "lines 1–\(end) of \(total)" : "\(total) lines"
             }
             return "ok"
         },

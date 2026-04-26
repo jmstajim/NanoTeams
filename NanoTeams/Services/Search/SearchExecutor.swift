@@ -1,7 +1,7 @@
 import Foundation
 
 /// Input bundle for a grep pass — used by both the plain `SearchTool` handler
-/// and the expanded-search processor (which constrains the walk to a posting-hit
+/// and the exploratory-search processor (which constrains the walk to a posting-hit
 /// set before invoking the executor).
 struct SearchExecutorInput {
     let workFolderRoot: URL
@@ -16,7 +16,7 @@ struct SearchExecutorInput {
     let maxResults: Int
     let maxMatchLines: Int
     /// When non-nil, the executor iterates exactly this set of relative file
-    /// paths instead of walking the directory tree. Used by expanded search after
+    /// paths instead of walking the directory tree. Used by exploratory search after
     /// posting-list intersection narrows the candidate files.
     let constrainToFiles: [String]?
     /// Optional restriction to a set of internal paths that should never be
@@ -76,12 +76,20 @@ enum SearchExecutorError: Error, Equatable, LocalizedError {
     /// pattern; `message` carries the platform-specific failure detail.
     case regexCompileFailed(query: String, message: String)
 
+    /// The supplied `file_glob` failed to compile after escaping. Without
+    /// this throw, `GlobMatcher.matches` would fail-closed on every candidate
+    /// and the envelope would carry zero hits with no signal that the glob
+    /// itself was the problem — see CLAUDE.md "rename complete" review.
+    case invalidFileGlob(pattern: String, message: String)
+
     /// `LocalizedError` conformance — `error.localizedDescription` is what
     /// reaches the envelope's `search_error` field, so it must be readable.
     var errorDescription: String? {
         switch self {
         case .regexCompileFailed(let query, let message):
             return "regex compile failed for pattern '\(query)': \(message)"
+        case .invalidFileGlob(let pattern, let message):
+            return "file_glob '\(pattern)' did not compile: \(message)"
         }
     }
 }
@@ -94,6 +102,24 @@ struct SearchExecutorOutput {
     var skippedBinaryCount: Int
     /// Truncated because we hit `maxResults` or `maxMatchLines`.
     var truncated: Bool
+    /// Files whose name or relative path matched the query, independent of
+    /// content. Computed against the same walk that produced `matches`, so
+    /// `WalkSkipRules` and `internalDir` exclusion are already applied.
+    var filenameMatches: [FilenameMatch]
+
+    init(
+        matches: [SearchMatch],
+        skipped: [SkippedFile],
+        skippedBinaryCount: Int,
+        truncated: Bool,
+        filenameMatches: [FilenameMatch] = []
+    ) {
+        self.matches = matches
+        self.skipped = skipped
+        self.skippedBinaryCount = skippedBinaryCount
+        self.truncated = truncated
+        self.filenameMatches = filenameMatches
+    }
 
     /// Empty output — convenience for short-circuit branches.
     static var empty: SearchExecutorOutput {
@@ -102,7 +128,7 @@ struct SearchExecutorOutput {
 }
 
 /// Stateless grep engine shared by plain `SearchTool.handle` and the broad-
-/// search processor in `LLMExecutionService+ExpandedSearch`.
+/// search processor in `LLMExecutionService+ExploratorySearch`.
 ///
 /// Round-robin fan-out across `queries`: for N terms, each query gets
 /// `ceil(maxResults / N)` slots in pass 1; a second greedy pass fills any
@@ -111,6 +137,12 @@ struct SearchExecutorOutput {
 enum SearchExecutor {
 
     static func run(_ input: SearchExecutorInput) throws -> SearchExecutorOutput {
+        // Pre-validate `file_glob` once. Without this, `GlobMatcher.matches`
+        // fail-closes on every candidate and the envelope carries zero hits
+        // with no signal that the user's glob is the problem.
+        if let glob = input.fileGlob {
+            try GlobMatcher.validate(glob: glob)
+        }
         // Dedup — a single source line can match multiple expanded terms.
         var dedupKeys: Set<String> = []
         // Bucket matches by query index so we can round-robin the final list.
@@ -155,6 +187,13 @@ enum SearchExecutor {
         let fm = input.fileManager
         let workFolderRoot = input.workFolderRoot
         let internalDir = input.internalDir
+
+        // Files we enumerated and would have grepped — fed to `FilenameMatcher`
+        // after the walk so name/path matches can be returned alongside
+        // content matches in one tool call. Bounded by the same content
+        // budget that gates the walk, so on saturated searches the filename
+        // hit list reflects "what we walked" rather than the entire tree.
+        var visitedPaths: [String] = []
 
         func totalMatches() -> Int { perQueryMatches.reduce(0) { $0 + $1.count } }
 
@@ -258,6 +297,7 @@ enum SearchExecutor {
 
                 // RTFD is a file-bundle directory — treat as a single document.
                 if isDir.boolValue && name.hasSuffix(".rtfd") {
+                    visitedPaths.append(itemPath)
                     searchFile(at: itemURL, relativePath: itemPath)
                     continue
                 }
@@ -265,7 +305,8 @@ enum SearchExecutor {
                 if isDir.boolValue {
                     searchDirectory(at: itemURL, relativePath: itemPath)
                 } else {
-                    if !matchesGlob(name: name, glob: input.fileGlob) { continue }
+                    if !GlobMatcher.matches(name: name, glob: input.fileGlob ?? "*", caseInsensitive: false) { continue }
+                    visitedPaths.append(itemPath)
                     searchFile(at: itemURL, relativePath: itemPath)
                 }
             }
@@ -280,7 +321,8 @@ enum SearchExecutor {
                 guard fm.fileExists(atPath: url.path, isDirectory: &isDir) else { continue }
                 // Treat .rtfd bundles as single files; otherwise skip directories.
                 if isDir.boolValue && !url.pathExtension.lowercased().hasSuffix("rtfd") { continue }
-                if !matchesGlob(name: url.lastPathComponent, glob: input.fileGlob) { continue }
+                if !GlobMatcher.matches(name: url.lastPathComponent, glob: input.fileGlob ?? "*", caseInsensitive: false) { continue }
+                visitedPaths.append(relative)
                 searchFile(at: url, relativePath: relative)
             }
         } else {
@@ -303,6 +345,12 @@ enum SearchExecutor {
                     } else {
                         let rel = dir.path.replacingOccurrences(
                             of: workFolderRoot.path + "/", with: "")
+                        // Mirror the dir-walk: also feed single-file `paths`
+                        // entries into `visitedPaths` so filename matching
+                        // sees them. Without this, `paths: ["foo.swift"]`
+                        // would silently omit the only candidate from the
+                        // filename-match scan.
+                        visitedPaths.append(rel)
                         searchFile(at: dir, relativePath: rel)
                     }
                 }
@@ -329,42 +377,18 @@ enum SearchExecutor {
 
         let truncated = totalMatches() >= input.maxResults || totalMatchLines >= input.maxMatchLines
 
+        let filenameMatches = FilenameMatcher.match(
+            candidates: visitedPaths,
+            queries: input.queries,
+            limit: input.maxResults
+        )
+
         return SearchExecutorOutput(
             matches: combined,
             skipped: skipped,
             skippedBinaryCount: skippedBinaryCount,
-            truncated: truncated
+            truncated: truncated,
+            filenameMatches: filenameMatches
         )
-    }
-
-    // MARK: - Helpers
-
-    /// Sentinel glob that `matchesGlob` intentionally fails to compile —
-    /// reserved for test injection of the "regex compile failure" path.
-    /// The leading null byte causes `NSRegularExpression(pattern:options:)`
-    /// to fail deterministically.
-    #if DEBUG
-    static let _testUncompilableGlobSentinel = "\0__bad_glob__"
-    #endif
-
-    private static func matchesGlob(name: String, glob: String?) -> Bool {
-        guard let glob = glob else { return true }
-        // Fail-closed on a hard-coded bad sentinel so the regex-failure path
-        // can be reached from tests without relying on platform regex quirks.
-        #if DEBUG
-        if glob == _testUncompilableGlobSentinel { return false }
-        #endif
-        let escaped = NSRegularExpression.escapedPattern(for: glob)
-        let pattern = escaped.replacingOccurrences(of: "\\*", with: ".*")
-        guard let regex = try? NSRegularExpression(pattern: "^\(pattern)$", options: []) else {
-            // Fail-closed: an uncompilable user-supplied glob must not
-            // silently widen the search to every file. The LLM can recover
-            // by supplying a valid glob; silently widening would flood it
-            // with unrelated matches and it would never know the glob was
-            // wrong.
-            return false
-        }
-        let range = NSRange(name.startIndex..., in: name)
-        return regex.firstMatch(in: name, options: [], range: range) != nil
     }
 }

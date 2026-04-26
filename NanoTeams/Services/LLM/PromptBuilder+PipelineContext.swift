@@ -112,7 +112,7 @@ extension PromptBuilder {
         return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Builds the project context message.
+    /// Builds the work folder context message.
     static func buildWorkFolderContextMessage(workFolder: WorkFolderProjection?) -> String? {
         guard let wf = workFolder else { return nil }
 
@@ -120,15 +120,15 @@ extension PromptBuilder {
         lines.append("Work folder context:")
         lines.append("Name: \(wf.name)")
 
-        var description = wf.settings.description.trimmingCharacters(in: .whitespacesAndNewlines)
-        if description.count > ArtifactConstants.maxDescriptionChars {
-            description =
-                String(description.prefix(ArtifactConstants.maxDescriptionChars)) + "..."
+        var context = wf.settings.context.trimmingCharacters(in: .whitespacesAndNewlines)
+        if context.count > ArtifactConstants.maxDescriptionChars {
+            context =
+                String(context.prefix(ArtifactConstants.maxDescriptionChars)) + "..."
         }
-        if description.isEmpty {
-            return nil  // No useful project context to send
+        if context.isEmpty {
+            return nil  // No useful work folder context to send
         }
-        lines.append("Description: \(description)")
+        lines.append("Description: \(context)")
 
         return lines.joined(separator: "\n")
     }

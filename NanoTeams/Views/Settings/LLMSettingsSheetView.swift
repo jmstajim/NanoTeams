@@ -12,10 +12,6 @@ struct LLMSettingsView: View {
     @State private var availableModels: [String] = []
     @State private var isFetchingModels: Bool = false
     @State private var modelFetchError: String?
-    @State private var visionEnabled: Bool = false
-    @State private var visionAvailableModels: [String] = []
-    @State private var isFetchingVisionModels: Bool = false
-    @State private var visionModelFetchError: String?
 
     var body: some View {
         @Bindable var config = config
@@ -46,23 +42,11 @@ struct LLMSettingsView: View {
                 LLMGenerationCard(config: config)
 
                 LLMErrorHandlingCard(config: config)
-
-                LLMVisionCard(
-                    config: config,
-                    visionEnabled: $visionEnabled,
-                    visionAvailableModels: visionAvailableModels,
-                    isFetchingVisionModels: isFetchingVisionModels,
-                    visionModelFetchError: visionModelFetchError,
-                    onFetchVisionModels: { Task { await fetchVisionModels() } }
-                )
             }
             .padding(Spacing.xl)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Colors.surfacePrimary)
-        .onAppear {
-            visionEnabled = config.isVisionConfigured
-        }
     }
 
     // MARK: - Actions
@@ -93,24 +77,6 @@ struct LLMSettingsView: View {
             availableModels = try await LLMConnectionChecker.fetchAvailableModels(config: config)
         } catch {
             modelFetchError = error.localizedDescription
-        }
-    }
-
-    private func fetchVisionModels() async {
-        isFetchingVisionModels = true
-        visionModelFetchError = nil
-        defer { isFetchingVisionModels = false }
-
-        do {
-            let visionURL = config.visionBaseURLString.isEmpty ? config.llmBaseURLString : config.visionBaseURLString
-            let fetchConfig = LLMConfig(
-                provider: config.llmProvider,
-                baseURLString: visionURL,
-                modelName: config.visionModelName
-            )
-            visionAvailableModels = try await LLMClientRouter().fetchModels(config: fetchConfig, visionOnly: true)
-        } catch {
-            visionModelFetchError = error.localizedDescription
         }
     }
 }

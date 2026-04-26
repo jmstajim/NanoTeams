@@ -148,6 +148,28 @@ final class StoreConfiguration {
         dismissedNotificationIDs.remove(id)
     }
 
+    var dismissedFeatureTipIDs: Set<String> {
+        didSet {
+            storage.set(Array(dismissedFeatureTipIDs), forKey: Keys.dismissedFeatureTipIDs)
+        }
+    }
+
+    func dismissFeatureTip(id: String) {
+        dismissedFeatureTipIDs.insert(id)
+    }
+
+    func undismissFeatureTip(id: String) {
+        dismissedFeatureTipIDs.remove(id)
+    }
+
+    func dismiss(_ tip: FeatureTipID) {
+        dismissFeatureTip(id: tip.rawValue)
+    }
+
+    func isDismissed(_ tip: FeatureTipID) -> Bool {
+        dismissedFeatureTipIDs.contains(tip.rawValue)
+    }
+
     // MARK: - Vision Model
 
     var visionModelName: String {
@@ -297,67 +319,146 @@ final class StoreConfiguration {
         }
     }
 
-    // MARK: - Expanded Search
+    // MARK: - Exploratory Search
 
-    /// Gates the expanded-search feature: when true, `search(expand: true)`
+    /// Gates the exploratory-search feature: when true, `search(exploratory: true)`
     /// calls through to the semantic vector index (per-token + whole-phrase
     /// embeddings) intersected with the token posting index; when false, it
     /// falls back to a plain search. Proactive indexing (and the on-disk
     /// `search_index.json`, `vocab_vectors.*`) is also gated on this flag.
-    var expandedSearchEnabled: Bool {
-        didSet { storage.set(expandedSearchEnabled, forKey: Keys.expandedSearchEnabled) }
+    var exploratorySearchEnabled: Bool {
+        didSet { storage.set(exploratorySearchEnabled, forKey: Keys.exploratorySearchEnabled) }
     }
 
-    /// Per-expanded-search embedding-model config. `nil` = use the default
+    /// Per-exploratory-search embedding-model config. `nil` = use the default
     /// (`EmbeddingConfig.defaultNomicLMStudio`). Powers the offline vector
     /// index build AND the query-time whole-phrase expansion call.
-    var expandedSearchEmbeddingConfig: EmbeddingConfig? {
+    var exploratorySearchEmbeddingConfig: EmbeddingConfig? {
         didSet {
-            if let config = expandedSearchEmbeddingConfig,
+            if let config = exploratorySearchEmbeddingConfig,
                let data = try? JSONCoderFactory.makePersistenceEncoder().encode(config) {
-                storage.set(data, forKey: Keys.expandedSearchEmbeddingConfig)
+                storage.set(data, forKey: Keys.exploratorySearchEmbeddingConfig)
             } else {
-                storage.removeObject(forKey: Keys.expandedSearchEmbeddingConfig)
+                storage.removeObject(forKey: Keys.exploratorySearchEmbeddingConfig)
             }
         }
     }
 
     /// Effective embedding config — user override or the built-in default.
     var effectiveEmbeddingConfig: EmbeddingConfig {
-        expandedSearchEmbeddingConfig ?? .defaultNomicLMStudio
+        exploratorySearchEmbeddingConfig ?? .defaultNomicLMStudio
     }
 
     /// Cosine threshold for per-token vector expansion (queries that have at
     /// least one token already in the vocab). 0.0-1.0. Higher = stricter.
-    var expandedSearchPerTokenThreshold: Double {
+    var exploratorySearchPerTokenThreshold: Double {
         didSet {
-            storage.set(expandedSearchPerTokenThreshold,
-                        forKey: Keys.expandedSearchPerTokenThreshold)
+            storage.set(exploratorySearchPerTokenThreshold,
+                        forKey: Keys.exploratorySearchPerTokenThreshold)
         }
     }
 
     /// Cosine threshold for whole-phrase expansion (multi-word or OOV queries
     /// that fire one /v1/embeddings round-trip). Typically lower than
-    /// `expandedSearchPerTokenThreshold` because a phrase vector is a noisier
+    /// `exploratorySearchPerTokenThreshold` because a phrase vector is a noisier
     /// signal than a specific token's stored vector.
-    var expandedSearchPhraseThreshold: Double {
+    var exploratorySearchPhraseThreshold: Double {
         didSet {
-            storage.set(expandedSearchPhraseThreshold,
-                        forKey: Keys.expandedSearchPhraseThreshold)
+            storage.set(exploratorySearchPhraseThreshold,
+                        forKey: Keys.exploratorySearchPhraseThreshold)
+        }
+    }
+
+    /// When `true`, `search` calls without an explicit `exploratory` argument
+    /// run in exploratory mode by default. Independent of `exploratorySearchEnabled`:
+    /// this flag only controls the default for missing args; if the feature is
+    /// disabled the processor still falls back to plain search.
+    var searchExploratoryByDefault: Bool {
+        didSet { storage.set(searchExploratoryByDefault, forKey: Keys.searchExploratoryByDefault) }
+    }
+
+    // MARK: - Tools
+
+    /// Hard line limit enforced by `read_file`. Files exceeding this return an
+    /// error directing the LLM to use `read_lines` with explicit ranges.
+    /// Clamped to `[AppDefaults.readFileMaxLinesMin, AppDefaults.readFileMaxLinesMax]`
+    /// on assignment so the persisted value can never violate the UI bounds.
+    var readFileMaxLines: Int {
+        didSet {
+            let clamped = min(max(readFileMaxLines, AppDefaults.readFileMaxLinesMin), AppDefaults.readFileMaxLinesMax)
+            if clamped != readFileMaxLines {
+                readFileMaxLines = clamped
+                return
+            }
+            storage.set(readFileMaxLines, forKey: Keys.readFileMaxLines)
+        }
+    }
+
+    /// Default cap on `search` results when the LLM omits `max_results`.
+    /// Clamped to `[AppDefaults.searchMaxResultsMin, AppDefaults.searchMaxResultsMax]`
+    /// on assignment so the persisted value can never violate the UI bounds.
+    var searchMaxResults: Int {
+        didSet {
+            let clamped = min(max(searchMaxResults, AppDefaults.searchMaxResultsMin), AppDefaults.searchMaxResultsMax)
+            if clamped != searchMaxResults {
+                searchMaxResults = clamped
+                return
+            }
+            storage.set(searchMaxResults, forKey: Keys.searchMaxResults)
+        }
+    }
+
+    /// Default number of source lines to include before each `search` match
+    /// when the LLM omits `context_before`. Clamped to
+    /// `[AppDefaults.searchContextMin, AppDefaults.searchContextMax]`.
+    var searchContextBefore: Int {
+        didSet {
+            let clamped = min(max(searchContextBefore, AppDefaults.searchContextMin), AppDefaults.searchContextMax)
+            if clamped != searchContextBefore {
+                searchContextBefore = clamped
+                return
+            }
+            storage.set(searchContextBefore, forKey: Keys.searchContextBefore)
+        }
+    }
+
+    /// Default number of source lines to include after each `search` match
+    /// when the LLM omits `context_after`. Clamped to
+    /// `[AppDefaults.searchContextMin, AppDefaults.searchContextMax]`.
+    var searchContextAfter: Int {
+        didSet {
+            let clamped = min(max(searchContextAfter, AppDefaults.searchContextMin), AppDefaults.searchContextMax)
+            if clamped != searchContextAfter {
+                searchContextAfter = clamped
+                return
+            }
+            storage.set(searchContextAfter, forKey: Keys.searchContextAfter)
         }
     }
 
     // MARK: - Dictation
 
     /// Locale identifiers the user explicitly enabled for dictation. Empty
-    /// means "fall back to `Locale.preferredLanguages`" — the default for
-    /// users who haven't opened the Dictation settings tab yet. Only the
-    /// intersection with installed on-device models is actually used at
-    /// runtime; this array just expresses user intent.
+    /// means no dictation language is configured — `DictationService.start`
+    /// surfaces a friendly error in that case and the mic button routes the
+    /// user to Settings → Dictation. There is NO `Locale.preferredLanguages`
+    /// fallback. Only the intersection with installed on-device models is
+    /// actually used at runtime; this array just expresses user intent.
+    /// Identifiers are normalized to `Locale(identifier:).identifier` form
+    /// on load (see `init`) so legacy hyphenated entries (`ru-RU`) and
+    /// canonical underscored entries (`ru_RU`) compare equal.
     var dictationLocaleIdentifiers: [String] {
         didSet {
             storage.set(dictationLocaleIdentifiers, forKey: Keys.dictationLocales)
         }
+    }
+
+    private static var defaultLoggingEnabled: Bool {
+#if DEBUG
+        return true
+#else
+        return false
+#endif
     }
 
     private enum Keys {
@@ -377,6 +478,7 @@ final class StoreConfiguration {
         static let visionBaseURL = UserDefaultsKeys.visionBaseURL
         static let visionMaxTokens = UserDefaultsKeys.visionMaxTokens
         static let dismissedNotificationIDs = UserDefaultsKeys.dismissedNotificationIDs
+        static let dismissedFeatureTipIDs = UserDefaultsKeys.dismissedFeatureTipIDs
         static let enterSendsMessage = UserDefaultsKeys.enterSendsMessage
         static let embedFilesInPrompt = UserDefaultsKeys.quickCaptureEmbedFiles
         static let loggingEnabled = UserDefaultsKeys.loggingEnabled
@@ -390,14 +492,20 @@ final class StoreConfiguration {
         static let cachedAppUpdateRelease = UserDefaultsKeys.cachedAppUpdateRelease
         static let appUpdateCheckInterval = UserDefaultsKeys.appUpdateCheckInterval
         static let dictationLocales = UserDefaultsKeys.dictationLocales
-        static let expandedSearchEnabled = UserDefaultsKeys.expandedSearchEnabled
-        static let expandedSearchEmbeddingConfig = UserDefaultsKeys.expandedSearchEmbeddingConfig
-        static let expandedSearchPerTokenThreshold = UserDefaultsKeys.expandedSearchPerTokenThreshold
-        static let expandedSearchPhraseThreshold = UserDefaultsKeys.expandedSearchPhraseThreshold
+        static let exploratorySearchEnabled = UserDefaultsKeys.exploratorySearchEnabled
+        static let exploratorySearchEmbeddingConfig = UserDefaultsKeys.exploratorySearchEmbeddingConfig
+        static let exploratorySearchPerTokenThreshold = UserDefaultsKeys.exploratorySearchPerTokenThreshold
+        static let exploratorySearchPhraseThreshold = UserDefaultsKeys.exploratorySearchPhraseThreshold
+        static let searchExploratoryByDefault = UserDefaultsKeys.searchExploratoryByDefault
+        static let readFileMaxLines = UserDefaultsKeys.readFileMaxLines
+        static let searchMaxResults = UserDefaultsKeys.searchMaxResults
+        static let searchContextBefore = UserDefaultsKeys.searchContextBefore
+        static let searchContextAfter = UserDefaultsKeys.searchContextAfter
     }
 
     init(storage: any ConfigurationStorage = UserDefaults.standard) {
         self.storage = storage
+        Self.migrateExpandedSearchKeys(storage)
         let providerRaw = storage.string(forKey: Keys.llmProvider)
         let provider = providerRaw.flatMap(LLMProvider.init(rawValue:)) ?? .lmStudio
         self.llmProvider = provider
@@ -411,7 +519,7 @@ final class StoreConfiguration {
         self.enterSendsMessage = (storage.object(forKey: Keys.enterSendsMessage) as? Bool) ?? true
         self.embedFilesInPrompt = storage.bool(forKey: Keys.embedFilesInPrompt)
         self.debugModeEnabled = storage.bool(forKey: Keys.debugModeEnabled)
-        self.loggingEnabled = storage.bool(forKey: Keys.loggingEnabled)
+        self.loggingEnabled = (storage.object(forKey: Keys.loggingEnabled) as? Bool) ?? Self.defaultLoggingEnabled
         self.sidebarTaskFilter = storage.string(forKey: Keys.sidebarTaskFilter)
             .flatMap(TaskFilter.init(rawValue:)) ?? .all
         self.maxLLMRetries = (storage.object(forKey: Keys.maxLLMRetries) as? Int) ?? LLMConstants.defaultMaxLLMRetries
@@ -422,6 +530,8 @@ final class StoreConfiguration {
         self.visionMaxTokens = (storage.object(forKey: Keys.visionMaxTokens) as? Int) ?? 0
         let rawIDs = (storage.object(forKey: Keys.dismissedNotificationIDs) as? [String]) ?? []
         self.dismissedNotificationIDs = Set(rawIDs)
+        let rawTipIDs = (storage.object(forKey: Keys.dismissedFeatureTipIDs) as? [String]) ?? []
+        self.dismissedFeatureTipIDs = Set(rawTipIDs)
         if let data = storage.data(forKey: Keys.teamGenLLMOverride),
            let decoded = try? JSONCoderFactory.makeDateDecoder().decode(LLMOverride.self, from: data),
            !decoded.isEmpty {
@@ -446,21 +556,74 @@ final class StoreConfiguration {
         }
         self.appUpdateCheckInterval = storage.string(forKey: Keys.appUpdateCheckInterval)
             .flatMap(AppUpdateCheckInterval.init(rawValue:)) ?? .daily
-        self.dictationLocaleIdentifiers = (storage.object(forKey: Keys.dictationLocales) as? [String]) ?? []
-        self.expandedSearchEnabled = storage.bool(forKey: Keys.expandedSearchEnabled)
-        if let data = storage.data(forKey: Keys.expandedSearchEmbeddingConfig),
+        // Normalize-and-dedupe on load.
+        //
+        // On macOS 26, Foundation's plain `Locale.identifier` PRESERVES the
+        // input form — both `"ru-RU"` and `"ru_RU"` round-trip unchanged.
+        // The only way to actually canonicalize is `.identifier(.bcp47)`,
+        // which always emits hyphenated form (`ru-RU`).
+        //
+        // Without this, a legacy `["en_US","ru_RU"]` can't be matched against
+        // a `model.id == "en-US"` row id on macOS 26 — the English row shows
+        // unchecked while the engine still receives the `en_US` entry from
+        // the provider. Worse, toggling Russian appends `ru-RU` next to the
+        // legacy `ru_RU`, accumulating duplicate slots across launches.
+        let storedDictationLocales = (storage.object(forKey: Keys.dictationLocales) as? [String]) ?? []
+        var seenDictationLocales: Set<String> = []
+        let normalizedDictationLocales = storedDictationLocales
+            .map { Locale(identifier: $0).identifier(.bcp47) }
+            .filter { seenDictationLocales.insert($0).inserted }
+        self.dictationLocaleIdentifiers = normalizedDictationLocales
+        if storedDictationLocales != normalizedDictationLocales {
+            storage.set(normalizedDictationLocales, forKey: Keys.dictationLocales)
+        }
+        self.exploratorySearchEnabled = storage.bool(forKey: Keys.exploratorySearchEnabled)
+        if let data = storage.data(forKey: Keys.exploratorySearchEmbeddingConfig),
            let decoded = try? JSONCoderFactory.makeDateDecoder().decode(EmbeddingConfig.self, from: data) {
-            self.expandedSearchEmbeddingConfig = decoded
+            self.exploratorySearchEmbeddingConfig = decoded
         } else {
-            self.expandedSearchEmbeddingConfig = nil
+            self.exploratorySearchEmbeddingConfig = nil
         }
         // Defaults tuned from the plan. Kept as `Double` (`UserDefaults` has
         // first-class `double(forKey:)`) but applied as `Float` at the vector
         // site — Accelerate and nomic both use Float32.
-        self.expandedSearchPerTokenThreshold =
-            (storage.object(forKey: Keys.expandedSearchPerTokenThreshold) as? Double) ?? 0.75
-        self.expandedSearchPhraseThreshold =
-            (storage.object(forKey: Keys.expandedSearchPhraseThreshold) as? Double) ?? 0.70
+        self.exploratorySearchPerTokenThreshold =
+            (storage.object(forKey: Keys.exploratorySearchPerTokenThreshold) as? Double) ?? 0.75
+        self.exploratorySearchPhraseThreshold =
+            (storage.object(forKey: Keys.exploratorySearchPhraseThreshold) as? Double) ?? 0.70
+        self.searchExploratoryByDefault = storage.bool(forKey: Keys.searchExploratoryByDefault)
+        let storedReadFileMaxLines = (storage.object(forKey: Keys.readFileMaxLines) as? Int) ?? AppDefaults.readFileMaxLines
+        self.readFileMaxLines = min(max(storedReadFileMaxLines, AppDefaults.readFileMaxLinesMin), AppDefaults.readFileMaxLinesMax)
+        let storedSearchMaxResults = (storage.object(forKey: Keys.searchMaxResults) as? Int) ?? AppDefaults.searchMaxResults
+        self.searchMaxResults = min(max(storedSearchMaxResults, AppDefaults.searchMaxResultsMin), AppDefaults.searchMaxResultsMax)
+        let storedSearchContextBefore = (storage.object(forKey: Keys.searchContextBefore) as? Int) ?? AppDefaults.searchContextBefore
+        self.searchContextBefore = min(max(storedSearchContextBefore, AppDefaults.searchContextMin), AppDefaults.searchContextMax)
+        let storedSearchContextAfter = (storage.object(forKey: Keys.searchContextAfter) as? Int) ?? AppDefaults.searchContextAfter
+        self.searchContextAfter = min(max(storedSearchContextAfter, AppDefaults.searchContextMin), AppDefaults.searchContextMax)
+    }
+
+    // MARK: - Migration
+
+    /// One-shot migration: copies legacy `expandedSearch*` UserDefaults keys
+    /// into the new `exploratorySearch*` keys and removes the originals.
+    /// Idempotent — after the first run there's nothing left to migrate.
+    /// TODO(2026-Q3): remove once all live installs have migrated.
+    private static func migrateExpandedSearchKeys(_ storage: any ConfigurationStorage) {
+        let pairs: [(old: String, new: String)] = [
+            ("NanoTeams.search.expandedSearchEnabled.v1",           UserDefaultsKeys.exploratorySearchEnabled),
+            ("NanoTeams.search.expandedSearchEmbeddingConfig.v1",   UserDefaultsKeys.exploratorySearchEmbeddingConfig),
+            ("NanoTeams.search.expandedSearchPerTokenThreshold.v1", UserDefaultsKeys.exploratorySearchPerTokenThreshold),
+            ("NanoTeams.search.expandedSearchPhraseThreshold.v1",   UserDefaultsKeys.exploratorySearchPhraseThreshold),
+        ]
+        for (oldKey, newKey) in pairs {
+            // Copy only when the new key is empty — never clobber a value the
+            // user committed to under the new name. But always drop the legacy
+            // key afterwards so the next migration run is a no-op.
+            if storage.object(forKey: newKey) == nil, let value = storage.object(forKey: oldKey) {
+                storage.set(value, forKey: newKey)
+            }
+            storage.removeObject(forKey: oldKey)
+        }
     }
 
     // MARK: - Reset
@@ -484,6 +647,7 @@ final class StoreConfiguration {
         storage.removeObject(forKey: Keys.visionBaseURL)
         storage.removeObject(forKey: Keys.visionMaxTokens)
         storage.removeObject(forKey: Keys.dismissedNotificationIDs)
+        storage.removeObject(forKey: Keys.dismissedFeatureTipIDs)
         storage.removeObject(forKey: Keys.sidebarTaskFilter)
         storage.removeObject(forKey: Keys.teamGenLLMOverride)
         storage.removeObject(forKey: Keys.teamGenSystemPrompt)
@@ -494,10 +658,15 @@ final class StoreConfiguration {
         storage.removeObject(forKey: Keys.cachedAppUpdateRelease)
         storage.removeObject(forKey: Keys.appUpdateCheckInterval)
         storage.removeObject(forKey: Keys.dictationLocales)
-        storage.removeObject(forKey: Keys.expandedSearchEnabled)
-        storage.removeObject(forKey: Keys.expandedSearchEmbeddingConfig)
-        storage.removeObject(forKey: Keys.expandedSearchPerTokenThreshold)
-        storage.removeObject(forKey: Keys.expandedSearchPhraseThreshold)
+        storage.removeObject(forKey: Keys.exploratorySearchEnabled)
+        storage.removeObject(forKey: Keys.exploratorySearchEmbeddingConfig)
+        storage.removeObject(forKey: Keys.exploratorySearchPerTokenThreshold)
+        storage.removeObject(forKey: Keys.exploratorySearchPhraseThreshold)
+        storage.removeObject(forKey: Keys.searchExploratoryByDefault)
+        storage.removeObject(forKey: Keys.readFileMaxLines)
+        storage.removeObject(forKey: Keys.searchMaxResults)
+        storage.removeObject(forKey: Keys.searchContextBefore)
+        storage.removeObject(forKey: Keys.searchContextAfter)
 
         let provider = LLMProvider.lmStudio
         llmProvider = provider
@@ -511,13 +680,14 @@ final class StoreConfiguration {
         enterSendsMessage = true
         embedFilesInPrompt = false
         debugModeEnabled = false
-        loggingEnabled = false
+        loggingEnabled = Self.defaultLoggingEnabled
         maxLLMRetries = LLMConstants.defaultMaxLLMRetries
         llmRequestTimeoutSeconds = LLMConstants.defaultLLMRequestTimeoutSeconds
         visionModelName = ""
         visionBaseURLString = ""
         visionMaxTokens = 0
         dismissedNotificationIDs = []
+        dismissedFeatureTipIDs = []
         sidebarTaskFilter = .all
         teamGenLLMOverride = nil
         teamGenSystemPrompt = ""
@@ -528,10 +698,15 @@ final class StoreConfiguration {
         cachedAppUpdateRelease = nil
         appUpdateCheckInterval = .daily
         dictationLocaleIdentifiers = []
-        expandedSearchEnabled = false
-        expandedSearchEmbeddingConfig = nil
-        expandedSearchPerTokenThreshold = 0.75
-        expandedSearchPhraseThreshold = 0.70
+        exploratorySearchEnabled = false
+        exploratorySearchEmbeddingConfig = nil
+        exploratorySearchPerTokenThreshold = 0.75
+        exploratorySearchPhraseThreshold = 0.70
+        searchExploratoryByDefault = false
+        readFileMaxLines = AppDefaults.readFileMaxLines
+        searchMaxResults = AppDefaults.searchMaxResults
+        searchContextBefore = AppDefaults.searchContextBefore
+        searchContextAfter = AppDefaults.searchContextAfter
     }
 
     // MARK: - Work Folder Path

@@ -16,10 +16,8 @@ struct SidebarView: View {
     @Environment(\.openWindow) var openWindow
     @AppStorage(UserDefaultsKeys.selectedSettingsTab) var selectedSettingsTab: SettingsView.SettingsTab = .llm
 
-    // Note: isGeneratingDescription, isPresentingFolderPicker, recentProjects
-    // are intentionally internal — accessed from SidebarProjectCards.swift
-    @State var isGeneratingDescription = false
-    @State var generateDescriptionTask: Task<Void, Never>?
+    // Note: isPresentingFolderPicker and recentProjects are intentionally
+    // internal — accessed from SidebarWorkFolderCards.swift.
     @State var isPresentingFolderPicker = false
     @State private var showCloseProjectConfirmation = false
     @State var recentProjects: [URL] = []
@@ -114,7 +112,7 @@ struct SidebarView: View {
             }
             .onAppear { refreshRecentProjects() }
             .onChange(of: store.workFolderURL) { _, newValue in
-                generateDescriptionTask?.cancel()
+                store.cancelWorkFolderContextGeneration()
                 guard let url = newValue, store.hasRealWorkFolder else { return }
                 store.configuration.lastOpenedWorkFolderPath = url.path
                 NSDocumentController.shared.noteNewRecentDocumentURL(url)

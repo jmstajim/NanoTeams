@@ -12,7 +12,10 @@ struct SettingsView: View {
         case workFolder = "Work Folder"
         case general = "General"
         case dictation = "Dictation"
-        case expandedSearch = "Expanded Search"
+        case vision = "Vision"
+        case exploratorySearch = "Exploratory Search"
+        case toolBehavior = "Tool Behavior"
+        case debug = "Debug"
         case teams = "Teams"
         case generateTeam = "Generate Team"
         case tools = "Tools"
@@ -23,7 +26,9 @@ struct SettingsView: View {
 
         private static let iconMap: [SettingsTab: String] = [
             .llm: "brain", .workFolder: "folder", .general: "gearshape",
-            .dictation: "mic", .expandedSearch: "text.magnifyingglass",
+            .dictation: "mic", .vision: "eye", .exploratorySearch: "binoculars",
+            .toolBehavior: "slider.horizontal.3",
+            .debug: "ladybug",
             .teams: "rectangle.3.group",
             .generateTeam: "wand.and.stars",
             .tools: "wrench.and.screwdriver", .help: "questionmark.circle",
@@ -55,7 +60,7 @@ struct SettingsView: View {
     private var settingsSidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
             settingsSection("Configuration", tabs: [.general, .llm, .workFolder])
-            settingsSection("Advanced", tabs: [.dictation, .expandedSearch])
+            settingsSection("Advanced", tabs: [.exploratorySearch, .vision, .dictation, .toolBehavior, .debug])
             settingsSection("Team", tabs: [.teams, .generateTeam, .tools])
             settingsSection("Support", tabs: [.help, .updates])
             Spacer()
@@ -99,9 +104,18 @@ struct SettingsView: View {
         case .dictation:
             DictationSettingsView()
                 .navigationTitle(SettingsTab.dictation.rawValue)
-        case .expandedSearch:
-            ExpandedSearchSettingsView()
-                .navigationTitle(SettingsTab.expandedSearch.rawValue)
+        case .vision:
+            VisionSettingsView()
+                .navigationTitle(SettingsTab.vision.rawValue)
+        case .exploratorySearch:
+            ExploratorySearchSettingsView()
+                .navigationTitle(SettingsTab.exploratorySearch.rawValue)
+        case .toolBehavior:
+            ToolBehaviorSettingsView()
+                .navigationTitle(SettingsTab.toolBehavior.rawValue)
+        case .debug:
+            DebugSettingsView()
+                .navigationTitle(SettingsTab.debug.rawValue)
         case .teams:
             TeamEditorView()
                 .navigationTitle(SettingsTab.teams.rawValue)

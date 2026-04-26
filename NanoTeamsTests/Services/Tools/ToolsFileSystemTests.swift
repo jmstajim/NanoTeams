@@ -81,33 +81,39 @@ final class ToolsFileSystemTests: XCTestCase {
         XCTAssertTrue(results[0].outputJSON.contains("NOT_A_FILE"))
     }
 
-    func testReadFile_truncatesLargeFiles() throws {
-        let largeContent = String(repeating: "A", count: 300_000)
+    func testReadFile_largeFile_returnsErrorPointingToReadLines() throws {
+        // File over the configured limit → hard-block error pointing at `read_lines`.
+        let limit = AppDefaults.readFileMaxLines
+        let largeContent = (1...(limit + 200)).map { "Line \($0)" }.joined(separator: "\n")
         let filePath = tempDir.appendingPathComponent("large.txt")
         try largeContent.write(to: filePath, atomically: true, encoding: .utf8)
 
         let call = StepToolCall(name: "read_file", argumentsJSON: "{\"path\": \"large.txt\"}")
         let results = runtime.executeAll(context: context, toolCalls: [call])
 
-        XCTAssertFalse(results[0].isError)
-        XCTAssertTrue(results[0].outputJSON.contains("truncated"))
+        XCTAssertTrue(results[0].isError)
+        let json = results[0].outputJSON
+        XCTAssertTrue(json.contains("INVALID_ARGS"))
+        XCTAssertTrue(json.contains("\(limit)-line read_file limit"))
+        XCTAssertTrue(json.contains("read_lines"))
     }
 
-    func testReadFile_respectsMaxBytes() throws {
-        let content = String(repeating: "B", count: 1000)
+    func testReadFile_inLimitFile_returnsAllLines() throws {
+        let content = (1...100).map { "Line \($0)" }.joined(separator: "\n")
         let filePath = tempDir.appendingPathComponent("medium.txt")
         try content.write(to: filePath, atomically: true, encoding: .utf8)
 
         let call = StepToolCall(
             name: "read_file",
-            argumentsJSON: "{\"path\": \"medium.txt\", \"max_bytes\": 100}"
+            argumentsJSON: "{\"path\": \"medium.txt\"}"
         )
         let results = runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
-        // Should be truncated
         let json = results[0].outputJSON
-        XCTAssertTrue(json.contains("truncated\":true") || json.contains("truncated\": true"))
+        XCTAssertTrue(json.contains("\"total_lines\":100") || json.contains("\"total_lines\" : 100"))
+        XCTAssertTrue(json.contains("\"end_line\":100") || json.contains("\"end_line\" : 100"))
+        XCTAssertTrue(json.contains("Line 100"))
     }
 
     // MARK: - read_lines Tests

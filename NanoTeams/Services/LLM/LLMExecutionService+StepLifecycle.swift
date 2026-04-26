@@ -58,7 +58,12 @@ extension LLMExecutionService {
             : nil
         let (_, runtime) = ToolRegistry.defaultRegistry(
             workFolderRoot: workFolderRoot, toolCallsLogURL: toolCallsLogURL,
-            isDefaultStorage: isDefaultStorage)
+            isDefaultStorage: isDefaultStorage,
+            searchExploratoryByDefault: delegate.searchExploratoryByDefault,
+            readFileMaxLines: delegate.readFileMaxLines,
+            searchMaxResults: delegate.searchMaxResults,
+            searchContextBefore: delegate.searchContextBefore,
+            searchContextAfter: delegate.searchContextAfter)
 
         let fullConversation = buildChatMessages(
             for: task, stepID: stepID, tools: tools, supervisorMode: supervisorMode)
@@ -200,7 +205,6 @@ extension LLMExecutionService {
                         let msg = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                         let limitLabel = maxRetries > 0 ? "/\(maxRetries)" : ""
                         let retryNote = "LLM server error (attempt \(llmErrorCount)\(limitLabel)): \(msg). Retrying in \(LLMConstants.llmRetryDelaySeconds)s…"
-                        print("[DEBUG] \(retryNote)")
                         await appendLLMMessage(stepID: stepID, role: .assistant, content: retryNote)
                         ConversationRepairService.repairConversationIfNeeded(&conversation)
                         ConversationRepairService.collapseRedundantAssistantTextRuns(&conversation)
@@ -209,8 +213,6 @@ extension LLMExecutionService {
                     }
                     llmErrorCount = 0
                     needsSessionFallback = false
-
-                    print("[DEBUG] LLM iteration \(safetyIterations) for \(roleForMessage.baseID) returned: \(stop)")
 
                     switch stop {
                     case .completed:

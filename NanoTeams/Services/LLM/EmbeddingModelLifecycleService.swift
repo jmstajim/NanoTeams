@@ -1,7 +1,7 @@
 import Foundation
 
 /// Owns the in-memory state machine for the LM Studio embed model used by
-/// Expanded Search: which model+URL we currently consider loaded, plus the
+/// Exploratory Search: which model+URL we currently consider loaded, plus the
 /// `instance_id` LM Studio handed back so we can target it for unload later.
 ///
 /// Reconciles to a desired state via two idempotent hooks:
@@ -41,6 +41,12 @@ final class EmbeddingModelLifecycleService {
     /// means "we have nothing loaded".
     private(set) var loaded: LoadedState?
 
+    /// Callback for soft warnings — adoption-path prior-unload failures and
+    /// `listLoadedInstances` failures that previously went silent. The
+    /// orchestrator wires this to `lastInfoMessage` so a VRAM-leak signal
+    /// reaches the user even when the operation as a whole "succeeds".
+    var onWarning: ((String) -> Void)?
+
     init(client: any LLMClient = LLMClientRouter()) {
         self.client = client
     }
@@ -67,8 +73,18 @@ final class EmbeddingModelLifecycleService {
 
         // C1: server-side adoption. Best-effort — if listing fails (older
         // LM Studio without /api/v0/models, network blip, etc.), fall through
-        // to the normal load path.
-        let serverLoaded = (try? await client.listLoadedInstances(baseURLString: config.baseURLString)) ?? []
+        // to the normal load path. Non-nil errors are surfaced via `onWarning`
+        // so a transient 503 doesn't silently mask a duplicate-instance bug.
+        let serverLoaded: [LoadedModelInstance]
+        do {
+            serverLoaded = try await client.listLoadedInstances(baseURLString: config.baseURLString)
+        } catch {
+            onWarning?(
+                "Couldn't query loaded models on \(config.baseURLString): \(error.localizedDescription). " +
+                "Adoption skipped — a duplicate embedding instance may be created."
+            )
+            serverLoaded = []
+        }
         if let existing = serverLoaded.first(where: { $0.modelName == config.modelName }) {
             // If we previously thought we owned a different config, unload
             // it first — the user changed model/URL, server already has the
@@ -82,7 +98,13 @@ final class EmbeddingModelLifecycleService {
                 } catch {
                     // Adoption is more valuable than a perfect prior-unload —
                     // the prior may live on the same server we're about to
-                    // adopt from, and the next reconcile will clean up.
+                    // adopt from, and the next reconcile will clean up. Still
+                    // surface so the user knows VRAM may not have been
+                    // reclaimed on the prior endpoint.
+                    onWarning?(
+                        "Couldn't unload previous embedding model '\(prior.config.modelName)' on \(prior.config.baseURLString): " +
+                        "\(error.localizedDescription). It may still consume VRAM until the server is restarted."
+                    )
                 }
             }
             loaded = LoadedState(config: config, instanceID: existing.instanceID)

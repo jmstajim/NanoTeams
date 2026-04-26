@@ -11,7 +11,7 @@ private final class UncheckedBox<T>: @unchecked Sendable {
     init(_ value: T) { self.value = value }
 }
 
-/// End-to-end user scenarios for the expanded-search lifecycle — covers the
+/// End-to-end user scenarios for the exploratory-search lifecycle — covers the
 /// flow a user actually touches via the Advanced settings tab:
 /// 1. Toggle on → coordinator spins up, watcher starts, index lands on disk.
 /// 2. Toggle off → coordinator torn down, on-disk file deleted.
@@ -24,9 +24,9 @@ private final class UncheckedBox<T>: @unchecked Sendable {
 /// - Toggling rapidly on/off/on (no orphaned coordinators or FS watchers).
 /// - `awaitSearchIndex` returns nil when the feature is off.
 /// - Closing a folder with the feature on tears down the coordinator.
-/// - `onExpandedSearchSettingChanged` is idempotent when state matches.
+/// - `onExploratorySearchSettingChanged` is idempotent when state matches.
 @MainActor
-final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
+final class ExploratorySearchUserScenarioTests: NTMSOrchestratorTestBase {
 
     // MARK: - Toggle ON — happy path
 
@@ -34,8 +34,8 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
         await sut.openWorkFolder(tempDir)
         XCTAssertNil(sut.searchIndexCoordinator, "Feature off → no coordinator")
 
-        sut.configuration.expandedSearchEnabled = true
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = true
+        await sut.onExploratorySearchSettingChanged()
 
         XCTAssertNotNil(sut.searchIndexCoordinator, "Feature on → coordinator exists")
     }
@@ -48,8 +48,8 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
         )
 
         await sut.openWorkFolder(tempDir)
-        sut.configuration.expandedSearchEnabled = true
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = true
+        await sut.onExploratorySearchSettingChanged()
 
         // Give the initial ensure-fresh pass a moment.
         let index = await sut.searchIndexCoordinator?.awaitIndex()
@@ -69,8 +69,8 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
         try "alpha beta".write(to: file, atomically: true, encoding: .utf8)
 
         await sut.openWorkFolder(tempDir)
-        sut.configuration.expandedSearchEnabled = true
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = true
+        await sut.onExploratorySearchSettingChanged()
         _ = await sut.searchIndexCoordinator?.awaitIndex()
 
         let indexFile = tempDir
@@ -78,8 +78,8 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: indexFile.path))
 
         // Flip off.
-        sut.configuration.expandedSearchEnabled = false
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = false
+        await sut.onExploratorySearchSettingChanged()
 
         XCTAssertNil(sut.searchIndexCoordinator)
         XCTAssertFalse(FileManager.default.fileExists(atPath: indexFile.path),
@@ -90,16 +90,16 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
 
     func testToggleOn_noFolderOpen_coordinatorStaysNil() async {
         XCTAssertNil(sut.workFolderURL)
-        sut.configuration.expandedSearchEnabled = true
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = true
+        await sut.onExploratorySearchSettingChanged()
         XCTAssertNil(sut.searchIndexCoordinator,
                      "Without a folder we cannot index — coordinator must stay nil.")
     }
 
     func testToggleOn_noFolder_thenOpenFolder_spawnsCoordinatorOnOpen() async {
         // Pre-enable with no folder → no coordinator.
-        sut.configuration.expandedSearchEnabled = true
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = true
+        await sut.onExploratorySearchSettingChanged()
         XCTAssertNil(sut.searchIndexCoordinator)
 
         // Open a folder → coordinator should materialize.
@@ -110,7 +110,7 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
 
     // MARK: - Corner: Default storage
 
-    /// Regression: enabling expanded search while on default internal storage
+    /// Regression: enabling exploratory search while on default internal storage
     /// silently did nothing (`setUpSearchIndexCoordinatorIfEnabled` guards on
     /// `hasRealWorkFolder`). The toggle would read ON, the status card
     /// would still read "disabled", and the user had no signal explaining
@@ -121,8 +121,8 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
         // the path that `hasRealWorkFolder` compares against.
         sut.workFolderURL = NTMSOrchestrator.defaultStorageURL
 
-        sut.configuration.expandedSearchEnabled = true
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = true
+        await sut.onExploratorySearchSettingChanged()
 
         XCTAssertNil(sut.searchIndexCoordinator,
                      "Default storage must not spawn a coordinator.")
@@ -139,10 +139,10 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
     func testRapidToggle_doesNotOrphanCoordinators() async {
         await sut.openWorkFolder(tempDir)
         for _ in 0..<3 {
-            sut.configuration.expandedSearchEnabled = true
-            await sut.onExpandedSearchSettingChanged()
-            sut.configuration.expandedSearchEnabled = false
-            await sut.onExpandedSearchSettingChanged()
+            sut.configuration.exploratorySearchEnabled = true
+            await sut.onExploratorySearchSettingChanged()
+            sut.configuration.exploratorySearchEnabled = false
+            await sut.onExploratorySearchSettingChanged()
         }
         XCTAssertNil(sut.searchIndexCoordinator,
                      "After N on/off cycles the coordinator must be nil.")
@@ -153,13 +153,13 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
 
     func testToggleOn_whenAlreadyOn_isIdempotent() async {
         await sut.openWorkFolder(tempDir)
-        sut.configuration.expandedSearchEnabled = true
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = true
+        await sut.onExploratorySearchSettingChanged()
         let first = sut.searchIndexCoordinator
 
         // Calling the hook again without flipping state should not replace
         // the coordinator (avoids orphaned FS watchers).
-        await sut.onExpandedSearchSettingChanged()
+        await sut.onExploratorySearchSettingChanged()
         XCTAssertTrue(sut.searchIndexCoordinator === first,
                       "Redundant enable must NOT replace the existing coordinator.")
     }
@@ -167,8 +167,8 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
     func testToggleOff_whenAlreadyOff_isSafe() async {
         await sut.openWorkFolder(tempDir)
         // Double-off from initial state — should not crash or leak.
-        await sut.onExpandedSearchSettingChanged()
-        await sut.onExpandedSearchSettingChanged()
+        await sut.onExploratorySearchSettingChanged()
+        await sut.onExploratorySearchSettingChanged()
         XCTAssertNil(sut.searchIndexCoordinator)
     }
 
@@ -176,27 +176,27 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
 
     // MARK: - I3: rapid-toggle via detached tasks respects click order
 
-    /// Simulates the real UI path where `ExpandedSearchToggleCard.onChanged`
+    /// Simulates the real UI path where `ExploratorySearchToggleCard.onChanged`
     /// wraps the orchestrator call in `Task { await ... }`. Three rapid
     /// clicks (on → off → on) without inline `await` can interleave inside
-    /// `onExpandedSearchSettingChanged`. A serial task chain keeps the effects
+    /// `onExploratorySearchSettingChanged`. A serial task chain keeps the effects
     /// in click order so the final state matches the last toggle.
     func testRapidToggle_viaDetachedTasks_finalStateMatchesLastClick() async {
         await sut.openWorkFolder(tempDir)
 
-        // Each mutation of `expandedSearchEnabled` + spawn mirrors one click.
-        sut.configuration.expandedSearchEnabled = true
-        let t1 = Task { await sut.onExpandedSearchSettingChanged() }
-        sut.configuration.expandedSearchEnabled = false
-        let t2 = Task { await sut.onExpandedSearchSettingChanged() }
-        sut.configuration.expandedSearchEnabled = true
-        let t3 = Task { await sut.onExpandedSearchSettingChanged() }
+        // Each mutation of `exploratorySearchEnabled` + spawn mirrors one click.
+        sut.configuration.exploratorySearchEnabled = true
+        let t1 = Task { await sut.onExploratorySearchSettingChanged() }
+        sut.configuration.exploratorySearchEnabled = false
+        let t2 = Task { await sut.onExploratorySearchSettingChanged() }
+        sut.configuration.exploratorySearchEnabled = true
+        let t3 = Task { await sut.onExploratorySearchSettingChanged() }
 
         await t1.value
         await t2.value
         await t3.value
 
-        XCTAssertEqual(sut.configuration.expandedSearchEnabled, true)
+        XCTAssertEqual(sut.configuration.exploratorySearchEnabled, true)
         XCTAssertNotNil(sut.searchIndexCoordinator,
             "After on → off → on, the final state must be ON with a live coordinator.")
     }
@@ -204,7 +204,7 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
     // MARK: - Regression: searchIndexCoordinator must be observable by views
 
     /// User bug: "пропали индикаторы индексирования" / "включил, он пишет что
-    /// всё отключено". Views (`ExpandedSearchSettingsView`, `SidebarWorkFolderCards`)
+    /// всё отключено". Views (`ExploratorySearchSettingsView`, `SidebarWorkFolderCards`)
     /// read `store.searchIndexCoordinator` and `store.searchIndexCoordinator?.isBuilding`
     /// directly from the orchestrator's `@Observable` surface. Marking the
     /// property `@ObservationIgnored` freezes them at their initial nil
@@ -243,14 +243,14 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
     }
 
     /// Direct regression for the "install race / FSEventStream leak" class:
-    /// even if callers bypass `onExpandedSearchSettingChanged` and call
+    /// even if callers bypass `onExploratorySearchSettingChanged` and call
     /// `setUpSearchIndexCoordinatorIfEnabled` repeatedly, no new coordinator
     /// is installed when one already exists. Without this guard, the first
     /// coordinator's FSEventStream would be orphaned (still retained via the
     /// underlying Unmanaged but never `stop`ped).
     func testSetUp_calledTwice_doesNotReplaceExistingCoordinator() async {
         await sut.openWorkFolder(tempDir)
-        sut.configuration.expandedSearchEnabled = true
+        sut.configuration.exploratorySearchEnabled = true
         await sut.setUpSearchIndexCoordinatorIfEnabled()
         let first = sut.searchIndexCoordinator
         XCTAssertNotNil(first)
@@ -264,8 +264,8 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
 
     func testClosingProject_tearsDownCoordinator() async {
         await sut.openWorkFolder(tempDir)
-        sut.configuration.expandedSearchEnabled = true
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = true
+        await sut.onExploratorySearchSettingChanged()
         XCTAssertNotNil(sut.searchIndexCoordinator)
 
         await sut.closeProject()
@@ -281,8 +281,8 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
         defer { try? FileManager.default.removeItem(at: secondFolder) }
 
         await sut.openWorkFolder(tempDir)
-        sut.configuration.expandedSearchEnabled = true
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = true
+        await sut.onExploratorySearchSettingChanged()
         let firstCoordinator = sut.searchIndexCoordinator
         XCTAssertNotNil(firstCoordinator)
 
@@ -297,7 +297,7 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
 
     func testAwaitSearchIndex_returnsNilWhenDisabled() async {
         await sut.openWorkFolder(tempDir)
-        XCTAssertFalse(sut.configuration.expandedSearchEnabled)
+        XCTAssertFalse(sut.configuration.exploratorySearchEnabled)
         let index = await sut.awaitSearchIndex()
         XCTAssertNil(index, "Disabled → awaitSearchIndex returns nil (signals fall back).")
     }
@@ -307,8 +307,8 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
         try "alpha".write(to: first, atomically: true, encoding: .utf8)
 
         await sut.openWorkFolder(tempDir)
-        sut.configuration.expandedSearchEnabled = true
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = true
+        await sut.onExploratorySearchSettingChanged()
         let firstIdx = await sut.searchIndexCoordinator?.awaitIndex()
         XCTAssertEqual(firstIdx?.files.count, 1)
 
@@ -323,10 +323,10 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
 
     // MARK: - Schema stability
 
-    func testSearchToolSchema_alwaysExposesExpand_regardlessOfToggle() {
+    func testSearchToolSchema_alwaysExposesExploratory_regardlessOfToggle() {
         let schema = SearchTool.schema
         let names = Set(schema.parameters.properties?.keys ?? [:].keys)
-        XCTAssertTrue(names.contains("expand"),
+        XCTAssertTrue(names.contains("exploratory"),
                       "Schema parameter list is compile-time; must not depend on runtime toggle.")
     }
 
@@ -337,8 +337,8 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
         XCTAssertTrue(embeddingClient.loadUnloadCalls.isEmpty,
                       "Folder open with toggle OFF must not load anything.")
 
-        sut.configuration.expandedSearchEnabled = true
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = true
+        await sut.onExploratorySearchSettingChanged()
 
         let modelName = sut.configuration.effectiveEmbeddingConfig.modelName
         let baseURL = sut.configuration.effectiveEmbeddingConfig.baseURLString
@@ -348,13 +348,13 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
 
     func testToggleOff_unloadsEmbeddingModel() async {
         await sut.openWorkFolder(tempDir)
-        sut.configuration.expandedSearchEnabled = true
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = true
+        await sut.onExploratorySearchSettingChanged()
         let baseURL = sut.configuration.effectiveEmbeddingConfig.baseURLString
         embeddingClient.calls.removeAll()
 
-        sut.configuration.expandedSearchEnabled = false
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = false
+        await sut.onExploratorySearchSettingChanged()
 
         XCTAssertEqual(embeddingClient.loadUnloadCalls.count, 1)
         guard case .unload(_, let url)? = embeddingClient.loadUnloadCalls.first else {
@@ -365,8 +365,8 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
 
     func testToggleOn_onDefaultStorage_doesNotLoadEmbeddingModel() async {
         sut.workFolderURL = NTMSOrchestrator.defaultStorageURL
-        sut.configuration.expandedSearchEnabled = true
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = true
+        await sut.onExploratorySearchSettingChanged()
 
         XCTAssertTrue(embeddingClient.loadUnloadCalls.isEmpty,
                       "Default storage → no coordinator → no load.")
@@ -379,8 +379,8 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
         defer { try? FileManager.default.removeItem(at: secondFolder) }
 
         await sut.openWorkFolder(tempDir)
-        sut.configuration.expandedSearchEnabled = true
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = true
+        await sut.onExploratorySearchSettingChanged()
         XCTAssertEqual(embeddingClient.loadUnloadCalls.count, 1, "First load on toggle ON.")
         embeddingClient.calls.removeAll()
 
@@ -392,8 +392,8 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
 
     func testCloseProject_unloadsEmbeddingModel() async {
         await sut.openWorkFolder(tempDir)
-        sut.configuration.expandedSearchEnabled = true
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = true
+        await sut.onExploratorySearchSettingChanged()
         embeddingClient.calls.removeAll()
 
         await sut.closeProject()
@@ -408,15 +408,15 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
 
     func testEmbeddingConfigChange_whileEnabled_unloadsOldThenLoadsNew() async {
         await sut.openWorkFolder(tempDir)
-        sut.configuration.expandedSearchEnabled = true
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = true
+        await sut.onExploratorySearchSettingChanged()
         embeddingClient.calls.removeAll()
 
-        sut.configuration.expandedSearchEmbeddingConfig = EmbeddingConfig(
+        sut.configuration.exploratorySearchEmbeddingConfig = EmbeddingConfig(
             baseURLString: "http://127.0.0.1:1234",
             modelName: "different-embed-model"
         )
-        await sut.onExpandedSearchEmbeddingConfigChanged()
+        await sut.onExploratorySearchEmbeddingConfigChanged()
 
         XCTAssertEqual(embeddingClient.loadUnloadCalls.count, 2,
                        "Config change must produce one unload + one load.")
@@ -434,11 +434,11 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
         await sut.openWorkFolder(tempDir)
         // Toggle is OFF.
 
-        sut.configuration.expandedSearchEmbeddingConfig = EmbeddingConfig(
+        sut.configuration.exploratorySearchEmbeddingConfig = EmbeddingConfig(
             baseURLString: "http://127.0.0.1:1234",
             modelName: "different-model"
         )
-        await sut.onExpandedSearchEmbeddingConfigChanged()
+        await sut.onExploratorySearchEmbeddingConfigChanged()
 
         XCTAssertTrue(embeddingClient.loadUnloadCalls.isEmpty,
                       "Embed config change while disabled must not touch the lifecycle.")
@@ -446,7 +446,7 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
 
     // MARK: - Embedding lifecycle: error surfaces & user feedback
 
-    /// User enables Expanded Search while LM Studio is unreachable. The toggle
+    /// User enables Exploratory Search while LM Studio is unreachable. The toggle
     /// should still flip ON (coordinator is created and the on-disk index can
     /// build without embeddings — vector index just lands in `modelUnavailable`),
     /// but the user must see WHY the embed model isn't ready via the
@@ -455,11 +455,11 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
         await sut.openWorkFolder(tempDir)
         embeddingClient.loadError = TestError.boom
 
-        sut.configuration.expandedSearchEnabled = true
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = true
+        await sut.onExploratorySearchSettingChanged()
 
         XCTAssertNotNil(sut.searchIndexCoordinator,
-                        "Coordinator must still be created — Expanded Search degrades gracefully without embeddings.")
+                        "Coordinator must still be created — Exploratory Search degrades gracefully without embeddings.")
         XCTAssertNotNil(sut.lastErrorMessage,
                         "Load failure means the feature is broken — must use red error banner, not neutral info.")
         XCTAssertTrue(
@@ -478,14 +478,14 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
     /// anything reaching the orchestrator's catch is rare and worth a note.
     func testToggleOff_whenUnloadFails_surfacesInfoBanner() async {
         await sut.openWorkFolder(tempDir)
-        sut.configuration.expandedSearchEnabled = true
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = true
+        await sut.onExploratorySearchSettingChanged()
         sut.lastInfoMessage = nil
         sut.lastErrorMessage = nil
         embeddingClient.unloadError = TestError.boom
 
-        sut.configuration.expandedSearchEnabled = false
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = false
+        await sut.onExploratorySearchSettingChanged()
 
         XCTAssertNotNil(sut.lastInfoMessage,
                         "Unload error should surface as info so the user knows VRAM may not have been reclaimed.")
@@ -499,14 +499,14 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
 
     // MARK: - Embedding lifecycle: app-restart user path
 
-    /// User had Expanded Search ON, quit the app, relaunched, and re-opened
+    /// User had Exploratory Search ON, quit the app, relaunched, and re-opened
     /// the same project. `bootstrapDefaultStorageIfNeeded` reads
     /// `lastOpenedWorkFolderPath` and calls `openWorkFolder` with the saved
     /// path — and our reconcile-after-openWorkFolder must auto-load the model
     /// without the user touching the toggle.
     func testAppRestart_simulatedByPreEnabledToggle_loadsOnFolderOpen() async {
         // Pre-condition: toggle persisted as ON in UserDefaults from prior session.
-        sut.configuration.expandedSearchEnabled = true
+        sut.configuration.exploratorySearchEnabled = true
         XCTAssertTrue(embeddingClient.loadUnloadCalls.isEmpty,
                       "Setting the bool alone must not touch the lifecycle — open is the trigger.")
 
@@ -525,14 +525,14 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
     /// longer holding an instance_id to short-circuit on).
     func testReEnable_afterDisable_loadsAgain() async {
         await sut.openWorkFolder(tempDir)
-        sut.configuration.expandedSearchEnabled = true
-        await sut.onExpandedSearchSettingChanged()
-        sut.configuration.expandedSearchEnabled = false
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = true
+        await sut.onExploratorySearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = false
+        await sut.onExploratorySearchSettingChanged()
         embeddingClient.calls.removeAll()
 
-        sut.configuration.expandedSearchEnabled = true
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = true
+        await sut.onExploratorySearchSettingChanged()
 
         XCTAssertEqual(embeddingClient.loadUnloadCalls.count, 1)
         if case .load = embeddingClient.loadUnloadCalls.first {} else {
@@ -547,16 +547,16 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
     /// equality covers all fields, so this must trigger unload+load too.
     func testBaseURLChange_whileEnabled_unloadsOldThenLoadsNew() async {
         await sut.openWorkFolder(tempDir)
-        sut.configuration.expandedSearchEnabled = true
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = true
+        await sut.onExploratorySearchSettingChanged()
         let originalModel = sut.configuration.effectiveEmbeddingConfig.modelName
         embeddingClient.calls.removeAll()
 
-        sut.configuration.expandedSearchEmbeddingConfig = EmbeddingConfig(
+        sut.configuration.exploratorySearchEmbeddingConfig = EmbeddingConfig(
             baseURLString: "http://192.168.1.50:1234",
             modelName: originalModel
         )
-        await sut.onExpandedSearchEmbeddingConfigChanged()
+        await sut.onExploratorySearchEmbeddingConfigChanged()
 
         XCTAssertEqual(embeddingClient.loadUnloadCalls.count, 2,
                        "URL change with same model name must still cycle the model.")
@@ -576,8 +576,8 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
 
     func testResetAllData_unloadsEmbeddingModel() async {
         await sut.openWorkFolder(tempDir)
-        sut.configuration.expandedSearchEnabled = true
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = true
+        await sut.onExploratorySearchSettingChanged()
         embeddingClient.calls.removeAll()
 
         await sut.resetAllData()
@@ -597,18 +597,18 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
     // MARK: - Embedding lifecycle: rapid toggle via detached tasks
 
     /// Mirrors the real UI path where each toggle click spawns its own
-    /// `Task { await ... }`. The FIFO `pendingExpandedSearchToggle` chain
+    /// `Task { await ... }`. The FIFO `pendingExploratorySearchToggle` chain
     /// must serialize the lifecycle effects so the final state matches the
     /// last click — for ON→OFF→ON, that's "loaded".
     func testRapidToggle_viaDetachedTasks_finalLifecycleStateMatchesLastClick() async {
         await sut.openWorkFolder(tempDir)
 
-        sut.configuration.expandedSearchEnabled = true
-        let t1 = Task { await sut.onExpandedSearchSettingChanged() }
-        sut.configuration.expandedSearchEnabled = false
-        let t2 = Task { await sut.onExpandedSearchSettingChanged() }
-        sut.configuration.expandedSearchEnabled = true
-        let t3 = Task { await sut.onExpandedSearchSettingChanged() }
+        sut.configuration.exploratorySearchEnabled = true
+        let t1 = Task { await sut.onExploratorySearchSettingChanged() }
+        sut.configuration.exploratorySearchEnabled = false
+        let t2 = Task { await sut.onExploratorySearchSettingChanged() }
+        sut.configuration.exploratorySearchEnabled = true
+        let t3 = Task { await sut.onExploratorySearchSettingChanged() }
 
         await t1.value
         await t2.value
@@ -625,19 +625,19 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
 
     // MARK: - Embedding lifecycle: redundant toggle ON
 
-    /// `onExpandedSearchSettingChanged` is called whenever the user clicks
+    /// `onExploratorySearchSettingChanged` is called whenever the user clicks
     /// the toggle, including on a no-op click that doesn't actually change
     /// the value (rare but possible via direct binding writes). The
     /// lifecycle service's idempotency guard must short-circuit so the
     /// coordinator's existing model isn't needlessly reloaded.
     func testRedundantToggleOn_doesNotReissueLoad() async {
         await sut.openWorkFolder(tempDir)
-        sut.configuration.expandedSearchEnabled = true
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = true
+        await sut.onExploratorySearchSettingChanged()
         XCTAssertEqual(embeddingClient.loadUnloadCalls.count, 1)
 
         // Hook fires again with no state change.
-        await sut.onExpandedSearchSettingChanged()
+        await sut.onExploratorySearchSettingChanged()
 
         XCTAssertEqual(embeddingClient.loadUnloadCalls.count, 1,
                        "ensureLoaded with same config must short-circuit; no extra calls.")
@@ -645,23 +645,23 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
 
     // MARK: - Embedding lifecycle: config change while disabled, then enable
 
-    /// User changes the embed model in settings while Expanded Search is OFF
+    /// User changes the embed model in settings while Exploratory Search is OFF
     /// (preview/setup before flipping the feature on). The change itself is
     /// a no-op for the lifecycle. Then they flip ON — the FIRST load must
     /// use the NEW config, not the original default.
     func testConfigChange_whileDisabled_thenEnable_loadsWithNewConfig() async {
         await sut.openWorkFolder(tempDir)
         // Toggle still OFF.
-        sut.configuration.expandedSearchEmbeddingConfig = EmbeddingConfig(
+        sut.configuration.exploratorySearchEmbeddingConfig = EmbeddingConfig(
             baseURLString: "http://127.0.0.1:1234",
             modelName: "preconfigured-model"
         )
-        await sut.onExpandedSearchEmbeddingConfigChanged()
+        await sut.onExploratorySearchEmbeddingConfigChanged()
         XCTAssertTrue(embeddingClient.loadUnloadCalls.isEmpty,
                       "Disabled state — config change must be inert.")
 
-        sut.configuration.expandedSearchEnabled = true
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = true
+        await sut.onExploratorySearchSettingChanged()
 
         XCTAssertEqual(embeddingClient.loadUnloadCalls.count, 1)
         if case .load(let model, _) = embeddingClient.loadUnloadCalls.first {
@@ -688,7 +688,7 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
 
         // App "restart": fresh orchestrator state (no in-memory `loaded`),
         // user re-opens a project with toggle pre-enabled.
-        sut.configuration.expandedSearchEnabled = true
+        sut.configuration.exploratorySearchEnabled = true
         await sut.openWorkFolder(tempDir)
 
         // The lifecycle service must adopt without calling load.
@@ -713,7 +713,7 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
         ]
         embeddingClient.loadResults = ["fresh-instance"]
 
-        sut.configuration.expandedSearchEnabled = true
+        sut.configuration.exploratorySearchEnabled = true
         await sut.openWorkFolder(tempDir)
 
         // The list call happened, no match for current modelName, so loadModel
@@ -738,8 +738,8 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
         await sut.openWorkFolder(tempDir)
         embeddingClient.loadError = TestError.boom
 
-        sut.configuration.expandedSearchEnabled = true
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = true
+        await sut.onExploratorySearchSettingChanged()
 
         XCTAssertNotNil(sut.lastErrorMessage,
                         "Load failure means feature broken — must use red banner, not neutral info.")
@@ -756,15 +756,15 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
     /// not have been reclaimed and can retry.
     func testUserPath_unloadFails_surfacesInfoForUser() async {
         await sut.openWorkFolder(tempDir)
-        sut.configuration.expandedSearchEnabled = true
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = true
+        await sut.onExploratorySearchSettingChanged()
         sut.lastInfoMessage = nil
         sut.lastErrorMessage = nil
 
         // Toggle OFF, but unload fails.
         embeddingClient.unloadError = TestError.boom
-        sut.configuration.expandedSearchEnabled = false
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = false
+        await sut.onExploratorySearchSettingChanged()
 
         XCTAssertNotNil(sut.lastInfoMessage,
                         "Unload failure must not be silent — user needs to know VRAM may be pinned")
@@ -842,8 +842,8 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
 
     // MARK: - I7 regression: FIFO guard reads post-FIFO state
 
-    /// I7: pre-fix `onExpandedSearchEmbeddingConfigChanged`'s
-    /// `guard configuration.expandedSearchEnabled else { return }` ran
+    /// I7: pre-fix `onExploratorySearchEmbeddingConfigChanged`'s
+    /// `guard configuration.exploratorySearchEnabled else { return }` ran
     /// SYNCHRONOUSLY before enqueueing on the FIFO chain. If a toggle-OFF
     /// was already queued ahead of this config change, the guard read the
     /// stale (still-true) value and scheduled a reconcile that fired
@@ -852,21 +852,21 @@ final class ExpandedSearchUserScenarioTests: NTMSOrchestratorTestBase {
     /// the post-FIFO state and the reconcile is skipped correctly.
     func testOnEmbeddingConfigChanged_afterToggleOff_observesPostFIFOState() async {
         await sut.openWorkFolder(tempDir)
-        sut.configuration.expandedSearchEnabled = true
-        await sut.onExpandedSearchSettingChanged()
+        sut.configuration.exploratorySearchEnabled = true
+        await sut.onExploratorySearchSettingChanged()
         embeddingClient.calls.removeAll()
 
         // Stage two events back-to-back via detached tasks: toggle-OFF first,
-        // then a config change. The config change captures `expandedSearchEnabled
+        // then a config change. The config change captures `exploratorySearchEnabled
         // == true` at scheduling time (before toggle-OFF has applied) but must
         // observe `false` when its turn in the FIFO chain runs.
-        sut.configuration.expandedSearchEnabled = false
-        let togglePromise = Task { await sut.onExpandedSearchSettingChanged() }
-        sut.configuration.expandedSearchEmbeddingConfig = EmbeddingConfig(
+        sut.configuration.exploratorySearchEnabled = false
+        let togglePromise = Task { await sut.onExploratorySearchSettingChanged() }
+        sut.configuration.exploratorySearchEmbeddingConfig = EmbeddingConfig(
             baseURLString: "http://127.0.0.1:1234",
             modelName: "different-model"
         )
-        let configPromise = Task { await sut.onExpandedSearchEmbeddingConfigChanged() }
+        let configPromise = Task { await sut.onExploratorySearchEmbeddingConfigChanged() }
 
         await togglePromise.value
         await configPromise.value

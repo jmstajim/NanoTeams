@@ -38,6 +38,10 @@ struct WatchtowerView: View {
                     .transition(.scale(scale: 0.95, anchor: .center).combined(with: .opacity))
                 }
 
+                // Setup tips for unconfigured advanced features (own subview so its
+                // LLMStatusMonitor observation doesn't churn the rest of Watchtower).
+                WatchtowerSetupSection()
+
                 // Notification banners (from all loaded tasks)
                 if !cachedNotifications.isEmpty {
                     NTMSSectionHeader(title: "Notifications", systemImage: "bell.fill")
@@ -348,10 +352,12 @@ struct WatchtowerView: View {
 #Preview {
     @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     @Previewable @State var appUpdateState = AppUpdateState(config: StoreConfiguration())
+    @Previewable @State var llmStatusMonitor = LLMStatusMonitor()
     WatchtowerView(taskState: TaskManagementState(), navigationSelection: .constant(.watchtower), clearedUpToDate: .constant(nil))
         .environment(store)
         .environment(store.engineState)
         .environment(store.configuration)
         .environment(appUpdateState)
+        .environment(llmStatusMonitor)
         .frame(width: 600, height: 700)
 }

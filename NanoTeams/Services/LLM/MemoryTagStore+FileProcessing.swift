@@ -4,31 +4,18 @@ import Foundation
 
 extension MemoryTagStore {
 
+    /// Both `read_file` and `read_lines` return a `{start_line, end_line, total_lines, content}`
+    /// envelope. They share the same range-keyed baseline machinery so dedup, invalidation,
+    /// and tag references are identical.
     func processReadFile(_ result: ToolExecutionResult, iteration: Int) -> TagProcessingResult {
-        guard let path = extractPath(from: result.argumentsJSON),
-              let fileContent = extractDataString(from: result.outputJSON, key: "content"),
-              !result.isError else {
-            return .passthrough
-        }
-
-        if let existingTag = currentReadTags[path],
-           let entry = entries[existingTag] {
-            let wasEdited = editedSinceLastRead[path] ?? false
-
-            if !wasEdited && entry.content == fileContent {
-                // Unchanged, no edits — reference only
-                return .reference(content: buildUnchangedReference(tag: existingTag, extras: [("path", path)]))
-            }
-
-            // Changed (by edits or externally) — new baseline with full content
-            return createNewReadBaseline(path: path, content: fileContent, iteration: iteration)
-        }
-
-        // First read — create baseline
-        return createNewReadBaseline(path: path, content: fileContent, iteration: iteration)
+        processRangedRead(result, iteration: iteration)
     }
 
     func processReadLines(_ result: ToolExecutionResult, iteration: Int) -> TagProcessingResult {
+        processRangedRead(result, iteration: iteration)
+    }
+
+    private func processRangedRead(_ result: ToolExecutionResult, iteration: Int) -> TagProcessingResult {
         guard let path = extractPath(from: result.argumentsJSON),
               let content = extractDataString(from: result.outputJSON, key: "content"),
               !result.isError else {
@@ -37,6 +24,7 @@ extension MemoryTagStore {
 
         let startLine = extractDataInt(from: result.outputJSON, key: "start_line") ?? 0
         let endLine = extractDataInt(from: result.outputJSON, key: "end_line") ?? 0
+        let totalLines = extractDataInt(from: result.outputJSON, key: "total_lines") ?? 0
         let rangeKey = "\(path):\(startLine)-\(endLine)"
 
         let wasEdited = editedSinceLastRead[path] ?? false
@@ -47,21 +35,19 @@ extension MemoryTagStore {
             return .reference(content: buildUnchangedReference(tag: existingTag, extras: [("path", path), ("lines", "\(startLine)-\(endLine)")]))
         }
 
-        // First read or changed — new baseline for this range
         let tag = registerEntry(type: .read, resource: rangeKey, iteration: iteration,
                                 content: content, replacingIn: &currentReadTags)
+        // Clear staleness ONLY when the entire file was re-read. A partial
+        // re-read (e.g. `read_lines 60-100` after `edit_file`) refreshes the
+        // baseline for that range only — other ranges (e.g. 1-50) remain
+        // stale, and clearing the per-path flag here would let a subsequent
+        // 1-50 read incorrectly short-circuit to its pre-edit tag.
+        let isFullRead = startLine == 1 && totalLines > 0 && endLine == totalLines
+        if isFullRead {
+            editedSinceLastRead[path] = false
+        }
 
         let taggedContent = "{\"tag\":\"\(tag)\",\"path\":\(jsonEscape(path)),\"lines\":\"\(startLine)-\(endLine)\",\"content\":\(jsonEscape(content))}"
-        return .tagged(content: taggedContent, tag: tag)
-    }
-
-    func createNewReadBaseline(path: String, content: String, iteration: Int) -> TagProcessingResult {
-        let tag = registerEntry(type: .read, resource: path, iteration: iteration,
-                                content: content, replacingIn: &currentReadTags)
-        editedSinceLastRead[path] = false
-
-        let lines = content.components(separatedBy: "\n").count
-        let taggedContent = "{\"tag\":\"\(tag)\",\"path\":\(jsonEscape(path)),\"lines\":\(lines),\"content\":\(jsonEscape(content))}"
         return .tagged(content: taggedContent, tag: tag)
     }
 }

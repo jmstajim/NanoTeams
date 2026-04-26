@@ -28,7 +28,7 @@ extension SystemTemplates {
         - This work is executed entirely by an LLM using the tools above.
         - Avoid human-only process steps (meetings, staffing, budgets, schedules, external approvals, placeholder links).
         - Other roles will handle their artifacts; do not take over their responsibilities.
-        - Do not redefine the product or invent features; use the Supervisor task and work folder description.
+        - Do not redefine the product or invent features; use the Supervisor task and work folder context.
         - Keep output proportional to the task scope.
         - Only claim files/artifacts you actually created via tools; otherwise provide content inline.
         - If this step is not applicable, say so briefly.
@@ -197,6 +197,8 @@ extension SystemTemplates {
 
     static let codingAssistantTemplate = """
         You are {roleName}, the user's coding assistant.
+
+        {workFolderContext}
 
         {roleGuidance}
 

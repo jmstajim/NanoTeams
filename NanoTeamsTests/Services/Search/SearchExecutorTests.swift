@@ -368,4 +368,263 @@ final class SearchExecutorTests: XCTestCase {
         XCTAssertEqual(out.matches[0].path, "a.swift",
             "Internal subtree must not contribute matches at any depth.")
     }
+
+    // MARK: - Filename matches (walk-collected)
+
+    func testFilenameMatches_returnedAlongsideContentMatches() throws {
+        try write("Sources/SearchExecutor.swift", content: "let x = 1\n")
+        try write("Domain/Role.swift", content: "let y = 2\n")
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: ["SearchExecutor"],
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(out.matches.count, 0,
+            "Query doesn't appear in any file's content.")
+        XCTAssertEqual(out.filenameMatches.count, 1)
+        XCTAssertEqual(out.filenameMatches[0].path, "Sources/SearchExecutor.swift")
+        XCTAssertEqual(out.filenameMatches[0].matched_on, .basename)
+    }
+
+    func testFilenameMatches_basenameSortsBeforePath() throws {
+        try write("Services/Search/Foo.swift", content: "")
+        try write("Domain/Search.swift", content: "")
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: ["Search"],
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(out.filenameMatches.first?.path, "Domain/Search.swift",
+            "Basename hits must come before path-only hits.")
+        XCTAssertEqual(out.filenameMatches.first?.matched_on, .basename)
+    }
+
+    func testFilenameMatches_respectInternalDirSkip() throws {
+        try write(".nanoteams/internal/SearchSecrets.swift", content: "")
+        try write("a.swift", content: "")
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: ["Search"],
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(out.filenameMatches.count, 0,
+            "Internal-dir files must not contribute filename matches even when they'd otherwise match.")
+    }
+
+    func testFilenameMatches_respectFileGlob() throws {
+        // file_glob filters which files we walk for content; the same filter
+        // should narrow filename match candidates so the LLM gets one
+        // consistent scope.
+        try write("a.swift", content: "")
+        try write("a.md", content: "")
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: ["a."],
+            fileGlob: "*.swift",
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(out.filenameMatches.map(\.path), ["a.swift"])
+    }
+
+    func testFilenameMatches_emptyWhenNoCandidates() throws {
+        try write("foo.swift", content: "")
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: ["nothing-will-match-this"],
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(out.filenameMatches.count, 0)
+    }
+
+    func testFilenameMatches_constrainToFiles_iteratesExactSet() throws {
+        try write("a.swift", content: "")
+        try write("b.swift", content: "")
+        try write("c.swift", content: "")
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: [".swift"],
+            constrainToFiles: ["a.swift", "c.swift"],
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(Set(out.filenameMatches.map(\.path)), ["a.swift", "c.swift"],
+            "Constrained walk only visits the listed files for filename matching too.")
+    }
+
+    // MARK: - Filename matches: walk-integration corner cases
+
+    func testFilenameMatches_skipDirectories_neverContributeFiles() throws {
+        // `.git` is in `WalkSkipRules.skipped`. Files inside it must not
+        // appear in filename matches even if their basename matches.
+        try write(".git/objects/SearchExecutor.swift", content: "")
+        try write("Sources/SearchExecutor.swift", content: "")
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: ["SearchExecutor"],
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(out.filenameMatches.count, 1)
+        XCTAssertEqual(out.filenameMatches[0].path, "Sources/SearchExecutor.swift",
+            "WalkSkipRules-blocked subtree must not contribute filename matches.")
+    }
+
+    func testFilenameMatches_deeplyNested_pathBranchAttribution() throws {
+        // A file deep in the tree where only a parent dir matches the
+        // query — ensures `matched_on: .path` fires for nested paths.
+        try write("a/b/c/d/Foo.swift", content: "")
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: ["b/c"],
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(out.filenameMatches.count, 1)
+        XCTAssertEqual(out.filenameMatches[0].matched_on, .path)
+    }
+
+    func testFilenameMatches_pathsParameter_narrowsCandidateSet() throws {
+        // The `paths` filter restricts the walk to a subdirectory; filename
+        // matches must respect the same scope.
+        try write("inside/foo.swift", content: "")
+        try write("outside/foo.swift", content: "")
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: ["foo"],
+            paths: ["inside"],
+            internalDir: internalDir
+        ))
+        let paths = Set(out.filenameMatches.map(\.path))
+        XCTAssertTrue(paths.contains(where: { $0.contains("inside/foo.swift") }))
+        XCTAssertFalse(paths.contains(where: { $0.contains("outside/foo.swift") }),
+            "Files outside the `paths` scope must not contribute filename matches.")
+    }
+
+    func testFilenameMatches_multipleQueries_allTermsContribute() throws {
+        // Round-robin/dedup at the matcher level: each query term feeds
+        // into the same `visitedPaths`, so any file whose name matches
+        // ANY query surfaces.
+        try write("AuthService.swift", content: "")
+        try write("UserManager.swift", content: "")
+        try write("Other.swift", content: "")
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: ["Auth", "User"],
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(Set(out.filenameMatches.map(\.path)),
+                       ["AuthService.swift", "UserManager.swift"])
+    }
+
+    func testFilenameMatches_globQueryMatchesByExtension() throws {
+        // The query parameter (not file_glob) carries a glob — filename
+        // match path detects `*` and switches to glob mode.
+        try write("a.swift", content: "")
+        try write("b.md", content: "")
+        try write("c.swift", content: "")
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: ["*.swift"],
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(Set(out.filenameMatches.map(\.path)), ["a.swift", "c.swift"])
+    }
+
+    func testFilenameMatches_caseInsensitiveAcrossBasenameCase() throws {
+        // The walk preserves filesystem casing. Queries must match
+        // regardless of case difference between query and file.
+        try write("README.MD", content: "")
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: ["readme"],
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(out.filenameMatches.count, 1)
+        XCTAssertEqual(out.filenameMatches[0].matched_on, .basename)
+    }
+
+    func testFilenameMatches_dotfileIncluded_notTreatedAsHidden() throws {
+        // `.gitignore` is intentionally NOT in `WalkSkipRules.skipped` —
+        // the project allows useful dotfiles. Filename match must surface
+        // it when queried.
+        try write(".gitignore", content: "build/\n")
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: ["gitignore"],
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(out.filenameMatches.count, 1)
+        XCTAssertEqual(out.filenameMatches[0].path, ".gitignore")
+    }
+
+    func testFilenameMatches_constrainToFiles_emptyList_emptyOutput() throws {
+        // The `constrainToFiles: []` early-return path returns an empty
+        // output. No files were "visited", so no filename matches.
+        try write("a.swift", content: "")
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: ["a"],
+            constrainToFiles: [],
+            internalDir: internalDir
+        ))
+        XCTAssertTrue(out.filenameMatches.isEmpty)
+    }
+
+    func testFilenameMatches_regexContentMode_doesNotAffectFilenameMatch() throws {
+        // `mode: .regex` controls CONTENT search; filename matching is
+        // independent (always substring/glob). Verify a regex-mode query
+        // that is also a valid substring still surfaces the file by name.
+        try write("FooBar.swift", content: "no content match here\n")
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: ["FooBar"],
+            mode: .regex,
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(out.matches.count, 0,
+            "No content matches the regex `FooBar` in this file.")
+        XCTAssertEqual(out.filenameMatches.count, 1,
+            "Filename match runs in substring mode regardless of content `mode`.")
+    }
+
+    func testFilenameMatches_combinedWithContentMatches_bothPresent() throws {
+        // A file can legitimately match BOTH on content and on name.
+        // The two outputs are independent — no dedup between them.
+        try write("Search.swift", content: "Search\n")
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: ["Search"],
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(out.matches.count, 1)
+        XCTAssertEqual(out.filenameMatches.count, 1)
+        XCTAssertEqual(out.filenameMatches[0].path, "Search.swift",
+            "Same file appearing in both `matches` and `filename_matches` is by design.")
+    }
+
+    func testFilenameMatches_pathsTargetingSingleFile_onlyThatFile() throws {
+        // When `paths` resolves to a single file (not a dir), the walk
+        // searches only that file. Filename matching reflects the same
+        // scope — exactly one candidate considered.
+        try write("only.swift", content: "")
+        try write("other.swift", content: "")
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: [".swift"],
+            paths: ["only.swift"],
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(out.filenameMatches.map(\.path), ["only.swift"],
+            "Single-file `paths` argument feeds the file into the filename-match scan, mirroring the dir-walk branch.")
+    }
+
+    func testFilenameMatches_emptyQueriesArray_emptyOutput() throws {
+        // Empty queries (somehow reached the executor) must produce no
+        // filename matches and no content matches, but not crash.
+        try write("a.swift", content: "")
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: [],
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(out.filenameMatches.count, 0)
+        XCTAssertEqual(out.matches.count, 0)
+    }
 }

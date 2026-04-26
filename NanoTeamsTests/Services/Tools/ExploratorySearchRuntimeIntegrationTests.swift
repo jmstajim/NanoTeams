@@ -5,7 +5,7 @@ import XCTest
 /// `ToolRegistry.defaultRegistry` + `ToolRuntime` stack — confirming that
 /// argument parsing, handler dispatch, alias resolution, and signal
 /// propagation all line up end-to-end.
-final class ExpandedSearchRuntimeIntegrationTests: XCTestCase {
+final class ExploratorySearchRuntimeIntegrationTests: XCTestCase {
 
     private let fm = FileManager.default
     private var tempDir: URL!
@@ -70,58 +70,58 @@ final class ExpandedSearchRuntimeIntegrationTests: XCTestCase {
 
     // MARK: - Broad search via runtime: signal makes it back
 
-    func testExpandedSearch_viaRuntime_emitsExpandedSearchSignal() throws {
+    func testExploratorySearch_viaRuntime_emitsExploratorySearchSignal() throws {
         try write("a.swift", content: "anything\n")
 
         let call = StepToolCall(
             name: "search",
-            argumentsJSON: #"{"query": "scroll", "expand": true}"#
+            argumentsJSON: #"{"query": "scroll", "exploratory": true}"#
         )
         let results = runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertEqual(results.count, 1)
-        guard case .expandedSearch(let payload) = results[0].signal else {
-            XCTFail("Expected .expandedSearch signal, got \(String(describing: results[0].signal))")
+        guard case .exploratorySearch(let payload) = results[0].signal else {
+            XCTFail("Expected .exploratorySearch signal, got \(String(describing: results[0].signal))")
             return
         }
         XCTAssertEqual(payload.query, "scroll")
         XCTAssertFalse(results[0].isError)
     }
 
-    // MARK: - Aliases route to expanded search too
+    // MARK: - Aliases route to exploratory search too
 
-    func testGrepAlias_withExpandedSearch_emitsSignal() throws {
+    func testGrepAlias_withExploratorySearch_emitsSignal() throws {
         let call = StepToolCall(
             name: "grep",
-            argumentsJSON: #"{"query": "scroll", "expand": true}"#
+            argumentsJSON: #"{"query": "scroll", "exploratory": true}"#
         )
         let results = runtime.executeAll(context: context, toolCalls: [call])
-        guard case .expandedSearch = results[0].signal else {
-            XCTFail("grep alias must route to SearchTool and propagate expanded_search.")
+        guard case .exploratorySearch = results[0].signal else {
+            XCTFail("grep alias must route to SearchTool and propagate exploratory_search.")
             return
         }
     }
 
-    func testFindAlias_withExpandedSearch_emitsSignal() throws {
+    func testFindAlias_withExploratorySearch_emitsSignal() throws {
         let call = StepToolCall(
             name: "find",
-            argumentsJSON: #"{"query": "scroll", "expand": true}"#
+            argumentsJSON: #"{"query": "scroll", "exploratory": true}"#
         )
         let results = runtime.executeAll(context: context, toolCalls: [call])
-        guard case .expandedSearch = results[0].signal else {
-            XCTFail("find alias must route to SearchTool and propagate expanded_search.")
+        guard case .exploratorySearch = results[0].signal else {
+            XCTFail("find alias must route to SearchTool and propagate exploratory_search.")
             return
         }
     }
 
     // MARK: - Provider-prefix tool name: functions.search
 
-    func testFunctionsPrefix_withExpandedSearch_emitsSignal() throws {
+    func testFunctionsPrefix_withExploratorySearch_emitsSignal() throws {
         let call = StepToolCall(
             name: "functions.search",
-            argumentsJSON: #"{"query": "scroll", "expand": true}"#
+            argumentsJSON: #"{"query": "scroll", "exploratory": true}"#
         )
         let results = runtime.executeAll(context: context, toolCalls: [call])
-        guard case .expandedSearch = results[0].signal else {
+        guard case .exploratorySearch = results[0].signal else {
             XCTFail("functions.* prefix must be stripped before dispatch.")
             return
         }
@@ -129,13 +129,13 @@ final class ExpandedSearchRuntimeIntegrationTests: XCTestCase {
 
     // MARK: - All passthrough parameters preserved
 
-    func testExpandedSearch_passesAllOptionalParametersIntoSignal() throws {
+    func testExploratorySearch_passesAllOptionalParametersIntoSignal() throws {
         let call = StepToolCall(
             name: "search",
             argumentsJSON: #"""
             {
               "query": "scroll",
-              "expand": true,
+              "exploratory": true,
               "mode": "regex",
               "paths": ["src", "lib"],
               "file_glob": "*.swift",
@@ -147,8 +147,8 @@ final class ExpandedSearchRuntimeIntegrationTests: XCTestCase {
             """#
         )
         let results = runtime.executeAll(context: context, toolCalls: [call])
-        guard case .expandedSearch(let payload) = results[0].signal else {
-            XCTFail("Expected .expandedSearch")
+        guard case .exploratorySearch(let payload) = results[0].signal else {
+            XCTFail("Expected .exploratorySearch")
             return
         }
         XCTAssertEqual(payload.query, "scroll")
@@ -163,15 +163,15 @@ final class ExpandedSearchRuntimeIntegrationTests: XCTestCase {
 
     // MARK: - providerID is set by the runtime even on signal results
 
-    func testExpandedSearch_signalResult_hasProviderID() throws {
+    func testExploratorySearch_signalResult_hasProviderID() throws {
         let call = StepToolCall(
             providerID: "call_xyz_123",
             name: "search",
-            argumentsJSON: #"{"query": "x", "expand": true}"#
+            argumentsJSON: #"{"query": "x", "exploratory": true}"#
         )
         let results = runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertEqual(results[0].providerID, "call_xyz_123",
-                       "ToolRuntime must propagate providerID into the expandedSearch signal result.")
+                       "ToolRuntime must propagate providerID into the exploratorySearch signal result.")
     }
 
     // MARK: - Plain regex still works through runtime
@@ -184,7 +184,16 @@ final class ExpandedSearchRuntimeIntegrationTests: XCTestCase {
         )
         let results = runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
-        XCTAssertTrue(results[0].outputJSON.contains("world43"))
-        XCTAssertFalse(results[0].outputJSON.contains("hello42"))
+
+        // Inspect the parsed `matches` array — `hello42` can legitimately
+        // appear inside `context_before` (AppDefaults is non-zero), but the
+        // anchored `^world\d+$` regex must match `world43` only.
+        let data = results[0].outputJSON.data(using: .utf8) ?? Data()
+        let env = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let payload = env?["data"] as? [String: Any]
+        let matches = payload?["matches"] as? [[String: Any]]
+        XCTAssertEqual(matches?.count, 1)
+        XCTAssertEqual(matches?.first?["text"] as? String, "world43")
+        XCTAssertEqual(matches?.first?["line"] as? Int, 2)
     }
 }

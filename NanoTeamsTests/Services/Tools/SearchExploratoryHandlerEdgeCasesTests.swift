@@ -4,7 +4,7 @@ import XCTest
 /// Edge cases for `SearchTool.handle` under the `expand` flag —
 /// defensive against LLM-ugly arg permutations and ensures the plain path
 /// behavior doesn't regress when the flag is absent.
-final class SearchExpandedHandlerEdgeCasesTests: XCTestCase {
+final class SearchExploratoryHandlerEdgeCasesTests: XCTestCase {
 
     private let fm = FileManager.default
     private var tempDir: URL!
@@ -33,7 +33,11 @@ final class SearchExpandedHandlerEdgeCasesTests: XCTestCase {
             resolver: resolver,
             fileManager: fm,
             workFolderRoot: tempDir,
-            internalDir: tempDir.appendingPathComponent(".nanoteams/internal", isDirectory: true)
+            internalDir: tempDir.appendingPathComponent(".nanoteams/internal", isDirectory: true),
+            exploratoryByDefault: false,
+            defaultMaxResults: AppDefaults.searchMaxResults,
+            defaultContextBefore: AppDefaults.searchContextBefore,
+            defaultContextAfter: AppDefaults.searchContextAfter
         )
     }
 
@@ -66,7 +70,7 @@ final class SearchExpandedHandlerEdgeCasesTests: XCTestCase {
     func testMissingQuery_returnsInvalidArgsError() {
         let result = makeTool().handle(
             context: ctx(),
-            args: ["expand": true]
+            args: ["exploratory": true]
         )
         XCTAssertTrue(result.isError)
         XCTAssertNil(result.signal)
@@ -84,10 +88,10 @@ final class SearchExpandedHandlerEdgeCasesTests: XCTestCase {
         )
         let result = makeTool().handle(
             context: ctx(),
-            args: ["query": "target", "expand": "true"]
+            args: ["query": "target", "exploratory": "true"]
         )
         XCTAssertNil(result.signal,
-                     "String 'true' must not trigger expanded search — only real bool true.")
+                     "String 'true' must not trigger exploratory search — only real bool true.")
     }
 
     func testExpand_intValue_treatedAsFalse() throws {
@@ -97,7 +101,7 @@ final class SearchExpandedHandlerEdgeCasesTests: XCTestCase {
         )
         let result = makeTool().handle(
             context: ctx(),
-            args: ["query": "target", "expand": 1]
+            args: ["query": "target", "exploratory": 1]
         )
         XCTAssertNil(result.signal)
     }
@@ -107,33 +111,33 @@ final class SearchExpandedHandlerEdgeCasesTests: XCTestCase {
     func testSignal_noOptionalArgs_allDefaults() {
         let result = makeTool().handle(
             context: ctx(),
-            args: ["query": "scroll", "expand": true]
+            args: ["query": "scroll", "exploratory": true]
         )
-        guard case .expandedSearch(let payload) = result.signal else {
-            XCTFail("Expected expandedSearch signal")
+        guard case .exploratorySearch(let payload) = result.signal else {
+            XCTFail("Expected exploratorySearch signal")
             return
         }
         XCTAssertEqual(payload.mode, .substring)
         XCTAssertNil(payload.paths)
         XCTAssertNil(payload.fileGlob)
-        XCTAssertEqual(payload.contextBefore, 0)
-        XCTAssertEqual(payload.contextAfter, 0)
-        XCTAssertEqual(payload.maxResults, 20)
+        XCTAssertEqual(payload.contextBefore, AppDefaults.searchContextBefore)
+        XCTAssertEqual(payload.contextAfter, AppDefaults.searchContextAfter)
+        XCTAssertEqual(payload.maxResults, AppDefaults.searchMaxResults)
         XCTAssertEqual(payload.maxMatchLines, 40)
     }
 
     // MARK: - Signal envelope shape
 
-    func testSignal_envelopeIsValidJSON_andMentionsExpanding() throws {
+    func testSignal_envelopeIsValidJSON_andMentionsExploring() throws {
         let result = makeTool().handle(
             context: ctx(),
-            args: ["query": "scroll", "expand": true]
+            args: ["query": "scroll", "exploratory": true]
         )
         let data = result.outputJSON.data(using: .utf8) ?? Data()
         let parsed = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         XCTAssertNotNil(parsed, "Interim envelope must be valid JSON")
         let inner = parsed?["data"] as? [String: Any]
-        XCTAssertEqual(inner?["status"] as? String, "expanding")
+        XCTAssertEqual(inner?["status"] as? String, "exploring")
         XCTAssertEqual(inner?["query"] as? String, "scroll")
     }
 
@@ -141,13 +145,13 @@ final class SearchExpandedHandlerEdgeCasesTests: XCTestCase {
 
     func testSchema_expandProperty_isBoolean() {
         let schema = SearchTool.schema
-        let expand = schema.parameters.properties?["expand"]
+        let expand = schema.parameters.properties?["exploratory"]
         XCTAssertEqual(expand?.type, "boolean")
     }
 
     func testSchema_expand_notRequired() {
         let schema = SearchTool.schema
-        XCTAssertFalse(schema.parameters.required?.contains("expand") ?? false,
+        XCTAssertFalse(schema.parameters.required?.contains("exploratory") ?? false,
                        "expand must remain optional — always-on would double charge every search.")
     }
 

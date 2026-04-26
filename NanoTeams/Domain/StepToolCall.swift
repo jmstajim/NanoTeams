@@ -46,4 +46,13 @@ struct StepToolCall: Codable, Identifiable, Hashable {
             && resultJSON?.contains("\"status\":\"generating\"") == true
             && isError != true
     }
+
+    /// True when this `search` call requested exploratory mode but it was downgraded
+    /// to plain search because the user has `exploratorySearchEnabled = false`.
+    /// Matches the `"exploratory_disabled":true` flag set by `ExploratorySearchEnvelope.make`.
+    var isExploratorySearchDisabled: Bool {
+        name == ToolNames.search
+            && resultJSON?.contains("\"exploratory_disabled\":true") == true
+            && isError != true
+    }
 }

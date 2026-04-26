@@ -58,6 +58,21 @@ final class QuickCaptureController {
     @ObservationIgnored private var lastRefreshedTaskID: Int?
     @ObservationIgnored private var didSetupHotkeys = false
 
+    /// In-flight guard for the queue-driven `resumeRun` wake-up. Prevents two
+    /// `tryFlush` ticks (e.g. an enqueue immediately followed by an engineState
+    /// onChange) from spawning two concurrent `resumeRun(taskID:)` calls before
+    /// the first transitions the engine out of `.paused`. Cleared in the
+    /// dispatched `Task`'s `defer` so back-to-back callers within the same
+    /// in-flight cycle collapse to one resume.
+    @ObservationIgnored private var pendingResumeForQueueFlush: Set<Int> = []
+
+    /// Test seam — overrides the `Task { resumeRun }` dispatched by the
+    /// `.paused`/`.pending`/`.none` branch of `tryFlushQueuedMessages`. Production
+    /// path is `nil`. Tests inject a synchronous closure so the in-flight guard
+    /// + branch routing can be exercised without spinning a real engine. Mirrors
+    /// the `engineFactory` seam pattern in `NTMSOrchestrator`.
+    @ObservationIgnored var resumeRunForTesting: ((Int) -> Void)?
+
     // MARK: - Hotkey IDs
 
     private static let openHotkeyID: UInt32 = 1
@@ -319,6 +334,14 @@ final class QuickCaptureController {
     /// wants to line up their next message without waiting for a question.
     /// Silently no-ops when no task is active (guarded upstream by `canSubmit`);
     /// callers rely on `queueChatMessage` to accept/reject the payload.
+    ///
+    /// Targets the same role the QuickCapture title displays — i.e. the first
+    /// running step's role. This keeps title and queue recipient in lockstep
+    /// (multi-role chat teams like Quest Party show one role at a time and
+    /// auto-switch as the engine progresses; submit-time lookup follows that
+    /// switch). If no running step exists during a transient state transition,
+    /// `targetRoleID` falls back to `nil` and the message is drained tier-2
+    /// (untargeted) on the next backstop fire.
     func submitQueuedMessageFromForm() {
         guard let store else {
             return
@@ -327,16 +350,27 @@ final class QuickCaptureController {
             store.lastErrorMessage = "No active task — open or create a task first."
             return
         }
+        let targetRoleID = store.loadedTask(taskID).flatMap(Self.firstRunningStepRoleID(in:))
         let queued = queueChatMessage(
             text: formState.supervisorTask,
             attachments: formState.answerAttachments,
             clippedTexts: formState.answerClippedTexts,
-            taskID: taskID
+            taskID: taskID,
+            targetRoleID: targetRoleID
         )
         guard queued else { return }
         formState.supervisorTask = ""
         formState.answerAttachments = []
         formState.answerClippedTexts = []
+    }
+
+    /// The role ID of the first running step in `task`'s latest run, if any.
+    /// Single source of truth used by both `QuickCaptureModeCoordinator` (to
+    /// build the `.taskWorking` title) and `submitQueuedMessageFromForm` (to
+    /// target the queue at the same role). Without this shared call site, a
+    /// future tweak to either site could silently desync title vs. queue target.
+    static func firstRunningStepRoleID(in task: NTMSTask) -> String? {
+        task.runs.last?.steps.first(where: { $0.status == .running })?.effectiveRoleID
     }
 
     // MARK: - Chat Queue
@@ -377,14 +411,21 @@ final class QuickCaptureController {
             return false
         }
         formState.appendQueuedMessage(message, for: taskID)
+        // Drive the wake-up immediately so a `.paused` engine doesn't leave the
+        // message hanging until the next unrelated `engineState` onChange. Cheap
+        // for `.running`/`.needsAcceptance` (default branch is no-op); for
+        // `.needsSupervisorInput` and `.paused`/`.pending`/`.none` it triggers the
+        // appropriate dispatch path.
+        tryFlushQueuedMessages()
         return true
     }
 
     /// Backstop for the queue — handles the `.needsSupervisorInput` case (primary
     /// consumption happens in `LLMExecutionService.injectQueuedSupervisorMessage`
-    /// for `.running` roles). Flushes the first matching queued message for any
-    /// task whose engine paused waiting for Supervisor input, or discards the
-    /// entire task's queue on `.done` / `.failed`. Called from
+    /// for `.running` roles). Drains every eligible queued message for the chosen
+    /// waiting role into one combined `answerSupervisorQuestion` call (matches the
+    /// primary path's drain-all-at-once batching), or discards the entire task's
+    /// queue on `.done` / `.failed`. Called from
     /// `MainLayoutView.onChange(of: engineState.taskEngineStates)` — panel-visibility
     /// independent (queue must resolve even when the overlay is closed).
     ///
@@ -412,11 +453,67 @@ final class QuickCaptureController {
                     let reason = store.taskEngineStates[taskID] == .failed ? "failed" : "completed"
                     store.lastInfoMessage = "\(count) queued message(s) discarded — task \(reason)."
                 }
-            default:
+            case .paused, .pending, .none:
+                // Wake the run so the primary path (`injectQueuedSupervisorMessage`)
+                // can drain the queue on the next tool-loop iteration. Without this,
+                // the queue silently waits for an unrelated `engineState` onChange
+                // (the user-reported "messages just sit there after restart" bug).
+                wakeRunForQueuedMessages(taskID: taskID, store: store)
+            case .running, .needsAcceptance:
                 continue
             }
         }
     }
+
+    /// Dispatches a `resumeRun(taskID:)` for a `.paused`/`.pending`/`.none` engine
+    /// when the task has queued messages. Three guards — in priority order:
+    ///
+    /// 1. **Closed-task discard** — `closedAt != nil` means the task is finalized
+    ///    (active-task close is normally caught by `handleActiveTaskClosedAtChanged`,
+    ///    but: (a) there's a race when `stopEngine` removes the engine state before
+    ///    the `closedAt` onChange fires, and (b) background-task close has no
+    ///    closedAt onChange wired). Drop the queue and surface the discard message
+    ///    so we don't resurrect a closed task by creating a fresh engine.
+    /// 2. **In-flight dedupe** — a single resumeRun per (taskID, in-flight cycle).
+    ///    Multiple `tryFlush` ticks can fire before the first resume changes
+    ///    engineState (see `pendingResumeForQueueFlush` doc).
+    /// 3. **Test seam** — `resumeRunForTesting` short-circuits the `Task` dispatch
+    ///    so unit tests can assert call sequencing synchronously.
+    private func wakeRunForQueuedMessages(taskID: Int, store: NTMSOrchestrator) {
+        if store.loadedTask(taskID)?.closedAt != nil {
+            let count = formState.queuedMessages(for: taskID).count
+            formState.clearQueuedMessages(for: taskID)
+            if count > 0 {
+                store.lastInfoMessage = "\(count) queued message(s) discarded — task closed."
+            }
+            return
+        }
+        guard !pendingResumeForQueueFlush.contains(taskID) else { return }
+        pendingResumeForQueueFlush.insert(taskID)
+        if let resume = resumeRunForTesting {
+            // Test path: the in-flight flag is intentionally NOT cleared after
+            // the closure — that mirrors production semantics where the flag
+            // stays set while the dispatched `Task` is in flight. Tests that
+            // need to simulate "Task finished, ready for next resume" call
+            // `clearPendingResumeForQueueFlushForTesting(taskID:)` explicitly.
+            resume(taskID)
+            return
+        }
+        Task { @MainActor [weak self] in
+            defer { self?.pendingResumeForQueueFlush.remove(taskID) }
+            await self?.store?.resumeRun(taskID: taskID)
+        }
+    }
+
+    #if DEBUG
+    /// Test-only: clears the in-flight resume guard for a given task, simulating
+    /// completion of the production `Task { resumeRun }`. Lets tests verify that
+    /// a subsequent `tryFlush` after the prior resume "finishes" can dispatch
+    /// another resume.
+    func clearPendingResumeForQueueFlushForTesting(taskID: Int) {
+        pendingResumeForQueueFlush.remove(taskID)
+    }
+    #endif
 
     /// Discards all queued chat messages for the given task. Use on task delete/close
     /// to prevent a stale queue from re-applying to a reincarnated task ID.
@@ -448,6 +545,23 @@ final class QuickCaptureController {
         discardQueuedChatMessage(taskID: taskID)
     }
 
+    /// Drains every eligible queued message for the chosen waiting role into
+    /// ONE combined `answerSupervisorQuestion` call. Mirrors the primary path's
+    /// drain-all semantics in `NTMSOrchestrator.consumeQueuedSupervisorMessage`
+    /// — eliminates the previous drip-pattern where messages dribbled out one
+    /// per `engineState` transition (and could stall entirely when SwiftUI's
+    /// `onChange` coalesced rapid `.needsSupervisorInput` re-entries or the
+    /// `TeamEngine` same-state guard suppressed `onStateChanged`).
+    ///
+    /// Atomicity contract (matches primary path):
+    /// 1. Pop every collected message id synchronously BEFORE any `await`. A
+    ///    concurrent `flushQueuedChatMessage` invocation triggered by another
+    ///    rapid state flip would otherwise see the same messages and double-deliver.
+    /// 2. On `answerSupervisorQuestion` failure (attachment finalize, missing step,
+    ///    etc.), re-insert popped messages at the queue **head** via
+    ///    `prependQueuedMessages` — preserves FIFO under concurrent additions
+    ///    (a message queued during the await would otherwise push the failed
+    ///    batch behind it).
     private func flushQueuedChatMessage(taskID: Int) async {
         guard let store,
               let task = store.loadedTask(taskID),
@@ -458,41 +572,53 @@ final class QuickCaptureController {
         guard !waitingSteps.isEmpty else { return }
 
         let queue = formState.queuedMessages(for: taskID)
-        guard let picked = Self.pickQueuedMessageForFlush(
+        guard let picked = Self.collectQueuedMessagesForFlush(
             queue: queue,
             waitingStepRoleIDs: waitingSteps.map(\.effectiveRoleID)
         ) else { return }
-        guard let queued = queue.first(where: { $0.id == picked.messageID }),
-              let step = waitingSteps.first(where: { $0.effectiveRoleID == picked.stepRoleID })
+        guard let step = waitingSteps.first(where: { $0.effectiveRoleID == picked.stepRoleID })
         else { return }
 
-        let built = AnswerTextBuilder.build(
-            text: queued.text,
-            clips: queued.clippedTexts,
-            attachments: queued.attachments,
-            embedFiles: embedFilesInPrompt
-        )
+        // ATOMIC RESERVE — pop every collected id synchronously before any await.
+        var popped: [QuickCaptureFormState.QueuedChatMessage] = []
+        for id in picked.messageIDs {
+            if let msg = formState.popFirstQueuedMessage(for: taskID, matching: { $0.id == id }) {
+                popped.append(msg)
+            }
+        }
+        guard !popped.isEmpty else { return }
+
+        // Build each message's body and join with a single newline (matching the
+        // primary path). No `Supervisor:` prefix here — the backstop delivers
+        // through `answerSupervisorQuestion`, which routes via the `ask_supervisor`
+        // tool-result path; LLM attribution is intrinsic.
+        var bodies: [String] = []
+        var combinedAttachments: [StagedAttachment] = []
+        for msg in popped {
+            let built = AnswerTextBuilder.build(
+                text: msg.text,
+                clips: msg.clippedTexts,
+                attachments: msg.attachments,
+                embedFiles: embedFilesInPrompt
+            )
+            bodies.append(built.answer)
+            combinedAttachments.append(contentsOf: msg.attachments)
+        }
+        let combinedAnswer = bodies.joined(separator: "\n")
 
         // answerSupervisorQuestion auto-resumes the run — do NOT call resumeRun separately.
         let delivered = await store.answerSupervisorQuestion(
             stepID: step.id,
             taskID: taskID,
-            answer: built.answer,
-            attachments: queued.attachments
+            answer: combinedAnswer,
+            attachments: combinedAttachments
         )
-        if delivered {
-            // Match by stable id — avoids structural-equality collisions when two
-            // queued messages have identical text/attachments/clips.
-            formState.popFirstQueuedMessage(for: taskID) { $0.id == queued.id }
-        }
-        // Delivery failure: `answerSupervisorQuestion` already set `store.lastErrorMessage`
-        // (attachment finalization is the only documented failure path). The queue entry
-        // stays put, but `onChange(of: taskEngineStates)` will NOT re-fire unless the
-        // engine state actually transitions (CLAUDE.md #39) — in practice recovery
-        // requires user action. Surface a persistent hint so they know retry is manual.
-        else {
+        if !delivered {
+            // Re-insert at HEAD (not append) so FIFO holds even if new messages
+            // were queued during the await.
+            formState.prependQueuedMessages(popped, for: taskID)
             store.lastErrorMessage = (store.lastErrorMessage ?? "Message delivery failed.")
-                + " — queued message remains; retry after resolving the issue."
+                + " — \(popped.count) queued message(s) kept; retry after resolving the issue."
         }
     }
 
@@ -535,10 +661,39 @@ final class QuickCaptureController {
     private func applyAnswerModeTransition(needsAnswerMode: Bool, resolvedMode: QuickCaptureMode) {
         if needsAnswerMode && !formState.isInAnswerMode {
             if case .supervisorAnswer(let payload) = resolvedMode {
+                // Chat-mode `.taskWorking` and `.supervisorAnswer` bind the composer to the
+                // same three live fields (supervisorTask / answerAttachments / answerClippedTexts).
+                // When the LLM finishes thinking and asks a question, snapshot whatever the
+                // user was composing so `enterAnswerMode`'s has-draft branch loads it back
+                // instead of clearing. Gated on `currentVisualMode == .working` to avoid
+                // capturing stale `.newTask` content (composer there binds to a different
+                // attachments field, so live `answerAttachments` is empty anyway, but
+                // `supervisorTask` may legitimately hold a new-task draft we must not hijack)
+                // and on `payload.isChatMode` since non-chat working has no composer.
+                if currentVisualMode == .working && payload.isChatMode {
+                    formState.captureLiveComposerAsAnswerDraft(taskID: payload.taskID)
+                    // Clear live fields so `enterAnswerMode`'s `savedSupervisorTask` stash
+                    // captures empty — not the chat-working content we just persisted to
+                    // the draft. Otherwise `submitAnswer`'s post-submit `exitAnswerMode`
+                    // would restore the just-sent text into the composer (regression
+                    // observed: "queued message stays after submit"). The draft load
+                    // inside `enterAnswerMode` repopulates these from the saved draft.
+                    formState.supervisorTask = ""
+                    formState.answerAttachments = []
+                    formState.answerClippedTexts = []
+                }
                 formState.enterAnswerMode(payload: payload)
             }
         } else if !needsAnswerMode && formState.isInAnswerMode {
             formState.exitAnswerMode()
+            // Symmetric restore: returning to chat-mode `.taskWorking` for the active task
+            // reloads the draft `exitAnswerMode` just saved. No-op when no draft exists, so
+            // a fresh transition with empty composer stays empty.
+            if case .taskWorking(_, let isChatMode) = resolvedMode,
+               isChatMode,
+               let taskID = store?.activeTaskID {
+                formState.restoreAnswerDraftToLiveFields(taskID: taskID)
+            }
         } else if needsAnswerMode, case .supervisorAnswer(let payload) = resolvedMode {
             // Already in answer mode — task switch: save old draft, load new
             if let oldPayload = formState.pendingAnswer, oldPayload.taskID != payload.taskID {
@@ -679,46 +834,51 @@ final class QuickCaptureController {
 
     // MARK: - Backstop Priority (pure, unit-testable)
 
-    /// Picks the next deliverable queued message for the `.needsSupervisorInput`
-    /// backstop path, using the same priority tiers as
-    /// `NTMSOrchestrator.consumeQueuedSupervisorMessage`:
-    /// - **Tier 1** — role-targeted message whose target role is currently waiting
-    ///   (FIFO within the tier).
-    /// - **Tier 2** — oldest untargeted (Team) message, routed to the first waiting
-    ///   role in the input list (FIFO within the tier).
+    /// Collects every deliverable queued message for the `.needsSupervisorInput`
+    /// backstop path in priority order. Mirrors the primary path's drain-all
+    /// semantics in `NTMSOrchestrator.consumeQueuedSupervisorMessage` — one
+    /// combined Supervisor turn per backstop fire instead of dripping one
+    /// message per `engineState` transition.
     ///
-    /// Extracted as a pure static function so backstop/primary priority alignment
-    /// is trivially unit-testable without spinning up an orchestrator + engine.
+    /// Tier priority (matches the primary path):
+    /// - **Tier 1** — role-targeted messages whose target role is currently
+    ///   waiting, FIFO within the tier. The first such message determines the
+    ///   recipient role; subsequent tier-1 messages targeted at the *same* role
+    ///   join the batch, while messages targeted at other waiting roles stay
+    ///   queued for their own backstop fire.
+    /// - **Tier 2** — untargeted (Team) messages join the same batch as the
+    ///   tier-1 winner's role (FIFO). If no tier-1 messages match, the oldest
+    ///   untargeted message picks the first waiting role and drains all
+    ///   untargeted messages into that batch.
     ///
-    /// **Fan-out divergence vs. primary path**: this helper returns ONE message
-    /// per call — the backstop delivers through `answerSupervisorQuestion` which
-    /// is single-answer-at-a-time, so draining happens across successive engine
-    /// state changes. The primary path (`consumeQueuedSupervisorMessage`) instead
-    /// BATCHES all eligible messages into one combined Supervisor turn. Net
-    /// user-visible effect: three messages queued while the role is `.running`
-    /// render as one activity-feed bubble; three messages queued while the role
-    /// is already `.needsSupervisorInput` render as three bubbles across three
-    /// flushes. The tier ordering is aligned; the fan-out is not.
-    static func pickQueuedMessageForFlush(
+    /// Returns the chosen recipient `stepRoleID` and an ordered `[UUID]` to pop
+    /// in sequence. Returns `nil` when nothing is deliverable to the current
+    /// waiting set. Pure — no I/O, no main-actor dependency — so backstop
+    /// priority is trivially unit-testable without an engine.
+    static func collectQueuedMessagesForFlush(
         queue: [QuickCaptureFormState.QueuedChatMessage],
         waitingStepRoleIDs: [String]
-    ) -> (messageID: UUID, stepRoleID: String)? {
+    ) -> (stepRoleID: String, messageIDs: [UUID])? {
         guard !waitingStepRoleIDs.isEmpty else { return nil }
 
-        // Tier 1: role-targeted. Scan the whole queue — if the FIRST targeted
-        // message's target isn't currently waiting, we continue past it (rather
-        // than giving up on tier 1 entirely) so a later tier-1 entry whose target
-        // IS waiting can still win. Only if no targeted message has a waiting
-        // target do we fall through to tier 2.
-        for message in queue where message.targetRoleID != nil {
-            if let matchingRole = waitingStepRoleIDs.first(where: { $0 == message.targetRoleID }) {
-                return (message.id, matchingRole)
+        // Find the first role-targeted message whose target is waiting — that
+        // role becomes the recipient. Targeted messages whose target is NOT
+        // waiting are skipped (they stay queued for their own backstop fire).
+        let pickedRoleID: String? = queue.lazy
+            .compactMap { msg -> String? in
+                guard let target = msg.targetRoleID,
+                      waitingStepRoleIDs.contains(target) else { return nil }
+                return target
             }
-        }
-        // Tier 2: untargeted — oldest (FIFO) routes to the first waiting role.
-        if let untargeted = queue.first(where: { $0.targetRoleID == nil }) {
-            return (untargeted.id, waitingStepRoleIDs[0])
-        }
-        return nil
+            .first ?? (queue.contains(where: { $0.targetRoleID == nil }) ? waitingStepRoleIDs.first : nil)
+
+        guard let roleID = pickedRoleID else { return nil }
+
+        // Tier 1 first (role-targeted to roleID, FIFO), then tier 2 (untargeted, FIFO).
+        let targeted = queue.compactMap { $0.targetRoleID == roleID ? $0.id : nil }
+        let untargeted = queue.compactMap { $0.targetRoleID == nil ? $0.id : nil }
+        let ids = targeted + untargeted
+        guard !ids.isEmpty else { return nil }
+        return (roleID, ids)
     }
 }

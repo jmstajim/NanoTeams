@@ -60,6 +60,24 @@ struct SearchMatch: Codable {
     var context_after: [LineRef]?
 }
 
+/// A file whose name or relative path matched the search query, independent of
+/// content. Surfaced alongside `SearchMatch` so the LLM can find files it
+/// already knows the name of in one tool call instead of falling back to
+/// `list_files`. `matched_on` lets the LLM see whether the hit was on the
+/// basename (stronger signal) or only on a parent directory in the path.
+///
+/// `matched_on` is a typed enum (encoded as the raw string `"basename"` or
+/// `"path"`) so the discriminator can never drift between the matcher and
+/// the wire — the only two valid values are spelled exactly once.
+struct FilenameMatch: Codable, Equatable {
+    enum MatchedOn: String, Codable {
+        case basename
+        case path
+    }
+    var path: String
+    var matched_on: MatchedOn
+}
+
 /// A file the search traversal encountered but could not index.
 /// Surfaced so the LLM/user can tell "no hits" from "file was unreadable".
 struct SkippedFile: Codable {

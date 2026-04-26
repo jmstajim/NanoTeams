@@ -128,7 +128,12 @@ extension LLMExecutionService {
             : nil
         let (_, runtime) = ToolRegistry.defaultRegistry(
             workFolderRoot: workFolderRoot, toolCallsLogURL: meetingToolCallsLogURL,
-            isDefaultStorage: isDefaultStorage
+            isDefaultStorage: isDefaultStorage,
+            searchExploratoryByDefault: delegate.searchExploratoryByDefault,
+            readFileMaxLines: delegate.readFileMaxLines,
+            searchMaxResults: delegate.searchMaxResults,
+            searchContextBefore: delegate.searchContextBefore,
+            searchContextAfter: delegate.searchContextAfter
         )
         let meetingRoleID = stepID
         let toolContext = ToolExecutionContext(

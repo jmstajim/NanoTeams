@@ -290,11 +290,18 @@ final class ToolCallSummarizerTests: XCTestCase {
         XCTAssertEqual(ToolCallSummarizer.summarizeResult(toolName: TN.runXcodebuild, json: json), "failed (3 errors)")
     }
 
-    func testSummarizeResult_readFile_showsSize() {
+    func testSummarizeResult_readFile_showsLineRange_whenTruncated() {
         let json = """
-        {"data": {"size": 1024}}
+        {"data": {"end_line": 100, "total_lines": 250}}
         """
-        XCTAssertEqual(ToolCallSummarizer.summarizeResult(toolName: TN.readFile, json: json), "1024 bytes")
+        XCTAssertEqual(ToolCallSummarizer.summarizeResult(toolName: TN.readFile, json: json), "lines 1–100 of 250")
+    }
+
+    func testSummarizeResult_readFile_showsTotalLines_whenComplete() {
+        let json = """
+        {"data": {"end_line": 50, "total_lines": 50}}
+        """
+        XCTAssertEqual(ToolCallSummarizer.summarizeResult(toolName: TN.readFile, json: json), "50 lines")
     }
 
     func testSummarizeResult_gitCommit_returnsCommitted() {

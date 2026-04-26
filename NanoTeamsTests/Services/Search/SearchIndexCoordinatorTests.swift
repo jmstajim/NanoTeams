@@ -280,7 +280,7 @@ final class SearchIndexCoordinatorTests: XCTestCase {
 
     func testVectorLifecycle_clear_removesVectorFilesFromDisk() async throws {
         // L2: `clear()` removes BOTH token and vector files. This is what
-        // `onExpandedSearchSettingChanged(false)` ultimately does.
+        // `onExploratorySearchSettingChanged(false)` ultimately does.
         try write("A.swift", content: "class ScrollView {}")
         try write("B.swift", content: "class ScrollView {}")
         let c = makeCoordinatorWithMockEmbedder(RecordingEmbedClient())

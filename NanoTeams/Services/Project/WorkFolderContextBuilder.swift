@@ -1,6 +1,6 @@
 import Foundation
 
-struct WorkFolderDescriptionInput: Hashable {
+struct WorkFolderContextInput: Hashable {
     struct FileExcerpt: Hashable {
         var path: String
         var content: String
@@ -12,14 +12,13 @@ struct WorkFolderDescriptionInput: Hashable {
     var excerpts: [FileExcerpt]
 }
 
-struct WorkFolderDescriptionBuilder {
+struct WorkFolderContextBuilder {
     nonisolated static func buildInput(
         workFolderRoot: URL,
-        maxFiles: Int = 120,
         maxExcerpts: Int = 6,
         maxBytesPerExcerpt: Int = 3000,
         fileManager: FileManager = .default
-    ) -> WorkFolderDescriptionInput {
+    ) -> WorkFolderContextInput {
         // Standardize path to resolve symlinks (e.g., /var -> /private/var on macOS)
         let basePath = workFolderRoot.standardizedFileURL.path
         let basePrefix = basePath.hasSuffix("/") ? basePath : (basePath + "/")
@@ -67,7 +66,7 @@ struct WorkFolderDescriptionBuilder {
             includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
             options: [.skipsHiddenFiles]
         ) else {
-            return WorkFolderDescriptionInput(
+            return WorkFolderContextInput(
                 rootName: workFolderRoot.lastPathComponent,
                 fileList: [],
                 fileTypeCounts: [:],
@@ -87,9 +86,7 @@ struct WorkFolderDescriptionBuilder {
                     continue
                 }
                 if name.hasSuffix(".xcodeproj") || name.hasSuffix(".xcworkspace") || name.hasSuffix(".xcassets") {
-                    if fileList.count < maxFiles {
-                        fileList.append(rel)
-                    }
+                    fileList.append(rel)
                     enumerator.skipDescendants()
                 }
                 continue
@@ -102,9 +99,7 @@ struct WorkFolderDescriptionBuilder {
                 fileTypeCounts[ext, default: 0] += 1
             }
 
-            if fileList.count < maxFiles {
-                fileList.append(rel)
-            }
+            fileList.append(rel)
 
             if filesByName[url.lastPathComponent] == nil {
                 filesByName[url.lastPathComponent] = url
@@ -115,7 +110,7 @@ struct WorkFolderDescriptionBuilder {
             }
         }
 
-        var excerpts: [WorkFolderDescriptionInput.FileExcerpt] = []
+        var excerpts: [WorkFolderContextInput.FileExcerpt] = []
         var usedPaths: Set<String> = []
         var usedFilenames: Set<String> = []
 
@@ -127,7 +122,7 @@ struct WorkFolderDescriptionBuilder {
             let filename = url.lastPathComponent
             guard !usedFilenames.contains(filename) else { return }
             guard let content = readExcerpt(from: url, maxBytes: maxBytesPerExcerpt) else { return }
-            excerpts.append(WorkFolderDescriptionInput.FileExcerpt(path: rel, content: content))
+            excerpts.append(WorkFolderContextInput.FileExcerpt(path: rel, content: content))
             usedPaths.insert(rel)
             usedFilenames.insert(filename)
         }
@@ -143,7 +138,7 @@ struct WorkFolderDescriptionBuilder {
             addExcerpt(from: url)
         }
 
-        return WorkFolderDescriptionInput(
+        return WorkFolderContextInput(
             rootName: workFolderRoot.lastPathComponent,
             fileList: fileList.sorted(),
             fileTypeCounts: fileTypeCounts,
@@ -157,9 +152,27 @@ struct WorkFolderDescriptionBuilder {
 
         guard let dataChunk = try? handle.read(upToCount: maxBytes) else { return nil }
         guard !dataChunk.isEmpty else { return nil }
-        guard var text = String(data: dataChunk, encoding: .utf8) else { return nil }
+        guard var text = decodeUTF8TrimmingPartialTail(dataChunk) else { return nil }
 
         text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty ? nil : text
+    }
+
+    /// Decodes `data` as UTF-8. If the read terminated mid-multibyte-sequence
+    /// (the cap fell inside a 2/3/4-byte codepoint — common with Cyrillic,
+    /// CJK, or emoji at offset `maxBytes`), strict UTF-8 decode returns nil
+    /// and the whole excerpt would be lost. Falls back by trimming up to 3
+    /// trailing bytes — the maximum continuation tail. Non-UTF-8 files still
+    /// return nil after exhausting the budget (no regression).
+    nonisolated private static func decodeUTF8TrimmingPartialTail(_ data: Data) -> String? {
+        if let s = String(data: data, encoding: .utf8) { return s }
+        let maxDrop = min(3, data.count - 1)
+        guard maxDrop >= 1 else { return nil }
+        for drop in 1...maxDrop {
+            if let s = String(data: data.prefix(data.count - drop), encoding: .utf8) {
+                return s
+            }
+        }
+        return nil
     }
 }

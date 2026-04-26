@@ -62,7 +62,7 @@ protocol LLMClient: Sendable {
 
     /// Load a model into LM Studio's runtime. Provider-specific lifecycle
     /// surface used by `EmbeddingModelLifecycleService` to ensure the embed
-    /// model is in memory while Expanded Search is enabled. Takes a raw
+    /// model is in memory while Exploratory Search is enabled. Takes a raw
     /// `baseURLString` rather than `LLMConfig` because the embed URL is
     /// distinct from the chat-LLM URL (separate `EmbeddingConfig`).
     /// Returns the `instance_id` to use for subsequent `unloadModel`.

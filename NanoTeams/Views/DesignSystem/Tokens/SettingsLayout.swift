@@ -10,4 +10,7 @@ enum SettingsLayout {
     static let cardIconSize: CGFloat = 36
     /// Toggle row icon container size (compact icon square)
     static let toggleIconSize: CGFloat = 28
+    /// Right-aligned numeric value cell in stepper rows (the "500" / "Unlimited" label).
+    /// Wide enough to keep the Stepper from jumping when the value gains/loses a digit.
+    static let stepperValueMinWidth: CGFloat = 70
 }

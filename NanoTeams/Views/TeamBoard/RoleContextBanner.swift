@@ -34,9 +34,6 @@ struct RoleContextBanner: View {
         guard let def = roleDef, let sysID = def.systemRoleID else { return .idle }
         for (key, status) in run?.roleStatuses ?? [:] {
             if roleDefinitions.first(where: { $0.id == key })?.systemRoleID == sysID {
-                #if DEBUG
-                print("[RoleContextBanner] Status fallback: roleID \(roleID) matched via systemRoleID '\(sysID)' → \(status)")
-                #endif
                 return status
             }
         }
@@ -49,13 +46,7 @@ struct RoleContextBanner: View {
         }
         // Fallback: match by role.baseID via systemRoleID bridge
         guard let def = roleDef, let sysID = def.systemRoleID else { return nil }
-        let step = run?.steps.last(where: { $0.role.baseID == sysID })
-        #if DEBUG
-        if step != nil {
-            print("[RoleContextBanner] Step fallback: roleID \(roleID) matched step via systemRoleID '\(sysID)'")
-        }
-        #endif
-        return step
+        return run?.steps.last(where: { $0.role.baseID == sysID })
     }
 
     private var displayStatusName: String {

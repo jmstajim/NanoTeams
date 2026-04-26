@@ -23,6 +23,20 @@ struct ToolHandlerDependencies {
     let resolver: SandboxPathResolver
     let fileManager: FileManager
     let internalDir: URL
+    /// When `true`, `SearchTool` treats a missing `exploratory` argument as
+    /// `true`. User preference, surfaced from `StoreConfiguration` at
+    /// registry-build time.
+    let searchExploratoryByDefault: Bool
+    /// Hard line limit enforced by `read_file`. User preference, surfaced from
+    /// `StoreConfiguration` at registry-build time.
+    let readFileMaxLines: Int
+    /// Default `max_results` for `search` when the LLM omits the argument.
+    /// User preference, surfaced from `StoreConfiguration` at registry-build time.
+    let searchMaxResults: Int
+    /// Default `context_before` for `search` when the LLM omits the argument.
+    let searchContextBefore: Int
+    /// Default `context_after` for `search` when the LLM omits the argument.
+    let searchContextAfter: Int
 }
 
 // MARK: - ToolHandler

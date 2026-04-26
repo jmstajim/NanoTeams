@@ -590,7 +590,12 @@ final class DocumentTextExtractorTests: XCTestCase {
             workFolderRoot: tempDir,
             resolver: SandboxPathResolver(workFolderRoot: tempDir, internalDir: tempDir),
             fileManager: .default,
-            internalDir: tempDir
+            internalDir: tempDir,
+            searchExploratoryByDefault: false,
+            readFileMaxLines: 0,
+            searchMaxResults: AppDefaults.searchMaxResults,
+            searchContextBefore: AppDefaults.searchContextBefore,
+            searchContextAfter: AppDefaults.searchContextAfter
         ))
         let context = ToolExecutionContext(workFolderRoot: tempDir, taskID: 0, runID: 0, roleID: "r")
         let args: [String: Any] = ["name": "Report", "content": "# Report", "format": "pdf"]
@@ -611,7 +616,12 @@ final class DocumentTextExtractorTests: XCTestCase {
             workFolderRoot: tempDir,
             resolver: SandboxPathResolver(workFolderRoot: tempDir, internalDir: tempDir),
             fileManager: .default,
-            internalDir: tempDir
+            internalDir: tempDir,
+            searchExploratoryByDefault: false,
+            readFileMaxLines: 0,
+            searchMaxResults: AppDefaults.searchMaxResults,
+            searchContextBefore: AppDefaults.searchContextBefore,
+            searchContextAfter: AppDefaults.searchContextAfter
         ))
         let context = ToolExecutionContext(workFolderRoot: tempDir, taskID: 0, runID: 0, roleID: "r")
         let args: [String: Any] = ["name": "Report", "content": "# Report"]

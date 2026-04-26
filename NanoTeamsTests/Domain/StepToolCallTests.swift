@@ -129,4 +129,66 @@ final class StepToolCallTests: XCTestCase {
         )
         XCTAssertFalse(call.isGeneratingTeam)
     }
+
+    // MARK: - isExploratorySearchDisabled
+
+    func testIsExploratorySearchDisabled_trueWhenFlagPresent() {
+        let call = StepToolCall(
+            name: ToolNames.search,
+            argumentsJSON: "{\"query\":\"advisor\",\"exploratory\":true}",
+            resultJSON: "{\"ok\":true,\"data\":{\"query\":\"advisor\",\"exploratory_disabled\":true,\"matches\":[]}}",
+            isError: false
+        )
+        XCTAssertTrue(call.isExploratorySearchDisabled)
+    }
+
+    func testIsExploratorySearchDisabled_falseForOtherToolName() {
+        let call = StepToolCall(
+            name: "read_file",
+            argumentsJSON: "{}",
+            resultJSON: "{\"exploratory_disabled\":true}",
+            isError: false
+        )
+        XCTAssertFalse(call.isExploratorySearchDisabled)
+    }
+
+    func testIsExploratorySearchDisabled_falseWhenFlagAbsent() {
+        let call = StepToolCall(
+            name: ToolNames.search,
+            argumentsJSON: "{\"query\":\"advisor\",\"exploratory\":true}",
+            resultJSON: "{\"ok\":true,\"data\":{\"query\":\"advisor\",\"matches\":[],\"expanded_terms\":[\"advisory\"]}}",
+            isError: false
+        )
+        XCTAssertFalse(call.isExploratorySearchDisabled)
+    }
+
+    func testIsExploratorySearchDisabled_falseWhenError() {
+        let call = StepToolCall(
+            name: ToolNames.search,
+            argumentsJSON: "{}",
+            resultJSON: "{\"exploratory_disabled\":true}",
+            isError: true
+        )
+        XCTAssertFalse(call.isExploratorySearchDisabled)
+    }
+
+    func testIsExploratorySearchDisabled_falseWhenResultNil() {
+        let call = StepToolCall(
+            name: ToolNames.search,
+            argumentsJSON: "{}",
+            resultJSON: nil,
+            isError: nil
+        )
+        XCTAssertFalse(call.isExploratorySearchDisabled)
+    }
+
+    func testIsExploratorySearchDisabled_trueWhenIsErrorNil() {
+        let call = StepToolCall(
+            name: ToolNames.search,
+            argumentsJSON: "{}",
+            resultJSON: "{\"exploratory_disabled\":true}",
+            isError: nil
+        )
+        XCTAssertTrue(call.isExploratorySearchDisabled)
+    }
 }

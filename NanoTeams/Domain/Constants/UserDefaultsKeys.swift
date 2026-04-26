@@ -22,6 +22,7 @@ enum UserDefaultsKeys {
     static let visionMaxTokens = "NanoTeams.vision.maxTokens.v1"
     static let quickCapturePanelFrame = "NanoTeams.QuickCapturePanel"
     static let dismissedNotificationIDs = "NanoTeams.ui.dismissedNotificationIDs.v1"
+    static let dismissedFeatureTipIDs = "NanoTeams.ui.dismissedFeatureTipIDs.v1"
     static let graphPanelVisible = "NanoTeams.ui.graphPanelVisible.v1"
     static let quickCaptureKeepOpenInChat = "NanoTeams.ui.quickCaptureKeepOpenInChat.v1"
     static let enterSendsMessage = "NanoTeams.ui.enterSendsMessage.v1"
@@ -37,10 +38,16 @@ enum UserDefaultsKeys {
     static let cachedAppUpdateRelease = "NanoTeams.appUpdate.cachedRelease.v1"
     static let appUpdateCheckInterval = "NanoTeams.appUpdate.checkInterval.v1"
     /// Locale identifiers the user opted into for dictation (array of strings).
-    /// Empty = fall back to `Locale.preferredLanguages`.
+    /// Empty = no dictation language selected; the mic button routes the user
+    /// to Settings → Dictation. There is no `preferredLanguages` fallback.
     static let dictationLocales = "NanoTeams.dictation.locales.v1"
-    static let expandedSearchEnabled = "NanoTeams.search.expandedSearchEnabled.v1"
-    static let expandedSearchEmbeddingConfig = "NanoTeams.search.expandedSearchEmbeddingConfig.v1"
-    static let expandedSearchPerTokenThreshold = "NanoTeams.search.expandedSearchPerTokenThreshold.v1"
-    static let expandedSearchPhraseThreshold = "NanoTeams.search.expandedSearchPhraseThreshold.v1"
+    static let exploratorySearchEnabled = "NanoTeams.search.exploratorySearchEnabled.v1"
+    static let exploratorySearchEmbeddingConfig = "NanoTeams.search.exploratorySearchEmbeddingConfig.v1"
+    static let exploratorySearchPerTokenThreshold = "NanoTeams.search.exploratorySearchPerTokenThreshold.v1"
+    static let exploratorySearchPhraseThreshold = "NanoTeams.search.exploratorySearchPhraseThreshold.v1"
+    static let searchExploratoryByDefault = "NanoTeams.search.exploratoryByDefault.v1"
+    static let readFileMaxLines = "NanoTeams.read_file.maxLines.v1"
+    static let searchMaxResults = "NanoTeams.search.maxResults.v1"
+    static let searchContextBefore = "NanoTeams.search.contextBefore.v1"
+    static let searchContextAfter = "NanoTeams.search.contextAfter.v1"
 }

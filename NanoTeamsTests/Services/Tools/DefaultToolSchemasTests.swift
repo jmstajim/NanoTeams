@@ -499,6 +499,8 @@ final class DefaultToolSchemasTests: XCTestCase {
     }
 
     func testReadFileHasOneProperty() {
+        // Only `path`. The line limit is enforced at runtime from
+        // `StoreConfiguration.readFileMaxLines`, not via a per-call argument.
         XCTAssertEqual(propertyNames(for: "read_file").count, 1)
     }
 
@@ -514,8 +516,8 @@ final class DefaultToolSchemasTests: XCTestCase {
         XCTAssertEqual(propertyNames(for: "delete_file").count, 2)
     }
 
-    func testSearchProjectHasThreeProperties() {
-        XCTAssertEqual(propertyNames(for: "search").count, 3)
+    func testSearchProjectHasFiveProperties() {
+        XCTAssertEqual(propertyNames(for: "search").count, 5)
     }
 
     func testGitCommitHasTwoProperties() {
@@ -569,7 +571,7 @@ final class DefaultToolSchemasTests: XCTestCase {
     func testSearchProjectPropertyNames() {
         XCTAssertEqual(
             propertyNames(for: "search"),
-            ["query", "max_results", "expand"])
+            ["query", "max_results", "context_before", "context_after", "exploratory"])
     }
 
     func testGitBranchPropertyNames() {

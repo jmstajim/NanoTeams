@@ -130,30 +130,31 @@ final class ReadFileDocumentTests: XCTestCase {
         XCTAssertTrue(results[0].outputJSON.contains("${name}"))
     }
 
-    func testReadFile_oversizeHTML_truncatesViaMaxBytesWithTruncatedMeta() throws {
-        // HTML now goes through the raw-read path (FileReadHandlers ReadFileTool
-        // ~line 101-114), which applies the per-call `max_bytes` cap (default
-        // 200_000) and sets `meta.truncated = true`. This is a different code
-        // path than the extractor's `maxExtractionBytes` marker — pin both.
+    func testReadFile_oversizeHTML_returnsErrorPointingToReadLines() throws {
+        // HTML goes through the raw-read path (FileReadHandlers ReadFileTool),
+        // which now hard-rejects files larger than the configured limit and
+        // points the LLM at `read_lines`.
         let htmlURL = tempDir.appendingPathComponent("big.html")
-        let oversize = String(repeating: "a", count: 250_000)
-        let source = "<html><body><pre>" + oversize + "</pre></body></html>"
+        let limit = AppDefaults.readFileMaxLines
+        // limit + 100 lines of body so the HTML clearly exceeds the limit.
+        let bodyLines = (1...(limit + 100)).map { "<p>line \($0)</p>" }.joined(separator: "\n")
+        let source = "<html><body>\n" + bodyLines + "\n</body></html>"
         try source.write(to: htmlURL, atomically: true, encoding: .utf8)
 
         let call = StepToolCall(
             name: "read_file",
-            argumentsJSON: "{\"path\": \"big.html\", \"max_bytes\": 200000}"
+            argumentsJSON: "{\"path\": \"big.html\"}"
         )
         let results = runtime.executeAll(context: context, toolCalls: [call])
 
-        XCTAssertFalse(results[0].isError)
-        XCTAssertTrue(results[0].outputJSON.contains("\"truncated\" : true")
-                      || results[0].outputJSON.contains("\"truncated\":true"),
-                      "oversize HTML must set meta.truncated: \(String(results[0].outputJSON.prefix(200)))")
-        // The opening `<html><body><pre>` must still be present — truncation
-        // cuts from the tail, not the head.
-        XCTAssertTrue(results[0].outputJSON.contains("<html>") || results[0].outputJSON.contains("<pre>"),
-                      "head of HTML source must survive truncation")
+        XCTAssertTrue(results[0].isError, "oversize HTML must be rejected")
+        let json = results[0].outputJSON
+        XCTAssertTrue(json.contains("INVALID_ARGS"))
+        XCTAssertTrue(json.contains("\(limit)-line read_file limit"))
+        XCTAssertTrue(json.contains("read_lines"))
+        // Body must NOT leak into the error envelope.
+        XCTAssertFalse(json.contains("<html>") || json.contains("<body>"),
+                       "rejected reads must not return content")
     }
 
     func testReadFile_mixedCaseHTMLExtension_stillReadsAsRawSource() throws {
@@ -491,7 +492,7 @@ final class ReadFileDocumentTests: XCTestCase {
                       "expected range error, got: \(results[0].outputJSON)")
     }
 
-    // MARK: - Edge: Unicode / maxBytes / empty document
+    // MARK: - Edge: Unicode / maxLines / empty document
 
     func testReadFile_docx_withUnicodeContent() throws {
         // Cyrillic, emoji, zero-width joiner — all must round-trip through
@@ -511,24 +512,25 @@ final class ReadFileDocumentTests: XCTestCase {
         XCTAssertTrue(results[0].outputJSON.contains("🌍"))
     }
 
-    func testReadFile_docx_truncatedByMaxBytes() throws {
-        // Produce a DOCX whose extracted text exceeds a low max_bytes cap.
-        let longText = String(repeating: "A", count: 5000)
-        let docxURL = try makeDOCX(
-            at: "long.docx",
-            body: "<w:p><w:r><w:t>\(longText)</w:t></w:r></w:p>"
-        )
+    func testReadFile_docx_returnsAllParagraphsWhenWithinLimit() throws {
+        // Produce a DOCX with multiple paragraphs (each becomes a line in extracted text).
+        // 20 paragraphs is well below the default limit, so the file is read in full.
+        let body = (1...20).map {
+            "<w:p><w:r><w:t>Paragraph \($0)</w:t></w:r></w:p>"
+        }.joined()
+        let docxURL = try makeDOCX(at: "long.docx", body: body)
 
         let call = StepToolCall(
             name: "read_file",
             argumentsJSON: """
-            {"path": "\(docxURL.lastPathComponent)", "max_bytes": 500}
+            {"path": "\(docxURL.lastPathComponent)"}
             """
         )
         let results = runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
-        XCTAssertTrue(results[0].outputJSON.contains("\"truncated\":true"),
-                      "max_bytes truncation must set truncated meta flag: \(results[0].outputJSON)")
+        let json = results[0].outputJSON
+        XCTAssertTrue(json.contains("Paragraph 1"))
+        XCTAssertTrue(json.contains("Paragraph 20"), "in-limit DOCX must return all paragraphs")
     }
 
     func testReadFile_emptyDOCX_returnsFailureMessage() throws {

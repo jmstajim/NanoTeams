@@ -65,7 +65,7 @@ extension NTMSOrchestrator {
                 lastInfoMessage = "Bundled updates deferred for \(count) \(noun) — will retry on next open."
             }
 
-            // Spin up the search index coordinator if expanded search is enabled.
+            // Spin up the search index coordinator if exploratory search is enabled.
             await setUpSearchIndexCoordinatorIfEnabled()
         } catch {
             self.lastErrorMessage = error.localizedDescription
@@ -80,13 +80,13 @@ extension NTMSOrchestrator {
 
     // MARK: - Search Index Coordinator Lifecycle
 
-    /// Creates a coordinator bound to the current work folder (if expanded search
+    /// Creates a coordinator bound to the current work folder (if exploratory search
     /// is enabled) and kicks off an initial ensure-fresh pass.
     ///
     /// Skipped for default internal storage (Application Support) — that
     /// directory holds NanoTeams's own metadata for template/chat teams
     /// without a real project, and indexing it just surfaces bookkeeping
-    /// files. Broad search only makes sense against a user-selected project.
+    /// files. Exploratory search only makes sense against a user-selected project.
     ///
     /// Idempotent: repeated calls with a coordinator already installed return
     /// early WITHOUT creating a second one. The install-after-await guard
@@ -94,7 +94,7 @@ extension NTMSOrchestrator {
     /// `coordinator.start()` await — if someone else won the race, we tear
     /// down the one we built before returning so no FSEventStream is orphaned.
     func setUpSearchIndexCoordinatorIfEnabled() async {
-        guard configuration.expandedSearchEnabled,
+        guard configuration.exploratorySearchEnabled,
               hasRealWorkFolder,
               let url = workFolderURL,
               searchIndexCoordinator == nil else { return }
@@ -136,39 +136,39 @@ extension NTMSOrchestrator {
         searchIndexCoordinator = nil
     }
 
-    /// Hook: user toggled the "Expanded Search" setting. Creates or destroys the
+    /// Hook: user toggled the "Exploratory Search" setting. Creates or destroys the
     /// coordinator and (on disable) deletes the on-disk `search_index.json`.
     ///
-    /// When the user enables expanded search while on default internal storage
+    /// When the user enables exploratory search while on default internal storage
     /// (no real project folder), `setUpSearchIndexCoordinatorIfEnabled` is a
     /// no-op — broadcast an info message so the toggle's "ON" state doesn't
     /// silently contradict the index-status card reading "disabled".
     ///
-    /// Rapid toggle sequencing: `ExpandedSearchToggleCard.onChanged` spawns a
+    /// Rapid toggle sequencing: `ExploratorySearchToggleCard.onChanged` spawns a
     /// detached `Task { await ... }` per click, so three rapid clicks race
-    /// without inline awaits. We chain them through `pendingExpandedSearchToggle`
+    /// without inline awaits. We chain them through `pendingExploratorySearchToggle`
     /// so the effects apply in FIFO click order — otherwise the final state
     /// could disagree with the last click.
-    func onExpandedSearchSettingChanged() async {
-        let prior = pendingExpandedSearchToggle
+    func onExploratorySearchSettingChanged() async {
+        let prior = pendingExploratorySearchToggle
         let myTask = Task { [weak self] in
             _ = await prior?.value
             guard let self else { return }
-            await self.applyExpandedSearchSettingChange()
+            await self.applyExploratorySearchSettingChange()
         }
-        pendingExpandedSearchToggle = myTask
+        pendingExploratorySearchToggle = myTask
         _ = await myTask.value
-        if pendingExpandedSearchToggle == myTask {
-            pendingExpandedSearchToggle = nil
+        if pendingExploratorySearchToggle == myTask {
+            pendingExploratorySearchToggle = nil
         }
     }
 
-    private func applyExpandedSearchSettingChange() async {
-        if configuration.expandedSearchEnabled {
+    private func applyExploratorySearchSettingChange() async {
+        if configuration.exploratorySearchEnabled {
             if searchIndexCoordinator == nil {
                 await setUpSearchIndexCoordinatorIfEnabled()
                 if searchIndexCoordinator == nil, !hasRealWorkFolder {
-                    lastInfoMessage = "Expanded Search needs an open project folder — default storage isn't indexed."
+                    lastInfoMessage = "Exploratory Search needs an open project folder — default storage isn't indexed."
                 }
             }
         } else {
@@ -180,29 +180,29 @@ extension NTMSOrchestrator {
         await reconcileEmbeddingLifecycle()
     }
 
-    /// User changed the embed-model URL or name in `ExpandedSearchEmbeddingsCard`.
+    /// User changed the embed-model URL or name in `ExploratorySearchEmbeddingsCard`.
     /// Chains on the same FIFO sequencer as toggle events so a rapid model swap
     /// can't interleave with a toggle ON/OFF and leave us with the wrong state.
     ///
-    /// I7: the `expandedSearchEnabled` guard runs INSIDE the queued task body,
+    /// I7: the `exploratorySearchEnabled` guard runs INSIDE the queued task body,
     /// not before enqueueing — otherwise a config change observed while a
     /// toggle-OFF is still queued would read the not-yet-applied (stale) value
     /// and schedule a reconcile that fires after the toggle-OFF has already
     /// torn down the coordinator.
-    func onExpandedSearchEmbeddingConfigChanged() async {
-        let prior = pendingExpandedSearchToggle
+    func onExploratorySearchEmbeddingConfigChanged() async {
+        let prior = pendingExploratorySearchToggle
         let myTask = Task { [weak self] in
             _ = await prior?.value
             guard let self else { return }
             // Read AFTER the prior task drained — this is now the post-FIFO
             // state, the only state the user actually committed to.
-            guard self.configuration.expandedSearchEnabled else { return }
+            guard self.configuration.exploratorySearchEnabled else { return }
             await self.reconcileEmbeddingLifecycle()
         }
-        pendingExpandedSearchToggle = myTask
+        pendingExploratorySearchToggle = myTask
         _ = await myTask.value
-        if pendingExpandedSearchToggle == myTask {
-            pendingExpandedSearchToggle = nil
+        if pendingExploratorySearchToggle == myTask {
+            pendingExploratorySearchToggle = nil
         }
     }
 
@@ -214,7 +214,7 @@ extension NTMSOrchestrator {
     /// `embeddingLifecycle.loaded == nil`. The next reconcile retries.
     ///
     /// I3: load failures use `lastErrorMessage` (red banner) because the
-    /// user enabled Expanded Search and the feature is now broken — info
+    /// user enabled Exploratory Search and the feature is now broken — info
     /// severity is wrong here. I8: unload failures (which `NativeLMStudioClient`
     /// already swallows for 404 / "no such instance") still surface via
     /// `lastInfoMessage` so the user knows VRAM may not have been reclaimed.
@@ -275,10 +275,10 @@ extension NTMSOrchestrator {
 
     // MARK: - Work Folder Settings
 
-    func updateWorkFolderDescription(_ description: String) async {
+    func updateWorkFolderContext(_ context: String) async {
         guard let url = workFolderURL else { return }
         do {
-            let snapshot = try workFolderManagementService.updateWorkFolderDescription(description, at: url)
+            let snapshot = try workFolderManagementService.updateWorkFolderContext(context, at: url)
             apply(snapshot)
         } catch {
             self.lastErrorMessage = error.localizedDescription
@@ -295,13 +295,13 @@ extension NTMSOrchestrator {
         }
     }
 
-    func generateWorkFolderDescription() async -> String? {
+    func generateWorkFolderContext() async -> String? {
         guard let workFolderRoot = workFolderURL else { return nil }
         do {
-            return try await workFolderManagementService.generateWorkFolderDescription(
+            return try await workFolderManagementService.generateWorkFolderContext(
                 workFolderRoot: workFolderRoot,
                 config: globalLLMConfig,
-                customPrompt: workFolder?.settings.descriptionPrompt
+                customPrompt: workFolder?.settings.contextPrompt
             )
         } catch is CancellationError {
             return nil
@@ -311,9 +311,61 @@ extension NTMSOrchestrator {
         }
     }
 
-    func updateDescriptionPrompt(_ prompt: String) async {
+    /// Spawns a generation task whose lifecycle is owned by the orchestrator,
+    /// so Settings and the Sidebar both observe a single shared
+    /// `isGeneratingWorkFolderContext` flag. Idempotent — if a generation
+    /// is already in flight, the call is a no-op.
+    ///
+    /// Cancel-then-restart safety: the lambda captures `workFolderContextGenerationGeneration`
+    /// at spawn time. If the user cancels and starts a new generation while
+    /// the prior LLM stream is still draining, the prior lambda's late tail
+    /// finds its captured generation no longer matches and skips the
+    /// flag/task-handle reset — otherwise the new run's state would be clobbered.
+    func startGeneratingWorkFolderContext() {
+        guard !isGeneratingWorkFolderContext else { return }
+        guard workFolderURL != nil else { return }
+        isGeneratingWorkFolderContext = true
+        workFolderContextGenerationGeneration += 1
+        let myGeneration = workFolderContextGenerationGeneration
+        workFolderContextGenerationTask = Task { [weak self] in
+            guard let self else { return }
+            let context = await self.generateWorkFolderContext()
+            // Only the lambda for the most recent start is allowed to write back.
+            guard self.workFolderContextGenerationGeneration == myGeneration else { return }
+            if !Task.isCancelled {
+                if let context {
+                    await self.updateWorkFolderContext(context)
+                } else {
+                    // Distinguish "cancelled" (silent — already handled by
+                    // cancelWorkFolderContextGeneration's info toast) from
+                    // "model produced nothing usable" — the second branch is
+                    // reachable only when the model legitimately returned
+                    // empty/whitespace, and the user otherwise sees a spinner
+                    // disappear with no insertion and no explanation.
+                    self.lastInfoMessage = "Model returned no usable context. Try a more descriptive prompt or check that your LLM is responding."
+                }
+            }
+            self.isGeneratingWorkFolderContext = false
+            self.workFolderContextGenerationTask = nil
+        }
+    }
+
+    /// Cancels an in-flight generation. Safe to call when nothing is running.
+    /// Bumps `workFolderContextGenerationGeneration` so any lambda from the
+    /// cancelled run that completes after this returns can detect it lost the
+    /// race and skip its tail.
+    func cancelWorkFolderContextGeneration() {
+        guard isGeneratingWorkFolderContext else { return }
+        workFolderContextGenerationTask?.cancel()
+        workFolderContextGenerationTask = nil
+        workFolderContextGenerationGeneration += 1
+        isGeneratingWorkFolderContext = false
+        lastInfoMessage = "Generation stopped"
+    }
+
+    func updateContextPrompt(_ prompt: String) async {
         await mutateWorkFolder { proj in
-            proj.settings.descriptionPrompt = prompt
+            proj.settings.contextPrompt = prompt
         }
     }
 
@@ -334,6 +386,10 @@ extension NTMSOrchestrator {
 
     func resetWorkFolderSettings() async {
         guard let url = workFolderURL else { return }
+        // Tip-dismissal state lives in UserDefaults (not in the work folder), and
+        // clearing it cannot fail — so do it unconditionally regardless of whether
+        // the disk reset succeeds. The user pressed "reset"; tips should reappear.
+        configuration.dismissedFeatureTipIDs = []
         do {
             let snapshot = try settingsService.resetWorkFolderSettings(at: url)
             apply(snapshot)

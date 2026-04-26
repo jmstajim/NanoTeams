@@ -18,7 +18,7 @@ actor VocabVectorIndexService {
     // MARK: - Types
 
     /// Result of a query-time expansion. Three cases are mutually exclusive
-    /// by construction — no runtime guards needed. The `+ExpandedSearch.swift`
+    /// by construction — no runtime guards needed. The `+ExploratorySearch.swift`
     /// consumer collapses `errorReason` and `unavailableReason` into the
     /// envelope's single `expansion_error` field.
     enum ExpansionResult: Sendable, Equatable {
@@ -440,7 +440,7 @@ actor VocabVectorIndexService {
 // MARK: - State
 
 /// Snapshot of the vector-index actor's state. UI renders from this. Enum
-/// cases are distinct enough that `ExpandedSearchEmbeddingsCard` can switch on
+/// cases are distinct enough that `ExploratorySearchEmbeddingsCard` can switch on
 /// them directly without peeking at internals.
 enum VocabVectorIndexState: Equatable, Sendable {
     case missing

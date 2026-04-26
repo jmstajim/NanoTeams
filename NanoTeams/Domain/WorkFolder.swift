@@ -74,33 +74,59 @@ struct WorkFolderState: Codable, Hashable {
 /// User-configurable project settings.
 ///
 /// Stored in `.nanoteams/internal/settings.json`. Mutates only when the user
-/// edits project description, descriptionPrompt, or selectedScheme — never
-/// written during task execution.
+/// edits work folder context, contextPrompt, or selectedScheme — never written
+/// during task execution.
 struct ProjectSettings: Codable, Hashable {
     var schemaVersion: Int
-    var description: String
-    var descriptionPrompt: String
+    var context: String
+    var contextPrompt: String
     var selectedScheme: String?
 
     init(
-        schemaVersion: Int = 1,
-        description: String = "",
-        descriptionPrompt: String = AppDefaults.workFolderDescriptionPrompt,
+        schemaVersion: Int = 2,
+        context: String = "",
+        contextPrompt: String = AppDefaults.workFolderContextPrompt,
         selectedScheme: String? = nil
     ) {
         self.schemaVersion = schemaVersion
-        self.description = description
-        self.descriptionPrompt = descriptionPrompt
+        self.context = context
+        self.contextPrompt = contextPrompt
         self.selectedScheme = selectedScheme
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case context
+        case contextPrompt
+        case selectedScheme
+        // Legacy keys (schemaVersion 1). Read-only fallback so existing
+        // settings.json files continue to load after the rename.
+        case legacyDescription = "description"
+        case legacyDescriptionPrompt = "descriptionPrompt"
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
-        self.description = try c.decodeIfPresent(String.self, forKey: .description) ?? ""
-        self.descriptionPrompt = try c.decodeIfPresent(String.self, forKey: .descriptionPrompt)
-            ?? AppDefaults.workFolderDescriptionPrompt
+        let storedVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        // Migrate to current shape in-memory so the next encode never writes new
+        // keys under a stale `schemaVersion`. Files at v3+ keep their version so
+        // a forward-rolled binary doesn't silently downgrade on save.
+        self.schemaVersion = max(storedVersion, 2)
+        self.context = try c.decodeIfPresent(String.self, forKey: .context)
+            ?? c.decodeIfPresent(String.self, forKey: .legacyDescription)
+            ?? ""
+        self.contextPrompt = try c.decodeIfPresent(String.self, forKey: .contextPrompt)
+            ?? c.decodeIfPresent(String.self, forKey: .legacyDescriptionPrompt)
+            ?? AppDefaults.workFolderContextPrompt
         self.selectedScheme = try c.decodeIfPresent(String.self, forKey: .selectedScheme)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(schemaVersion, forKey: .schemaVersion)
+        try c.encode(context, forKey: .context)
+        try c.encode(contextPrompt, forKey: .contextPrompt)
+        try c.encodeIfPresent(selectedScheme, forKey: .selectedScheme)
     }
 
     static let defaults = ProjectSettings()

@@ -206,6 +206,38 @@ final class EndToEndAnswerDraftPersistenceTests: XCTestCase {
                        "Task 1's clips preserved during the switch")
     }
 
+    // MARK: - Scenario 11: Capture / Restore round-trip across chat-working ↔ answer
+
+    /// Mirrors what the controller does at the `.taskWorking` (chat) ↔ `.supervisorAnswer`
+    /// boundary: capture live composer fields into the answer draft on entry, restore
+    /// from draft on exit. Round-trip must preserve text, attachments, and clips
+    /// bit-for-bit — the same parity contract as the existing `enterAnswerMode` path.
+    func testCaptureThenRestore_roundTrip_preservesAllThreeFields() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("E2EDraftTests_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("attachment.txt", isDirectory: false)
+        try "data".write(to: url, atomically: true, encoding: .utf8)
+        let attachment = try StagedAttachment(url: url, stagedRelativePath: "draft/attachment.txt")
+
+        formState.supervisorTask = "queued composition"
+        formState.answerAttachments = [attachment]
+        formState.answerClippedTexts = ["clip-1", "clip-2"]
+
+        formState.captureLiveComposerAsAnswerDraft(taskID: 77)
+
+        // Simulate the post-`exitAnswerMode` cleared state
+        formState.supervisorTask = ""
+        formState.answerAttachments = []
+        formState.answerClippedTexts = []
+
+        formState.restoreAnswerDraftToLiveFields(taskID: 77)
+
+        XCTAssertEqual(formState.supervisorTask, "queued composition")
+        XCTAssertEqual(formState.answerAttachments, [attachment])
+        XCTAssertEqual(formState.answerClippedTexts, ["clip-1", "clip-2"])
+    }
+
     // MARK: - Scenario 10: clearAnswerSession saves draft (not a destructive clear)
 
     func testClearAnswerSession_savesDraft_fieldsCleared() {

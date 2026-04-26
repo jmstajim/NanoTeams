@@ -93,6 +93,7 @@ enum TaskMutationService {
         resultJSON: String,
         isError: Bool,
         stepID: String,
+        argumentsJSON: String? = nil,
         in task: inout NTMSTask
     ) {
         guard let location = task.locateStepInLatestRun(stepID: stepID) else {
@@ -109,6 +110,10 @@ enum TaskMutationService {
         task.runs[location.runIndex].steps[location.stepIndex].toolCalls[callIndex].resultJSON =
             resultJSON
         task.runs[location.runIndex].steps[location.stepIndex].toolCalls[callIndex].isError = isError
+        if let argumentsJSON {
+            task.runs[location.runIndex].steps[location.stepIndex].toolCalls[callIndex].argumentsJSON =
+                argumentsJSON
+        }
         task.runs[location.runIndex].steps[location.stepIndex].updatedAt = MonotonicClock.shared.now()
     }
 

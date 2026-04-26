@@ -130,7 +130,7 @@ struct IndexSignature: Codable, Equatable, Hashable {
 //
 // Ranking and posting-intersection live on the data type, not on the service
 // that persists it. Both `SearchIndexService` (actor) and
-// `LLMExecutionService+ExpandedSearch` (processor) call these directly; without
+// `LLMExecutionService+ExploratorySearch` (processor) call these directly; without
 // this split the ranking would need to be duplicated in both places.
 
 extension SearchIndex {

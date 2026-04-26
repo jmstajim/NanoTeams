@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct ExpandedSearchIndexStatusCard: View {
+struct ExploratorySearchIndexStatusCard: View {
     var coordinator: SearchIndexCoordinator?
     var onRebuild: () -> Void
 
@@ -40,7 +40,7 @@ struct ExpandedSearchIndexStatusCard: View {
                     .disabled(coordinator.isBuilding)
                 }
             } else {
-                Text("Expanded Search is disabled. Enable it above to build an index.")
+                Text("Exploratory Search is disabled. Enable it above to build an index.")
                     .font(Typography.caption)
                     .foregroundStyle(Colors.textTertiary)
             }
@@ -69,7 +69,7 @@ struct ExpandedSearchIndexStatusCard: View {
 }
 
 #Preview("Index Status – disabled") {
-    ExpandedSearchIndexStatusCard(coordinator: nil, onRebuild: {})
+    ExploratorySearchIndexStatusCard(coordinator: nil, onRebuild: {})
         .padding()
         .background(Colors.surfacePrimary)
 }

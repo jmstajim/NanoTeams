@@ -80,7 +80,7 @@ private struct DictationLanguagesCard: View {
         SettingsCard(
             header: "Languages",
             systemImage: "globe",
-            footer: "Pick which languages can be recognized. Uninstalled models must be downloaded once before they can be used. The active session runs at most 3 languages in parallel."
+            footer: "Pick which on-device models load when dictation starts. Apple's recognizer is multilingual — selecting a language biases recognition toward it but doesn't hard-filter other languages out of the audio. Uninstalled models must be downloaded once before they can be used. The active session runs at most 3 models in parallel."
         ) {
             VStack(alignment: .leading, spacing: Spacing.s) {
                 if let message = lastErrorMessage {
@@ -106,7 +106,14 @@ private struct DictationLanguagesCard: View {
                     ForEach(models) { model in
                         LanguageRow(
                             model: model,
-                            isSelected: config.dictationLocaleIdentifiers.contains(model.id),
+                            isSelected: config.dictationLocaleIdentifiers.contains {
+                                // Compare via BCP-47 — Foundation's default
+                                // `Locale.identifier` preserves input form, so
+                                // `"ru_RU"` and `"ru-RU"` would otherwise be
+                                // unequal on both sides.
+                                Locale(identifier: $0).identifier(.bcp47)
+                                    == Locale(identifier: model.id).identifier(.bcp47)
+                            },
                             isInstalling: installing.contains(model.id),
                             isRemoving: removing.contains(model.id),
                             onToggle: { toggle(model: model) },
@@ -145,7 +152,15 @@ private struct DictationLanguagesCard: View {
 
     private func toggle(model: DictationModelCatalog.ModelInfo) {
         var current = config.dictationLocaleIdentifiers
-        if let index = current.firstIndex(of: model.id) {
+        // Format-tolerant match via BCP-47 canonicalization. Without this,
+        // a stored `ru_RU` (from a legacy build or older macOS) wouldn't
+        // match `model.id == "ru-RU"` on macOS 26, so toggling would APPEND
+        // a duplicate instead of removing — accumulating phantom locales
+        // the user can never see.
+        let modelCanonical = Locale(identifier: model.id).identifier(.bcp47)
+        if let index = current.firstIndex(where: {
+            Locale(identifier: $0).identifier(.bcp47) == modelCanonical
+        }) {
             current.remove(at: index)
         } else if model.status == .installed {
             // Only allow selecting locales whose models are actually installed;
@@ -231,8 +246,12 @@ private struct DictationLanguagesCard: View {
 
         // Removing a model invalidates its selection — drop from the user's
         // dictation list BEFORE the actual uninstall so no runtime start
-        // races against a half-removed model.
-        if let index = config.dictationLocaleIdentifiers.firstIndex(of: model.id) {
+        // races against a half-removed model. BCP-47 canonicalization for
+        // the same reason as `toggle(model:)`.
+        let modelCanonical = Locale(identifier: model.id).identifier(.bcp47)
+        if let index = config.dictationLocaleIdentifiers.firstIndex(where: {
+            Locale(identifier: $0).identifier(.bcp47) == modelCanonical
+        }) {
             config.dictationLocaleIdentifiers.remove(at: index)
         }
 

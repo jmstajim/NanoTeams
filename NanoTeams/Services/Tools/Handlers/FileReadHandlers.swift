@@ -14,7 +14,7 @@ struct ReadFileTool: ToolHandler {
     static let name = TN.readFile
     static let schema = ToolSchema(
         name: TN.readFile,
-        description: "Read file content. Returns plain text files verbatim (source code, .html, .xml, .md, .json, etc.) and auto-extracts PDF/DOCX/RTF/RTFD/ODT/XLSX/PPTX to plain text.",
+        description: "Read entire file content. The file's line count must not exceed the limit configured in Settings → Tool Behavior (default \(AppDefaults.readFileMaxLines)) — for larger files use `read_lines` with explicit ranges. Auto-extracts PDF/DOCX/RTF/RTFD/ODT/XLSX/PPTX to plain text.",
         parameters: JS.object(
             properties: [
                 "path": JS.string("Relative path to file"),
@@ -26,17 +26,16 @@ struct ReadFileTool: ToolHandler {
 
     let resolver: SandboxPathResolver
     let fileManager: FileManager
+    /// Hard line cap. `0` means unlimited (no size check).
+    let lineLimit: Int
 
-    
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self {
-        Self(resolver: dependencies.resolver, fileManager: dependencies.fileManager)
+        Self(resolver: dependencies.resolver, fileManager: dependencies.fileManager, lineLimit: dependencies.readFileMaxLines)
     }
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let path = try requiredString(args, "path")
-            let maxBytes = optionalInt(args, "max_bytes") ?? 200_000
-            let encoding = optionalString(args, "encoding") ?? "utf-8"
 
             let fileURL = try resolver.resolveFileURL(relativePath: path)
 
@@ -70,50 +69,68 @@ struct ReadFileTool: ToolHandler {
             struct ReadFileData: Codable {
                 var path: String
                 var content: String
-                var size: Int
+                var start_line: Int
+                var end_line: Int
+                var total_lines: Int
                 var encoding: String
             }
 
+            // Extract content (PDF/DOCX/RTF/etc. → plain text; otherwise raw UTF-8).
+            let fullContent: String
+            let encoding: String
             if let extracted = DocumentTextExtractor.extractText(from: fileURL) {
-                // Extraction failure → error result (avoids polluting MemoryTagStore/ToolCallCache).
                 if DocumentTextExtractor.isFailureMessage(extracted) {
                     return makeErrorResult(
                         toolName: Self.name, args: args,
                         code: .commandFailed, message: extracted
                     )
                 }
+                fullContent = extracted
+                encoding = "extracted_text"
+            } else {
+                // A nil decode here means the file is binary or non-UTF-8.
+                // Returning empty content would make the LLM mistake the file
+                // for genuinely empty — surface a clear error envelope instead.
+                guard let utf8 = try? String(contentsOf: fileURL, encoding: .utf8) else {
+                    return makeErrorResult(
+                        toolName: Self.name, args: args,
+                        code: .commandFailed,
+                        message: "File is not valid UTF-8 — appears to be binary or in another encoding: \(path)"
+                    )
+                }
+                fullContent = utf8
+                encoding = "utf-8"
+            }
 
-                let byteCount = extracted.utf8.count
-                let truncated = byteCount > maxBytes
-                let content = truncated
-                    ? DocumentTextExtractor.truncateToUTF8Bytes(extracted, maxBytes: maxBytes)
-                    : extracted
-                return makeSuccessResult(
+            let allLines = fullContent.components(separatedBy: .newlines)
+            let totalLines = allLines.count
+
+            // Hard block: file exceeds configured limit. `lineLimit == 0` is the
+            // "unlimited" sentinel — skip the check entirely so the LLM gets the
+            // full file regardless of size.
+            if lineLimit > 0 && totalLines > lineLimit {
+                return makeErrorResult(
                     toolName: Self.name, args: args,
-                    data: ReadFileData(
-                        path: path, content: content,
-                        size: byteCount, encoding: "extracted_text"
-                    ),
-                    meta: ToolResultMeta(truncated: truncated)
+                    code: .invalidArgs,
+                    message: "File has \(totalLines) lines, exceeding the \(lineLimit)-line read_file limit. Use read_lines with explicit ranges.",
+                    next: NextHint(
+                        suggested_cmd: TN.readLines,
+                        suggested_args: ["path": path, "start_line": "1", "end_line": "-1"],
+                        reason: "Use read_lines for files larger than \(lineLimit) lines"
+                    )
                 )
             }
 
-            // Standard UTF-8 text path
-            let data = try Data(contentsOf: fileURL)
-            var truncated = false
-            let contentData: Data
-            if data.count > maxBytes {
-                contentData = data.prefix(maxBytes)
-                truncated = true
-            } else {
-                contentData = data
-            }
-
-            let content = String(data: contentData, encoding: .utf8) ?? ""
             return makeSuccessResult(
                 toolName: Self.name, args: args,
-                data: ReadFileData(path: path, content: content, size: data.count, encoding: encoding),
-                meta: ToolResultMeta(truncated: truncated)
+                data: ReadFileData(
+                    path: path,
+                    content: fullContent,
+                    start_line: totalLines == 0 ? 0 : 1,
+                    end_line: totalLines,
+                    total_lines: totalLines,
+                    encoding: encoding
+                )
             )
         }
     }
@@ -140,7 +157,6 @@ struct ReadLinesTool: ToolHandler {
     let resolver: SandboxPathResolver
     let fileManager: FileManager
 
-    
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self {
         Self(resolver: dependencies.resolver, fileManager: dependencies.fileManager)
     }
@@ -366,12 +382,14 @@ struct SearchTool: ToolHandler {
     static let name = TN.search
     static let schema = ToolSchema(
         name: TN.search,
-        description: "Search for text across the work folder. Reads plain text (including .html/.xml/.md source) plus PDF/DOCX/RTF/RTFD/ODT/XLSX/PPTX (auto-extracted to plain text). Returns matching lines with file paths. Narrow with file_glob for large doc-heavy folders.",
+        description: "Search for text across the work folder. Reads plain text (including .html/.xml/.md source) plus PDF/DOCX/RTF/RTFD/ODT/XLSX/PPTX (auto-extracted to plain text). Returns matching content lines in `matches` AND files whose name or relative path contains the query in `filename_matches` (basename hits sort first, then by path). Use `context_before` / `context_after` to widen each match with surrounding source lines. Narrow with file_glob for large doc-heavy folders. exploratory=true also applies vocab expansion to filename matching.",
         parameters: JS.object(
             properties: [
                 "query": JS.string("Search query (substring match)"),
-                "max_results": JS.integer("Max number of results"),
-                "expand": JS.boolean("Broaden the query via a local vocab vector index — surfaces synonyms, cross-language translations (e.g. Russian↔English), and camelCase/snake_case variants of each token. SET TO TRUE whenever any of these holds: (1) the query is in a different language than the codebase, (2) you don't know the project's exact naming for the concept, (3) a previous plain search returned 0 or very few hits. Always retry with expand=true before falling back to list_files/read_file or escalating to ask_supervisor."),
+                "max_results": JS.integer("Max number of results returned. Defaults to the user-configured value in Settings → Tool Behavior (default \(AppDefaults.searchMaxResults))."),
+                "context_before": JS.integer("Number of source lines to include before each match. Defaults to the user-configured value in Settings → Tool Behavior (default \(AppDefaults.searchContextBefore)). Use 2-5 when you need surrounding context (function signatures, imports, comment headers)."),
+                "context_after": JS.integer("Number of source lines to include after each match. Defaults to the user-configured value in Settings → Tool Behavior (default \(AppDefaults.searchContextAfter)). Use 2-5 to see what follows a hit."),
+                "exploratory": JS.boolean("Run an exploratory pass via a local vocab vector index — surfaces synonyms, cross-language translations (e.g. Russian↔English), and camelCase/snake_case variants of each token. SET TO TRUE whenever any of these holds: (1) the query is in a different language than the codebase, (2) you don't know the project's exact naming for the concept, (3) a previous plain search returned 0 or very few hits. Always retry with exploratory=true before falling back to list_files/read_file or escalating to ask_supervisor."),
             ],
             required: ["query"]
         )
@@ -382,31 +400,50 @@ struct SearchTool: ToolHandler {
     let fileManager: FileManager
     let workFolderRoot: URL
     let internalDir: URL?
+    let exploratoryByDefault: Bool
+    let defaultMaxResults: Int
+    let defaultContextBefore: Int
+    let defaultContextAfter: Int
 
 
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self {
-        Self(resolver: dependencies.resolver, fileManager: dependencies.fileManager, workFolderRoot: dependencies.workFolderRoot, internalDir: dependencies.internalDir)
+        Self(
+            resolver: dependencies.resolver,
+            fileManager: dependencies.fileManager,
+            workFolderRoot: dependencies.workFolderRoot,
+            internalDir: dependencies.internalDir,
+            exploratoryByDefault: dependencies.searchExploratoryByDefault,
+            defaultMaxResults: dependencies.searchMaxResults,
+            defaultContextBefore: dependencies.searchContextBefore,
+            defaultContextAfter: dependencies.searchContextAfter
+        )
     }
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            let query = try requiredString(args, "query")
-            let mode = SearchMode(raw: optionalString(args, "mode"))
-            let paths = optionalStringArray(args, "paths")
-            let fileGlob = optionalString(args, "file_glob")
-            let maxResults = optionalInt(args, "max_results") ?? 20
-            let contextBefore = optionalInt(args, "context_before") ?? 0
-            let contextAfter = optionalInt(args, "context_after") ?? 0
-            let maxMatchLines = optionalInt(args, "max_match_lines") ?? 40
-            let expand = optionalBool(args, "expand", default: false)
+        // Resolve `exploratory` against the default-on setting and write it back into args
+        // before any throwing call, so error envelopes (e.g. missing query) also reflect
+        // the actual branch taken rather than the verbatim LLM input.
+        let exploratory = optionalBool(args, "exploratory", default: exploratoryByDefault)
+        var canonicalArgs = args
+        canonicalArgs["exploratory"] = exploratory
 
-            // Expanded-search mode: hand off to the processor via a signal.
-            // Body of the final result is produced in `appendExpandedSearchResult`.
+        return ToolErrorHandler.execute(toolName: Self.name, args: canonicalArgs) {
+            let query = try requiredString(canonicalArgs, "query")
+            let mode = SearchMode(raw: optionalString(canonicalArgs, "mode"))
+            let paths = optionalStringArray(canonicalArgs, "paths")
+            let fileGlob = optionalString(canonicalArgs, "file_glob")
+            let maxResults = optionalInt(canonicalArgs, "max_results") ?? defaultMaxResults
+            let contextBefore = optionalInt(canonicalArgs, "context_before") ?? defaultContextBefore
+            let contextAfter = optionalInt(canonicalArgs, "context_after") ?? defaultContextAfter
+            let maxMatchLines = optionalInt(canonicalArgs, "max_match_lines") ?? 40
+
+            // Exploratory-search mode: hand off to the processor via a signal.
+            // Body of the final result is produced in `appendExploratorySearchResult`.
             // Payload init throws on empty query and clamps out-of-range
             // numerics — `ToolErrorHandler.execute` turns the throw into a
             // standard error envelope for the LLM.
-            if expand {
-                let payload = try ExpandedSearchPayload(
+            if exploratory {
+                let payload = try ExploratorySearchPayload(
                     query: query,
                     mode: mode,
                     paths: paths,
@@ -418,12 +455,12 @@ struct SearchTool: ToolHandler {
                 )
                 return ToolExecutionResult(
                     toolName: Self.name,
-                    argumentsJSON: encodeArgsToJSON(args),
+                    argumentsJSON: encodeArgsToJSON(canonicalArgs),
                     outputJSON: makeSuccessEnvelope(
-                        data: ["query": query, "status": "expanding"]
+                        data: ["query": query, "status": "exploring"]
                     ),
                     isError: false,
-                    signal: .expandedSearch(payload)
+                    signal: .exploratorySearch(payload)
                 )
             }
 
@@ -448,16 +485,18 @@ struct SearchTool: ToolHandler {
                 var query: String
                 var matches: [SearchMatch]
                 var count: Int
+                var filename_matches: [FilenameMatch]?
                 var skipped_files: [SkippedFile]?
                 var skipped_binary_count: Int?
             }
 
             return makeSuccessResult(
-                toolName: Self.name, args: args,
+                toolName: Self.name, args: canonicalArgs,
                 data: SearchData(
                     query: query,
                     matches: output.matches,
                     count: output.matches.count,
+                    filename_matches: output.filenameMatches.isEmpty ? nil : output.filenameMatches,
                     skipped_files: output.skipped.isEmpty ? nil : output.skipped,
                     skipped_binary_count: output.skippedBinaryCount > 0 ? output.skippedBinaryCount : nil
                 ),

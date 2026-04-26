@@ -6,7 +6,7 @@ import XCTest
 /// Subclass and add test methods. setUp/tearDown are handled automatically.
 ///
 /// Uses an in-memory `ConfigurationStorage` so each test starts with clean
-/// defaults — otherwise settings (e.g. `expandedSearchEnabled`) leak between
+/// defaults — otherwise settings (e.g. `exploratorySearchEnabled`) leak between
 /// tests via `UserDefaults.standard` and the order of execution starts to
 /// matter.
 @MainActor

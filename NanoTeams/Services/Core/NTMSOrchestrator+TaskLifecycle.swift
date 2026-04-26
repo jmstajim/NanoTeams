@@ -33,6 +33,11 @@ extension NTMSOrchestrator {
         // Stop engine for this task if running
         stopEngine(for: taskID)
         llmExecutionService.cancelExecutions(forTaskID: taskID)
+        // Drop any queued chat messages for this task. `handleActiveTaskClosedAtChanged`
+        // only catches active-task close (its onChange watches `activeTask?.closedAt`),
+        // so without this a removed background task leaks orphan queue entries that the
+        // wake-up branch in `tryFlushQueuedMessages` would then burn empty `Task { resumeRun }`s on.
+        quickCaptureFormState?.clearQueuedMessages(for: taskID)
 
         guard let url = workFolderURL else { return }
         do {

@@ -83,6 +83,41 @@ extension NTMSOrchestrator {
             }
         }
 
+        // 1.5 Supervisor answered after restart (or any pause that left a saved session).
+        // `engine.start()` after restart skips `reconcileAfterPause()`, and branch 3
+        // below depends on `step.messages`/`llmConversation` being non-empty — both
+        // gaps cause the answered chat to never resume. Restart explicitly when the
+        // step has a saved session ID + an answer; `startStepExecution` then takes
+        // the stateful continuation path and sends only the answer via
+        // `previous_response_id` (no full history rebuild).
+        for step in run.steps where step.status == .paused || step.status == .pending {
+            guard step.effectiveSupervisorAnswer != nil, step.llmSessionID != nil else { continue }
+            let roleID = step.effectiveRoleID
+            let roleStatus = run.roleStatuses[roleID]
+            // Guard: only restart for live role states. Done / failed / skipped /
+            // needsAcceptance / accepted / revisionRequested have their own flows.
+            guard roleStatus == .idle || roleStatus == .working || roleStatus == .ready else { continue }
+            if roleStatus != .working {
+                await mutateTask(taskID: taskID) { task in
+                    guard let ri = task.runs.indices.last else { return }
+                    task.runs[ri].roleStatuses[roleID] = .working
+                    task.runs[ri].updatedAt = MonotonicClock.shared.now()
+                }
+                // The closure can short-circuit (no runs in `task` due to a
+                // concurrent mutation), and `mutateTask` returning true means
+                // "persisted" not "did something" (CLAUDE.md §7). Re-read the
+                // post-mutate state and skip `runStep` if the flip didn't land
+                // — otherwise the engine starts a step with the role in a state
+                // that violates its "step runs only when role is .working" invariant.
+                let postStatus = loadedTask(taskID)?.runs.last?.roleStatuses[roleID]
+                guard postStatus == .working else {
+                    lastErrorMessage = "Couldn't restart role after restart: task state changed concurrently"
+                    continue
+                }
+            }
+            await runStep(stepID: step.id, taskID: taskID)
+        }
+
         // 2. Re-read task after mutations
         guard let updatedTask = loadedTask(taskID), let updatedRun = updatedTask.runs.last else { return }
 

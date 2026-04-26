@@ -54,6 +54,7 @@ extension LLMExecutionService {
                 resultJSON: result.outputJSON,
                 isError: result.isError,
                 stepID: stepID,
+                argumentsJSON: result.argumentsJSON,
                 in: &task
             )
         }

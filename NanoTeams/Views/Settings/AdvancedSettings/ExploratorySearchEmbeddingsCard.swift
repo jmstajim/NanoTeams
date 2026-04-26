@@ -7,14 +7,14 @@ import SwiftUI
 /// 3. Thresholds — per-token and whole-phrase cosine cutoffs.
 /// Plus a primary "Rebuild embeddings" button and an overflow-menu action
 /// for a force-full rebuild.
-struct ExpandedSearchEmbeddingsCard: View {
+struct ExploratorySearchEmbeddingsCard: View {
     @Bindable var config: StoreConfiguration
     var coordinator: SearchIndexCoordinator?
     var onRebuild: () -> Void
     var onForceFullRebuild: () -> Void
     /// Fired after the embed-model URL / name has been written to
     /// `StoreConfiguration`. Wired by `AdvancedSettingsView` to the
-    /// orchestrator's `onExpandedSearchEmbeddingConfigChanged` hook so the
+    /// orchestrator's `onExploratorySearchEmbeddingConfigChanged` hook so the
     /// LM Studio embed model is auto unloaded-then-reloaded.
     var onConfigChanged: () -> Void = {}
     /// Injected for testability. Defaults to the real router.
@@ -24,7 +24,7 @@ struct ExpandedSearchEmbeddingsCard: View {
     //
     // Scoped to this card (not persisted). Re-fetched on appear via the
     // picker's `onFetch` hook, and on Refresh click. `pickerModel` mirrors
-    // `config.expandedSearchEmbeddingConfig?.modelName`; binding sync happens
+    // `config.exploratorySearchEmbeddingConfig?.modelName`; binding sync happens
     // inside `modelPickerBinding` so the Picker can show the stored value
     // even before the first fetch completes.
     @State private var availableEmbeddingModels: [String] = []
@@ -33,9 +33,9 @@ struct ExpandedSearchEmbeddingsCard: View {
 
     var body: some View {
         SettingsCard(
-            header: "Semantic Expansion",
+            header: "Semantic Query Expansion",
             systemImage: "sparkle.magnifyingglass",
-            footer: "Embeddings let Expanded Search surface translations, synonyms, and related terms — computed once after index build, reused on every query."
+            footer: "Embeddings let Exploratory Search surface translations, synonyms, and related terms — computed once after index build, reused on every query."
         ) {
             if let coordinator {
                 statusSection(coordinator: coordinator)
@@ -45,7 +45,7 @@ struct ExpandedSearchEmbeddingsCard: View {
                 thresholdsSection()
                 actionsRow(coordinator: coordinator)
             } else {
-                Text("Expanded Search is disabled. Enable it above to build the embedding index.")
+                Text("Exploratory Search is disabled. Enable it above to build the embedding index.")
                     .font(Typography.caption)
                     .foregroundStyle(Colors.textTertiary)
             }
@@ -82,11 +82,11 @@ struct ExpandedSearchEmbeddingsCard: View {
 
         if case .ready(let coverage, let failed, let vectorsCount) = coordinator.vectorIndexState {
             statusRow(
-                label: "Vectors",
+                label: "Embeddings",
                 value: "\(vectorsCount)"
             )
             statusRow(
-                label: "Coverage",
+                label: "Token coverage",
                 value: percentString(coverage)
             )
             if failed > 0 {
@@ -161,14 +161,14 @@ struct ExpandedSearchEmbeddingsCard: View {
 
     private var baseURLBinding: Binding<String> {
         Binding(
-            get: { config.expandedSearchEmbeddingConfig?.baseURLString ?? "" },
+            get: { config.exploratorySearchEmbeddingConfig?.baseURLString ?? "" },
             set: { updateConfig(\.baseURLString, $0.isEmpty ? nil : $0) }
         )
     }
 
     private var modelNameBinding: Binding<String> {
         Binding(
-            get: { config.expandedSearchEmbeddingConfig?.modelName ?? "" },
+            get: { config.exploratorySearchEmbeddingConfig?.modelName ?? "" },
             set: { updateConfig(\.modelName, $0.isEmpty ? nil : $0) }
         )
     }
@@ -185,11 +185,11 @@ struct ExpandedSearchEmbeddingsCard: View {
     /// both fields end up empty after the write, the whole override clears
     /// (back to `EmbeddingConfig.defaultNomicLMStudio`).
     private func updateConfig(_ keyPath: WritableKeyPath<OverrideFields, String?>, _ value: String?) {
-        var fields = OverrideFields(from: config.expandedSearchEmbeddingConfig)
+        var fields = OverrideFields(from: config.exploratorySearchEmbeddingConfig)
         fields[keyPath: keyPath] = value
         let next = fields.build()
-        guard next != config.expandedSearchEmbeddingConfig else { return }
-        config.expandedSearchEmbeddingConfig = next
+        guard next != config.exploratorySearchEmbeddingConfig else { return }
+        config.exploratorySearchEmbeddingConfig = next
         onConfigChanged()
     }
 
@@ -199,14 +199,14 @@ struct ExpandedSearchEmbeddingsCard: View {
     private func thresholdsSection() -> some View {
         thresholdSlider(
             title: "Per-token threshold",
-            caption: "Cosine cutoff when a query token is already in the vocab. Higher = stricter.",
-            value: $config.expandedSearchPerTokenThreshold,
+            caption: "Cosine similarity threshold for nearest-neighbor lookup in the vocabulary index. Higher = stricter.",
+            value: $config.exploratorySearchPerTokenThreshold,
             range: 0.5...0.95
         )
         thresholdSlider(
-            title: "Whole-phrase threshold",
-            caption: "Cosine cutoff for multi-word / novel queries that fire a /v1/embeddings call.",
-            value: $config.expandedSearchPhraseThreshold,
+            title: "Out-of-vocabulary threshold",
+            caption: "Cosine similarity threshold for queries that require a fresh embedding (multi-word phrases or out-of-vocab tokens).",
+            value: $config.exploratorySearchPhraseThreshold,
             range: 0.4...0.9
         )
     }
@@ -342,8 +342,8 @@ struct ExpandedSearchEmbeddingsCard: View {
     }
 }
 
-#Preview("Semantic Expansion — disabled") {
-    ExpandedSearchEmbeddingsCard(
+#Preview("Semantic Query Expansion — disabled") {
+    ExploratorySearchEmbeddingsCard(
         config: StoreConfiguration(),
         coordinator: nil,
         onRebuild: {},

@@ -112,9 +112,9 @@ final class HeadlessRunner {
             print("[HEADLESS] Scheme: \(scheme)")
         }
 
-        // 7. Set project description if provided
-        if let desc = config.projectDescription {
-            await orchestrator.updateWorkFolderDescription(desc)
+        // 7. Set work folder context if provided
+        if let context = config.workFolderContext {
+            await orchestrator.updateWorkFolderContext(context)
         }
 
         // 8. Create task

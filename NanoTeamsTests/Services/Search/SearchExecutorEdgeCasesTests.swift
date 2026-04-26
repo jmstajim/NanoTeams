@@ -38,6 +38,37 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
         try content.write(to: url, atomically: true, encoding: .utf8)
     }
 
+    // MARK: - Invalid file_glob → typed throw
+
+    func testInvalidFileGlob_throwsTypedError() throws {
+        // Drop a real file so the executor would otherwise return matches for
+        // the literal query — proves the throw fires *before* the walk runs
+        // and isn't just an artifact of an empty corpus.
+        try write("hit.swift", content: "needle")
+
+        XCTAssertThrowsError(
+            try SearchExecutor.run(SearchExecutorInput(
+                workFolderRoot: tempDir,
+                resolver: resolver,
+                fileManager: fm,
+                queries: ["needle"],
+                fileGlob: GlobMatcher._testUncompilableGlobSentinel,
+                internalDir: internalDir
+            ))
+        ) { err in
+            // Without the typed throw, the executor would silently filter every
+            // candidate to false and return zero matches with no signal. The
+            // human Supervisor would just see an empty result.
+            guard let searchErr = err as? SearchExecutorError,
+                  case .invalidFileGlob(let pattern, _) = searchErr
+            else {
+                XCTFail("expected SearchExecutorError.invalidFileGlob, got \(err)")
+                return
+            }
+            XCTAssertEqual(pattern, GlobMatcher._testUncompilableGlobSentinel)
+        }
+    }
+
     // MARK: - Empty input
 
     func testEmptyFile_noMatches() throws {
@@ -88,7 +119,7 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
 
     /// Behavior change (was: swallowed via `try?` → 0 matches, no signal).
     /// Now: throws `SearchExecutorError.regexCompileFailed` so the
-    /// expanded-search envelope's `search_error` carries the reason and the
+    /// exploratory-search envelope's `search_error` carries the reason and the
     /// LLM can distinguish "no matches in corpus" from "your pattern is
     /// malformed". `try?` ate this signal silently — the LLM kept retrying
     /// with the same broken pattern.
@@ -216,28 +247,32 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
         XCTAssertEqual(out.matches.count, 0)
     }
 
-    /// I10: when the glob cannot be compiled into a regex, `matchesGlob`
-    /// must return `false` (nothing matches) — not `true` (match every file).
-    /// Returning `true` on compile failure silently widens the search to the
-    /// whole tree, defeating the point of the glob and flooding the LLM
-    /// with unrelated files.
-    func testFileGlob_compileFailure_matchesNothing() throws {
+    /// I10 (updated): when `file_glob` cannot be compiled into a regex, the
+    /// executor must surface a typed `SearchExecutorError.invalidFileGlob`
+    /// rather than silently fail-close to zero matches. The old behavior
+    /// (return zero hits) was indistinguishable from "no files matched the
+    /// query", so the LLM concluded the glob was correct and the search
+    /// genuinely empty. The new throw lets the caller put the reason in
+    /// the result envelope's `search_error` field. See also
+    /// `testInvalidFileGlob_throwsTypedError` above for the dedicated assertion.
+    func testFileGlob_compileFailure_throwsTypedError() throws {
         try write("a.swift", content: "target\n")
         try write("b.m", content: "target\n")
-        // A pattern that after our `\\*` → `.*` substitution still fails to
-        // compile is surprisingly hard to synthesize because we pre-escape
-        // with `escapedPattern(for:)`. The practical failure path is an
-        // internally-generated regex breaking on platform quirks, so we
-        // exercise `matchesGlob` indirectly: `makeGlobRegex` is exposed for
-        // testing. If that returns nil, the executor must match nothing.
-        let out = try SearchExecutor.run(SearchExecutorInput(
-            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
-            queries: ["target"],
-            fileGlob: SearchExecutor._testUncompilableGlobSentinel,
-            internalDir: internalDir
-        ))
-        XCTAssertEqual(out.matches.count, 0,
-            "An uncompilable glob must match no files, not every file.")
+        XCTAssertThrowsError(
+            try SearchExecutor.run(SearchExecutorInput(
+                workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+                queries: ["target"],
+                fileGlob: GlobMatcher._testUncompilableGlobSentinel,
+                internalDir: internalDir
+            ))
+        ) { err in
+            guard let searchErr = err as? SearchExecutorError,
+                  case .invalidFileGlob = searchErr
+            else {
+                XCTFail("expected SearchExecutorError.invalidFileGlob, got \(err)")
+                return
+            }
+        }
     }
 
     func testFileGlob_withMultipleStars() throws {

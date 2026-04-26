@@ -14,8 +14,7 @@ final class SettingsService {
     }
 
     func resetWorkFolderSettings(at url: URL) throws -> WorkFolderContext {
-        print("[SettingsService] Resetting at: \(url.path)")
-        return try repository.resetWorkFolderSettings(at: url)
+        try repository.resetWorkFolderSettings(at: url)
     }
     nonisolated deinit {}
 }

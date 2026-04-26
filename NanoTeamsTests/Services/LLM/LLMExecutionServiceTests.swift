@@ -12,9 +12,14 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     var maxLLMRetries: Int = 0
     var visionLLMConfig: LLMConfig?
     var loggingEnabled: Bool = false
-    var expandedSearchEnabled: Bool = false
+    var exploratorySearchEnabled: Bool = false
+    var searchExploratoryByDefault: Bool = false
+    var readFileMaxLines: Int = AppDefaults.readFileMaxLines
+    var searchMaxResults: Int = AppDefaults.searchMaxResults
+    var searchContextBefore: Int = AppDefaults.searchContextBefore
+    var searchContextAfter: Int = AppDefaults.searchContextAfter
     /// Scripted for tests — defaults to `true` so real-folder paths exercise.
-    /// Flip to `false` to simulate default-storage expanded-search on real folder.
+    /// Flip to `false` to simulate default-storage exploratory-search on real folder.
     var hasRealWorkFolder: Bool = true
     /// Scripted index used by `awaitSearchIndex`. Tests install it directly.
     var scriptedSearchIndex: SearchIndex?
@@ -135,6 +140,13 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
         let entry = scriptedQueuedMessages.remove(at: idx)
         consumedQueuedMessages.append((taskID, roleID, stepID, entry.content))
         return entry.content
+    }
+
+    // MARK: - User-visible banners
+
+    var lastInfoMessages: [String] = []
+    func setLastInfoMessageForUI(_ message: String) {
+        lastInfoMessages.append(message)
     }
 }
 

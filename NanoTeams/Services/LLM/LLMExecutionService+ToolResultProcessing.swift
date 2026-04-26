@@ -44,17 +44,17 @@ extension LLMExecutionService {
 
         // Record tool calls to memory.
         //
-        // `.expandedSearch` and `.visionAnalysis` results carry an interim
+        // `.exploratorySearch` and `.visionAnalysis` results carry an interim
         // `{"status":"expanding"}` / `{"status":"analyzing"}` placeholder
         // at this point — their envelopes get rewritten asynchronously by
-        // `appendExpandedSearchResult` / `appendVisionResult`. We skip them
+        // `appendExploratorySearchResult` / `appendVisionResult`. We skip them
         // here and let those finalizers record the real result into the
         // cache; otherwise a subsequent identical call would dedup against
         // the placeholder and the LLM would be served junk.
         for (idx, (call, result)) in zip(resolvedToolCalls, results).enumerated() {
             if !cachedIndices.contains(idx) {
                 switch result.signal {
-                case .expandedSearch, .visionAnalysis:
+                case .exploratorySearch, .visionAnalysis:
                     continue
                 default:
                     break
@@ -95,9 +95,9 @@ extension LLMExecutionService {
                     conversationMessages: &conversationMessages,
                     memory: memory
                 )
-            case .expandedSearch:
+            case .exploratorySearch:
                 let toolCallID = resolvedToolCalls[idx].id
-                await appendExpandedSearchResult(
+                await appendExploratorySearchResult(
                     result: result,
                     toolCallID: toolCallID,
                     stepID: stepID,

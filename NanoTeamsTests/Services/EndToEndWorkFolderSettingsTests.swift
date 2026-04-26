@@ -3,20 +3,20 @@ import XCTest
 @testable import NanoTeams
 
 /// E2E user-scenario tests for **Settings → Work Folder**: the user edits
-/// the project description, sets a custom description prompt (for LLM-
-/// assisted description generation), and selects an Xcode scheme.
+/// the work-folder context, sets a custom context prompt (for LLM-assisted
+/// context generation), and selects an Xcode scheme.
 ///
 /// Pinned behaviors:
-/// 1. `updateWorkFolderDescription` persists → settings.json updated.
+/// 1. `updateWorkFolderContext` persists → settings.json updated.
 /// 2. `updateSelectedScheme` persists → settings.json updated.
-/// 3. Description update leaves workfolder.json + teams.json alone
+/// 3. Context update leaves workfolder.json + teams.json alone
 ///    (three-file split invariant).
-/// 4. Scheme update leaves description untouched.
-/// 5. Empty description is allowed (user cleared the field).
+/// 4. Scheme update leaves context untouched.
+/// 5. Empty context is allowed (user cleared the field).
 /// 6. Nil scheme clears the selection (scheme picker → "None").
-/// 7. Multi-line descriptions round-trip without mangling.
+/// 7. Multi-line context round-trips without mangling.
 /// 8. Settings survive across restart.
-/// 9. descriptionPrompt edits round-trip identically (custom templates).
+/// 9. contextPrompt edits round-trip identically (custom templates).
 @MainActor
 final class EndToEndWorkFolderSettingsTests: NTMSOrchestratorTestBase {
 
@@ -25,16 +25,16 @@ final class EndToEndWorkFolderSettingsTests: NTMSOrchestratorTestBase {
     func testUpdateDescription_persistsToSettingsJSON() async {
         await sut.openWorkFolder(tempDir)
 
-        await sut.updateWorkFolderDescription("A really cool project")
+        await sut.updateWorkFolderContext("A really cool project")
 
-        XCTAssertEqual(sut.workFolder?.settings.description,
+        XCTAssertEqual(sut.workFolder?.settings.context,
                        "A really cool project",
                        "In-memory projection reflects the update")
 
         // Reopen and confirm disk persistence
         sut = NTMSOrchestrator(repository: NTMSRepository())
         await sut.openWorkFolder(tempDir)
-        XCTAssertEqual(sut.workFolder?.settings.description,
+        XCTAssertEqual(sut.workFolder?.settings.context,
                        "A really cool project")
     }
 
@@ -63,18 +63,18 @@ final class EndToEndWorkFolderSettingsTests: NTMSOrchestratorTestBase {
                      "Passing nil must clear the selection")
     }
 
-    // MARK: - Scenario 4: Empty description is valid
+    // MARK: - Scenario 4: Empty context is valid
 
     func testUpdateDescription_emptyString_storedAsEmpty() async {
         await sut.openWorkFolder(tempDir)
-        await sut.updateWorkFolderDescription("initial")
-        await sut.updateWorkFolderDescription("")
+        await sut.updateWorkFolderContext("initial")
+        await sut.updateWorkFolderContext("")
 
-        XCTAssertEqual(sut.workFolder?.settings.description, "",
+        XCTAssertEqual(sut.workFolder?.settings.context, "",
                        "Empty string is a valid user choice — must be stored, not reverted")
     }
 
-    // MARK: - Scenario 5: Multi-line description round-trips
+    // MARK: - Scenario 5: Multi-line context round-trips
 
     func testUpdateDescription_multiLine_roundTripsCorrectly() async {
         let multiLine = """
@@ -86,21 +86,21 @@ final class EndToEndWorkFolderSettingsTests: NTMSOrchestratorTestBase {
             """
 
         await sut.openWorkFolder(tempDir)
-        await sut.updateWorkFolderDescription(multiLine)
+        await sut.updateWorkFolderContext(multiLine)
 
         sut = NTMSOrchestrator(repository: NTMSRepository())
         await sut.openWorkFolder(tempDir)
 
-        XCTAssertEqual(sut.workFolder?.settings.description, multiLine,
-                       "Multi-line + Unicode description must round-trip identically")
+        XCTAssertEqual(sut.workFolder?.settings.context, multiLine,
+                       "Multi-line + Unicode context must round-trip identically")
     }
 
     // MARK: - Scenario 6: Three-file-split isolation
 
-    /// The three-file-split invariant: editing the description must NOT
+    /// The three-file-split invariant: editing the context must NOT
     /// rewrite `workfolder.json` or `teams.json`. We assert via content
     /// hash (mtime is CI-flaky).
-    func testUpdateDescription_onlyTouchesSettingsJSON() async {
+    func testUpdateContext_onlyTouchesSettingsJSON() async {
         await sut.openWorkFolder(tempDir)
         let paths = NTMSPaths(workFolderRoot: tempDir)
 
@@ -108,16 +108,16 @@ final class EndToEndWorkFolderSettingsTests: NTMSOrchestratorTestBase {
         let teamsBefore = try? Data(contentsOf: paths.teamsJSON)
         let settingsBefore = try? Data(contentsOf: paths.settingsJSON)
 
-        await sut.updateWorkFolderDescription("new description \(UUID().uuidString)")
+        await sut.updateWorkFolderContext("new context \(UUID().uuidString)")
 
         let wfAfter = try? Data(contentsOf: paths.workFolderJSON)
         let teamsAfter = try? Data(contentsOf: paths.teamsJSON)
         let settingsAfter = try? Data(contentsOf: paths.settingsJSON)
 
         XCTAssertEqual(wfBefore, wfAfter,
-                       "workfolder.json must not change when only description edits")
+                       "workfolder.json must not change when only context edits")
         XCTAssertEqual(teamsBefore, teamsAfter,
-                       "teams.json must not change when only description edits")
+                       "teams.json must not change when only context edits")
         XCTAssertNotEqual(settingsBefore, settingsAfter,
                           "settings.json must change")
     }
@@ -138,33 +138,33 @@ final class EndToEndWorkFolderSettingsTests: NTMSOrchestratorTestBase {
         XCTAssertEqual(teamsBefore, teamsAfter, "Scheme edit must not touch teams.json")
     }
 
-    // MARK: - Scenario 7: descriptionPrompt (template) survives edit via mutateWorkFolder
+    // MARK: - Scenario 7: contextPrompt (template) survives edit via mutateWorkFolder
 
-    func testDescriptionPrompt_customTemplate_persistsAndRoundTrips() async {
+    func testContextPrompt_customTemplate_persistsAndRoundTrips() async {
         await sut.openWorkFolder(tempDir)
 
         let customPrompt = "Summarize the folder focusing on tests:\n\n{workFolderListing}"
         await sut.mutateWorkFolder { proj in
-            proj.settings.descriptionPrompt = customPrompt
+            proj.settings.contextPrompt = customPrompt
         }
 
-        XCTAssertEqual(sut.workFolder?.settings.descriptionPrompt, customPrompt)
+        XCTAssertEqual(sut.workFolder?.settings.contextPrompt, customPrompt)
 
         sut = NTMSOrchestrator(repository: NTMSRepository())
         await sut.openWorkFolder(tempDir)
-        XCTAssertEqual(sut.workFolder?.settings.descriptionPrompt, customPrompt,
-                       "Custom descriptionPrompt must round-trip across restart")
+        XCTAssertEqual(sut.workFolder?.settings.contextPrompt, customPrompt,
+                       "Custom contextPrompt must round-trip across restart")
     }
 
     // MARK: - Scenario 8: Independent edits compose cleanly
 
-    func testUpdateDescriptionThenScheme_bothPersistIndependently() async {
+    func testUpdateContextThenScheme_bothPersistIndependently() async {
         await sut.openWorkFolder(tempDir)
 
-        await sut.updateWorkFolderDescription("desc")
+        await sut.updateWorkFolderContext("ctx")
         await sut.updateSelectedScheme("sch")
 
-        XCTAssertEqual(sut.workFolder?.settings.description, "desc")
+        XCTAssertEqual(sut.workFolder?.settings.context, "ctx")
         XCTAssertEqual(sut.workFolder?.settings.selectedScheme, "sch")
     }
 

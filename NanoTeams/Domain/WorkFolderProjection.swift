@@ -10,8 +10,8 @@ import Foundation
 /// Field layout is designed so that existing view code (`store.workFolder?.teams`,
 /// `store.workFolder?.activeTeam`, `store.workFolder?.name`) continues to work
 /// without rewrites. The only callsite-level change is that user settings
-/// (`description`, `descriptionPrompt`, `selectedScheme`) are now accessed through
-/// the `settings` sub-struct: `store.workFolder?.settings.description`.
+/// (`context`, `contextPrompt`, `selectedScheme`) are now accessed through
+/// the `settings` sub-struct: `store.workFolder?.settings.context`.
 struct WorkFolderProjection: Hashable {
     var state: WorkFolderState
     var settings: ProjectSettings

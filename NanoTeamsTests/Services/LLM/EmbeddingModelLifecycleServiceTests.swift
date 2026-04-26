@@ -158,7 +158,7 @@ final class EmbeddingModelLifecycleServiceTests: XCTestCase {
 
     /// listLoadedInstances throwing must not block the load — the adoption
     /// optimization is best-effort. Older LM Studio builds may not expose
-    /// /api/v0/models; we shouldn't break Expanded Search there.
+    /// /api/v0/models; we shouldn't break Exploratory Search there.
     func testEnsureLoaded_listInstancesThrows_fallsThroughToLoad() async throws {
         client.listLoadedInstancesError = TestError.boom
         client.loadResults = ["instance-a"]
@@ -201,6 +201,63 @@ final class EmbeddingModelLifecycleServiceTests: XCTestCase {
             // expected
         }
         XCTAssertNil(sut.loaded, "Local belief is cleared even on unload failure (defer).")
+    }
+
+    // MARK: - Soft-warning surfacing (#10 + #11)
+
+    /// Adoption-path prior-unload failure used to be fully swallowed in an
+    /// empty `catch {}`. Now it must invoke `onWarning` so the orchestrator
+    /// can surface the VRAM-leak signal via `lastInfoMessage`.
+    func testEnsureLoaded_adoptionPath_priorUnloadFails_emitsWarning() async throws {
+        // 1. First load configA — populates `loaded` with instance-a.
+        client.loadResults = ["instance-a"]
+        try await sut.ensureLoaded(configA)
+        XCTAssertEqual(sut.loaded?.config, configA)
+
+        // 2. Switch to configB. Server already has configB loaded → adoption
+        //    path. Make the prior-unload throw so we can pin the warning.
+        client.unloadError = TestError.boom
+        client.listLoadedInstancesResults = [
+            LoadedModelInstance(
+                modelName: configB.modelName,
+                instanceID: "adopted-b"
+            ),
+        ]
+
+        var warnings: [String] = []
+        sut.onWarning = { warnings.append($0) }
+
+        // ensureLoaded MUST succeed (adoption is the goal); the warning is
+        // the side channel for the user.
+        try await sut.ensureLoaded(configB)
+
+        XCTAssertEqual(sut.loaded?.config, configB)
+        XCTAssertEqual(sut.loaded?.instanceID, "adopted-b")
+        XCTAssertFalse(warnings.isEmpty,
+                       "Adoption-path prior-unload failure must emit a warning so " +
+                       "the user can see the VRAM leak instead of getting silence.")
+        XCTAssertTrue(warnings.contains { $0.contains(configA.modelName) },
+                      "Warning text must name the model that may still be loaded")
+    }
+
+    /// `listLoadedInstances` failure used to swallow into `[]` via `try?`,
+    /// indistinguishable from a legit "no instances" response. Now any
+    /// throwing call must surface a soft warning so a transient 503 isn't
+    /// confused with a normal empty server.
+    func testEnsureLoaded_listFails_emitsWarningAndFallsThroughToLoad() async throws {
+        client.listLoadedInstancesError = TestError.boom
+        client.loadResults = ["fallback-a"]
+
+        var warnings: [String] = []
+        sut.onWarning = { warnings.append($0) }
+
+        try await sut.ensureLoaded(configA)
+
+        // Fallback to fresh load worked.
+        XCTAssertEqual(sut.loaded?.instanceID, "fallback-a")
+        XCTAssertFalse(warnings.isEmpty,
+                       "List failure must emit a warning — silent swallow turns a " +
+                       "transient 503 into a duplicate-instance bug.")
     }
 }
 

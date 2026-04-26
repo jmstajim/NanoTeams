@@ -2,7 +2,7 @@ import XCTest
 
 @testable import NanoTeams
 
-final class WorkFolderDescriptionBuilderTests: XCTestCase {
+final class WorkFolderContextBuilderTests: XCTestCase {
     private let fileManager = FileManager.default
     private var tempDir: URL!
 
@@ -41,13 +41,13 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
     // MARK: - Basic Input Building Tests
 
     func testBuildInput_returnsRootName() throws {
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
         XCTAssertEqual(input.rootName, tempDir.lastPathComponent)
     }
 
     func testBuildInput_emptyProject() {
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
         XCTAssertTrue(input.fileList.isEmpty)
         XCTAssertTrue(input.fileTypeCounts.isEmpty)
@@ -59,7 +59,7 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
         try createFile(named: "file2.swift", content: "class MyClass {}")
         try createFile(named: "README.md", content: "# Project")
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
         XCTAssertEqual(input.fileList.count, 3)
         XCTAssertTrue(input.fileList.contains("file1.swift"))
@@ -73,7 +73,7 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
         try createFile(named: "c.swift")
         try createFile(named: "d.json")
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
         XCTAssertEqual(input.fileTypeCounts["swift"], 3)
         XCTAssertEqual(input.fileTypeCounts["json"], 1)
@@ -84,7 +84,7 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
         try createFile(named: "a.swift")
         try createFile(named: "m.swift")
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
         XCTAssertEqual(input.fileList, ["a.swift", "m.swift", "z.swift"])
     }
@@ -96,7 +96,7 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
         try createFile(named: ".git/config", content: "[core]")
         try createFile(named: "main.swift")
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
         XCTAssertFalse(input.fileList.contains { $0.contains(".git") })
         XCTAssertTrue(input.fileList.contains("main.swift"))
@@ -107,7 +107,7 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
         try createFile(named: ".nanoteams/project.json")
         try createFile(named: "main.swift")
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
         XCTAssertFalse(input.fileList.contains { $0.contains(".nanoteams") })
     }
@@ -117,7 +117,7 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
         try createFile(named: "DerivedData/Build/some.o")
         try createFile(named: "main.swift")
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
         XCTAssertFalse(input.fileList.contains { $0.contains("DerivedData") })
     }
@@ -127,7 +127,7 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
         try createFile(named: "node_modules/package/index.js")
         try createFile(named: "app.js")
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
         XCTAssertFalse(input.fileList.contains { $0.contains("node_modules") })
         XCTAssertTrue(input.fileList.contains("app.js"))
@@ -138,7 +138,7 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
         try createFile(named: "Pods/AFNetworking/AFNetworking.m")
         try createFile(named: "MyApp.swift")
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
         XCTAssertFalse(input.fileList.contains { $0.contains("Pods") })
     }
@@ -149,7 +149,7 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
         try createDirectory(named: "MyApp.xcodeproj")
         try createFile(named: "main.swift")
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
         XCTAssertTrue(input.fileList.contains("MyApp.xcodeproj"))
     }
@@ -158,7 +158,7 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
         try createDirectory(named: "MyApp.xcworkspace")
         try createFile(named: "main.swift")
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
         XCTAssertTrue(input.fileList.contains("MyApp.xcworkspace"))
     }
@@ -168,7 +168,7 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
     func testBuildInput_extractsExcerpts() throws {
         try createFile(named: "main.swift", content: "import Foundation\nprint(\"Hello\")")
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
         XCTAssertFalse(input.excerpts.isEmpty)
         XCTAssertTrue(input.excerpts.contains { $0.path == "main.swift" })
@@ -178,7 +178,7 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
         try createFile(named: "README.md", content: "# My Project\n\nThis is a description.")
         try createFile(named: "other.swift", content: "import Foundation")
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
         // README should be included in excerpts
         XCTAssertTrue(input.excerpts.contains { $0.path == "README.md" })
@@ -187,7 +187,7 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
     func testBuildInput_prioritizesReadmeLLM() throws {
         try createFile(named: "README_LLM.md", content: "# LLM Guide\n\nInstructions for AI.")
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
         XCTAssertTrue(input.excerpts.contains { $0.path == "README_LLM.md" })
     }
@@ -195,7 +195,7 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
     func testBuildInput_prioritizesPackageSwift() throws {
         try createFile(named: "Package.swift", content: "// swift-tools-version:5.5")
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
         XCTAssertTrue(input.excerpts.contains { $0.path == "Package.swift" })
     }
@@ -203,7 +203,7 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
     func testBuildInput_excerptContentTrimmed() throws {
         try createFile(named: "test.swift", content: "   \n\nclass Test {}\n\n   ")
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
         let excerpt = input.excerpts.first { $0.path == "test.swift" }
         XCTAssertNotNil(excerpt)
@@ -216,7 +216,7 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
             try createFile(named: "file\(i).swift", content: "// File \(i)")
         }
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir, maxExcerpts: 3)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir, maxExcerpts: 3)
 
         XCTAssertEqual(input.excerpts.count, 3)
     }
@@ -228,7 +228,7 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
         let binaryURL = tempDir.appendingPathComponent("image.png")
         try Data([0x89, 0x50, 0x4E, 0x47]).write(to: binaryURL)
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
         XCTAssertTrue(input.excerpts.contains { $0.path == "code.swift" })
         XCTAssertFalse(input.excerpts.contains { $0.path == "image.png" })
@@ -236,21 +236,66 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
 
     // MARK: - Max Limits Tests
 
-    func testBuildInput_limitsFiles() throws {
-        for i in 1...150 {
+    func testBuildInput_doesNotCapFileList() throws {
+        // Confirm the legacy maxFiles=120 cap is gone — every regular file
+        // should land in fileList regardless of count.
+        for i in 1...200 {
             try createFile(named: "file\(i).swift")
         }
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir, maxFiles: 50)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
-        XCTAssertEqual(input.fileList.count, 50)
+        XCTAssertEqual(input.fileList.count, 200)
+    }
+
+    func testReadExcerpt_recoversFromTruncatedMultibyteTail() throws {
+        // Write 2999 ASCII bytes + 1 UTF-8 lead byte (0xD1, the high byte of
+        // Cyrillic "я"). With maxBytesPerExcerpt=3000, read(upToCount:) returns
+        // 3000 bytes ending mid-codepoint — strict decode returns nil. The
+        // fallback must drop the dangling lead byte and yield a 2999-byte
+        // ASCII excerpt instead of dropping the file entirely.
+        let asciiPrefix = String(repeating: "a", count: 2999)
+        var bytes = Data(asciiPrefix.utf8)
+        bytes.append(0xD1)
+        let url = tempDir.appendingPathComponent("partial_cyrillic.md")
+        try bytes.write(to: url)
+
+        let input = WorkFolderContextBuilder.buildInput(
+            workFolderRoot: tempDir,
+            maxBytesPerExcerpt: 3000
+        )
+
+        let excerpt = input.excerpts.first { $0.path == "partial_cyrillic.md" }
+        XCTAssertNotNil(excerpt, "Excerpt must survive a tail cut inside a multibyte sequence")
+        XCTAssertEqual(excerpt?.content.utf8.count, 2999)
+        XCTAssertEqual(excerpt?.content, asciiPrefix)
+    }
+
+    func testReadExcerpt_recoversFromTruncatedFourByteEmojiTail() throws {
+        // 2998 ASCII + first two bytes of a 4-byte emoji (e.g. 🎉 = F0 9F 8E 89).
+        // Strict decode fails; fallback must drop both dangling bytes (drop=2).
+        let asciiPrefix = String(repeating: "b", count: 2998)
+        var bytes = Data(asciiPrefix.utf8)
+        bytes.append(contentsOf: [0xF0, 0x9F])
+        let url = tempDir.appendingPathComponent("partial_emoji.md")
+        try bytes.write(to: url)
+
+        let input = WorkFolderContextBuilder.buildInput(
+            workFolderRoot: tempDir,
+            maxBytesPerExcerpt: 3000
+        )
+
+        let excerpt = input.excerpts.first { $0.path == "partial_emoji.md" }
+        XCTAssertNotNil(excerpt, "Excerpt must survive a tail cut inside a 4-byte sequence")
+        XCTAssertEqual(excerpt?.content.utf8.count, 2998)
+        XCTAssertEqual(excerpt?.content, asciiPrefix)
     }
 
     func testBuildInput_limitsExcerptSize() throws {
         let longContent = String(repeating: "x", count: 10000)
         try createFile(named: "large.swift", content: longContent)
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir, maxBytesPerExcerpt: 1000)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir, maxBytesPerExcerpt: 1000)
 
         let excerpt = input.excerpts.first { $0.path == "large.swift" }
         XCTAssertNotNil(excerpt)
@@ -262,7 +307,7 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
     func testBuildInput_recognizesSwiftFiles() throws {
         try createFile(named: "app.swift", content: "import UIKit")
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
         XCTAssertTrue(input.excerpts.contains { $0.path == "app.swift" })
     }
@@ -270,7 +315,7 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
     func testBuildInput_recognizesJavaScriptFiles() throws {
         try createFile(named: "app.js", content: "console.log('hello');")
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
         XCTAssertTrue(input.excerpts.contains { $0.path == "app.js" })
     }
@@ -278,7 +323,7 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
     func testBuildInput_recognizesTypeScriptFiles() throws {
         try createFile(named: "app.ts", content: "const x: number = 1;")
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
         XCTAssertTrue(input.excerpts.contains { $0.path == "app.ts" })
     }
@@ -286,7 +331,7 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
     func testBuildInput_recognizesPythonFiles() throws {
         try createFile(named: "app.py", content: "print('hello')")
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
         XCTAssertTrue(input.excerpts.contains { $0.path == "app.py" })
     }
@@ -294,7 +339,7 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
     func testBuildInput_recognizesYamlFiles() throws {
         try createFile(named: "config.yml", content: "key: value")
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
         XCTAssertTrue(input.excerpts.contains { $0.path == "config.yml" })
     }
@@ -302,7 +347,7 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
     func testBuildInput_recognizesJsonFiles() throws {
         try createFile(named: "config.json", content: "{\"key\": \"value\"}")
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
         XCTAssertTrue(input.excerpts.contains { $0.path == "config.json" })
     }
@@ -314,23 +359,23 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
         try createFile(named: "src/main.swift", content: "import Foundation")
         try createFile(named: "src/models/User.swift", content: "struct User {}")
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
         XCTAssertTrue(input.fileList.contains("src/main.swift"))
         XCTAssertTrue(input.fileList.contains("src/models/User.swift"))
     }
 
-    // MARK: - WorkFolderDescriptionInput Structure Tests
+    // MARK: - WorkFolderContextInput Structure Tests
 
-    func testWorkFolderDescriptionInput_hashable() throws {
-        let input1 = WorkFolderDescriptionInput(
+    func testWorkFolderContextInput_hashable() throws {
+        let input1 = WorkFolderContextInput(
             rootName: "Project",
             fileList: ["a.swift", "b.swift"],
             fileTypeCounts: ["swift": 2],
             excerpts: []
         )
 
-        let input2 = WorkFolderDescriptionInput(
+        let input2 = WorkFolderContextInput(
             rootName: "Project",
             fileList: ["a.swift", "b.swift"],
             fileTypeCounts: ["swift": 2],
@@ -342,8 +387,8 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
     }
 
     func testFileExcerpt_hashable() {
-        let excerpt1 = WorkFolderDescriptionInput.FileExcerpt(path: "test.swift", content: "content")
-        let excerpt2 = WorkFolderDescriptionInput.FileExcerpt(path: "test.swift", content: "content")
+        let excerpt1 = WorkFolderContextInput.FileExcerpt(path: "test.swift", content: "content")
+        let excerpt2 = WorkFolderContextInput.FileExcerpt(path: "test.swift", content: "content")
 
         XCTAssertEqual(excerpt1, excerpt2)
         XCTAssertEqual(excerpt1.hashValue, excerpt2.hashValue)
@@ -354,7 +399,7 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
     func testBuildInput_handlesEmptyFiles() throws {
         try createFile(named: "empty.swift", content: "")
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
         // Empty file should be in file list but not in excerpts
         XCTAssertTrue(input.fileList.contains("empty.swift"))
@@ -364,7 +409,7 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
     func testBuildInput_handlesWhitespaceOnlyFiles() throws {
         try createFile(named: "whitespace.swift", content: "   \n\n   \t  ")
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
         // Whitespace-only file should be in file list but not in excerpts (trimmed to empty)
         XCTAssertTrue(input.fileList.contains("whitespace.swift"))
@@ -375,7 +420,7 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
     func testBuildInput_nonExistentDirectory() {
         let nonExistent = tempDir.appendingPathComponent("does_not_exist")
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: nonExistent)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: nonExistent)
 
         XCTAssertEqual(input.rootName, "does_not_exist")
         XCTAssertTrue(input.fileList.isEmpty)
@@ -388,7 +433,7 @@ final class WorkFolderDescriptionBuilderTests: XCTestCase {
         try createFile(named: "dir1/README.md", content: "# Dir1")
         try createFile(named: "dir2/README.md", content: "# Dir2")
 
-        let input = WorkFolderDescriptionBuilder.buildInput(workFolderRoot: tempDir)
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
 
         // Both files should be in file list
         XCTAssertTrue(input.fileList.contains("dir1/README.md"))

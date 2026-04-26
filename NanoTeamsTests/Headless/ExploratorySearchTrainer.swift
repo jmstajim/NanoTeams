@@ -12,18 +12,18 @@ import Foundation
 /// 5. Measure recall against `expectedExpansionTerms` / `expectedHitFiles`.
 ///
 /// Mirrors `CreateTeamTrainer` in shape so the mental model carries over.
-final class ExpandedSearchTrainer {
+final class ExploratorySearchTrainer {
 
     /// Expansion seam. Default hits a live LM Studio embedding endpoint;
     /// unit tests can inject a deterministic stub.
     typealias Expander = @Sendable (String, [String], EmbeddingConfig) async -> VocabVectorIndexService.ExpansionResult
 
-    private let config: ExpandedSearchTrainerConfig
+    private let config: ExploratorySearchTrainerConfig
     private let expanderFactory: (@Sendable () -> Expander)?
     private let fileManager: FileManager
 
     init(
-        config: ExpandedSearchTrainerConfig,
+        config: ExploratorySearchTrainerConfig,
         fileManager: FileManager = .default,
         expanderFactory: (@Sendable () -> Expander)? = nil
     ) {
@@ -34,14 +34,14 @@ final class ExpandedSearchTrainer {
 
     // MARK: - Top-level run
 
-    func run() async throws -> ExpandedSearchTrainerRunResult {
+    func run() async throws -> ExploratorySearchTrainerRunResult {
         let corpus = try loadCorpus()
         print("[TRAINER] Loaded \(corpus.cases.count) case(s) from \(config.corpusPath)")
 
         let embeddingConfig = config.toEmbeddingConfig()
         let timeout = config.resolvedTimeout
 
-        var caseResults: [ExpandedSearchTrainerCaseResult] = []
+        var caseResults: [ExploratorySearchTrainerCaseResult] = []
         let runStart = MonotonicClock.shared.now()
 
         for (index, kase) in corpus.cases.enumerated() {
@@ -53,7 +53,7 @@ final class ExpandedSearchTrainer {
             printCaseSummary(result)
         }
 
-        let runResult = ExpandedSearchTrainerRunResult(
+        let runResult = ExploratorySearchTrainerRunResult(
             startedAt: runStart,
             durationSeconds: Date().timeIntervalSince(runStart),
             model: config.resolvedModel,
@@ -68,10 +68,10 @@ final class ExpandedSearchTrainer {
     // MARK: - Per-case
 
     private func runOneCase(
-        kase: ExpandedSearchTrainerCase,
+        kase: ExploratorySearchTrainerCase,
         embeddingConfig: EmbeddingConfig,
         timeout: TimeInterval
-    ) async -> ExpandedSearchTrainerCaseResult {
+    ) async -> ExploratorySearchTrainerCaseResult {
         let start = Date()
 
         // 1. Resolve work folder.
@@ -86,7 +86,7 @@ final class ExpandedSearchTrainer {
             cleanup = nil
         } else {
             let tempRoot = fileManager.temporaryDirectory
-                .appendingPathComponent("expanded_search_trainer_\(UUID().uuidString)",
+                .appendingPathComponent("exploratory_search_trainer_\(UUID().uuidString)",
                                         isDirectory: true)
             let tempInternalDir = tempRoot
                 .appendingPathComponent(".nanoteams/internal", isDirectory: true)
@@ -196,29 +196,29 @@ final class ExpandedSearchTrainer {
             actual: index.tokens
         )
 
-        return ExpandedSearchTrainerCaseResult(
+        return ExploratorySearchTrainerCaseResult(
             tag: kase.tag,
             query: kase.query,
             language: kase.language,
             elapsedSeconds: Date().timeIntervalSince(start),
-            index: ExpandedSearchTrainerIndexSummary(
+            index: ExploratorySearchTrainerIndexSummary(
                 fileCount: index.files.count,
                 tokenCount: index.tokens.count,
                 vocabularyRecall: vocabularyRecall
             ),
-            vectorBuild: ExpandedSearchTrainerVectorBuildSummary(
+            vectorBuild: ExploratorySearchTrainerVectorBuildSummary(
                 durationSeconds: vectorBuildDuration,
                 vectorCount: await Self.vectorCount(vectorService),
                 failedTokenCount: await Self.failedCount(vectorService)
             ),
-            expansion: ExpandedSearchTrainerExpansionSummary(
+            expansion: ExploratorySearchTrainerExpansionSummary(
                 outcome: expansionOutcome,
                 terms: expandedTerms,
                 expectedTerms: kase.expectedExpansionTerms,
                 recall: expansionRecall,
                 expectsFailure: kase.expectsExpansionFailure ?? false
             ),
-            posting: ExpandedSearchTrainerPostingSummary(
+            posting: ExploratorySearchTrainerPostingSummary(
                 combinedTerms: combinedTerms,
                 hitFiles: hitFiles,
                 expectedHitFiles: kase.expectedHitFiles,
@@ -240,30 +240,30 @@ final class ExpandedSearchTrainer {
     }
 
     private func makeFailure(
-        kase: ExpandedSearchTrainerCase,
+        kase: ExploratorySearchTrainerCase,
         phase: String,
         message: String,
         elapsed: TimeInterval
-    ) -> ExpandedSearchTrainerCaseResult {
-        ExpandedSearchTrainerCaseResult(
+    ) -> ExploratorySearchTrainerCaseResult {
+        ExploratorySearchTrainerCaseResult(
             tag: kase.tag,
             query: kase.query,
             language: kase.language,
             elapsedSeconds: elapsed,
-            index: ExpandedSearchTrainerIndexSummary(
+            index: ExploratorySearchTrainerIndexSummary(
                 fileCount: 0, tokenCount: 0, vocabularyRecall: nil
             ),
-            vectorBuild: ExpandedSearchTrainerVectorBuildSummary(
+            vectorBuild: ExploratorySearchTrainerVectorBuildSummary(
                 durationSeconds: 0, vectorCount: 0, failedTokenCount: 0
             ),
-            expansion: ExpandedSearchTrainerExpansionSummary(
+            expansion: ExploratorySearchTrainerExpansionSummary(
                 outcome: .failure(type: phase, message: message),
                 terms: [],
                 expectedTerms: kase.expectedExpansionTerms,
                 recall: nil,
                 expectsFailure: kase.expectsExpansionFailure ?? false
             ),
-            posting: ExpandedSearchTrainerPostingSummary(
+            posting: ExploratorySearchTrainerPostingSummary(
                 combinedTerms: [kase.query],
                 hitFiles: [],
                 expectedHitFiles: kase.expectedHitFiles,
@@ -306,14 +306,14 @@ final class ExpandedSearchTrainer {
         }
     }
 
-    private func loadCorpus() throws -> ExpandedSearchTrainerCorpus {
+    private func loadCorpus() throws -> ExploratorySearchTrainerCorpus {
         let url = URL(fileURLWithPath: config.corpusPath)
         let data = try Data(contentsOf: url)
         return try JSONCoderFactory.makeWireDecoder()
-            .decode(ExpandedSearchTrainerCorpus.self, from: data)
+            .decode(ExploratorySearchTrainerCorpus.self, from: data)
     }
 
-    private func writeOutput(_ result: ExpandedSearchTrainerRunResult) throws {
+    private func writeOutput(_ result: ExploratorySearchTrainerRunResult) throws {
         let url = URL(fileURLWithPath: config.outputPath)
         try fileManager.createDirectory(
             at: url.deletingLastPathComponent(),
@@ -324,7 +324,7 @@ final class ExpandedSearchTrainer {
         print("[TRAINER] Results → \(url.path)")
     }
 
-    private func printCaseSummary(_ r: ExpandedSearchTrainerCaseResult) {
+    private func printCaseSummary(_ r: ExploratorySearchTrainerCaseResult) {
         let hits = r.posting.hitFiles.count
         let terms = r.expansion.terms.count
         let recallStr: String = {
@@ -394,26 +394,26 @@ enum ExpansionOutcome: Codable {
 
 // MARK: - Result Models
 
-struct ExpandedSearchTrainerRunResult: Codable {
+struct ExploratorySearchTrainerRunResult: Codable {
     var startedAt: Date
     var durationSeconds: Double
     var model: String
     var baseURL: String
-    var cases: [ExpandedSearchTrainerCaseResult]
+    var cases: [ExploratorySearchTrainerCaseResult]
 }
 
-struct ExpandedSearchTrainerCaseResult: Codable {
+struct ExploratorySearchTrainerCaseResult: Codable {
     var tag: String
     var query: String
     var language: String?
     var elapsedSeconds: Double
-    var index: ExpandedSearchTrainerIndexSummary
-    var vectorBuild: ExpandedSearchTrainerVectorBuildSummary
-    var expansion: ExpandedSearchTrainerExpansionSummary
-    var posting: ExpandedSearchTrainerPostingSummary
+    var index: ExploratorySearchTrainerIndexSummary
+    var vectorBuild: ExploratorySearchTrainerVectorBuildSummary
+    var expansion: ExploratorySearchTrainerExpansionSummary
+    var posting: ExploratorySearchTrainerPostingSummary
 }
 
-struct ExpandedSearchTrainerIndexSummary: Codable {
+struct ExploratorySearchTrainerIndexSummary: Codable {
     var fileCount: Int
     var tokenCount: Int
     var vocabularyRecall: Double?
@@ -421,13 +421,13 @@ struct ExpandedSearchTrainerIndexSummary: Codable {
 
 /// Stats from the vector-index build phase. Separate from token-index stats
 /// so the output JSON makes it obvious which phase spent how much time.
-struct ExpandedSearchTrainerVectorBuildSummary: Codable {
+struct ExploratorySearchTrainerVectorBuildSummary: Codable {
     var durationSeconds: Double
     var vectorCount: Int
     var failedTokenCount: Int
 }
 
-struct ExpandedSearchTrainerExpansionSummary: Codable {
+struct ExploratorySearchTrainerExpansionSummary: Codable {
     var outcome: ExpansionOutcome
     var terms: [String]
     var expectedTerms: [String]?
@@ -435,7 +435,7 @@ struct ExpandedSearchTrainerExpansionSummary: Codable {
     var expectsFailure: Bool
 }
 
-struct ExpandedSearchTrainerPostingSummary: Codable {
+struct ExploratorySearchTrainerPostingSummary: Codable {
     var combinedTerms: [String]
     var hitFiles: [String]
     var expectedHitFiles: [String]?

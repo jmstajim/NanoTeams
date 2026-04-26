@@ -58,7 +58,7 @@ actor SearchIndexService {
     ///
     /// Cancellation: `rebuildIndex` checks `Task.isCancelled` between
     /// directories. If the caller's Task was cancelled (e.g. the coordinator
-    /// was torn down mid-build because the user disabled expanded search),
+    /// was torn down mid-build because the user disabled exploratory search),
     /// the partial walk result is NOT cached or persisted — we return the
     /// prior cache if any, otherwise an empty index without writing it.
     func loadOrBuild(force: Bool = false) -> SearchIndex {
@@ -404,7 +404,7 @@ actor SearchIndexService {
     ) {
         // Cancellation check at each directory entry: if the enclosing Task
         // was cancelled (e.g. `coordinator.stop()` fired because the user
-        // toggled expanded-search OFF), abandon the walk immediately instead
+        // toggled exploratory-search OFF), abandon the walk immediately instead
         // of finishing it synchronously on the actor. Without this, OFF
         // would wait for the full walk to complete before teardown proceeds.
         if Task.isCancelled { return }

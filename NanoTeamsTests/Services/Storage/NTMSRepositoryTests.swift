@@ -555,21 +555,21 @@ final class NTMSRepositoryTests: XCTestCase {
         XCTAssertTrue(relativePath.hasSuffix("artifact_notes.rtf"))
     }
 
-    // MARK: - 27. updateWorkFolderDescription_updatesDescription
+    // MARK: - 27. updateWorkFolderContext_updatesContext
 
-    func testUpdateProjectDescription_updatesDescription() throws {
+    func testUpdateWorkFolderContext_updatesContext() throws {
         let root = try makeProjectRoot()
         let initial = try sut.openOrCreateWorkFolder(at: root)
-        XCTAssertEqual(initial.workFolder.settings.description, "", "Initial description should be empty")
+        XCTAssertEqual(initial.workFolder.settings.context, "", "Initial context should be empty")
 
-        let updated = try sut.updateWorkFolderDescription(at: root, description: "A cool project")
-        XCTAssertEqual(updated.workFolder.settings.description, "A cool project",
-                        "Description should be updated")
+        let updated = try sut.updateWorkFolderContext(at: root, context: "A cool project")
+        XCTAssertEqual(updated.workFolder.settings.context, "A cool project",
+                        "Context should be updated")
 
         // Verify persistence by re-reading
         let reloaded = try sut.openOrCreateWorkFolder(at: root)
-        XCTAssertEqual(reloaded.workFolder.settings.description, "A cool project",
-                        "Description should persist across reloads")
+        XCTAssertEqual(reloaded.workFolder.settings.context, "A cool project",
+                        "Context should persist across reloads")
     }
 
     // MARK: - 28. resetWorkFolderSettings_recreatesDefaults
@@ -578,8 +578,8 @@ final class NTMSRepositoryTests: XCTestCase {
         let root = try makeProjectRoot()
         _ = try sut.openOrCreateWorkFolder(at: root)
 
-        // Modify the project description so we can detect a reset
-        _ = try sut.updateWorkFolderDescription(at: root, description: "Custom description")
+        // Modify the work folder context so we can detect a reset
+        _ = try sut.updateWorkFolderContext(at: root, context: "Custom context")
 
         // Create a task so there is data to reset
         _ = try sut.createTask(at: root, title: "Will be lost", supervisorTask: "Goal")
@@ -588,8 +588,8 @@ final class NTMSRepositoryTests: XCTestCase {
         let resetContext = try sut.resetWorkFolderSettings(at: root)
 
         // The project should be fresh with defaults
-        XCTAssertEqual(resetContext.workFolder.settings.description, "",
-                        "Description should be reset to default empty string")
+        XCTAssertEqual(resetContext.workFolder.settings.context, "",
+                        "Context should be reset to default empty string")
         XCTAssertTrue(resetContext.tasksIndex.tasks.isEmpty,
                        "Tasks index should be empty after reset")
         XCTAssertNil(resetContext.activeTaskID,
@@ -659,15 +659,15 @@ final class NTMSRepositoryTests: XCTestCase {
         let initial = try sut.openOrCreateWorkFolder(at: root)
 
         var settings = initial.workFolder.settings
-        settings.description = "Modified via updateProject"
+        settings.context = "Modified via updateProject"
 
         let updated = try sut.updateSettings(at: root) { $0 = settings }
 
-        XCTAssertEqual(updated.workFolder.settings.description, "Modified via updateProject")
+        XCTAssertEqual(updated.workFolder.settings.context, "Modified via updateProject")
 
         // Verify persistence
         let reloaded = try sut.openOrCreateWorkFolder(at: root)
-        XCTAssertEqual(reloaded.workFolder.settings.description, "Modified via updateProject")
+        XCTAssertEqual(reloaded.workFolder.settings.context, "Modified via updateProject")
     }
 
     func testOpenOrCreateProject_setsProjectNameToFolderName() throws {

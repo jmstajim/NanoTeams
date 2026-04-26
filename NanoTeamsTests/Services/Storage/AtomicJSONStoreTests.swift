@@ -305,18 +305,18 @@ final class AtomicJSONStoreTests: XCTestCase {
     func testWriteAndReadProjectSettings() throws {
         let testURL = tempDir.appendingPathComponent("settings.json")
         let settings = ProjectSettings(
-            description: "Desc",
-            descriptionPrompt: "Prompt",
+            context: "Ctx",
+            contextPrompt: "Prompt",
             selectedScheme: "MyScheme"
         )
 
         try store.write(settings, to: testURL)
 
         let loaded = try store.read(ProjectSettings.self, from: testURL)
-        XCTAssertEqual(loaded.description, "Desc")
-        XCTAssertEqual(loaded.descriptionPrompt, "Prompt")
+        XCTAssertEqual(loaded.context, "Ctx")
+        XCTAssertEqual(loaded.contextPrompt, "Prompt")
         XCTAssertEqual(loaded.selectedScheme, "MyScheme")
-        XCTAssertEqual(loaded.schemaVersion, 1)
+        XCTAssertEqual(loaded.schemaVersion, 2)
     }
 
     func testWriteAndReadTeamsFile() throws {

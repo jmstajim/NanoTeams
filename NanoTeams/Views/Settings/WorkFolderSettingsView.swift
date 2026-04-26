@@ -2,10 +2,8 @@ import SwiftUI
 
 struct WorkFolderSettingsView: View {
     @Environment(NTMSOrchestrator.self) var store
-    @State private var descriptionDraft: String = ""
+    @State private var contextDraft: String = ""
     @State private var promptDraft: String = ""
-    @State private var isGenerating = false
-    @State private var generateTask: Task<Void, Never>?
     @State private var isShowingResetConfirmation = false
     @State private var isShowingCloseConfirmation = false
     @State private var isPromptExpanded = false
@@ -55,7 +53,7 @@ struct WorkFolderSettingsView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This will restore the work folder description, teams, roles, and tools to their default values. Existing tasks and runs will be preserved but might reference missing configurations. This action cannot be undone.")
+            Text("This will restore the work folder context, teams, roles, and tools to their default values. Existing tasks and runs will be preserved but might reference missing configurations. This action cannot be undone.")
         }
         .confirmationDialog(
             "Close Work Folder?",
@@ -71,25 +69,22 @@ struct WorkFolderSettingsView: View {
         }
         .onAppear {
             if let p = store.workFolder {
-                descriptionDraft = p.settings.description
-                promptDraft = p.settings.descriptionPrompt
+                contextDraft = p.settings.context
+                promptDraft = p.settings.contextPrompt
             }
             recentProjects = NSDocumentController.shared.recentDocumentURLs
             Task { availableSchemes = await store.fetchAvailableSchemes() }
         }
-        .onDisappear {
-            generateTask?.cancel()
-        }
         .onChange(of: store.workFolder?.id) { _, _ in
             if let p = store.workFolder {
-                descriptionDraft = p.settings.description
-                promptDraft = p.settings.descriptionPrompt
+                contextDraft = p.settings.context
+                promptDraft = p.settings.contextPrompt
             }
         }
-        .onChange(of: store.workFolder?.settings.description) { _, newValue in
-            if let val = newValue { descriptionDraft = val }
+        .onChange(of: store.workFolder?.settings.context) { _, newValue in
+            if let val = newValue { contextDraft = val }
         }
-        .onChange(of: store.workFolder?.settings.descriptionPrompt) { _, newValue in
+        .onChange(of: store.workFolder?.settings.contextPrompt) { _, newValue in
             if let val = newValue { promptDraft = val }
         }
     }
@@ -159,15 +154,15 @@ struct WorkFolderSettingsView: View {
         .cardStyle()
     }
 
-    // MARK: - Description Card
+    // MARK: - Context Card
 
     private var descriptionCard: some View {
         SettingsCard(
-            header: "Work Folder Description",
+            header: "Work Folder Context",
             systemImage: "doc.text",
-            footer: "This description is sent to all AI roles as work folder context. Use Generate to create it from your files, or write your own."
+            footer: "This context is sent to all AI roles. Use Generate to build it from your files, or write your own."
         ) {
-            TextEditor(text: $descriptionDraft)
+            TextEditor(text: $contextDraft)
                 .font(.system(.body, design: .monospaced))
                 .scrollContentBackground(.hidden)
                 .frame(minHeight: 150)
@@ -176,33 +171,24 @@ struct WorkFolderSettingsView: View {
                     RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous)
                         .fill(Colors.surfaceElevated)
                 )
-                .onChange(of: descriptionDraft) { _, newValue in
+                .onChange(of: contextDraft) { _, newValue in
                     saveTask?.cancel()
                     saveTask = Task {
                         try? await Task.sleep(for: .milliseconds(500))
                         guard !Task.isCancelled else { return }
-                        if store.workFolder?.settings.description != newValue {
-                            await store.updateWorkFolderDescription(newValue)
+                        if store.workFolder?.settings.context != newValue {
+                            await store.updateWorkFolderContext(newValue)
                         }
                     }
                 }
 
             HStack {
+                let isGenerating = store.isGeneratingWorkFolderContext
                 Button {
                     if isGenerating {
-                        generateTask?.cancel()
-                        generateTask = nil
-                        isGenerating = false
-                        store.lastInfoMessage = "Generation stopped"
+                        store.cancelWorkFolderContextGeneration()
                     } else {
-                        generateTask = Task {
-                            isGenerating = true
-                            defer { if !Task.isCancelled { isGenerating = false } }
-                            if let description = await store.generateWorkFolderDescription() {
-                                guard !Task.isCancelled else { return }
-                                descriptionDraft = description
-                            }
-                        }
+                        store.startGeneratingWorkFolderContext()
                     }
                 } label: {
                     HStack(spacing: Spacing.s) {
@@ -247,7 +233,7 @@ struct WorkFolderSettingsView: View {
 
                 Spacer()
 
-                savingIndicator(isVisible: store.workFolder?.settings.description != descriptionDraft)
+                savingIndicator(isVisible: store.workFolder?.settings.context != contextDraft)
             }
         }
     }
@@ -347,26 +333,26 @@ struct WorkFolderSettingsView: View {
                     promptSaveTask = Task {
                         try? await Task.sleep(for: .milliseconds(500))
                         guard !Task.isCancelled else { return }
-                        if store.workFolder?.settings.descriptionPrompt != newValue {
-                            await store.updateDescriptionPrompt(newValue)
+                        if store.workFolder?.settings.contextPrompt != newValue {
+                            await store.updateContextPrompt(newValue)
                         }
                     }
                 }
 
             HStack {
                 Button {
-                    promptDraft = AppDefaults.workFolderDescriptionPrompt
+                    promptDraft = AppDefaults.workFolderContextPrompt
                 } label: {
                     Text("Reset to Default")
                         .font(Typography.caption)
                         .foregroundStyle(Colors.accent)
                 }
                 .buttonStyle(.plain)
-                .disabled(promptDraft == AppDefaults.workFolderDescriptionPrompt)
+                .disabled(promptDraft == AppDefaults.workFolderContextPrompt)
 
                 Spacer()
 
-                savingIndicator(isVisible: store.workFolder?.settings.descriptionPrompt != promptDraft)
+                savingIndicator(isVisible: store.workFolder?.settings.contextPrompt != promptDraft)
             }
         }
         .padding(Spacing.standard)

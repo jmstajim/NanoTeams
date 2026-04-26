@@ -51,10 +51,15 @@ struct DefaultQuickCaptureModeCoordinator: QuickCaptureModeCoordinator {
             ))
         }
 
-        // Task is running — show the working loader.
+        // Task is running — show the working loader. Role displayed in the title
+        // MUST equal the role that `QuickCaptureController.submitQueuedMessageFromForm`
+        // targets — both call `firstRunningStepRoleID(in:)` to stay in lockstep.
         if engineState == .running {
-            let workingStep = task.runs.last?.steps.first(where: { $0.status == .running })
-            let roleDef = workingStep.flatMap { s in activeTeam?.findRole(byIdentifier: s.effectiveRoleID) }
+            let workingStepRoleID = QuickCaptureController.firstRunningStepRoleID(in: task)
+            let workingStep = workingStepRoleID.flatMap { id in
+                task.runs.last?.steps.first(where: { $0.effectiveRoleID == id })
+            }
+            let roleDef = workingStepRoleID.flatMap { activeTeam?.findRole(byIdentifier: $0) }
             let fallbackName = activeTeam?.nonSupervisorRoles.first?.name ?? ""
             let roleName = roleDef?.name ?? workingStep?.role.displayName ?? fallbackName
             return .taskWorking(roleName: roleName, isChatMode: task.isChatMode)

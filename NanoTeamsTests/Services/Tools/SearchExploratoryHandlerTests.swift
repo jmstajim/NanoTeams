@@ -1,7 +1,7 @@
 import XCTest
 @testable import NanoTeams
 
-final class SearchExpandedHandlerTests: XCTestCase {
+final class SearchExploratoryHandlerTests: XCTestCase {
 
     private let fm = FileManager.default
     private var tempDir: URL!
@@ -25,12 +25,16 @@ final class SearchExpandedHandlerTests: XCTestCase {
         try super.tearDownWithError()
     }
 
-    private func makeTool() -> SearchTool {
+    private func makeTool(exploratoryByDefault: Bool = false) -> SearchTool {
         SearchTool(
             resolver: resolver,
             fileManager: fm,
             workFolderRoot: tempDir,
-            internalDir: tempDir.appendingPathComponent(".nanoteams/internal", isDirectory: true)
+            internalDir: tempDir.appendingPathComponent(".nanoteams/internal", isDirectory: true),
+            exploratoryByDefault: exploratoryByDefault,
+            defaultMaxResults: AppDefaults.searchMaxResults,
+            defaultContextBefore: AppDefaults.searchContextBefore,
+            defaultContextAfter: AppDefaults.searchContextAfter
         )
     }
 
@@ -40,28 +44,28 @@ final class SearchExpandedHandlerTests: XCTestCase {
         )
     }
 
-    // MARK: - expand=true → signal
+    // MARK: - exploratory=true → signal
 
-    func testExpandTrue_emitsExpandedSearchSignal() {
+    func testExpandTrue_emitsExploratorySearchSignal() {
         let result = makeTool().handle(
             context: ctx(),
-            args: ["query": "scroll", "expand": true]
+            args: ["query": "scroll", "exploratory": true]
         )
-        guard case .expandedSearch(let payload) = result.signal else {
-            XCTFail("Expected .expandedSearch signal, got \(String(describing: result.signal))")
+        guard case .exploratorySearch(let payload) = result.signal else {
+            XCTFail("Expected .exploratorySearch signal, got \(String(describing: result.signal))")
             return
         }
         XCTAssertEqual(payload.query, "scroll")
         XCTAssertFalse(result.isError)
     }
 
-    func testExpandTrue_placeholderEnvelopeMarksExpanding() {
+    func testExploratoryTrue_placeholderEnvelopeMarksExploring() {
         let result = makeTool().handle(
             context: ctx(),
-            args: ["query": "scroll", "expand": true]
+            args: ["query": "scroll", "exploratory": true]
         )
         XCTAssertTrue(result.outputJSON.contains("\"status\""))
-        XCTAssertTrue(result.outputJSON.contains("expanding"))
+        XCTAssertTrue(result.outputJSON.contains("exploring"))
     }
 
     func testExpandTrue_passesThroughParameters() {
@@ -69,7 +73,7 @@ final class SearchExpandedHandlerTests: XCTestCase {
             context: ctx(),
             args: [
                 "query": "scroll",
-                "expand": true,
+                "exploratory": true,
                 "mode": "regex",
                 "paths": ["src"],
                 "file_glob": "*.swift",
@@ -79,8 +83,8 @@ final class SearchExpandedHandlerTests: XCTestCase {
                 "max_match_lines": 25,
             ]
         )
-        guard case .expandedSearch(let payload) = result.signal else {
-            XCTFail("Expected expandedSearch signal")
+        guard case .exploratorySearch(let payload) = result.signal else {
+            XCTFail("Expected exploratorySearch signal")
             return
         }
         XCTAssertEqual(payload.query, "scroll")
@@ -101,7 +105,7 @@ final class SearchExpandedHandlerTests: XCTestCase {
 
         let result = makeTool().handle(
             context: ctx(),
-            args: ["query": "target", "expand": false]
+            args: ["query": "target", "exploratory": false]
         )
         XCTAssertNil(result.signal, "Plain search must not emit a signal.")
         XCTAssertFalse(result.isError)
@@ -120,12 +124,42 @@ final class SearchExpandedHandlerTests: XCTestCase {
         XCTAssertFalse(result.isError)
     }
 
+    /// User toggle "Default `search` calls to exploratory" is plumbed through
+    /// `ToolHandlerDependencies.searchExploratoryByDefault`. When ON, a missing
+    /// `exploratory` arg is treated as `true` and the handler emits a signal.
+    func testExpandMissing_withExploratoryByDefault_emitsSignal() throws {
+        let fileURL = tempDir.appendingPathComponent("a.swift")
+        try "target here\n".write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let result = makeTool(exploratoryByDefault: true).handle(
+            context: ctx(),
+            args: ["query": "target"]
+        )
+        guard case .exploratorySearch = result.signal else {
+            XCTFail("Expected .exploratorySearch signal when default is on, got \(String(describing: result.signal))")
+            return
+        }
+    }
+
+    /// Explicit `exploratory: false` always wins over the user-toggle default.
+    func testExpandFalseExplicit_withExploratoryByDefault_runsPlainSearch() throws {
+        let fileURL = tempDir.appendingPathComponent("a.swift")
+        try "target here\n".write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let result = makeTool(exploratoryByDefault: true).handle(
+            context: ctx(),
+            args: ["query": "target", "exploratory": false]
+        )
+        XCTAssertNil(result.signal,
+            "Explicit `exploratory: false` must override the user-toggle default.")
+    }
+
     /// The old `expand` key is retired (pre-release rename). Asserting
     /// its absence ensures we don't accidentally re-introduce a silent alias.
-    func testLegacyExpandedSearchKey_isIgnored() {
+    func testLegacyExploratorySearchKey_isIgnored() {
         let result = makeTool().handle(
             context: ctx(),
-            args: ["query": "scroll", "expanded_search": true]
+            args: ["query": "scroll", "exploratory_search": true]
         )
         XCTAssertNil(result.signal,
             "Legacy `expand` key is removed; must behave as plain search.")
@@ -136,9 +170,9 @@ final class SearchExpandedHandlerTests: XCTestCase {
     func testSchema_exposesExpandParameter() {
         let params = SearchTool.schema.parameters
         let keys = Set(params.properties?.keys ?? [:].keys)
-        XCTAssertTrue(keys.contains("expand"),
+        XCTAssertTrue(keys.contains("exploratory"),
             "Schema must expose `expand` as the primary flag. Keys: \(keys)")
-        XCTAssertFalse(keys.contains("expanded_search"),
+        XCTAssertFalse(keys.contains("exploratory_search"),
             "Legacy `expand` key must not appear in the schema.")
     }
 }

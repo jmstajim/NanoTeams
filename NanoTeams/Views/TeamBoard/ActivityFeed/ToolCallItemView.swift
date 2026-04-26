@@ -27,6 +27,15 @@ struct ToolCallItemView: View {
         return call.isError == true ? Colors.error : Colors.success
     }
 
+    /// True when this `search` call took the exploratory branch. `SearchTool` canonicalizes
+    /// the resolved `exploratory` value into `argumentsJSON` (covering both the explicit-arg
+    /// case and the `searchExploratoryByDefault`-ON case), so this is a direct args check.
+    private var isExploratorySearch: Bool {
+        guard call.name == ToolNames.search else { return false }
+        guard let args = JSONUtilities.parseJSONDictionary(call.argumentsJSON) else { return false }
+        return args["exploratory"] as? Bool == true
+    }
+
     // MARK: - Body
 
     private static let noHeaderLeading: CGFloat = ActivityCardTokens.avatarSize + ActivityCardTokens.cardPadding
@@ -65,6 +74,12 @@ struct ToolCallItemView: View {
                     .font(.caption.weight(.medium).monospaced())
                     .foregroundStyle(statusColor)
                     .lineLimit(1)
+                if isExploratorySearch && !call.isExploratorySearchDisabled {
+                    Image(systemName: "binoculars")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .accessibilityLabel("Exploratory search")
+                }
                 if !hasCustomSummary {
                     let argSummary = ToolCallSummarizer.summarizeArguments(
                         toolName: call.name, json: call.argumentsJSON,
@@ -330,6 +345,41 @@ private struct ToolCallCustomSummaryView: View {
         teamRoles: [],
         toolCallsExpanded: $expanded
     )
+    .padding()
+    .frame(width: 500)
+    .background(Colors.surfacePrimary)
+}
+
+#Preview("Exploratory Search") {
+    @Previewable @State var expanded: Set<UUID> = []
+    VStack(spacing: 16) {
+        ToolCallItemView(
+            call: StepToolCall(
+                name: "search",
+                argumentsJSON: "{\"query\": \"advisory\", \"exploratory\": true}",
+                resultJSON: "{\"data\": {\"query\": \"advisory\", \"expanded_terms\": [\"советник\", \"consultant\"], \"matches\": [], \"count\": 0, \"hit_files\": 0}}",
+                isError: false
+            ),
+            role: .softwareEngineer,
+            roleDefinition: nil,
+            showHeader: true,
+            teamRoles: [],
+            toolCallsExpanded: $expanded
+        )
+        ToolCallItemView(
+            call: StepToolCall(
+                name: "search",
+                argumentsJSON: "{\"query\": \"advisory\"}",
+                resultJSON: "{\"data\": {\"query\": \"advisory\", \"matches\": [], \"count\": 0}}",
+                isError: false
+            ),
+            role: .softwareEngineer,
+            roleDefinition: nil,
+            showHeader: false,
+            teamRoles: [],
+            toolCallsExpanded: $expanded
+        )
+    }
     .padding()
     .frame(width: 500)
     .background(Colors.surfacePrimary)

@@ -180,10 +180,7 @@ struct GenerateTeamSheet: View {
         // Flush pending dictation so the last spoken words land in
         // `taskDescription` before we read it.
         dictation.flushAndThen {
-            guard isGenerating else {
-                print("[GenerateTeamSheet] Submit aborted: cancelled during dictation flush")
-                return
-            }
+            guard isGenerating else { return }
             let finalText = taskDescription.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !finalText.isEmpty else {
                 isGenerating = false
@@ -197,12 +194,7 @@ struct GenerateTeamSheet: View {
                     generationTask = nil
                 }
                 let error = await onGenerate(finalText)
-                if Task.isCancelled {
-                    if let error {
-                        print("[GenerateTeamSheet] Dropping error after cancel: \(error)")
-                    }
-                    return
-                }
+                if Task.isCancelled { return }
                 if let error {
                     errorMessage = error
                 } else {

@@ -60,10 +60,10 @@ final class WorkFolderFileSplitTests: XCTestCase {
 
     // MARK: - Single-file edits
 
-    func testDescriptionEditTouchesOnlySettingsFile() throws {
+    func testContextEditTouchesOnlySettingsFile() throws {
         let before = snapshotContent()
 
-        _ = try sut.updateWorkFolderDescription(at: root, description: "Updated description")
+        _ = try sut.updateWorkFolderContext(at: root, context: "Updated context")
 
         let after = snapshotContent()
         XCTAssertEqual(before.wf, after.wf, "workfolder.json must not change")
@@ -151,14 +151,14 @@ final class WorkFolderFileSplitTests: XCTestCase {
     /// When a single file is corrupt, the other two files must be preserved
     /// untouched. Previously, any corruption nuked all three files; the
     /// per-file recovery policy fixes that so a bad `teams.json` doesn't
-    /// destroy the user's description/prompt/scheme in `settings.json`.
+    /// destroy the user's context/prompt/scheme in `settings.json`.
     func testCorruptedSettingsFilePreservesOtherFiles() throws {
         // Write custom content into the two uncorrupted files so we can verify
         // they survive the recovery unchanged. Deliberately do NOT mutate
         // workfolder.json.activeTaskID to a random UUID — openOrCreateWorkFolder
         // has a stale-active-task sweep that would rewrite workfolder.json on
         // the next open, which would pollute the "preserved" assertion below.
-        _ = try sut.updateWorkFolderDescription(at: root, description: "WAIT WHAT") // will be lost
+        _ = try sut.updateWorkFolderContext(at: root, context: "WAIT WHAT") // will be lost
         _ = try sut.updateTeams(at: root) { teams in
             teams[0].name = "Must Survive Corruption"
         }
@@ -189,7 +189,7 @@ final class WorkFolderFileSplitTests: XCTestCase {
     }
 
     func testCorruptedTeamsFilePreservesOtherFiles() throws {
-        _ = try sut.updateWorkFolderDescription(at: root, description: "Survives Corruption")
+        _ = try sut.updateWorkFolderContext(at: root, context: "Survives Corruption")
         let settingsBefore = try Data(contentsOf: paths.settingsJSON)
 
         try "garbage".write(to: paths.teamsJSON, atomically: true, encoding: .utf8)
@@ -204,12 +204,12 @@ final class WorkFolderFileSplitTests: XCTestCase {
         XCTAssertEqual(settingsBefore, settingsAfter,
             "settings.json MUST be preserved when teams.json is corrupt")
         let settingsDecoded = try JSONCoderFactory.makeDateDecoder().decode(ProjectSettings.self, from: settingsAfter)
-        XCTAssertEqual(settingsDecoded.description, "Survives Corruption",
-            "User description must survive a teams.json corruption")
+        XCTAssertEqual(settingsDecoded.context, "Survives Corruption",
+            "User context must survive a teams.json corruption")
     }
 
     func testCorruptedWorkFolderJSONPreservesOtherFiles() throws {
-        _ = try sut.updateWorkFolderDescription(at: root, description: "Must Survive")
+        _ = try sut.updateWorkFolderContext(at: root, context: "Must Survive")
         let settingsBefore = try Data(contentsOf: paths.settingsJSON)
         let teamsBefore = try Data(contentsOf: paths.teamsJSON)
 

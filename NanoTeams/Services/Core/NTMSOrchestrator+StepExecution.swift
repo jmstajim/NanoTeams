@@ -9,6 +9,12 @@ extension NTMSOrchestrator {
         lastErrorMessage = message
     }
 
+    /// Synchronous variant for `LLMStateDelegate.setLastInfoMessageForUI`.
+    /// Surfaces a user-visible info banner (auto-dismissing, neutral style).
+    func setLastInfoMessageForUI(_ message: String) {
+        lastInfoMessage = message
+    }
+
     /// Notify the engine for a specific task that an external event occurred.
     func notifyEngineExternalEvent(taskID: Int) {
         taskEngines[taskID]?.notifyExternalEvent()

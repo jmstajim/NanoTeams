@@ -1,6 +1,6 @@
 import Foundation
 
-/// Extension for handling `expand: true` signals emitted by `SearchTool`.
+/// Extension for handling `exploratory: true` signals emitted by `SearchTool`.
 /// Pipeline:
 /// 1. Read feature gates from the delegate.
 /// 2. Await the token search index (or fall back to plain search on failure).
@@ -12,25 +12,26 @@ import Foundation
 /// 6. Overwrite the interim "expanding" envelope with the final result.
 extension LLMExecutionService {
 
-    func appendExpandedSearchResult(
+    func appendExploratorySearchResult(
         result: ToolExecutionResult,
         toolCallID: UUID,
         stepID: String,
         conversationMessages: inout [ChatMessage],
         memory: ToolCallCache? = nil
     ) async {
-        guard case .expandedSearch(let payload) = result.signal else { return }
+        guard case .exploratorySearch(let payload) = result.signal else { return }
         guard let delegate else { return }
         guard let workFolderRoot = delegate.workFolderURL else {
             await finalizeEnvelope(
-                envelope: ExpandedSearchEnvelope.make(
+                envelope: ExploratorySearchEnvelope.make(
                     payload: payload,
                     expanded: [],
                     output: .empty,
                     hitFilesCount: 0,
+                    filenameMatches: [],
                     expansionError: "no_work_folder",
                     searchError: nil,
-                    expandDisabled: false
+                    exploratoryDisabled: false
                 ),
                 result: result,
                 toolCallID: toolCallID,
@@ -45,7 +46,7 @@ extension LLMExecutionService {
         let resolver = SandboxPathResolver(workFolderRoot: workFolderRoot, internalDir: internalDir)
 
         // Feature disabled → plain search with a marker envelope.
-        if !delegate.expandedSearchEnabled {
+        if !delegate.exploratorySearchEnabled {
             let plain = runPlainExecutor(
                 workFolderRoot: workFolderRoot,
                 resolver: resolver,
@@ -54,14 +55,15 @@ extension LLMExecutionService {
                 constrainToFiles: nil
             )
             await finalizeEnvelope(
-                envelope: ExpandedSearchEnvelope.make(
+                envelope: ExploratorySearchEnvelope.make(
                     payload: payload,
                     expanded: [],
                     output: plain.output,
                     hitFilesCount: uniqueFiles(plain.output.matches),
+                    filenameMatches: plain.output.filenameMatches,
                     expansionError: nil,
                     searchError: plain.searchError,
-                    expandDisabled: true
+                    exploratoryDisabled: true
                 ),
                 result: result,
                 toolCallID: toolCallID,
@@ -86,16 +88,17 @@ extension LLMExecutionService {
             )
             let expansionReason = delegate.hasRealWorkFolder
                 ? "index_unavailable"
-                : "expand_unsupported_default_storage"
+                : "exploratory_unsupported_default_storage"
             await finalizeEnvelope(
-                envelope: ExpandedSearchEnvelope.make(
+                envelope: ExploratorySearchEnvelope.make(
                     payload: payload,
                     expanded: [],
                     output: plain.output,
                     hitFilesCount: uniqueFiles(plain.output.matches),
+                    filenameMatches: plain.output.filenameMatches,
                     expansionError: expansionReason,
                     searchError: plain.searchError,
-                    expandDisabled: false
+                    exploratoryDisabled: false
                 ),
                 result: result,
                 toolCallID: toolCallID,
@@ -125,16 +128,32 @@ extension LLMExecutionService {
         // `expansion_error` field in priority order.
         let expansionError: String? = expansion.errorReason ?? expansion.unavailableReason
 
-        // Posting intersection — union over postings for the literal query
-        // string, its tokenized parts, and expansion terms. The literal
-        // query is rarely a posting key on its own (multi-word queries
-        // never are), so without `queryTokens` the union for "team meeting
-        // service" against a corpus that contains `team`, `meeting`, and
-        // `service` postings would return 0 candidate files and the
-        // executor would skip files that obviously match. Tokens are
-        // already extracted above for `expandSearchQuery`; reuse them here.
-        let hitFiles = index.files(
-            containing: Array(queryTokens) + [payload.query] + expanded
+        // Single source of truth for "everything the search asked about"
+        // — literal query plus its tokens plus expansion terms. Both
+        // posting intersection and filename matching consume the same list
+        // so they can never disagree on what was searched. Original query
+        // first so `FilenameMatcher`'s ordered iteration attributes hits
+        // to the literal term when it matches.
+        let unionTerms = Self.unionSearchTerms(
+            query: payload.query, tokens: queryTokens, expanded: expanded
+        )
+
+        // Posting intersection — union over postings for every search term.
+        // The literal query is rarely a posting key on its own (multi-word
+        // queries never are), so without `queryTokens` the union for
+        // "team meeting service" against a corpus that contains `team`,
+        // `meeting`, and `service` postings would return 0 candidate files.
+        let hitFiles = index.files(containing: unionTerms)
+
+        // Filename matches over the FULL index roster (not just `hitFiles`)
+        // so a file whose name matches an expanded vocab term still surfaces
+        // even if its content didn't intersect any posting list. The index
+        // builder already applied `WalkSkipRules` + internal-dir exclusion,
+        // so candidate paths are sandbox-clean.
+        let indexFilenameMatches = FilenameMatcher.match(
+            candidates: index.files.map(\.path),
+            queries: unionTerms,
+            limit: payload.maxResults
         )
 
         // If the posting intersection returned nothing, short-circuit.
@@ -152,7 +171,7 @@ extension LLMExecutionService {
                 constrainToFiles: nil
             )
             await finalizeEnvelope(
-                envelope: ExpandedSearchEnvelope.make(
+                envelope: ExploratorySearchEnvelope.make(
                     payload: payload,
                     expanded: expanded,
                     output: SearchExecutorOutput(
@@ -162,9 +181,10 @@ extension LLMExecutionService {
                         truncated: false
                     ),
                     hitFilesCount: 0,
+                    filenameMatches: indexFilenameMatches,
                     expansionError: expansionError,
                     searchError: plain.searchError,
-                    expandDisabled: false
+                    exploratoryDisabled: false
                 ),
                 result: result,
                 toolCallID: toolCallID,
@@ -191,17 +211,18 @@ extension LLMExecutionService {
         // - Disabled / fall-back / empty-postings: unique paths in the
         //   returned matches, since no posting intersection ran.
         // Keeping both under one field name because the caller that cares
-        // about distinguishing them can inspect `expand_disabled`
+        // about distinguishing them can inspect `exploratory_disabled`
         // and `expansion_error`.
         await finalizeEnvelope(
-            envelope: ExpandedSearchEnvelope.make(
+            envelope: ExploratorySearchEnvelope.make(
                 payload: payload,
                 expanded: expanded,
                 output: plain.output,
                 hitFilesCount: hitFiles.count,
+                filenameMatches: indexFilenameMatches,
                 expansionError: expansionError,
                 searchError: plain.searchError,
-                expandDisabled: false
+                exploratoryDisabled: false
             ),
             result: result,
             toolCallID: toolCallID,
@@ -212,6 +233,21 @@ extension LLMExecutionService {
     }
 
     // MARK: - Private Helpers
+
+    /// Single source of truth for the term list passed to BOTH posting
+    /// intersection and filename matching. Keeping this in one helper
+    /// guarantees the two consumers can never silently disagree on what
+    /// the search asked about — a real bug we hit before the helper
+    /// existed (different orderings, easy to drift).
+    static func unionSearchTerms(
+        query: String, tokens: Set<String>, expanded: [String]
+    ) -> [String] {
+        // Original query first so `FilenameMatcher`'s ordered iteration
+        // attributes basename hits to the literal term when possible.
+        // Tokens follow as fallback for multi-word queries that aren't
+        // a posting key on their own. Expansion last (lowest priority).
+        [query] + Array(tokens) + expanded
+    }
 
     /// Outcome of a plain-executor pass. When `SearchExecutor.run` throws
     /// (e.g. sandbox-reject of an absolute `paths` entry, regex compile
@@ -227,7 +263,7 @@ extension LLMExecutionService {
         workFolderRoot: URL,
         resolver: SandboxPathResolver,
         internalDir: URL,
-        payload: ExpandedSearchPayload,
+        payload: ExploratorySearchPayload,
         constrainToFiles: [String]?,
         extraQueries: [String] = []
     ) -> PlainExecutorResult {
@@ -250,7 +286,13 @@ extension LLMExecutionService {
             ))
             return PlainExecutorResult(output: output, searchError: nil)
         } catch {
-            print("[ExpandedSearch] WARNING: SearchExecutor threw: \(error)")
+            // Surface the failure to BOTH channels: the LLM gets a structured
+            // `search_error` in its envelope, AND the human Supervisor sees an
+            // info banner — without it, a recurring sandbox-reject / regex
+            // problem would only show up as confusing empty results.
+            delegate?.setLastInfoMessageForUI(
+                "Search failed: \(error.localizedDescription) — falling back to limited results."
+            )
             return PlainExecutorResult(
                 output: .empty,
                 searchError: "search_failed: \(error.localizedDescription)"
@@ -291,10 +333,10 @@ extension LLMExecutionService {
         await updateToolCallResult(stepID: stepID, toolCallID: toolCallID, result: finalResult)
 
         // Record the FINALIZED envelope in the tool-call cache. The upstream
-        // `processToolResults` skipped this call for `.expandedSearch` signals
-        // because it only had the interim `{"status":"expanding"}` placeholder
+        // `processToolResults` skipped this call for `.exploratorySearch` signals
+        // because it only had the interim `{"status":"exploring"}` placeholder
         // at that point; without this record, a subsequent identical
-        // `expand` call would either not dedup at all or dedup against
+        // `exploratory` call would either not dedup at all or dedup against
         // the placeholder.
         memory?.record(
             toolName: result.toolName,
@@ -310,9 +352,9 @@ extension LLMExecutionService {
 // Stateless namespace so the envelope shape is a single function with clear
 // inputs, not a service method threading many positional args.
 
-enum ExpandedSearchEnvelope {
+enum ExploratorySearchEnvelope {
 
-    /// Wire shape for the expanded-search tool result envelope. Snake-case
+    /// Wire shape for the exploratory-search tool result envelope. Snake-case
     /// field names match what the LLM sees (hot path for model parsing).
     ///
     /// `expansion_error` and `search_error` are orthogonal: the first signals
@@ -326,21 +368,23 @@ enum ExpandedSearchEnvelope {
         var matches: [SearchMatch]
         var count: Int
         var hit_files: Int
+        var filename_matches: [FilenameMatch]?
         var skipped_files: [SkippedFile]?
         var skipped_binary_count: Int?
         var expansion_error: String?
         var search_error: String?
-        var expand_disabled: Bool?
+        var exploratory_disabled: Bool?
     }
 
     static func make(
-        payload: ExpandedSearchPayload,
+        payload: ExploratorySearchPayload,
         expanded: [String],
         output: SearchExecutorOutput,
         hitFilesCount: Int,
+        filenameMatches: [FilenameMatch],
         expansionError: String?,
         searchError: String?,
-        expandDisabled: Bool
+        exploratoryDisabled: Bool
     ) -> String {
         let body = Body(
             query: payload.query,
@@ -348,11 +392,12 @@ enum ExpandedSearchEnvelope {
             matches: output.matches,
             count: output.matches.count,
             hit_files: hitFilesCount,
+            filename_matches: filenameMatches.isEmpty ? nil : filenameMatches,
             skipped_files: output.skipped.isEmpty ? nil : output.skipped,
             skipped_binary_count: output.skippedBinaryCount > 0 ? output.skippedBinaryCount : nil,
             expansion_error: expansionError,
             search_error: searchError,
-            expand_disabled: expandDisabled ? true : nil
+            exploratory_disabled: exploratoryDisabled ? true : nil
         )
         return makeSuccessEnvelope(data: body, meta: ToolResultMeta(truncated: output.truncated))
     }

@@ -375,7 +375,7 @@ struct TeamActivityComposer: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, Spacing.s)
                         .padding(.top, Spacing.xxs)
-                        .padding(.bottom, Spacing.s)
+                        .padding(.bottom, Spacing.xl)
                         .onGeometryChange(for: CGFloat.self) { proxy in
                             proxy.size.height
                         } action: { newHeight in

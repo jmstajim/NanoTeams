@@ -7,7 +7,7 @@ import Observation
 /// pill and the Advanced settings tab.
 ///
 /// Lifecycle: created by `NTMSOrchestrator` when a work folder opens AND
-/// expanded search is enabled; torn down on folder close OR when the user flips
+/// exploratory search is enabled; torn down on folder close OR when the user flips
 /// the setting off. Safe to `start()` / `stop()` repeatedly.
 @Observable @MainActor
 final class SearchIndexCoordinator {
@@ -20,7 +20,7 @@ final class SearchIndexCoordinator {
     /// full vector build.
     private(set) var isBuilding: Bool = false
     /// True while the vector index is being built (post-token-index phase).
-    /// Observed by `ExpandedSearchEmbeddingsCard` to render a separate progress
+    /// Observed by `ExploratorySearchEmbeddingsCard` to render a separate progress
     /// indicator from the token-index status.
     private(set) var isBuildingVectorIndex: Bool = false
     private(set) var tokenCount: Int? = nil
@@ -32,7 +32,7 @@ final class SearchIndexCoordinator {
     private(set) var vectorIndexState: VocabVectorIndexState = .missing
     /// Live per-batch progress during a vector rebuild. `nil` when not building.
     /// Separate from `vectorIndexState` because `.building` also carries the
-    /// same data — this field is a convenience for `ExpandedSearchEmbeddingsCard`.
+    /// same data — this field is a convenience for `ExploratorySearchEmbeddingsCard`.
     private(set) var vectorIndexProgress: VocabVectorIndexBuilder.BuildProgress?
 
     // MARK: - Dependencies

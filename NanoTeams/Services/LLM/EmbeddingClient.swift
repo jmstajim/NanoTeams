@@ -21,7 +21,7 @@ protocol EmbeddingClient: Sendable {
 // MARK: - Config
 
 /// Configuration for an embedding endpoint. Lives in `StoreConfiguration` as
-/// `expandedSearchEmbeddingConfig` and is produced at call-time via the
+/// `exploratorySearchEmbeddingConfig` and is produced at call-time via the
 /// coordinator's `embeddingConfigProvider` closure so config changes (model
 /// swap, URL change) take effect on the next rebuild without tearing down
 /// the coordinator.

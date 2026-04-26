@@ -156,6 +156,44 @@ final class MemoryTagStoreTests: XCTestCase {
         XCTAssertEqual(tag, "<§R2§>")
     }
 
+    /// Regression: a partial re-read after `edit_file` was clearing the
+    /// per-path "edited since last read" flag, which made a subsequent read
+    /// of a *different* range incorrectly short-circuit to the pre-edit tag
+    /// reference (stale content). The flag must only clear when the FULL
+    /// file is re-read so all stale ranges have been observably refreshed.
+    func testReadLinesAfterEdit_doesNotClearStalenessForOtherRanges() {
+        // 1. Read range 1-50 — establishes baseline R1 for that range.
+        let r1 = makeReadLinesResult(
+            path: "Foo.swift", content: "lines 1..50 original",
+            startLine: 1, endLine: 50)
+        _ = sut.processToolResult(r1, iteration: 1)
+
+        // 2. Edit the file — staleness flag set for path.
+        _ = sut.processToolResult(makeEditResult(path: "Foo.swift"), iteration: 2)
+
+        // 3. Read range 60-100. This is a NEW range, so it gets a fresh tag —
+        //    but the per-path staleness flag must NOT be cleared because the
+        //    1-50 range is still stale (the edit's effect on that range was
+        //    never observed).
+        let r2 = makeReadLinesResult(
+            path: "Foo.swift", content: "lines 60..100 post-edit",
+            startLine: 60, endLine: 100)
+        _ = sut.processToolResult(r2, iteration: 3)
+
+        // 4. Re-read range 1-50 with the *original* (now stale) content. This
+        //    can happen when the LLM repeats a read to get cached content.
+        //    Must return a NEW tagged baseline, NOT a reference to R1 — the
+        //    edit at step 2 invalidated the original 1-50 baseline.
+        let r3 = makeReadLinesResult(
+            path: "Foo.swift", content: "lines 1..50 original",
+            startLine: 1, endLine: 50)
+        let result = sut.processToolResult(r3, iteration: 4)
+
+        if case .reference = result {
+            XCTFail("Re-read of stale range after edit must NOT return a reference; got reference to pre-edit tag")
+        }
+    }
+
     // MARK: - edit_file Processing
 
     func testEditFile_ReturnsTaggedAndInvalidatesRead() {
@@ -216,11 +254,13 @@ final class MemoryTagStoreTests: XCTestCase {
         XCTAssertEqual(tag, "<§W1§>")
         XCTAssertTrue(content.contains("\"status\":\"success\""))
 
-        // Old read tag should be replaced
-        if case .replaced(let by) = sut.entries["<§R1§>"]?.status {
-            XCTAssertEqual(by, "<§W1§>")
+        // `read_file` now keys reads by range (`path:start-end`); `processWrite` invalidates
+        // every range for the path via `invalidateReadRanges` → `.outdated(reason: W1)`,
+        // not `.replaced(by: W1)` (the latter is reserved for collisions on the same key).
+        if case .outdated(let reason) = sut.entries["<§R1§>"]?.status {
+            XCTAssertEqual(reason, "<§W1§>")
         } else {
-            XCTFail("Expected R1 to be replaced by W1")
+            XCTFail("Expected R1 to be outdated by W1, got: \(String(describing: sut.entries["<§R1§>"]?.status))")
         }
     }
 
@@ -463,8 +503,9 @@ final class MemoryTagStoreTests: XCTestCase {
     }
 
     func testDeleteInvalidatesAllRangesForPath() {
-        // Read full file and a range
-        let readFull = makeReadResult(path: "Foo.swift", content: "full content")
+        // Read first N lines (whole file, since it's only 3 lines) and a sub-range.
+        // Distinct ranges so they get distinct range keys (`path:1-3` vs `path:1-1`).
+        let readFull = makeReadResult(path: "Foo.swift", content: "line1\nline2\nline3")
         _ = sut.processToolResult(readFull, iteration: 1)
 
         let readRange = makeReadLinesResult(
@@ -498,8 +539,11 @@ final class MemoryTagStoreTests: XCTestCase {
     // MARK: - Helpers
 
     private func makeReadResult(path: String, content: String) -> ToolExecutionResult {
+        // Mirrors the new ReadFileTool envelope: first-N-lines slice with
+        // start_line / end_line / total_lines so MemoryTagStore can build a range key.
+        let totalLines = content.components(separatedBy: "\n").count
         let outputJSON = """
-        {"ok":true,"data":{"path":"\(path)","content":\(jsonEscape(content)),"total_lines":\(content.components(separatedBy: "\n").count)}}
+        {"ok":true,"data":{"path":"\(path)","content":\(jsonEscape(content)),"start_line":1,"end_line":\(totalLines),"total_lines":\(totalLines)}}
         """
         return ToolExecutionResult(
             providerID: "call_\(UUID().uuidString.prefix(4))",

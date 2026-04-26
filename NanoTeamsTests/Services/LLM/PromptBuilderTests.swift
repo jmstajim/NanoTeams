@@ -72,18 +72,18 @@ final class PromptBuilderTests: XCTestCase {
 
     // MARK: - buildWorkFolderContextMessage
 
-    func testBuildWorkFolderContextMessage_withProject_includesNameAndDescription() {
+    func testBuildWorkFolderContextMessage_withProject_includesNameAndContext() {
         let wf = WorkFolderProjection(
             state: WorkFolderState(name: "MyApp"),
-            settings: ProjectSettings(description: "An iOS application for task management"),
+            settings: ProjectSettings(context: "An iOS application for task management"),
             teams: []
         )
 
         let result = PromptBuilder.buildWorkFolderContextMessage(workFolder: wf)
 
         XCTAssertNotNil(result)
-        XCTAssertTrue(result!.contains("MyApp"), "Should include project name")
-        XCTAssertTrue(result!.contains("An iOS application for task management"), "Should include project description")
+        XCTAssertTrue(result!.contains("MyApp"), "Should include work folder name")
+        XCTAssertTrue(result!.contains("An iOS application for task management"), "Should include work folder context")
         XCTAssertTrue(result!.contains("Work folder context:"), "Should include header")
     }
 
@@ -93,16 +93,16 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertNil(result)
     }
 
-    func testBuildWorkFolderContextMessage_emptyDescription_returnsNil() {
+    func testBuildWorkFolderContextMessage_emptyContext_returnsNil() {
         let wf = WorkFolderProjection(
             state: WorkFolderState(name: "EmptyProject"),
-            settings: ProjectSettings(description: ""),
+            settings: ProjectSettings(context: ""),
             teams: []
         )
 
         let result = PromptBuilder.buildWorkFolderContextMessage(workFolder: wf)
 
-        XCTAssertNil(result, "Should return nil when project has no description")
+        XCTAssertNil(result, "Should return nil when work folder has no context")
     }
 
     // MARK: - buildPipelineContext
@@ -596,7 +596,7 @@ final class PromptBuilderTests: XCTestCase {
     func testBuildChatMessages_workFolderContext_goesIntoSystemPromptNotUserMessage() {
         let wf = WorkFolderProjection(
             state: WorkFolderState(name: "PlacementProbe"),
-            settings: ProjectSettings(description: "Unique description string for placement check"),
+            settings: ProjectSettings(context: "Unique context string for placement check"),
             teams: []
         )
         let context = makeContext(workFolder: wf)
@@ -607,8 +607,8 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertNotNil(systemMessage)
         XCTAssertTrue(systemMessage?.content?.contains("PlacementProbe") == true,
                        "Work folder name must appear in the system prompt")
-        XCTAssertTrue(systemMessage?.content?.contains("Unique description string for placement check") == true,
-                       "Work folder description must appear in the system prompt")
+        XCTAssertTrue(systemMessage?.content?.contains("Unique context string for placement check") == true,
+                       "Work folder context must appear in the system prompt")
 
         let userMessagesWithWorkFolderHeader = messages.filter { msg in
             msg.role == .user && msg.content?.contains("Work folder context:") == true

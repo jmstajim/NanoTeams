@@ -1,12 +1,12 @@
 import Foundation
 @testable import NanoTeams
 
-/// Configuration for the expanded-search trainer. Loaded from a JSON file at
-/// `.nanoteams/expanded_search_trainer.json` by `ExpandedSearchTrainerTests`.
+/// Configuration for the exploratory-search trainer. Loaded from a JSON file at
+/// `.nanoteams/exploratory_search_trainer.json` by `ExploratorySearchTrainerTests`.
 ///
 /// Shape mirrors `CreateTeamTrainerConfig` so operators have one mental
 /// model for all trainers.
-struct ExpandedSearchTrainerConfig: Codable {
+struct ExploratorySearchTrainerConfig: Codable {
     // MARK: - Embedding endpoint
 
     /// OpenAI-compatible embedding endpoint. Default: LM Studio on 127.0.0.1:1234.
@@ -26,7 +26,7 @@ struct ExpandedSearchTrainerConfig: Codable {
     /// Absolute path to the corpus JSON file.
     var corpusPath: String
 
-    /// Absolute path where the trainer writes `expanded_search_results.json`.
+    /// Absolute path where the trainer writes `exploratory_search_results.json`.
     var outputPath: String
 
     /// Per-case budget (indexing + embedding + expansion + hit check). Default 60s.
@@ -35,7 +35,7 @@ struct ExpandedSearchTrainerConfig: Codable {
     /// Absolute path to a REAL work folder whose existing
     /// `.nanoteams/internal/search_index.json` the trainer should reuse for
     /// every case. When set, the trainer skips inline fixture materialization
-    /// entirely — `ExpandedSearchTrainerCase.files` is ignored, and the index is
+    /// entirely — `ExploratorySearchTrainerCase.files` is ignored, and the index is
     /// loaded via `SearchIndexService.loadOrBuild(force: false)` so a rebuilt
     /// index on disk is picked up without re-indexing.
     ///
@@ -71,7 +71,7 @@ struct ExpandedSearchTrainerConfig: Codable {
 /// One entry in the corpus JSON. Each case describes an inline fixture
 /// (files to write into a temp folder) plus the query we're expanding +
 /// what we hope to see in the result.
-struct ExpandedSearchTrainerCase: Codable {
+struct ExploratorySearchTrainerCase: Codable {
     /// Short tag for the case (e.g. `"ru-scroll"`).
     var tag: String
 
@@ -108,6 +108,6 @@ struct ExpandedSearchTrainerCase: Codable {
     var expectsExpansionFailure: Bool?
 }
 
-struct ExpandedSearchTrainerCorpus: Codable {
-    var cases: [ExpandedSearchTrainerCase]
+struct ExploratorySearchTrainerCorpus: Codable {
+    var cases: [ExploratorySearchTrainerCase]
 }

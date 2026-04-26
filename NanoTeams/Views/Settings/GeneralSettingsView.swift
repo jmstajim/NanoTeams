@@ -14,7 +14,6 @@ struct GeneralSettingsView: View {
                 themeCard
                 activityFeedCard
                 inputCard
-                advancedCard
                 dangerZoneCard
             }
             .padding(Spacing.xl)
@@ -107,36 +106,6 @@ struct GeneralSettingsView: View {
         }
     }
 
-    // MARK: - Advanced Card
-
-    private var advancedCard: some View {
-        @Bindable var config = config
-        return SettingsCard(
-            header: "Advanced",
-            systemImage: "gearshape.2"
-        ) {
-            VStack(spacing: 0) {
-                settingsToggleRow("Debug mode", icon: "ladybug", isOn: $config.debugModeEnabled)
-
-                Text("Shows model input messages and artifacts in Team Activity view.")
-                    .font(Typography.caption)
-                    .foregroundStyle(Colors.textTertiary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.leading, SettingsLayout.toggleIconSize + Spacing.m)
-                    .padding(.bottom, Spacing.s)
-
-                settingsToggleRow("Network logs", icon: "doc.text", isOn: $config.loggingEnabled)
-
-                Text("Saves request and tool call logs locally for debugging. Logs are never sent anywhere — share them manually if needed.")
-                    .font(Typography.caption)
-                    .foregroundStyle(Colors.textTertiary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.leading, SettingsLayout.toggleIconSize + Spacing.m)
-                    .padding(.bottom, Spacing.s)
-            }
-        }
-    }
-
     // MARK: - Danger Zone Card
 
     private var dangerZoneCard: some View {
@@ -192,7 +161,7 @@ struct GeneralSettingsView: View {
 
 // MARK: - Settings Toggle Row
 
-private struct SettingsToggleRow: View {
+struct SettingsToggleRow: View {
     let title: String
     let icon: String
     @Binding var isOn: Bool

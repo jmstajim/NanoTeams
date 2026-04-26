@@ -64,7 +64,7 @@ extension SidebarView {
 
     /// Active project card — compact row with folder icon, name, dropdown, settings gear.
     func projectInfoCard(folder: URL) -> some View {
-        let hasDescription = !(store.workFolder?.settings.description.isEmpty ?? true)
+        let hasContext = !(store.workFolder?.settings.context.isEmpty ?? true)
         return VStack(alignment: .leading, spacing: Spacing.s) {
             HStack(spacing: Spacing.xs) {
                 // Folder icon — tap to reveal in Finder
@@ -148,41 +148,44 @@ extension SidebarView {
                 }
             }
 
-            // Description or generate button
-            if hasDescription {
-                Text(store.workFolder?.settings.description ?? "")
+            // Context or generate button.
+            //
+            // Generating state takes priority over the context text so a
+            // regeneration kicked off from Settings (which keeps the previous
+            // context in place until the new one streams in) shows up here
+            // too. Tap-to-cancel works from either surface.
+            let isGenerating = store.isGeneratingWorkFolderContext
+            if isGenerating {
+                Button {
+                    store.cancelWorkFolderContextGeneration()
+                } label: {
+                    HStack(spacing: Spacing.xs) {
+                        NTMSLoader(.mini)
+                            .frame(width: 12, height: 12)
+                        Text("Generating...")
+                            .font(Typography.caption)
+                    }
+                    .foregroundStyle(Colors.textSecondary)
+                }
+                .buttonStyle(.plain)
+            } else if hasContext {
+                Text(store.workFolder?.settings.context ?? "")
                     .font(Typography.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .truncationMode(.tail)
             } else {
                 Button {
-                    if isGeneratingDescription {
-                        generateDescriptionTask?.cancel()
-                        generateDescriptionTask = nil
-                        isGeneratingDescription = false
-                        store.lastInfoMessage = "Generation stopped"
-                    } else {
-                        generateDescriptionTask = Task {
-                            isGeneratingDescription = true
-                            defer { if !Task.isCancelled { isGeneratingDescription = false } }
-                            if let description = await store.generateWorkFolderDescription() {
-                                guard !Task.isCancelled else { return }
-                                await store.updateWorkFolderDescription(description)
-                            }
-                        }
-                    }
+                    store.startGeneratingWorkFolderContext()
                 } label: {
                     HStack(spacing: Spacing.xs) {
-                        ZStack {
-                            if isGeneratingDescription { NTMSLoader(.mini) }
-                            else { Image(systemName: "sparkles").font(Typography.caption) }
-                        }
-                        .frame(width: 12, height: 12)
-                        Text(isGeneratingDescription ? "Generating..." : "Generate Description")
+                        Image(systemName: "sparkles")
+                            .font(Typography.caption)
+                            .frame(width: 12, height: 12)
+                        Text("Generate Context")
                             .font(Typography.caption)
                     }
-                    .foregroundStyle(isGeneratingDescription ? Colors.textSecondary : Colors.accent)
+                    .foregroundStyle(Colors.accent)
                 }
                 .buttonStyle(.plain)
             }

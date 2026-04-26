@@ -151,6 +151,37 @@ final class StepMessagingServiceTests: XCTestCase {
         XCTAssertEqual(task.runs[0].steps[0].status, .running)
     }
 
+    /// Regression: after app restart, `StatusRecoveryService` flips `.needsSupervisorInput → .paused`
+    /// but the `needsSupervisorInput` flag stays true, so the user can still answer via the chip.
+    /// `answerSupervisorQuestion` must transition `.paused → .pending` so the resume path picks it up.
+    func testAnswerSupervisorQuestion_pausedAfterRecovery_setsStatusToPending() {
+        var (task, stepID) = createTaskWithStep()
+        task.runs[0].steps[0].status = .paused
+        task.runs[0].steps[0].needsSupervisorInput = true
+        task.runs[0].steps[0].llmSessionID = "resp_xyz"
+
+        StepMessagingService.answerSupervisorQuestion(stepID: stepID, answer: "продолжай", in: &task)
+
+        XCTAssertEqual(task.runs[0].steps[0].status, .pending)
+        XCTAssertFalse(task.runs[0].steps[0].needsSupervisorInput)
+        XCTAssertEqual(task.runs[0].steps[0].supervisorAnswer, "продолжай")
+        XCTAssertEqual(task.runs[0].steps[0].llmSessionID, "resp_xyz",
+                       "Saved session ID must survive — startStepExecution uses it for previous_response_id")
+    }
+
+    /// Other terminal/transitional statuses must NOT be promoted to `.pending` — the `.paused`
+    /// allowlist is intentionally narrow (only post-recovery resume). E.g. `.done` or `.failed`
+    /// steps shouldn't reactivate just because someone wrote into `supervisorAnswer`.
+    func testAnswerSupervisorQuestion_doneStatus_statusUnchanged() {
+        var (task, stepID) = createTaskWithStep()
+        task.runs[0].steps[0].status = .done
+        task.runs[0].steps[0].needsSupervisorInput = true
+
+        StepMessagingService.answerSupervisorQuestion(stepID: stepID, answer: "Answer", in: &task)
+
+        XCTAssertEqual(task.runs[0].steps[0].status, .done)
+    }
+
     func testAnswerSupervisorQuestion_invalidStepID_noEffect() {
         var (task, _) = createTaskWithStep()
         let invalidStepID = "invalid_step_id"

@@ -1,7 +1,7 @@
 import Foundation
 
-/// Service for generating project descriptions using LLM.
-final class WorkFolderDescriptionService {
+/// Service for generating work-folder context using LLM.
+final class WorkFolderContextService {
 
     private let client: any LLMClient
 
@@ -9,24 +9,28 @@ final class WorkFolderDescriptionService {
         self.client = client
     }
 
-    /// Generates a project description by analyzing the codebase and using an LLM.
+    /// Generates work-folder context by analyzing the folder contents via an LLM.
     /// - Parameters:
-    ///   - workFolderRoot: The project root URL.
+    ///   - workFolderRoot: The work folder root URL.
     ///   - config: The LLM configuration.
-    /// - Returns: A generated description, or nil if generation fails.
-    /// - Throws: An error if the LLM request fails.
+    ///   - customPrompt: Optional override for `AppDefaults.workFolderContextPrompt`.
+    /// - Returns: The trimmed generated context, or `nil` when the LLM produced
+    ///   only whitespace. Callers must distinguish "nil from empty content" from
+    ///   "nil from cancellation" via `Task.isCancelled` at the call site.
+    /// - Throws: Transport / decoding errors from `client.streamChat` and
+    ///   `CancellationError` if the surrounding `Task` is cancelled mid-stream.
     func generate(
         workFolderRoot: URL,
         config: LLMConfig,
         customPrompt: String? = nil
     ) async throws -> String? {
         let input = await Task.detached {
-            WorkFolderDescriptionBuilder.buildInput(workFolderRoot: workFolderRoot)
+            WorkFolderContextBuilder.buildInput(workFolderRoot: workFolderRoot)
         }.value
 
         let trimmedCustom = customPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let system = trimmedCustom.isEmpty
-            ? AppDefaults.workFolderDescriptionPrompt
+            ? AppDefaults.workFolderContextPrompt
             : trimmedCustom
 
         var userLines: [String] = []
@@ -43,10 +47,9 @@ final class WorkFolderDescriptionService {
             }
         }
 
-        let snapshotFiles = input.fileList.prefix(80)
-        if !snapshotFiles.isEmpty {
+        if !input.fileList.isEmpty {
             userLines.append("File snapshot:")
-            for path in snapshotFiles {
+            for path in input.fileList {
                 userLines.append("- \(path)")
             }
         }

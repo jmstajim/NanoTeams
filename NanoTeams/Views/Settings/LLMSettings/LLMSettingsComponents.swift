@@ -37,7 +37,10 @@ struct LLMConnectionStatusPill: View {
 
 // MARK: - Stepper Row
 
-/// Reusable stepper row: label + "Unlimited"/value + Stepper + optional caption.
+/// LLM-card stepper row: label + `SettingsStepperControl` + optional caption.
+/// No leading icon and no hover shell — that's the General-card style covered
+/// by `SettingsStepperRow`. The only LLM-specific bit here is the inline
+/// caption support; the value cell + Stepper come from the shared atom.
 struct LLMStepperSettingsRow: View {
     let title: String
     @Binding var value: Int
@@ -53,14 +56,7 @@ struct LLMStepperSettingsRow: View {
 
                 Spacer()
 
-                HStack(spacing: 4) {
-                    Text(value == 0 ? "Unlimited" : "\(value)")
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                        .frame(minWidth: 60, alignment: .trailing)
-                    Stepper("", value: $value, in: range, step: step)
-                        .labelsHidden()
-                }
+                SettingsStepperControl(value: $value, range: range, step: step)
             }
 
             if let caption {

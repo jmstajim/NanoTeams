@@ -1,36 +1,36 @@
 import Foundation
 
-/// Service for project folder management and description updates.
+/// Service for work folder management and context updates.
 @MainActor
 final class WorkFolderManagementService {
     private let repository: any NTMSRepositoryProtocol
-    private let workFolderDescriptionService: WorkFolderDescriptionService
+    private let workFolderContextService: WorkFolderContextService
 
     init(
         repository: any NTMSRepositoryProtocol,
-        workFolderDescriptionService: WorkFolderDescriptionService = WorkFolderDescriptionService()
+        workFolderContextService: WorkFolderContextService = WorkFolderContextService()
     ) {
         self.repository = repository
-        self.workFolderDescriptionService = workFolderDescriptionService
+        self.workFolderContextService = workFolderContextService
     }
 
     func openOrCreateWorkFolder(at url: URL) throws -> WorkFolderContext {
         try repository.openOrCreateWorkFolder(at: url)
     }
 
-    func updateWorkFolderDescription(_ description: String, at url: URL) throws -> WorkFolderContext {
-        try repository.updateWorkFolderDescription(
+    func updateWorkFolderContext(_ context: String, at url: URL) throws -> WorkFolderContext {
+        try repository.updateWorkFolderContext(
             at: url,
-            description: description.trimmingCharacters(in: .whitespacesAndNewlines)
+            context: context.trimmingCharacters(in: .whitespacesAndNewlines)
         )
     }
 
-    func generateWorkFolderDescription(
+    func generateWorkFolderContext(
         workFolderRoot: URL,
         config: LLMConfig,
         customPrompt: String? = nil
     ) async throws -> String? {
-        try await workFolderDescriptionService.generate(
+        try await workFolderContextService.generate(
             workFolderRoot: workFolderRoot,
             config: config,
             customPrompt: customPrompt

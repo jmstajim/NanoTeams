@@ -30,7 +30,7 @@ struct SidebarFooter: View {
 
                 Spacer(minLength: 0)
 
-                ExpandedSearchStatusIndicator()
+                ExploratorySearchStatusIndicator()
                 LLMStatusIndicator()
             }
             .padding(.horizontal, Spacing.m)
@@ -42,10 +42,10 @@ struct SidebarFooter: View {
     }
 }
 
-/// Expanded-search index rebuild indicator. Visible only while the coordinator
+/// Exploratory-search index rebuild indicator. Visible only while the coordinator
 /// is rebuilding the token index or the vocab vector index. Tapping opens
-/// Settings → Expanded Search.
-struct ExpandedSearchStatusIndicator: View {
+/// Settings → Exploratory Search.
+struct ExploratorySearchStatusIndicator: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(NTMSOrchestrator.self) private var store
     @AppStorage(UserDefaultsKeys.selectedSettingsTab)
@@ -55,7 +55,7 @@ struct ExpandedSearchStatusIndicator: View {
         if let coordinator = store.searchIndexCoordinator,
            coordinator.isBuilding || coordinator.isBuildingVectorIndex {
             Button {
-                selectedSettingsTab = .expandedSearch
+                selectedSettingsTab = .exploratorySearch
                 openWindow(id: "settings")
             } label: {
                 Text("Indexing")
@@ -69,8 +69,8 @@ struct ExpandedSearchStatusIndicator: View {
                     .contentShape(Capsule(style: .continuous))
             }
             .buttonStyle(.plain)
-            .help("Rebuilding expanded-search index — click to open settings")
-            .accessibilityLabel("Expanded search index rebuilding")
+            .help("Rebuilding exploratory-search index — click to open settings")
+            .accessibilityLabel("Exploratory search index rebuilding")
             .transition(.opacity.combined(with: .scale(scale: 0.95)))
         }
     }

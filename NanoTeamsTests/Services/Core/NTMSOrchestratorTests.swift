@@ -304,16 +304,16 @@ final class NTMSOrchestratorTests: NTMSOrchestratorTestBase {
         await sut.openWorkFolder(tempDir)
 
         await sut.mutateWorkFolder { proj in
-            proj.settings.description = "Test description"
+            proj.settings.context = "Test context"
         }
 
-        XCTAssertEqual(sut.workFolder?.settings.description, "Test description")
+        XCTAssertEqual(sut.workFolder?.settings.context, "Test context")
     }
 
     func testMutateProject_noSnapshot_doesNotCrash() async {
         // No project open
         await sut.mutateWorkFolder { proj in
-            proj.settings.description = "Won't work"
+            proj.settings.context = "Won't work"
         }
 
         XCTAssertNil(sut.workFolder)

@@ -17,11 +17,11 @@ enum ToolSignal: Hashable {
     case artifact(name: String, content: String, format: String?)
     case visionAnalysis(imagePath: String, prompt: String)
     case teamCreation(config: GeneratedTeamConfig)
-    case expandedSearch(ExpandedSearchPayload)
+    case exploratorySearch(ExploratorySearchPayload)
 }
 
-/// Payload for a `expand: true` call on `SearchTool`. Threaded through
-/// `ToolSignal.expandedSearch` so the processor gets every argument the handler
+/// Payload for a `exploratory: true` call on `SearchTool`. Threaded through
+/// `ToolSignal.exploratorySearch` so the processor gets every argument the handler
 /// parsed, without 8 positional fields on the enum case. `mode` is stored as
 /// the strongly-typed enum so the processor doesn't re-parse a raw string.
 ///
@@ -34,7 +34,7 @@ enum ToolSignal: Hashable {
 ///   negative values can't crash the executor budget math.
 /// - `paths` is normalized: empty arrays collapse to `nil` so consumers
 ///   don't have to branch on both "unset" and "set but empty".
-struct ExpandedSearchPayload: Hashable {
+struct ExploratorySearchPayload: Hashable {
     let query: String
     let mode: SearchMode
     let paths: [String]?

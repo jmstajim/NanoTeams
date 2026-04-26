@@ -315,7 +315,7 @@ struct MessageComposer<SettingsMenu: View>: View {
                     .overlay(alignment: .bottomLeading) {
                         if isImage && !config.isVisionConfigured {
                             Button {
-                                selectedSettingsTab = .llm
+                                selectedSettingsTab = .vision
                                 openWindow(id: "settings")
                             } label: {
                                 Image(systemName: "eye.trianglebadge.exclamationmark")

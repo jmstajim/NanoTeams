@@ -78,29 +78,29 @@ final class EndToEndResetWorkFolderSettingsTests: NTMSOrchestratorTestBase {
                        "Reset must restore the full default team set")
     }
 
-    // MARK: - Scenario 4: Project description cleared
+    // MARK: - Scenario 4: Work folder context cleared
 
-    func testReset_clearsProjectDescription() async {
+    func testReset_clearsWorkFolderContext() async {
         await sut.openWorkFolder(tempDir)
-        await sut.updateWorkFolderDescription("Custom description — should be wiped")
+        await sut.updateWorkFolderContext("Custom context — should be wiped")
 
         await sut.resetWorkFolderSettings()
 
-        XCTAssertEqual(sut.workFolder?.settings.description, "",
-                       "Reset must clear the project description")
+        XCTAssertEqual(sut.workFolder?.settings.context, "",
+                       "Reset must clear the work folder context")
     }
 
     func testReset_restoresDefaultPromptTemplate() async {
         await sut.openWorkFolder(tempDir)
         await sut.mutateWorkFolder { proj in
-            proj.settings.descriptionPrompt = "MY CUSTOM PROMPT"
+            proj.settings.contextPrompt = "MY CUSTOM PROMPT"
         }
 
         await sut.resetWorkFolderSettings()
 
-        XCTAssertEqual(sut.workFolder?.settings.descriptionPrompt,
-                       AppDefaults.workFolderDescriptionPrompt,
-                       "Reset must restore default descriptionPrompt")
+        XCTAssertEqual(sut.workFolder?.settings.contextPrompt,
+                       AppDefaults.workFolderContextPrompt,
+                       "Reset must restore default contextPrompt")
     }
 
     // MARK: - Scenario 5: Idempotent
@@ -153,7 +153,7 @@ final class EndToEndResetWorkFolderSettingsTests: NTMSOrchestratorTestBase {
 
         XCTAssertNotNil(sut.workFolder,
                         "Work folder context must be usable after reset-from-corruption")
-        XCTAssertEqual(sut.workFolder?.settings.description, "",
+        XCTAssertEqual(sut.workFolder?.settings.context, "",
                        "Settings restored to defaults")
     }
 }

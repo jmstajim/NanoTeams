@@ -28,7 +28,13 @@ enum StepMessagingService {
         task.runs[location.runIndex].steps[location.stepIndex].supervisorAnswerAttachmentPaths = attachmentPaths
         task.runs[location.runIndex].steps[location.stepIndex].needsSupervisorInput = false
 
-        if task.runs[location.runIndex].steps[location.stepIndex].status == .needsSupervisorInput {
+        // Normal flow: status was .needsSupervisorInput → .pending so the engine's
+        // reconcileAfterPause picks it up. After app restart, StatusRecoveryService has
+        // already flipped .needsSupervisorInput → .paused, but the user can still answer
+        // (the Answer chip surfaces while `needsSupervisorInput` flag is true). Treat
+        // .paused identically here so resumeRun's continuation path is invariant.
+        let s = task.runs[location.runIndex].steps[location.stepIndex].status
+        if s == .needsSupervisorInput || s == .paused {
             task.runs[location.runIndex].steps[location.stepIndex].status = .pending
         }
         return true

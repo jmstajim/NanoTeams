@@ -1,15 +1,15 @@
 import XCTest
 @testable import NanoTeams
 
-/// XCTest entry point for the expanded-search trainer. Reads config from
-/// `.nanoteams/expanded_search_trainer.json` at the project root and writes
+/// XCTest entry point for the exploratory-search trainer. Reads config from
+/// `.nanoteams/exploratory_search_trainer.json` at the project root and writes
 /// results to the path the config specifies.
 ///
 /// Auto-skips when the config file is missing or when the LLM server is
 /// unreachable — same contract as `CreateTeamTrainerTests` so CI runs are
 /// clean even when nobody's touching the trainer.
 @MainActor
-final class ExpandedSearchTrainerTests: XCTestCase {
+final class ExploratorySearchTrainerTests: XCTestCase {
 
     func testRunTrainer() async throws {
         let sourceFile = URL(fileURLWithPath: #filePath)
@@ -20,7 +20,7 @@ final class ExpandedSearchTrainerTests: XCTestCase {
 
         let configURL = projectRoot
             .appendingPathComponent(".nanoteams")
-            .appendingPathComponent("expanded_search_trainer.json")
+            .appendingPathComponent("exploratory_search_trainer.json")
 
         // `XCTSkip` rather than silent `return`: a silent return makes a
         // genuinely-broken trainer setup indistinguishable from a benign
@@ -34,7 +34,7 @@ final class ExpandedSearchTrainerTests: XCTestCase {
 
         let configData = try Data(contentsOf: configURL)
         let config = try JSONCoderFactory.makeWireDecoder().decode(
-            ExpandedSearchTrainerConfig.self, from: configData
+            ExploratorySearchTrainerConfig.self, from: configData
         )
 
         // Pre-flight the LLM server — skip when unreachable so devs without LM
@@ -61,14 +61,14 @@ final class ExpandedSearchTrainerTests: XCTestCase {
         print("[TRAINER] Per-case timeout: \(config.caseTimeoutSeconds ?? 60)s")
         print("[TRAINER] ==========================================")
 
-        let trainer = ExpandedSearchTrainer(config: config)
+        let trainer = ExploratorySearchTrainer(config: config)
         let result = try await trainer.run()
 
         printSummary(result)
 
         // Structural invariants — independent of model quality.
         let corpus = try JSONCoderFactory.makeWireDecoder().decode(
-            ExpandedSearchTrainerCorpus.self,
+            ExploratorySearchTrainerCorpus.self,
             from: Data(contentsOf: URL(fileURLWithPath: config.corpusPath))
         )
         XCTAssertEqual(
@@ -98,7 +98,7 @@ final class ExpandedSearchTrainerTests: XCTestCase {
         }
     }
 
-    private func printSummary(_ result: ExpandedSearchTrainerRunResult) {
+    private func printSummary(_ result: ExploratorySearchTrainerRunResult) {
         var success = 0, failure = 0, timeout = 0
         var totalHits = 0
         var recallBuckets: [Double] = []

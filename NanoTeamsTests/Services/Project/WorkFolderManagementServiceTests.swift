@@ -57,27 +57,27 @@ final class WorkFolderManagementServiceTests: XCTestCase {
         XCTAssertTrue(fileManager.fileExists(atPath: nanoteamsDir.path))
     }
 
-    // MARK: - updateWorkFolderDescription
+    // MARK: - updateWorkFolderContext
 
-    func testUpdateProjectDescription_UpdatesDescription() throws {
+    func testUpdateWorkFolderContext_UpdatesContext() throws {
         _ = try service.openOrCreateWorkFolder(at: tempDir)
 
-        let context = try service.updateWorkFolderDescription("New description", at: tempDir)
-        XCTAssertEqual(context.workFolder.settings.description, "New description")
+        let context = try service.updateWorkFolderContext("New context", at: tempDir)
+        XCTAssertEqual(context.workFolder.settings.context, "New context")
     }
 
-    func testUpdateProjectDescription_TrimsWhitespace() throws {
+    func testUpdateWorkFolderContext_TrimsWhitespace() throws {
         _ = try service.openOrCreateWorkFolder(at: tempDir)
 
-        let context = try service.updateWorkFolderDescription("  Trimmed  \n", at: tempDir)
-        XCTAssertEqual(context.workFolder.settings.description, "Trimmed")
+        let context = try service.updateWorkFolderContext("  Trimmed  \n", at: tempDir)
+        XCTAssertEqual(context.workFolder.settings.context, "Trimmed")
     }
 
-    func testUpdateProjectDescription_EmptyString() throws {
+    func testUpdateWorkFolderContext_EmptyString() throws {
         _ = try service.openOrCreateWorkFolder(at: tempDir)
 
-        let context = try service.updateWorkFolderDescription("", at: tempDir)
-        XCTAssertEqual(context.workFolder.settings.description, "")
+        let context = try service.updateWorkFolderContext("", at: tempDir)
+        XCTAssertEqual(context.workFolder.settings.context, "")
     }
 
     // MARK: - updateSelectedScheme
@@ -106,13 +106,13 @@ final class WorkFolderManagementServiceTests: XCTestCase {
 
     // MARK: - Round-trip Persistence
 
-    func testRoundTrip_DescriptionPersistsAcrossOpens() throws {
+    func testRoundTrip_ContextPersistsAcrossOpens() throws {
         _ = try service.openOrCreateWorkFolder(at: tempDir)
-        _ = try service.updateWorkFolderDescription("Persisted description", at: tempDir)
+        _ = try service.updateWorkFolderContext("Persisted context", at: tempDir)
 
         // Use fresh service to simulate fresh open
         let context2 = try freshService.openOrCreateWorkFolder(at: tempDir)
-        XCTAssertEqual(context2.workFolder.settings.description, "Persisted description")
+        XCTAssertEqual(context2.workFolder.settings.context, "Persisted context")
     }
 
     func testRoundTrip_SchemePersistsAcrossOpens() throws {
@@ -128,14 +128,14 @@ final class WorkFolderManagementServiceTests: XCTestCase {
 
     /// Validates the fix for draft state sync after reset.
     /// When .nanoteams is deleted and re-created (simulating "Reset All Application Settings"),
-    /// the new WorkFolder must have a different `id` even though `descriptionPrompt` stays
+    /// the new WorkFolder must have a different `id` even though `contextPrompt` stays
     /// at the same default value. This ensures `onChange(of: workFolder.id)` fires in the view,
-    /// re-syncing @State drafts — whereas `onChange(of: descriptionPrompt)` would NOT fire
+    /// re-syncing @State drafts — whereas `onChange(of: contextPrompt)` would NOT fire
     /// because the value is identical.
     func testResetProducesNewIdentity_WithSameDefaultPrompt() throws {
         let contextBefore = try service.openOrCreateWorkFolder(at: tempDir)
         let idBefore = contextBefore.workFolder.id
-        let promptBefore = contextBefore.workFolder.settings.descriptionPrompt
+        let promptBefore = contextBefore.workFolder.settings.contextPrompt
 
         // Simulate reset: delete .nanoteams and re-create
         let nanoteamsDir = tempDir.appendingPathComponent(".nanoteams")
@@ -143,13 +143,13 @@ final class WorkFolderManagementServiceTests: XCTestCase {
 
         let contextAfter = try service.openOrCreateWorkFolder(at: tempDir)
         let idAfter = contextAfter.workFolder.id
-        let promptAfter = contextAfter.workFolder.settings.descriptionPrompt
+        let promptAfter = contextAfter.workFolder.settings.contextPrompt
 
         // ID must change — this is what triggers onChange(of: id) in the view
         XCTAssertNotEqual(idBefore, idAfter, "Reset must produce a new WorkFolder identity")
 
-        // descriptionPrompt stays the same default — onChange(of: descriptionPrompt) would NOT fire
+        // contextPrompt stays the same default — onChange(of: contextPrompt) would NOT fire
         XCTAssertEqual(promptBefore, promptAfter, "Both should have the same default prompt")
-        XCTAssertEqual(promptAfter, AppDefaults.workFolderDescriptionPrompt)
+        XCTAssertEqual(promptAfter, AppDefaults.workFolderContextPrompt)
     }
 }

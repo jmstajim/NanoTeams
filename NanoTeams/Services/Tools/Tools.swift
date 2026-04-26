@@ -6,7 +6,12 @@ extension ToolRegistry {
     static func defaultRegistry(
         workFolderRoot: URL,
         toolCallsLogURL: URL?,
-        isDefaultStorage: Bool = false
+        isDefaultStorage: Bool = false,
+        searchExploratoryByDefault: Bool = false,
+        readFileMaxLines: Int = AppDefaults.readFileMaxLines,
+        searchMaxResults: Int = AppDefaults.searchMaxResults,
+        searchContextBefore: Int = AppDefaults.searchContextBefore,
+        searchContextAfter: Int = AppDefaults.searchContextAfter
     ) -> (registry: ToolRegistry, runtime: ToolRuntime) {
         let registry = ToolRegistry()
         let logger = toolCallsLogURL.map { ToolCallLogger(logURL: $0) }
@@ -15,7 +20,12 @@ extension ToolRegistry {
         // Register all live handlers (state captured at build time)
         let handlers = ToolHandlerRegistry.buildHandlers(
             workFolderRoot: workFolderRoot,
-            isDefaultStorage: isDefaultStorage
+            isDefaultStorage: isDefaultStorage,
+            searchExploratoryByDefault: searchExploratoryByDefault,
+            readFileMaxLines: readFileMaxLines,
+            searchMaxResults: searchMaxResults,
+            searchContextBefore: searchContextBefore,
+            searchContextAfter: searchContextAfter
         )
         for handler in handlers {
             let name = type(of: handler).name

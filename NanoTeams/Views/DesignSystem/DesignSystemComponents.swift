@@ -263,6 +263,82 @@ struct SettingsPillButton: View {
     }
 }
 
+// MARK: - Settings Stepper Control
+
+/// Right-aligned numeric value cell + native `Stepper`. The shared atom used by
+/// every settings stepper row. Renders `0` as the literal string `"Unlimited"` so
+/// settings that treat zero as a sentinel get consistent presentation. The value
+/// cell width comes from `SettingsLayout.stepperValueMinWidth` so callers can't
+/// drift apart on column alignment.
+struct SettingsStepperControl: View {
+    @Binding var value: Int
+    let range: ClosedRange<Int>
+    var step: Int = 1
+    /// Label shown when `value == 0`. Defaults to `"Unlimited"` for limit-style
+    /// settings (e.g. `read_file` line cap) where zero means "no cap". Pass
+    /// `nil` for count-style settings where zero is just zero.
+    var zeroLabel: String? = "Unlimited"
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(displayValue)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .frame(minWidth: SettingsLayout.stepperValueMinWidth, alignment: .trailing)
+            Stepper("", value: $value, in: range, step: step)
+                .labelsHidden()
+        }
+    }
+
+    private var displayValue: String {
+        if value == 0, let zeroLabel { return zeroLabel }
+        return "\(value)"
+    }
+}
+
+// MARK: - Settings Stepper Row
+
+/// Icon-in-rounded-rect + title + `SettingsStepperControl`, with the same hover
+/// shell as `SettingsToggleRow`. Use this in cards that mix toggle and stepper
+/// settings so they share visual treatment. For LLM-style cards (no leading icon,
+/// caption supported), use `LLMStepperSettingsRow` instead.
+struct SettingsStepperRow: View {
+    let title: String
+    let icon: String
+    @Binding var value: Int
+    let range: ClosedRange<Int>
+    var step: Int = 1
+    /// Forwarded to `SettingsStepperControl`. Defaults to `"Unlimited"` for
+    /// limit-style settings; pass `nil` when zero is a real count.
+    var zeroLabel: String? = "Unlimited"
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(spacing: Spacing.m) {
+            RoundedRectangle.squircle(CornerRadius.small)
+                .fill(Colors.surfaceElevated)
+                .frame(width: SettingsLayout.toggleIconSize, height: SettingsLayout.toggleIconSize)
+                .overlay(
+                    Image(systemName: icon)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                )
+            Text(title)
+                .font(Typography.subheadline)
+            Spacer()
+            SettingsStepperControl(value: $value, range: range, step: step, zeroLabel: zeroLabel)
+        }
+        .padding(.vertical, Spacing.xs)
+        .padding(.horizontal, Spacing.s)
+        .background(
+            RoundedRectangle.squircle(CornerRadius.small)
+                .fill(isHovered ? Colors.surfaceHover : .clear)
+        )
+        .trackHover($isHovered)
+        .animation(Animations.quick, value: isHovered)
+    }
+}
+
 // MARK: - Settings Item Header
 
 /// Icon-in-rounded-rect + title + subtitle header row for settings cards.

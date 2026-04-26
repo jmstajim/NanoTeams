@@ -602,12 +602,12 @@ final class ToolCallCacheTests: XCTestCase {
         memory.record(
             toolName: "read_file",
             argumentsJSON: "{\"path\": \"test.swift\"}",
-            resultJSON: "{\"ok\": true, \"data\": {\"size\": 1024}}",
+            resultJSON: "{\"ok\": true, \"data\": {\"end_line\": 100, \"total_lines\": 250}}",
             isError: false
         )
 
         let calls = memory.recentCalls(limit: 1)
-        XCTAssertTrue(calls[0].resultSummary.contains("1024 bytes"))
+        XCTAssertTrue(calls[0].resultSummary.contains("lines 1–100 of 250"))
     }
 
     func testResultSummaryForError() {

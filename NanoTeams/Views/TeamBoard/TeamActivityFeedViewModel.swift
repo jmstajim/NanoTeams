@@ -380,9 +380,6 @@ final class TeamActivityFeedViewModel {
             )
             for step in steps where !members.contains(step.effectiveRoleID) {
                 if sysIDToMember[step.role.baseID] != nil {
-                    #if DEBUG
-                    print("[ActivityFeed] UUID mismatch fallback: step \(step.role.baseID) matched via systemRoleID bridge")
-                    #endif
                     teamSteps.append(step)
                 }
             }
@@ -396,13 +393,7 @@ final class TeamActivityFeedViewModel {
         // Fallback: match by role.baseID via systemRoleID bridge
         if let roleDef = roleDefinitions.first(where: { $0.id == filterID }),
            let sysID = roleDef.systemRoleID {
-            let fallback = teamSteps.filter { $0.role.baseID == sysID }
-            #if DEBUG
-            if !fallback.isEmpty {
-                print("[ActivityFeed] Filter fallback: roleID \(filterID) matched \(fallback.count) step(s) via systemRoleID '\(sysID)'")
-            }
-            #endif
-            return fallback
+            return teamSteps.filter { $0.role.baseID == sysID }
         }
         return []
     }

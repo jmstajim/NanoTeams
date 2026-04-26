@@ -89,13 +89,13 @@ struct NTMSRepository {
     // MARK: - Narrow update methods (one file per method)
 
     /// Update just the user-editable project settings. Writes **only** `settings.json`.
-    func updateWorkFolderDescription(at workFolderRoot: URL, description: String) throws
+    func updateWorkFolderContext(at workFolderRoot: URL, context: String) throws
         -> WorkFolderContext
     {
         let paths = try preparePaths(at: workFolderRoot)
 
         var settings = try store.read(ProjectSettings.self, from: paths.settingsJSON)
-        settings.description = description
+        settings.context = context
         try store.write(settings, to: paths.settingsJSON)
 
         return try assembleContext(paths: paths, settings: settings)

@@ -53,8 +53,28 @@ final class NTMSOrchestrator {
         configuration.loggingEnabled
     }
 
-    var expandedSearchEnabled: Bool {
-        configuration.expandedSearchEnabled
+    var exploratorySearchEnabled: Bool {
+        configuration.exploratorySearchEnabled
+    }
+
+    var searchExploratoryByDefault: Bool {
+        configuration.searchExploratoryByDefault
+    }
+
+    var readFileMaxLines: Int {
+        configuration.readFileMaxLines
+    }
+
+    var searchMaxResults: Int {
+        configuration.searchMaxResults
+    }
+
+    var searchContextBefore: Int {
+        configuration.searchContextBefore
+    }
+
+    var searchContextAfter: Int {
+        configuration.searchContextAfter
     }
 
     func awaitSearchIndex() async -> SearchIndex? {
@@ -73,35 +93,49 @@ final class NTMSOrchestrator {
             query: query,
             tokens: tokens,
             config: configuration.effectiveEmbeddingConfig,
-            perTokenThreshold: Float(configuration.expandedSearchPerTokenThreshold),
-            phraseThreshold: Float(configuration.expandedSearchPhraseThreshold)
+            perTokenThreshold: Float(configuration.exploratorySearchPerTokenThreshold),
+            phraseThreshold: Float(configuration.exploratorySearchPhraseThreshold)
         )
     }
 
     /// Coordinator that owns the search index + FS watcher. Populated on work
-    /// folder open when `configuration.expandedSearchEnabled == true`. `nil` when
+    /// folder open when `configuration.exploratorySearchEnabled == true`. `nil` when
     /// feature is off or no folder is open.
     ///
-    /// Views DO observe this identity change — `ExpandedSearchSettingsView` passes
+    /// Views DO observe this identity change — `ExploratorySearchSettingsView` passes
     /// `store.searchIndexCoordinator` into the status cards, and
     /// `SidebarWorkFolderCards` reads `store.searchIndexCoordinator?.isBuilding`.
     /// `@ObservationIgnored` would freeze the cards at their initial nil
     /// snapshot so enabling the toggle would not refresh them.
     var searchIndexCoordinator: SearchIndexCoordinator?
 
-    /// Serial pipeline for expanded-search toggle events. Each enqueued task
+    /// Serial pipeline for exploratory-search toggle events. Each enqueued task
     /// awaits the prior one so three rapid detached-Task clicks from
-    /// `ExpandedSearchToggleCard.onChanged` can't interleave inside
-    /// `applyExpandedSearchSettingChange`, which would produce a non-deterministic
-    /// final state. See `onExpandedSearchSettingChanged` in +WorkFolderManagement.
-    @ObservationIgnored var pendingExpandedSearchToggle: Task<Void, Never>?
+    /// `ExploratorySearchToggleCard.onChanged` can't interleave inside
+    /// `applyExploratorySearchSettingChange`, which would produce a non-deterministic
+    /// final state. See `onExploratorySearchSettingChanged` in +WorkFolderManagement.
+    @ObservationIgnored var pendingExploratorySearchToggle: Task<Void, Never>?
 
-    /// Manages load/unload of the LM Studio embed model used by Expanded
+    /// Manages load/unload of the LM Studio embed model used by Exploratory
     /// Search. Reconciled at the end of every public lifecycle method
-    /// (openWorkFolder, applyExpandedSearchSettingChange, embed-config change)
+    /// (openWorkFolder, applyExploratorySearchSettingChange, embed-config change)
     /// so the model loaded in LM Studio tracks `searchIndexCoordinator != nil`.
     /// Test-injected via init to avoid real network calls in CI.
     @ObservationIgnored let embeddingLifecycle: EmbeddingModelLifecycleService
+
+    /// Shared "is the work-folder context currently being generated" flag.
+    /// Both Settings and the Sidebar work-folder card observe this so generation
+    /// triggered from either surface lights up the other.
+    var isGeneratingWorkFolderContext: Bool = false
+
+    @ObservationIgnored var workFolderContextGenerationTask: Task<Void, Never>?
+
+    /// Generation counter for `startGeneratingWorkFolderContext`. The spawned
+    /// lambda captures the value at start; on completion it only writes back
+    /// state when the counter still matches. `cancelWorkFolderContextGeneration`
+    /// bumps the counter so a late-firing lambda from a cancelled run can't
+    /// clobber the flag / handle of a freshly started new run.
+    @ObservationIgnored var workFolderContextGenerationGeneration: Int = 0
 
     /// All tasks currently in memory (active + background).
     var allLoadedTasks: [NTMSTask] {
@@ -178,6 +212,12 @@ final class NTMSOrchestrator {
         self.fileManager = fileManager ?? .default
         self.embeddingLifecycle = embeddingLifecycle ?? EmbeddingModelLifecycleService()
         self.llmExecutionService.attach(delegate: self)
+        // Wire soft-warning surfacing — VRAM-leak / transient-list failures
+        // previously went silent. Use a weak self capture so the lifecycle
+        // service doesn't keep the orchestrator alive after teardown.
+        self.embeddingLifecycle.onWarning = { [weak self] message in
+            self?.lastInfoMessage = message
+        }
     }
 
     // MARK: - UI Helpers
@@ -387,8 +427,8 @@ final class NTMSOrchestrator {
     /// runtime diff instead of through type-level API splits.
     ///
     /// Closure-body rename cheatsheet (vs the old `(inout WorkFolder)` signature):
-    /// - `wf.description`        → `proj.settings.description`
-    /// - `wf.descriptionPrompt`  → `proj.settings.descriptionPrompt`
+    /// - `wf.description`        → `proj.settings.context`
+    /// - `wf.descriptionPrompt`  → `proj.settings.contextPrompt`
     /// - `wf.selectedScheme`     → `proj.settings.selectedScheme`
     /// - `wf.teams.append(...)`  — unchanged (teams on top level of projection)
     /// - `wf.activeTeamID = ...` — unchanged (state.activeTeamID aliased on projection)

@@ -1,9 +1,9 @@
 import SwiftUI
 
-/// Settings page for the Expanded Search feature — toggle, index status, and
+/// Settings page for the Exploratory Search feature — toggle, index status, and
 /// semantic-embedding configuration. Owns shared state and delegates rendering
 /// to the cards under `AdvancedSettings/`.
-struct ExpandedSearchSettingsView: View {
+struct ExploratorySearchSettingsView: View {
     @Environment(NTMSOrchestrator.self) var store
     @Environment(StoreConfiguration.self) var config
 
@@ -12,21 +12,21 @@ struct ExpandedSearchSettingsView: View {
 
         ScrollView {
             VStack(spacing: Spacing.xl) {
-                ExpandedSearchToggleCard(
+                ExploratorySearchToggleCard(
                     config: config,
                     onChanged: {
-                        Task { await store.onExpandedSearchSettingChanged() }
+                        Task { await store.onExploratorySearchSettingChanged() }
                     }
                 )
 
-                ExpandedSearchIndexStatusCard(
+                ExploratorySearchIndexStatusCard(
                     coordinator: store.searchIndexCoordinator,
                     onRebuild: {
                         Task { await store.searchIndexCoordinator?.rebuild() }
                     }
                 )
 
-                ExpandedSearchEmbeddingsCard(
+                ExploratorySearchEmbeddingsCard(
                     config: config,
                     coordinator: store.searchIndexCoordinator,
                     onRebuild: {
@@ -36,7 +36,7 @@ struct ExpandedSearchSettingsView: View {
                         Task { await store.searchIndexCoordinator?.rebuildVectorIndexFull() }
                     },
                     onConfigChanged: {
-                        Task { await store.onExpandedSearchEmbeddingConfigChanged() }
+                        Task { await store.onExploratorySearchEmbeddingConfigChanged() }
                     }
                 )
             }
@@ -47,9 +47,9 @@ struct ExpandedSearchSettingsView: View {
     }
 }
 
-#Preview("Expanded Search Settings") {
+#Preview("Exploratory Search Settings") {
     @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
-    ExpandedSearchSettingsView()
+    ExploratorySearchSettingsView()
         .environment(store)
         .environment(store.configuration)
         .frame(width: 720, height: 800)

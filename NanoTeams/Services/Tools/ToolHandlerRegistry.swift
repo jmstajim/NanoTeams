@@ -127,6 +127,11 @@ enum ToolHandlerRegistry {
     static func buildHandlers(
         workFolderRoot: URL,
         isDefaultStorage: Bool,
+        searchExploratoryByDefault: Bool = false,
+        readFileMaxLines: Int = AppDefaults.readFileMaxLines,
+        searchMaxResults: Int = AppDefaults.searchMaxResults,
+        searchContextBefore: Int = AppDefaults.searchContextBefore,
+        searchContextAfter: Int = AppDefaults.searchContextAfter,
         fileManager: FileManager = .default
     ) -> [any ToolHandler] {
         let internalDir = NTMSPaths(workFolderRoot: workFolderRoot).internalDir
@@ -135,7 +140,12 @@ enum ToolHandlerRegistry {
             workFolderRoot: workFolderRoot,
             resolver: resolver,
             fileManager: fileManager,
-            internalDir: internalDir
+            internalDir: internalDir,
+            searchExploratoryByDefault: searchExploratoryByDefault,
+            readFileMaxLines: readFileMaxLines,
+            searchMaxResults: searchMaxResults,
+            searchContextBefore: searchContextBefore,
+            searchContextAfter: searchContextAfter
         )
 
         return allTypes.compactMap { type -> (any ToolHandler)? in

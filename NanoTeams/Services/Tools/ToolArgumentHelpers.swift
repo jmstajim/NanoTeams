@@ -94,7 +94,7 @@ func requiredStringArray(_ args: [String: Any], _ key: String) throws -> [String
 
 /// Known non-content keys that should never be treated as content fallbacks.
 private let nonContentKeys: Set<String> = [
-    "path", "create_dirs", "encoding", "max_bytes",
+    "path", "create_dirs", "encoding", "max_lines",
     "must_exist", "mode", "file_glob", "patch",
     "start_line", "end_line", "include_line_numbers",
     "new_text", "anchors", "replace_range", "occurrence",

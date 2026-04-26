@@ -35,7 +35,11 @@ final class SearchToolPlainParityTests: XCTestCase {
             resolver: resolver,
             fileManager: fm,
             workFolderRoot: tempDir,
-            internalDir: tempDir.appendingPathComponent(".nanoteams/internal", isDirectory: true)
+            internalDir: tempDir.appendingPathComponent(".nanoteams/internal", isDirectory: true),
+            exploratoryByDefault: false,
+            defaultMaxResults: AppDefaults.searchMaxResults,
+            defaultContextBefore: AppDefaults.searchContextBefore,
+            defaultContextAfter: AppDefaults.searchContextAfter
         )
     }
 
@@ -141,8 +145,11 @@ final class SearchToolPlainParityTests: XCTestCase {
 
     func testPlain_contextFields_omitted_whenZero() throws {
         try write("a.swift", content: "target\n")
+        // Explicit 0/0 — `makeTool()` propagates non-zero AppDefaults so the
+        // test must override them to exercise the "context omitted" branch.
         let result = makeTool().handle(
-            context: ctx(), args: ["query": "target"]
+            context: ctx(),
+            args: ["query": "target", "context_before": 0, "context_after": 0]
         )
         let env = try parse(result.outputJSON)
         let matches = env["data"] as? [String: Any]
@@ -199,5 +206,151 @@ final class SearchToolPlainParityTests: XCTestCase {
         XCTAssertNotNil(err)
         XCTAssertNotNil(err?["code"])
         XCTAssertNotNil(err?["message"])
+    }
+
+    // MARK: - Filename matches envelope shape
+
+    /// Pin the omit-when-empty contract so the LLM-visible envelope stays
+    /// compact when there are no name hits — a `"filename_matches": []`
+    /// would burn tokens on every plain search that has only content hits.
+    func testPlain_filenameMatches_omittedWhenEmpty() throws {
+        try write("a.swift", content: "target line\n")
+        let result = makeTool().handle(
+            context: ctx(), args: ["query": "target"]
+        )
+        let env = try parse(result.outputJSON)
+        let data = env["data"] as? [String: Any]
+        XCTAssertNil(data?["filename_matches"],
+            "filename_matches must be omitted when no files matched by name.")
+    }
+
+    func testPlain_filenameMatches_presentWhenBasenameHits() throws {
+        try write("Sources/SearchExecutor.swift", content: "// no content match\n")
+        let result = makeTool().handle(
+            context: ctx(), args: ["query": "SearchExecutor"]
+        )
+        let env = try parse(result.outputJSON)
+        let data = env["data"] as? [String: Any]
+        XCTAssertEqual(data?["count"] as? Int, 0,
+            "Query has no content hits — only a filename hit.")
+        let names = data?["filename_matches"] as? [[String: Any]]
+        XCTAssertEqual(names?.count, 1)
+        XCTAssertEqual(names?.first?["path"] as? String, "Sources/SearchExecutor.swift")
+        XCTAssertEqual(names?.first?["matched_on"] as? String, "basename")
+    }
+
+    func testPlain_filenameMatches_basenameSortsBeforePath() throws {
+        try write("Services/Search/Foo.swift", content: "")
+        try write("Domain/Search.swift", content: "")
+        let result = makeTool().handle(
+            context: ctx(), args: ["query": "Search"]
+        )
+        let env = try parse(result.outputJSON)
+        let names = (env["data"] as? [String: Any])?["filename_matches"] as? [[String: Any]]
+        XCTAssertEqual(names?.first?["path"] as? String, "Domain/Search.swift")
+        XCTAssertEqual(names?.first?["matched_on"] as? String, "basename")
+    }
+
+    /// Pin the `MatchedOn` enum's wire encoding. The enum is `String`-raw,
+    /// but the contract is that it serializes as exactly `"basename"` /
+    /// `"path"` — never `"basename"` capitalized, never an int, never a
+    /// nested object. A drift here would silently break any LLM-side parser.
+    func testPlain_filenameMatches_matchedOn_serializesAsRawLowercaseString() throws {
+        try write("Domain/Search.swift", content: "")
+        try write("Services/Search/Foo.swift", content: "")
+        let result = makeTool().handle(
+            context: ctx(), args: ["query": "Search"]
+        )
+        let env = try parse(result.outputJSON)
+        let names = (env["data"] as? [String: Any])?["filename_matches"] as? [[String: Any]]
+        let onValues = names?.compactMap { $0["matched_on"] as? String } ?? []
+        XCTAssertTrue(onValues.contains("basename"))
+        XCTAssertTrue(onValues.contains("path"))
+        for v in onValues {
+            XCTAssertTrue(v == "basename" || v == "path",
+                "matched_on raw value drifted: \(v)")
+        }
+    }
+
+    /// Pin that filename matches survive content-mode `regex` — filename
+    /// matching is scoped to substring/glob semantics independent of
+    /// content's regex compile. Useful regression guard against accidental
+    /// coupling of the two paths.
+    func testPlain_filenameMatches_unaffectedByContentRegexMode() throws {
+        try write("FooBar.swift", content: "no regex match here\n")
+        let result = makeTool().handle(
+            context: ctx(),
+            args: ["query": "FooBar", "mode": "regex"]
+        )
+        let env = try parse(result.outputJSON)
+        let data = env["data"] as? [String: Any]
+        XCTAssertEqual(data?["count"] as? Int, 0)
+        let names = data?["filename_matches"] as? [[String: Any]]
+        XCTAssertEqual(names?.count, 1)
+        XCTAssertEqual(names?.first?["path"] as? String, "FooBar.swift")
+    }
+
+    /// Both `matches` and `filename_matches` populated for a query that
+    /// hits content AND name — the envelope's two arrays are independent.
+    func testPlain_filenameMatches_alongsideContentMatches() throws {
+        try write("Search.swift", content: "// Search\n")
+        let result = makeTool().handle(
+            context: ctx(), args: ["query": "Search"]
+        )
+        let env = try parse(result.outputJSON)
+        let data = env["data"] as? [String: Any]
+        XCTAssertEqual(data?["count"] as? Int, 1)
+        let matches = data?["matches"] as? [[String: Any]]
+        XCTAssertEqual(matches?.first?["path"] as? String, "Search.swift")
+        let names = data?["filename_matches"] as? [[String: Any]]
+        XCTAssertEqual(names?.first?["path"] as? String, "Search.swift",
+            "Same file legitimately appears in both arrays — no dedup between them.")
+    }
+
+    /// `file_glob` should narrow filename match candidates the same way it
+    /// narrows content scan candidates. Verify via the envelope.
+    func testPlain_filenameMatches_respectFileGlob() throws {
+        try write("a.swift", content: "")
+        try write("a.md", content: "")
+        let result = makeTool().handle(
+            context: ctx(),
+            args: ["query": "a.", "file_glob": "*.swift"]
+        )
+        let env = try parse(result.outputJSON)
+        let names = (env["data"] as? [String: Any])?["filename_matches"] as? [[String: Any]]
+        let paths = names?.compactMap { $0["path"] as? String } ?? []
+        XCTAssertEqual(paths, ["a.swift"],
+            "Filename matches must reflect the same glob-narrowed scope as content matches.")
+    }
+
+    /// Pin nil-when-empty semantics under both `count == 0` AND
+    /// `filename_matches.isEmpty` — neither field should appear when both
+    /// are zero, keeping the envelope minimal.
+    func testPlain_emptyEnvelope_omitsBothMatchArrays() throws {
+        try write("README.md", content: "no relevant content\n")
+        let result = makeTool().handle(
+            context: ctx(), args: ["query": "nonexistent-token"]
+        )
+        let env = try parse(result.outputJSON)
+        let data = env["data"] as? [String: Any]
+        XCTAssertEqual(data?["count"] as? Int, 0)
+        XCTAssertNil(data?["filename_matches"],
+            "Empty filename_matches must be omitted to keep envelope compact.")
+    }
+
+    /// Internal-dir entries must NEVER reach `filename_matches`. Pin via
+    /// envelope — defense-in-depth even though the executor walk filters.
+    func testPlain_filenameMatches_internalDirNeverSurfaces() throws {
+        try write(".nanoteams/internal/SecretsHelper.swift", content: "")
+        try write("Sources/Helper.swift", content: "")
+        let result = makeTool().handle(
+            context: ctx(), args: ["query": "Helper"]
+        )
+        let env = try parse(result.outputJSON)
+        let names = (env["data"] as? [String: Any])?["filename_matches"] as? [[String: Any]]
+        let paths = names?.compactMap { $0["path"] as? String } ?? []
+        XCTAssertFalse(paths.contains(where: { $0.contains("internal") }),
+            "Internal-dir entries must never appear in filename_matches.")
+        XCTAssertTrue(paths.contains("Sources/Helper.swift"))
     }
 }

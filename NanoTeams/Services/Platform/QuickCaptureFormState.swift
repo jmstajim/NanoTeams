@@ -200,6 +200,26 @@ final class QuickCaptureFormState {
         answerDrafts.removeValue(forKey: taskID)
     }
 
+    /// Snapshots the current live composer fields into `answerDrafts[taskID]`. Called by the
+    /// controller across `.taskWorking` (chat) → `.supervisorAnswer` transitions for the same
+    /// task so the in-progress message survives `enterAnswerMode`'s reset path. Reuses the
+    /// same emptiness contract as `saveCurrentAnswerDraft` — empty content removes the entry
+    /// rather than creating a phantom draft.
+    func captureLiveComposerAsAnswerDraft(taskID: Int) {
+        saveCurrentAnswerDraft(taskID: taskID)
+    }
+
+    /// Loads `answerDrafts[taskID]` into the live composer fields. No-op when no draft exists.
+    /// Called by the controller after `.supervisorAnswer` → `.taskWorking` (chat) transitions
+    /// for the same task so the just-saved draft becomes visible again in the chat-working
+    /// composer (which binds to the same three live fields).
+    func restoreAnswerDraftToLiveFields(taskID: Int) {
+        guard let draft = answerDrafts[taskID] else { return }
+        supervisorTask = draft.text
+        answerAttachments = draft.attachments
+        answerClippedTexts = draft.clippedTexts
+    }
+
     // MARK: - Queued Chat Message API
 
     /// All pending queued messages for the task, in FIFO order.

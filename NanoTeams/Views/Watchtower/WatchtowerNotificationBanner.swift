@@ -75,7 +75,6 @@ struct WatchtowerNotificationBanner: View {
 private struct DismissButton: View {
     let onDismiss: () -> Void
     @State private var isHovered = false
-    @FocusState private var isFocused: Bool
 
     var body: some View {
         Button {
@@ -83,14 +82,13 @@ private struct DismissButton: View {
         } label: {
             Image(systemName: "xmark")
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(isHovered || isFocused ? .primary : .secondary)
+                .foregroundStyle(isHovered ? .primary : .secondary)
                 .padding(6)
-                .background(Circle().fill(isHovered || isFocused ? Colors.surfaceCard : Colors.surfaceHover))
+                .background(Circle().fill(isHovered ? Colors.surfaceCard : Colors.surfaceHover))
         }
         .buttonStyle(.plain)
+        .focusEffectDisabled()
         .accessibilityLabel("Dismiss notification")
-        .focusable()
-        .focused($isFocused)
         .trackHover($isHovered)
     }
 }

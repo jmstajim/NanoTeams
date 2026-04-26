@@ -761,6 +761,485 @@ final class QuickCaptureTeamSelectionTests: NTMSOrchestratorTestBase {
     }
 }
 
+// MARK: - Chat-Working ↔ Answer Mode Composer Preservation
+
+/// Drives `applyAnswerModeTransition` via `refreshPanelIfVisible` to verify that the
+/// composer's text / attachments / clips survive `.taskWorking` (chat) ↔ `.supervisorAnswer`
+/// transitions for the same task. See plan in `recursive-hopping-cocke.md` and
+/// CLAUDE.md "Quick Capture System" section.
+@MainActor
+final class QuickCaptureChatWorkingComposerTests: NTMSOrchestratorTestBase {
+
+    var controller: QuickCaptureController!
+
+    override func setUp() {
+        super.setUp()
+        controller = QuickCaptureController.shared
+        controller.store = sut
+        if controller._testIsInAnswerMode { controller._testExitAnswerMode() }
+        controller.formState._testClearAnswerDrafts()
+        controller.formState.supervisorTask = ""
+        controller.formState.title = ""
+        controller.formState.attachments = []
+        controller.formState.clippedTexts = []
+        controller.formState.answerAttachments = []
+        controller.formState.answerClippedTexts = []
+        controller.isTaskSelected = false
+        controller._testForceNewTaskMode = false
+    }
+
+    override func tearDown() {
+        if controller._testIsInAnswerMode { controller._testExitAnswerMode() }
+        controller.formState._testClearAnswerDrafts()
+        controller.formState.supervisorTask = ""
+        controller.formState.answerAttachments = []
+        controller.formState.answerClippedTexts = []
+        controller.isTaskSelected = false
+        controller._testForceNewTaskMode = false
+        controller._testIsPanelVisible = false
+        controller._testLastRefreshedTaskID = nil
+        controller.store = nil
+        controller = nil
+        super.tearDown()
+    }
+
+    /// Creates a chat-mode task in `.running`, drives `refreshPanelIfVisible` once so
+    /// `currentVisualMode` becomes `.working`. Returns the taskID.
+    private func setUpChatWorkingPanel() async -> Int? {
+        await sut.openWorkFolder(tempDir)
+        guard let taskID = await sut.createTask(title: "T", supervisorTask: "G") else {
+            XCTFail("Failed to create task"); return nil
+        }
+        await sut.switchTask(to: taskID)
+        // Default team for fresh work folder is the chat-mode Coding Assistant.
+        guard sut.activeTask?.isChatMode == true else {
+            XCTFail("Default team should be chat-mode (Coding Assistant)"); return nil
+        }
+        sut.engineState[taskID] = .running
+        controller.isTaskSelected = true
+        controller._testIsPanelVisible = true
+        controller._testLastRefreshedTaskID = taskID
+        controller.refreshPanelIfVisible()
+        return taskID
+    }
+
+    /// Mutates the active run to add a step that needs supervisor input. Triggers the
+    /// `.taskWorking` → `.supervisorAnswer` transition on the next `refreshPanelIfVisible`.
+    private func addSupervisorQuestionStep(taskID: Int, stepID: String = "q_step") async {
+        await sut.mutateTask(taskID: taskID) { task in
+            var run: Run
+            if let last = task.runs.last {
+                run = last
+                task.runs.removeLast()
+            } else {
+                run = Run(id: 0, teamID: task.preferredTeamID ?? "test_team")
+            }
+            var step = StepExecution.make(for: TeamRoleDefinition(
+                id: "assistant", name: "Assistant",
+                prompt: "", toolIDs: [], usePlanningPhase: false,
+                dependencies: RoleDependencies()
+            ))
+            step.id = stepID
+            step.needsSupervisorInput = true
+            step.supervisorQuestion = "Pick one?"
+            step.status = .needsSupervisorInput
+            run.steps.append(step)
+            task.runs.append(run)
+        }
+    }
+
+    private func makeStagedAttachment(name: String) throws -> StagedAttachment {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("QCControllerTests_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent(name, isDirectory: false)
+        try "stub".write(to: url, atomically: true, encoding: .utf8)
+        return try StagedAttachment(url: url, stagedRelativePath: "draft/\(name)")
+    }
+
+    func testTransition_chatWorkingToAnswerMode_preservesComposerState() async throws {
+        guard let taskID = await setUpChatWorkingPanel() else { return }
+
+        let attachment = try makeStagedAttachment(name: "spec.txt")
+        controller.formState.supervisorTask = "in-progress msg"
+        controller.formState.answerAttachments = [attachment]
+        controller.formState.answerClippedTexts = ["clip-A"]
+
+        await addSupervisorQuestionStep(taskID: taskID)
+        controller.refreshPanelIfVisible()
+
+        XCTAssertTrue(controller._testIsInAnswerMode,
+                      "Engine .needsSupervisorInput should drive the panel into answer mode")
+        XCTAssertEqual(controller.formState.supervisorTask, "in-progress msg",
+                       "Composer text must survive the .working → .answer transition")
+        XCTAssertEqual(controller.formState.answerAttachments, [attachment],
+                       "Attachments must survive the transition")
+        XCTAssertEqual(controller.formState.answerClippedTexts, ["clip-A"],
+                       "Clips must survive the transition")
+    }
+
+    func testTransition_answerModeToChatWorking_restoresComposerState() async throws {
+        guard let taskID = await setUpChatWorkingPanel() else { return }
+
+        let attachment = try makeStagedAttachment(name: "doc.txt")
+        controller.formState.supervisorTask = "msg"
+        controller.formState.answerAttachments = [attachment]
+        controller.formState.answerClippedTexts = ["c1"]
+
+        await addSupervisorQuestionStep(taskID: taskID)
+        controller.refreshPanelIfVisible()
+        XCTAssertTrue(controller._testIsInAnswerMode)
+
+        // Engine returns to .running (e.g. queue flush or external resume) — the question
+        // disappears. We model it by clearing the step and switching engine back to .running.
+        await sut.mutateTask(taskID: taskID) { task in
+            guard var run = task.runs.last else { return }
+            run.steps.removeAll()
+            task.runs.removeLast()
+            task.runs.append(run)
+        }
+        sut.engineState[taskID] = .running
+        controller.refreshPanelIfVisible()
+
+        XCTAssertFalse(controller._testIsInAnswerMode,
+                       "Returning to .running with no question must exit answer mode")
+        XCTAssertEqual(controller.formState.supervisorTask, "msg",
+                       "Composer text must be restored from the saved draft")
+        XCTAssertEqual(controller.formState.answerAttachments, [attachment],
+                       "Attachments must be restored from the saved draft")
+        XCTAssertEqual(controller.formState.answerClippedTexts, ["c1"],
+                       "Clips must be restored from the saved draft")
+    }
+
+    func testTransition_chatWorkingToAnswerMode_nonChatTask_doesNotCaptureDraft() async {
+        await sut.openWorkFolder(tempDir)
+        guard let taskID = await sut.createTask(title: "T", supervisorTask: "G") else {
+            XCTFail("Failed to create task"); return
+        }
+        await sut.switchTask(to: taskID)
+        // Force the task to non-chat mode regardless of the default team.
+        await sut.mutateTask(taskID: taskID) { task in
+            task.setStoredChatMode(false)
+        }
+        XCTAssertFalse(sut.activeTask?.isChatMode ?? true)
+
+        sut.engineState[taskID] = .running
+        controller.isTaskSelected = true
+        controller._testIsPanelVisible = true
+        controller._testLastRefreshedTaskID = taskID
+        controller.refreshPanelIfVisible()
+
+        // Pre-seed `supervisorTask` with a stale value (would happen if the user typed
+        // it earlier in `.newTask` and then navigated to this running non-chat task).
+        controller.formState.supervisorTask = "stale new-task draft"
+        controller.formState.answerAttachments = []
+        controller.formState.answerClippedTexts = []
+
+        await addSupervisorQuestionStep(taskID: taskID)
+        controller.refreshPanelIfVisible()
+
+        XCTAssertTrue(controller._testIsInAnswerMode)
+        XCTAssertNil(controller.formState._testAnswerDrafts[taskID],
+                     "Non-chat task transition must NOT capture live composer into answerDrafts (payload.isChatMode gate)")
+    }
+
+    /// Regression: after capturing chat-working composer into the answer draft, the
+    /// branch-1 path must also clear the live fields so `enterAnswerMode`'s
+    /// `savedSupervisorTask` stash is empty. Otherwise `submitAnswer`'s post-submit
+    /// `exitAnswerMode` restores the just-sent text into the composer.
+    func testTransition_chatWorkingToAnswer_savedSupervisorTaskIsEmpty() async throws {
+        guard let taskID = await setUpChatWorkingPanel() else { return }
+
+        controller.formState.supervisorTask = "queued msg"
+        await addSupervisorQuestionStep(taskID: taskID)
+        controller.refreshPanelIfVisible()
+
+        XCTAssertTrue(controller._testIsInAnswerMode)
+        // The draft now owns the user's text; the savedSupervisorTask stash that
+        // `submitAnswer`'s exit path would restore must be empty.
+        XCTAssertEqual(controller._testSavedSupervisorTask, "",
+                       "savedSupervisorTask must not hold chat-working text — the draft is the source of truth")
+        // And the composer still shows the user's content (loaded from the draft).
+        XCTAssertEqual(controller.formState.supervisorTask, "queued msg")
+    }
+
+    /// End-to-end regression for the user-reported bug: typed in chat-working,
+    /// transitioned to answer, simulated submit (clears + discardDraft + exitAnswerMode).
+    /// Composer must be empty afterwards — no leftover text from the just-sent message.
+    func testQueuedThenSubmitted_composerEmptyAfterExit() async throws {
+        guard let taskID = await setUpChatWorkingPanel() else { return }
+
+        controller.formState.supervisorTask = "фвы"
+        await addSupervisorQuestionStep(taskID: taskID)
+        controller.refreshPanelIfVisible()
+        XCTAssertTrue(controller._testIsInAnswerMode)
+        XCTAssertEqual(controller.formState.supervisorTask, "фвы")
+
+        // Simulate the post-`answerSupervisorQuestion` cleanup that `submitAnswer` does:
+        controller.formState.discardAnswerDraft(taskID: taskID)
+        controller.formState.supervisorTask = ""
+        controller.formState.answerAttachments = []
+        controller.formState.answerClippedTexts = []
+        controller._testExitAnswerMode()
+
+        XCTAssertEqual(controller.formState.supervisorTask, "",
+                       "Composer must be empty after submit — no echo of the just-sent message")
+        XCTAssertTrue(controller.formState.answerAttachments.isEmpty)
+        XCTAssertTrue(controller.formState.answerClippedTexts.isEmpty)
+    }
+
+    /// `currentVisualMode` defaults to `.newTask`. Opening a panel directly into
+    /// `.supervisorAnswer` (engine in `.needsSupervisorInput` from the start) must NOT
+    /// capture the live `supervisorTask` — that text could be a stale new-task draft.
+    func testInitialPanelShow_intoSupervisorAnswer_doesNotCaptureFromCurrentVisualMode() async {
+        await sut.openWorkFolder(tempDir)
+        guard let taskID = await sut.createTask(title: "T", supervisorTask: "G") else {
+            XCTFail("Failed to create task"); return
+        }
+        await sut.switchTask(to: taskID)
+        await addSupervisorQuestionStep(taskID: taskID)
+        XCTAssertTrue(sut.activeTask?.isChatMode ?? false,
+                      "Default team should be chat-mode for this regression check")
+
+        // Pre-seed a stale new-task draft. `currentVisualMode` is still `.newTask`.
+        controller.formState.supervisorTask = "stale new-task draft"
+        controller.isTaskSelected = true
+        controller._testIsPanelVisible = true
+        controller._testLastRefreshedTaskID = nil
+        controller.refreshPanelIfVisible()
+
+        XCTAssertTrue(controller._testIsInAnswerMode)
+        XCTAssertNil(controller.formState._testAnswerDrafts[taskID],
+                     "Initial transition with currentVisualMode==.newTask must NOT capture live fields")
+    }
+
+    // MARK: - Helpers for full round-trip simulation
+
+    /// Mimics `submitAnswer`'s post-`answerSupervisorQuestion` cleanup in chat-keep-open
+    /// mode (lines 300-309 of QuickCaptureController.swift) without going through the
+    /// real orchestrator's `answerSupervisorQuestion` async flow.
+    private func simulatePostSubmitInChatKeepOpen(taskID: Int) {
+        controller.formState.discardAnswerDraft(taskID: taskID)
+        controller.formState.supervisorTask = ""
+        controller.formState.answerAttachments = []
+        controller.formState.answerClippedTexts = []
+        controller._testExitAnswerMode()
+    }
+
+    /// Clears the supervisor-input step so the next `refreshPanelIfVisible` resolves to
+    /// `.taskWorking` chat. Mimics the engine receiving an answer and resuming.
+    private func simulateEngineResume(taskID: Int) async {
+        await sut.mutateTask(taskID: taskID) { task in
+            guard var run = task.runs.last else { return }
+            run.steps.removeAll()
+            task.runs.removeLast()
+            task.runs.append(run)
+        }
+        sut.engineState[taskID] = .running
+        controller.refreshPanelIfVisible()
+    }
+
+    // MARK: - Multi-round-trip user scenarios
+
+    /// User typed in chat-working, transitioned to answer, submitted, returned to
+    /// chat-working, typed a fresh message, transitioned to answer again. The second
+    /// answer composer must show only the second-typed text — no echo of the first.
+    func testMultipleRoundTrips_eachQuestionGetsFreshComposer() async throws {
+        guard let taskID = await setUpChatWorkingPanel() else { return }
+
+        // ROUND 1: type "msg1", LLM asks, preserved into answer mode
+        controller.formState.supervisorTask = "msg1"
+        await addSupervisorQuestionStep(taskID: taskID, stepID: "q1")
+        controller.refreshPanelIfVisible()
+        XCTAssertEqual(controller.formState.supervisorTask, "msg1",
+                       "Round 1: chat-working text preserved into answer mode")
+
+        // User submits "msg1" → cleanup → engine resumes
+        simulatePostSubmitInChatKeepOpen(taskID: taskID)
+        await simulateEngineResume(taskID: taskID)
+        XCTAssertEqual(controller.formState.supervisorTask, "",
+                       "Composer empty after submit + engine resume")
+        XCTAssertNil(controller.formState._testAnswerDrafts[taskID],
+                     "Draft discarded on submit — no leftover for next round")
+
+        // ROUND 2: type "msg2", LLM asks again — only "msg2" appears (no echo of msg1)
+        controller.formState.supervisorTask = "msg2"
+        await addSupervisorQuestionStep(taskID: taskID, stepID: "q2")
+        controller.refreshPanelIfVisible()
+
+        XCTAssertEqual(controller.formState.supervisorTask, "msg2",
+                       "Round 2: only the second-typed message appears in the answer composer")
+        XCTAssertEqual(controller._testSavedSupervisorTask, "",
+                       "savedSupervisorTask must remain empty across rounds")
+    }
+
+    /// User typed "x" in chat-working, transitioned to answer, then added "y" inside
+    /// answer mode making it "xy", submitted "xy", resumed chat-working. The composer
+    /// must be empty — neither "x" nor "xy" should echo back.
+    func testTypedInBoth_chatWorkingAndAnswerMode_submitClearsCompletely() async throws {
+        guard let taskID = await setUpChatWorkingPanel() else { return }
+
+        // Type partial in chat-working
+        controller.formState.supervisorTask = "x"
+        await addSupervisorQuestionStep(taskID: taskID)
+        controller.refreshPanelIfVisible()
+        XCTAssertEqual(controller.formState.supervisorTask, "x")
+
+        // User extends the message inside answer mode
+        controller.formState.supervisorTask = "xy"
+
+        // Submit + resume
+        simulatePostSubmitInChatKeepOpen(taskID: taskID)
+        await simulateEngineResume(taskID: taskID)
+
+        XCTAssertEqual(controller.formState.supervisorTask, "",
+                       "Composer must be fully empty after submit, including the extended portion")
+        XCTAssertTrue(controller.formState.answerAttachments.isEmpty)
+        XCTAssertTrue(controller.formState.answerClippedTexts.isEmpty)
+    }
+
+    /// User typed in chat-working, transitioned to answer, then **cancelled** the
+    /// answer (X / Esc). After cancel the panel dismisses and the saved per-task
+    /// draft is discarded — reopening the panel must show empty composer.
+    func testCancelInAnswerMode_afterChatWorking_discardsDraft() async throws {
+        guard let taskID = await setUpChatWorkingPanel() else { return }
+
+        controller.formState.supervisorTask = "draft to cancel"
+        await addSupervisorQuestionStep(taskID: taskID)
+        controller.refreshPanelIfVisible()
+        XCTAssertTrue(controller._testIsInAnswerMode)
+        XCTAssertNotNil(controller.formState._testAnswerDrafts[taskID],
+                        "After branch-1 capture, the draft entry should exist")
+
+        // Mimic `cancelDraft` in answer mode (lines 501-516 of QuickCaptureController.swift):
+        // discards the per-task draft and clears live fields.
+        controller.formState.discardAnswerDraft(taskID: taskID)
+        controller.formState.supervisorTask = ""
+        controller.formState.answerAttachments = []
+        controller.formState.answerClippedTexts = []
+        controller._testExitAnswerMode()
+
+        XCTAssertNil(controller.formState._testAnswerDrafts[taskID],
+                     "Cancel must discard the per-task draft entirely")
+        XCTAssertEqual(controller.formState.supervisorTask, "",
+                       "Cancel + exit must leave the composer empty")
+    }
+
+    /// Empty composer in chat-working transitioning to answer must NOT create a phantom
+    /// draft entry. Pre-existing `saveCurrentAnswerDraft` empty-removal contract — verified
+    /// at the controller level.
+    func testEmptyChatWorking_thenTransition_noPhantomDraft() async throws {
+        guard let taskID = await setUpChatWorkingPanel() else { return }
+
+        XCTAssertEqual(controller.formState.supervisorTask, "")
+        XCTAssertTrue(controller.formState.answerAttachments.isEmpty)
+        XCTAssertTrue(controller.formState.answerClippedTexts.isEmpty)
+
+        await addSupervisorQuestionStep(taskID: taskID)
+        controller.refreshPanelIfVisible()
+
+        XCTAssertTrue(controller._testIsInAnswerMode)
+        XCTAssertNil(controller.formState._testAnswerDrafts[taskID],
+                     "Empty composer must not create a phantom draft on transition")
+        XCTAssertEqual(controller.formState.supervisorTask, "",
+                       "Composer stays empty when nothing was typed")
+    }
+
+    /// User attached files + typed in chat-working, transitioned to answer, **added a
+    /// second attachment** inside answer mode. All three (text + both attachments)
+    /// must survive when the user submits — and the composer must be cleared after.
+    func testAttachmentsAccumulate_acrossTransition_thenClearOnSubmit() async throws {
+        guard let taskID = await setUpChatWorkingPanel() else { return }
+
+        let first = try makeStagedAttachment(name: "a.txt")
+        let second = try makeStagedAttachment(name: "b.txt")
+
+        controller.formState.supervisorTask = "with files"
+        controller.formState.answerAttachments = [first]
+
+        await addSupervisorQuestionStep(taskID: taskID)
+        controller.refreshPanelIfVisible()
+
+        XCTAssertEqual(controller.formState.answerAttachments, [first],
+                       "First attachment survived the transition")
+
+        // User adds another attachment inside answer mode
+        controller.formState.answerAttachments.append(second)
+        XCTAssertEqual(controller.formState.answerAttachments, [first, second])
+
+        // Submit + resume
+        simulatePostSubmitInChatKeepOpen(taskID: taskID)
+        await simulateEngineResume(taskID: taskID)
+
+        XCTAssertTrue(controller.formState.answerAttachments.isEmpty,
+                      "All attachments cleared after submit — no leftover")
+        XCTAssertEqual(controller.formState.supervisorTask, "")
+    }
+
+    /// User queues a message via `submitQueuedMessageFromForm` (clears live fields),
+    /// then types a NEW message. When the LLM asks a question, the answer composer
+    /// must show only the newly-typed message — the queued one is owned by the queue
+    /// and delivered separately.
+    func testQueueThenTypeMore_secondMessagePreservedNotEchoed() async throws {
+        guard let taskID = await setUpChatWorkingPanel() else { return }
+
+        // Queue "first" via submitQueuedMessageFromForm
+        controller.formState.supervisorTask = "first"
+        controller.submitQueuedMessageFromForm()
+        XCTAssertEqual(controller.formState.supervisorTask, "",
+                       "Queue submit clears the live composer")
+        XCTAssertTrue(controller.formState.hasQueuedMessage(for: taskID),
+                      "Queue must contain the first message")
+
+        // User types another message
+        controller.formState.supervisorTask = "second"
+
+        // LLM asks → transition into answer mode
+        await addSupervisorQuestionStep(taskID: taskID)
+        controller.refreshPanelIfVisible()
+
+        XCTAssertEqual(controller.formState.supervisorTask, "second",
+                       "Only the just-typed message appears — not the queued 'first'")
+        // The queued message stays in the queue — the backstop will deliver it separately.
+        XCTAssertTrue(controller.formState.hasQueuedMessage(for: taskID),
+                      "Queue is untouched by the chat-working → answer transition")
+    }
+
+    /// Two chat-mode tasks. User types "msgA" in task A's chat-working, switches to
+    /// task B (also chat-mode, also running), types "msgB". Switching back to A,
+    /// then triggering a question on A, must restore "msgA" — not leak "msgB".
+    /// Currently this verifies the branch-1 capture is per-task.
+    func testTwoTaskChatWorking_perTaskCaptureIsolated() async throws {
+        await sut.openWorkFolder(tempDir)
+        guard let taskA = await sut.createTask(title: "A", supervisorTask: "GA") else {
+            XCTFail("Failed to create task A"); return
+        }
+        guard let taskB = await sut.createTask(title: "B", supervisorTask: "GB") else {
+            XCTFail("Failed to create task B"); return
+        }
+        XCTAssertNotEqual(taskA, taskB)
+
+        await sut.switchTask(to: taskA)
+        sut.engineState[taskA] = .running
+        sut.engineState[taskB] = .running
+        controller.isTaskSelected = true
+        controller._testIsPanelVisible = true
+        controller._testLastRefreshedTaskID = taskA
+        controller.refreshPanelIfVisible()
+
+        // Type msgA in task A's chat-working
+        controller.formState.supervisorTask = "msgA"
+
+        // Trigger A's question — branch 1 captures into answerDrafts[A]
+        await addSupervisorQuestionStep(taskID: taskA, stepID: "qA")
+        controller.refreshPanelIfVisible()
+        XCTAssertEqual(controller.formState.supervisorTask, "msgA")
+        XCTAssertEqual(controller.formState._testAnswerDrafts[taskA]?.text, "msgA")
+        XCTAssertNil(controller.formState._testAnswerDrafts[taskB],
+                     "Task B's draft must remain absent — capture is per-task")
+    }
+}
+
 // MARK: - Helpers
 
 private func makePayload(

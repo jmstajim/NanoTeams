@@ -10,7 +10,7 @@ import Foundation
 /// Work-folder (project) lifecycle and metadata operations.
 protocol WorkFolderRepository {
     func openOrCreateWorkFolder(at workFolderRoot: URL) throws -> WorkFolderContext
-    func updateWorkFolderDescription(at workFolderRoot: URL, description: String) throws -> WorkFolderContext
+    func updateWorkFolderContext(at workFolderRoot: URL, context: String) throws -> WorkFolderContext
     func updateSelectedScheme(at workFolderRoot: URL, scheme: String?) throws -> WorkFolderContext
     func updateWorkFolderState(at workFolderRoot: URL, mutate: (inout WorkFolderState) -> Void) throws -> WorkFolderContext
     func updateSettings(at workFolderRoot: URL, mutate: (inout ProjectSettings) -> Void) throws -> WorkFolderContext
