@@ -47,7 +47,6 @@ You are the **Supervisor**. You create a task, and a team of AI roles executes i
 For example, with the **FAANG Team**: you describe what you want → PM writes requirements → Tech Lead creates a plan → Engineer implements → Code Reviewer checks the code → SRE verifies production readiness → TPM writes release notes → you review and accept.
 
 Each role can read/write files, use git, build with Xcode, consult other roles, and request team meetings — all within a sandboxed environment limited to your work folder.
-<img width="1280" height="1049" alt="Screenshot 2026-04-27 at 01 31 54 Large" src="https://github.com/user-attachments/assets/ee0db2f5-2ee4-455d-8644-c4e90fdb976b" />
 
 <img width="1280" height="1009" alt="NanoTeams — team graph showing roles and artifact dependencies" src="https://github.com/user-attachments/assets/9e75d4c2-4cda-43a9-812b-3abd20ed986d" />
 
