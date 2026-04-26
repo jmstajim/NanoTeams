@@ -281,7 +281,7 @@ final class QuickCaptureQueueTests: XCTestCase {
 
     // MARK: - Terminal-state cleanup + user feedback
 
-    func testTryFlush_dropsAllQueuedOnDone_andSurfacesInfoMessage() {
+    func testTryFlush_dropsAllQueuedOnDone_andSurfacesInfoMessage() async {
         let store = NTMSOrchestrator(repository: NTMSRepository())
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
@@ -297,7 +297,7 @@ final class QuickCaptureQueueTests: XCTestCase {
                        "Terminal-state discard must surface a user-visible info message")
     }
 
-    func testTryFlush_dropsAllQueuedOnFailed_andSurfacesInfoMessage() {
+    func testTryFlush_dropsAllQueuedOnFailed_andSurfacesInfoMessage() async {
         let store = NTMSOrchestrator(repository: NTMSRepository())
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
@@ -310,7 +310,7 @@ final class QuickCaptureQueueTests: XCTestCase {
         XCTAssertEqual(store.lastInfoMessage, "1 queued message(s) discarded — task failed.")
     }
 
-    func testTryFlush_preservesAllQueuedOnRunning() {
+    func testTryFlush_preservesAllQueuedOnRunning() async {
         let store = NTMSOrchestrator(repository: NTMSRepository())
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
@@ -324,7 +324,7 @@ final class QuickCaptureQueueTests: XCTestCase {
         XCTAssertNil(store.lastInfoMessage, "No user feedback should fire for non-terminal states")
     }
 
-    func testTryFlush_perTaskIsolation_onlyTargetedTaskIsAffected() {
+    func testTryFlush_perTaskIsolation_onlyTargetedTaskIsAffected() async {
         let store = NTMSOrchestrator(repository: NTMSRepository())
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
@@ -457,7 +457,7 @@ final class QuickCaptureQueueTests: XCTestCase {
                        "Untargeted messages route to the first waiting role, preserving caller order")
     }
 
-    func testHandleEngineStateChanged_drivesFlush() {
+    func testHandleEngineStateChanged_drivesFlush() async {
         let store = NTMSOrchestrator(repository: NTMSRepository())
         let controller = QuickCaptureController(formState: sut)
         controller.store = store

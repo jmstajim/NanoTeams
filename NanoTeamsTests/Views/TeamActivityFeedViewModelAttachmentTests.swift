@@ -59,7 +59,7 @@ final class TeamActivityFeedViewModelAttachmentTests: XCTestCase {
 
     // MARK: - Submit Guard
 
-    func testSubmitGuard_emptyTextAndNoAttachments_doesNotSubmit() {
+    func testSubmitGuard_emptyTextAndNoAttachments_doesNotSubmit() async {
         let stepID = "test_step"
         viewModel.supervisorAnswerText[stepID] = ""
         viewModel.supervisorAnswerAttachments[stepID] = []
@@ -70,7 +70,7 @@ final class TeamActivityFeedViewModelAttachmentTests: XCTestCase {
         XCTAssertFalse(viewModel.isSubmittingAnswer.contains(stepID))
     }
 
-    func testSubmitGuard_textOnly_submits() {
+    func testSubmitGuard_textOnly_submits() async {
         let stepID = "test_step"
         viewModel.supervisorAnswerText[stepID] = "Answer"
 
@@ -80,7 +80,7 @@ final class TeamActivityFeedViewModelAttachmentTests: XCTestCase {
         XCTAssertTrue(viewModel.isSubmittingAnswer.contains(stepID))
     }
 
-    func testSubmitGuard_attachmentsOnly_submits() throws {
+    func testSubmitGuard_attachmentsOnly_submits() async throws {
         let stepID = "test_step"
         viewModel.supervisorAnswerText[stepID] = ""
         viewModel.supervisorAnswerAttachments[stepID] = [
@@ -93,7 +93,7 @@ final class TeamActivityFeedViewModelAttachmentTests: XCTestCase {
         XCTAssertTrue(viewModel.isSubmittingAnswer.contains(stepID))
     }
 
-    func testSubmitGuard_doubleSubmit_blocked() {
+    func testSubmitGuard_doubleSubmit_blocked() async {
         let stepID = "test_step"
         viewModel.supervisorAnswerText[stepID] = "Answer"
 
