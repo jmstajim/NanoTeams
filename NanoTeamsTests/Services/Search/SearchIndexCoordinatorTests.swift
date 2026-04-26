@@ -37,8 +37,16 @@ final class SearchIndexCoordinatorTests: XCTestCase {
     }
 
     private func makeCoordinator() -> SearchIndexCoordinator {
+        // Use a recording mock so the vector phase doesn't hit a real LM
+        // Studio endpoint. Default `LMStudioEmbeddingClient()` would issue a
+        // POST /v1/embeddings on every rebuild and pay either a connect
+        // refused round-trip OR a real model response — adding ~2.5s/build.
         SearchIndexCoordinator(
-            workFolderRoot: tempDir, internalDir: internalDir, fileManager: fm
+            workFolderRoot: tempDir,
+            internalDir: internalDir,
+            embeddingClient: RecordingEmbedClient(),
+            fileManager: fm,
+            watcherDebounce: 0.05
         )
     }
 
@@ -242,7 +250,8 @@ final class SearchIndexCoordinatorTests: XCTestCase {
                 )
             },
             embeddingClient: client,
-            fileManager: fm
+            fileManager: fm,
+            watcherDebounce: 0.05
         )
     }
 
@@ -260,7 +269,7 @@ final class SearchIndexCoordinatorTests: XCTestCase {
 
         // Vector index build runs inside the same performBuild — give it
         // a moment by polling `isBuildingVectorIndex`.
-        await waitUntilVectorReady(c, timeoutSeconds: 2.0)
+        await waitUntilVectorReady(c)
 
         // Bin + meta on disk.
         let bin = internalDir.appendingPathComponent("vocab_vectors.bin").path
@@ -285,7 +294,7 @@ final class SearchIndexCoordinatorTests: XCTestCase {
         try write("B.swift", content: "class ScrollView {}")
         let c = makeCoordinatorWithMockEmbedder(RecordingEmbedClient())
         await c.start()
-        await waitUntilVectorReady(c, timeoutSeconds: 2.0)
+        await waitUntilVectorReady(c)
 
         let bin = internalDir.appendingPathComponent("vocab_vectors.bin").path
         let meta = internalDir.appendingPathComponent("vocab_vectors.meta.json").path
@@ -308,7 +317,7 @@ final class SearchIndexCoordinatorTests: XCTestCase {
         let client1 = RecordingEmbedClient()
         let c1 = makeCoordinatorWithMockEmbedder(client1)
         await c1.start()
-        await waitUntilVectorReady(c1, timeoutSeconds: 2.0)
+        await waitUntilVectorReady(c1)
         let firstBuildCalls = client1.callCount
         XCTAssertGreaterThan(firstBuildCalls, 0)
         await c1.clear()
@@ -317,7 +326,7 @@ final class SearchIndexCoordinatorTests: XCTestCase {
         let client2 = RecordingEmbedClient()
         let c2 = makeCoordinatorWithMockEmbedder(client2)
         await c2.start()
-        await waitUntilVectorReady(c2, timeoutSeconds: 2.0)
+        await waitUntilVectorReady(c2)
 
         XCTAssertGreaterThan(client2.callCount, 0,
             "Fresh coordinator post-clear must re-embed from scratch")
@@ -332,7 +341,7 @@ final class SearchIndexCoordinatorTests: XCTestCase {
         let client1 = RecordingEmbedClient()
         let c1 = makeCoordinatorWithMockEmbedder(client1)
         await c1.start()
-        await waitUntilVectorReady(c1, timeoutSeconds: 2.0)
+        await waitUntilVectorReady(c1)
         let firstBuildCalls = client1.callCount
         await c1.stop()
 
@@ -342,7 +351,7 @@ final class SearchIndexCoordinatorTests: XCTestCase {
         let client2 = RecordingEmbedClient()
         let c2 = makeCoordinatorWithMockEmbedder(client2)
         await c2.start()
-        await waitUntilVectorReady(c2, timeoutSeconds: 2.0)
+        await waitUntilVectorReady(c2)
 
         XCTAssertEqual(client2.callCount, 0,
             "Reopening a folder with on-disk vectors must not re-embed")
@@ -365,7 +374,7 @@ final class SearchIndexCoordinatorTests: XCTestCase {
         let client = RecordingEmbedClient()
         let c = makeCoordinatorWithMockEmbedder(client)
         await c.start()
-        await waitUntilVectorReady(c, timeoutSeconds: 2.0)
+        await waitUntilVectorReady(c)
         let warmCalls = client.callCount
 
         async let a: Void = c.rebuildVectorIndex()
@@ -486,14 +495,16 @@ final class SearchIndexCoordinatorTests: XCTestCase {
 
     /// Helper: poll `vectorIndexState` until `.ready` or timeout. Used by
     /// lifecycle tests where the build completes asynchronously inside
-    /// `start()`.
+    /// `start()`. Default 10s — generous for parallel CI runners; the loop
+    /// returns the moment state flips to `.ready`, so a healthy build pays
+    /// no extra time.
     private func waitUntilVectorReady(
-        _ c: SearchIndexCoordinator, timeoutSeconds: Double
+        _ c: SearchIndexCoordinator, timeoutSeconds: Double = 10.0
     ) async {
         let deadline = Date().addingTimeInterval(timeoutSeconds)
         while Date() < deadline {
             if case .ready = c.vectorIndexState { return }
-            try? await Task.sleep(nanoseconds: 20_000_000)
+            try? await Task.sleep(nanoseconds: 50_000_000)
         }
     }
 }

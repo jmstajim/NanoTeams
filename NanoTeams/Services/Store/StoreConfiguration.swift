@@ -377,6 +377,28 @@ final class StoreConfiguration {
         didSet { storage.set(searchExploratoryByDefault, forKey: Keys.searchExploratoryByDefault) }
     }
 
+    /// FSEvents debounce window for the exploratory-search index watcher.
+    /// Larger values coalesce bursty writes into one rebuild; smaller values
+    /// pick up changes sooner. Clamped on assignment to
+    /// `[AppDefaults.searchIndexWatcherDebounceSecondsMin, ...Max]` so the
+    /// persisted value always sits inside the UI bounds.
+    /// **Note:** read once at coordinator construction (folder open / toggle
+    /// flip). Live editing of this value during a session does not retune
+    /// the active watcher — close/reopen the folder or toggle the feature.
+    var searchIndexWatcherDebounceSeconds: TimeInterval {
+        didSet {
+            let clamped = min(
+                max(searchIndexWatcherDebounceSeconds, AppDefaults.searchIndexWatcherDebounceSecondsMin),
+                AppDefaults.searchIndexWatcherDebounceSecondsMax
+            )
+            if clamped != searchIndexWatcherDebounceSeconds {
+                searchIndexWatcherDebounceSeconds = clamped
+                return
+            }
+            storage.set(searchIndexWatcherDebounceSeconds, forKey: Keys.searchIndexWatcherDebounceSeconds)
+        }
+    }
+
     // MARK: - Tools
 
     /// Hard line limit enforced by `read_file`. Files exceeding this return an
@@ -499,6 +521,7 @@ final class StoreConfiguration {
         static let searchExploratoryByDefault = UserDefaultsKeys.searchExploratoryByDefault
         static let readFileMaxLines = UserDefaultsKeys.readFileMaxLines
         static let searchMaxResults = UserDefaultsKeys.searchMaxResults
+        static let searchIndexWatcherDebounceSeconds = UserDefaultsKeys.searchIndexWatcherDebounceSeconds
         static let searchContextBefore = UserDefaultsKeys.searchContextBefore
         static let searchContextAfter = UserDefaultsKeys.searchContextAfter
     }
@@ -600,6 +623,12 @@ final class StoreConfiguration {
         self.searchContextBefore = min(max(storedSearchContextBefore, AppDefaults.searchContextMin), AppDefaults.searchContextMax)
         let storedSearchContextAfter = (storage.object(forKey: Keys.searchContextAfter) as? Int) ?? AppDefaults.searchContextAfter
         self.searchContextAfter = min(max(storedSearchContextAfter, AppDefaults.searchContextMin), AppDefaults.searchContextMax)
+        let storedSearchIndexWatcherDebounce = (storage.object(forKey: Keys.searchIndexWatcherDebounceSeconds) as? Double)
+            ?? AppDefaults.searchIndexWatcherDebounceSeconds
+        self.searchIndexWatcherDebounceSeconds = min(
+            max(storedSearchIndexWatcherDebounce, AppDefaults.searchIndexWatcherDebounceSecondsMin),
+            AppDefaults.searchIndexWatcherDebounceSecondsMax
+        )
     }
 
     // MARK: - Migration
@@ -667,6 +696,7 @@ final class StoreConfiguration {
         storage.removeObject(forKey: Keys.searchMaxResults)
         storage.removeObject(forKey: Keys.searchContextBefore)
         storage.removeObject(forKey: Keys.searchContextAfter)
+        storage.removeObject(forKey: Keys.searchIndexWatcherDebounceSeconds)
 
         let provider = LLMProvider.lmStudio
         llmProvider = provider
@@ -707,6 +737,7 @@ final class StoreConfiguration {
         searchMaxResults = AppDefaults.searchMaxResults
         searchContextBefore = AppDefaults.searchContextBefore
         searchContextAfter = AppDefaults.searchContextAfter
+        searchIndexWatcherDebounceSeconds = AppDefaults.searchIndexWatcherDebounceSeconds
     }
 
     // MARK: - Work Folder Path

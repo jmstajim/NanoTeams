@@ -122,6 +122,10 @@ final class NTMSOrchestrator {
     /// so the model loaded in LM Studio tracks `searchIndexCoordinator != nil`.
     /// Test-injected via init to avoid real network calls in CI.
     @ObservationIgnored let embeddingLifecycle: EmbeddingModelLifecycleService
+    /// Embedding client used by the per-folder `SearchIndexCoordinator` for
+    /// vocab-vector builds. DI seam — tests inject a recording mock so the
+    /// vector phase doesn't issue real `/v1/embeddings` round-trips.
+    @ObservationIgnored let searchEmbeddingClient: any EmbeddingClient
 
     /// Shared "is the work-folder context currently being generated" flag.
     /// Both Settings and the Sidebar work-folder card observe this so generation
@@ -198,7 +202,8 @@ final class NTMSOrchestrator {
         streamingPreviewManager: StreamingPreviewManager? = nil,
         configuration: StoreConfiguration? = nil,
         fileManager: FileManager? = nil,
-        embeddingLifecycle: EmbeddingModelLifecycleService? = nil
+        embeddingLifecycle: EmbeddingModelLifecycleService? = nil,
+        searchEmbeddingClient: (any EmbeddingClient)? = nil
     ) {
         self.repository = repository
         self.llmExecutionService = llmExecutionService ?? LLMExecutionService(repository: repository)
@@ -211,6 +216,7 @@ final class NTMSOrchestrator {
         self.configuration = configuration ?? StoreConfiguration()
         self.fileManager = fileManager ?? .default
         self.embeddingLifecycle = embeddingLifecycle ?? EmbeddingModelLifecycleService()
+        self.searchEmbeddingClient = searchEmbeddingClient ?? LMStudioEmbeddingClient()
         self.llmExecutionService.attach(delegate: self)
         // Wire soft-warning surfacing — VRAM-leak / transient-list failures
         // previously went silent. Use a weak self capture so the lifecycle

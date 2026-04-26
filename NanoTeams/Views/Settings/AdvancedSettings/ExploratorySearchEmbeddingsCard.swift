@@ -40,7 +40,7 @@ struct ExploratorySearchEmbeddingsCard: View {
             if let coordinator {
                 statusSection(coordinator: coordinator)
                 Divider().padding(.vertical, Spacing.xs)
-                modelSection()
+                modelSection(coordinator: coordinator)
                 Divider().padding(.vertical, Spacing.xs)
                 thresholdsSection()
                 actionsRow(coordinator: coordinator)
@@ -114,7 +114,15 @@ struct ExploratorySearchEmbeddingsCard: View {
     // MARK: - Model config
 
     @ViewBuilder
-    private func modelSection() -> some View {
+    private func modelSection(coordinator: SearchIndexCoordinator) -> some View {
+        // Suppress the picker's "Failed to load embedding models" line when
+        // the Status section already explains the same connection failure
+        // (`.modelUnavailable`). Two warnings stacked vertically with the
+        // same root cause is just noise.
+        let statusAlreadyShowsConnectionFailure: Bool = {
+            if case .modelUnavailable = coordinator.vectorIndexState { return true }
+            return false
+        }()
         LLMElevatedTextField(
             "Server Address",
             text: baseURLBinding,
@@ -123,7 +131,7 @@ struct ExploratorySearchEmbeddingsCard: View {
         LLMModelPickerSection(
             modelName: modelPickerBinding,
             availableModels: availableEmbeddingModels,
-            fetchError: fetchEmbeddingModelsError,
+            fetchError: statusAlreadyShowsConnectionFailure ? nil : fetchEmbeddingModelsError,
             isFetching: isFetchingEmbeddingModels,
             emptyLabel: EmbeddingConfig.defaultNomicLMStudio.modelName,
             onFetch: { Task { await fetchEmbeddingModels() } }

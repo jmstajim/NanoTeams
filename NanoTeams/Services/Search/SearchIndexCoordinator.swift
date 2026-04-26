@@ -42,6 +42,11 @@ final class SearchIndexCoordinator {
     @ObservationIgnored let service: SearchIndexService
     @ObservationIgnored let vectorIndex: VocabVectorIndexService
     @ObservationIgnored private var watcher: FileSystemWatcher?
+    /// FSEvents debounce window. Production default 2.0s coalesces bursty
+    /// writes (e.g. `git checkout`, IDE save-all) into a single rebuild.
+    /// Tests override to ~0.05s so they don't pay multi-second waits per
+    /// `rebuild()`/`ensureFresh()` cycle.
+    @ObservationIgnored private let watcherDebounce: TimeInterval
     /// Token-index walk task. **Cancellable on every FS event** — a stale
     /// walk is cheap to drop and re-run with the latest folder state.
     @ObservationIgnored private var currentTokenBuildTask: Task<Void, Never>?
@@ -73,11 +78,13 @@ final class SearchIndexCoordinator {
         internalDir: URL,
         embeddingConfigProvider: @escaping @MainActor () -> EmbeddingConfig = { .defaultNomicLMStudio },
         embeddingClient: any EmbeddingClient = LMStudioEmbeddingClient(),
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        watcherDebounce: TimeInterval = AppDefaults.searchIndexWatcherDebounceSeconds
     ) {
         self.workFolderRoot = workFolderRoot
         self.internalDir = internalDir
         self.embeddingConfigProvider = embeddingConfigProvider
+        self.watcherDebounce = watcherDebounce
         self.service = SearchIndexService(
             workFolderRoot: workFolderRoot,
             internalDir: internalDir,
@@ -110,7 +117,7 @@ final class SearchIndexCoordinator {
                 // excluded from the index walk, so each one would trigger
                 // a wasted signature probe.
                 excludedPrefixes: [internalDir],
-                debounce: 2.0,
+                debounce: watcherDebounce,
                 onChange: { [weak self] in
                     Task { @MainActor in
                         self?.scheduleEnsureFresh()

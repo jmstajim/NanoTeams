@@ -1,5 +1,7 @@
 # NanoTeams
 
+### Open-source AI coding assistant and multi-agent teams for macOS — powered by local LLMs
+
 [![Build&Test](https://github.com/jmstajim/NanoTeams/actions/workflows/ios.yml/badge.svg)](https://github.com/jmstajim/NanoTeams/actions/workflows/ios.yml)
 [![Version](https://img.shields.io/github/v/release/jmstajim/NanoTeams?sort=semver&display_name=tag&label=version&color=5F87D9&style=flat-square)](https://github.com/jmstajim/NanoTeams/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/jmstajim/NanoTeams/total?label=downloads&color=5F87D9&style=flat-square)](https://github.com/jmstajim/NanoTeams/releases/latest/download/NanoTeams.app.zip)
@@ -8,7 +10,7 @@
 [![License](https://img.shields.io/github/license/jmstajim/NanoTeams?color=5F87D9&style=flat-square)](LICENSE)
 [![Download](https://img.shields.io/badge/Download-NanoTeams.app.zip-35BE81?style=flat-square)](https://github.com/jmstajim/NanoTeams/releases/latest/download/NanoTeams.app.zip)
 
-**Coding assistant, agentic chat and multi-role AI teams for macOS.** Start a chat or hand a task to a team of specialized AI roles — they read your files, produce artifacts, consult each other, and report back when done. Generate teams on demand from a one-line description, attach documents, clip text from any app, dictate hands-free, queue messages to working roles without pausing them. Everything runs on-device — LLMs through LM Studio, dictation through Apple's built-in speech engine. No cloud, no API keys, zero telemetry.
+**AI coding assistant and multi-agent AI teams for macOS, powered by local LLMs through [LM Studio](https://lmstudio.ai).** Open-source, free, fully private — no cloud, no API keys, no telemetry. Start an agentic chat with the **Coding Assistant** ([Get started](#getting-started)) or hand a task to a team of specialized AI roles that read your files, produce artifacts, consult each other, and report back when done. Generate custom teams from a one-line description, paste images and documents straight into the composer, search your project semantically with on-device embeddings, clip text from any app, dictate hands-free with fully on-device speech recognition, and queue messages to working roles without pausing them.
 
 <img width="640" height="604" alt="NanoTeams — AI agent teams for local LLMs on macOS" src="https://github.com/user-attachments/assets/aaf71be6-a72f-4f5d-bf77-47d015985f0e" />
 
@@ -33,7 +35,7 @@ Built with **LM Studio's stateful chat API** (`previous_response_id`), so the se
 1. Open **LM Studio** and load a model (see [Recommended Models](#recommended-models))
 2. Launch **NanoTeams**
 3. Select a work folder — this is where AI roles will read and write files
-4. Pick a team (or start with **Personal Assistant** for a simple chat)
+4. Pick a team — **Coding Assistant** is the default and a good starting point (chat-mode with files, git, and Xcode tools)
 5. Create a task, describe what you need — the team takes it from there
 
 <img width="640" height="633" alt="NanoTeams — create a new task and select a team" src="https://github.com/user-attachments/assets/d4de18bb-7cdd-4d21-8d72-7018136b8700" />
@@ -80,22 +82,30 @@ Create tasks and let a team of specialized AI roles collaborate. Each role has i
 ### AI Team Generation
 Describe a task in one line and an LLM designs a custom team for it — roles, artifacts, prompts, dependencies, and hierarchy. The *Generate Team* settings tab lets you customize the meta-model, system prompt, and defaults used whenever a team is generated.
 
-### 28 Built-in Tools
+### 29 Built-in Tools
 Sandboxed tool system: file operations, git, Xcode build & test, team collaboration (`ask_teammate`, `request_team_meeting`, `request_changes`), artifact creation, supervisor Q&A, persistent memory, and image analysis.
 
 ### Documents In & Out
-Roles read PDF, DOCX, RTF, XLSX, PPTX, ODT, and HTML files directly — no manual conversion to plain text. Generated artifacts can be exported to PDF, Word, or RTF. Document handling is pure-Swift.
+Roles read PDF, DOCX, RTF, XLSX, PPTX, ODT, and HTML files directly — no manual conversion to plain text. Generated artifacts can be exported to PDF, Word, or RTF. Document handling is **pure Swift** — no `textutil`, no `unzip` subprocess, no temp files, no shell-out.
 
 ### Universal Search
-Search across PDFs, Word documents, spreadsheets, slides, OpenDocument files, HTML, source code, and plain text — all from a single tool call. Results are capped to keep agent context clean and prevent search-result poisoning.
+Keyword search across PDFs, Word documents, spreadsheets, slides, OpenDocument files, HTML, source code, and plain text — all from a single tool call. Results are capped to keep agent context clean and prevent search-result poisoning.
 
-### Per-Role LLM & Vision Configuration
-Assign different local models to different roles in the same team — a fast small model for the PM, a powerful coding model for the Engineer, a vision-capable model for image analysis. Each role can have its own base URL, model, max tokens, and temperature.
+### Exploratory Search (Semantic)
+Optional vocab-vector embedding pipeline lets roles find code and prose by meaning, not just keywords — useful for navigating large codebases. Embeddings and the token index are computed and stored entirely on your machine; toggle and configure the embedding model in **Advanced Settings → Exploratory Search**.
+
+### Per-Role LLM Configuration
+Assign different local models to different roles in the same team — a fast small model for the PM, a powerful coding model for the Engineer. Each role can have its own base URL, model, max tokens, and temperature.
+
+### Vision (Image Analysis)
+Roles can analyze screenshots, diagrams, and photos using a separate vision-capable LLM via the `analyze_image` tool. Configure the vision server, model, and token budget independently of the main model — useful for keeping vision on a smaller, image-tuned model while text generation stays on a heavyweight coder.
 
 ### Quick Capture
 Two global hotkeys work from any app:
 - **Ctrl+Opt+Cmd+0** — Floating overlay to create chat/task, answer AI questions, or view status
 - **Ctrl+Opt+Cmd+K** — Capture the current selection (text or files) and attach it to your chat/task
+
+Cmd+V in the composer pastes anything from the clipboard — copied files (any kind, including PDFs / DOCX / source files), screenshots and images, or plain text. Files and images are staged as attachments; text drops into the message field.
 
 <img width="441" height="455" alt="NanoTeams — Quick Capture overlay for creating tasks from any app" src="https://github.com/user-attachments/assets/48c6ac05-ff5f-49b8-9131-424a5b4f7acd" />
 
@@ -121,6 +131,7 @@ NanoTeams doesn't send your data anywhere. All processing happens locally via LM
 
 | Team | Description |
 |------|-------------|
+| **Coding Assistant** *(default)* | Dialog-first coding companion with files, git, and Xcode tools |
 | **Personal Assistant** | Conversational AI helper for any task |
 | **FAANG Team** | Full product pipeline: PM → UX → Engineering → Code Review → SRE → Release |
 | **Engineering Team** | Lean pipeline: Tech Lead → Engineer → Code Review → Release |
@@ -147,6 +158,29 @@ xcodebuild -project NanoTeams.xcodeproj -scheme NanoTeams -configuration Release
 ```
 
 No external dependencies required — pure Swift/SwiftUI.
+
+## FAQ
+
+**Is NanoTeams free?**
+Yes. NanoTeams is open-source and free. There are no subscriptions, no API keys, and no usage limits. You only pay for the hardware your local LLM runs on.
+
+**Does NanoTeams send my data anywhere?**
+No. All inference runs locally through LM Studio on your Mac. Files, prompts, and tool calls never leave your machine. There is no telemetry and no account.
+
+**Do I need an internet connection?**
+No, after the initial download of LM Studio and a model. NanoTeams works fully offline — useful for travel, secure environments, or air-gapped machines.
+
+**What models does NanoTeams support?**
+Any model you can run in LM Studio. NanoTeams has been trained on `gpt-oss-20b`, `qwen3.5-9b`, `gemma-4-26b-a4b`, and `qwen3.5-35b-a3b` — see [Recommended Models](#recommended-models). Vision models (for image analysis) are configured separately per role.
+
+**Why use NanoTeams instead of a hosted AI assistant?**
+Hosted assistants run massive frontier models in the cloud and are excellent at what they do. NanoTeams is a different choice for a different need: when your code or data can't leave the machine, when you don't want a subscription or per-token bill, or when you want a multi-agent workflow with specialized roles, artifact pipelines, and on-device embeddings around whichever local model you prefer.
+
+**Can I customize teams and roles?**
+Yes. Create your own teams with custom roles, artifacts, prompts, tool access, dependencies, and per-role LLM overrides. Import/export as JSON. Or describe a task in one line and let the LLM design a team for it.
+
+**What are the system requirements?**
+macOS 15.0 or later. LM Studio 0.4.0 or later. Apple Silicon recommended for best local-LLM performance. Voice dictation requires macOS 26+.
 
 ## Support
 

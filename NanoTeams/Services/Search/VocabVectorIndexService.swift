@@ -235,6 +235,10 @@ actor VocabVectorIndexService {
                 state = .modelUnavailable(
                     reason: "Embedding model '\(name)' is not loaded in LM Studio."
                 )
+            } else if case .serverUnreachable = err {
+                state = .modelUnavailable(
+                    reason: "Could not connect to the embedding server."
+                )
             } else {
                 state = .error(err.errorDescription ?? "Embedding error")
             }
@@ -352,11 +356,17 @@ actor VocabVectorIndexService {
                 // by Swift concurrency automatically; we just return what we
                 // have so far. Don't mark as error.
             } catch let err as EmbeddingClientError {
-                // On model-not-loaded mid-query, update state so the UI card
-                // shows the right message.
+                // On terminal mid-query failures, update state so the UI card
+                // shows the right message instead of leaving us in `.ready`.
                 if case .modelNotLoaded(let name) = err {
                     state = .modelUnavailable(
                         reason: "Embedding model '\(name)' is not loaded in LM Studio."
+                    )
+                    return .unavailable(reason: err.envelopeReason)
+                }
+                if case .serverUnreachable = err {
+                    state = .modelUnavailable(
+                        reason: "Could not connect to the embedding server."
                     )
                     return .unavailable(reason: err.envelopeReason)
                 }

@@ -296,13 +296,47 @@ final class LMStudioEmbeddingClientTests: XCTestCase {
         }
     }
 
-    func testEmbed_otherURLError_classifiesAsTransportError() async {
+    func testEmbed_genericURLError_classifiesAsTransportError() async {
+        // `networkConnectionLost` is a transient mid-request failure (cable
+        // unplugged after handshake, NAT hiccup) — distinct from "server
+        // unreachable" which is terminal. Stays in `.transportError` so the
+        // builder retries.
+        let mock = MockNetworkSession()
+        mock.errorToThrow = URLError(.networkConnectionLost)
+        let client = LMStudioEmbeddingClient(session: mock)
+
+        await assertThrows(EmbeddingClientError.self, matching: { err in
+            if case .transportError = err { return true }
+            return false
+        }) {
+            _ = try await client.embed(texts: ["a"], config: self.config)
+        }
+    }
+
+    /// Regression: LM Studio not running used to surface as `.transportError`
+    /// (non-terminal), so the vector builder retried every batch and the UI
+    /// sat in "Building…" forever. `cannotConnectToHost` now classifies as
+    /// `.serverUnreachable`, which is terminal.
+    func testEmbed_cannotConnectToHost_classifiesAsServerUnreachable() async {
+        let mock = MockNetworkSession()
+        mock.errorToThrow = URLError(.cannotConnectToHost)
+        let client = LMStudioEmbeddingClient(session: mock)
+
+        await assertThrows(EmbeddingClientError.self, matching: { err in
+            if case .serverUnreachable = err { return true }
+            return false
+        }) {
+            _ = try await client.embed(texts: ["a"], config: self.config)
+        }
+    }
+
+    func testEmbed_notConnectedToInternet_classifiesAsServerUnreachable() async {
         let mock = MockNetworkSession()
         mock.errorToThrow = URLError(.notConnectedToInternet)
         let client = LMStudioEmbeddingClient(session: mock)
 
         await assertThrows(EmbeddingClientError.self, matching: { err in
-            if case .transportError = err { return true }
+            if case .serverUnreachable = err { return true }
             return false
         }) {
             _ = try await client.embed(texts: ["a"], config: self.config)
@@ -342,6 +376,8 @@ final class LMStudioEmbeddingClientTests: XCTestCase {
                        "embedding_request_encoding_failed")
         XCTAssertEqual(EmbeddingClientError.transportError("").envelopeReason,
                        "embedding_transport_error")
+        XCTAssertEqual(EmbeddingClientError.serverUnreachable("").envelopeReason,
+                       "embedding_server_unreachable")
     }
 
     func testIsTerminal_classification() {

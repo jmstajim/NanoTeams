@@ -449,9 +449,12 @@ final class ExploratorySearchUserScenarioTests: NTMSOrchestratorTestBase {
     /// User enables Exploratory Search while LM Studio is unreachable. The toggle
     /// should still flip ON (coordinator is created and the on-disk index can
     /// build without embeddings — vector index just lands in `modelUnavailable`),
-    /// but the user must see WHY the embed model isn't ready via the
-    /// red error banner. I3: the feature is now broken; info-severity is wrong.
-    func testToggleOn_whenLoadFails_surfacesErrorBanner() async {
+    /// and the failure must NOT surface as a global red banner: the user
+    /// enabled the feature in Settings → Exploratory Search and the failure
+    /// is already visible there (model picker shows "Failed to load embedding
+    /// models", vector-index card shows the unavailable state). A second
+    /// global banner across the whole app was noise.
+    func testToggleOn_whenLoadFails_doesNotSurfaceGlobalBanner() async {
         await sut.openWorkFolder(tempDir)
         embeddingClient.loadError = TestError.boom
 
@@ -460,16 +463,8 @@ final class ExploratorySearchUserScenarioTests: NTMSOrchestratorTestBase {
 
         XCTAssertNotNil(sut.searchIndexCoordinator,
                         "Coordinator must still be created — Exploratory Search degrades gracefully without embeddings.")
-        XCTAssertNotNil(sut.lastErrorMessage,
-                        "Load failure means the feature is broken — must use red error banner, not neutral info.")
-        XCTAssertTrue(
-            sut.lastErrorMessage?.contains("Couldn't load embedding model") ?? false,
-            "Error banner should explain the load failure (was: \(sut.lastErrorMessage ?? "<nil>"))."
-        )
-        XCTAssertTrue(
-            sut.lastErrorMessage?.contains("keyword-only") ?? false,
-            "Error banner should tell the user search degrades gracefully so they don't think the app is broken."
-        )
+        XCTAssertNil(sut.lastErrorMessage,
+                     "Embed-load failure must not pollute the global red banner — the Exploratory Search settings card already surfaces it.")
     }
 
     /// I8: an unload error MUST surface as info — pre-fix it was silent,
@@ -731,20 +726,21 @@ final class ExploratorySearchUserScenarioTests: NTMSOrchestratorTestBase {
         XCTAssertEqual(sut.embeddingLifecycle.loaded?.instanceID, "fresh-instance")
     }
 
-    /// User path: load fails (server down) — the user must see a RED error
-    /// banner explaining the feature is degraded, NOT a neutral info banner.
-    /// Coordinator stays installed so keyword-only search still works.
-    func testUserPath_loadFails_userSeesErrorBanner_keywordSearchStillWorks() async {
+    /// User path: load fails (server down). The Exploratory Search settings
+    /// card already surfaces the failure (model picker + vector-index
+    /// `.modelUnavailable` reason); a global red banner across the app was
+    /// noisy, so the orchestrator now swallows the load error. Coordinator
+    /// stays installed so keyword-only search keeps working — the user
+    /// discovers the failure exactly where they enabled the feature.
+    func testUserPath_loadFails_keywordSearchStillWorks_noGlobalBanner() async {
         await sut.openWorkFolder(tempDir)
         embeddingClient.loadError = TestError.boom
 
         sut.configuration.exploratorySearchEnabled = true
         await sut.onExploratorySearchSettingChanged()
 
-        XCTAssertNotNil(sut.lastErrorMessage,
-                        "Load failure means feature broken — must use red banner, not neutral info.")
-        XCTAssertTrue(sut.lastErrorMessage?.contains("keyword-only") ?? false,
-                      "Banner must reassure the user keyword search still works.")
+        XCTAssertNil(sut.lastErrorMessage,
+                     "Embed-load failure must not pollute the global red banner — surfaced inside the Exploratory Search card instead.")
         XCTAssertNotNil(sut.searchIndexCoordinator,
                         "Coordinator must remain installed — vector index degrades gracefully")
         XCTAssertNil(sut.embeddingLifecycle.loaded,

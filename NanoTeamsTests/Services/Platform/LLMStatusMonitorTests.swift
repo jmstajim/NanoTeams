@@ -29,8 +29,10 @@ final class LLMStatusMonitorTests: XCTestCase {
     func testStartMonitoring_probesOnce_updatesLastCheckedAt() async {
         sut.startMonitoring(baseURLProvider: { "http://127.0.0.1:9" }, interval: 60)
 
-        // Give the initial probe time to complete — check timeout is 2s, invalid port fails fast.
-        try? await Task.sleep(for: .seconds(3))
+        // Wait until the initial probe lands. Invalid port fails the connect
+        // attempt fast (<<1s on localhost); poll-with-timeout avoids the prior
+        // unconditional 3-second sleep.
+        await waitUntilNotNil({ self.sut.lastCheckedAt }, timeoutSeconds: 5)
 
         XCTAssertNotNil(sut.lastCheckedAt, "First poll should have set lastCheckedAt")
         XCTAssertFalse(sut.isReachable, "Invalid port must not report reachable")
@@ -55,7 +57,7 @@ final class LLMStatusMonitorTests: XCTestCase {
     /// we can assert that stopMonitoring is idempotent and leaves state frozen.
     func testStopMonitoring_idempotent_afterStart() async {
         sut.startMonitoring(baseURLProvider: { "http://127.0.0.1:9" }, interval: 60)
-        try? await Task.sleep(for: .seconds(3))
+        await waitUntilNotNil({ self.sut.lastCheckedAt }, timeoutSeconds: 5)
         let frozen = sut.lastCheckedAt
 
         sut.stopMonitoring()
@@ -63,5 +65,21 @@ final class LLMStatusMonitorTests: XCTestCase {
 
         // No further updates after stop
         XCTAssertEqual(sut.lastCheckedAt, frozen)
+    }
+
+    // MARK: - Helpers
+
+    /// Polls `predicate` every 50ms until it returns a non-nil value or the
+    /// deadline expires. Replaces the prior unconditional `Task.sleep` waits
+    /// for `lastCheckedAt` — the probe completes well under a second on an
+    /// invalid port, so the test no longer pays a fixed 3s.
+    private func waitUntilNotNil<T>(
+        _ predicate: @MainActor () -> T?, timeoutSeconds: Double
+    ) async {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            if predicate() != nil { return }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
     }
 }

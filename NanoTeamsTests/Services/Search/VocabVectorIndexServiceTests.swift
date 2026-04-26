@@ -563,6 +563,32 @@ final class VocabVectorIndexServiceTests: XCTestCase {
         XCTAssertEqual(client.callCount, 1, "Terminal errors must short-circuit retries")
     }
 
+    // Regression: LM Studio not running used to leak through as
+    // `.transportError` (non-terminal) — builder retried every batch and the
+    // UI sat in "Building…" with thousands of failedTokens. `.serverUnreachable`
+    // is terminal, transitions to `.modelUnavailable`, and short-circuits retries.
+    func testRebuild_serverUnreachable_transitionsToModelUnavailable() async {
+        let client = MockEmbeddingClient()
+        client.errorsOnCall = [
+            0: EmbeddingClientError.serverUnreachable("Could not connect to the server.")
+        ]
+        let service = makeService(client: client)
+
+        await service.rebuildIfNeeded(
+            searchIndex: makeSearchIndex(tokens: ["aa", "bb"]),
+            config: makeConfig(), force: false
+        )
+
+        let state = await service.state
+        guard case .modelUnavailable(let reason) = state else {
+            XCTFail("Expected .modelUnavailable, got \(state)"); return
+        }
+        XCTAssertTrue(reason.lowercased().contains("connect"),
+                      "Reason should mention the connection failure")
+        XCTAssertEqual(client.callCount, 1,
+                       "serverUnreachable must short-circuit retries — not retry every batch")
+    }
+
     // I7: rebuild-time `.dimensionMismatch` transitions state to `.error`.
     func testRebuild_dimensionMismatch_transitionsToError() async {
         let client = MockEmbeddingClient()

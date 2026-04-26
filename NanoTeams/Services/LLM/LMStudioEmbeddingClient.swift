@@ -161,8 +161,18 @@ struct LMStudioEmbeddingClient: EmbeddingClient {
                 // Classify conservatively as a transport error for the
                 // static API so existing callers see a typed EmbeddingClientError.
                 return .transportError("cancelled")
-            case .cannotFindHost, .dnsLookupFailed:
-                return .transportError(urlErr.localizedDescription)
+            case .cannotConnectToHost,
+                 .cannotFindHost,
+                 .dnsLookupFailed,
+                 .notConnectedToInternet:
+                // Server is definitively not reachable — port closed,
+                // host doesn't resolve, or the device is offline. Bail out
+                // immediately instead of retrying every batch: the builder
+                // would otherwise burn ~2.5s × N batches × retries against
+                // a closed port and end with every token in `failedTokens`,
+                // misleading the UI into "Building…" while no progress is
+                // possible. Routed to `.modelUnavailable` by the service.
+                return .serverUnreachable(urlErr.localizedDescription)
             default:
                 return .transportError(urlErr.localizedDescription)
             }

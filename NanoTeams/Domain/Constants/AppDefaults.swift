@@ -34,6 +34,17 @@ enum AppDefaults {
     /// Inclusive upper bound for the configurable `search` context.
     static let searchContextMax = 20
 
+    /// FSEvents debounce window for the exploratory-search file watcher.
+    /// Coalesces bursty writes (`git checkout`, IDE save-all, build artifact
+    /// fanout) into a single rebuild. Generous default — the user feels a
+    /// stale index for at most this window when new files appear.
+    static let searchIndexWatcherDebounceSeconds: TimeInterval = 10.0
+    /// Inclusive lower bound. Below ~0.5s the watcher fires faster than
+    /// FSEvents' own ~1s buffering so we'd thrash the indexer.
+    static let searchIndexWatcherDebounceSecondsMin: TimeInterval = 0.5
+    /// Inclusive upper bound. Above 60s the user perceives a "stuck" index.
+    static let searchIndexWatcherDebounceSecondsMax: TimeInterval = 60.0
+
     static let workFolderContextPrompt = """
         You are analyzing a work folder to write a reference for AI agents who will work with its contents.
 

@@ -29,7 +29,13 @@ class NTMSOrchestratorTestBase: XCTestCase {
         sut = NTMSOrchestrator(
             repository: NTMSRepository(),
             configuration: StoreConfiguration(storage: InMemoryConfigurationStorage()),
-            embeddingLifecycle: EmbeddingModelLifecycleService(client: embeddingClient)
+            embeddingLifecycle: EmbeddingModelLifecycleService(client: embeddingClient),
+            // Stub the vector-index embedding path. Without this every
+            // `SearchIndexCoordinator.start()` / `rebuild()` issued a real
+            // POST /v1/embeddings to the default LMStudioEmbeddingClient,
+            // adding ~2.5s of network round-trip per build to every
+            // exploratory-search scenario test.
+            searchEmbeddingClient: StubSearchEmbeddingClient()
         )
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -44,6 +50,16 @@ class NTMSOrchestratorTestBase: XCTestCase {
         }
         tempDir = nil
         super.tearDown()
+    }
+}
+
+/// In-memory `EmbeddingClient` for orchestrator tests — returns deterministic
+/// 3-dim vectors and never touches the network. Distinct from the
+/// `RecordingEmbedClient` defined file-private in `SearchIndexCoordinatorTests`
+/// (different ownership, but same shape).
+final class StubSearchEmbeddingClient: EmbeddingClient, @unchecked Sendable {
+    func embed(texts: [String], config: EmbeddingConfig) async throws -> [[Float]] {
+        texts.enumerated().map { (i, _) in [Float(i), 0, 0] }
     }
 }
 

@@ -210,6 +210,14 @@ enum EmbeddingClientError: LocalizedError, Equatable {
     /// Underlying `URLSession` failure (connection refused, DNS, TLS).
     case transportError(String)
 
+    /// Server is not reachable at all — connection refused (port closed),
+    /// DNS lookup failed, or the device is offline. Distinct from
+    /// `.transportError` because retrying without outside intervention
+    /// (start LM Studio, fix DNS, plug in network) will never succeed.
+    /// Terminal — short-circuits the builder retry loop so we don't burn
+    /// minutes hammering a closed port for every batch.
+    case serverUnreachable(String)
+
     var errorDescription: String? {
         switch self {
         case .invalidResponse(let detail):
@@ -229,6 +237,8 @@ enum EmbeddingClientError: LocalizedError, Equatable {
             return "Embedding HTTP \(status)."
         case .transportError(let detail):
             return "Embedding transport error: \(detail.prefix(160))"
+        case .serverUnreachable(let detail):
+            return "Could not connect to the embedding server: \(detail.prefix(160))"
         }
     }
 
@@ -244,6 +254,7 @@ enum EmbeddingClientError: LocalizedError, Equatable {
         case .invalidResponse: return "embedding_invalid_response"
         case .requestEncodingFailed: return "embedding_request_encoding_failed"
         case .transportError: return "embedding_transport_error"
+        case .serverUnreachable: return "embedding_server_unreachable"
         }
     }
 
@@ -255,7 +266,7 @@ enum EmbeddingClientError: LocalizedError, Equatable {
     /// `.modelUnavailable` routing becomes dead code.
     var isTerminal: Bool {
         switch self {
-        case .modelNotLoaded, .dimensionMismatch, .requestEncodingFailed:
+        case .modelNotLoaded, .dimensionMismatch, .requestEncodingFailed, .serverUnreachable:
             return true
         case .invalidResponse, .timeout, .httpError, .transportError:
             return false

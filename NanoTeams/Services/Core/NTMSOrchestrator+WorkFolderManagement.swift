@@ -111,7 +111,9 @@ extension NTMSOrchestrator {
             embeddingConfigProvider: { @MainActor [weak config] in
                 config?.effectiveEmbeddingConfig ?? .defaultNomicLMStudio
             },
-            fileManager: fileManager
+            embeddingClient: searchEmbeddingClient,
+            fileManager: fileManager,
+            watcherDebounce: configuration.searchIndexWatcherDebounceSeconds
         )
         // `start()` awaits — a concurrent caller could install a coordinator
         // in the meantime. Install AFTER start so the observed ordering is
@@ -213,11 +215,15 @@ extension NTMSOrchestrator {
     /// `ensureLoaded` throws, the coordinator stays installed but
     /// `embeddingLifecycle.loaded == nil`. The next reconcile retries.
     ///
-    /// I3: load failures use `lastErrorMessage` (red banner) because the
-    /// user enabled Exploratory Search and the feature is now broken — info
-    /// severity is wrong here. I8: unload failures (which `NativeLMStudioClient`
-    /// already swallows for 404 / "no such instance") still surface via
-    /// `lastInfoMessage` so the user knows VRAM may not have been reclaimed.
+    /// Load failures are deliberately NOT surfaced as a global red banner.
+    /// Settings → Exploratory Search → Semantic Query Expansion already shows
+    /// the failure (model picker carries "Failed to load embedding models",
+    /// vector-index state transitions to `.modelUnavailable`). A second
+    /// surface across the entire app is noisy — keyword search keeps working
+    /// and the user discovers the issue exactly where they enable the feature.
+    /// I8: unload failures still surface via `lastInfoMessage` so the user
+    /// knows VRAM may not have been reclaimed (server-side state, harder to
+    /// inspect from the UI).
     ///
     /// No "Loading embedding model…" progress banner: the C1 adoption path
     /// (`listLoadedInstances` ahead of `loadModel`) makes the common case a
@@ -226,12 +232,10 @@ extension NTMSOrchestrator {
     /// own UI surfaces the download progress.
     private func reconcileEmbeddingLifecycle() async {
         if searchIndexCoordinator != nil {
-            let modelName = configuration.effectiveEmbeddingConfig.modelName
             do {
                 try await embeddingLifecycle.ensureLoaded(configuration.effectiveEmbeddingConfig)
             } catch {
-                let url = configuration.effectiveEmbeddingConfig.baseURLString
-                lastErrorMessage = "Couldn't load embedding model '\(modelName)': \(error.localizedDescription). Search will fall back to keyword-only matching. Check that LM Studio is running at \(url) and the model is downloaded."
+                // Swallow — the Exploratory Search settings card surfaces it.
             }
         } else {
             do {

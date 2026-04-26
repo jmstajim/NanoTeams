@@ -26,6 +26,8 @@ struct ExploratorySearchSettingsView: View {
                     }
                 )
 
+                ExploratorySearchWatcherDebounceCard(config: config)
+
                 ExploratorySearchEmbeddingsCard(
                     config: config,
                     coordinator: store.searchIndexCoordinator,

@@ -45,6 +45,7 @@ enum UserDefaultsKeys {
     static let exploratorySearchEmbeddingConfig = "NanoTeams.search.exploratorySearchEmbeddingConfig.v1"
     static let exploratorySearchPerTokenThreshold = "NanoTeams.search.exploratorySearchPerTokenThreshold.v1"
     static let exploratorySearchPhraseThreshold = "NanoTeams.search.exploratorySearchPhraseThreshold.v1"
+    static let searchIndexWatcherDebounceSeconds = "NanoTeams.search.watcherDebounceSeconds.v1"
     static let searchExploratoryByDefault = "NanoTeams.search.exploratoryByDefault.v1"
     static let readFileMaxLines = "NanoTeams.read_file.maxLines.v1"
     static let searchMaxResults = "NanoTeams.search.maxResults.v1"
