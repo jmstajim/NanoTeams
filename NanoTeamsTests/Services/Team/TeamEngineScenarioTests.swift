@@ -66,7 +66,7 @@ final class TeamEngineScenarioTests: XCTestCase {
 
     /// In afterEachRole mode, every completing role should get .needsAcceptance,
     /// not just the last one (unlike finalOnly).
-    func testAfterEachRole_eachCompletingRoleGetsNeedsAcceptance() {
+    func testAfterEachRole_eachCompletingRoleGetsNeedsAcceptance() async {
         let supervisorRole = makeSupervisorRole()
         let roleA = makeWorkerRole(
             id: "a", name: "RoleA",
@@ -96,7 +96,7 @@ final class TeamEngineScenarioTests: XCTestCase {
         }
 
         sut.start()
-        wait(for: [expectation], timeout: 2.0)
+        await fulfillment(of: [expectation], timeout: 2.0)
 
         // In afterEachRole, role A should get .needsAcceptance (not .done)
         let aCalls = mockStore.updateRoleStatusCalls.filter { $0.roleID == "a" }
@@ -108,7 +108,7 @@ final class TeamEngineScenarioTests: XCTestCase {
 
     /// In customCheckpoints mode, only checkpoint roles and the last role get .needsAcceptance.
     /// Non-checkpoint intermediate roles get .done.
-    func testCustomCheckpoints_onlyCheckpointRolesGetNeedsAcceptance() {
+    func testCustomCheckpoints_onlyCheckpointRolesGetNeedsAcceptance() async {
         let supervisorRole = makeSupervisorRole()
         let roleA = makeWorkerRole(id: "a", name: "A", requiredArtifacts: ["Supervisor Task"], producesArtifacts: ["Art A"])
         let roleB = makeWorkerRole(id: "b", name: "B", requiredArtifacts: ["Art A"], producesArtifacts: ["Art B"])
@@ -147,7 +147,7 @@ final class TeamEngineScenarioTests: XCTestCase {
         }
 
         sut.start()
-        wait(for: [expectation], timeout: 2.0)
+        await fulfillment(of: [expectation], timeout: 2.0)
 
         // A should be .done (not checkpoint, not last)
         let aCalls = mockStore.updateRoleStatusCalls.filter { $0.roleID == "a" }
@@ -165,7 +165,7 @@ final class TeamEngineScenarioTests: XCTestCase {
     // MARK: - Scenario 3: parallel flow
 
     /// After a shared dependency is produced, all roles requiring it should become ready simultaneously.
-    func testParallelFlow_twoRolesStartSimultaneously() {
+    func testParallelFlow_twoRolesStartSimultaneously() async {
         let supervisorRole = makeSupervisorRole()
         let designer = makeWorkerRole(
             id: "designer", name: "Designer",
@@ -218,7 +218,7 @@ final class TeamEngineScenarioTests: XCTestCase {
         }
 
         sut.start()
-        wait(for: [expectation], timeout: 3.0)
+        await fulfillment(of: [expectation], timeout: 3.0)
 
         // Both iOS and Android should have been started (findOrCreateStep called for both)
         XCTAssertTrue(mockStore.findOrCreateStepCalls.contains("ios"),
@@ -230,7 +230,7 @@ final class TeamEngineScenarioTests: XCTestCase {
     // MARK: - Scenario 4: diamond dependency
 
     /// A role requiring multiple artifacts should only start when ALL are produced.
-    func testDiamondDependency_roleWaitsForMultipleInputs() {
+    func testDiamondDependency_roleWaitsForMultipleInputs() async {
         let supervisorRole = makeSupervisorRole()
         let roleA = makeWorkerRole(id: "a", name: "A", requiredArtifacts: ["Supervisor Task"], producesArtifacts: ["Art A"])
         let roleB = makeWorkerRole(id: "b", name: "B", requiredArtifacts: ["Supervisor Task"], producesArtifacts: ["Art B"])
@@ -267,7 +267,7 @@ final class TeamEngineScenarioTests: XCTestCase {
         }
 
         sut.start()
-        wait(for: [expectation], timeout: 3.0)
+        await fulfillment(of: [expectation], timeout: 3.0)
 
         // C should have been started (both dependencies satisfied)
         XCTAssertTrue(mockStore.findOrCreateStepCalls.contains("c"),
@@ -277,7 +277,7 @@ final class TeamEngineScenarioTests: XCTestCase {
     // MARK: - Scenario 5: revision cascade
 
     /// A role with .revisionRequested status should be restarted by the engine.
-    func testRevisionCascade_revisionRequestedRolesGetRestarted() {
+    func testRevisionCascade_revisionRequestedRolesGetRestarted() async {
         let supervisorRole = makeSupervisorRole()
         let roleA = makeWorkerRole(id: "a", name: "A", requiredArtifacts: ["Supervisor Task"], producesArtifacts: ["Art A"])
 
@@ -309,7 +309,7 @@ final class TeamEngineScenarioTests: XCTestCase {
         }
 
         sut.start()
-        wait(for: [expectation], timeout: 3.0)
+        await fulfillment(of: [expectation], timeout: 3.0)
 
         // resetStepForRevision should have been called for A's step
         XCTAssertTrue(mockStore.resetStepForRevisionCalls.contains(stepAID),
@@ -319,7 +319,7 @@ final class TeamEngineScenarioTests: XCTestCase {
     // MARK: - Scenario 6: deadlock detection
 
     /// When no roles can start (circular dependency), the engine should fail with an error message.
-    func testDeadlock_noReadyRoles_engineFails() {
+    func testDeadlock_noReadyRoles_engineFails() async {
         let supervisorRole = makeSupervisorRole()
         // Circular: A requires Art B, B requires Art A
         let roleA = makeWorkerRole(id: "a", name: "A", requiredArtifacts: ["Art B"], producesArtifacts: ["Art A"])
@@ -339,7 +339,7 @@ final class TeamEngineScenarioTests: XCTestCase {
         }
 
         sut.start()
-        wait(for: [expectation], timeout: 2.0)
+        await fulfillment(of: [expectation], timeout: 2.0)
 
         XCTAssertEqual(sut.state, .failed)
         XCTAssertFalse(mockStore.setLastErrorMessageCalls.isEmpty,

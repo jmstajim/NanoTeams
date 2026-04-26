@@ -248,7 +248,7 @@ final class TeamEngineTests: XCTestCase {
 
     // MARK: - 11. testStart_whenNeedsAcceptance_ignored
 
-    func testStart_whenNeedsAcceptance_ignored() {
+    func testStart_whenNeedsAcceptance_ignored() async {
         let supervisorRole = makeSupervisorRole()
         let workerRole = makeWorkerRole(id: "eng", name: "Engineer", producesArtifacts: ["Code"])
         let team = makeTeam(roles: [supervisorRole, workerRole])
@@ -270,7 +270,7 @@ final class TeamEngineTests: XCTestCase {
         }
         // Since start is already called, if the run loop reaches needsAcceptance quickly
         // we may need to wait
-        wait(for: [expectation], timeout: 2.0)
+        await fulfillment(of: [expectation], timeout: 2.0)
 
         XCTAssertEqual(sut.state, .needsAcceptance)
 
@@ -334,7 +334,7 @@ final class TeamEngineTests: XCTestCase {
 
     // MARK: - 14. testNotifyExternalEvent_resumesFromNeedsAcceptance
 
-    func testNotifyExternalEvent_resumesFromNeedsAcceptance() {
+    func testNotifyExternalEvent_resumesFromNeedsAcceptance() async {
         let supervisorRole = makeSupervisorRole()
         let workerRole = makeWorkerRole(id: "eng", name: "Engineer", producesArtifacts: ["Code"])
         let team = makeTeam(roles: [supervisorRole, workerRole])
@@ -353,7 +353,7 @@ final class TeamEngineTests: XCTestCase {
                 expectation.fulfill()
             }
         }
-        wait(for: [expectation], timeout: 2.0)
+        await fulfillment(of: [expectation], timeout: 2.0)
         XCTAssertEqual(sut.state, .needsAcceptance)
 
         // Mark the role as accepted so the engine can proceed after resume
@@ -366,7 +366,7 @@ final class TeamEngineTests: XCTestCase {
 
     // MARK: - 15. testNotifyExternalEvent_resumesFromNeedsSupervisorInput
 
-    func testNotifyExternalEvent_resumesFromNeedsSupervisorInput() {
+    func testNotifyExternalEvent_resumesFromNeedsSupervisorInput() async {
         let supervisorRole = makeSupervisorRole()
         let workerRole = makeWorkerRole(id: "eng", name: "Engineer", producesArtifacts: ["Code"])
         let team = makeTeam(roles: [supervisorRole, workerRole])
@@ -400,7 +400,7 @@ final class TeamEngineTests: XCTestCase {
                 expectation.fulfill()
             }
         }
-        wait(for: [expectation], timeout: 2.0)
+        await fulfillment(of: [expectation], timeout: 2.0)
         XCTAssertEqual(sut.state, .needsSupervisorInput)
 
         // Now answer the question and notify
@@ -416,7 +416,7 @@ final class TeamEngineTests: XCTestCase {
 
     // MARK: - 14. testSetAutoIterationLimit_clampsToMin1
 
-    func testSetAutoIterationLimit_clampsToMin1() {
+    func testSetAutoIterationLimit_clampsToMin1() async {
         // Setting a value of 0 should clamp to 1
         sut.setAutoIterationLimitForTesting(0)
 
@@ -455,7 +455,7 @@ final class TeamEngineTests: XCTestCase {
         }
 
         sut.start()
-        wait(for: [expectation], timeout: 5.0)
+        await fulfillment(of: [expectation], timeout: 5.0)
 
         XCTAssertEqual(sut.state, .paused)
         XCTAssertFalse(mockStore.setLastErrorMessageCalls.isEmpty,
@@ -474,7 +474,7 @@ final class TeamEngineTests: XCTestCase {
         }
 
         sut.start()
-        wait(for: [expectation2], timeout: 5.0)
+        await fulfillment(of: [expectation2], timeout: 5.0)
 
         XCTAssertEqual(sut.state, .paused)
     }
@@ -570,7 +570,7 @@ final class TeamEngineTests: XCTestCase {
         XCTAssertEqual(callbackCount, 0)
     }
 
-    func testPause_fromNeedsAcceptance_setsPaused() {
+    func testPause_fromNeedsAcceptance_setsPaused() async {
         let supervisorRole = makeSupervisorRole()
         let workerRole = makeWorkerRole(id: "eng", name: "Engineer", producesArtifacts: ["Code"])
         let team = makeTeam(roles: [supervisorRole, workerRole])
@@ -589,7 +589,7 @@ final class TeamEngineTests: XCTestCase {
                 expectation.fulfill()
             }
         }
-        wait(for: [expectation], timeout: 2.0)
+        await fulfillment(of: [expectation], timeout: 2.0)
         XCTAssertEqual(sut.state, .needsAcceptance)
 
         sut.pause()
@@ -597,7 +597,7 @@ final class TeamEngineTests: XCTestCase {
         XCTAssertEqual(sut.state, .paused)
     }
 
-    func testPause_fromNeedsSupervisorInput_setsPaused() {
+    func testPause_fromNeedsSupervisorInput_setsPaused() async {
         let supervisorRole = makeSupervisorRole()
         let workerRole = makeWorkerRole(id: "eng", name: "Engineer", producesArtifacts: ["Code"])
         let team = makeTeam(roles: [supervisorRole, workerRole])
@@ -629,7 +629,7 @@ final class TeamEngineTests: XCTestCase {
                 expectation.fulfill()
             }
         }
-        wait(for: [expectation], timeout: 2.0)
+        await fulfillment(of: [expectation], timeout: 2.0)
         XCTAssertEqual(sut.state, .needsSupervisorInput)
 
         sut.pause()
@@ -639,7 +639,7 @@ final class TeamEngineTests: XCTestCase {
 
     // MARK: - notifyExternalEvent from .done and .failed
 
-    func testNotifyExternalEvent_resumesFromDone() {
+    func testNotifyExternalEvent_resumesFromDone() async {
         let supervisorRole = makeSupervisorRole()
         let workerRole = makeWorkerRole(id: "eng", name: "Engineer", producesArtifacts: ["Code"])
         let team = makeTeam(roles: [supervisorRole, workerRole])
@@ -661,7 +661,7 @@ final class TeamEngineTests: XCTestCase {
             if state == .done { doneExpectation.fulfill() }
         }
         sut.start()
-        wait(for: [doneExpectation], timeout: 2.0)
+        await fulfillment(of: [doneExpectation], timeout: 2.0)
         XCTAssertEqual(sut.state, .done)
 
         // Simulate restartRole: reset the role to .idle and step to .pending
@@ -674,7 +674,7 @@ final class TeamEngineTests: XCTestCase {
         XCTAssertEqual(sut.state, .running)
     }
 
-    func testNotifyExternalEvent_resumesFromFailed() {
+    func testNotifyExternalEvent_resumesFromFailed() async {
         let supervisorRole = makeSupervisorRole()
         let workerRole = makeWorkerRole(id: "eng", name: "Engineer", producesArtifacts: ["Code"])
         let team = makeTeam(roles: [supervisorRole, workerRole])
@@ -696,7 +696,7 @@ final class TeamEngineTests: XCTestCase {
             if state == .failed { failedExpectation.fulfill() }
         }
         sut.start()
-        wait(for: [failedExpectation], timeout: 2.0)
+        await fulfillment(of: [failedExpectation], timeout: 2.0)
         XCTAssertEqual(sut.state, .failed)
 
         // Simulate restartRole: reset the role to .idle and step to .pending
@@ -742,7 +742,7 @@ final class TeamEngineTests: XCTestCase {
     /// This reproduces the race condition: reconciliation and waitForStepCompletion could both
     /// detect step .done; if the second call ran after the downstream role started (.working),
     /// the old isLastRoleToComplete logic would exclude .working roles and incorrectly return true.
-    func testFinalOnly_intermediateRoleGetsDone_whenDownstreamIsWorking() {
+    func testFinalOnly_intermediateRoleGetsDone_whenDownstreamIsWorking() async {
         let supervisorRole = makeSupervisorRole()
         let roleA = makeWorkerRole(
             id: "a", name: "RoleA",
@@ -799,7 +799,7 @@ final class TeamEngineTests: XCTestCase {
         }
 
         sut.start()
-        wait(for: [expectation], timeout: 2.0)
+        await fulfillment(of: [expectation], timeout: 2.0)
 
         // Role A should be .done, NOT .needsAcceptance (it's not the last role)
         let aStatusCalls = mockStore.updateRoleStatusCalls.filter { $0.roleID == "a" }
@@ -812,7 +812,7 @@ final class TeamEngineTests: XCTestCase {
 
     /// Verifies that handleRoleCompleted is a no-op when the role's status is already .done.
     /// This guards against the double-call race (reconciliation + waitForStepCompletion).
-    func testHandleRoleCompleted_skipsWhenRoleAlreadyDone() {
+    func testHandleRoleCompleted_skipsWhenRoleAlreadyDone() async {
         let supervisorRole = makeSupervisorRole()
         let roleA = makeWorkerRole(
             id: "a", name: "RoleA",
@@ -853,7 +853,7 @@ final class TeamEngineTests: XCTestCase {
         }
 
         sut.start()
-        wait(for: [expectation], timeout: 2.0)
+        await fulfillment(of: [expectation], timeout: 2.0)
 
         // Reconciliation should NOT have called handleRoleCompleted for "a"
         // because its roleStatus is .done (not .working). Verify no re-update.
@@ -863,7 +863,7 @@ final class TeamEngineTests: XCTestCase {
     }
 
     /// Verifies that the last role in a .finalOnly chain correctly gets .needsAcceptance.
-    func testFinalOnly_lastRoleGetsNeedsAcceptance() {
+    func testFinalOnly_lastRoleGetsNeedsAcceptance() async {
         let supervisorRole = makeSupervisorRole()
         let roleA = makeWorkerRole(
             id: "a", name: "RoleA",
@@ -903,7 +903,7 @@ final class TeamEngineTests: XCTestCase {
         }
 
         sut.start()
-        wait(for: [expectation], timeout: 2.0)
+        await fulfillment(of: [expectation], timeout: 2.0)
 
         let aStatusCalls = mockStore.updateRoleStatusCalls.filter { $0.roleID == "a" }
         XCTAssertTrue(aStatusCalls.contains(where: { $0.status == .needsAcceptance }),
@@ -911,7 +911,7 @@ final class TeamEngineTests: XCTestCase {
     }
 
     /// Three-role chain A → B → C with .finalOnly: only C (last) should get .needsAcceptance.
-    func testFinalOnly_threeRoleChain_onlyLastGetsNeedsAcceptance() {
+    func testFinalOnly_threeRoleChain_onlyLastGetsNeedsAcceptance() async {
         let supervisorRole = makeSupervisorRole()
         let roleA = makeWorkerRole(id: "a", name: "A", requiredArtifacts: ["Supervisor Task"], producesArtifacts: ["Art A"])
         let roleB = makeWorkerRole(id: "b", name: "B", requiredArtifacts: ["Art A"], producesArtifacts: ["Art B"])
@@ -952,7 +952,7 @@ final class TeamEngineTests: XCTestCase {
         }
 
         sut.start()
-        wait(for: [expectation], timeout: 2.0)
+        await fulfillment(of: [expectation], timeout: 2.0)
 
         // Only C should have been set to .needsAcceptance
         let cCalls = mockStore.updateRoleStatusCalls.filter { $0.roleID == "c" }
@@ -970,7 +970,7 @@ final class TeamEngineTests: XCTestCase {
 
     /// Observer roles (no required/produced artifacts, not Supervisor) should not block
     /// the "last role" check in finalOnly mode.
-    func testFinalOnly_ObserverRolesSkipped_InLastRoleCheck() {
+    func testFinalOnly_ObserverRolesSkipped_InLastRoleCheck() async {
         let supervisorRole = makeSupervisorRole()
         let workerRole = makeWorkerRole(
             id: "worker", name: "Worker",
@@ -1020,7 +1020,7 @@ final class TeamEngineTests: XCTestCase {
         }
 
         sut.start()
-        wait(for: [expectation], timeout: 2.0)
+        await fulfillment(of: [expectation], timeout: 2.0)
 
         // Worker should get .needsAcceptance (observer doesn't block "last" check)
         let workerCalls = mockStore.updateRoleStatusCalls.filter { $0.roleID == "worker" }
