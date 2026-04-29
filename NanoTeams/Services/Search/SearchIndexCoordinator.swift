@@ -66,6 +66,9 @@ final class SearchIndexCoordinator {
     /// it via one follow-up build. Many FS events during a long embed →
     /// at most one extra build queued.
     @ObservationIgnored private var pendingVectorRefresh: Bool = false
+    /// Set by `stop()` to refuse new vector tasks; cleared by `start()`.
+    /// See `stop()`'s doc for the cancellation-tail race it closes.
+    @ObservationIgnored private var isStopped: Bool = false
     /// Snapshotted every time a vector build kicks off. `@MainActor` closure —
     /// safe to call from the coordinator's own isolation and captures any
     /// MainActor-resident `StoreConfiguration`.
@@ -108,6 +111,7 @@ final class SearchIndexCoordinator {
     /// and vector tasks; `awaitIndex()` blocks on the token build only so
     /// posting-list consumers don't wait minutes for an embedding refresh.
     func start() async {
+        isStopped = false
         if watcher == nil {
             let w = FileSystemWatcher(
                 paths: [workFolderRoot],
@@ -150,20 +154,44 @@ final class SearchIndexCoordinator {
     /// Tears down the watcher and cancels any in-flight build. This is the
     /// **only** legitimate site that cancels `currentVectorBuildTask` — FS
     /// events never do (see field doc).
+    ///
+    /// Lifecycle ordering matters here. `isStopped = true` and
+    /// `pendingVectorRefresh = false` are set BEFORE any cancel/await so that:
+    /// (a) any stale FS-event-driven `Task { @MainActor }` already queued by
+    ///     the watcher hits `startVectorBuild`'s `isStopped` gate and no-ops
+    ///     instead of spawning a successor;
+    /// (b) the in-flight vector task's tail respawn check
+    ///     (`if pendingVectorRefresh, !isStopped`) sees both flags false.
+    /// The vector await is a drain LOOP rather than a single `if let` as
+    /// belt-and-suspenders: a vector task that read its tail's flags BEFORE
+    /// `stop()` set them, but hadn't yet hopped through the call to
+    /// `startVectorBuild`, would still install a successor. The loop catches
+    /// that successor and any further chain. Empirically the loop runs at
+    /// most once after the fix; keeping it eliminates a regression class
+    /// where someone re-introduces a flag-read-without-gate path.
     func stop() async {
+        isStopped = true
+        pendingVectorRefresh = false
         watcher?.stop()
         watcher = nil
+
         currentTokenBuildTask?.cancel()
-        currentVectorBuildTask?.cancel()
         if let task = currentTokenBuildTask {
             _ = await task.value
         }
-        if let task = currentVectorBuildTask {
-            _ = await task.value
-        }
         currentTokenBuildTask = nil
-        currentVectorBuildTask = nil
-        pendingVectorRefresh = false
+
+        // `Task` is a struct, so `===` doesn't compile; `==` compares the
+        // underlying task handle by identity. The check is required because
+        // the awaited task itself never nils the slot — its tail may have
+        // replaced it with a successor. Nil only when no successor attached.
+        while let task = currentVectorBuildTask {
+            task.cancel()
+            _ = await task.value
+            if currentVectorBuildTask == task {
+                currentVectorBuildTask = nil
+            }
+        }
     }
 
     func rebuild() async {
@@ -319,6 +347,9 @@ final class SearchIndexCoordinator {
     }
 
     private func startVectorBuild() {
+        // Once `stop()` has fired, refuse to arm any new vector task — a
+        // cancelled task's tail must not respawn a fresh successor.
+        guard !isStopped else { return }
         pendingVectorRefresh = false
         // `Task { ... }` is unstructured — not a child of any enclosing
         // task — so a future cancellation of `currentTokenBuildTask`
@@ -330,7 +361,9 @@ final class SearchIndexCoordinator {
             let idx = await self.service.loadOrBuild(force: false)
             await self.performVectorBuild(searchIndex: idx, force: false)
             // Drain any FS events that arrived while we were building.
-            if self.pendingVectorRefresh {
+            // Suppressed once `stop()` has set the gate so a cancellation
+            // handoff doesn't leak an uncancelled successor.
+            if self.pendingVectorRefresh, !self.isStopped {
                 self.startVectorBuild()
             }
         }
@@ -393,4 +426,29 @@ final class SearchIndexCoordinator {
     }
 
     nonisolated deinit {}
+
+    #if DEBUG
+    /// Test-only accessor: simulates an FS-event-driven vector refresh
+    /// arriving while a build is in flight, without depending on watcher
+    /// timing. Used by `testStop_disarmsPendingRespawn` to prove that
+    /// `stop()` disarms the respawn even when the flag is set.
+    func _testForcePendingVectorRefresh() {
+        pendingVectorRefresh = true
+    }
+
+    /// Test-only accessor: lets stop-related tests assert the drain loop's
+    /// post-condition (slot is nil) without exposing the task reference.
+    var _testCurrentVectorBuildTaskIsNil: Bool {
+        currentVectorBuildTask == nil
+    }
+
+    /// Test-only accessor: simulates a late FS-event-driven refresh request
+    /// that races `stop()` — i.e. a `Task { @MainActor in scheduleEnsureFresh() }`
+    /// queued by the watcher callback before `stop()` tore the watcher down,
+    /// which then ran `performTokenBuild` and reached `requestVectorRefresh()`
+    /// after `stop()` already returned. Used by `testStop_blocksLateRefreshRequest`.
+    func _testRequestVectorRefresh() {
+        requestVectorRefresh()
+    }
+    #endif
 }

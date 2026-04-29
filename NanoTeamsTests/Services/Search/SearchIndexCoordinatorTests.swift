@@ -493,6 +493,116 @@ final class SearchIndexCoordinatorTests: XCTestCase {
             "Vector-build flag must be off after stop().")
     }
 
+    /// Regression: deterministic companion to `testStop_duringBuild_*`. The
+    /// coordinator's `pendingVectorRefresh` flag is intentionally set BEFORE
+    /// `stop()` to simulate an FS-event-driven refresh arriving mid-build.
+    /// Pre-fix, V1's tail (`if pendingVectorRefresh { startVectorBuild() }`)
+    /// would replace `currentVectorBuildTask` with a fresh, uncancelled V2
+    /// after V1 was cancelled, and `stop()`'s second `await` would run V2
+    /// to completion. The fix gates respawns behind `isStopped` and drains
+    /// any in-flight successor in a loop. This test proves no embed batches
+    /// run after `stop()` returns — strictly observable, not wall-clock.
+    func testStop_disarmsPendingRespawn() async throws {
+        try write("A.swift", content: "alpha beta gamma delta epsilon zeta eta")
+        try write("B.swift", content: "alpha beta gamma delta epsilon zeta eta")
+        let client = SlowRecordingEmbedClient()
+        client.delayNanos = 200_000_000
+        let c = makeCoordinatorWithMockEmbedder(client)
+
+        await c.start()
+        // Let the build actually enter its embed loop.
+        try await Task.sleep(nanoseconds: 80_000_000)
+
+        // Force the respawn arm without depending on FSEvents timing.
+        c._testForcePendingVectorRefresh()
+        await c.stop()
+
+        // Drain-loop post-condition: the vector slot is nil after stop().
+        XCTAssertTrue(c._testCurrentVectorBuildTaskIsNil,
+            "stop() must drain the vector slot to nil.")
+        XCTAssertFalse(c.isBuildingVectorIndex,
+            "Vector-build flag must be off after stop() drains all successors.")
+
+        // After stop() returns, no further embed batches must run — even
+        // if a successor build was queued via pendingVectorRefresh. Snapshot
+        // call count AFTER both the in-flight cancellation and any drain
+        // have settled (above assertion proves they have), then verify the
+        // count is stable across a window long enough for a full successor
+        // build (2 batches × 200ms = 400ms) to surface had it been spawned.
+        let callsAfterStop = client.callCount
+        try await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertEqual(client.callCount, callsAfterStop,
+            "stop() must disarm pendingVectorRefresh — no successor build allowed.")
+    }
+
+    /// Regression: a late FS-event-driven refresh that reaches the
+    /// coordinator AFTER `stop()` returned must not install a vector task.
+    /// Production scenario: the watcher's `onChange` callback creates a
+    /// `Task { @MainActor in scheduleEnsureFresh() }` BEFORE `stop()` tears
+    /// the watcher down. That Task is queued on MainActor and runs even
+    /// after the watcher is gone. Without `startVectorBuild`'s `isStopped`
+    /// gate, the late refresh would spawn a fresh vector build that
+    /// outlives the user's "stop" intent. We simulate the post-stop call
+    /// directly via `_testRequestVectorRefresh` rather than racing the
+    /// real watcher.
+    func testStop_blocksLateRefreshRequest() async throws {
+        try write("A.swift", content: "alpha beta gamma delta")
+        let client = RecordingEmbedClient()
+        let c = makeCoordinatorWithMockEmbedder(client)
+
+        await c.start()
+        await waitUntilVectorReady(c)
+        await c.stop()
+        let callsAfterStop = client.callCount
+
+        // Simulate a late watcher-driven refresh request landing on MainActor
+        // after stop() returned. Pre-fix this would spawn a fresh build via
+        // startVectorBuild; post-fix the isStopped gate must reject it.
+        c._testRequestVectorRefresh()
+
+        // No task should have been installed in the slot…
+        XCTAssertTrue(c._testCurrentVectorBuildTaskIsNil,
+            "Late refresh request post-stop must not install a vector task.")
+
+        // …and no embed batches should run when given time to surface.
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(client.callCount, callsAfterStop,
+            "Gate must block the embed pipeline from running post-stop.")
+        XCTAssertFalse(c.isBuildingVectorIndex,
+            "Vector-build flag must stay off after a late blocked refresh.")
+    }
+
+    /// Regression: `stop()` sets `isStopped = true`; `start()` must clear it.
+    /// Without the reset, the coordinator is permanently disarmed for
+    /// FS-event-driven respawns after the first stop/start cycle —
+    /// `startVectorBuild`'s gate refuses every subsequent invocation.
+    /// Locks in [SearchIndexCoordinator.swift:118](`isStopped = false`) in
+    /// `start()` so a future refactor can't drop it silently.
+    func testStartAfterStop_reArmsCoordinator() async throws {
+        try write("A.swift", content: "alpha beta gamma delta")
+        let c = makeCoordinatorWithMockEmbedder(RecordingEmbedClient())
+
+        // First lifecycle: start -> stop. After this, isStopped is true.
+        await c.start()
+        await waitUntilVectorReady(c)
+        await c.stop()
+
+        // Second lifecycle: start again. If isStopped weren't cleared, the
+        // vector build would never complete because every `startVectorBuild`
+        // call would be gated to no-op.
+        try write("B.swift", content: "epsilon zeta eta theta")
+        await c.start()
+        await waitUntilVectorReady(c)
+
+        guard case .ready(_, _, let count) = c.vectorIndexState else {
+            XCTFail("Expected .ready after restart, got \(c.vectorIndexState)")
+            return
+        }
+        XCTAssertGreaterThan(count, 0,
+            "Coordinator must rebuild after stop+start; isStopped must be cleared by start().")
+        await c.stop()
+    }
+
     /// Helper: poll `vectorIndexState` until `.ready` or timeout. Used by
     /// lifecycle tests where the build completes asynchronously inside
     /// `start()`. Default 10s — generous for parallel CI runners; the loop

@@ -26,9 +26,18 @@ class NTMSOrchestratorTestBase: XCTestCase {
         super.setUp()
         MonotonicClock.shared.reset()
         embeddingClient = RecordingLLMClient()
+        // Production debounce is 10 s — without overriding it here, every
+        // SearchIndexCoordinator that tests spin up serializes around a 10 s
+        // FSEvents coalescing window, dominating wall-clock time in
+        // `ExploratorySearchUserScenarioTests` (~20 s avg per test). The
+        // user-facing clamp floor (`searchIndexWatcherDebounceSecondsMin`,
+        // 0.5 s) is the lowest legal value for the configured setting.
+        let configuration = StoreConfiguration(storage: InMemoryConfigurationStorage())
+        configuration.searchIndexWatcherDebounceSeconds =
+            AppDefaults.searchIndexWatcherDebounceSecondsMin
         sut = NTMSOrchestrator(
             repository: NTMSRepository(),
-            configuration: StoreConfiguration(storage: InMemoryConfigurationStorage()),
+            configuration: configuration,
             embeddingLifecycle: EmbeddingModelLifecycleService(client: embeddingClient),
             // Stub the vector-index embedding path. Without this every
             // `SearchIndexCoordinator.start()` / `rebuild()` issued a real
