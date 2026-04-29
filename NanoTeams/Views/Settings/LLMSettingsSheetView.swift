@@ -2,16 +2,34 @@ import SwiftUI
 
 /// LLM settings with card layout.
 ///
-/// Holds shared state (connection status, fetched model lists) and dispatches to
-/// focused card sub-views in `Views/Settings/LLMSettings/`.
+/// Owns Test-Connection state. Model lists come from the shared
+/// `ModelCatalog`, so opening multiple settings tabs against the same
+/// server doesn't re-issue `/api/v1/models`.
 struct LLMSettingsView: View {
     @Environment(StoreConfiguration.self) var config
+    @Environment(NTMSOrchestrator.self) var store
+    @Environment(ModelCatalog.self) var modelCatalog
 
     @State private var connectionStatus: LLMConnectionStatus = .idle
     @State private var statusMessage: String = ""
-    @State private var availableModels: [String] = []
-    @State private var isFetchingModels: Bool = false
-    @State private var modelFetchError: String?
+
+    /// In-memory mirror of the LM Studio bearer token for the currently-typed
+    /// URL. `LLMTokenField` (inside `LLMEndpointEditor`) owns the
+    /// load-on-appear / save-on-change Keychain lifecycle — this view only
+    /// holds the binding so it can pass the live value to Test Connection.
+    @State private var apiToken: String = ""
+
+    private var availableModels: [String] {
+        modelCatalog.models(for: config.llmBaseURLString)
+    }
+
+    private var isFetchingModels: Bool {
+        modelCatalog.isFetching(config.llmBaseURLString)
+    }
+
+    private var modelFetchError: String? {
+        modelCatalog.error(for: config.llmBaseURLString)
+    }
 
     var body: some View {
         @Bindable var config = config
@@ -30,13 +48,21 @@ struct LLMSettingsView: View {
 
                 LLMServerConfigCard(
                     config: config,
+                    apiToken: $apiToken,
                     connectionStatus: connectionStatus,
                     statusMessage: statusMessage,
                     availableModels: availableModels,
                     isFetchingModels: isFetchingModels,
                     modelFetchError: modelFetchError,
                     onTestConnection: { Task { await testConnection() } },
-                    onFetchModels: { Task { await fetchModels() } }
+                    onRefreshModels: { Task { await modelCatalog.refresh(url: config.llmBaseURLString) } },
+                    onTokenSaveError: { error in
+                        store.lastErrorMessage = "Could not save API token: \(error.localizedDescription)"
+                    },
+                    onTokenLoadError: { error in
+                        store.lastErrorMessage = "Could not read saved API token: \(error.localizedDescription)"
+                    },
+                    onURLCommit: { Task { await testConnection() } }
                 )
 
                 LLMGenerationCard(config: config)
@@ -47,6 +73,14 @@ struct LLMSettingsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Colors.surfacePrimary)
+        .task {
+            // First-appear load only. URL edits do NOT re-trigger fetches
+            // here — that would ping the server on every keystroke. The
+            // URL field's onCommit (focus loss / Enter) runs Test Connection
+            // which refreshes on success; the Refresh button forces a
+            // re-fetch independently.
+            await modelCatalog.loadIfNeeded(url: config.llmBaseURLString)
+        }
     }
 
     // MARK: - Actions
@@ -55,33 +89,21 @@ struct LLMSettingsView: View {
         connectionStatus = .checking
         statusMessage = ""
 
-        let result = await LLMConnectionChecker.checkWithMessage(baseURL: config.llmBaseURLString)
+        let result = await LLMConnectionChecker.checkWithMessage(
+            baseURL: config.llmBaseURLString,
+            bearerToken: apiToken)
         connectionStatus = result.isReachable ? .success : .failure
         statusMessage = result.message
         if result.isReachable {
-            await fetchModels()
-        }
-    }
-
-    private func fetchModels() async {
-        guard config.llmProvider.supportsModelFetching else {
-            availableModels = []
-            return
-        }
-
-        isFetchingModels = true
-        modelFetchError = nil
-        defer { isFetchingModels = false }
-
-        do {
-            availableModels = try await LLMConnectionChecker.fetchAvailableModels(config: config)
-        } catch {
-            modelFetchError = error.localizedDescription
+            await modelCatalog.refresh(url: config.llmBaseURLString)
         }
     }
 }
 
 #Preview {
+    @Previewable @State var config = StoreConfiguration()
+    @Previewable @State var catalog = ModelCatalog()
     LLMSettingsView()
-        .environment(StoreConfiguration())
+        .environment(config)
+        .environment(catalog)
 }

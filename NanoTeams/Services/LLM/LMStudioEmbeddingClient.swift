@@ -26,9 +26,14 @@ import Foundation
 struct LMStudioEmbeddingClient: EmbeddingClient {
 
     let session: any NetworkSession
+    let tokenResolver: any LLMTokenResolver
 
-    init(session: any NetworkSession = URLSession.shared) {
+    init(
+        session: any NetworkSession = URLSession.shared,
+        tokenResolver: any LLMTokenResolver = DefaultLLMTokenResolver()
+    ) {
         self.session = session
+        self.tokenResolver = tokenResolver
     }
 
     func embed(texts: [String], config: EmbeddingConfig) async throws -> [[Float]] {
@@ -54,6 +59,7 @@ struct LMStudioEmbeddingClient: EmbeddingClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.applyLMStudioBearer(baseURL: config.baseURLString, resolver: tokenResolver)
         request.timeoutInterval = config.requestTimeout
         request.httpBody = body
 

@@ -14,9 +14,14 @@ import Foundation
 struct NativeLMStudioClient: LLMClient {
 
     let session: any NetworkSession
+    let tokenResolver: any LLMTokenResolver
 
-    init(session: any NetworkSession = URLSession.shared) {
+    init(
+        session: any NetworkSession = URLSession.shared,
+        tokenResolver: any LLMTokenResolver = DefaultLLMTokenResolver()
+    ) {
         self.session = session
+        self.tokenResolver = tokenResolver
     }
 
     // MARK: - Public API
@@ -47,6 +52,7 @@ struct NativeLMStudioClient: LLMClient {
                     var request = URLRequest(url: url)
                     request.httpMethod = "POST"
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    request.applyLMStudioBearer(baseURL: config.baseURLString, resolver: tokenResolver)
                     // Reasoning/MoE models can spend minutes producing the first token on
                     // large prompts. URLRequest's 60s default would otherwise cause the
                     // request to time out before any content arrives. 0 = wait indefinitely.
@@ -219,6 +225,7 @@ struct NativeLMStudioClient: LLMClient {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.timeoutInterval = 5
+        request.applyLMStudioBearer(baseURL: config.baseURLString, resolver: tokenResolver)
 
         let (data, response) = try await self.session.sessionData(for: request)
 
@@ -283,6 +290,7 @@ struct NativeLMStudioClient: LLMClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.applyLMStudioBearer(baseURL: baseURLString, resolver: tokenResolver)
         request.timeoutInterval = 600
         request.httpBody = body
 
@@ -330,6 +338,7 @@ struct NativeLMStudioClient: LLMClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.applyLMStudioBearer(baseURL: baseURLString, resolver: tokenResolver)
         request.timeoutInterval = 30
         request.httpBody = body
 
@@ -383,6 +392,7 @@ struct NativeLMStudioClient: LLMClient {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.timeoutInterval = 5
+        request.applyLMStudioBearer(baseURL: baseURLString, resolver: tokenResolver)
 
         let (data, response) = try await self.session.sessionData(for: request)
         guard let http = response as? HTTPURLResponse else {

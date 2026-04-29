@@ -60,7 +60,7 @@ struct TeamActivityComposer: View {
     /// `onGeometryChange` does not fire (no value change), and a `.infinity` reseed
     /// would clamp the frame to `maxPreviewHeight` until the next geometry callback.
     @State private var questionContentHeight: CGFloat = .infinity
-    /// Tracks which chip the cursor is hovering over (Spotify-style hover feedback).
+    /// Tracks which chip the cursor is hovering over for hover feedback.
     @State private var hoveredChipRecipient: Recipient? = nil
     /// Whether the question preview card is collapsed to a single header line.
     @State private var isQuestionCollapsed: Bool = false
@@ -218,7 +218,7 @@ struct TeamActivityComposer: View {
         }
     }
 
-    // MARK: - Recipient Chips (Spotify-style horizontal pill row)
+    // MARK: - Recipient Chips (horizontal pill row)
 
     private var chipOptionsComputed: [ChipOption] {
         Self.computeChipOptions(

@@ -249,9 +249,15 @@ struct SettingsPillButton: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: Spacing.xs) {
-                Image(systemName: icon)
+                // `.inline` matches the system-icon footprint (14×14) so the
+                // loader visually replaces the leading icon — button keeps
+                // its resting size and reads as one symbol + label.
+                if isLoading {
+                    NTMSLoader(.inline)
+                } else {
+                    Image(systemName: icon)
+                }
                 Text(title)
-                if isLoading { NTMSLoader(.small) }
             }
             .font(Typography.captionSemibold)
             .foregroundStyle(isDestructive ? Colors.error : .secondary)

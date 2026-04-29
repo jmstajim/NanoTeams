@@ -2,16 +2,19 @@ import SwiftUI
 
 /// Vision (image analysis) configuration as a top-level Settings tab.
 ///
-/// Owns the `LLMVisionCard` previously embedded in the LLM Settings sheet,
-/// plus auto-default behavior: if no vision model is chosen, adopt the main
-/// LLM model when it appears in the vision-capable list.
+/// Owns the `LLMVisionCard`. The card binds its enable toggle directly to
+/// `StoreConfiguration.visionEnabled` (persisted), so the state survives
+/// tab switches and app restarts. The card itself owns its model-fetch
+/// loop so it can gate fetches on the override fields.
 struct VisionSettingsView: View {
     @Environment(StoreConfiguration.self) var config
+    @Environment(NTMSOrchestrator.self) var store
 
-    @State private var visionEnabled: Bool = false
-    @State private var visionAvailableModels: [String] = []
-    @State private var isFetchingVisionModels: Bool = false
-    @State private var visionModelFetchError: String?
+    /// Per-vision-server bearer token. `LLMTokenField` (inside
+    /// `LLMEndpointEditor`) owns the load/save lifecycle keyed by the live
+    /// vision URL — when the vision URL is empty the field lookup falls back
+    /// to the main LLM URL via inheritance handled at the resolver layer.
+    @State private var apiToken: String = ""
 
     var body: some View {
         @Bindable var config = config
@@ -20,57 +23,26 @@ struct VisionSettingsView: View {
             VStack(spacing: Spacing.xl) {
                 LLMVisionCard(
                     config: config,
-                    visionEnabled: $visionEnabled,
-                    visionAvailableModels: visionAvailableModels,
-                    isFetchingVisionModels: isFetchingVisionModels,
-                    visionModelFetchError: visionModelFetchError,
-                    onFetchVisionModels: { Task { await fetchVisionModels() } }
+                    apiToken: $apiToken,
+                    onTokenSaveError: { error in
+                        store.lastErrorMessage = "Could not save API token: \(error.localizedDescription)"
+                    },
+                    onTokenLoadError: { error in
+                        store.lastErrorMessage = "Could not read saved API token: \(error.localizedDescription)"
+                    }
                 )
             }
             .padding(Spacing.xl)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Colors.surfacePrimary)
-        .task {
-            visionEnabled = config.isVisionConfigured
-            if visionEnabled {
-                await fetchVisionModels()
-            }
-        }
-        .onChange(of: visionEnabled) { oldValue, newValue in
-            if !oldValue, newValue {
-                Task { await fetchVisionModels() }
-            }
-        }
-    }
-
-    // MARK: - Actions
-
-    private func fetchVisionModels() async {
-        isFetchingVisionModels = true
-        visionModelFetchError = nil
-        defer { isFetchingVisionModels = false }
-
-        do {
-            let visionURL = config.visionBaseURLString.isEmpty ? config.llmBaseURLString : config.visionBaseURLString
-            let fetchConfig = LLMConfig(
-                provider: config.llmProvider,
-                baseURLString: visionURL,
-                modelName: config.visionModelName
-            )
-            visionAvailableModels = try await LLMClientRouter().fetchModels(config: fetchConfig, visionOnly: true)
-
-            if config.visionModelName.isEmpty,
-               visionAvailableModels.contains(config.llmModelName) {
-                config.visionModelName = config.llmModelName
-            }
-        } catch {
-            visionModelFetchError = error.localizedDescription
-        }
     }
 }
 
 #Preview {
+    @Previewable @State var config = StoreConfiguration()
+    @Previewable @State var catalog = ModelCatalog()
     VisionSettingsView()
-        .environment(StoreConfiguration())
+        .environment(config)
+        .environment(catalog)
 }

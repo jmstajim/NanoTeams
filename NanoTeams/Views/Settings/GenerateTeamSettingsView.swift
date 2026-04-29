@@ -1,14 +1,12 @@
 import SwiftUI
 
-/// Settings page for Generate Team flow. Owns shared state (model fetch) and
-/// delegates rendering to focused cards under `GenerateTeamSettings/`.
+/// Settings page for Generate Team flow. Delegates rendering to focused
+/// cards under `GenerateTeamSettings/`. The LLM-override card reads its
+/// model list from the shared `ModelCatalog`, so this parent doesn't
+/// need any fetch state of its own.
 struct GenerateTeamSettingsView: View {
     @Environment(StoreConfiguration.self) var config
-    var client: any LLMClient = LLMClientRouter()
-
-    @State private var availableModels: [String] = []
-    @State private var isFetchingModels: Bool = false
-    @State private var modelFetchError: String?
+    @Environment(NTMSOrchestrator.self) var store
 
     var body: some View {
         @Bindable var config = config
@@ -27,10 +25,12 @@ struct GenerateTeamSettingsView: View {
 
                 GenerateTeamLLMOverrideCard(
                     config: config,
-                    availableModels: availableModels,
-                    isFetchingModels: isFetchingModels,
-                    modelFetchError: modelFetchError,
-                    onFetchModels: { Task { await fetchModels() } }
+                    onTokenSaveError: { error in
+                        store.lastErrorMessage = "Could not save API token: \(error.localizedDescription)"
+                    },
+                    onTokenLoadError: { error in
+                        store.lastErrorMessage = "Could not read saved API token: \(error.localizedDescription)"
+                    }
                 )
 
                 GenerateTeamSystemPromptCard(config: config)
@@ -41,37 +41,16 @@ struct GenerateTeamSettingsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Colors.surfacePrimary)
-        .onAppear {
-            if config.teamGenLLMOverride != nil && availableModels.isEmpty && !isFetchingModels {
-                Task { await fetchModels() }
-            }
-        }
-    }
-
-    // MARK: - Actions
-
-    private func fetchModels() async {
-        guard let override = config.teamGenLLMOverride else { return }
-        isFetchingModels = true
-        modelFetchError = nil
-        defer { isFetchingModels = false }
-
-        let fetchConfig = LLMConfig(
-            provider: .lmStudio,
-            baseURLString: override.baseURLString ?? config.llmBaseURLString,
-            modelName: override.modelName
-        )
-
-        do {
-            availableModels = try await client.fetchModels(config: fetchConfig, visionOnly: false)
-        } catch {
-            modelFetchError = error.localizedDescription
-        }
     }
 }
 
 #Preview("Generate Team Settings") {
+    @Previewable @State var config = StoreConfiguration()
+    @Previewable @State var catalog = ModelCatalog()
+    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     GenerateTeamSettingsView()
-        .environment(StoreConfiguration())
+        .environment(config)
+        .environment(catalog)
+        .environment(store)
         .frame(width: 720, height: 800)
 }

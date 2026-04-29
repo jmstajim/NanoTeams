@@ -27,32 +27,88 @@ extension LLMExecutionService {
     // MARK: - LLM Override Pre-flight
 
     /// Pre-flight check — verifies LM Studio server reachability before use.
+    /// On auth failure (401/403) the override is **kept** rather than silently
+    /// falling back to the global config — that would mask "user enabled auth
+    /// on this server but didn't add a token", which is the exact situation
+    /// the user needs to know about. Transport / non-auth HTTP errors still
+    /// fall back to the global config so the run isn't wedged by a momentarily
+    /// unreachable override server.
     static func preflightCheck(
         effectiveConfig: LLMConfig,
         globalConfig: LLMConfig,
         stepID: String,
         service: LLMExecutionService,
-        session: any NetworkSession = URLSession.shared
+        session: any NetworkSession = URLSession.shared,
+        resolver: any LLMTokenResolver = DefaultLLMTokenResolver()
     ) async -> LLMConfig {
-        // Check server reachability (5s timeout)
+        await preflightDecision(
+            effectiveConfig: effectiveConfig,
+            globalConfig: globalConfig,
+            session: session,
+            resolver: resolver,
+            appendSystemMessage: { content in
+                await service.appendLLMMessage(stepID: stepID, role: .system, content: content)
+            }
+        )
+    }
+
+    /// Pure decision-with-callback variant — tests inject a `NetworkSession`
+    /// returning the desired status and capture the system messages via the
+    /// closure. Not constructing a real `LLMExecutionService` keeps preflight
+    /// tests independent of the orchestrator + repository scaffolding.
+    static func preflightDecision(
+        effectiveConfig: LLMConfig,
+        globalConfig: LLMConfig,
+        session: any NetworkSession,
+        resolver: any LLMTokenResolver,
+        appendSystemMessage: (String) async -> Void
+    ) async -> LLMConfig {
         do {
             guard let checkURL = URL(string: effectiveConfig.baseURLString)?
-                .appendingPathComponent("v1/models") else {
+                .appendingPathComponent("api/v1/models") else {
                 throw LLMClientError.invalidBaseURL(effectiveConfig.baseURLString)
             }
             var request = URLRequest(url: checkURL)
             request.timeoutInterval = 5
+            request.applyLMStudioBearer(baseURL: effectiveConfig.baseURLString, resolver: resolver)
             let (_, response) = try await session.sessionData(for: request)
-            guard let http = response as? HTTPURLResponse,
-                  (200..<300).contains(http.statusCode) else {
-                throw LLMClientError.badHTTPStatus(
-                    (response as? HTTPURLResponse)?.statusCode ?? 0, nil)
+            guard let http = response as? HTTPURLResponse else {
+                throw LLMClientError.badHTTPStatus(0, nil)
+            }
+            if !(200..<300).contains(http.statusCode) {
+                // 401/403: keep the override and let the LLM call surface the
+                // auth failure. Falling back to global would hide the misconfig.
+                if LLMAuthErrorClassifier.authFailureKind(status: http.statusCode) != nil {
+                    await appendSystemMessage(
+                        LLMAuthErrorClassifier.message(forStatus: http.statusCode, body: nil)
+                    )
+                    return effectiveConfig
+                }
+                throw LLMClientError.badHTTPStatus(http.statusCode, nil)
             }
             return effectiveConfig
+        } catch let error as LLMClientError {
+            // `invalidBaseURL` is not a transient transport failure — the
+            // override URL itself is malformed. Falling back to the global
+            // would mask the misconfig (every subsequent role-override
+            // request would also fail). Keep the override and surface the
+            // validation error so the user fixes the URL instead of
+            // wondering why their override silently runs on the global.
+            if case .invalidBaseURL = error {
+                await appendSystemMessage(
+                    "LLM override URL is invalid: \(effectiveConfig.baseURLString). "
+                        + "Fix the URL in Settings → LLM or per-role override."
+                )
+                return effectiveConfig
+            }
+            await appendSystemMessage(
+                "LLM server (\(effectiveConfig.baseURLString)) unavailable, using default."
+            )
+            return globalConfig
         } catch {
-            await service.appendLLMMessage(
-                stepID: stepID, role: .system,
-                content: "LLM server (\(effectiveConfig.baseURLString)) unavailable, using default.")
+            await appendSystemMessage(
+                "LLM server (\(effectiveConfig.baseURLString)) unavailable, using default."
+            )
             return globalConfig
         }
     }

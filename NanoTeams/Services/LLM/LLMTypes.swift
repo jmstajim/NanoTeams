@@ -12,7 +12,12 @@ enum LLMProvider: String, Codable, Hashable, CaseIterable, Identifiable {
     }
 
     var defaultBaseURL: String {
-        "http://localhost:1234"
+        // `127.0.0.1` over `localhost` because the UI placeholder + the
+        // Keychain key normalization both treat them as distinct hosts —
+        // keeping a single canonical form avoids drift between what the
+        // user sees, what Reset restores, and what the bearer token is
+        // saved under.
+        "http://127.0.0.1:1234"
     }
 
     var defaultModel: String {
@@ -234,9 +239,23 @@ enum LLMClientError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .invalidBaseURL(let s):
-            "Invalid LLM base URL: \(s)"
+            // Empty / whitespace URL means "not configured yet" rather than
+            // "user typed something invalid" — surface a hint instead of the
+            // raw empty string so onAppear-triggered preflights don't show
+            // a useless `Invalid LLM base URL:` row.
+            if s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                "Server address is empty. Enter the LM Studio URL above."
+            } else {
+                "Invalid LLM base URL: \(s)"
+            }
         case .badHTTPStatus(let code, let body):
-            if let body {
+            // 401 / 403: route through the auth classifier so every UI that
+            // surfaces this error (settings cards, role editor, status banners)
+            // shows the actionable "add your API token" message instead of
+            // dumping the raw LM Studio JSON envelope.
+            if LLMAuthErrorClassifier.isAuthFailure(status: code) {
+                LLMAuthErrorClassifier.message(forStatus: code, body: body)
+            } else if let body {
                 "LLM request failed with HTTP \(code): \(body)"
             } else {
                 "LLM request failed with HTTP status \(code)"

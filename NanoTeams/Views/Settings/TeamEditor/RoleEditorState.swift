@@ -32,7 +32,6 @@ struct RoleEditorState {
     var usePlanningPhase: Bool = true
     var requiredArtifacts: [String] = []
     var producedArtifacts: [String] = []
-    var llmOverrideEnabled: Bool = false
     var llmBaseURL: String = ""
     var llmModelName: String = ""
     var overrideMaxTokens: Int = 0
@@ -58,8 +57,10 @@ struct RoleEditorState {
         requiredArtifacts = role.dependencies.requiredArtifacts
         producedArtifacts = role.dependencies.producesArtifacts
 
-        if let override = role.llmOverride, !override.isEmpty {
-            llmOverrideEnabled = true
+        // Override fields seed from the persisted struct directly. With no
+        // master toggle, the runtime treats empty fields as "use global"
+        // and a fully-empty struct round-trips back to `nil` at save time.
+        if let override = role.llmOverride {
             llmBaseURL = override.baseURLString ?? ""
             llmModelName = override.modelName ?? ""
             overrideMaxTokens = override.maxTokens ?? 0

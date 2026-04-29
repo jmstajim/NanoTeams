@@ -17,7 +17,9 @@ final class LMStudioClientTests: XCTestCase {
 
     func testConfigurationDefaultValues() {
         let config = LLMConfig()
-        XCTAssertEqual(config.baseURLString, "http://localhost:1234")
+        // 127.0.0.1, not localhost — see `LLMProvider.defaultBaseURL` rationale
+        // (Keychain bearer-token key normalization keeps the two distinct).
+        XCTAssertEqual(config.baseURLString, "http://127.0.0.1:1234")
         XCTAssertEqual(config.modelName, "openai/gpt-oss-20b")
     }
 

@@ -231,6 +231,12 @@ enum EmbeddingClientError: LocalizedError, Equatable {
         case .timeout:
             return "Embedding request timed out."
         case .httpError(let status, let message):
+            // 401 / 403: route through the auth classifier so the user sees
+            // the actionable "add your API token" message instead of the raw
+            // LM Studio JSON envelope. Mirrors `LLMClientError.errorDescription`.
+            if LLMAuthErrorClassifier.isAuthFailure(status: status) {
+                return LLMAuthErrorClassifier.message(forStatus: status, body: message)
+            }
             if let message, !message.isEmpty {
                 return "Embedding HTTP \(status): \(message.prefix(160))"
             }

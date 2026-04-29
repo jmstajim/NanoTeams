@@ -1,12 +1,12 @@
 import SwiftUI
 
-/// Settings card for the semantic vector index powering `expand`.
-/// Three sections, top-to-bottom:
-/// 1. Status — count, coverage, model name, failures.
-/// 2. Model config — embedding server URL + model name.
-/// 3. Thresholds — per-token and whole-phrase cosine cutoffs.
-/// Plus a primary "Rebuild embeddings" button and an overflow-menu action
-/// for a force-full rebuild.
+/// Settings card for the embedding server / model used by Exploratory
+/// Search. Mirrors `LLMVisionCard` visually: the body is just the
+/// `LLMEndpointEditor` (URL + token + model picker), with build status
+/// and Rebuild actions surfaced when the feature is enabled.
+///
+/// Thresholds live in `ExploratorySearchThresholdsCard` so this card
+/// stays focused on server / model config.
 struct ExploratorySearchEmbeddingsCard: View {
     @Bindable var config: StoreConfiguration
     var coordinator: SearchIndexCoordinator?
@@ -17,19 +17,48 @@ struct ExploratorySearchEmbeddingsCard: View {
     /// orchestrator's `onExploratorySearchEmbeddingConfigChanged` hook so the
     /// LM Studio embed model is auto unloaded-then-reloaded.
     var onConfigChanged: () -> Void = {}
+    /// Surfaced by the parent view so Keychain write failures land in the
+    /// app-wide error banner instead of disappearing silently.
+    var onTokenSaveError: ((Error) -> Void)? = nil
+    /// Surfaced by the parent view so Keychain READ failures (locked,
+    /// ACL denied, corrupt) land in the app-wide error banner — without
+    /// this wired the user just sees an empty field and a 401 loop.
+    var onTokenLoadError: ((Error) -> Void)? = nil
     /// Injected for testability. Defaults to the real router.
     var client: any LLMClient = LLMClientRouter()
 
-    // MARK: - Picker state
-    //
-    // Scoped to this card (not persisted). Re-fetched on appear via the
-    // picker's `onFetch` hook, and on Refresh click. `pickerModel` mirrors
-    // `config.exploratorySearchEmbeddingConfig?.modelName`; binding sync happens
-    // inside `modelPickerBinding` so the Picker can show the stored value
-    // even before the first fetch completes.
     @State private var availableEmbeddingModels: [String] = []
     @State private var isFetchingEmbeddingModels = false
     @State private var fetchEmbeddingModelsError: String?
+
+    /// Per-embedding-server bearer token. `LLMTokenField` (inside
+    /// `LLMEndpointEditor`) owns the load/save lifecycle keyed by the
+    /// embedding URL.
+    @State private var apiToken: String = ""
+
+    /// URL the picker reads from — override URL when typed, otherwise
+    /// the global LLM URL via `EmbeddingConfig.defaultNomicLMStudio`
+    /// fallback. Mirrors the runtime resolver.
+    private var effectiveFetchURL: String {
+        config.effectiveEmbeddingConfig.baseURLString
+    }
+
+    private var inheritedURLPrompt: String {
+        let global = config.llmBaseURLString.trimmingCharacters(in: .whitespaces)
+        return global.isEmpty ? "http://127.0.0.1:1234" : global
+    }
+
+    private var emptyModelLabel: String {
+        "Use default: \(EmbeddingConfig.defaultNomicLMStudio.modelName)"
+    }
+
+    /// Suppress the override editor's status row when the build status
+    /// already explains the same connection failure (`.modelUnavailable`).
+    private var statusAlreadyShowsConnectionFailure: Bool {
+        guard let coordinator else { return false }
+        if case .modelUnavailable = coordinator.vectorIndexState { return true }
+        return false
+    }
 
     var body: some View {
         SettingsCard(
@@ -37,211 +66,66 @@ struct ExploratorySearchEmbeddingsCard: View {
             systemImage: "sparkle.magnifyingglass",
             footer: "Embeddings let Exploratory Search surface translations, synonyms, and related terms — computed once after index build, reused on every query."
         ) {
+            LLMEndpointEditor(
+                baseURL: baseURLBinding,
+                modelName: modelNameBinding,
+                apiToken: $apiToken,
+                urlPrompt: inheritedURLPrompt,
+                emptyModelLabel: emptyModelLabel,
+                onTokenSaveError: onTokenSaveError,
+                onTokenLoadError: onTokenLoadError,
+                onURLCommit: { Task { await fetchEmbeddingModels() } },
+                availableModels: availableEmbeddingModels,
+                isFetchingModels: isFetchingEmbeddingModels,
+                status: statusAlreadyShowsConnectionFailure
+                    ? nil
+                    : EndpointStatus.resolve(
+                        fetchError: fetchEmbeddingModelsError,
+                        isFetching: isFetchingEmbeddingModels
+                    ),
+                onRefreshModels: { Task { await fetchEmbeddingModels() } }
+            )
+
             if let coordinator {
-                statusSection(coordinator: coordinator)
-                Divider().padding(.vertical, Spacing.xs)
-                modelSection(coordinator: coordinator)
-                Divider().padding(.vertical, Spacing.xs)
-                thresholdsSection()
+                buildStatusRow(coordinator: coordinator)
                 actionsRow(coordinator: coordinator)
             } else {
-                Text("Exploratory Search is disabled. Enable it above to build the embedding index.")
+                Text("Enable Exploratory Search above to build the embedding index using these settings.")
                     .font(Typography.caption)
                     .foregroundStyle(Colors.textTertiary)
             }
         }
+        .task {
+            // First-appear load only. URL edits don't re-trigger — onCommit
+            // (Enter / focus loss) and the Refresh button are the user-driven
+            // re-fetch paths.
+            guard availableEmbeddingModels.isEmpty else { return }
+            await fetchEmbeddingModels()
+        }
     }
 
-    // MARK: - Status
+    // MARK: - Build status (compact one-row summary)
 
     @ViewBuilder
-    private func statusSection(coordinator: SearchIndexCoordinator) -> some View {
-        statusRow(
-            label: "Status",
-            value: statusLabel(state: coordinator.vectorIndexState,
-                               building: coordinator.isBuildingVectorIndex),
-            tint: statusTint(state: coordinator.vectorIndexState)
-        )
+    private func buildStatusRow(coordinator: SearchIndexCoordinator) -> some View {
+        HStack(spacing: Spacing.xs) {
+            Image(systemName: statusIcon(state: coordinator.vectorIndexState,
+                                         building: coordinator.isBuildingVectorIndex))
+                .foregroundStyle(statusTint(state: coordinator.vectorIndexState)
+                                 ?? Colors.textSecondary)
+            Text(statusLabel(state: coordinator.vectorIndexState,
+                             building: coordinator.isBuildingVectorIndex))
+                .font(Typography.caption)
+                .foregroundStyle(Colors.textSecondary)
+            Spacer(minLength: 0)
+        }
 
         if let progress = coordinator.vectorIndexProgress {
             ProgressView(value: Double(progress.processed),
                          total: Double(max(progress.total, 1)))
                 .progressViewStyle(.linear)
-            HStack {
-                Text("\(progress.processed) of \(progress.total)")
-                    .font(Typography.caption)
-                    .foregroundStyle(Colors.textSecondary)
-                if progress.failed > 0 {
-                    Spacer()
-                    Text("\(progress.failed) failed")
-                        .font(Typography.caption)
-                        .foregroundStyle(Colors.warning)
-                }
-            }
-        }
-
-        if case .ready(let coverage, let failed, let vectorsCount) = coordinator.vectorIndexState {
-            statusRow(
-                label: "Embeddings",
-                value: "\(vectorsCount)"
-            )
-            statusRow(
-                label: "Token coverage",
-                value: percentString(coverage)
-            )
-            if failed > 0 {
-                statusRow(
-                    label: "Failed",
-                    value: "\(failed)",
-                    tint: Colors.warning
-                )
-            }
-        }
-
-        if case .error(let message) = coordinator.vectorIndexState {
-            Text(message)
-                .font(Typography.caption)
-                .foregroundStyle(Colors.error)
-        }
-
-        if case .modelUnavailable(let reason) = coordinator.vectorIndexState {
-            Text(reason)
-                .font(Typography.caption)
-                .foregroundStyle(Colors.warning)
         }
     }
-
-    // MARK: - Model config
-
-    @ViewBuilder
-    private func modelSection(coordinator: SearchIndexCoordinator) -> some View {
-        // Suppress the picker's "Failed to load embedding models" line when
-        // the Status section already explains the same connection failure
-        // (`.modelUnavailable`). Two warnings stacked vertically with the
-        // same root cause is just noise.
-        let statusAlreadyShowsConnectionFailure: Bool = {
-            if case .modelUnavailable = coordinator.vectorIndexState { return true }
-            return false
-        }()
-        LLMElevatedTextField(
-            "Server Address",
-            text: baseURLBinding,
-            prompt: EmbeddingConfig.defaultNomicLMStudio.baseURLString
-        )
-        LLMModelPickerSection(
-            modelName: modelPickerBinding,
-            availableModels: availableEmbeddingModels,
-            fetchError: statusAlreadyShowsConnectionFailure ? nil : fetchEmbeddingModelsError,
-            isFetching: isFetchingEmbeddingModels,
-            emptyLabel: EmbeddingConfig.defaultNomicLMStudio.modelName,
-            onFetch: { Task { await fetchEmbeddingModels() } }
-        )
-    }
-
-    /// Fetches embedding-type models from the server. Filtered on the client
-    /// side to LM Studio's `type == "embeddings"` — chat and vision models
-    /// don't surface in this picker.
-    private func fetchEmbeddingModels() async {
-        isFetchingEmbeddingModels = true
-        fetchEmbeddingModelsError = nil
-        defer { isFetchingEmbeddingModels = false }
-        do {
-            availableEmbeddingModels = try await client.fetchEmbeddingModels(
-                config: fetchConfig
-            )
-        } catch {
-            fetchEmbeddingModelsError = "Failed to load embedding models: \(error.localizedDescription)"
-        }
-    }
-
-    /// `LLMConfig` shaped for the fetch call. The picker only needs URL +
-    /// a placeholder model (fetchEmbeddingModels ignores `modelName`).
-    private var fetchConfig: LLMConfig {
-        let cfg = config.effectiveEmbeddingConfig
-        return LLMConfig(
-            provider: .lmStudio,
-            baseURLString: cfg.baseURLString,
-            modelName: cfg.modelName,
-            maxTokens: 0,
-            temperature: 0.0
-        )
-    }
-
-    private var baseURLBinding: Binding<String> {
-        Binding(
-            get: { config.exploratorySearchEmbeddingConfig?.baseURLString ?? "" },
-            set: { updateConfig(\.baseURLString, $0.isEmpty ? nil : $0) }
-        )
-    }
-
-    private var modelNameBinding: Binding<String> {
-        Binding(
-            get: { config.exploratorySearchEmbeddingConfig?.modelName ?? "" },
-            set: { updateConfig(\.modelName, $0.isEmpty ? nil : $0) }
-        )
-    }
-
-    /// Binding the Picker reads / writes. Same storage as `modelNameBinding`
-    /// but exists so the Picker's `Text(modelName).tag(modelName)` path can
-    /// preserve a pre-selected value that isn't in the fetched list yet —
-    /// e.g. on first open before `onFetch` completes.
-    private var modelPickerBinding: Binding<String> {
-        modelNameBinding
-    }
-
-    /// Writes `value` into the override without clobbering the other field. If
-    /// both fields end up empty after the write, the whole override clears
-    /// (back to `EmbeddingConfig.defaultNomicLMStudio`).
-    private func updateConfig(_ keyPath: WritableKeyPath<OverrideFields, String?>, _ value: String?) {
-        var fields = OverrideFields(from: config.exploratorySearchEmbeddingConfig)
-        fields[keyPath: keyPath] = value
-        let next = fields.build()
-        guard next != config.exploratorySearchEmbeddingConfig else { return }
-        config.exploratorySearchEmbeddingConfig = next
-        onConfigChanged()
-    }
-
-    // MARK: - Thresholds
-
-    @ViewBuilder
-    private func thresholdsSection() -> some View {
-        thresholdSlider(
-            title: "Per-token threshold",
-            caption: "Cosine similarity threshold for nearest-neighbor lookup in the vocabulary index. Higher = stricter.",
-            value: $config.exploratorySearchPerTokenThreshold,
-            range: 0.5...0.95
-        )
-        thresholdSlider(
-            title: "Out-of-vocabulary threshold",
-            caption: "Cosine similarity threshold for queries that require a fresh embedding (multi-word phrases or out-of-vocab tokens).",
-            value: $config.exploratorySearchPhraseThreshold,
-            range: 0.4...0.9
-        )
-    }
-
-    private func thresholdSlider(
-        title: String,
-        caption: String,
-        value: Binding<Double>,
-        range: ClosedRange<Double>
-    ) -> some View {
-        VStack(alignment: .leading, spacing: Spacing.xs) {
-            HStack {
-                Text(title).font(Typography.subheadline)
-                Spacer()
-                Text(String(format: "%.2f", value.wrappedValue))
-                    .font(Typography.subheadlineMedium)
-                    .monospacedDigit()
-                    .foregroundStyle(Colors.textPrimary)
-            }
-            Slider(value: value, in: range, step: 0.01)
-            Text(caption)
-                .font(Typography.caption)
-                .foregroundStyle(Colors.textTertiary)
-        }
-    }
-
-    // MARK: - Actions
 
     @ViewBuilder
     private func actionsRow(coordinator: SearchIndexCoordinator) -> some View {
@@ -266,41 +150,32 @@ struct ExploratorySearchEmbeddingsCard: View {
         }
     }
 
-    // MARK: - Helpers
+    // MARK: - Status helpers
 
-    private func statusRow(
-        label: String,
-        value: String,
-        tint: Color? = nil
-    ) -> some View {
-        HStack {
-            Text(label)
-                .font(Typography.subheadline)
-                .foregroundStyle(Colors.textSecondary)
-            Spacer()
-            Text(value)
-                .font(Typography.subheadlineMedium)
-                .monospacedDigit()
-                .foregroundStyle(tint ?? Colors.textPrimary)
+    private func statusIcon(state: VocabVectorIndexState, building: Bool) -> String {
+        if building { return "arrow.triangle.2.circlepath" }
+        switch state {
+        case .ready: return "checkmark.circle.fill"
+        case .modelUnavailable: return "exclamationmark.triangle.fill"
+        case .error: return "xmark.octagon.fill"
+        case .missing, .loading, .building: return "circle.dotted"
         }
     }
 
-    private func statusLabel(
-        state: VocabVectorIndexState,
-        building: Bool
-    ) -> String {
-        if building { return "Building…" }
+    private func statusLabel(state: VocabVectorIndexState, building: Bool) -> String {
+        if building { return "Building embedding index…" }
         switch state {
-        case .missing: return "Not built"
-        case .loading: return "Loading…"
-        case .building: return "Building…"
-        case .ready(let coverage, let failed, _):
+        case .missing: return "Index not built — click Rebuild Embeddings."
+        case .loading: return "Loading embedding index…"
+        case .building: return "Building embedding index…"
+        case .ready(let coverage, let failed, let vectorsCount):
+            let pct = Int((coverage * 100).rounded())
             if failed > 0 {
-                return "Ready — \(percentString(coverage)) coverage"
+                return "\(vectorsCount) embeddings · \(pct)% coverage · \(failed) failed"
             }
-            return "Ready"
-        case .modelUnavailable: return "Model not loaded"
-        case .error: return "Error"
+            return "\(vectorsCount) embeddings · \(pct)% coverage"
+        case .modelUnavailable(let reason): return reason
+        case .error(let message): return message
         }
     }
 
@@ -313,8 +188,99 @@ struct ExploratorySearchEmbeddingsCard: View {
         }
     }
 
-    private func percentString(_ value: Double) -> String {
-        "\(Int((value * 100).rounded()))%"
+    // MARK: - Fetch loop
+
+    /// Fetches embedding-type models from the server. Filtered on the client
+    /// side to LM Studio's `type == "embeddings"` — chat and vision models
+    /// don't surface in this picker.
+    private func fetchEmbeddingModels() async {
+        guard !isFetchingEmbeddingModels else { return }
+        isFetchingEmbeddingModels = true
+        fetchEmbeddingModelsError = nil
+        defer { isFetchingEmbeddingModels = false }
+        do {
+            availableEmbeddingModels = try await effectiveClient.fetchEmbeddingModels(
+                config: fetchConfig
+            )
+        } catch {
+            fetchEmbeddingModelsError = "Failed to load embedding models: \(error.localizedDescription)"
+        }
+    }
+
+    /// Returns either the injected client (test override) or a fresh router
+    /// preconfigured with the typed-but-unsaved bearer token for this card's
+    /// embedding URL.
+    private var effectiveClient: any LLMClient {
+        let url = config.effectiveEmbeddingConfig.baseURLString
+        let trimmed = apiToken.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return client }
+        return LLMClientRouter(tokenResolver: OverridingLLMTokenResolver(
+            overrides: [url: trimmed]
+        ))
+    }
+
+    private var fetchConfig: LLMConfig {
+        let cfg = config.effectiveEmbeddingConfig
+        return LLMConfig(
+            provider: .lmStudio,
+            baseURLString: cfg.baseURLString,
+            modelName: cfg.modelName,
+            maxTokens: 0,
+            temperature: 0.0
+        )
+    }
+
+    // MARK: - Field bindings
+
+    /// Canonical embedding default. Stored values matching this collapse to
+    /// "no override" — the user sees the same visual state (empty field +
+    /// placeholder, inherited token hint) whether they cleared the field or
+    /// typed the canonical default.
+    private static let canonicalDefaultURL: String =
+        EmbeddingConfig.defaultNomicLMStudio.baseURLString
+    private static let canonicalDefaultModel: String =
+        EmbeddingConfig.defaultNomicLMStudio.modelName
+
+    private var baseURLBinding: Binding<String> {
+        Binding(
+            get: {
+                let stored = config.exploratorySearchEmbeddingConfig?.baseURLString ?? ""
+                return stored == Self.canonicalDefaultURL ? "" : stored
+            },
+            set: { newValue in
+                let trimmed = newValue.trimmingCharacters(in: .whitespaces)
+                let normalized: String? = (trimmed.isEmpty
+                    || trimmed == Self.canonicalDefaultURL) ? nil : trimmed
+                updateConfig(\.baseURLString, normalized)
+            }
+        )
+    }
+
+    private var modelNameBinding: Binding<String> {
+        Binding(
+            get: {
+                let stored = config.exploratorySearchEmbeddingConfig?.modelName ?? ""
+                return stored == Self.canonicalDefaultModel ? "" : stored
+            },
+            set: { newValue in
+                let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                let normalized: String? = (trimmed.isEmpty
+                    || trimmed == Self.canonicalDefaultModel) ? nil : trimmed
+                updateConfig(\.modelName, normalized)
+            }
+        )
+    }
+
+    /// Writes `value` into the override without clobbering the other field.
+    /// If both fields end up empty the whole override clears (back to
+    /// `EmbeddingConfig.defaultNomicLMStudio`).
+    private func updateConfig(_ keyPath: WritableKeyPath<OverrideFields, String?>, _ value: String?) {
+        var fields = OverrideFields(from: config.exploratorySearchEmbeddingConfig)
+        fields[keyPath: keyPath] = value
+        let next = fields.build()
+        guard next != config.exploratorySearchEmbeddingConfig else { return }
+        config.exploratorySearchEmbeddingConfig = next
+        onConfigChanged()
     }
 
     // MARK: - OverrideFields helper
@@ -336,10 +302,7 @@ struct ExploratorySearchEmbeddingsCard: View {
             let defaults = EmbeddingConfig.defaultNomicLMStudio
             let url = baseURLString ?? ""
             let model = modelName ?? ""
-            // If both blank, clear the override (fall back to defaults).
             if url.isEmpty, model.isEmpty { return nil }
-            // Use the failable validating init — a malformed URL the user
-            // typed shouldn't precondition-crash the settings card.
             return EmbeddingConfig(
                 validating: url.isEmpty ? defaults.baseURLString : url,
                 modelName: model.isEmpty ? defaults.modelName : model,
@@ -351,8 +314,9 @@ struct ExploratorySearchEmbeddingsCard: View {
 }
 
 #Preview("Semantic Query Expansion — disabled") {
+    @Previewable @State var config = StoreConfiguration()
     ExploratorySearchEmbeddingsCard(
-        config: StoreConfiguration(),
+        config: config,
         coordinator: nil,
         onRebuild: {},
         onForceFullRebuild: {}

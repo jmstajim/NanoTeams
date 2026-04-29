@@ -34,7 +34,11 @@ final class LLMTypesTests: XCTestCase {
     // MARK: - LLMProvider: defaultBaseURL
 
     func testLLMProviderDefaultBaseURL() {
-        XCTAssertEqual(LLMProvider.lmStudio.defaultBaseURL, "http://localhost:1234")
+        // 127.0.0.1 (not localhost) — keeps the UI placeholder, the
+        // Reset-to-defaults fallback, and the Keychain bearer-token key all
+        // in one canonical form. localhost and 127.0.0.1 normalize to
+        // distinct Keychain keys (firewalls can route them differently).
+        XCTAssertEqual(LLMProvider.lmStudio.defaultBaseURL, "http://127.0.0.1:1234")
     }
 
     // MARK: - LLMProvider: defaultModel

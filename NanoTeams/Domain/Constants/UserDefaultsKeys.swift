@@ -17,6 +17,7 @@ enum UserDefaultsKeys {
     static let appAppearance = "appAppearance"
     static let selectedSettingsTab = "selectedSettingsTab"
     static let timelineClearedUpToDate = "NanoTeams.ui.timelineClearedUpToDate.v1"
+    static let visionEnabled = "NanoTeams.vision.enabled.v1"
     static let visionModelName = "NanoTeams.vision.model.v1"
     static let visionBaseURL = "NanoTeams.vision.baseURL.v1"
     static let visionMaxTokens = "NanoTeams.vision.maxTokens.v1"

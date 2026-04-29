@@ -39,8 +39,16 @@ struct ExploratorySearchSettingsView: View {
                     },
                     onConfigChanged: {
                         Task { await store.onExploratorySearchEmbeddingConfigChanged() }
+                    },
+                    onTokenSaveError: { error in
+                        store.lastErrorMessage = "Could not save API token: \(error.localizedDescription)"
+                    },
+                    onTokenLoadError: { error in
+                        store.lastErrorMessage = "Could not read saved API token: \(error.localizedDescription)"
                     }
                 )
+
+                ExploratorySearchThresholdsCard(config: config)
             }
             .padding(Spacing.xl)
         }

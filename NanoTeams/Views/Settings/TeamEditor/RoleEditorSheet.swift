@@ -101,7 +101,16 @@ struct RoleEditorSheet: View {
         case .dependencies:
             RoleEditorDependenciesTab(editorState: $editorState, isEditingSupervisor: isEditingSupervisor, team: $team)
         case .llm:
-            RoleEditorLLMTab(editorState: $editorState, llmProvider: config.llmProvider)
+            RoleEditorLLMTab(
+                editorState: $editorState,
+                llmProvider: config.llmProvider,
+                onTokenSaveError: { error in
+                    store.lastErrorMessage = "Could not save API token: \(error.localizedDescription)"
+                },
+                onTokenLoadError: { error in
+                    store.lastErrorMessage = "Could not read saved API token: \(error.localizedDescription)"
+                }
+            )
         }
     }
 
@@ -152,12 +161,14 @@ struct RoleEditorSheet: View {
             producesArtifacts: sanitizedProduced
         )
 
-        let llmOverride: LLMOverride? = editorState.llmOverrideEnabled ? LLMOverride(
+        let candidateOverride = LLMOverride(
             baseURLString: editorState.llmBaseURL.isEmpty ? nil : editorState.llmBaseURL,
             modelName: editorState.llmModelName.isEmpty ? nil : editorState.llmModelName,
             maxTokens: editorState.overrideMaxTokens > 0 ? editorState.overrideMaxTokens : nil,
             temperature: editorState.overrideTemperature
-        ) : nil
+        )
+        // No master toggle anymore — empty fields ⇒ no override.
+        let llmOverride: LLMOverride? = candidateOverride.isEmpty ? nil : candidateOverride
 
         switch mode {
         case .create:

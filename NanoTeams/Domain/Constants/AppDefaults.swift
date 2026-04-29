@@ -2,7 +2,7 @@ import Foundation
 
 /// Hard-coded default values used at app bootstrap (LLM, prompts).
 enum AppDefaults {
-    static let llmBaseURL = "http://localhost:1234"
+    static let llmBaseURL = "http://127.0.0.1:1234"
     static let llmModel = "openai/gpt-oss-20b"
 
     /// Default hard limit for `read_file` line count. Files exceeding this are

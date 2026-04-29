@@ -26,6 +26,10 @@ struct NanoTeamsApp: App {
     @State private var llmStatusMonitor = LLMStatusMonitor()
     @State private var dictation: DictationService
     @State private var appUpdateState: AppUpdateState
+    /// Process-wide cache of LM Studio model lists. Shared across every
+    /// settings surface that picks a model so opening multiple cards on
+    /// the same server doesn't re-issue `/api/v1/models`.
+    @State private var modelCatalog = ModelCatalog()
     @AppStorage(UserDefaultsKeys.appAppearance) private var appAppearance: AppAppearance = .system
 
     init() {
@@ -55,6 +59,7 @@ struct NanoTeamsApp: App {
                     .environment(llmStatusMonitor)
                     .environment(dictation)
                     .environment(appUpdateState)
+                    .environment(modelCatalog)
                     .preferredColorScheme(appAppearance.colorScheme)
                     .onAppear {
                         QuickCaptureController.shared.setup(store: store, dictation: dictation)
@@ -160,6 +165,7 @@ struct NanoTeamsApp: App {
                 .environment(store.streamingPreviewManager)
                 .environment(dictation)
                 .environment(appUpdateState)
+                .environment(modelCatalog)
         }
         .defaultSize(width: 1000, height: 700)
         .restorationBehavior(.disabled)

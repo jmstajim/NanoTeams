@@ -172,6 +172,16 @@ final class StoreConfiguration {
 
     // MARK: - Vision Model
 
+    /// User's intent to enable Vision — persisted independently from the
+    /// concrete URL / model fields so the toggle survives tab switches even
+    /// before the user fills in any override field. `isVisionConfigured`
+    /// stays gated on `visionModelName.isEmpty` because it's the predicate
+    /// the runtime uses to decide whether to actually invoke the vision
+    /// endpoint (see `visionLLMConfig`).
+    var visionEnabled: Bool {
+        didSet { storage.set(visionEnabled, forKey: Keys.visionEnabled) }
+    }
+
     var visionModelName: String {
         didSet { storage.set(visionModelName, forKey: Keys.visionModelName) }
     }
@@ -496,6 +506,7 @@ final class StoreConfiguration {
         static let maxLLMRetries = UserDefaultsKeys.maxLLMRetries
         static let llmRequestTimeoutSeconds = UserDefaultsKeys.llmRequestTimeoutSeconds
         static let timelineClearedUpToDate = UserDefaultsKeys.timelineClearedUpToDate
+        static let visionEnabled = UserDefaultsKeys.visionEnabled
         static let visionModelName = UserDefaultsKeys.visionModelName
         static let visionBaseURL = UserDefaultsKeys.visionBaseURL
         static let visionMaxTokens = UserDefaultsKeys.visionMaxTokens
@@ -548,9 +559,15 @@ final class StoreConfiguration {
         self.maxLLMRetries = (storage.object(forKey: Keys.maxLLMRetries) as? Int) ?? LLMConstants.defaultMaxLLMRetries
         self.llmRequestTimeoutSeconds = (storage.object(forKey: Keys.llmRequestTimeoutSeconds) as? Int) ?? LLMConstants.defaultLLMRequestTimeoutSeconds
         self.timelineClearedUpToDate = storage.object(forKey: Keys.timelineClearedUpToDate) as? Date
-        self.visionModelName = storage.string(forKey: Keys.visionModelName) ?? ""
+        let storedVisionModel = storage.string(forKey: Keys.visionModelName) ?? ""
+        self.visionModelName = storedVisionModel
         self.visionBaseURLString = storage.string(forKey: Keys.visionBaseURL) ?? ""
         self.visionMaxTokens = (storage.object(forKey: Keys.visionMaxTokens) as? Int) ?? 0
+        // Back-compat: existing installs with a configured vision model but no
+        // explicit `visionEnabled` flag yet should default to ON so users don't
+        // lose their working setup on upgrade.
+        self.visionEnabled = (storage.object(forKey: Keys.visionEnabled) as? Bool)
+            ?? !storedVisionModel.isEmpty
         let rawIDs = (storage.object(forKey: Keys.dismissedNotificationIDs) as? [String]) ?? []
         self.dismissedNotificationIDs = Set(rawIDs)
         let rawTipIDs = (storage.object(forKey: Keys.dismissedFeatureTipIDs) as? [String]) ?? []
@@ -672,6 +689,7 @@ final class StoreConfiguration {
         storage.removeObject(forKey: Keys.loggingEnabled)
         storage.removeObject(forKey: Keys.maxLLMRetries)
         storage.removeObject(forKey: Keys.llmRequestTimeoutSeconds)
+        storage.removeObject(forKey: Keys.visionEnabled)
         storage.removeObject(forKey: Keys.visionModelName)
         storage.removeObject(forKey: Keys.visionBaseURL)
         storage.removeObject(forKey: Keys.visionMaxTokens)
@@ -713,6 +731,7 @@ final class StoreConfiguration {
         loggingEnabled = Self.defaultLoggingEnabled
         maxLLMRetries = LLMConstants.defaultMaxLLMRetries
         llmRequestTimeoutSeconds = LLMConstants.defaultLLMRequestTimeoutSeconds
+        visionEnabled = false
         visionModelName = ""
         visionBaseURLString = ""
         visionMaxTokens = 0

@@ -10,6 +10,14 @@ struct LLMClientRouter: LLMClient {
         self.nativeClient = nativeClient
     }
 
+    /// Convenience init that builds a `NativeLMStudioClient` with a non-default
+    /// token resolver. Used by the settings UI to inject a typed-but-unsaved
+    /// SecureField token for "Test Connection" / "Fetch Models" before the
+    /// user has committed it to the Keychain.
+    init(tokenResolver: any LLMTokenResolver) {
+        self.nativeClient = NativeLMStudioClient(tokenResolver: tokenResolver)
+    }
+
     func streamChat(
         config: LLMConfig,
         messages: [ChatMessage],

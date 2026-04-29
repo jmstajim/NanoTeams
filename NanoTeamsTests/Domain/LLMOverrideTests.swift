@@ -121,6 +121,53 @@ final class LLMOverrideTests: XCTestCase {
         XCTAssertEqual(decoded.modelName, "m1")
     }
 
+    // MARK: - hasServerOverride / hasModelOverride
+
+    func testHasServerOverride_nil_returnsFalse() {
+        XCTAssertFalse(LLMOverride().hasServerOverride)
+    }
+
+    func testHasServerOverride_emptyString_returnsFalse() {
+        XCTAssertFalse(LLMOverride(baseURLString: "").hasServerOverride)
+    }
+
+    func testHasServerOverride_whitespaceOnly_returnsFalse() {
+        XCTAssertFalse(LLMOverride(baseURLString: "   \n\t  ").hasServerOverride,
+                       "Whitespace-only URLs are visually empty — must not seed the toggle on")
+    }
+
+    func testHasServerOverride_validURL_returnsTrue() {
+        XCTAssertTrue(LLMOverride(baseURLString: "http://192.168.1.10:1234").hasServerOverride)
+    }
+
+    func testHasModelOverride_nil_returnsFalse() {
+        XCTAssertFalse(LLMOverride().hasModelOverride)
+    }
+
+    func testHasModelOverride_emptyString_returnsFalse() {
+        XCTAssertFalse(LLMOverride(modelName: "").hasModelOverride)
+    }
+
+    func testHasModelOverride_whitespaceOnly_returnsFalse() {
+        XCTAssertFalse(LLMOverride(modelName: "  \t  ").hasModelOverride)
+    }
+
+    func testHasModelOverride_validName_returnsTrue() {
+        XCTAssertTrue(LLMOverride(modelName: "qwen-14b").hasModelOverride)
+    }
+
+    /// The two predicates are independent — server and model can be
+    /// overridden independently per CLAUDE.md "Per-role architecture".
+    func testHasOverrides_independent() {
+        let serverOnly = LLMOverride(baseURLString: "http://x:1234")
+        XCTAssertTrue(serverOnly.hasServerOverride)
+        XCTAssertFalse(serverOnly.hasModelOverride)
+
+        let modelOnly = LLMOverride(modelName: "m")
+        XCTAssertFalse(modelOnly.hasServerOverride)
+        XCTAssertTrue(modelOnly.hasModelOverride)
+    }
+
     // MARK: - Hashable
 
     func testHashable_sameValues_equalAndSameHash() {

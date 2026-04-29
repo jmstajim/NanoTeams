@@ -74,6 +74,11 @@ enum Colors {
     static let surfaceCard = adaptive(dark: 0x161616, light: 0xF8F8F8)
     /// Elevated — hover states, inputs, elevated cards
     static let surfaceElevated = adaptive(dark: 0x1E1E1E, light: 0xF0F0F0)
+    /// Subtler elevated tint — used by inheritance/disabled rows that need
+    /// to read as "less prominent than an editable field" without falling
+    /// to plain background. Pre-computed so callers don't apply
+    /// `surfaceElevated.opacity(0.5)` (forbidden by Color Rule #2).
+    static let surfaceElevatedSubtle = adaptive(dark: 0x191919, light: 0xF4F4F4)
     /// Hover feedback on cards/timeline items
     static let surfaceHover = adaptive(dark: 0x1A1A1A, light: 0xEEEEEE)
     /// Overlay (dimmed window, code blocks)
@@ -241,6 +246,7 @@ private extension Colors {
                 ColorPreviewItem(name: "surfacePrimary", color: surfacePrimary),
                 ColorPreviewItem(name: "surfaceCard", color: surfaceCard),
                 ColorPreviewItem(name: "surfaceElevated", color: surfaceElevated),
+                ColorPreviewItem(name: "surfaceElevatedSubtle", color: surfaceElevatedSubtle),
                 ColorPreviewItem(name: "surfaceHover", color: surfaceHover),
                 ColorPreviewItem(name: "surfaceOverlay", color: surfaceOverlay),
                 ColorPreviewItem(name: "surfaceFadeClear", color: surfaceFadeClear)

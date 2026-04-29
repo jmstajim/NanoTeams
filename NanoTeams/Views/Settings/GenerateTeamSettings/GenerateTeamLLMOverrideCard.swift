@@ -1,17 +1,42 @@
 import SwiftUI
 
-/// LLM override card for team generation. Toggle gates a sub-block of URL / model /
-/// max-tokens / temperature inputs. When the toggle is ON, fields are seeded from
-/// the global provider defaults so `LLMOverride.isEmpty == false` and the override
-/// persists across settings reopens.
+/// LLM override card for team generation. Reads model lists from the
+/// shared `ModelCatalog`, so opening this card on the same server as the
+/// global LLM card is a cache hit.
+///
+/// All fields are always visible. Empty fields fall back to the global
+/// configuration — placeholders surface the live defaults so the user
+/// sees what would be used. The override struct is automatically
+/// created when any field is non-default and cleared back to `nil` once
+/// every field is at its default.
 struct GenerateTeamLLMOverrideCard: View {
     @Bindable var config: StoreConfiguration
-    let availableModels: [String]
-    let isFetchingModels: Bool
-    let modelFetchError: String?
-    var onFetchModels: () -> Void
+    @Environment(ModelCatalog.self) private var modelCatalog
+    var onTokenSaveError: ((Error) -> Void)? = nil
+    var onTokenLoadError: ((Error) -> Void)? = nil
 
-    private var isEnabled: Bool { config.teamGenLLMOverride != nil }
+    /// Per-server bearer token. `LLMTokenField` (inside `LLMEndpointEditor`)
+    /// owns the load/save lifecycle keyed by the override URL.
+    @State private var apiToken: String = ""
+
+    private var inheritedURLPrompt: String {
+        let global = config.llmBaseURLString.trimmingCharacters(in: .whitespaces)
+        return global.isEmpty ? "http://127.0.0.1:1234" : global
+    }
+
+    private var emptyModelLabel: String {
+        let global = config.llmModelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return global.isEmpty ? "Use global model" : "Use global: \(global)"
+    }
+
+    /// URL the picker reads from — override URL when typed, otherwise
+    /// the global LLM URL.
+    private var effectiveFetchURL: String {
+        let custom = (config.teamGenLLMOverride?.baseURLString ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !custom.isEmpty { return custom }
+        return config.llmBaseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     var body: some View {
         SettingsCard(
@@ -19,54 +44,43 @@ struct GenerateTeamLLMOverrideCard: View {
             systemImage: "brain",
             footer: "Use a different LLM only for Generate Team. Empty fields fall back to the global configuration."
         ) {
-            Toggle(isOn: Binding(
-                get: { isEnabled },
-                set: { newValue in
-                    if newValue {
-                        // Seed from provider defaults so the override is non-empty and
-                        // persists across settings reopens.
-                        let provider = LLMProvider.lmStudio
-                        config.teamGenLLMOverride = LLMOverride(
-                            baseURLString: provider.defaultBaseURL,
-                            modelName: provider.defaultModel,
-                            maxTokens: provider.defaultMaxTokens
-                        )
-                        onFetchModels()
-                    } else {
-                        config.teamGenLLMOverride = nil
-                    }
+            LLMEndpointEditor(
+                baseURL: baseURLBinding,
+                modelName: modelNameBinding,
+                apiToken: $apiToken,
+                urlPrompt: inheritedURLPrompt,
+                emptyModelLabel: emptyModelLabel,
+                onTokenSaveError: onTokenSaveError,
+                onTokenLoadError: onTokenLoadError,
+                onURLCommit: {
+                    Task { await modelCatalog.loadIfNeeded(url: effectiveFetchURL) }
+                },
+                availableModels: modelCatalog.models(for: effectiveFetchURL),
+                isFetchingModels: modelCatalog.isFetching(effectiveFetchURL),
+                status: EndpointStatus.resolve(
+                    fetchError: modelCatalog.error(for: effectiveFetchURL),
+                    isFetching: modelCatalog.isFetching(effectiveFetchURL)
+                ),
+                onRefreshModels: {
+                    Task { await modelCatalog.refresh(url: effectiveFetchURL) }
                 }
-            )) {
-                Text("Use custom LLM for team generation")
-                    .font(Typography.subheadline)
-            }
+            )
 
-            if isEnabled {
-                LLMElevatedTextField(
-                    "Server Address",
-                    text: baseURLBinding,
-                    prompt: config.llmBaseURLString
-                )
+            LLMStepperSettingsRow(
+                title: "Response Limit",
+                value: maxTokensBinding,
+                range: 0...128_000,
+                step: 1024,
+                caption: "Maximum tokens per response. 0 inherits the global setting."
+            )
 
-                LLMModelPickerSection(
-                    modelName: modelNameBinding,
-                    availableModels: availableModels,
-                    fetchError: modelFetchError,
-                    isFetching: isFetchingModels,
-                    emptyLabel: "Connect to load models",
-                    onFetch: onFetchModels
-                )
-
-                LLMStepperSettingsRow(
-                    title: "Response Limit",
-                    value: maxTokensBinding,
-                    range: 0...128_000,
-                    step: 1024,
-                    caption: "Maximum tokens per response."
-                )
-
-                temperatureRow
-            }
+            temperatureRow
+        }
+        .task {
+            // First-appear load only. URL edits don't re-trigger — onCommit
+            // fires loadIfNeeded on Enter / focus loss; Refresh button
+            // forces a re-fetch.
+            await modelCatalog.loadIfNeeded(url: effectiveFetchURL)
         }
     }
 
@@ -141,23 +155,23 @@ struct GenerateTeamLLMOverrideCard: View {
         setOverride(\.temperature, value)
     }
 
+    /// Writes one override field. Auto-clears `teamGenLLMOverride` to
+    /// `nil` once all fields are at their defaults — keeps persistence
+    /// in sync with the "no override" UX.
     private func setOverride<V>(_ keyPath: WritableKeyPath<LLMOverride, V>, _ value: V) {
         var override = config.teamGenLLMOverride ?? LLMOverride()
         override[keyPath: keyPath] = value
-        config.teamGenLLMOverride = override
+        config.teamGenLLMOverride = override.isEmpty ? nil : override
     }
 }
 
 #Preview("LLM Override – disabled") {
+    @Previewable @State var config = StoreConfiguration()
+    @Previewable @State var catalog = ModelCatalog()
     ScrollView {
-        GenerateTeamLLMOverrideCard(
-            config: StoreConfiguration(),
-            availableModels: [],
-            isFetchingModels: false,
-            modelFetchError: nil,
-            onFetchModels: {}
-        )
-        .padding()
+        GenerateTeamLLMOverrideCard(config: config)
+            .padding()
     }
     .background(Colors.surfacePrimary)
+    .environment(catalog)
 }

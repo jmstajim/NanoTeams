@@ -16,4 +16,13 @@ enum Typography {
     static let captionSemibold: Font = .caption.weight(.semibold)
     /// Caption 2 — smaller than caption
     static let caption2: Font = .caption2
+
+    /// Monospaced (SF Mono) at body size — for technical content where
+    /// fixed-width digits and identifiers help legibility: server URLs,
+    /// API tokens, model identifiers, file paths.
+    static let mono: Font = .system(.body, design: .monospaced)
+
+    /// Monospaced at caption size — small technical chips, inheritance
+    /// hints, short identifiers in dense rows.
+    static let monoCaption: Font = .system(.caption, design: .monospaced)
 }

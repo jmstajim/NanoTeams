@@ -14,6 +14,22 @@ struct LLMOverride: Codable, Hashable {
             && maxTokens == nil && temperature == nil
     }
 
+    /// True when the URL field is non-nil and non-empty after trimming. Used
+    /// by the override-card UIs to seed the "Override server URL & API token"
+    /// sub-toggle from persisted state.
+    var hasServerOverride: Bool {
+        guard let s = baseURLString else { return false }
+        return !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// True when the model field is non-nil and non-empty after trimming.
+    /// Used by the override-card UIs to seed the "Override model" sub-toggle
+    /// from persisted state.
+    var hasModelOverride: Bool {
+        guard let m = modelName else { return false }
+        return !m.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         baseURLString = try container.decodeIfPresent(String.self, forKey: .baseURLString)

@@ -23,10 +23,13 @@ struct RoleEditorPromptTab: View {
                 requiredArtifacts: editorState.requiredArtifacts,
                 producesArtifacts: editorState.producedArtifacts
             ),
-            llmOverride: editorState.llmOverrideEnabled ? LLMOverride(
-                baseURLString: editorState.llmBaseURL.isEmpty ? nil : editorState.llmBaseURL,
-                modelName: editorState.llmModelName.isEmpty ? nil : editorState.llmModelName
-            ) : nil,
+            llmOverride: {
+                let candidate = LLMOverride(
+                    baseURLString: editorState.llmBaseURL.isEmpty ? nil : editorState.llmBaseURL,
+                    modelName: editorState.llmModelName.isEmpty ? nil : editorState.llmModelName
+                )
+                return candidate.isEmpty ? nil : candidate
+            }(),
             isSystemRole: false,
             systemRoleID: {
                 if case .edit(let role) = mode { return role.systemRoleID }
