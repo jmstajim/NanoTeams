@@ -10,7 +10,7 @@
 [![License](https://img.shields.io/github/license/jmstajim/NanoTeams?color=5F87D9&style=flat-square)](LICENSE)
 [![Download](https://img.shields.io/badge/Download-NanoTeams.app.zip-35BE81?style=flat-square)](https://github.com/jmstajim/NanoTeams/releases/latest/download/NanoTeams.app.zip)
 
-**AI coding assistant and multi-agent AI teams for macOS, powered by local LLMs through [LM Studio](https://lmstudio.ai).** Open-source, free, fully private — no cloud, no API keys, no telemetry. Start an agentic chat with the **Coding Assistant** ([Get started](#getting-started)) or hand a task to a team of specialized AI roles that read your files, produce artifacts, consult each other, and report back when done. Generate custom teams from a one-line description, paste images and documents straight into the composer, search your project semantically with on-device embeddings, clip text from any app, dictate hands-free with fully on-device speech recognition, and queue messages to working roles without pausing them.
+**AI coding assistant and multi-agent AI teams for macOS, powered by local LLMs through [LM Studio](https://lmstudio.ai).** Open-source, free, fully private. Start an agentic chat with the **Coding Assistant** ([Get started](#getting-started)) or hand a task to a team of specialized AI roles that read your files, produce artifacts, consult each other, and report back when done. Generate custom teams from a one-line description, paste images and documents straight into the composer, search your project semantically with on-device embeddings, clip text from any app, dictate hands-free with fully on-device speech recognition, and queue messages to working roles without pausing them.
 
 <img width="600" height="510" alt="NanoTeams — AI coding assistant and multi-agent AI teams for macOS" src="https://github.com/user-attachments/assets/c7549d11-abd9-4faf-94c3-6cefb6214394" />
 
@@ -86,10 +86,10 @@ Describe a task in one line and an LLM designs a custom team for it — roles, a
 Sandboxed tool system: file operations, git, Xcode build & test, team collaboration (`ask_teammate`, `request_team_meeting`, `request_changes`), artifact creation, supervisor Q&A, persistent memory, and image analysis.
 
 ### Documents In & Out
-Roles read PDF, DOCX, RTF, XLSX, PPTX, ODT, and HTML files directly — no manual conversion to plain text. Generated artifacts can be exported to PDF, Word, or RTF. Document handling is **pure Swift** — no `textutil`, no `unzip` subprocess, no temp files, no shell-out.
+Roles read PDF, DOCX, RTF, XLSX, PPTX, ODT, and HTML files directly — no manual conversion to plain text. Generated artifacts can be exported to PDF, Word, or RTF.
 
 ### Universal Search
-Keyword search across PDFs, Word documents, spreadsheets, slides, OpenDocument files, HTML, source code, and plain text — all from a single tool call. Results are capped to keep agent context clean and prevent search-result poisoning.
+Keyword search across PDFs, Word documents, spreadsheets, slides, OpenDocument files, HTML, source code, and plain text — all from a single tool call.
 
 ### Exploratory Search (Semantic)
 Optional vocab-vector embedding pipeline lets roles find code and prose by meaning, not just keywords — useful for navigating large codebases. Embeddings and the token index are computed and stored entirely on your machine; toggle and configure the embedding model in **Advanced Settings → Exploratory Search**.
