@@ -16,9 +16,11 @@
 
 ## Why NanoTeams
 
-NanoTeams was designed from the ground up for **local LLMs**. The goal is simple: make local language models work **as fast and efficiently as possible** in real tasks — writing code, making decisions, organizing your thinking, drafting documents, and bringing ideas to life.
+The goal is simple: make local LLMs work **as fast and efficiently as possible** in real tasks — writing code, making decisions, organizing your thinking, drafting documents, and bringing ideas to life.
 
-Built with **LM Studio's stateful chat API** (`previous_response_id`), so the server doesn't reprocess the full conversation every turn. This means dramatically faster multi-step workflows compared to stateless approaches.
+NanoTeams treats smaller models as the design constraint.
+
+Stateful chat keeps things fast. The architecture forgives mistakes. Every piece of the program compensates for something local models don't do well.
 
 ## Download & Installation
 
