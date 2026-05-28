@@ -8,7 +8,7 @@ import XCTest
 /// - Priority tier ordering in the real orchestrator (role-targeted → untargeted).
 /// - Attachment finalization failure leaves the queue intact.
 /// - Persistence failure (closure's `locateStepInLatestRun` guard) re-queues.
-/// - `--- Attached Files ---` section uses FINAL paths, not staged paths.
+/// - `## Attached Files` section uses FINAL paths, not staged paths.
 /// - `LLMMessage` persisted with the `.supervisorMessage` source context.
 /// - Partial embed failure surfaces as `lastInfoMessage` (degraded, not error).
 @MainActor
@@ -29,8 +29,8 @@ final class ConsumeQueuedSupervisorMessageTests: NTMSOrchestratorTestBase {
         sut.quickCaptureFormState = formState
         // `StoreConfiguration` reads `UserDefaults.standard`, so the value of
         // `embedFilesInPrompt` leaks from the dev machine into the test. Attachment
-        // tests here assert the `--- Attached Files ---` path-list shape, not the
-        // inline `--- Attached File: <name> ---` embed shape — pin to `false` so
+        // tests here assert the `## Attached Files` path-list shape, not the
+        // inline `## Attached File: <name>` embed shape — pin to `false` so
         // the test is deterministic regardless of the developer's settings.
         sut.configuration.embedFilesInPrompt = false
     }
@@ -223,8 +223,8 @@ final class ConsumeQueuedSupervisorMessageTests: NTMSOrchestratorTestBase {
 
         XCTAssertNotNil(prompt)
         XCTAssertTrue(prompt?.contains("see attached") ?? false)
-        XCTAssertTrue(prompt?.contains("--- Attached Files ---") ?? false,
-                      "Non-embedded attachments must get a '--- Attached Files ---' section")
+        XCTAssertTrue(prompt?.contains("## Attached Files") ?? false,
+                      "Non-embedded attachments must get a '## Attached Files' section")
         // Final paths live under `.nanoteams/tasks/{taskID}/attachments/` — NOT under staged/.
         let expectedTaskSegment = ".nanoteams/tasks/\(taskID)/attachments/"
         XCTAssertTrue(prompt?.contains(expectedTaskSegment) ?? false,
@@ -296,7 +296,7 @@ final class ConsumeQueuedSupervisorMessageTests: NTMSOrchestratorTestBase {
     func testConsume_successfulEmbed_noInfoMessage_andContentInlined() async {
         // Happy-path embed: a plain UTF-8 file succeeds inline extraction, so
         // no `failedFiles` accumulate and no info banner fires. Also verifies
-        // the `--- Attached Files ---` section is suppressed (content is inline).
+        // the `## Attached Files` section is suppressed (content is inline).
         let original = sut.configuration.embedFilesInPrompt
         sut.configuration.embedFilesInPrompt = true
         defer { sut.configuration.embedFilesInPrompt = original }
@@ -317,9 +317,9 @@ final class ConsumeQueuedSupervisorMessageTests: NTMSOrchestratorTestBase {
         XCTAssertNotNil(prompt)
         XCTAssertNil(sut.lastInfoMessage,
                      "Successful inline embed should not surface an info message")
-        XCTAssertFalse(prompt?.contains("--- Attached Files ---") ?? true,
+        XCTAssertFalse(prompt?.contains("## Attached Files") ?? true,
                        "Embedded files must not duplicate as attachment paths")
-        XCTAssertTrue(prompt?.contains("--- Attached File: note.txt ---") ?? false)
+        XCTAssertTrue(prompt?.contains("## Attached File: note.txt") ?? false)
     }
 
     // MARK: - Info banner for degraded delivery (real partial-embed failure)
@@ -328,7 +328,7 @@ final class ConsumeQueuedSupervisorMessageTests: NTMSOrchestratorTestBase {
         // Real failure path: a file that `DocumentTextExtractor` can't parse AND
         // that isn't valid UTF-8, so it falls into `failedFiles` in
         // `AnswerTextBuilder.build`. The non-embedded file still gets its final
-        // path in the `--- Attached Files ---` section — degraded, not lost.
+        // path in the `## Attached Files` section — degraded, not lost.
         let original = sut.configuration.embedFilesInPrompt
         sut.configuration.embedFilesInPrompt = true
         defer { sut.configuration.embedFilesInPrompt = original }
@@ -364,9 +364,9 @@ final class ConsumeQueuedSupervisorMessageTests: NTMSOrchestratorTestBase {
                         "failedFiles must surface as lastInfoMessage after successful persistence")
         XCTAssertTrue(sut.lastInfoMessage?.contains("garbage.bin") ?? false,
                       "Info message must name the failed file")
-        XCTAssertTrue(prompt?.contains("--- Attached Files ---") ?? false,
+        XCTAssertTrue(prompt?.contains("## Attached Files") ?? false,
                       "Non-embeddable file falls back to path attachment, not dropped")
-        XCTAssertFalse(prompt?.contains("--- Attached File: garbage.bin ---") ?? true,
+        XCTAssertFalse(prompt?.contains("## Attached File: garbage.bin") ?? true,
                        "Failed extraction must NOT appear as inline embed")
         XCTAssertNil(sut.lastErrorMessage, "Info, not error")
     }

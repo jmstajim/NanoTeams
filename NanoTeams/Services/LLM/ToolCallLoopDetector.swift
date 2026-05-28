@@ -1,7 +1,7 @@
 import Foundation
 
 /// Represents a detected loop pattern in tool calls.
-enum LoopDetection {
+nonisolated enum LoopDetection {
     case readOnlyLoop(message: String)
     case repetitiveTool(tool: String, count: Int, message: String)
 
@@ -14,8 +14,8 @@ enum LoopDetection {
 }
 
 /// Stateless loop detection for tool call sequences.
-/// Operates on a snapshot of recent calls from ToolCallCache.
-enum ToolCallLoopDetector {
+/// Operates on a snapshot of recent calls from ToolCallTracker.
+nonisolated enum ToolCallLoopDetector {
 
     private typealias TN = ToolNames
 
@@ -25,7 +25,7 @@ enum ToolCallLoopDetector {
 
     /// Detects if recent calls form a loop pattern.
     /// - Parameter recentCalls: The last N tracked calls (typically limit: 6).
-    static func detectLoopPattern(in recentCalls: [ToolCallCache.TrackedCall]) -> LoopDetection? {
+    static func detectLoopPattern(in recentCalls: [ToolCallTracker.TrackedCall]) -> LoopDetection? {
         guard recentCalls.count >= 6 else { return nil }
 
         if recentCalls.allSatisfy({ readOnlyTools.contains($0.toolName) }) {

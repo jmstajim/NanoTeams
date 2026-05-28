@@ -9,7 +9,7 @@ import Foundation
 /// Decode is validating: empty `name` or `roles` throw, and enum-shaped strings
 /// (`supervisorMode`, `acceptanceMode`) are parsed into their typed enums so that
 /// typos like `"autnomous"` fail loudly instead of silently mapping to a default.
-struct GeneratedTeamConfig: Codable, Hashable {
+nonisolated struct GeneratedTeamConfig: Codable, Hashable {
 
     struct RoleConfig: Codable, Hashable {
         let name: String
@@ -106,19 +106,31 @@ struct GeneratedTeamConfig: Codable, Hashable {
     }
 
     init(from decoder: Decoder) throws {
+        let decoded = try Self.decode(from: decoder)
+        self.name = decoded.name
+        self.description = decoded.description
+        self.supervisorMode = decoded.supervisorMode
+        self.acceptanceMode = decoded.acceptanceMode
+        self.roles = decoded.roles
+        self.artifacts = decoded.artifacts
+        self.supervisorRequires = decoded.supervisorRequires
+    }
+
+    /// Heavy decode body extracted from `init(from:)`. Returning a populated
+    /// `GeneratedTeamConfig` from a static factory works around a Swift 6.3.1
+    /// type-checker crash (`bad_optional_access`) that fires when the original
+    /// 150-line init body was inlined inside the type — the crash reproduces
+    /// in both Swift 5 and Swift 6 language modes once the type has any
+    /// non-default isolation. Functionally identical to the prior init.
+    private static func decode(from decoder: Decoder) throws -> GeneratedTeamConfig {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        // `name` missing/empty is recoverable when the model provided a meaningful
-        // description: some models (e.g. gemma-4-26b-a4b) emit a valid `team_config`
-        // object but forget the top-level `name` field. Synthesize from description
-        // rather than rejecting the whole team — matches the decode-time
-        // normalization pattern used for orphan artifacts and phantom inputs.
         let rawName = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
         let rawDescription = try c.decodeIfPresent(String.self, forKey: .description) ?? ""
         let trimmedName = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedName: String
         if !trimmedName.isEmpty {
             resolvedName = trimmedName
-        } else if let synthesized = Self.synthesizedTeamName(from: rawDescription) {
+        } else if let synthesized = synthesizedTeamName(from: rawDescription) {
             resolvedName = synthesized
         } else {
             throw DecodingError.dataCorruptedError(
@@ -133,42 +145,25 @@ struct GeneratedTeamConfig: Codable, Hashable {
                 debugDescription: "Team must have at least one role."
             )
         }
-        self.name = resolvedName
-        self.description = rawDescription
-        // Tolerant per-element decode: skip artifacts that fail to decode
-        // (e.g. `name: null` from a truncated stream) instead of failing the
-        // entire team. `Failable` swallows decode errors per-element.
         let rawArts = try c.decodeIfPresent([Failable<ArtifactConfig>].self, forKey: .artifacts) ?? []
         var decodedArtifacts: [ArtifactConfig] = rawArts.compactMap(\.value).filter {
             !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
         var decodedSupervisorRequires = try c.decodeIfPresent([String].self, forKey: .supervisorRequires) ?? []
 
-        // Auto-synthesize artifacts from role outputs when the top-level list is
-        // missing/incomplete. Some models drop the `artifacts` field entirely,
-        // leaving every `produces_artifacts` entry as an orphan.
-        // Stub description borrows the first sentence of the producing role's
-        // prompt — keeps the language matched to the rest of the team and gives
-        // the supervisor at least some context about what the artifact contains.
         let alreadyDeclared = Set(decodedArtifacts.map(\.name))
         var seen = alreadyDeclared
         for role in rawRoles {
             for name in role.producesArtifacts where !seen.contains(name) {
                 decodedArtifacts.append(ArtifactConfig(
                     name: name,
-                    description: Self.derivedDescription(producedBy: role),
+                    description: derivedDescription(producedBy: role),
                     icon: nil
                 ))
                 seen.insert(name)
             }
         }
-        self.artifacts = decodedArtifacts
 
-        // Auto-promote orphan produced artifacts (no consumer, not in
-        // supervisor_requires) to supervisor_requires. An orphan produced
-        // artifact means a role does work that flows nowhere — the model
-        // intent is almost always "the supervisor sees this," so surface it
-        // rather than silently waste the role's output.
         let consumers = Set(rawRoles.flatMap(\.requiresArtifacts))
         let supReqSet = Set(decodedSupervisorRequires)
         for role in rawRoles {
@@ -182,27 +177,13 @@ struct GeneratedTeamConfig: Codable, Hashable {
                 }
             }
         }
-        self.supervisorRequires = decodedSupervisorRequires
 
-        // Auto-rewrite phantom inputs to the implicit Supervisor Task. Two variants:
-        //   1. Translation aliasing — non-English models emit a translated
-        //      `"Supervisor Task"` (e.g. Russian → "Задача Супервизора") which
-        //      isn't declared in `artifacts[]`.
-        //   2. Declared-but-unproduced artifact — the model declares an artifact
-        //      AND lists it as a consumer's `requires_artifacts`, but NO role
-        //      produces it. Previously slipped past the rewrite because the
-        //      artifact WAS declared; at runtime the consuming role would stall
-        //      forever.
-        // Narrowing `producers` to "roles only" (not declared artifacts) catches
-        // both cases with the same rule: if no role actually produces this name,
-        // the consumer can't wait for it, so redirect to the Supervisor brief.
         let producers = Set(rawRoles.flatMap(\.producesArtifacts))
         let supervisorTask = SystemTemplates.supervisorTaskArtifactName
-        self.roles = rawRoles.map { role in
+        let normalizedRoles: [RoleConfig] = rawRoles.map { role in
             let normalizedRequires = role.requiresArtifacts.map { name -> String in
                 if name == supervisorTask { return name }
                 if producers.contains(name) { return name }
-                // Phantom dependency — assume the model translated/aliased the brief.
                 return supervisorTask
             }
             if normalizedRequires == role.requiresArtifacts { return role }
@@ -218,6 +199,7 @@ struct GeneratedTeamConfig: Codable, Hashable {
             )
         }
 
+        let supervisorMode: SupervisorMode?
         if let s = try c.decodeIfPresent(String.self, forKey: .supervisorMode),
            !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             guard let mode = SupervisorMode(rawValue: s.lowercased()) else {
@@ -226,11 +208,12 @@ struct GeneratedTeamConfig: Codable, Hashable {
                     debugDescription: "Unknown supervisor_mode '\(s)'. Allowed: manual, autonomous."
                 )
             }
-            self.supervisorMode = mode
+            supervisorMode = mode
         } else {
-            self.supervisorMode = nil
+            supervisorMode = nil
         }
 
+        let acceptanceMode: AcceptanceMode?
         if let s = try c.decodeIfPresent(String.self, forKey: .acceptanceMode),
            !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             guard let mode = AcceptanceMode.fromLooseString(s) else {
@@ -239,29 +222,34 @@ struct GeneratedTeamConfig: Codable, Hashable {
                     debugDescription: "Unknown acceptance_mode '\(s)'. Allowed: finalOnly, afterEachRole, afterEachArtifact."
                 )
             }
-            self.acceptanceMode = mode
+            acceptanceMode = mode
         } else {
-            self.acceptanceMode = nil
+            acceptanceMode = nil
         }
 
-        // Cross-validate artifact references — every name appearing in a role's
-        // requires/produces or in supervisor_requires must either be in `artifacts`
-        // or be the implicit "Supervisor Task". Catches LLMs that ship roles
-        // depending on artifacts that nobody declared (the engine would otherwise
-        // stall on "no roles ready").
-        let declared = Set(artifacts.map(\.name) + [SystemTemplates.supervisorTaskArtifactName])
+        let declared = Set(decodedArtifacts.map(\.name) + [SystemTemplates.supervisorTaskArtifactName])
         var unknown = Set<String>()
-        for role in roles {
+        for role in normalizedRoles {
             for name in role.requiresArtifacts where !declared.contains(name) { unknown.insert(name) }
             for name in role.producesArtifacts where !declared.contains(name) { unknown.insert(name) }
         }
-        for name in supervisorRequires where !declared.contains(name) { unknown.insert(name) }
+        for name in decodedSupervisorRequires where !declared.contains(name) { unknown.insert(name) }
         if !unknown.isEmpty {
             throw DecodingError.dataCorruptedError(
                 forKey: .artifacts, in: c,
                 debugDescription: "Unknown artifact reference(s): \(unknown.sorted().joined(separator: ", ")). Add to artifacts[] or use \"Supervisor Task\"."
             )
         }
+
+        return GeneratedTeamConfig(
+            name: resolvedName,
+            description: rawDescription,
+            supervisorMode: supervisorMode,
+            acceptanceMode: acceptanceMode,
+            roles: normalizedRoles,
+            artifacts: decodedArtifacts,
+            supervisorRequires: decodedSupervisorRequires
+        )
     }
 
     /// Fallback team name when the LLM omitted the `name` field. Returns `nil`
@@ -303,14 +291,14 @@ struct GeneratedTeamConfig: Codable, Hashable {
 /// Decodes a `T` per array element, swallowing per-element failures. Lets us
 /// drop malformed array entries (e.g. an artifact with `name: null` from a
 /// truncated LLM stream) without rejecting the entire payload.
-private struct Failable<T: Decodable>: Decodable {
+nonisolated private struct Failable<T: Decodable>: Decodable {
     let value: T?
     init(from decoder: Decoder) throws {
         value = try? T(from: decoder)
     }
 }
 
-private extension AcceptanceMode {
+nonisolated private extension AcceptanceMode {
     /// Case-insensitive lookup so the LLM can return `finalOnly`, `FinalOnly`, or `finalonly`.
     static func fromLooseString(_ raw: String) -> AcceptanceMode? {
         let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()

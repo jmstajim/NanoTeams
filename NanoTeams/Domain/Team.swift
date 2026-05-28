@@ -10,7 +10,7 @@ import Foundation
 // MARK: - Team
 
 /// Represents a team configuration with per-team roles, artifacts, settings, and graph layout
-struct Team: Codable, Identifiable {
+nonisolated struct Team: Codable, Identifiable {
     var id: NTMSID
     var createdAt: Date
     var updatedAt: Date
@@ -101,6 +101,50 @@ struct Team: Codable, Identifiable {
             settings: .default,
             graphLayout: .default
         )
+    }
+
+    // MARK: - Prompt Template Mutation
+
+    /// Identifies one of the three prompt-template fields. Used as the typed
+    /// surface for `assignPromptTemplate(_:value:clock:)` — narrower than
+    /// `WritableKeyPath<Team, String>` (which would also accept `\.name`,
+    /// `\.description`, etc., bypassing the prompt-template contract).
+    enum PromptField {
+        case system
+        case consultation
+        case meeting
+
+        fileprivate var keyPath: WritableKeyPath<Team, String> {
+            switch self {
+            case .system: return \.systemPromptTemplate
+            case .consultation: return \.consultationPromptTemplate
+            case .meeting: return \.meetingPromptTemplate
+            }
+        }
+    }
+
+    /// Writes `value` to the selected prompt-template field and bumps
+    /// `updatedAt` on every real change. Idempotent on no-op writes (skip
+    /// equal-value assignment so binding round-trips don't burn timestamps).
+    ///
+    /// **Why this exists.** `Team.==` is `(id, updatedAt)`-only — a perf
+    /// shortcut documented at the bottom of this file. Without bumping
+    /// `updatedAt`, SwiftUI's view diff treats a Team whose template body
+    /// changed as identical to the pre-write one and skips re-evaluating
+    /// downstream views (visible regression: "Reset to Default" in the
+    /// Prompts tab silently did nothing until the user navigated away and
+    /// back, because `PromptTemplateEditor.updateNSView` never received the
+    /// new value). Routing every prompt-template write through this method
+    /// keeps the `(id, updatedAt)` contract honest.
+    mutating func assignPromptTemplate(
+        _ field: PromptField,
+        value: String,
+        clock: MonotonicClock = .shared
+    ) {
+        let keyPath = field.keyPath
+        guard self[keyPath: keyPath] != value else { return }
+        self[keyPath: keyPath] = value
+        self.updatedAt = clock.now()
     }
 
     // MARK: - Codable
@@ -204,6 +248,16 @@ struct Team: Codable, Identifiable {
         supervisorRequiredArtifacts.isEmpty
     }
 
+    /// True when this team can be a *target* of `delegate_to_team`. Chat-mode
+    /// teams never produce supervisor deliverables (they never auto-complete),
+    /// so they're never valid delegation targets. Single source of truth shared
+    /// by the runtime catalog (`DelegateToTeamTool.buildSchema`) and the
+    /// role-editor delegation picker (`RoleEditorDelegationPolicy`). Named for
+    /// the target side, mirroring `roleIsTopLevelDelegator` on the source side.
+    var isValidDelegationTarget: Bool {
+        !isChatMode
+    }
+
     /// Creates a new pending `StepExecution` for the given role ID.
     /// Returns `nil` if no role with that ID exists in this team.
     func makeStep(forRoleID roleID: String) -> StepExecution? {
@@ -263,10 +317,25 @@ struct Team: Codable, Identifiable {
         return nil
     }
 
-    /// Update a role in the team
+    /// Update a role in the team. Bumps both the role's `updatedAt`
+    /// (via `withUpdatedTimestamp`) and the team's `updatedAt` so SwiftUI
+    /// observers re-evaluate through `Team.==`'s id+timestamp shortcut
+    /// (see CLAUDE.md #42). Silently no-ops if no role matches
+    /// `updatedRole.id` — callers that need failure-on-missing must
+    /// pre-validate via `roles.contains(where:)`.
     mutating func updateRole(_ updatedRole: TeamRoleDefinition) {
         if let index = roles.firstIndex(where: { $0.id == updatedRole.id }) {
             roles[index] = updatedRole.withUpdatedTimestamp()
+            updatedAt = MonotonicClock.shared.now()
+        }
+    }
+
+    /// Remove a role's upstream `reportsTo` entry, making it peer-level
+    /// with Supervisor. Bumps `team.updatedAt` iff the dictionary
+    /// actually changed — no-op for already-peer roles so non-delegating
+    /// edits don't churn SwiftUI observers.
+    mutating func detachFromHierarchy(roleID: String) {
+        if settings.hierarchy.reportsTo.removeValue(forKey: roleID) != nil {
             updatedAt = MonotonicClock.shared.now()
         }
     }
@@ -377,6 +446,30 @@ struct Team: Codable, Identifiable {
         roles.filter { !$0.isSupervisor }
     }
 
+    /// True iff `role` is **peer-level with the human Supervisor** — i.e. has no
+    /// upstream entry in `settings.hierarchy.reportsTo` (or the entry points back
+    /// to itself). Peer roles act autonomously and don't depend on Supervisor for
+    /// completion; they are the eligibility set for `delegate_to_team`.
+    ///
+    /// Takes `TeamRoleDefinition` (not a string) so the call site resolves
+    /// identity once via `findRole(byIdentifier:)` and the predicate operates on
+    /// a single canonical id (`role.id`). Supervisor itself is always rejected.
+    func roleIsTopLevelDelegator(_ role: TeamRoleDefinition) -> Bool {
+        guard !role.isSupervisor else { return false }
+        let parent = settings.hierarchy.reportsTo[role.id]
+        return parent == nil || parent == role.id
+    }
+
+    /// True iff `role` can produce any successful `delegate_to_team` call —
+    /// peer-level with Supervisor AND has at least one configured target
+    /// (whitelisted team OR generated permission). The 4-tool delegation pack
+    /// auto-injects into the LLM schema only when this returns true.
+    /// Combines the two structural/configuration halves into one canonical
+    /// predicate so callers don't have to chain them manually.
+    func delegationEnabled(for role: TeamRoleDefinition) -> Bool {
+        roleIsTopLevelDelegator(role) && role.hasDelegationConfigured
+    }
+
     /// All built-in team templates.
     static var defaultTeams: [Team] { TeamTemplateFactory.allTemplates }
 
@@ -386,7 +479,7 @@ struct Team: Codable, Identifiable {
 
 // MARK: - Hashable
 
-extension Team: Hashable {
+nonisolated extension Team: Hashable {
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
         hasher.combine(updatedAt)

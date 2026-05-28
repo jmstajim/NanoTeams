@@ -48,7 +48,7 @@ extension LLMExecutionService {
         // Re-read fresh task to get current consultation state (the `task` parameter
         // is a snapshot captured at step start and doesn't reflect mutations from prior iterations).
         let step: StepExecution
-        if let freshTask = await { delegate.loadedTask(tid) }(),
+        if let freshTask = delegate.loadedTask(tid),
            runIndex < freshTask.runs.count,
            stepIndex < freshTask.runs[runIndex].steps.count {
             step = freshTask.runs[runIndex].steps[stepIndex]

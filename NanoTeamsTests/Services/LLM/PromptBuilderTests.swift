@@ -82,9 +82,10 @@ final class PromptBuilderTests: XCTestCase {
         let result = PromptBuilder.buildWorkFolderContextMessage(workFolder: wf)
 
         XCTAssertNotNil(result)
-        XCTAssertTrue(result!.contains("MyApp"), "Should include work folder name")
+        XCTAssertTrue(result!.contains("MyApp"), "Should include work folder name (bold)")
         XCTAssertTrue(result!.contains("An iOS application for task management"), "Should include work folder context")
-        XCTAssertTrue(result!.contains("Work folder context:"), "Should include header")
+        XCTAssertFalse(result!.contains("## Work folder"),
+                       "Chip body must NOT include the `## Work folder` header — template owns it (2026-05 chip-format contract)")
     }
 
     func testBuildWorkFolderContextMessage_nilProject_returnsNil() {
@@ -428,9 +429,9 @@ final class PromptBuilderTests: XCTestCase {
         let supervisorTaskMessage = messages.first { $0.content?.contains("## Supervisor Task") == true }
         XCTAssertNotNil(supervisorTaskMessage)
         XCTAssertTrue(supervisorTaskMessage?.content?.contains("Implement import flow") == true)
-        XCTAssertTrue(supervisorTaskMessage?.content?.contains("--- Clipped Text ---") == true)
+        XCTAssertTrue(supervisorTaskMessage?.content?.contains("## Clipped Text") == true)
         XCTAssertTrue(supervisorTaskMessage?.content?.contains("Selected API response") == true)
-        XCTAssertTrue(supervisorTaskMessage?.content?.contains("--- Attached Files ---") == true)
+        XCTAssertTrue(supervisorTaskMessage?.content?.contains("## Attached Files") == true)
         XCTAssertTrue(supervisorTaskMessage?.content?.contains(".nanoteams/tasks/abc/attachments/spec.pdf") == true)
     }
 
@@ -611,32 +612,86 @@ final class PromptBuilderTests: XCTestCase {
                        "Work folder context must appear in the system prompt")
 
         let userMessagesWithWorkFolderHeader = messages.filter { msg in
-            msg.role == .user && msg.content?.contains("Work folder context:") == true
+            msg.role == .user && msg.content?.contains("## Work folder") == true
         }
         XCTAssertTrue(userMessagesWithWorkFolderHeader.isEmpty,
                       "Work folder context must not be re-broadcast as a user message")
     }
 
-    // MARK: - buildContextAwarenessGuidance branches
+    // MARK: - buildConversationMechanicsGuidance branches
+    //
+    // After the 2026-05 chip-format contract change, this builder returns the
+    // BARE BODY — the `## Conversation mechanics` header lives in the template,
+    // not in the chip's resolved value.
 
-    func testBuildContextAwarenessGuidance_withFileReadTools_includesResourceTracking() {
-        let guidance = PromptBuilder.buildContextAwarenessGuidance(hasFileReadTools: true)
+    func testBuildConversationMechanicsGuidance_withFileReadTools_includesResourceTracking() {
+        let guidance = PromptBuilder.buildConversationMechanicsGuidance(hasFileReadTools: true)
 
+        XCTAssertFalse(guidance.hasPrefix("## "),
+                       "guidance must be bare body — the `## Conversation mechanics` header is in the template")
         XCTAssertTrue(guidance.contains("<§R1§>"),
                       "file-read roles must get the tag legend")
-        XCTAssertTrue(guidance.contains("MEMORIES"),
-                      "file-read roles must be pointed at the MEMORIES index")
+        // TODO(memories-disabled, 2026-05-19): While `injectMemories` is gated
+        // off, the second sentence points at the per-tool-result `unchanged`
+        // envelope (the only consumer-visible signal that remains). When
+        // `LLMExecutionService.isMemoriesInjectionEnabled` flips back to `true`,
+        // restore the original "must be pointed at the Memories index" assertion
+        // on `guidance.contains("Memories")`.
+        XCTAssertTrue(guidance.contains("\"status\":\"unchanged\""),
+                      "file-read roles must be steered to the compact unchanged-reference envelope")
+        XCTAssertFalse(guidance.contains("Memories"),
+                       "while Memories injection is disabled, the prompt must not point at an index that won't appear")
     }
 
-    func testBuildContextAwarenessGuidance_withoutFileReadTools_omitsResourceTracking() {
-        let guidance = PromptBuilder.buildContextAwarenessGuidance(hasFileReadTools: false)
+    func testBuildConversationMechanicsGuidance_withoutFileReadTools_omitsResourceTracking() {
+        let guidance = PromptBuilder.buildConversationMechanicsGuidance(hasFileReadTools: false)
 
+        XCTAssertFalse(guidance.hasPrefix("## "),
+                       "guidance must be bare body — the `## Conversation mechanics` header is in the template")
         XCTAssertFalse(guidance.contains("<§R1§>"),
                        "non-file-reading roles must not see the tag legend")
-        XCTAssertFalse(guidance.contains("MEMORIES"),
-                       "non-file-reading roles must not be told about MEMORIES — they never produce tags")
+        XCTAssertFalse(guidance.contains("Memories"),
+                       "non-file-reading roles must not be told about the Memories index — they never produce tags")
         XCTAssertFalse(guidance.isEmpty,
                        "the Supervisor-task-awareness sentence still runs for every role")
+    }
+
+    // MARK: - renderToolListPlaceholder (deprecated 2026-05; always empty)
+
+    func testRenderToolListPlaceholder_deprecated_alwaysEmpty() {
+        // After 2026-05 merge, `{toolList}` is deprecated — the no-tools notice
+        // and the Harmony tool catalog live together in `{toolCalling}`. Legacy
+        // stored templates with `## Tools\n{toolList}` get their orphan header
+        // stripped by `TemplateResolver.stripOrphanHeaders`.
+        XCTAssertEqual(PromptBuilder.renderToolListPlaceholder(toolNames: []), "")
+        XCTAssertEqual(PromptBuilder.renderToolListPlaceholder(toolNames: ["read_file"]), "")
+    }
+
+    func testBuildChatMessages_emptyTools_systemPromptContainsNoToolsNotice() {
+        // No-tools branch ships through the merged `{toolCalling}` chip: when
+        // the role has no tools, the chip resolves to "None available — respond
+        // directly..." (no `## Tools` header — that lives in the template's
+        // `## Tool Calling\n{toolCalling}` block).
+        let context = makeContext()
+        let messages = PromptBuilder.buildChatMessages(context: context, tools: [])
+        let system = messages.first { $0.role == .system }
+        XCTAssertNotNil(system)
+        XCTAssertTrue(system?.content?.contains("None available") == true,
+                      "no-tools branch must say `None available` (via {toolCalling} chip resolution)")
+        XCTAssertTrue(system?.content?.contains("## Tool Calling") == true,
+                      "template's `## Tool Calling` header wraps the chip")
+    }
+
+    func testBuildChatMessages_withTools_emitsHarmonyBlockNotNoToolsNotice() {
+        let tools = [ToolSchema(name: "read_file", description: "Read file", parameters: JSONSchema(type: "object"))]
+        let context = makeContext()
+        let messages = PromptBuilder.buildChatMessages(context: context, tools: tools)
+        let system = messages.first { $0.role == .system }
+        XCTAssertNotNil(system)
+        XCTAssertFalse(system?.content?.contains("None available — respond directly") == true,
+                       "roles with tools must not see the no-tools notice")
+        XCTAssertTrue(system?.content?.contains("Call tools using this Harmony format") == true,
+                      "roles with tools must see the Harmony format preamble")
     }
 
     // MARK: - getRequiredArtifactNames (Round 2 regression)
@@ -669,5 +724,103 @@ final class PromptBuilderTests: XCTestCase {
 
         XCTAssertEqual(names, ["Design Spec"],
                        "Should find custom role via findRole(byIdentifier:) and return its requiredArtifacts")
+    }
+
+    // MARK: - Global Context Injection
+
+    func testAppendingSeparator_emptySuffix_returnsTextUnchanged() {
+        let result = TemplateResolver.appendingSeparator("", to: "Base prompt.")
+        XCTAssertEqual(result, "Base prompt.")
+    }
+
+    func testAppendingSeparator_whitespaceOnlySuffix_returnsTextUnchanged() {
+        let result = TemplateResolver.appendingSeparator("   \n\t  ", to: "Base prompt.")
+        XCTAssertEqual(result, "Base prompt.")
+    }
+
+    func testAppendingSeparator_nonEmptySuffix_appendsAsGlobalGuidanceSection() {
+        let result = TemplateResolver.appendingSeparator("Rule X.", to: "Base prompt.")
+        XCTAssertEqual(result, "Base prompt.\n\n## Global guidance\n\nRule X.")
+    }
+
+    func testAppendingSeparator_trimsSurroundingWhitespace() {
+        let result = TemplateResolver.appendingSeparator("\n  Rule X.  \n", to: "Base prompt.")
+        XCTAssertEqual(result, "Base prompt.\n\n## Global guidance\n\nRule X.")
+    }
+
+    func testBuildChatMessages_withNonEmptyGlobalContext_systemEndsWithSeparator() {
+        let context = makeContext()
+        let withGlobal = PromptBuilder.Context(
+            task: context.task,
+            step: context.step,
+            stepIndex: context.stepIndex,
+            run: context.run,
+            workFolder: context.workFolder,
+            artifactReader: context.artifactReader,
+            activeTeam: context.activeTeam,
+            roleDefinition: context.roleDefinition,
+            globalContext: "RULE_X"
+        )
+        let messages = PromptBuilder.buildChatMessages(context: withGlobal, tools: [])
+        guard let system = messages.first(where: { $0.role == .system })?.content else {
+            XCTFail("expected a system message")
+            return
+        }
+        // Built-in templates wrap globalContext as `## Global guidance\n{globalContext}`
+        // — single `\n` between header and value (Swift multi-line literal indentation;
+        // matches the template's own style for other sections like `## Role\n{roleName}`).
+        // After 2026-05 contract: globalContext is one section among many — its
+        // position varies per template but is always BEFORE `## Tool Calling`,
+        // which is in turn before the literal-last `## Final reminder`. Assert
+        // presence/value here; FR-is-last invariant is pinned in
+        // `SystemTemplatesSectionPinTests.testEveryStepTemplate_finalReminderIsLastH2Section`.
+        XCTAssertTrue(system.contains("## Global guidance\nRULE_X"),
+                       "system prompt should include the `## Global guidance` section "
+                       + "(template owns the header; chip resolves to the bare value)")
+    }
+
+    func testBuildChatMessages_withEmptyGlobalContext_systemHasNoSeparator() {
+        let messages = PromptBuilder.buildChatMessages(context: makeContext(), tools: [])
+        guard let system = messages.first(where: { $0.role == .system })?.content else {
+            XCTFail("expected a system message")
+            return
+        }
+        XCTAssertFalse(system.contains("## Global guidance"),
+                       "empty global context must not emit a `## Global guidance` section")
+    }
+
+    // MARK: - buildTeamDescriptionLine
+
+    /// 2026-05 chip-rendering refactor: the `Team purpose:` label moved out of
+    /// the helper's return value and into the consuming template, so the
+    /// preview can colour the value only (matching `Members: {teamRoles}.`).
+    /// The helper now returns the trimmed description verbatim.
+    func testBuildTeamDescriptionLine_nonEmpty_returnsDescriptionOnly() {
+        var team = Team(name: "Test Team")
+        team.description = "  Lean engineering pipeline.  "
+        let result = PromptBuilder.buildTeamDescriptionLine(team: team)
+        XCTAssertEqual(result, "Lean engineering pipeline.")
+        XCTAssertFalse(result.contains("Team purpose:"),
+                       "label must live in the consuming template, not the helper's value")
+        XCTAssertFalse(result.hasPrefix("\n"),
+                       "leading newline must not be baked into the value")
+    }
+
+    /// Empty / whitespace-only description returns `""` so the consuming
+    /// template's `Team purpose: ` line becomes an orphan that
+    /// `TemplateResolver.stripOrphanInlineLabels` collapses.
+    func testBuildTeamDescriptionLine_empty_returnsEmpty() {
+        let team = Team(name: "Test Team")  // description defaults to ""
+        XCTAssertEqual(PromptBuilder.buildTeamDescriptionLine(team: team), "")
+    }
+
+    func testBuildTeamDescriptionLine_whitespaceOnly_returnsEmpty() {
+        var team = Team(name: "Test Team")
+        team.description = "   \n  \t  "
+        XCTAssertEqual(PromptBuilder.buildTeamDescriptionLine(team: team), "")
+    }
+
+    func testBuildTeamDescriptionLine_nilTeam_returnsEmpty() {
+        XCTAssertEqual(PromptBuilder.buildTeamDescriptionLine(team: nil), "")
     }
 }

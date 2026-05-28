@@ -1,7 +1,7 @@
 import Foundation
 
 /// Helper structures and utilities for Xcode build operations.
-enum XcodeBuildHelpers {
+nonisolated enum XcodeBuildHelpers {
     /// Regex pattern for valid feature branch names (`feature/...`).
     private static let featureBranchPattern = #"^feature\/[a-z0-9][a-z0-9._-]*$"#
 
@@ -85,16 +85,18 @@ enum XcodeBuildHelpers {
     // MARK: - Scheme Fetching (for UI)
 
     /// Fetches available schemes for the Xcode project at the given root.
-    /// Runs on a background thread to avoid blocking the main actor.
+    /// Runs `xcodebuild -list` on a background thread to avoid blocking the main actor.
     /// - Parameter workFolderRoot: The project root URL.
+    /// - Parameter fileManager: Used to enumerate the project directory before the
+    ///   detached `xcodebuild` call. Honored end-to-end so test mocks aren't dropped.
     /// - Returns: An array of scheme names.
     static func fetchAvailableSchemes(workFolderRoot: URL, fileManager: FileManager = .default) async -> [String] {
-        let fm = fileManager
-        return await Task.detached {
-            guard let contents = try? fm.contentsOfDirectory(atPath: workFolderRoot.path) else {
-                return []
-            }
-
+        // Enumerate the project directory on the calling thread using the injected
+        // `fileManager`. Pass the resulting `[String]` into `Task.detached` (Strings
+        // are Sendable) — this preserves the DI contract that previously got
+        // dropped when the body re-created `FileManager.default`.
+        let contents = (try? fileManager.contentsOfDirectory(atPath: workFolderRoot.path)) ?? []
+        return await Task.detached { [contents] in
             var args: [String] = ["-list"]
             if let workspace = contents.first(where: { $0.hasSuffix(".xcworkspace") }) {
                 args += ["-workspace", workspace]

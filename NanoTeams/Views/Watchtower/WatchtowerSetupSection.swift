@@ -61,7 +61,7 @@ struct WatchtowerSetupSection: View {
 
     /// Returns the ordered list of tips that should currently be shown.
     /// Order matches `FeatureTipID.allCases` (LLM first, per design).
-    static func visibleTips(
+    nonisolated static func visibleTips(
         llmReachable: Bool,
         exploratorySearchEnabled: Bool,
         visionConfigured: Bool,
@@ -79,7 +79,7 @@ struct WatchtowerSetupSection: View {
         }
     }
 
-    struct Copy {
+    nonisolated struct Copy {
         let icon: String
         let title: String
         let description: String
@@ -87,7 +87,7 @@ struct WatchtowerSetupSection: View {
         let tab: SettingsView.SettingsTab
     }
 
-    static func copy(for tip: FeatureTipID) -> Copy {
+    nonisolated static func copy(for tip: FeatureTipID) -> Copy {
         switch tip {
         case .llm:
             return Copy(

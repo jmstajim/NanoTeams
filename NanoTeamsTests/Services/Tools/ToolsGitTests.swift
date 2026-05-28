@@ -183,12 +183,50 @@ final class ToolsGitTests: XCTestCase {
         XCTAssertTrue(results[0].outputJSON.contains("alias_test.txt"))
     }
 
+    func testGitAdd_filesArrayAlias() throws {
+        try "A".write(to: tempDir.appendingPathComponent("files_alias_a.txt"), atomically: true, encoding: .utf8)
+        try "B".write(to: tempDir.appendingPathComponent("files_alias_b.txt"), atomically: true, encoding: .utf8)
+
+        let call = StepToolCall(
+            name: "git_add",
+            argumentsJSON: "{\"files\": [\"files_alias_a.txt\", \"files_alias_b.txt\"]}"
+        )
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError)
+        XCTAssertTrue(results[0].outputJSON.contains("files_alias_a.txt"))
+        XCTAssertTrue(results[0].outputJSON.contains("files_alias_b.txt"))
+    }
+
+    func testGitAdd_fileSingularAlias() throws {
+        try "content".write(to: tempDir.appendingPathComponent("file_alias.txt"), atomically: true, encoding: .utf8)
+
+        let call = StepToolCall(
+            name: "git_add",
+            argumentsJSON: "{\"file\": \"file_alias.txt\"}"
+        )
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError)
+        XCTAssertTrue(results[0].outputJSON.contains("file_alias.txt"))
+    }
+
     func testGitAdd_missingPathsArgument() {
         let call = StepToolCall(name: "git_add", argumentsJSON: "{}")
         let results = runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("INVALID_ARGS"))
+        // I4: error must surface every accepted alias so a model emitting
+        // {"foos": [...]} sees what shape is actually accepted instead of
+        // a single misleading "paths" key.
+        XCTAssertTrue(
+            results[0].outputJSON.contains("paths")
+                && results[0].outputJSON.contains("files")
+                && results[0].outputJSON.contains("path")
+                && results[0].outputJSON.contains("file"),
+            "Error message must list all accepted aliases (paths/files/path/file). Got: \(results[0].outputJSON)"
+        )
     }
 
     // MARK: - git_commit Tests

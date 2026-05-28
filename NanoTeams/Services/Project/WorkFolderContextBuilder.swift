@@ -1,6 +1,6 @@
 import Foundation
 
-struct WorkFolderContextInput: Hashable {
+nonisolated struct WorkFolderContextInput: Hashable {
     struct FileExcerpt: Hashable {
         var path: String
         var content: String
@@ -46,7 +46,6 @@ struct WorkFolderContextBuilder {
 
         let priorityNames: [String] = [
             "README.md",
-            "README_LLM.md",
             "README.txt",
             "Package.swift",
             "NanoTeamsApp.swift",

@@ -5,7 +5,7 @@ private typealias JS = JSONSchema
 
 // MARK: - git_add
 
-struct GitAddTool: ToolHandler {
+nonisolated struct GitAddTool: ToolHandler {
     static let name = TN.gitAdd
     static let schema = ToolSchema(
         name: TN.gitAdd,
@@ -32,10 +32,17 @@ struct GitAddTool: ToolHandler {
             let paths: [String]
             if let p = try? requiredStringArray(args, "paths") {
                 paths = p
+            } else if let p = try? requiredStringArray(args, "files") {
+                paths = p
             } else if let single = optionalString(args, "path") {
                 paths = [single]
+            } else if let single = optionalString(args, "file") {
+                paths = [single]
             } else {
-                throw ToolArgumentError.missingRequired("paths")
+                // I4: surface every accepted alias so a model that emits
+                // an unrecognized argument shape ({"foos": [...]}) sees the
+                // full set of acceptable keys instead of just `paths`.
+                throw ToolArgumentError.missingRequired("paths (or files / path / file)")
             }
 
             var gitArgs = ["add"]
@@ -68,7 +75,7 @@ struct GitAddTool: ToolHandler {
 
 // MARK: - git_commit
 
-struct GitCommitTool: ToolHandler {
+nonisolated struct GitCommitTool: ToolHandler {
     static let name = TN.gitCommit
     static let schema = ToolSchema(
         name: TN.gitCommit,
@@ -140,7 +147,7 @@ struct GitCommitTool: ToolHandler {
 
 // MARK: - git_pull
 
-struct GitPullTool: ToolHandler {
+nonisolated struct GitPullTool: ToolHandler {
     static let name = TN.gitPull
     static let schema = ToolSchema(
         name: TN.gitPull,
@@ -220,7 +227,7 @@ struct GitPullTool: ToolHandler {
 
 // MARK: - git_stash
 
-struct GitStashTool: ToolHandler {
+nonisolated struct GitStashTool: ToolHandler {
     static let name = TN.gitStash
     static let schema = ToolSchema(
         name: TN.gitStash,

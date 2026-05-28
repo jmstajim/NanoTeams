@@ -5,24 +5,78 @@ private typealias JS = JSONSchema
 
 // MARK: - create_artifact
 
-struct CreateArtifactTool: ToolHandler {
+nonisolated struct CreateArtifactTool: ToolHandler {
     static let name = TN.createArtifact
     static let schema = ToolSchema(
         name: TN.createArtifact,
-        description: "Submit a deliverable artifact. Your step ends when all expected deliverables are submitted.",
-        parameters: JS.object(
-            properties: [
-                "name": JS.string("Artifact name — must match one of the expected artifacts (e.g., 'World Compendium')"),
-                "content": JS.string("Full artifact content in markdown format"),
-                "format": JS.string("Output format: 'markdown' (default), 'pdf', 'rtf', 'docx'. Non-markdown formats produce binary document files alongside the markdown."),
-            ],
-            required: ["name", "content"]
-        )
+        description: baseDescription
+            + "\n\nAt runtime the role's expected deliverable names are appended here and constrained on the `name` parameter.",
+        parameters: parameterSchema(nameEnum: nil)
     )
     static let category: ToolCategory = .artifact
     static let excludedInMeetings = true
 
-    
+    /// LLM-facing prose. Stays in `Self.schema` as the user-curated tool surface
+    /// shown in the role-editor UI; `buildSchema` reuses this string and appends
+    /// the per-role expected-deliverables list before handing the schema to the LLM.
+    private static let baseDescription =
+        "Submit a deliverable artifact. The step ends when all expected deliverables have been submitted."
+
+    private static func parameterSchema(nameEnum: [String]?) -> JSONSchema {
+        JS.object(
+            properties: [
+                "name": JS.string(
+                    "Name of the deliverable — must match one from the list below.",
+                    enumValues: nameEnum
+                ),
+                "content": JS.string(
+                    "Full markdown body of the deliverable."
+                ),
+                "format": JS.string(
+                    "Output format. Non-markdown formats also emit a binary side-car.",
+                    enumValues: ["markdown", "pdf", "rtf", "docx"]
+                ),
+            ],
+            required: ["name", "content"]
+        )
+    }
+
+    /// Builds a per-role `create_artifact` schema with the role's expected
+    /// deliverables embedded inline in the description and constrained on the
+    /// `name` parameter as a JSON-schema `enum`. Mirrors
+    /// `DelegateToTeamTool.buildSchema(role:allTeams:)` — same
+    /// inline-context-at-the-decision-point pattern.
+    ///
+    /// Called from `LLMExecutionService.toolSchemas(for:team:)` step 5 when
+    /// `create_artifact` is auto-injected for a role with non-empty
+    /// `producesArtifacts`. The static `Self.schema` is the fallback for any
+    /// caller without role context (role-editor preview, tests).
+    ///
+    /// `enumValues` is set to `nil` (not `[]`) when `producesArtifacts` is empty
+    /// — most providers treat an empty enum as "no valid value", which would
+    /// hard-block the tool. Auto-injection (step 5) gates on
+    /// `!producesArtifacts.isEmpty`, so this branch only fires for callers that
+    /// explicitly bypass that gate (manual toolset edits, future code paths);
+    /// the `isValidArtifactName` runtime guard inside `handle(...)` still
+    /// catches the resulting bad calls and routes to a `tool_not_authorized`
+    /// envelope so the LLM gets the "don't retry" guidance.
+    static func buildSchema(role: TeamRoleDefinition) -> ToolSchema {
+        let names = role.dependencies.producesArtifacts
+        let nameEnum: [String]? = names.isEmpty ? nil : names
+        let listSection: String
+        if names.isEmpty {
+            listSection = "Expected deliverables for this role: (none configured)"
+        } else {
+            listSection = "Expected deliverables for this role:\n- "
+                + names.joined(separator: "\n- ")
+        }
+        return ToolSchema(
+            name: TN.createArtifact,
+            description: baseDescription + "\n\n" + listSection,
+            parameters: parameterSchema(nameEnum: nameEnum)
+        )
+    }
+
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self {
         Self()
     }
@@ -34,10 +88,50 @@ struct CreateArtifactTool: ToolHandler {
         "markdown", "md", "pdf", "rtf", "docx",
     ]
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let name = try requiredString(args, "name")
             let content = resolveContentString(args, excludeKeys: ["name"]) ?? ""
+
+            // Defense-in-depth on top of `GeneratedTeamBuilder.stripFileShapedArtifactNames`.
+            // The team-level cleanup catches file-shaped names in `produces_artifacts`
+            // at install time, but a role can still emit `create_artifact("foo.html", …)`
+            // at runtime — typically when the brief lists specific filenames and the
+            // model jumps straight to "produce them" instead of producing its declared
+            // artifact. The steering message names the role's actual `expectedArtifacts`
+            // so the model has a concrete fix-up list (the role's own prompt buries
+            // this field in placeholder text and the model frequently misses it).
+            //
+            // `create_artifact` is auto-injected for roles iff `producesArtifacts` is
+            // non-empty (see `LLMExecutionService+ToolResolution.swift` step 5), and
+            // `expectedArtifacts` is sourced from the same field. So in the auto-injected
+            // path it's always non-empty. But a manual toolset edit (or a future code
+            // path that explicitly authorizes the tool without seeding expected artifacts)
+            // can reach this branch with an empty list — the prior message rendered
+            // `[]` literally, leaving the model nothing to recover with. Surface a
+            // distinct error there so the operator sees the config bug instead.
+            if !ArtifactConstants.isValidArtifactName(name) {
+                if context.expectedArtifacts.isEmpty {
+                    // Emit the executor's `tool_not_authorized` envelope shape so
+                    // `buildToolErrorGuidance` routes through the bespoke
+                    // "don't retry" branch — the args aren't the cause; the
+                    // tool itself shouldn't be in the role's schema. The
+                    // generic `commandFailed` envelope falls through to "retry
+                    // with correct arguments", which loops the model on a
+                    // call that can't succeed.
+                    return makeToolNotAuthorizedConfigResult(
+                        toolName: Self.name,
+                        args: args,
+                        message: "create_artifact is not authorized for this role (no declared deliverables). Remove the call, or add producesArtifacts to the role definition."
+                    )
+                }
+                let list = context.expectedArtifacts.map { "'\($0)'" }.joined(separator: ", ")
+                return makeErrorResult(
+                    toolName: Self.name, args: args,
+                    code: .invalidArgs,
+                    message: "Artifact name '\(name)' looks like a filename. Your role is expected to produce: [\(list)]. Use one of those names."
+                )
+            }
 
             if let format = optionalString(args, "format"),
                !Self.allowedFormats.contains(format.lowercased()) {

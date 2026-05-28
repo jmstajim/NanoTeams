@@ -166,7 +166,6 @@ struct SupervisorFinalReviewView: View {
     let team = Team.default
     let supervisorTask = Artifact(name: "Supervisor Task", icon: "star.fill", description: "User task")
     let releaseNotes = Artifact(name: "Release Notes", icon: "doc.text.fill", description: "v1.0 release notes")
-    let tpmRole = team.roles.first(where: { $0.name == "TPM" })!
     let step = StepExecution(
         id: "preview",
         role: .tpm,
@@ -175,7 +174,6 @@ struct SupervisorFinalReviewView: View {
         status: .done,
         artifacts: [releaseNotes]
     )
-    let supervisorRole = team.roles.first(where: { $0.isSupervisor })!
     let supervisorStep = StepExecution(
         id: "preview",
         role: .supervisor,

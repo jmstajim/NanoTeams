@@ -110,6 +110,24 @@ final class ToolCallParsingHelpersTests: XCTestCase {
         XCTAssertEqual(result?.0, "{\"val\": \"{nested}\"}")
     }
 
+    /// `qwen3.5-9b-mlx` defect: emits one extra `}` after the legitimate close
+    /// of the tool-call envelope (`<|call|>{...}}}<|end|>` instead of `}}<|end|>`).
+    /// The walker must early-return at depth=0 and ignore the trailing junk —
+    /// pin the contract so a future refactor doesn't break it.
+    func testExtractJSON_trailingExtraClose_returnsBalancedAndStops() {
+        let s: Substring = #"{"name":"X","arguments":{"k":1}}}"#
+        let result = ToolCallParsingHelpers.extractJSONBracedValue(in: s, from: s.startIndex)
+        XCTAssertNotNil(result)
+        XCTAssertEqual(result?.0, #"{"name":"X","arguments":{"k":1}}"#)
+        // Cursor stops AT the legitimate close — NOT past the extra `}`.
+        // (Caller advances past `<|end|>` separately via advanceCursor.)
+        if let cursor = result?.1 {
+            XCTAssertEqual(s[cursor...], "}", "One stray `}` remains for the caller to skip")
+        } else {
+            XCTFail("Expected a cursor in the success path")
+        }
+    }
+
     // MARK: - advanceCursor
 
     func testAdvanceCursor_markerFound_returnsAfterMarker() {

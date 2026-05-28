@@ -9,6 +9,7 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     var workFolderURL: URL?
     var snapshot: WorkFolderContext?
     var globalLLMConfig: LLMConfig = LLMConfig()
+    var globalLLMContext: String = ""
     var maxLLMRetries: Int = 0
     var visionLLMConfig: LLMConfig?
     var loggingEnabled: Bool = false
@@ -51,6 +52,17 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     var clearStreamingPreviewCalls: [String] = []
     var updateProcessingProgressCalls: [(String, Double)] = []
     var clearProcessingProgressCalls: [String] = []
+    var markStreamActivityCalls: [String] = []
+    func markStreamActivity(stepID: String) { markStreamActivityCalls.append(stepID) }
+    var notifyQueuedMessageBackstopCalls: [Int] = []
+    func notifyQueuedMessageBackstop(taskID: Int) {
+        notifyQueuedMessageBackstopCalls.append(taskID)
+        eventLog.append("backstop:\(taskID)")
+    }
+    /// Cross-method call-sequence trace. Tests that need to pin ordering between
+    /// `mutateTask` and `notifyQueuedMessageBackstop` (e.g. hook must fire AFTER
+    /// the mutation persists, never inside the closure) append here.
+    var eventLog: [String] = []
     // Task to mutate (for testing)
     var taskToMutate: NTMSTask?
 
@@ -61,10 +73,13 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
 
     func mutateTask(taskID: Int, _ mutate: (inout NTMSTask) -> Void) async -> Bool {
         if var task = taskToMutate, task.id == taskID {
+            eventLog.append("mutate-begin:\(taskID)")
             mutate(&task)
             taskToMutate = task
+            eventLog.append("mutate-end:\(taskID)")
             return true
         }
+        eventLog.append("mutate-miss:\(taskID)")
         return false
     }
 
@@ -147,6 +162,71 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     var lastInfoMessages: [String] = []
     func setLastInfoMessageForUI(_ message: String) {
         lastInfoMessages.append(message)
+    }
+
+    var lastErrorMessages: [String] = []
+    func setLastErrorMessageForUI(_ message: String) {
+        lastErrorMessages.append(message)
+    }
+
+    // MARK: - Delegation (LLMStateDelegate stubs)
+
+    /// Scripted outcomes for `awaitTaskTerminalState`. Each call pops the next entry;
+    /// when the queue is empty the mock returns `.terminal(.failed)` so test runs
+    /// don't hang forever waiting for a continuation that will never fire.
+    var scriptedAwaitOutcomes: [TaskCompletionAwaiter.WaitOutcome] = []
+    var awaitedTaskIDs: [Int] = []
+    func awaitTaskTerminalState(taskID: Int) async -> TaskCompletionAwaiter.WaitOutcome {
+        awaitedTaskIDs.append(taskID)
+        guard !scriptedAwaitOutcomes.isEmpty else { return .terminal(.failed) }
+        return scriptedAwaitOutcomes.removeFirst()
+    }
+
+    var createDelegatedTaskStub: Int? = nil
+    var createdDelegatedTaskRequests: [(parentTaskID: Int, parentRoleID: String, title: String, supervisorTask: String, preferredTeamID: NTMSID?, depth: Int)] = []
+    func createDelegatedTask(
+        parentTaskID: Int,
+        parentRoleID: String,
+        title: String,
+        supervisorTask: String,
+        preferredTeamID: NTMSID?,
+        depth: Int
+    ) async -> Int? {
+        createdDelegatedTaskRequests.append((parentTaskID, parentRoleID, title, supervisorTask, preferredTeamID, depth))
+        return createDelegatedTaskStub
+    }
+
+    var startedRunForTaskIDs: [Int] = []
+    func startRunForTask(taskID: Int) async { startedRunForTaskIDs.append(taskID) }
+
+    var closeTaskStub: Bool = true
+    var closedTaskIDs: [Int] = []
+    func closeTask(taskID: Int) async -> Bool {
+        closedTaskIDs.append(taskID)
+        return closeTaskStub
+    }
+
+    var lastErrorPerTaskStub: [Int: String] = [:]
+    func lastErrorMessageForTask(_ taskID: Int) -> String? { lastErrorPerTaskStub[taskID] }
+
+    var stopEngineCalls: [Int] = []
+    func stopEngineForTask(_ taskID: Int) { stopEngineCalls.append(taskID) }
+
+    var pauseRunCalls: [Int] = []
+    func pauseRun(taskID: Int) async { pauseRunCalls.append(taskID) }
+
+    var resumeRunCalls: [Int] = []
+    func resumeRun(taskID: Int) async { resumeRunCalls.append(taskID) }
+
+    var activeDelegationChildStub: [String: Int] = [:]
+    func activeDelegationChildID(taskID: Int, roleID: String) -> Int? {
+        activeDelegationChildStub["\(taskID):\(roleID)"]
+    }
+
+    var answerSupervisorCalls: [(taskID: Int, stepID: String, answer: String)] = []
+    func answerSupervisorQuestion(taskID: Int, stepID: String, answer: String) async -> Bool {
+        answerSupervisorCalls.append((taskID, stepID, answer))
+        return true
     }
 }
 
@@ -264,11 +344,11 @@ final class LLMExecutionServiceTests: XCTestCase {
 
     // MARK: - Cancellation Tests
 
-    func testCancelStepExecution() {
+    func testCancelStepExecution() async {
         let stepID = "test_step"
 
         // Should not crash even if step wasn't running
-        service.cancelStepExecution(stepID: stepID)
+        await service.cancelStepExecution(stepID: stepID)
 
         XCTAssertFalse(service.isStepRunning(stepID: stepID))
     }
@@ -281,16 +361,16 @@ final class LLMExecutionServiceTests: XCTestCase {
         XCTAssertFalse(service.isStepRunning(stepID: stepID))
     }
 
-    func testCancelStepClearsStreamingPreview() {
+    func testCancelStepClearsStreamingPreview() async {
         let stepID = "test_step"
 
-        service.cancelStepExecution(stepID: stepID)
+        await service.cancelStepExecution(stepID: stepID)
 
         // Verify clearStreamingPreview was called
         XCTAssertTrue(mockDelegate.clearStreamingPreviewCalls.contains(stepID))
     }
 
-    func testCancelStepExecutionClearsPlanMessageIndex() {
+    func testCancelStepExecutionClearsPlanMessageIndex() async {
         let stepID = "test_step"
 
         // Set up a plan message index
@@ -298,12 +378,12 @@ final class LLMExecutionServiceTests: XCTestCase {
         XCTAssertEqual(service._testGetPlanMessageIndex(stepID: stepID), 10)
 
         // Cancel step execution should clear the plan message index
-        service.cancelStepExecution(stepID: stepID)
+        await service.cancelStepExecution(stepID: stepID)
 
         XCTAssertNil(service._testGetPlanMessageIndex(stepID: stepID))
     }
 
-    func testCancelStepExecutionClearsMemoriesMessageIndex() {
+    func testCancelStepExecutionClearsMemoriesMessageIndex() async {
         let stepID = "test_step"
 
         // Set up a memories message index
@@ -311,7 +391,7 @@ final class LLMExecutionServiceTests: XCTestCase {
         XCTAssertEqual(service._testGetMemoriesMessageIndex(stepID: stepID), 7)
 
         // Cancel step execution should clear the memories message index
-        service.cancelStepExecution(stepID: stepID)
+        await service.cancelStepExecution(stepID: stepID)
 
         XCTAssertNil(service._testGetMemoriesMessageIndex(stepID: stepID))
     }
@@ -339,7 +419,7 @@ final class LLMExecutionServiceTests: XCTestCase {
 
     // MARK: - Original System Prompt Restoration Tests
 
-    func testCancelStepExecutionClearsOriginalSystemPrompt() {
+    func testCancelStepExecutionClearsOriginalSystemPrompt() async {
         let stepID = "test_step"
 
         // Set up an original system prompt
@@ -347,7 +427,7 @@ final class LLMExecutionServiceTests: XCTestCase {
         XCTAssertEqual(service._testGetOriginalSystemPrompt(stepID: stepID), "Original prompt content")
 
         // Cancel step execution should clear the original system prompt
-        service.cancelStepExecution(stepID: stepID)
+        await service.cancelStepExecution(stepID: stepID)
 
         XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: stepID))
     }
@@ -818,7 +898,12 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
         )
     }
 
-    func testToolSchemas_noConcludeMeetingWhenNoCoordinatorConfigured() {
+    // Auto mode (no designated coordinator): any role that can start a meeting
+    // (`request_team_meeting` in toolIDs) needs to be able to close it, so
+    // `conclude_meeting` is auto-injected for them. This is the inverse of the
+    // pre-Auto behavior where conclude_meeting was gated to a single named
+    // coordinator role.
+    func testToolSchemas_concludeMeetingAvailable_inAutoMode_forAnyMeetingRequester() {
         let service = LLMExecutionService(repository: NTMSRepository())
         let delegate = MockLLMExecutionDelegate()
         service.attach(delegate: delegate)
@@ -840,10 +925,432 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
         )
 
         let schemas = service.toolSchemas(for: .custom(id: "r1"), team: team)
-        XCTAssertFalse(
+        XCTAssertTrue(
             schemas.contains(where: { $0.name == ToolNames.concludeMeeting }),
-            "No coordinator configured → conclude_meeting must not be granted to anyone"
+            "Auto mode → any role with request_team_meeting must get conclude_meeting"
         )
+    }
+
+    // Coordinator mode: conclude_meeting is gated to the designated coordinator;
+    // other roles with `request_team_meeting` do NOT get it.
+    func testToolSchemas_concludeMeetingStillGatedToCoordinator_whenCoordinatorSet() {
+        let service = LLMExecutionService(repository: NTMSRepository())
+        let delegate = MockLLMExecutionDelegate()
+        service.attach(delegate: delegate)
+
+        let roleA = TeamRoleDefinition(
+            id: "a",
+            name: "A (coordinator)",
+            prompt: "p",
+            toolIDs: [ToolNames.requestTeamMeeting],
+            usePlanningPhase: false,
+            dependencies: RoleDependencies()
+        )
+        let roleB = TeamRoleDefinition(
+            id: "b",
+            name: "B (also can request meetings)",
+            prompt: "p",
+            toolIDs: [ToolNames.requestTeamMeeting],
+            usePlanningPhase: false,
+            dependencies: RoleDependencies()
+        )
+        let team = Team(
+            name: "T",
+            roles: [roleA, roleB],
+            artifacts: [],
+            settings: TeamSettings(meetingCoordinatorRoleID: "a"),
+            graphLayout: TeamGraphLayout()
+        )
+
+        let schemasA = service.toolSchemas(for: .custom(id: "a"), team: team)
+        let schemasB = service.toolSchemas(for: .custom(id: "b"), team: team)
+        XCTAssertTrue(
+            schemasA.contains(where: { $0.name == ToolNames.concludeMeeting }),
+            "Designated coordinator must get conclude_meeting"
+        )
+        XCTAssertFalse(
+            schemasB.contains(where: { $0.name == ToolNames.concludeMeeting }),
+            "Non-coordinator roles must NOT get conclude_meeting when a coordinator is set"
+        )
+    }
+
+    // Regression pin for round-3 review CR.4 (silent-failure F2): the
+    // schema-build path is the earliest universal detection point for an
+    // orphan-coordinator team. Calling `toolSchemas` must surface the
+    // one-shot info banner before the LLM ever decides to start a meeting.
+    func testToolSchemas_orphanCoordinator_firesOrphanInfoBanner() {
+        let service = LLMExecutionService(repository: NTMSRepository())
+        let delegate = MockLLMExecutionDelegate()
+        service.attach(delegate: delegate)
+        let role = TeamRoleDefinition(
+            id: "live", name: "Live", prompt: "p",
+            toolIDs: [ToolNames.requestTeamMeeting],
+            usePlanningPhase: false, dependencies: RoleDependencies()
+        )
+        let team = Team(
+            name: "MyTeam", roles: [role], artifacts: [],
+            settings: TeamSettings(meetingCoordinatorRoleID: "ghost"),
+            graphLayout: TeamGraphLayout()
+        )
+
+        _ = service.toolSchemas(for: .custom(id: "live"), team: team)
+
+        XCTAssertEqual(delegate.lastInfoMessages.count, 1,
+                       "Orphan must be surfaced via schema-build, not gated on meeting actually starting")
+        XCTAssertTrue(delegate.lastInfoMessages[0].contains("MyTeam"))
+    }
+
+    // Regression pin for round-2 review finding C2.1: an orphaned stored
+    // coordinator ID must NOT trap `conclude_meeting` auto-inject in a
+    // coord-mode-no-match state where no role gets the tool. Both the runtime
+    // (`effectiveCoordinator`) and the picker self-heal to Auto for orphan
+    // IDs; the schema-build path must agree. Otherwise the LLM can start
+    // meetings (via `request_team_meeting`) but cannot close them
+    // (`conclude_meeting` absent from the schema).
+    func testToolSchemas_orphanCoordinator_treatedAsAutoMode_injectsConcludeMeeting() {
+        let service = LLMExecutionService(repository: NTMSRepository())
+        let delegate = MockLLMExecutionDelegate()
+        service.attach(delegate: delegate)
+
+        let role = TeamRoleDefinition(
+            id: "live",
+            name: "Live",
+            prompt: "p",
+            toolIDs: [ToolNames.requestTeamMeeting],
+            usePlanningPhase: false,
+            dependencies: RoleDependencies()
+        )
+        let team = Team(
+            name: "T",
+            roles: [role],
+            artifacts: [],
+            // Stored coordinator references a role that no longer exists.
+            settings: TeamSettings(meetingCoordinatorRoleID: "ghost-of-deleted-role"),
+            graphLayout: TeamGraphLayout()
+        )
+
+        let schemas = service.toolSchemas(for: .custom(id: "live"), team: team)
+        XCTAssertTrue(
+            schemas.contains(where: { $0.name == ToolNames.concludeMeeting }),
+            "Orphan stored coordinator ID must behave like Auto: any role with request_team_meeting gets conclude_meeting"
+        )
+    }
+
+    // Orphan self-heal: an ID that references a deleted role must resolve to
+    // nil (Auto mode), not silently fabricate a `.custom(id: "deleted-id")`.
+    func testResolveCoordinatorRole_orphanedID_returnsNil() {
+        let service = LLMExecutionService(repository: NTMSRepository())
+        let role = TeamRoleDefinition(
+            id: "alive",
+            name: "Alive",
+            prompt: "p",
+            toolIDs: [],
+            usePlanningPhase: false,
+            dependencies: RoleDependencies()
+        )
+        let team = Team(
+            name: "T",
+            roles: [role],
+            artifacts: [],
+            settings: TeamSettings(meetingCoordinatorRoleID: "ghost-of-deleted-role"),
+            graphLayout: TeamGraphLayout()
+        )
+        XCTAssertNil(
+            service.resolveCoordinatorRole(team: team),
+            "Orphaned coordinator ID must resolve to nil, not .custom(id:)"
+        )
+    }
+
+    // Supervisor cannot be a meeting coordinator (Supervisor is the user, not
+    // an LLM). If `teams.json` somehow stores Supervisor's id as the
+    // coordinator (hand edit / corruption), runtime must reject it and
+    // self-heal to Auto — symmetric with the picker which never offers
+    // Supervisor as an option. Regression pin for round-3 review MD.2.
+    func testResolveCoordinatorRole_storedSupervisorID_rejected() {
+        let service = LLMExecutionService(repository: NTMSRepository())
+        let supervisor = TeamRoleDefinition(
+            id: "sup", name: "Supervisor", prompt: "", toolIDs: [],
+            usePlanningPhase: false, dependencies: RoleDependencies(),
+            systemRoleID: "supervisor"
+        )
+        let role = TeamRoleDefinition(
+            id: "r", name: "R", prompt: "p", toolIDs: [],
+            usePlanningPhase: false, dependencies: RoleDependencies()
+        )
+        let team = Team(
+            name: "T", roles: [supervisor, role], artifacts: [],
+            settings: TeamSettings(meetingCoordinatorRoleID: "sup"),
+            graphLayout: TeamGraphLayout()
+        )
+        XCTAssertNil(
+            service.resolveCoordinatorRole(team: team),
+            "Stored Supervisor ID must be rejected (Supervisor can never be coordinator)"
+        )
+    }
+
+    // Defensive: stored empty string resolves to nil. Parity with
+    // `DesignatedCoordinatorResolver.normalize` since runtime now funnels
+    // through it (CR.1 fix).
+    func testResolveCoordinatorRole_emptyStoredID_returnsNil() {
+        let service = LLMExecutionService(repository: NTMSRepository())
+        let role = TeamRoleDefinition(
+            id: "r", name: "R", prompt: "p", toolIDs: [],
+            usePlanningPhase: false, dependencies: RoleDependencies()
+        )
+        let team = Team(
+            name: "T", roles: [role], artifacts: [],
+            settings: TeamSettings(meetingCoordinatorRoleID: ""),
+            graphLayout: TeamGraphLayout()
+        )
+        XCTAssertNil(service.resolveCoordinatorRole(team: team))
+    }
+
+    // Auto mode: nil coordinator ID resolves to nil — meeting runs leaderless.
+    func testResolveCoordinatorRole_autoMode_returnsNil() {
+        let service = LLMExecutionService(repository: NTMSRepository())
+        let role = TeamRoleDefinition(
+            id: "r1", name: "R", prompt: "p", toolIDs: [],
+            usePlanningPhase: false, dependencies: RoleDependencies()
+        )
+        let team = Team(
+            name: "T", roles: [role], artifacts: [],
+            settings: TeamSettings(meetingCoordinatorRoleID: nil),
+            graphLayout: TeamGraphLayout()
+        )
+        XCTAssertNil(service.resolveCoordinatorRole(team: team))
+    }
+
+    // MARK: - effectiveCoordinator (designated ?? initiator)
+
+    // Auto mode: when no coordinator is designated, the meeting's initiator
+    // becomes the effective coordinator for that meeting.
+    func testEffectiveCoordinator_autoMode_returnsInitiator() {
+        let service = LLMExecutionService(repository: NTMSRepository())
+        let role = TeamRoleDefinition(
+            id: "r", name: "R", prompt: "p", toolIDs: [],
+            usePlanningPhase: false, dependencies: RoleDependencies()
+        )
+        let team = Team(
+            name: "T", roles: [role], artifacts: [],
+            settings: TeamSettings(meetingCoordinatorRoleID: nil),
+            graphLayout: TeamGraphLayout()
+        )
+        let initiator: Role = .productManager
+        XCTAssertEqual(
+            service.effectiveCoordinator(team: team, initiator: initiator),
+            initiator,
+            "Auto mode (designated == nil): effective coordinator falls back to initiator"
+        )
+    }
+
+    // Designated-coordinator mode: effective coordinator is the designated role,
+    // not the initiator.
+    func testEffectiveCoordinator_designatedSet_returnsDesignated() {
+        let service = LLMExecutionService(repository: NTMSRepository())
+        let coord = TeamRoleDefinition(
+            id: "user-coord",
+            name: "User Coord",
+            prompt: "p",
+            toolIDs: [],
+            usePlanningPhase: false,
+            dependencies: RoleDependencies()
+        )
+        let team = Team(
+            name: "T", roles: [coord], artifacts: [],
+            settings: TeamSettings(meetingCoordinatorRoleID: "user-coord"),
+            graphLayout: TeamGraphLayout()
+        )
+        guard let resolved = service.effectiveCoordinator(team: team, initiator: .productManager) as Role? else {
+            XCTFail("expected a Role"); return
+        }
+        XCTAssertEqual(resolved.baseID, "user-coord",
+                       "Designated coordinator wins over initiator")
+    }
+
+    // Orphan ID falls through `resolveCoordinatorRole`'s self-heal to nil and
+    // then `effectiveCoordinator` falls back to the initiator.
+    func testEffectiveCoordinator_orphanedID_returnsInitiator() {
+        let service = LLMExecutionService(repository: NTMSRepository())
+        let role = TeamRoleDefinition(
+            id: "alive", name: "Alive", prompt: "p", toolIDs: [],
+            usePlanningPhase: false, dependencies: RoleDependencies()
+        )
+        let team = Team(
+            name: "T", roles: [role], artifacts: [],
+            settings: TeamSettings(meetingCoordinatorRoleID: "ghost"),
+            graphLayout: TeamGraphLayout()
+        )
+        let initiator: Role = .softwareEngineer
+        XCTAssertEqual(
+            service.effectiveCoordinator(team: team, initiator: initiator),
+            initiator,
+            "Orphaned designation self-heals; effective coordinator is the initiator"
+        )
+    }
+
+    // MARK: - Orphan-coordinator info signal (round-2 review I2.1)
+
+    // First detection on a team with an orphaned designated coordinator emits
+    // a `lastInfoMessage` so the Supervisor learns their explicit pick was
+    // silently substituted (the designated role was removed elsewhere).
+    func testReportOrphanCoordinator_orphanedDesignation_emitsInfoOnce() {
+        let service = LLMExecutionService(repository: NTMSRepository())
+        let delegate = MockLLMExecutionDelegate()
+        service.attach(delegate: delegate)
+        let role = TeamRoleDefinition(
+            id: "live", name: "Live", prompt: "p", toolIDs: [],
+            usePlanningPhase: false, dependencies: RoleDependencies()
+        )
+        let team = Team(
+            name: "FAANG", roles: [role], artifacts: [],
+            settings: TeamSettings(meetingCoordinatorRoleID: "ghost"),
+            graphLayout: TeamGraphLayout()
+        )
+
+        service.reportOrphanCoordinatorIfNeeded(team: team)
+        service.reportOrphanCoordinatorIfNeeded(team: team)
+
+        XCTAssertEqual(delegate.lastInfoMessages.count, 1,
+                       "Orphan info must surface exactly once per team")
+        XCTAssertTrue(delegate.lastInfoMessages[0].contains("FAANG"),
+                      "Info message must name the affected team")
+    }
+
+    // Nil designation (genuine Auto) is not an orphan — nothing surfaced.
+    func testReportOrphanCoordinator_autoMode_noEmit() {
+        let service = LLMExecutionService(repository: NTMSRepository())
+        let delegate = MockLLMExecutionDelegate()
+        service.attach(delegate: delegate)
+        let role = TeamRoleDefinition(
+            id: "r", name: "R", prompt: "p", toolIDs: [],
+            usePlanningPhase: false, dependencies: RoleDependencies()
+        )
+        let team = Team(
+            name: "T", roles: [role], artifacts: [],
+            settings: TeamSettings(meetingCoordinatorRoleID: nil),
+            graphLayout: TeamGraphLayout()
+        )
+
+        service.reportOrphanCoordinatorIfNeeded(team: team)
+        XCTAssertTrue(delegate.lastInfoMessages.isEmpty)
+    }
+
+    // Live designation (role exists) is not an orphan — nothing surfaced.
+    func testReportOrphanCoordinator_designatedLive_noEmit() {
+        let service = LLMExecutionService(repository: NTMSRepository())
+        let delegate = MockLLMExecutionDelegate()
+        service.attach(delegate: delegate)
+        let role = TeamRoleDefinition(
+            id: "live", name: "Live", prompt: "p", toolIDs: [],
+            usePlanningPhase: false, dependencies: RoleDependencies()
+        )
+        let team = Team(
+            name: "T", roles: [role], artifacts: [],
+            settings: TeamSettings(meetingCoordinatorRoleID: "live"),
+            graphLayout: TeamGraphLayout()
+        )
+
+        service.reportOrphanCoordinatorIfNeeded(team: team)
+        XCTAssertTrue(delegate.lastInfoMessages.isEmpty)
+    }
+
+    // Re-arm: once the orphan is resolved (e.g. user picks a valid coord in
+    // Settings), the throttle clears for that team so a NEW orphan emerges
+    // later (a different role gets deleted) → banner fires again.
+    // Regression pin for round-3 review CR.3 (silent-failure F1 / code-
+    // reviewer S3.1 convergence): without re-arm, the throttle stale-sticks
+    // after fix, suppressing future orphan signals for the team's lifetime.
+    func testReportOrphanCoordinator_rearms_afterOrphanResolved() {
+        let service = LLMExecutionService(repository: NTMSRepository())
+        let delegate = MockLLMExecutionDelegate()
+        service.attach(delegate: delegate)
+        let role = TeamRoleDefinition(
+            id: "live", name: "Live", prompt: "p", toolIDs: [],
+            usePlanningPhase: false, dependencies: RoleDependencies()
+        )
+        let teamWithOrphan = Team(
+            name: "T", roles: [role], artifacts: [],
+            settings: TeamSettings(meetingCoordinatorRoleID: "ghost-A"),
+            graphLayout: TeamGraphLayout()
+        )
+        let teamWithLiveCoord = Team(
+            id: teamWithOrphan.id,  // same team, just settings change
+            name: "T", roles: [role], artifacts: [],
+            settings: TeamSettings(meetingCoordinatorRoleID: "live"),
+            graphLayout: TeamGraphLayout()
+        )
+        let teamWithNewOrphan = Team(
+            id: teamWithOrphan.id,
+            name: "T", roles: [role], artifacts: [],
+            settings: TeamSettings(meetingCoordinatorRoleID: "ghost-B"),
+            graphLayout: TeamGraphLayout()
+        )
+
+        // 1. Orphan A → fires.
+        service.reportOrphanCoordinatorIfNeeded(team: teamWithOrphan)
+        XCTAssertEqual(delegate.lastInfoMessages.count, 1)
+
+        // 2. User fixes designation → re-arm should clear throttle entry.
+        service.reportOrphanCoordinatorIfNeeded(team: teamWithLiveCoord)
+        XCTAssertEqual(delegate.lastInfoMessages.count, 1,
+                       "Live coord must not emit a new info message")
+
+        // 3. New orphan B emerges → fires again.
+        service.reportOrphanCoordinatorIfNeeded(team: teamWithNewOrphan)
+        XCTAssertEqual(delegate.lastInfoMessages.count, 2,
+                       "After re-arm, a new orphan must surface a fresh info message")
+    }
+
+    // Different teams each get their own notification.
+    func testReportOrphanCoordinator_differentTeams_eachEmitOnce() {
+        let service = LLMExecutionService(repository: NTMSRepository())
+        let delegate = MockLLMExecutionDelegate()
+        service.attach(delegate: delegate)
+        let role = TeamRoleDefinition(
+            id: "r", name: "R", prompt: "p", toolIDs: [],
+            usePlanningPhase: false, dependencies: RoleDependencies()
+        )
+        let teamA = Team(
+            name: "A", roles: [role], artifacts: [],
+            settings: TeamSettings(meetingCoordinatorRoleID: "ghost"),
+            graphLayout: TeamGraphLayout()
+        )
+        let teamB = Team(
+            name: "B", roles: [role], artifacts: [],
+            settings: TeamSettings(meetingCoordinatorRoleID: "ghost"),
+            graphLayout: TeamGraphLayout()
+        )
+
+        service.reportOrphanCoordinatorIfNeeded(team: teamA)
+        service.reportOrphanCoordinatorIfNeeded(team: teamB)
+        service.reportOrphanCoordinatorIfNeeded(team: teamA)  // already reported
+        service.reportOrphanCoordinatorIfNeeded(team: teamB)  // already reported
+
+        XCTAssertEqual(delegate.lastInfoMessages.count, 2)
+    }
+
+    // Non-system role (no systemRoleID) — must preserve role identity as
+    // `.custom(id:)`.
+    func testResolveCoordinatorRole_customRole_resolvesToCustom() {
+        let service = LLMExecutionService(repository: NTMSRepository())
+        let role = TeamRoleDefinition(
+            id: "user-defined",
+            name: "User Defined Role",
+            prompt: "p",
+            toolIDs: [],
+            usePlanningPhase: false,
+            dependencies: RoleDependencies()
+        )
+        let team = Team(
+            name: "T", roles: [role], artifacts: [],
+            settings: TeamSettings(meetingCoordinatorRoleID: "user-defined"),
+            graphLayout: TeamGraphLayout()
+        )
+        guard let resolved = service.resolveCoordinatorRole(team: team) else {
+            XCTFail("Should resolve to a Role")
+            return
+        }
+        XCTAssertEqual(resolved.baseID, "user-defined")
     }
 
     func testUnavailableToRoles_doesNotContainNormalTools() {
@@ -1672,20 +2179,25 @@ final class LLMConversationSavingTests: XCTestCase {
     }
 
     func testImplementationPromptContainsExpectedContent() {
-        // Verify the default Software Engineer prompt contains key phrases
+        // Verify the default Software Engineer prompt carries its identity-
+        // defining lines. The 2026-05 rewrite tightened the wording
+        // (`Focus on implementation` / `Make real code changes using tools`
+        // were replaced by the more direct "Implement the change end-to-end"
+        // opener), so this test pins the stable intent rather than the
+        // earlier verbatim phrasing.
         let prompt = SystemTemplates.roles["softwareEngineer"]!.prompt
 
         XCTAssertTrue(
-            prompt.contains("Focus on implementation"),
-            "Software Engineer prompt should contain 'Focus on implementation'"
+            prompt.contains("Implement the change"),
+            "Software Engineer prompt should carry the implementation directive"
         )
         XCTAssertTrue(
-            prompt.contains("Make real code changes using tools"),
-            "Software Engineer prompt should contain 'Make real code changes using tools'"
+            prompt.contains("Engineering Standards"),
+            "Software Engineer prompt should expose the Engineering Standards block"
         )
         XCTAssertTrue(
             prompt.contains("No dead code"),
-            "Software Engineer prompt should contain engineering standards"
+            "Software Engineer prompt should keep the no-dead-code standard"
         )
     }
 
@@ -1721,7 +2233,7 @@ final class ToolAuthorizationTests: XCTestCase {
     private var service: LLMExecutionService!
     private var mockDelegate: MockLLMExecutionDelegate!
     private var toolRuntime: ToolRuntime!
-    private var toolMemory: ToolCallCache!
+    private var toolTracker: ToolCallTracker!
 
     override func setUp() {
         super.setUp()
@@ -1731,6 +2243,17 @@ final class ToolAuthorizationTests: XCTestCase {
 
         let nanoteamsDir = tempDir.appendingPathComponent(".nanoteams")
         try! FileManager.default.createDirectory(at: nanoteamsDir, withIntermediateDirectories: true)
+        // Seed a `.git` directory so the new tool-unavailability classifier
+        // doesn't reroute git_status / git_commit (used as the "unauthorized"
+        // canary in the tests below) onto the precondition_failed branch.
+        // These tests are about the authorization mechanism — the rejection
+        // envelope shape — not about precondition classification, which is
+        // covered by `ToolUnavailabilityClassifierTests` /
+        // `ToolUnavailabilityWiringTests`.
+        try! FileManager.default.createDirectory(
+            at: tempDir.appendingPathComponent(".git"),
+            withIntermediateDirectories: true
+        )
 
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
@@ -1742,7 +2265,7 @@ final class ToolAuthorizationTests: XCTestCase {
             registry: ToolRegistry(),
             logger: ToolCallLogger(logURL: logURL)
         )
-        toolMemory = ToolCallCache()
+        toolTracker = ToolCallTracker()
     }
 
     override func tearDown() {
@@ -1752,11 +2275,11 @@ final class ToolAuthorizationTests: XCTestCase {
         service = nil
         mockDelegate = nil
         toolRuntime = nil
-        toolMemory = nil
+        toolTracker = nil
         super.tearDown()
     }
 
-    func testUnauthorizedToolCallReturnsError() {
+    func testUnauthorizedToolCallReturnsError() async {
         let task = createTestTask()
 
         let unauthorizedCall = StepToolCall(
@@ -1765,22 +2288,22 @@ final class ToolAuthorizationTests: XCTestCase {
             argumentsJSON: "{}"
         )
 
-        let batch = service.executeToolCalls(
+        let batch = await service.executeToolCalls(
             resolvedToolCalls: [unauthorizedCall],
             allowedToolNames: ["read_file", "write_file"],
             runtime: toolRuntime,
-            memory: toolMemory,
+            tracker: toolTracker,
             task: task,
             runIndex: 0,
             roleID: "test_role")
 
-        XCTAssertEqual(batch.results.count, 1)
-        XCTAssertTrue(batch.results[0].isError)
-        XCTAssertTrue(batch.results[0].outputJSON.contains("tool_not_authorized"))
-        XCTAssertTrue(batch.results[0].outputJSON.contains("git_status"))
+        XCTAssertEqual(batch.count, 1)
+        XCTAssertTrue(batch[0].isError)
+        XCTAssertTrue(batch[0].outputJSON.contains("tool_not_authorized"))
+        XCTAssertTrue(batch[0].outputJSON.contains("git_status"))
     }
 
-    func testAuthorizedToolCallExecutesNormally() {
+    func testAuthorizedToolCallExecutesNormally() async {
         let task = createTestTask()
 
         let authorizedCall = StepToolCall(
@@ -1789,20 +2312,20 @@ final class ToolAuthorizationTests: XCTestCase {
             argumentsJSON: #"{"content":"test plan"}"#
         )
 
-        let batch = service.executeToolCalls(
+        let batch = await service.executeToolCalls(
             resolvedToolCalls: [authorizedCall],
             allowedToolNames: ["update_scratchpad"],
             runtime: toolRuntime,
-            memory: toolMemory,
+            tracker: toolTracker,
             task: task,
             runIndex: 0,
             roleID: "test_role")
 
-        XCTAssertEqual(batch.results.count, 1)
-        XCTAssertFalse(batch.results[0].outputJSON.contains("tool_not_authorized"))
+        XCTAssertEqual(batch.count, 1)
+        XCTAssertFalse(batch[0].outputJSON.contains("tool_not_authorized"))
     }
 
-    func testMixOfAuthorizedAndUnauthorizedToolCalls() {
+    func testMixOfAuthorizedAndUnauthorizedToolCalls() async {
         let task = createTestTask()
 
         let authorizedCall = StepToolCall(
@@ -1816,20 +2339,20 @@ final class ToolAuthorizationTests: XCTestCase {
             argumentsJSON: #"{"message":"test"}"#
         )
 
-        let batch = service.executeToolCalls(
+        let batch = await service.executeToolCalls(
             resolvedToolCalls: [authorizedCall, unauthorizedCall],
             allowedToolNames: ["update_scratchpad"],
             runtime: toolRuntime,
-            memory: toolMemory,
+            tracker: toolTracker,
             task: task,
             runIndex: 0,
             roleID: "test_role")
 
-        XCTAssertEqual(batch.results.count, 2)
-        XCTAssertFalse(batch.results[0].outputJSON.contains("tool_not_authorized"))
-        XCTAssertTrue(batch.results[1].isError)
-        XCTAssertTrue(batch.results[1].outputJSON.contains("tool_not_authorized"))
-        XCTAssertTrue(batch.results[1].outputJSON.contains("git_commit"))
+        XCTAssertEqual(batch.count, 2)
+        XCTAssertFalse(batch[0].outputJSON.contains("tool_not_authorized"))
+        XCTAssertTrue(batch[1].isError)
+        XCTAssertTrue(batch[1].outputJSON.contains("tool_not_authorized"))
+        XCTAssertTrue(batch[1].outputJSON.contains("git_commit"))
     }
 
     private func createTestTask() -> NTMSTask {
@@ -2222,5 +2745,266 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         let expected = String(repeating: "X", count: 210)
         XCTAssertEqual(mockDelegate.replaceStreamingPreviewCalls.last?.3, expected)
         XCTAssertEqual(mockDelegate.commitStreamingCalls.last?.2, expected)
+    }
+}
+
+// MARK: - setNeedsSupervisorInput Backstop Hook Tests
+
+/// Pins the new `LLMStateDelegate.notifyQueuedMessageBackstop` hook fired from
+/// `LLMExecutionService.setNeedsSupervisorInput`. The hook closes a stranded-queue
+/// gap when a parallel role (CLAUDE.md §45) lands a Supervisor question while the
+/// engine is already `.needsSupervisorInput` (held there by another role): the
+/// same-state re-entry guard in `TeamEngine.transition(to:)` (CLAUDE.md §39)
+/// suppresses `onStateChanged`, so the SwiftUI `onChange(of: taskEngineStates)`
+/// in `MainLayoutView.handleEngineStateChanged` doesn't fire, and the backstop
+/// drain never runs. The hook fires the drain directly from the mutation side.
+///
+/// Eligibility gate is `mutated && didApply` (matches the method's return value):
+/// the hook MUST NOT fire on closure short-circuits per CLAUDE.md §7.
+@MainActor
+final class SetNeedsSupervisorInputBackstopTests: XCTestCase {
+    private let fileManager = FileManager.default
+    private var tempDir: URL!
+    private var service: LLMExecutionService!
+    private var mockDelegate: MockLLMExecutionDelegate!
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        tempDir = fileManager.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try fileManager.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        service = LLMExecutionService(repository: NTMSRepository())
+        mockDelegate = MockLLMExecutionDelegate()
+        mockDelegate.workFolderURL = tempDir
+        service.attach(delegate: mockDelegate)
+    }
+
+    override func tearDownWithError() throws {
+        if let tempDir {
+            try? fileManager.removeItem(at: tempDir)
+        }
+        mockDelegate = nil
+        try super.tearDownWithError()
+    }
+
+    /// Happy path: step exists in the task, mutateTask persists, closure applies the
+    /// question. The hook MUST fire with the correct taskID exactly once.
+    func testSetNeedsSupervisorInput_firesBackstop_onMutationSuccess() async {
+        let step = StepExecution(
+            id: "test_step", role: .softwareEngineer, title: "Test", status: .running
+        )
+        let task = NTMSTask(
+            id: 42, title: "T", supervisorTask: "G", runs: [Run(id: 0, steps: [step])]
+        )
+        mockDelegate.taskToMutate = task
+        service._testRegisterStepTask(stepID: step.id, taskID: task.id)
+
+        let success = await service.setNeedsSupervisorInput(
+            stepID: step.id, question: "Confirm?", sessionID: "session-1"
+        )
+
+        XCTAssertTrue(success)
+        XCTAssertEqual(
+            mockDelegate.notifyQueuedMessageBackstopCalls, [42],
+            "Hook must fire with the correct taskID on mutation success"
+        )
+    }
+
+    /// `mutateTask` returns false: stepID is registered but `taskToMutate` is nil so
+    /// the mock can't find the task. The hook MUST NOT fire.
+    func testSetNeedsSupervisorInput_skipsBackstop_whenMutateTaskReturnsFalse() async {
+        // taskToMutate intentionally nil.
+        service._testRegisterStepTask(stepID: "ghost_step", taskID: 99)
+
+        let success = await service.setNeedsSupervisorInput(
+            stepID: "ghost_step", question: "Q?", sessionID: nil
+        )
+
+        XCTAssertFalse(success)
+        XCTAssertTrue(
+            mockDelegate.notifyQueuedMessageBackstopCalls.isEmpty,
+            "Hook must NOT fire when mutateTask returns false"
+        )
+    }
+
+    /// `mutateTask` persists (returns true) but the closure short-circuits because
+    /// the stepID doesn't exist in the task's latest run — `didApply` stays false.
+    /// Per CLAUDE.md §7, `mutateTask`'s `Bool` alone doesn't prove the closure did
+    /// anything; the eligibility gate must combine both flags. The hook MUST NOT fire.
+    func testSetNeedsSupervisorInput_skipsBackstop_whenClosureShortCircuits() async {
+        let existingStep = StepExecution(
+            id: "existing_step", role: .softwareEngineer, title: "T", status: .running
+        )
+        let task = NTMSTask(
+            id: 42, title: "T", supervisorTask: "G", runs: [Run(id: 0, steps: [existingStep])]
+        )
+        mockDelegate.taskToMutate = task
+        // Register a stepID that does NOT exist in the task's run.
+        service._testRegisterStepTask(stepID: "wrong_step", taskID: task.id)
+
+        let success = await service.setNeedsSupervisorInput(
+            stepID: "wrong_step", question: "Q?", sessionID: nil
+        )
+
+        XCTAssertFalse(success, "Eligibility gate (mutated && didApply) must fail")
+        XCTAssertTrue(
+            mockDelegate.notifyQueuedMessageBackstopCalls.isEmpty,
+            "Hook must NOT fire on closure short-circuit (CLAUDE.md \"`mutateTask` returning `true` means \"persisted\", NOT \"the closure did something\"\")"
+        )
+    }
+
+    /// Top guard: `setNeedsSupervisorInput` returns `false` immediately when
+    /// `taskIDForStep(stepID)` resolves to `nil`. The hook MUST NOT fire — there
+    /// is nothing to drain because we never got as far as a task.
+    ///
+    /// Without this anti-test, a regression that moves the hook ABOVE the top
+    /// `guard let delegate, let tid = taskIDForStep(stepID) else { return false }`
+    /// would pass the other three tests in this suite (they all register a
+    /// stepID before exercising the method). Catches "hook fires on every
+    /// invocation regardless of whether the mutation even started".
+    func testSetNeedsSupervisorInput_skipsBackstop_whenStepIDUnregistered() async {
+        // No `_testRegisterStepTask` call → `taskIDForStep` returns nil.
+        let success = await service.setNeedsSupervisorInput(
+            stepID: "unknown_step", question: "Q?", sessionID: nil
+        )
+
+        XCTAssertFalse(success, "Top guard must reject unknown stepID")
+        XCTAssertTrue(
+            mockDelegate.notifyQueuedMessageBackstopCalls.isEmpty,
+            "Hook must NOT fire when taskIDForStep returns nil"
+        )
+        // Belt-and-suspenders: mutateTask must not have been called either, since
+        // we never made it past the top guard. If a refactor moves the hook
+        // above the guard, this expectation fails alongside the call-count check.
+        XCTAssertTrue(
+            mockDelegate.eventLog.isEmpty,
+            "Top guard must short-circuit before any delegate call"
+        )
+    }
+
+    /// Ordering invariant: hook MUST fire AFTER `mutateTask` completes
+    /// (`mutate-end` event), never during the closure (`mutate-begin` event).
+    /// Pins the call sequence so a refactor that pulls the backstop fire INSIDE
+    /// the `mutateTask { task in ... }` closure cannot pass — even though all
+    /// three eligibility-gate tests would still go green (the mock just records
+    /// the call regardless of when it lands).
+    ///
+    /// The drain reads engine state and step state via the store; the step
+    /// mutation MUST have persisted by the time the hook fires, otherwise the
+    /// backstop reads stale state and may misclassify the task's engine state.
+    func testSetNeedsSupervisorInput_firesBackstop_afterMutationCompletes() async {
+        let step = StepExecution(
+            id: "test_step", role: .softwareEngineer, title: "Test", status: .running
+        )
+        let task = NTMSTask(
+            id: 77, title: "T", supervisorTask: "G", runs: [Run(id: 0, steps: [step])]
+        )
+        mockDelegate.taskToMutate = task
+        service._testRegisterStepTask(stepID: step.id, taskID: task.id)
+
+        _ = await service.setNeedsSupervisorInput(
+            stepID: step.id, question: "Q?", sessionID: nil
+        )
+
+        XCTAssertEqual(
+            mockDelegate.eventLog,
+            ["mutate-begin:77", "mutate-end:77", "backstop:77"],
+            "Hook must fire strictly after mutateTask returns — refactor pulling it inside the closure must fail this test"
+        )
+    }
+
+    /// Multi-call behavior: N consecutive calls must produce N independent hook
+    /// fires, each correctly paired with its own mutation. Catches:
+    ///   - hook accidentally moved out of the `if success` branch (would fire on
+    ///     misses too, breaking the per-call invariant)
+    ///   - any future batching / deduplication mechanism that coalesces hooks
+    ///   - hook firing only once per process / cached "already-fired" flag
+    func testSetNeedsSupervisorInput_consecutiveCalls_fireHookOncePerCall() async {
+        let step = StepExecution(
+            id: "test_step", role: .softwareEngineer, title: "Test", status: .running
+        )
+        let task = NTMSTask(
+            id: 42, title: "T", supervisorTask: "G", runs: [Run(id: 0, steps: [step])]
+        )
+        mockDelegate.taskToMutate = task
+        service._testRegisterStepTask(stepID: step.id, taskID: task.id)
+
+        // Three consecutive Q&A rounds for the same step. After each answer the
+        // production engine flips `needsSupervisorInput=false`; the LLM then
+        // asks again, landing back at `setNeedsSupervisorInput`. The mock
+        // doesn't model the engine, but the call surface is the same.
+        for _ in 1...3 {
+            let success = await service.setNeedsSupervisorInput(
+                stepID: step.id, question: "Q?", sessionID: nil
+            )
+            XCTAssertTrue(success)
+        }
+
+        XCTAssertEqual(
+            mockDelegate.notifyQueuedMessageBackstopCalls, [42, 42, 42],
+            "Hook must fire exactly once per call — no deduplication, no batching"
+        )
+        XCTAssertEqual(
+            mockDelegate.eventLog,
+            [
+                "mutate-begin:42", "mutate-end:42", "backstop:42",
+                "mutate-begin:42", "mutate-end:42", "backstop:42",
+                "mutate-begin:42", "mutate-end:42", "backstop:42",
+            ],
+            "Per-call ordering invariant must hold across multiple invocations"
+        )
+    }
+
+    /// Parallel-roles scenario at the unit level: two distinct steps on the
+    /// SAME task each call `setNeedsSupervisorInput`. Each call must fire its
+    /// own hook — this is exactly the production case the new hook is designed
+    /// for (parallel roles per CLAUDE.md "`TeamEngine` runs ready roles in
+    /// parallel, not serially"). The hook fires with the SAME taskID both
+    /// times — the integration test in `QuickCaptureBackstopBatchTests` pins
+    /// what happens downstream when both stepIDs are in the waiting set.
+    func testSetNeedsSupervisorInput_twoStepsOnSameTask_eachFiresOwnHook() async {
+        let stepA = StepExecution(
+            id: "step_a", role: .softwareEngineer, title: "A", status: .running
+        )
+        let stepB = StepExecution(
+            id: "step_b", role: .softwareEngineer, title: "B", status: .running
+        )
+        let task = NTMSTask(
+            id: 99, title: "T", supervisorTask: "G",
+            runs: [Run(id: 0, steps: [stepA, stepB])]
+        )
+        mockDelegate.taskToMutate = task
+        service._testRegisterStepTask(stepID: stepA.id, taskID: task.id)
+        service._testRegisterStepTask(stepID: stepB.id, taskID: task.id)
+
+        // Role A asks first.
+        let successA = await service.setNeedsSupervisorInput(
+            stepID: stepA.id, question: "From A", sessionID: nil
+        )
+        // Role B asks second — engine state would be unchanged in production
+        // (already `.needsSupervisorInput` because of A), but the hook still
+        // fires from the mutation side. This is the bug condition.
+        let successB = await service.setNeedsSupervisorInput(
+            stepID: stepB.id, question: "From B", sessionID: nil
+        )
+
+        XCTAssertTrue(successA)
+        XCTAssertTrue(successB)
+        XCTAssertEqual(
+            mockDelegate.notifyQueuedMessageBackstopCalls, [99, 99],
+            "Both steps on the same task must each fire the hook with that taskID"
+        )
+
+        // Verify both step mutations actually landed (defends against a bug
+        // where second `setNeedsSupervisorInput` finds A already there and
+        // overwrites instead of independently mutating B).
+        let mutatedTask = mockDelegate.taskToMutate!
+        let mutatedStepA = mutatedTask.runs[0].steps.first { $0.id == "step_a" }
+        let mutatedStepB = mutatedTask.runs[0].steps.first { $0.id == "step_b" }
+        XCTAssertEqual(mutatedStepA?.status, .needsSupervisorInput)
+        XCTAssertEqual(mutatedStepA?.supervisorQuestion, "From A")
+        XCTAssertEqual(mutatedStepB?.status, .needsSupervisorInput)
+        XCTAssertEqual(mutatedStepB?.supervisorQuestion, "From B")
     }
 }

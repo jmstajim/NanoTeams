@@ -1,7 +1,7 @@
 import Foundation
 
 /// Centralized JSON parsing and serialization utilities.
-enum JSONUtilities {
+nonisolated enum JSONUtilities {
 
     /// Parses a JSON string into a dictionary.
     /// - Parameter json: The JSON string to parse.

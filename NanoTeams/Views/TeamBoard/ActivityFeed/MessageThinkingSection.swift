@@ -1,61 +1,37 @@
 import SwiftUI
 
-/// Expandable "Thinking" disclosure section for a message bubble.
-/// Auto-expands on appear when streaming and `expandedByDefault` is true.
+/// Compact "Thinking" row inside a message bubble.
+/// Tapping opens the full untruncated text in a standalone window
+/// (`ActivityDetailWindow.thinking`). The streaming loader and label stay
+/// inline; there is no inline expansion anymore.
 struct MessageThinkingSection: View {
     let thinking: String
     let messageID: UUID
+    let roleName: String
     let isStreaming: Bool
-    let expandedByDefault: Bool
-    @Binding var thinkingExpanded: Set<UUID>
+
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        let isExpanded = thinkingExpanded.contains(messageID)
-
-        VStack(alignment: .leading, spacing: Spacing.xs) {
+        Button {
+            openWindow(value: ActivityDetailWindow.thinking(
+                id: messageID,
+                roleName: roleName,
+                text: thinking
+            ))
+        } label: {
             HStack(spacing: Spacing.xs) {
                 if isStreaming {
                     NTMSLoader(.mini)
                         .frame(width: 14, height: 12)
-                } else {
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.tertiary)
                 }
                 Text(isStreaming ? "Thinking..." : "Thinking")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.tertiary)
                 Spacer()
             }
-            if isExpanded {
-                Text(thinking)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.leading, Spacing.s)
-                    .overlay(alignment: .leading) {
-                        Rectangle()
-                            .fill(Colors.neutral)
-                            .frame(width: 1.5)
-                    }
-            }
+            .contentShape(Rectangle())
         }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                if isExpanded {
-                    thinkingExpanded.remove(messageID)
-                } else {
-                    thinkingExpanded.insert(messageID)
-                }
-            }
-        }
-        .onAppear {
-            if isStreaming && expandedByDefault && !thinkingExpanded.contains(messageID) {
-                thinkingExpanded.insert(messageID)
-            }
-        }
+        .buttonStyle(.plain)
     }
 }

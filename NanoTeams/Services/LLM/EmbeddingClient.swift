@@ -32,7 +32,7 @@ protocol EmbeddingClient: Sendable {
 /// - `modelName` is non-empty.
 /// - `batchSize > 0`.
 /// - `requestTimeout > 0`.
-struct EmbeddingConfig: Sendable, Codable, Equatable {
+nonisolated struct EmbeddingConfig: Sendable, Codable, Equatable {
 
     /// Base URL of the OpenAI-compatible server. No trailing slash required.
     /// Example: `http://127.0.0.1:1234`.

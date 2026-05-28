@@ -280,4 +280,72 @@ final class InternalLayoutCreationTests: XCTestCase {
         XCTAssertFalse(fm.fileExists(atPath: legacyProjectJSON.path),
                        "Legacy project.json should be removed on bootstrap")
     }
+
+    // MARK: - Orphan AtomicJSONStore temp-file sweep
+
+    /// Pre-seed orphan `.<filename>.<uuid>.tmp` files that a process kill /
+    /// power-loss between `Data.write(to: tempURL)` and `replaceItemAt` would
+    /// leave behind. Bootstrap must remove them so the unique-name temp scheme
+    /// doesn't trade the old shared-name race for an unbounded slow leak.
+    /// Also seeds matching files at a deeper subdirectory (mirroring how
+    /// `task.json` writes nest temps under `internal/tasks/{id}/...`).
+    func testBootstrap_sweepsOrphanAtomicJSONStoreTempFiles() throws {
+        let root = try makeProjectRoot()
+        let paths = NTMSPaths(workFolderRoot: root)
+        try fm.createDirectory(at: paths.internalDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: paths.internalTasksDir, withIntermediateDirectories: true)
+
+        let nestedTaskDir = paths.internalTasksDir
+            .appendingPathComponent("42", isDirectory: true)
+        try fm.createDirectory(at: nestedTaskDir, withIntermediateDirectories: true)
+
+        // Seed three orphans across two depths and varying inner UUID shapes.
+        let orphans: [URL] = [
+            paths.internalDir.appendingPathComponent(".workfolder.json.\(UUID().uuidString).tmp"),
+            paths.internalDir.appendingPathComponent(".teams.json.\(UUID().uuidString).tmp"),
+            nestedTaskDir.appendingPathComponent(".task.json.\(UUID().uuidString).tmp"),
+        ]
+        for url in orphans {
+            try "stale-bytes".write(to: url, atomically: true, encoding: .utf8)
+            XCTAssertTrue(fm.fileExists(atPath: url.path), "precondition: orphan must exist before bootstrap")
+        }
+
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        for url in orphans {
+            XCTAssertFalse(fm.fileExists(atPath: url.path),
+                           "Orphan temp \(url.lastPathComponent) should be removed on bootstrap")
+        }
+
+        // Sanity: bootstrap still produces the canonical files.
+        XCTAssertTrue(fm.fileExists(atPath: paths.workFolderJSON.path))
+        XCTAssertTrue(fm.fileExists(atPath: paths.teamsJSON.path))
+    }
+
+    /// Sweep must NOT remove non-`.tmp` files that happen to live in `internal/`,
+    /// non-dotfiles ending in `.tmp`, or files inside `subtasks/` that the
+    /// pattern would otherwise match. Negative-coverage so a future regression
+    /// (e.g. broadening the predicate) is caught.
+    func testBootstrap_orphanSweep_doesNotRemoveUnrelatedFiles() throws {
+        let root = try makeProjectRoot()
+        let paths = NTMSPaths(workFolderRoot: root)
+        try fm.createDirectory(at: paths.internalDir, withIntermediateDirectories: true)
+
+        // Non-`.tmp` dotfile, non-dotfile `.tmp`, and a `.bak` corruption backup.
+        let preserved: [URL] = [
+            paths.internalDir.appendingPathComponent(".keep.json"),
+            paths.internalDir.appendingPathComponent("not-a-dotfile.tmp"),
+            paths.internalDir.appendingPathComponent("workfolder.json.corrupt-2026-01-01.bak"),
+        ]
+        for url in preserved {
+            try "preserve-me".write(to: url, atomically: true, encoding: .utf8)
+        }
+
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        for url in preserved {
+            XCTAssertTrue(fm.fileExists(atPath: url.path),
+                          "Sweep must not remove unrelated file \(url.lastPathComponent)")
+        }
+    }
 }

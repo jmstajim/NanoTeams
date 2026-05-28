@@ -1,6 +1,6 @@
 import Foundation
 
-struct ParsedBuildIssue: Codable, Hashable, Sendable {
+nonisolated struct ParsedBuildIssue: Codable, Hashable, Sendable {
     enum Severity: String, Codable, Sendable {
         case error
         case warning

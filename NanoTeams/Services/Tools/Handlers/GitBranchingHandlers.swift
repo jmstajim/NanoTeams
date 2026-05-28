@@ -5,7 +5,7 @@ private typealias JS = JSONSchema
 
 // MARK: - Git Error Classifier (shared helper)
 
-enum GitErrorClassifier {
+nonisolated enum GitErrorClassifier {
     static func classify(
         stderr: String, toolName: String, args: [String: Any], subject: String
     ) -> ToolExecutionResult? {
@@ -54,7 +54,7 @@ enum GitErrorClassifier {
 
 // MARK: - git_checkout
 
-struct GitCheckoutTool: ToolHandler {
+nonisolated struct GitCheckoutTool: ToolHandler {
     static let name = TN.gitCheckout
     static let schema = ToolSchema(
         name: TN.gitCheckout,
@@ -126,7 +126,7 @@ struct GitCheckoutTool: ToolHandler {
 
 // MARK: - git_merge
 
-struct GitMergeTool: ToolHandler {
+nonisolated struct GitMergeTool: ToolHandler {
     static let name = TN.gitMerge
     static let schema = ToolSchema(
         name: TN.gitMerge,
@@ -193,7 +193,7 @@ struct GitMergeTool: ToolHandler {
 
 // MARK: - git_branch
 
-struct GitBranchTool: ToolHandler {
+nonisolated struct GitBranchTool: ToolHandler {
     static let name = TN.gitBranch
     static let schema = ToolSchema(
         name: TN.gitBranch,

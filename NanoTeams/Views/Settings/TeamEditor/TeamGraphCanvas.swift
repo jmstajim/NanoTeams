@@ -18,6 +18,16 @@ struct TeamGraphCanvas: View {
     var nodeHeight: CGFloat = 90
     var nodeSizes: [String: CGSize] = [:]
 
+    /// Optional precomputed layout. When non-nil, the canvas skips
+    /// `collectConnections` + `computePortOffsets` and reads `connections` /
+    /// `sourceOffsets` / `targetOffsets` directly. Owners that render the
+    /// canvas in multiple stacked instances (TeamGraphView for runtime,
+    /// TeamGraphEditorView for editor) precompute via `TeamGraphLayoutCache`
+    /// and pass the same `Layout` to both, eliminating duplicate work and
+    /// gaining cache reuse across re-renders during NSWindow live-resize.
+    /// Previews and one-off call sites leave it nil and pay inline compute.
+    var precomputedLayout: TeamGraphLayoutCache.Layout?
+
     /// Controls which connections to draw (for layered rendering).
     /// `.all` draws everything. `.excludeHighlighted` draws only dim connections.
     /// `.onlyHighlighted` draws only connections involving the selected node.
@@ -44,16 +54,29 @@ struct TeamGraphCanvas: View {
 
     var body: some View {
         Canvas { context, size in
-            let allConnections = TeamGraphCanvasGeometry.collectConnections(
-                nodePositions: nodePositions,
-                roleDefinitions: roleDefinitions,
-                teamMembers: teamMembers
-            )
-            let (sourceOffsets, targetOffsets) = TeamGraphCanvasGeometry.computePortOffsets(
-                connections: allConnections,
-                nodeSizes: nodeSizes,
-                fallbackNodeWidth: GraphTokens.nodeMaxWidth
-            )
+            let layout: TeamGraphLayoutCache.Layout
+            if let precomputed = precomputedLayout {
+                layout = precomputed
+            } else {
+                let connections = TeamGraphCanvasGeometry.collectConnections(
+                    nodePositions: nodePositions,
+                    roleDefinitions: roleDefinitions,
+                    teamMembers: teamMembers
+                )
+                let offsets = TeamGraphCanvasGeometry.computePortOffsets(
+                    connections: connections,
+                    nodeSizes: nodeSizes,
+                    fallbackNodeWidth: GraphTokens.nodeMaxWidth
+                )
+                layout = TeamGraphLayoutCache.Layout(
+                    connections: connections,
+                    sourceOffsets: offsets.source,
+                    targetOffsets: offsets.target
+                )
+            }
+            let allConnections = layout.connections
+            let sourceOffsets = layout.sourceOffsets
+            let targetOffsets = layout.targetOffsets
 
             for (index, conn) in allConnections.enumerated() {
                 let sourcePortX = sourceOffsets[index] ?? 0
@@ -201,10 +224,20 @@ struct TeamGraphCanvas: View {
         path.addCurve(to: lineEnd, control1: controlPoint1, control2: controlPoint2)
 
         if isDashed {
+            // Round centered dots — `dash: [0.01, gap]` + `lineCap: .round`
+            // renders a near-zero-length stroke per "dash" segment, so the
+            // round line cap dominates and produces a circular dot with
+            // diameter equal to `lineWidth`. The gap controls dot spacing.
+            // Replaces the prior rectangular dashes (`[5, 3]`) which read
+            // as code-like ticks instead of clean dots.
             context.stroke(
                 path,
                 with: .color(color),
-                style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, dash: [5, 3])
+                style: StrokeStyle(
+                    lineWidth: lineWidth,
+                    lineCap: .round,
+                    dash: [0.01, GraphTokens.dotSpacing]
+                )
             )
         } else {
             context.stroke(

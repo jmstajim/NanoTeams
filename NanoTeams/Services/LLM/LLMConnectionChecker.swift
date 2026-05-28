@@ -4,7 +4,7 @@ import Foundation
 /// connection-level failure modes so the UI can give an actionable hint
 /// ("hostname not found" vs. "connection refused" vs. "timed out") instead of
 /// the historical generic "could not reach server".
-enum LLMProbeOutcome {
+nonisolated enum LLMProbeOutcome {
     case http(Int)
     case dnsLookupFailed
     case connectionRefused
@@ -20,7 +20,7 @@ enum LLMProbeOutcome {
 }
 
 /// Checks LM Studio server reachability. Extracted from views to eliminate duplicated HTTP logic.
-enum LLMConnectionChecker {
+nonisolated enum LLMConnectionChecker {
 
     struct ConnectionResult {
         let isReachable: Bool
@@ -173,40 +173,4 @@ enum LLMConnectionChecker {
         }
     }
 
-    /// Fetches available models from the LLM server using the given configuration.
-    /// `bearerToken` lets the settings card pass a freshly-typed token before
-    /// it's committed to Keychain.
-    static func fetchAvailableModels(
-        config: StoreConfiguration,
-        bearerToken: String? = nil,
-        client: (any LLMClient)? = nil
-    ) async throws -> [String] {
-        let fetchConfig = LLMConfig(
-            provider: config.llmProvider,
-            baseURLString: config.llmBaseURLString,
-            modelName: config.llmModelName,
-            maxTokens: config.llmMaxTokens,
-            temperature: config.llmTemperature
-        )
-        let effectiveClient = client ?? makeRouter(bearerTokenOverride: bearerToken,
-                                                    forBaseURL: config.llmBaseURLString)
-        return try await effectiveClient.fetchModels(config: fetchConfig, visionOnly: false)
-    }
-
-    /// Builds a router that prefers an explicit bearer token (from a SecureField)
-    /// over the Keychain lookup for one specific URL. All other URLs still go
-    /// through the Keychain. Empty / whitespace tokens are dropped by the
-    /// `OverridingLLMTokenResolver` constructor itself, so callers can blindly
-    /// pass the SecureField value without their own guard.
-    private static func makeRouter(
-        bearerTokenOverride token: String?,
-        forBaseURL baseURL: String
-    ) -> LLMClientRouter {
-        guard let token, !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return LLMClientRouter()
-        }
-        return LLMClientRouter(tokenResolver: OverridingLLMTokenResolver(
-            overrides: [baseURL: token]
-        ))
-    }
 }

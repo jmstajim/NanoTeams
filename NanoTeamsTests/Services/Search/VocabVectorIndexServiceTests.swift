@@ -18,13 +18,14 @@ final class VocabVectorIndexServiceTests: XCTestCase {
         var errorsOnCall: [Int: Error] = [:]
 
         func embed(texts: [String], config: EmbeddingConfig) async throws -> [[Float]] {
-            lock.lock()
-            let idx = callCount
-            callCount += 1
-            capturedTexts.append(texts)
-            let maybeError = errorsOnCall[idx]
-            let maybeScripted = scriptedResponses.isEmpty ? nil : scriptedResponses.removeFirst()
-            lock.unlock()
+            let (idx, maybeError, maybeScripted): (Int, Error?, [[Float]]?) = lock.withLock {
+                let idx = callCount
+                callCount += 1
+                capturedTexts.append(texts)
+                let maybeError = errorsOnCall[idx]
+                let maybeScripted = scriptedResponses.isEmpty ? nil : scriptedResponses.removeFirst()
+                return (idx, maybeError, maybeScripted)
+            }
 
             if let err = maybeError { throw err }
             if let scripted = maybeScripted {
@@ -48,13 +49,13 @@ final class VocabVectorIndexServiceTests: XCTestCase {
         var perCallDelayNanos: UInt64 = 0
 
         func embed(texts: [String], config: EmbeddingConfig) async throws -> [[Float]] {
-            lock.lock()
-            callCount += 1
-            let delay = perCallDelayNanos
-            lock.unlock()
+            let delay: UInt64 = lock.withLock {
+                callCount += 1
+                return perCallDelayNanos
+            }
 
             if delay > 0 {
-                try await Task.sleep(nanoseconds: delay)
+                try await Task.sleep(for: .nanoseconds(delay))
             }
             try Task.checkCancellation()
             return texts.map { _ in [Float(callCount), 0, 0] }
@@ -520,7 +521,7 @@ final class VocabVectorIndexServiceTests: XCTestCase {
             )
         }
         // Give it time to start at least one embedding call, then cancel.
-        try await Task.sleep(nanoseconds: 80_000_000)
+        try await Task.sleep(for: .milliseconds(80))
         task.cancel()
         await task.value
 

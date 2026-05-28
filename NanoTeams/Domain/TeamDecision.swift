@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Team Decision
 
 /// A decision made during a team meeting
-struct TeamDecision: Codable, Identifiable {
+nonisolated struct TeamDecision: Codable, Identifiable {
     var id: UUID
     var createdAt: Date
 
@@ -64,7 +64,7 @@ struct TeamDecision: Codable, Identifiable {
 
 // MARK: - Hashable
 
-extension TeamDecision: Hashable {
+nonisolated extension TeamDecision: Hashable {
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
     }

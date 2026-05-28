@@ -18,7 +18,12 @@ final class GlobalHotkeyManager {
             forName: NSApplication.willTerminateNotification,
             object: nil, queue: .main
         ) { [weak self] _ in
-            self?.unregisterAll()
+            // `queue: .main` guarantees this block runs on the main thread, but
+            // Swift 6's strict checker can't prove that, so it treats the
+            // closure as nonisolated. The runtime assertion is safe.
+            MainActor.assumeIsolated {
+                self?.unregisterAll()
+            }
         }
     }
 

@@ -2,7 +2,7 @@ import Foundation
 
 /// Build error regex pattern definitions (configuration data).
 /// Extracted from XcodeBuildLogParser for SRP — patterns are configuration, not parsing logic.
-enum BuildErrorPatterns {
+nonisolated enum BuildErrorPatterns {
 
     struct Pattern {
         let regex: NSRegularExpression

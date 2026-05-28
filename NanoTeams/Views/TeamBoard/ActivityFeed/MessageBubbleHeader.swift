@@ -1,8 +1,11 @@
 import SwiftUI
 
-/// Header row for a message bubble: role name, optional source label, timestamp.
+/// Header row for a message bubble: role name (with optional ` from <Team>`
+/// suffix in secondary gray for child-team items), optional source label,
+/// timestamp.
 struct MessageBubbleHeader: View {
     let roleName: String
+    var teamSuffix: String? = nil
     let tintColor: Color
     let sourceLabel: String?
     let timestamp: Date
@@ -10,9 +13,7 @@ struct MessageBubbleHeader: View {
 
     var body: some View {
         HStack(spacing: Spacing.s) {
-            Text(roleName)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(tintColor)
+            roleNameText(roleName: roleName, teamSuffix: teamSuffix, tintColor: tintColor)
             if let sourceLabel {
                 Text("(\(sourceLabel))")
                     .font(.caption2)

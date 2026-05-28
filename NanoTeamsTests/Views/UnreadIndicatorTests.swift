@@ -63,14 +63,14 @@ final class UnreadIndicatorTests: XCTestCase {
     func testRemove_clearsSingleTask() {
         sut.markSupervisorInputSeen(taskID: taskA)
         sut.markSupervisorInputSeen(taskID: taskB)
-        sut.seenSupervisorInputTaskIDs.remove(taskA)
+        sut.unmarkSupervisorInputSeen(taskID: taskA)
         XCTAssertFalse(sut.seenSupervisorInputTaskIDs.contains(taskA))
         XCTAssertTrue(sut.seenSupervisorInputTaskIDs.contains(taskB))
     }
 
     func testRemove_nonExistentID_noOp() {
         sut.markSupervisorInputSeen(taskID: taskA)
-        sut.seenSupervisorInputTaskIDs.remove(taskB)
+        sut.unmarkSupervisorInputSeen(taskID: taskB)
         XCTAssertEqual(sut.seenSupervisorInputTaskIDs.count, 1)
     }
 
@@ -138,7 +138,7 @@ final class UnreadIndicatorTests: XCTestCase {
         XCTAssertFalse(computeHasUnread(isChatMode: true, status: .needsSupervisorInput, taskID: taskA))
 
         // 2. User answers → status changes → clear seen set (simulates onChange handler)
-        sut.seenSupervisorInputTaskIDs.remove(taskA)
+        sut.unmarkSupervisorInputSeen(taskID: taskA)
 
         // 3. Second question arrives → indicator re-triggers
         XCTAssertTrue(computeHasUnread(isChatMode: true, status: .needsSupervisorInput, taskID: taskA))

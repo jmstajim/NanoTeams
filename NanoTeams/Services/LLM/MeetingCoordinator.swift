@@ -7,12 +7,14 @@ enum MeetingCoordinator {
 
     /// Tools excluded from meeting turns (collaborative/control tools).
     /// Sourced from `ToolHandler.excludedInMeetings` flags — single source of truth.
-    static var meetingExcludedTools: Set<String> {
+    /// `nonisolated`: pure data.
+    nonisolated static var meetingExcludedTools: Set<String> {
         ToolHandlerRegistry.meetingExcluded
     }
 
     /// Filters tool schemas to exclude collaborative tools not allowed in meetings.
-    static func filterMeetingTools(_ tools: [ToolSchema]) -> [ToolSchema] {
+    /// `nonisolated`: pure filter, no MainActor state touched.
+    nonisolated static func filterMeetingTools(_ tools: [ToolSchema]) -> [ToolSchema] {
         let excluded = meetingExcludedTools
         return tools.filter { !excluded.contains($0.name) }
     }
@@ -25,7 +27,7 @@ enum MeetingCoordinator {
     ) -> String {
         let speakerName = context.team?.findRole(byIdentifier: speaker.baseID)?.name
             ?? speaker.displayName
-        var msg = "=== TEAM MEETING ===\nTopic: \(meeting.topic)\n"
+        var msg = "## Team meeting\nTopic: \(meeting.topic)\n"
         msg += "Initiated by: \(context.initiatedBy.displayName)\n"
         msg += "Participants: \(context.participants.map(\.displayName).joined(separator: ", "))\n"
 
@@ -61,9 +63,8 @@ enum MeetingCoordinator {
         } else if isCoordinator && turnNumber >= maxTurns / 2 {
             msg += "\nAs coordinator, start steering toward a conclusion."
         } else {
-            msg += "\nPlease provide your input as \(speakerName). Be concise and focused on the topic."
+            msg += "\nProvide your input as \(speakerName). Be concise and focused on the topic."
         }
-        msg += "\n=== END MEETING CONTEXT ==="
 
         return msg
     }

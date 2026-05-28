@@ -3,7 +3,7 @@ import Foundation
 /// Pure utility enum for Xcode build/test operations.
 /// Extracted from Tools+Xcode.swift to eliminate ~65% code duplication
 /// between run_xcodebuild and run_xcodetests handlers.
-enum XcodeBuildRunner {
+nonisolated enum XcodeBuildRunner {
 
     // MARK: - Work Folder Discovery
 

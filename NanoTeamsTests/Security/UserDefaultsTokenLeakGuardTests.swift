@@ -90,9 +90,6 @@ final class UserDefaultsTokenLeakGuardTests: XCTestCase {
         [
             UserDefaultsKeys.llmBaseURL,
             UserDefaultsKeys.llmModel,
-            UserDefaultsKeys.thinkingExpandedByDefault,
-            UserDefaultsKeys.toolCallsExpandedByDefault,
-            UserDefaultsKeys.artifactsExpandedByDefault,
             UserDefaultsKeys.debugModeEnabled,
             UserDefaultsKeys.maxLLMRetries,
             UserDefaultsKeys.llmRequestTimeoutSeconds,

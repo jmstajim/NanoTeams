@@ -12,7 +12,7 @@ import Foundation
 /// 5. Measure recall against `expectedExpansionTerms` / `expectedHitFiles`.
 ///
 /// Mirrors `CreateTeamTrainer` in shape so the mental model carries over.
-final class ExploratorySearchTrainer {
+final class ExploratorySearchTrainer: @unchecked Sendable {
 
     /// Expansion seam. Default hits a live LM Studio embedding endpoint;
     /// unit tests can inject a deterministic stub.
@@ -112,8 +112,7 @@ final class ExploratorySearchTrainer {
             }
             workFolderRoot = tempRoot
             internalDir = tempInternalDir
-            let fm = fileManager
-            cleanup = { try? fm.removeItem(at: tempRoot) }
+            cleanup = { try? FileManager.default.removeItem(at: tempRoot) }
         }
         defer { cleanup?() }
 
@@ -145,11 +144,13 @@ final class ExploratorySearchTrainer {
         // 4. Expand the query (per-token + whole-phrase). Uses the injected
         //    expander in tests; default path goes through the live service.
         let queryTokens = TokenExtractor.extractTokens(from: kase.query)
-        let expander = expanderFactory?() ?? { query, tokens, cfg in
+        let perTokenThreshold = self.config.resolvedPerTokenThreshold
+        let phraseThreshold = self.config.resolvedPhraseThreshold
+        let expander: Expander = expanderFactory?() ?? { @Sendable query, tokens, cfg in
             await vectorService.expand(
                 query: query, tokens: tokens, config: cfg,
-                perTokenThreshold: self.config.resolvedPerTokenThreshold,
-                phraseThreshold: self.config.resolvedPhraseThreshold
+                perTokenThreshold: perTokenThreshold,
+                phraseThreshold: phraseThreshold
             )
         }
 
@@ -297,7 +298,7 @@ final class ExploratorySearchTrainer {
         await withTaskGroup(of: T?.self) { group in
             group.addTask { await operation() }
             group.addTask {
-                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                try? await Task.sleep(for: .seconds(seconds))
                 return nil
             }
             let first = await group.next() ?? nil

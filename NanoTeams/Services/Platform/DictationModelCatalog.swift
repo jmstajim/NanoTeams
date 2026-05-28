@@ -8,7 +8,7 @@ import Speech
 /// user taps a button in settings. Keeping the runtime path side-effect-free
 /// is why this exists as a separate service.
 @available(macOS 26, iOS 26, visionOS 26, *)
-enum DictationModelCatalog {
+nonisolated enum DictationModelCatalog {
 
     /// Snapshot of a single locale's availability for on-device dictation.
     struct ModelInfo: Identifiable, Hashable {

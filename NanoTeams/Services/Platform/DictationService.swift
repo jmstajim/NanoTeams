@@ -224,7 +224,17 @@ final class DictationService {
     /// main actor. The final update races with `stop()` in naive submit
     /// paths — call this from `send` to avoid sending a partial when the
     /// analyzer was about to finalize.
-    func flushAndThen(_ action: @MainActor @escaping () -> Void) {
+    ///
+    /// Fast path: when no dictation session is active there's nothing to
+    /// flush. `resetObservedState` pairs `sessionState = .idle` with
+    /// `engineStorage = nil`, so the idle case cannot have an outstanding
+    /// engine to wait on; running `action` synchronously avoids a Task hop
+    /// on the submit-click hot path.
+    func flushAndThen(_ action: @MainActor @Sendable @escaping () -> Void) {
+        if case .idle = sessionState, engineStorage == nil {
+            action()
+            return
+        }
         Task { @MainActor in
             if #available(macOS 26, iOS 26, visionOS 26, *),
                let engine = engineStorage as? any DictationEngineProtocol {

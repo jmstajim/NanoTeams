@@ -194,6 +194,106 @@ final class MemoryTagStoreTests: XCTestCase {
         }
     }
 
+    /// The per-call line cap on `read_lines` means a single call may not
+    /// satisfy the legacy `endLine == totalLines` shortcut on large files.
+    /// Paginated reads that collectively cover [1, totalLines] must clear
+    /// the staleness flag — otherwise post-edit identical re-reads bypass
+    /// the cache forever, re-injecting full content into LLM context.
+    func testReadLines_paginatedCoverageAfterEdit_clearsStaleness() {
+        // Establish per-page baselines so the post-edit re-read has a tag
+        // to potentially reference.
+        let total = 100
+        _ = sut.processToolResult(makeReadLinesResult(
+            path: "Foo.swift", content: "page 1", startLine: 1, endLine: 50, totalLines: total
+        ), iteration: 1)
+        _ = sut.processToolResult(makeReadLinesResult(
+            path: "Foo.swift", content: "page 2", startLine: 51, endLine: 100, totalLines: total
+        ), iteration: 2)
+
+        _ = sut.processToolResult(makeEditResult(path: "Foo.swift"), iteration: 3)
+
+        // Paginated re-read covers [1, 100] across two calls.
+        _ = sut.processToolResult(makeReadLinesResult(
+            path: "Foo.swift", content: "page 1 v2", startLine: 1, endLine: 50, totalLines: total
+        ), iteration: 4)
+        _ = sut.processToolResult(makeReadLinesResult(
+            path: "Foo.swift", content: "page 2 v2", startLine: 51, endLine: 100, totalLines: total
+        ), iteration: 5)
+
+        // Identical-content re-read of the just-covered range must now
+        // short-circuit to a reference — staleness has been resolved.
+        let probe = sut.processToolResult(makeReadLinesResult(
+            path: "Foo.swift", content: "page 1 v2", startLine: 1, endLine: 50, totalLines: total
+        ), iteration: 6)
+
+        guard case .reference = probe else {
+            XCTFail("Paginated coverage of [1, total] should clear staleness; expected .reference, got \(probe)")
+            return
+        }
+    }
+
+    func testReadLines_outOfOrderPaginatedCoverage_clearsStaleness() {
+        // Same scenario as above, but pages re-read in reverse order.
+        // IndexSet-backed coverage must accumulate regardless of read order.
+        let total = 100
+        _ = sut.processToolResult(makeReadLinesResult(
+            path: "Bar.swift", content: "p1", startLine: 1, endLine: 50, totalLines: total
+        ), iteration: 1)
+        _ = sut.processToolResult(makeReadLinesResult(
+            path: "Bar.swift", content: "p2", startLine: 51, endLine: 100, totalLines: total
+        ), iteration: 2)
+
+        _ = sut.processToolResult(makeEditResult(path: "Bar.swift"), iteration: 3)
+
+        // Reverse order: read page 2 first, then page 1.
+        _ = sut.processToolResult(makeReadLinesResult(
+            path: "Bar.swift", content: "p2 v2", startLine: 51, endLine: 100, totalLines: total
+        ), iteration: 4)
+        _ = sut.processToolResult(makeReadLinesResult(
+            path: "Bar.swift", content: "p1 v2", startLine: 1, endLine: 50, totalLines: total
+        ), iteration: 5)
+
+        let probe = sut.processToolResult(makeReadLinesResult(
+            path: "Bar.swift", content: "p2 v2", startLine: 51, endLine: 100, totalLines: total
+        ), iteration: 6)
+
+        guard case .reference = probe else {
+            XCTFail("Out-of-order paginated coverage should still clear staleness; got \(probe)")
+            return
+        }
+    }
+
+    func testReadLines_partialPaginatedCoverageAfterEdit_staysStaleAcrossRanges() {
+        // Only page 1 is re-read after the edit. Coverage [1, 50] does not
+        // satisfy [1, 100]; the staleness flag must remain set so a re-read
+        // of page 2 can't short-circuit to its pre-edit baseline.
+        let total = 100
+        _ = sut.processToolResult(makeReadLinesResult(
+            path: "Baz.swift", content: "p1 orig", startLine: 1, endLine: 50, totalLines: total
+        ), iteration: 1)
+        _ = sut.processToolResult(makeReadLinesResult(
+            path: "Baz.swift", content: "p2 orig", startLine: 51, endLine: 100, totalLines: total
+        ), iteration: 2)
+
+        _ = sut.processToolResult(makeEditResult(path: "Baz.swift"), iteration: 3)
+
+        // Partial: only page 1 re-read after edit.
+        _ = sut.processToolResult(makeReadLinesResult(
+            path: "Baz.swift", content: "p1 v2", startLine: 1, endLine: 50, totalLines: total
+        ), iteration: 4)
+
+        // Re-read page 2 with the *original* content. Must NOT return a
+        // reference — coverage is incomplete, so the page-2 baseline is
+        // still considered stale relative to the edit.
+        let probe = sut.processToolResult(makeReadLinesResult(
+            path: "Baz.swift", content: "p2 orig", startLine: 51, endLine: 100, totalLines: total
+        ), iteration: 5)
+
+        if case .reference = probe {
+            XCTFail("Partial coverage must NOT clear staleness for unread ranges; got reference to stale page-2 baseline")
+        }
+    }
+
     // MARK: - edit_file Processing
 
     func testEditFile_ReturnsTaggedAndInvalidatesRead() {
@@ -437,10 +537,9 @@ final class MemoryTagStoreTests: XCTestCase {
         let memories = sut.generateMemories(version: 1)
 
         XCTAssertNotNil(memories)
-        XCTAssertTrue(memories?.contains("=== MEMORIES v1 ===") == true)
+        XCTAssertTrue(memories?.contains("## Memories v1") == true)
         XCTAssertTrue(memories?.contains("<§R1§>") == true)
         XCTAssertTrue(memories?.contains("<§E1§>") == true)
-        XCTAssertTrue(memories?.contains("=== END MEMORIES ===") == true)
     }
 
     func testGenerateMemories_WithPlanTag() {
@@ -555,9 +654,8 @@ final class MemoryTagStoreTests: XCTestCase {
     }
 
     private func makeReadLinesResult(
-        path: String, content: String, startLine: Int, endLine: Int
+        path: String, content: String, startLine: Int, endLine: Int, totalLines: Int = 100
     ) -> ToolExecutionResult {
-        let totalLines = 100
         let outputJSON = """
         {"ok":true,"data":{"path":"\(path)","content":\(jsonEscape(content)),"start_line":\(startLine),"end_line":\(endLine),"total_lines":\(totalLines)}}
         """

@@ -2,11 +2,16 @@ import Foundation
 
 // MARK: - Team Settings
 
-struct TeamSettings: Codable, Hashable {
+nonisolated struct TeamSettings: Codable, Hashable {
     /// Hierarchy of subordination: role → its supervisor
     var hierarchy: TeamHierarchy
 
-    /// Role ID (within team) that coordinates team meetings. Nil = first non-Supervisor role.
+    /// Role ID (within team) that coordinates team meetings. Nil = Auto: no
+    /// designated coordinator — the role that initiates each meeting becomes
+    /// that meeting's effective coordinator. They get the wrap-up / steering
+    /// prompts, auto-conclusion is attributed to them, and `conclude_meeting`
+    /// is auto-injected for every role with `request_team_meeting` (so any
+    /// role that can start a meeting can also close it).
     var meetingCoordinatorRoleID: String?
 
     /// Roles that can be invited to meetings
@@ -96,7 +101,7 @@ struct TeamSettings: Codable, Hashable {
 
 // MARK: - Acceptance Mode
 
-enum AcceptanceMode: String, Codable, CaseIterable, Hashable {
+nonisolated enum AcceptanceMode: String, Codable, CaseIterable, Hashable {
     /// Supervisor approves each artifact before it's passed to the next role
     case afterEachArtifact
 
@@ -122,7 +127,7 @@ enum AcceptanceMode: String, Codable, CaseIterable, Hashable {
 
 // MARK: - Supervisor Mode
 
-enum SupervisorMode: String, Codable, CaseIterable, Hashable {
+nonisolated enum SupervisorMode: String, Codable, CaseIterable, Hashable {
     /// Supervisor questions wait for user answer
     case manual
     /// Supervisor questions are auto-answered by LLM
@@ -139,7 +144,7 @@ enum SupervisorMode: String, Codable, CaseIterable, Hashable {
 
 // MARK: - Role Dependencies
 
-struct RoleDependencies: Codable, Hashable {
+nonisolated struct RoleDependencies: Codable, Hashable {
     /// Artifact names required for the role to start working
     var requiredArtifacts: [String]
 

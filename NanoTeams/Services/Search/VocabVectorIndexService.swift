@@ -102,7 +102,7 @@ actor VocabVectorIndexService {
     init(
         internalDir: URL,
         client: any EmbeddingClient,
-        fileManager: FileManager = .default
+        fileManager: sending FileManager = .default
     ) {
         self.internalDir = internalDir
         self.client = client

@@ -1,27 +1,27 @@
+import AppKit
 import SwiftUI
 
 // MARK: - Prompt Preview Sheet
 
-/// Read-only preview of the full system prompt that will be sent to the LLM.
-/// Resolved placeholder values are highlighted with category-matching colors (same as editor chips).
+/// Read-only preview of the step-execution wire system_prompt. Built via
+/// `PromptBuilder.buildWirePromptPreview(kind: .stepExecution, …)`.
+/// Includes the full Harmony `## Tool Calling` block + global-context footer.
+///
+/// Body never reads `store.*` directly — env reads happen only inside `.task`
+/// closures so orchestrator emissions during a running task don't fire body
+/// re-evals here.
 struct PromptPreviewSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(StoreConfiguration.self) private var config
+    @Environment(NTMSOrchestrator.self) private var store
     let roleDefinition: TeamRoleDefinition
-    let toolDefinitions: [ToolDefinitionRecord]
     let team: Team?
+    let workFolder: WorkFolderProjection?
 
-    /// Plain text for clipboard copy.
-    private var previewText: String {
-        PromptBuilder.buildSystemPromptPreview(
-            roleDefinition: roleDefinition,
-            toolDefinitions: toolDefinitions,
-            team: team
-        )
-    }
+    @State private var rendered: WirePreviewRender = .notRendered
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
             HStack {
                 Text("Full Prompt Preview")
                     .font(.title3)
@@ -30,60 +30,131 @@ struct PromptPreviewSheet: View {
                 Spacer()
 
                 Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(previewText, forType: .string)
+                    if let plain = rendered.plain {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(plain, forType: .string)
+                    }
                 } label: {
                     Label("Copy", systemImage: "doc.on.doc")
                         .font(.caption)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .disabled(rendered.plain == nil)
 
-                Button("Done") {
-                    dismiss()
-                }
-                .keyboardShortcut(.cancelAction)
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
             }
             .padding(.horizontal, Spacing.standard)
             .padding(.vertical, Spacing.m)
 
             Divider()
 
-            // Prompt content with colored placeholder values
-            ScrollView {
-                Text(highlightedPrompt)
-                    .textSelection(.enabled)
-                    .padding(Spacing.standard)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            switch rendered {
+            case .notRendered:
+                Color.clear
+            case .success(_, let attributed):
+                ResolvedPromptView(attributed: attributed)
+            case .failure(let error):
+                WirePreviewUnavailableView(error: error)
             }
         }
         .frame(minWidth: 640, minHeight: 480)
+        // `.task` closure runs outside body-tracking — env reads here do NOT
+        // register observation. Refreshes only on sheet appear and on
+        // role-identity flips (the only fields that can change while the sheet
+        // is open via the Role Editor's currentRoleDefinition pass-through).
+        // globalContext / snapshot / workFolderURL changes during the sheet's
+        // lifetime are intentionally NOT live — user must reopen the preview
+        // to pick up settings changes. Trade-off: zero observation overhead
+        // during runs.
+        .task(id: roleDefinition.id) {
+            rendered = renderFromEnv()
+        }
     }
 
-    // MARK: - Highlighted Prompt
-
-    private var highlightedPrompt: AttributedString {
-        let components = PromptBuilder.buildSystemPromptPreviewComponents(
-            roleDefinition: roleDefinition,
-            toolDefinitions: toolDefinitions,
-            team: team
+    /// Reads env (`store`, `config`, `workFolder`) inside a `.task` closure so
+    /// the reads happen outside SwiftUI's observation-tracking context — they
+    /// don't register the body as an observer of `snapshot` / `workFolderURL`
+    /// / `visionLLMConfig` / `globalContext`. Without this isolation, every
+    /// orchestrator emission during a running task fires a body re-eval here.
+    private func renderFromEnv() -> WirePreviewRender {
+        let inputs = PromptBuilder.WirePreviewInputs(
+            role: roleDefinition,
+            team: team,
+            allTeams: store.snapshot?.projection.teams ?? [],
+            workFolder: workFolder,
+            workFolderState: PromptBuilder.WireWorkFolder.from(orchestratorURL: store.workFolderURL),
+            selectedScheme: workFolder?.settings.selectedScheme,
+            isVisionConfigured: store.visionLLMConfig != nil,
+            globalContext: config.globalContext
         )
+        return renderWirePreview(kind: .stepExecution, inputs: inputs)
+    }
+}
 
-        var result = TemplatePlaceholderHighlighter.resolve(
-            template: components.template,
-            values: components.placeholders,
-            definitions: SystemTemplates.systemPromptPlaceholders
-        )
+// MARK: - Shared rendering helpers
 
-        // Append tools suffix as plain text
-        if !components.toolsSuffix.isEmpty {
-            let monoFont = Font.system(.body, design: .monospaced)
-            var suffix = AttributedString(components.toolsSuffix)
-            suffix.font = monoFont
-            result.append(suffix)
+/// Three-state cached render result. Sum-type encoding makes "error XOR
+/// content" structurally exclusive — a `.success` carries both encodings
+/// (plain + attributed), a `.failure` carries only the error, and
+/// `.notRendered` is the pre-task `@State` sentinel that's distinct from
+/// "successful render of empty content".
+///
+/// The previous 3-`var` struct + `.empty` sentinel allowed invalid combinations
+/// (e.g. `error != nil` together with non-empty `plain` / `attributed`) and
+/// couldn't distinguish "not rendered yet" from "rendered empty".
+enum WirePreviewRender {
+    case notRendered
+    case success(plain: String, attributed: NSAttributedString)
+    case failure(PromptBuilder.WirePreviewError)
+
+    /// Convenience for the Copy button — returns the plain payload, or `nil`
+    /// when there's nothing to copy.
+    var plain: String? {
+        if case .success(let plain, _) = self { return plain }
+        return nil
+    }
+
+}
+
+/// Drives both renderers (plain + attributed) and packages the result. Used
+/// by both `PromptPreviewSheet` and `TemplatePreviewSheet`. Both renderers
+/// use Swift 6 typed throws (`throws(WirePreviewError)`), so the catch is
+/// exhaustive over the declared error type — no generic catch, no silent
+/// misclassification of unrelated future errors.
+func renderWirePreview(
+    kind: WirePromptKind,
+    inputs: PromptBuilder.WirePreviewInputs
+) -> WirePreviewRender {
+    do {
+        let plain = try PromptBuilder.buildWirePromptPreview(kind: kind, inputs: inputs)
+        let attributed = try PromptBuilder.buildWirePromptPreviewAttributed(kind: kind, inputs: inputs)
+        return .success(plain: plain, attributed: attributed)
+    } catch {
+        return .failure(error)
+    }
+}
+
+/// Shared explanatory pane for `WirePreviewError` (currently only Generated
+/// Team can't be rendered offline). Used by both sheets.
+struct WirePreviewUnavailableView: View {
+    let error: PromptBuilder.WirePreviewError
+
+    var body: some View {
+        VStack(spacing: Spacing.s) {
+            Image(systemName: "wand.and.stars")
+                .font(.largeTitle)
+                .foregroundStyle(.secondary)
+            Text("Preview unavailable")
+                .font(.headline)
+            Text(error.description)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, Spacing.l)
         }
-
-        return result
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -94,8 +165,10 @@ struct PromptPreviewSheet: View {
     let role = team.nonSupervisorRoles.first!
     PromptPreviewSheet(
         roleDefinition: role,
-        toolDefinitions: ToolDefinitionRecord.defaultDefinitions(),
-        team: team
+        team: team,
+        workFolder: nil
     )
+    .environment(StoreConfiguration())
+    .environment(NTMSOrchestrator(repository: NTMSRepository()))
     .frame(width: 700, height: 1100)
 }

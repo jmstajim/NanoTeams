@@ -2,7 +2,7 @@ import Foundation
 
 /// Centralized factory for JSON encoder/decoder configurations.
 /// Eliminates duplication of dateEncodingStrategy/outputFormatting setup across 12+ files.
-enum JSONCoderFactory {
+nonisolated enum JSONCoderFactory {
 
     // MARK: - ISO 8601 formatters
 
@@ -10,7 +10,7 @@ enum JSONCoderFactory {
     /// Preserves the millisecond spacing produced by `MonotonicClock`, so persisted
     /// timestamps don't collapse to the same second on save and scramble ordering
     /// (e.g. activity feed messages/tool calls interleaving) after reload.
-    private static let fractionalFormatter: ISO8601DateFormatter = {
+    nonisolated(unsafe) private static let fractionalFormatter: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return f
@@ -18,7 +18,7 @@ enum JSONCoderFactory {
 
     /// Plain ISO 8601, second precision — used for backward-compatible decoding
     /// of pre-fix task.json files that were written with the default `.iso8601` strategy.
-    private static let plainFormatter: ISO8601DateFormatter = {
+    nonisolated(unsafe) private static let plainFormatter: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime]
         return f
@@ -100,7 +100,7 @@ enum JSONCoderFactory {
 
     /// Shared ISO 8601 date formatter for display strings (default options).
     /// Used by: ArtifactService.
-    static let iso8601Formatter: ISO8601DateFormatter = {
+    nonisolated(unsafe) static let iso8601Formatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         return formatter
     }()

@@ -3,7 +3,7 @@ import SwiftUI
 // MARK: - Notification Type
 
 /// Type of watchtower notification requiring Supervisor attention
-enum WatchtowerNotificationType {
+nonisolated enum WatchtowerNotificationType {
     case supervisorInput(stepID: String, question: String, role: Role)
     case acceptance(stepID: String, roleID: String, roleName: String)
     case failed(stepID: String, role: Role, errorMessage: String?)
@@ -47,10 +47,16 @@ enum WatchtowerNotificationType {
         }
     }
 
-    /// The string used to track dismissal state in the view.
+    /// Dismiss-set key. For `.supervisorInput`, includes question text so a
+    /// fresh question on the same step gets a fresh ID — dismissals must not
+    /// bleed across rounds. `::` separator: step IDs never contain it.
+    ///
+    /// Known limitation: byte-identical question text across rounds (e.g.
+    /// hardcoded refusal-loop nudges) collides. Acceptable today — switching
+    /// to a per-call UUID would require widening the enum case.
     var dismissID: String {
         switch self {
-        case .supervisorInput(let stepID, _, _): return stepID
+        case .supervisorInput(let stepID, let question, _): return "\(stepID)::\(question)"
         case .acceptance(let stepID, _, _): return stepID
         case .failed(let stepID, _, _): return stepID
         case .taskDone(let taskID, _): return String(taskID)
@@ -64,7 +70,7 @@ enum WatchtowerNotificationType {
 
 /// Wraps a `WatchtowerNotificationType` with the originating task context,
 /// enabling multi-task notification display in the Watchtower.
-struct WatchtowerNotification: Identifiable {
+nonisolated struct WatchtowerNotification: Identifiable {
     let taskID: Int
     let taskTitle: String
     let isChatMode: Bool
@@ -83,9 +89,20 @@ extension Run {
         var seenStepIDs: Set<String> = []
         let isChatMode = task.isChatMode
 
-        // Supervisor input (highest priority per step — unanswered questions)
-        for step in steps where step.needsSupervisorInput && step.effectiveSupervisorAnswer == nil {
-            if let question = step.supervisorQuestion {
+        // Shared predicate so Watchtower / activity feed / composer chip agree.
+        // A bare `needsSupervisorInput && answer == nil` check misses the race
+        // window where the round-N+1 question is in flight but A_N is still on
+        // the step.
+        //
+        // `supervisorQuestion` can lag the predicate during the same race (flag
+        // set, text not yet copied), so fall back to parsing the trailing ask
+        // call's args — same chain `activeSupervisorQuestions` uses for the
+        // composer chip. Without the fallback the banner is silently skipped.
+        for step in steps where ActivityFeedBuilder.stepHasActiveSupervisorInput(step) {
+            let question = step.supervisorQuestion
+                ?? step.toolCalls.last(where: { $0.name == ToolNames.askSupervisor })
+                    .flatMap { ActivityFeedBuilder.parseAskSupervisorQuestion(from: $0.argumentsJSON) }
+            if let question {
                 notifications.append(.supervisorInput(stepID: step.id, question: question, role: step.role))
                 seenStepIDs.insert(step.id)
             }

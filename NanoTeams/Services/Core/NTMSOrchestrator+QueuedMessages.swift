@@ -110,7 +110,7 @@ extension NTMSOrchestrator {
             }
             if !nonEmbeddedPaths.isEmpty {
                 let pathList = nonEmbeddedPaths.map { "- \($0)" }.joined(separator: "\n")
-                let section = "--- Attached Files ---\n\(pathList)"
+                let section = "## Attached Files\n\(pathList)"
                 body = body.isEmpty ? section : body + "\n\n" + section
             }
             bodies.append(body)
@@ -173,5 +173,25 @@ extension NTMSOrchestrator {
         taskID: Int
     ) {
         formState.prependQueuedMessages(messages, for: taskID)
+    }
+
+    /// `LLMStateDelegate.notifyQueuedMessageBackstop` witness — bridges the
+    /// step-mutation side of the LLM pipeline to the queued-message backstop
+    /// owned by `QuickCaptureController`. The orchestrator has no DI handle for
+    /// the controller (the controller holds a weak `store` reference back; the
+    /// reverse direction would create the cycle), so the witness reaches the
+    /// process-wide singleton directly.
+    ///
+    /// `taskID` is unused for now — `tryFlushQueuedMessages` iterates every
+    /// task with a non-empty queue regardless of the trigger source. The
+    /// parameter is kept on the protocol for symmetry with other taskID-keyed
+    /// hooks and to keep future per-task scoping low-friction. If
+    /// `tryFlushQueuedMessages` ever gains a scoped overload, this witness must
+    /// be updated to forward the taskID, or the parameter dropped from the
+    /// protocol — leaving it silently unused at the bridge point would mask the
+    /// intended scope.
+    // periphery:ignore - protocol conformance (LLMStateDelegate)
+    func notifyQueuedMessageBackstop(taskID _: Int) {
+        QuickCaptureController.shared.tryFlushQueuedMessages()
     }
 }

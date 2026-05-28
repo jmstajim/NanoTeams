@@ -1,10 +1,19 @@
 import AppKit
 import ApplicationServices
 
+/// String value of the CoreFoundation `kAXTrustedCheckOptionPrompt` global,
+/// inlined here as a plain `CFString` literal so Swift 6's data-race checker
+/// doesn't fire on the AX symbol (it's declared `var` in the headers but is
+/// effectively immutable — even reading it via `takeUnretainedValue()` trips
+/// "reference to var is not concurrency-safe" with no clean escape hatch under
+/// `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`). The string value is part of
+/// Apple's public ABI and has been stable for ~15+ years.
+nonisolated(unsafe) private let _trustedCheckPromptKey: CFString = "AXTrustedCheckOptionPrompt" as CFString
+
 // MARK: - Clipboard Capture Result
 
 /// Result of a smart clipboard capture — may contain text, file URLs, or both.
-struct ClipboardCaptureResult {
+nonisolated struct ClipboardCaptureResult {
     var text: String?
     var fileURLs: [URL]
 }
@@ -12,7 +21,7 @@ struct ClipboardCaptureResult {
 // MARK: - Source Context
 
 /// Metadata about the source location of a clipboard capture from a code editor.
-struct SourceContext {
+nonisolated struct SourceContext {
     let filePath: String
     let fileName: String
     let lineStart: Int?
@@ -37,7 +46,7 @@ struct SourceContext {
 
 /// Captures selected content from the frontmost application by simulating Cmd+C.
 /// Returns file URLs (e.g. from Finder) and/or text depending on what the source app places on the pasteboard.
-enum ClipboardCaptureService {
+nonisolated enum ClipboardCaptureService {
 
     /// Captures the currently selected content from the frontmost application.
     /// When `workFolderRoot` is provided and the source file is within that directory,
@@ -96,7 +105,7 @@ enum ClipboardCaptureService {
     /// Opens System Settings automatically.
     static func requestAccessibilityIfNeeded() {
         if !AXIsProcessTrusted() {
-            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+            let options = [_trustedCheckPromptKey: true] as CFDictionary
             _ = AXIsProcessTrustedWithOptions(options)
         }
     }

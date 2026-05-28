@@ -5,12 +5,15 @@ extension NTMSOrchestrator {
 
     // MARK: - Step Execution
 
-    func setLastErrorMessageForUI(_ message: String) async {
+    /// Synchronous variant for `LLMStateDelegate.setLastErrorMessageForUI`.
+    /// Surfaces a user-visible error banner (auto-dismissing, red).
+    func setLastErrorMessageForUI(_ message: String) {
         lastErrorMessage = message
     }
 
     /// Synchronous variant for `LLMStateDelegate.setLastInfoMessageForUI`.
     /// Surfaces a user-visible info banner (auto-dismissing, neutral style).
+    // periphery:ignore - protocol conformance (LLMStateDelegate)
     func setLastInfoMessageForUI(_ message: String) {
         lastInfoMessage = message
     }
@@ -41,7 +44,7 @@ extension NTMSOrchestrator {
     }
 
     func pauseStep(stepID: String, taskID: Int) async {
-        llmExecutionService.cancelStepExecution(stepID: stepID)
+        await llmExecutionService.cancelStepExecution(stepID: stepID)
 
         await mutateTask(taskID: taskID) { task in
             StepExecutionService.pauseStep(stepID: stepID, in: &task)
@@ -93,11 +96,14 @@ extension NTMSOrchestrator {
             )
         }
         guard applied else {
-            // Race scenario: the step was restarted, removed, or rebuilt between when
-            // the composer rendered the Answer chip and when the user submitted. Tell
-            // the Supervisor instead of silently swallowing the draft. The composer
-            // already declines to clear its text on `false` return, so the user can
-            // re-pick a recipient and retry without retyping.
+            // Race scenario: the step was restarted, removed, or rebuilt between
+            // when the composer rendered the Answer chip and when the user
+            // submitted. Set a specific `lastErrorMessage` so the Supervisor
+            // sees the cause instead of a generic "submission failed". The
+            // composer's `.answer` branch clears its draft synchronously on
+            // submit and restores it from snapshots when this returns `false`
+            // (see `TeamActivityComposer.performAnswerSubmit`), so the user
+            // can pick another recipient and retry without retyping.
             lastErrorMessage = "This question is no longer active — the role may have been restarted. Please pick another recipient and try again."
             return false
         }

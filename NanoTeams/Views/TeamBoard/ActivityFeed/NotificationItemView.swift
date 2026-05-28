@@ -9,14 +9,7 @@ struct NotificationItemView: View {
     let type: ActivityNotificationType
     var isChatMode: Bool = false
     var workFolderURL: URL? = nil
-    @Binding var thinkingExpanded: Set<UUID>
-    @Binding var answerText: String
-    @Binding var answerAttachments: [StagedAttachment]
-    let isSubmittingAnswer: Bool
     let isAutoAnswering: Bool
-    var onSubmitAnswer: () -> Void
-    var onStageAttachment: (URL) -> StagedAttachment?
-    var onRemoveAttachment: (StagedAttachment) -> Void
 
     private var resolvedColor: Color { type.color(isChatMode: isChatMode) }
 
@@ -54,14 +47,8 @@ struct NotificationItemView: View {
                 workFolderURL: workFolderURL,
                 thinking: thinking,
                 thinkingID: toolCallID,
-                isSubmittingAnswer: isSubmittingAnswer,
-                isAutoAnswering: isAutoAnswering,
-                thinkingExpanded: $thinkingExpanded,
-                answerText: $answerText,
-                answerAttachments: $answerAttachments,
-                onSubmitAnswer: onSubmitAnswer,
-                onStageAttachment: onStageAttachment,
-                onRemoveAttachment: onRemoveAttachment
+                roleName: role.displayName,
+                isAutoAnswering: isAutoAnswering
             )
         case .failed(let errorMessage):
             FailedNotificationCard(errorMessage: errorMessage)
@@ -69,70 +56,8 @@ struct NotificationItemView: View {
     }
 }
 
-#Preview("Unanswered Question") {
-    @Previewable @State var config = StoreConfiguration()
-    @Previewable @State var thinking: Set<UUID> = []
-    @Previewable @State var answer = ""
-    NotificationItemView(
-        stepID: "preview",
-        role: .softwareEngineer,
-        type: .supervisorInput(
-            question: "Should I use async/await or completion handlers for the network layer?",
-            answer: nil,
-            answerAttachmentPaths: [],
-            answerClippedTexts: [],
-            toolCallID: UUID(),
-            thinking: "I need guidance on the concurrency approach."
-        ),
-        thinkingExpanded: $thinking,
-        answerText: $answer,
-        answerAttachments: .constant([]),
-        isSubmittingAnswer: false,
-        isAutoAnswering: false,
-        onSubmitAnswer: {},
-        onStageAttachment: { _ in nil },
-        onRemoveAttachment: { _ in }
-    )
-    .padding()
-    .frame(width: 500)
-    .background(Colors.surfacePrimary)
-    .environment(config)
-}
-
-#Preview("Auto-Answering") {
-    @Previewable @State var config = StoreConfiguration()
-    @Previewable @State var thinking: Set<UUID> = []
-    @Previewable @State var answer = ""
-    NotificationItemView(
-        stepID: "preview",
-        role: .softwareEngineer,
-        type: .supervisorInput(
-            question: "Should I use async/await or completion handlers for the network layer?",
-            answer: nil,
-            answerAttachmentPaths: [],
-            answerClippedTexts: [],
-            toolCallID: UUID(),
-            thinking: "I need guidance on the concurrency approach."
-        ),
-        thinkingExpanded: $thinking,
-        answerText: $answer,
-        answerAttachments: .constant([]),
-        isSubmittingAnswer: false,
-        isAutoAnswering: true,
-        onSubmitAnswer: {},
-        onStageAttachment: { _ in nil },
-        onRemoveAttachment: { _ in }
-    )
-    .padding()
-    .frame(width: 500)
-    .background(Colors.surfacePrimary)
-    .environment(config)
-}
-
 #Preview("Answered") {
     @Previewable @State var config = StoreConfiguration()
-    @Previewable @State var thinking: Set<UUID> = []
-    @Previewable @State var answer = ""
     NotificationItemView(
         stepID: "preview",
         role: .productManager,
@@ -144,14 +69,28 @@ struct NotificationItemView: View {
             toolCallID: UUID(),
             thinking: nil
         ),
-        thinkingExpanded: $thinking,
-        answerText: $answer,
-        answerAttachments: .constant([]),
-        isSubmittingAnswer: false,
-        isAutoAnswering: false,
-        onSubmitAnswer: {},
-        onStageAttachment: { _ in nil },
-        onRemoveAttachment: { _ in }
+        isAutoAnswering: false
+    )
+    .padding()
+    .frame(width: 500)
+    .background(Colors.surfacePrimary)
+    .environment(config)
+}
+
+#Preview("Auto-Answered") {
+    @Previewable @State var config = StoreConfiguration()
+    NotificationItemView(
+        stepID: "preview",
+        role: .softwareEngineer,
+        type: .supervisorInput(
+            question: "Should I use async/await or completion handlers for the network layer?",
+            answer: "Use async/await throughout — matches the rest of the codebase.",
+            answerAttachmentPaths: [],
+            answerClippedTexts: [],
+            toolCallID: UUID(),
+            thinking: "I need guidance on the concurrency approach."
+        ),
+        isAutoAnswering: true
     )
     .padding()
     .frame(width: 500)
@@ -161,20 +100,11 @@ struct NotificationItemView: View {
 
 #Preview("Failed") {
     @Previewable @State var config = StoreConfiguration()
-    @Previewable @State var thinking: Set<UUID> = []
-    @Previewable @State var answer = ""
     NotificationItemView(
         stepID: "preview",
         role: .softwareEngineer,
         type: .failed(errorMessage: "LLM connection timeout after 30 seconds"),
-        thinkingExpanded: $thinking,
-        answerText: $answer,
-        answerAttachments: .constant([]),
-        isSubmittingAnswer: false,
-        isAutoAnswering: false,
-        onSubmitAnswer: {},
-        onStageAttachment: { _ in nil },
-        onRemoveAttachment: { _ in }
+        isAutoAnswering: false
     )
     .padding()
     .frame(width: 500)

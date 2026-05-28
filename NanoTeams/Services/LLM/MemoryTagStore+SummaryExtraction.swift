@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Build/Test Summary Extraction
 
-extension MemoryTagStore {
+nonisolated extension MemoryTagStore {
 
     /// Build compact summary from run_xcodebuild envelope JSON.
     func extractBuildSummary(from outputJSON: String) -> String {

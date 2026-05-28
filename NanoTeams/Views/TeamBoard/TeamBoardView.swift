@@ -7,7 +7,6 @@ import SwiftUI
 ///
 /// Split across extension files:
 /// - `TeamBoardToolbar.swift` — toolbar components (run history, team selector, control buttons)
-/// - `TeamBoardKeyboardShortcuts.swift` — keyboard shortcut handlers
 /// - `TeamBoardView+Actions.swift` — acceptance, revision, restart, review artifact lookup handlers
 /// - `TeamBoardView+Previews.swift` — `#Preview` blocks + fixtures
 struct TeamBoardView: View {
@@ -20,9 +19,10 @@ struct TeamBoardView: View {
     var task: NTMSTask? {
         store.activeTask
     }
-    // Note: selectedRoleID, isShowingFinalReviewSheet, isGraphPanelVisible accessed from TeamBoardToolbar/KeyboardShortcuts extensions
+    // Note: selectedRoleID, isShowingFinalReviewSheet, isGraphPanelVisible accessed from TeamBoardToolbar/TeamBoardView+Actions extensions
     @AppStorage(UserDefaultsKeys.graphPanelVisible) var isGraphPanelVisible: Bool = true
     @State var selectedRoleID: String?
+    @State private var resizeMonitor = WindowResizeMonitor()
     @State private var restartRoleID: String?
     @State private var isShowingRestartSheet: Bool = false
     @State var isShowingFinalReviewSheet: Bool = false
@@ -50,17 +50,6 @@ struct TeamBoardView: View {
     /// Role statuses from the displayed run (for graph and UI)
     var roleStatuses: [String: RoleExecutionStatus] {
         displayedRun?.roleStatuses ?? [:]
-    }
-
-    /// Ordered list of role IDs for keyboard navigation
-    var orderedRoleIDs: [String] {
-        resolvedTeam.roles.map(\.id)
-    }
-
-    /// Selected role's status for keyboard shortcut context
-    var selectedRoleStatus: RoleExecutionStatus? {
-        guard let roleID = selectedRoleID else { return nil }
-        return roleStatuses[roleID]
     }
 
     /// Resolved team for the current task — computed once, shared across graph, chat, and toolbar.
@@ -102,6 +91,8 @@ struct TeamBoardView: View {
                     .frame(minWidth: WindowLayout.teamBoardActivityMinWidth)
             }
         }
+        .background(WindowResizeMonitorAccessor(monitor: resizeMonitor))
+        .environment(\.windowResizeMonitor, resizeMonitor)
         .background(NTMSBackground())
         .overlay(alignment: .top) {
             historicalRunBanner
@@ -174,10 +165,6 @@ struct TeamBoardView: View {
                     isShowingFinalReviewSheet = false
                 }
             )
-        }
-        // Keyboard shortcuts
-        .background {
-            keyboardShortcuts
         }
     }
 
@@ -285,7 +272,7 @@ struct TeamBoardView: View {
         )
     }
 
-    // Actions (handleAcceptance, handleRevisionRequest, handleRestartRole,
+    // Actions (handleRevisionRequest, handleRestartRole, handleCorrectRole,
     // autoSelectAttentionRole, supervisorReviewArtifacts) live in TeamBoardView+Actions.swift.
 }
 

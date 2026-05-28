@@ -11,7 +11,7 @@ import Security
 /// one entry, regardless of which app surface (chat / vision / embedding /
 /// per-role override) reads it.
 protocol SecureTokenStorage: Sendable {
-    func setToken(_ token: String?, forKey key: String) throws
+    nonisolated func setToken(_ token: String?, forKey key: String) throws
 
     /// Reads the stored token. Returns `nil` ONLY for legitimate absence
     /// (`errSecItemNotFound`). Throws on real Keychain failures (locked,
@@ -19,10 +19,10 @@ protocol SecureTokenStorage: Sendable {
     /// from "lookup unavailable" — without that distinction, every
     /// transient lookup error silently sends the request unauthenticated
     /// and the user sees a 401 banner even though they configured a token.
-    func loadToken(forKey key: String) throws -> String?
+    nonisolated func loadToken(forKey key: String) throws -> String?
 }
 
-extension SecureTokenStorage {
+nonisolated extension SecureTokenStorage {
     /// Best-effort lookup that swallows real failures into `nil`. Use only
     /// on hot paths that have nowhere to surface the error (e.g. HTTP
     /// request build). Settings UI surfaces must use `loadToken(forKey:)`
@@ -60,7 +60,7 @@ enum KeychainError: Error, Equatable {
 ///
 /// Add-or-update is idempotent via `errSecDuplicateItem` → `SecItemUpdate`
 /// (preserves attributes; cleaner than delete+add).
-struct KeychainSecureTokenStorage: SecureTokenStorage {
+nonisolated struct KeychainSecureTokenStorage: SecureTokenStorage {
 
     /// Service identifier scoping all NanoTeams LM Studio bearer tokens. The `.v1`
     /// suffix is here so a future schema break (e.g. salting the key) can ship
@@ -166,7 +166,7 @@ struct KeychainSecureTokenStorage: SecureTokenStorage {
 #if DEBUG
 /// Test impl. CI macOS runners may refuse Keychain access, so unit tests
 /// inject this instead of touching the real Keychain.
-final class InMemorySecureTokenStorage: SecureTokenStorage, @unchecked Sendable {
+nonisolated final class InMemorySecureTokenStorage: SecureTokenStorage, @unchecked Sendable {
     private var tokens: [String: String] = [:]
     private let lock = NSLock()
 

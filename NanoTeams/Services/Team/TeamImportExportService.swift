@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Team Import/Export Service
 
 /// Service for importing and exporting team configurations, roles, and artifacts.
-enum TeamImportExportService {
+nonisolated enum TeamImportExportService {
 
     // MARK: - Role Export/Import
 
@@ -179,19 +179,19 @@ enum TeamImportExportService {
 
 // MARK: - Export Formats
 
-struct RoleExportFormat: Codable {
+nonisolated struct RoleExportFormat: Codable {
     let version: Int
     let role: TeamRoleDefinition
     let exportedAt: Date
 }
 
-struct ArtifactExportFormat: Codable {
+nonisolated struct ArtifactExportFormat: Codable {
     let version: Int
     let artifact: TeamArtifact
     let exportedAt: Date
 }
 
-struct TeamExportFormat: Codable {
+nonisolated struct TeamExportFormat: Codable {
     let version: Int
     let team: Team
     let exportedAt: Date
@@ -199,7 +199,7 @@ struct TeamExportFormat: Codable {
 
 // MARK: - Errors
 
-enum ImportExportError: Error, LocalizedError {
+nonisolated enum ImportExportError: Error, LocalizedError {
     case unsupportedVersion(Int)
     case invalidData
     case fileAccessError

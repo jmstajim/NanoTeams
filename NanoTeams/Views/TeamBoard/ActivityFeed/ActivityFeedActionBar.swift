@@ -198,7 +198,7 @@ struct ActivityFeedActionBar: View {
                 ActivityFeedActionBar(
                     isFinalReviewStage: true,
                     rolesNeedingAcceptance: [],
-                    supervisorReviewArtifacts: ["Release Notes", "Engineering Notes", "Build Diagnostics"],
+                    supervisorReviewArtifacts: ["Release Notes", "Engineering Notes"],
                     producedArtifacts: ["Release Notes", "Engineering Notes"]
                 )
             }
@@ -264,7 +264,7 @@ struct ActivityFeedActionBar: View {
                         (roleID: "tl-1", roleName: "Tech Lead"),
                         (roleID: "swe-1", roleName: "Software Engineer")
                     ],
-                    supervisorReviewArtifacts: ["Release Notes", "Engineering Notes", "Design Spec", "Code Review", "Production Readiness"],
+                    supervisorReviewArtifacts: ["Release Notes", "Engineering Notes", "Design Spec", "Code Review Summary", "Production Readiness"],
                     producedArtifacts: ["Release Notes", "Engineering Notes", "Design Spec"]
                 )
             }

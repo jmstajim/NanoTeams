@@ -1,7 +1,7 @@
 import Foundation
 
 /// Constants for document format reading and export.
-enum DocumentConstants {
+nonisolated enum DocumentConstants {
 
     /// Document extensions that `DocumentTextExtractor` converts to plain text.
     /// Source-like text formats (`.html`, `.xml`, `.md`, `.json`, source code)

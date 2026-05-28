@@ -1,8 +1,13 @@
 import SwiftUI
 
-/// Interactive card body for `ActivityNotificationType.supervisorInput`.
-/// Renders the question, optional thinking disclosure, auto-answer progress/result,
-/// or the answer input (text field + attachments + submit button).
+/// Read-only history card for a resolved (or auto-answered) `ask_supervisor`
+/// notification. Renders the question, optional "Thinking" row that opens a
+/// window, and either the auto-answer progress/result or the Supervisor's
+/// committed reply with attachments.
+///
+/// Active / in-flight questions are owned by the docked `TeamActivityComposer`
+/// — `ActivityFeedBuilder.emitItems` skips emitting a card for them so the
+/// answering surface is never duplicated.
 struct SupervisorInputCard: View {
     let question: String
     let answer: String?
@@ -11,22 +16,17 @@ struct SupervisorInputCard: View {
     var workFolderURL: URL? = nil
     let thinking: String?
     let thinkingID: UUID
-    let isSubmittingAnswer: Bool
+    let roleName: String
     let isAutoAnswering: Bool
-    @Binding var thinkingExpanded: Set<UUID>
-    @Binding var answerText: String
-    @Binding var answerAttachments: [StagedAttachment]
-    var onSubmitAnswer: () -> Void
-    var onStageAttachment: (URL) -> StagedAttachment?
-    var onRemoveAttachment: (StagedAttachment) -> Void
 
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         let isResolved = answer != nil
 
         VStack(alignment: .leading, spacing: Spacing.s) {
             if let thinking, !thinking.isEmpty {
-                thinkingDisclosure(thinking: thinking)
+                thinkingRow(thinking: thinking)
             }
 
             Text(question)
@@ -56,8 +56,6 @@ struct SupervisorInputCard: View {
                 }
             } else if isAutoAnswering {
                 autoAnswerProgress
-            } else {
-                answerInput
             }
         }
     }
@@ -96,91 +94,39 @@ struct SupervisorInputCard: View {
         }
     }
 
-    // MARK: - Answer input
+    // MARK: - Thinking row
 
-    private var answerInput: some View {
-        MessageComposer(
-            text: $answerText,
-            attachments: $answerAttachments,
-            placeholder: "Type your answer...",
-            canSubmit: !answerText.isEmpty || !answerAttachments.isEmpty,
-            isSubmitting: isSubmittingAnswer,
-            onSubmit: onSubmitAnswer,
-            onStageAttachment: onStageAttachment,
-            onRemoveAttachment: onRemoveAttachment
-        )
-    }
-
-    // MARK: - Thinking disclosure
-
-    private func thinkingDisclosure(thinking: String) -> some View {
-        let isExpanded = thinkingExpanded.contains(thinkingID)
-
-        return VStack(alignment: .leading, spacing: ActivityCardTokens.contentSpacing) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    if isExpanded {
-                        thinkingExpanded.remove(thinkingID)
-                    } else {
-                        thinkingExpanded.insert(thinkingID)
-                    }
-                }
-            } label: {
-                HStack(spacing: Spacing.xs) {
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.tertiary)
-                    Text("Thinking")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.tertiary)
-                    Spacer()
-                }
+    private func thinkingRow(thinking: String) -> some View {
+        Button {
+            openWindow(value: ActivityDetailWindow.supervisorThinking(
+                id: thinkingID,
+                roleName: roleName,
+                text: thinking
+            ))
+        } label: {
+            HStack(spacing: Spacing.xs) {
+                Text("Thinking")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.tertiary)
+                Spacer()
             }
-            .buttonStyle(.plain)
-
-            if isExpanded {
-                ScrollView {
-                    Text(thinking)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(maxHeight: ActivityCardTokens.thinkingMaxHeight)
-                .padding(.leading, Spacing.s)
-                .overlay(alignment: .leading) {
-                    Rectangle()
-                        .fill(Colors.neutral)
-                        .frame(width: 1.5)
-                }
-            }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
     }
 }
 
 #Preview {
-    @Previewable @State var thinkingExpanded: Set<UUID> = []
-    @Previewable @State var answerText = ""
-    @Previewable @State var answerAttachments: [StagedAttachment] = []
-
     SupervisorInputCard(
-        question: "Should I prioritize build stability or the onboarding flow for the next iteration?",
-        answer: nil,
-        thinking: "I need a clear priority so I can sequence the remaining work without blocking the team.",
+        question: "What should be the priority order for the notification channels?",
+        answer: "Push notifications first, then email. SMS can wait for v2.",
+        thinking: "I need direction on the rollout sequence so I can sequence the work.",
         thinkingID: UUID(),
-        isSubmittingAnswer: false,
-        isAutoAnswering: false,
-        thinkingExpanded: $thinkingExpanded,
-        answerText: $answerText,
-        answerAttachments: $answerAttachments,
-        onSubmitAnswer: {},
-        onStageAttachment: { _ in nil },
-        onRemoveAttachment: { _ in }
+        roleName: "Software Engineer",
+        isAutoAnswering: false
     )
     .padding()
     .frame(width: 300)
     .background(Colors.surfacePrimary)
     .environment(StoreConfiguration())
-    .environment(DictationService())
 }
-

@@ -24,7 +24,7 @@ import Foundation
 //    The watermark (`state.lastAppliedAppVersion`) is NOT advanced when any
 //    team is deferred — next open retries.
 
-extension NTMSRepository {
+nonisolated extension NTMSRepository {
 
     struct BundledReconcileResult {
         /// True if any team was mutated (roles/templates/settings/structure).
@@ -182,6 +182,14 @@ extension NTMSRepository {
                     teamChanged = true
                 }
 
+                // Prune orphan system artifacts — see helper for safety
+                // contract. Without this, a bundled rename ("Code Review" →
+                // "Code Review Summary") leaves the legacy artifact in the
+                // team editor's list as a selectable but unproduced ghost.
+                if Self.pruneOrphanSystemArtifacts(in: &teams[i], bundled: bundledTeam) {
+                    teamChanged = true
+                }
+
                 // Refresh layout — keeps user-dragged positions for existing
                 // nodes, auto-positions any newly-added role.
                 let nextLayout = TeamGraphLayoutCalculator.mergeLayout(
@@ -214,6 +222,39 @@ extension NTMSRepository {
             toolsTouched: toolsTouched,
             deferred: deferred
         )
+    }
+
+    // MARK: - Orphan system artifact prune
+
+    /// Removes system artifacts (`isSystemArtifact == true`) whose name is no
+    /// longer in the bundled team AND that no role / setting references.
+    /// Custom (`isSystemArtifact == false`) artifacts and any artifact still
+    /// referenced by a role's dependencies or by `supervisorRequiredArtifacts`
+    /// are preserved. Returns `true` iff at least one artifact was removed.
+    ///
+    /// Safety: this runs AFTER the role-dependency reconcile (step 1) inside
+    /// `applyBundledContentUpdates`, so the reference scan reflects
+    /// post-reconcile dependencies — orphans here are truly dead. Custom roles
+    /// the user added that still depend on the legacy name are protected via
+    /// the reference scan.
+    static func pruneOrphanSystemArtifacts(in team: inout Team, bundled: Team) -> Bool {
+        let bundledArtifactNames = Set(bundled.artifacts.map(\.name))
+        // `supervisorRequiredArtifacts` is a computed property on `Team`
+        // (derived from the Supervisor role's `requiredArtifacts`). The role
+        // loop below already covers it via `dependencies.requiredArtifacts`,
+        // but reading it explicitly here documents the intent.
+        var referencedNames = Set(team.supervisorRequiredArtifacts)
+        for r in team.roles {
+            referencedNames.formUnion(r.dependencies.requiredArtifacts)
+            referencedNames.formUnion(r.dependencies.producesArtifacts)
+        }
+        let prePruneCount = team.artifacts.count
+        team.artifacts.removeAll { art in
+            art.isSystemArtifact
+                && !bundledArtifactNames.contains(art.name)
+                && !referencedNames.contains(art.name)
+        }
+        return team.artifacts.count != prePruneCount
     }
 
     // MARK: - Running-role scan
@@ -249,7 +290,8 @@ extension NTMSRepository {
 
         var running: Set<NTMSID> = []
         for entry in index.tasks {
-            let taskURL = paths.taskJSON(taskID: entry.id)
+            let ancestors = index.ancestorIDs(of: entry.id)
+            let taskURL = paths.taskJSON(taskID: entry.id, ancestors: ancestors)
             guard fileManager.fileExists(atPath: taskURL.path) else { continue }
             let task: NTMSTask
             do {

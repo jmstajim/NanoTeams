@@ -1,7 +1,7 @@
 import Foundation
 
 /// Service for managing artifact file I/O operations.
-final class ArtifactService {
+nonisolated final class ArtifactService: @unchecked Sendable {
 
     private let repository: any NTMSRepositoryProtocol
     private let fileManager: FileManager
@@ -49,9 +49,9 @@ final class ArtifactService {
     ///   - stepID: The step ID.
     ///   - workFolderRoot: The project root URL.
     /// - Returns: The relative path within .nanoteams if exists, nil otherwise.
-    func buildDiagnosticsRelativePath(taskID: Int, runID: Int, roleID: String, workFolderRoot: URL) -> String? {
+    func buildDiagnosticsRelativePath(taskID: Int, runID: Int, roleID: String, workFolderRoot: URL, ancestors: [Int] = []) -> String? {
         let paths = NTMSPaths(workFolderRoot: workFolderRoot)
-        let jsonURL = paths.buildDiagnosticsJSON(taskID: taskID, runID: runID, roleID: roleID)
+        let jsonURL = paths.buildDiagnosticsJSON(taskID: taskID, runID: runID, roleID: roleID, ancestors: ancestors)
         guard fileManager.fileExists(atPath: jsonURL.path) else { return nil }
         return paths.relativePathWithinNanoteams(for: jsonURL)
     }
@@ -59,9 +59,9 @@ final class ArtifactService {
     /// Persists an empty/summary build diagnostics artifact for successful builds.
     /// Called when build completes with no errors (so no diagnostic data file exists).
     /// - Returns: The relative path within .nanoteams, or nil if persistence failed
-    func persistEmptyBuildDiagnostics(taskID: Int, runID: Int, roleID: String, workFolderRoot: URL) throws -> String? {
+    func persistEmptyBuildDiagnostics(taskID: Int, runID: Int, roleID: String, workFolderRoot: URL, ancestors: [Int] = []) throws -> String? {
         let paths = NTMSPaths(workFolderRoot: workFolderRoot)
-        let jsonURL = paths.buildDiagnosticsJSON(taskID: taskID, runID: runID, roleID: roleID)
+        let jsonURL = paths.buildDiagnosticsJSON(taskID: taskID, runID: runID, roleID: roleID, ancestors: ancestors)
 
         // Create directory if needed (restricted permissions — internal data)
         try fileManager.createDirectory(at: jsonURL.deletingLastPathComponent(), withIntermediateDirectories: true,

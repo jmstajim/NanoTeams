@@ -9,7 +9,7 @@ import Foundation
 /// Inputs are assumed pre-filtered by `WalkSkipRules` and the internal-dir
 /// exclusion — both call sites already apply them upstream. Keeping this
 /// matcher free of FS knowledge is what makes it trivially unit-testable.
-enum FilenameMatcher {
+nonisolated enum FilenameMatcher {
 
     /// For each candidate path, succeeds when ANY query term matches the
     /// basename or full relative path:
@@ -91,7 +91,7 @@ enum FilenameMatcher {
 /// `SearchExecutor`'s `file_glob` filter. Lifted out of `SearchExecutor` so
 /// the case-insensitive variant has one home and behavior is consistent
 /// across both call sites.
-enum GlobMatcher {
+nonisolated enum GlobMatcher {
 
     /// Sentinel that intentionally fails to compile — reserved for tests
     /// that need to exercise the regex-failure branch deterministically.

@@ -7,7 +7,12 @@ import SwiftUI
 enum TeamGraphCanvasGeometry {
 
     /// A single artifact dependency connection between two roles.
-    struct ConnectionInfo {
+    ///
+    /// `nonisolated Sendable`: pure value type (String + nonisolated
+    /// `TeamNodePosition`). Marking it explicitly Sendable lets it flow
+    /// through `TeamGraphLayoutCache.Layout` without dragging `@MainActor`
+    /// isolation onto cache results. Pinned by `TeamGraphLayoutSendableTests`.
+    nonisolated struct ConnectionInfo: Sendable {
         let producerID: String
         let consumerID: String
         let artifactName: String

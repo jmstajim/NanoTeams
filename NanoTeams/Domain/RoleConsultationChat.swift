@@ -6,7 +6,7 @@ import Foundation
 ///
 /// Separate from the role's artifact chat (step execution). Only final answers/decisions
 /// are returned to the requesting role's artifact chat as tool results.
-struct RoleConsultationChat: Codable, Identifiable, Hashable {
+nonisolated struct RoleConsultationChat: Codable, Identifiable, Hashable {
     /// Role base ID (e.g., "productManager", custom UUID string).
     var id: String
 

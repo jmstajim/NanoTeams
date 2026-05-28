@@ -1,6 +1,6 @@
 import Foundation
 
-enum SandboxPathError: LocalizedError {
+nonisolated enum SandboxPathError: LocalizedError {
     case emptyPath
     case absolutePathNotAllowed(String)
     case parentTraversalNotAllowed(String)
@@ -23,7 +23,7 @@ enum SandboxPathError: LocalizedError {
     }
 }
 
-struct SandboxPathResolver {
+nonisolated struct SandboxPathResolver {
     let workFolderRoot: URL
     let internalDir: URL?
 

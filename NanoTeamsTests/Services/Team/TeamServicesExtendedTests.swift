@@ -914,7 +914,7 @@ final class RoleDependenciesTests: XCTestCase {
         let deps = SystemTemplates.roles["softwareEngineer"]!.dependencies
 
         XCTAssertEqual(Set(deps.requiredArtifacts), Set(["Implementation Plan", "Design Spec"]))
-        XCTAssertEqual(deps.producesArtifacts, ["Engineering Notes", "Build Diagnostics"])
+        XCTAssertEqual(deps.producesArtifacts, ["Engineering Notes"])
     }
 
     func testSystemTemplateDependencies_SRE() {
@@ -929,7 +929,7 @@ final class RoleDependenciesTests: XCTestCase {
 
         XCTAssertEqual(
             Set(deps.requiredArtifacts), Set(["Implementation Plan", "Engineering Notes"]))
-        XCTAssertEqual(Set(deps.producesArtifacts), Set(["Code Review", "Code Review Summary"]))
+        XCTAssertEqual(Set(deps.producesArtifacts), Set(["Code Review Summary"]))
     }
 
     func testSystemTemplateDependencies_CustomRoleNotInTemplates() {

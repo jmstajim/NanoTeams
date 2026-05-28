@@ -80,7 +80,7 @@ extension LLMExecutionService {
             ?? (SystemTemplates.roles[roleID]?.prompt ?? "")
         let teamDescription = team?.description ?? ""
 
-        return """
+        let base = """
             You are \(roleName)\(teamDescription.isEmpty ? "" : " on a team: \(teamDescription)").
 
             \(roleGuidance)
@@ -91,6 +91,10 @@ extension LLMExecutionService {
             Current task: \(task.title)
             Supervisor Task: \(task.effectiveSupervisorBrief)
             """
+        return TemplateResolver.appendingSeparator(
+            delegate?.globalLLMContext ?? "",
+            to: base
+        )
     }
 
     // MARK: - Consultation Chat Artifact Helpers

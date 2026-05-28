@@ -18,7 +18,7 @@ import Foundation
 /// Cancellation: `Task.checkCancellation` is polled at each batch boundary.
 /// On cancellation the whole build throws — the caller is expected to NOT
 /// persist partial state, so the next invocation resumes from disk.
-struct VocabVectorIndexBuilder {
+nonisolated struct VocabVectorIndexBuilder {
 
     // MARK: - Types
 
@@ -296,7 +296,7 @@ struct VocabVectorIndexBuilder {
                     return nil
                 }
                 let delay = retryBackoffSeconds[min(attempt - 1, retryBackoffSeconds.count - 1)]
-                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                try? await Task.sleep(for: .seconds(delay))
             }
         }
     }

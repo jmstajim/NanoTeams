@@ -10,7 +10,7 @@ import Foundation
 // MARK: - Role Template
 
 /// Template for creating a TeamRoleDefinition from a system role
-struct SystemRoleTemplate {
+nonisolated struct SystemRoleTemplate {
     var id: String  // e.g., "supervisor", "productManager"
     var name: String  // Display name
     var icon: String  // SF Symbol name
@@ -23,7 +23,7 @@ struct SystemRoleTemplate {
 // MARK: - Artifact Template
 
 /// Template for creating a TeamArtifact from a system artifact
-struct SystemArtifactTemplate {
+nonisolated struct SystemArtifactTemplate {
     var name: String  // Display name (e.g., "Product Requirements")
     var icon: String  // SF Symbol name
     var mimeType: String  // e.g., "text/markdown"
@@ -33,7 +33,7 @@ struct SystemArtifactTemplate {
 // MARK: - System Templates
 
 /// Central registry of built-in role and artifact templates
-enum SystemTemplates {
+nonisolated enum SystemTemplates {
 
     /// The artifact name that only Supervisor can produce.
     static let supervisorTaskArtifactName = "Supervisor Task"
@@ -74,7 +74,9 @@ enum SystemTemplates {
         ("toolList", "Tool List", "tools"),
         ("expectedArtifacts", "Expected Artifacts", "artifacts"),
         ("artifactInstructions", "Artifact Instructions", "artifacts"),
-        ("contextAwareness", "Context Awareness", "context"),
+        ("conversationMechanics", "Conversation Mechanics", "context"),
+        ("globalContext", "Global Context", "context"),
+        ("toolCalling", "Tool Calling", "tools"),
     ]
 
     /// All available placeholder keys for the consultation prompt template.
@@ -83,6 +85,7 @@ enum SystemTemplates {
         ("requestingRoleName", "Requesting Role", "role"),
         ("roleGuidance", "Role Guidance", "context"),
         ("teamDescription", "Team Description", "role"),
+        ("globalContext", "Global Context", "context"),
     ]
 
     /// All available placeholder keys for the meeting prompt template.
@@ -93,6 +96,8 @@ enum SystemTemplates {
         ("turnNumber", "Turn Number", "context"),
         ("coordinatorHint", "Coordinator Hint", "context"),
         ("teamDescription", "Team Description", "role"),
+        ("globalContext", "Global Context", "context"),
+        ("toolCalling", "Tool Calling", "tools"),
     ]
 
 
@@ -114,6 +119,7 @@ enum SystemTemplates {
         "discussionClub":TeamTemplateConfig(system: discussionTemplate,    consultation: discussionConsultationTemplate,    meeting: discussionMeetingTemplate),
         "assistant":     TeamTemplateConfig(system: assistantTemplate,     consultation: genericConsultationTemplate,       meeting: genericMeetingTemplate),
         "codingAssistant": TeamTemplateConfig(system: codingAssistantTemplate, consultation: genericConsultationTemplate,   meeting: genericMeetingTemplate),
+        "codingAgent":   TeamTemplateConfig(system: codingAssistantTemplate, consultation: genericConsultationTemplate,   meeting: genericMeetingTemplate),
         "generated":     TeamTemplateConfig(system: genericTemplate,       consultation: genericConsultationTemplate,       meeting: genericMeetingTemplate),
     ]
 

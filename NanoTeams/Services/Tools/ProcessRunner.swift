@@ -1,8 +1,13 @@
 import Foundation
 
-enum ProcessRunnerError: LocalizedError {
+nonisolated enum ProcessRunnerError: LocalizedError {
     case timeout(TimeInterval)
     case executableNotFound(String)
+    /// The enclosing Swift `Task` was cancelled while the subprocess was running.
+    /// `ProcessRunner.run` SIGTERMs (and SIGKILLs after a grace period) the child
+    /// process before throwing this so a paused step doesn't leave a runaway
+    /// `xcodebuild` / `git` consuming CPU/disk for minutes.
+    case cancelled
 
     var errorDescription: String? {
         switch self {
@@ -10,11 +15,13 @@ enum ProcessRunnerError: LocalizedError {
             "Process timed out after \(Int(seconds)) seconds"
         case .executableNotFound(let path):
             "Executable not found: \(path)"
+        case .cancelled:
+            "Process cancelled (run paused or interrupted)."
         }
     }
 }
 
-struct ProcessRunner {
+nonisolated struct ProcessRunner {
     struct Result {
         var exitCode: Int32
         var stdout: String
@@ -52,52 +59,103 @@ struct ProcessRunner {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
+        // `terminationHandler` MUST be set before `process.run()` — Apple's docs
+        // guarantee delivery only if it was set before the process exited. A
+        // short-lived child (e.g. `git rev-parse HEAD`) can race the post-run
+        // handler installation.
+        let exitSemaphore = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exitSemaphore.signal() }
+
         do {
             try process.run()
         } catch {
             throw ProcessRunnerError.executableNotFound(executable)
         }
 
-        let timeoutWorkItem = DispatchWorkItem {
-            if process.isRunning {
-                process.terminate()
+        // Read pipes concurrently BEFORE the wait loop to prevent deadlock.
+        // If the child process fills the pipe buffer (~64KB), it blocks on write.
+        // Waiting before draining the pipes would deadlock.
+        // Use a class wrapper instead of `var Data` so Swift 6's strict checker
+        // can prove the assignment is safe inside the dispatch closure — the
+        // happens-before edge is `dispatch.async { box.data = … }` → `pipeGroup.wait()`,
+        // which the compiler can't see; `@unchecked Sendable` documents the
+        // invariant we enforce by `pipeGroup.wait()`.
+        let stdoutBox = DataBox()
+        let stderrBox = DataBox()
+        let pipeGroup = DispatchGroup()
+
+        pipeGroup.enter()
+        DispatchQueue.global().async {
+            stdoutBox.data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+            pipeGroup.leave()
+        }
+        pipeGroup.enter()
+        DispatchQueue.global().async {
+            stderrBox.data = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            pipeGroup.leave()
+        }
+
+        // Polling wait so a single semaphore covers BOTH timeout and
+        // `Task.isCancelled` — a blocking `process.waitUntilExit()` would
+        // ignore Swift task cancellation and leave a paused run unable to
+        // stop a long subprocess.
+        let deadline = DispatchTime.now() + .nanoseconds(Int(timeout * 1_000_000_000))
+        var didTimeOut = false
+        var didCancel = false
+        waitLoop: while true {
+            // 100 ms tick: cancellation observed within one frame, poll adds
+            // < 1 % CPU.
+            let now = DispatchTime.now()
+            let nextTick = min(now + .milliseconds(100), deadline)
+            switch exitSemaphore.wait(timeout: nextTick) {
+            case .success:
+                break waitLoop
+            case .timedOut:
+                if DispatchTime.now() >= deadline {
+                    didTimeOut = true
+                    if process.isRunning { process.terminate() }
+                    exitSemaphore.wait()
+                    break waitLoop
+                }
+                if Task.isCancelled {
+                    didCancel = true
+                    if process.isRunning { process.terminate() }
+                    // Grace period: give the child up to 2 s to flush+exit on
+                    // SIGTERM; if it ignores that, SIGKILL. `kill(pid, SIGKILL)`
+                    // works for any descendant pid we own.
+                    if exitSemaphore.wait(timeout: .now() + .seconds(2)) == .timedOut {
+                        let pid = process.processIdentifier
+                        if pid > 0 { kill(pid, SIGKILL) }
+                        exitSemaphore.wait()
+                    }
+                    break waitLoop
+                }
             }
         }
 
-        DispatchQueue.global().asyncAfter(
-            deadline: .now() + timeout,
-            execute: timeoutWorkItem
-        )
-
-        // Read pipes concurrently BEFORE waitUntilExit to prevent deadlock.
-        // If the child process fills the pipe buffer (~64KB), it blocks on write.
-        // Calling waitUntilExit() before draining the pipes would deadlock.
-        var stdoutData = Data()
-        var stderrData = Data()
-        let group = DispatchGroup()
-
-        group.enter()
-        DispatchQueue.global().async {
-            stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-            group.leave()
-        }
-        group.enter()
-        DispatchQueue.global().async {
-            stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-            group.leave()
+        // Bounded pipe drain. `readDataToEndOfFile()` blocks until the LAST
+        // writer closes the pipe — and a SIGKILLed parent (e.g. `xcodebuild`)
+        // can leave grandchildren (compilers, linkers) holding the writer FD
+        // open. Without the timeout, a cancelled run can hang the cooperative
+        // thread pool waiting for them to clean up.
+        if pipeGroup.wait(timeout: .now() + .seconds(5)) == .timedOut {
+            // Force the readers to unwind by closing the pipes ourselves.
+            // The dispatch closures will resume with whatever bytes already
+            // flushed; `stdoutBox.data` / `stderrBox.data` may be truncated.
+            try? stdoutPipe.fileHandleForReading.close()
+            try? stderrPipe.fileHandleForReading.close()
+            _ = pipeGroup.wait(timeout: .now() + .seconds(1))
         }
 
-        process.waitUntilExit()
-        group.wait()
-        timeoutWorkItem.cancel()
-
-        let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
-        let stderr = String(data: stderrData, encoding: .utf8) ?? ""
-
-        // Check if terminated due to timeout
-        if process.terminationReason == .uncaughtSignal && process.terminationStatus == SIGTERM {
+        if didCancel {
+            throw ProcessRunnerError.cancelled
+        }
+        if didTimeOut {
             throw ProcessRunnerError.timeout(timeout)
         }
+
+        let stdout = String(data: stdoutBox.data, encoding: .utf8) ?? ""
+        let stderr = String(data: stderrBox.data, encoding: .utf8) ?? ""
 
         return Result(
             exitCode: process.terminationStatus,
@@ -133,4 +191,14 @@ struct ProcessRunner {
             timeout: timeout
         )
     }
+}
+
+/// Mutable `Data` container used to receive pipe-read output from a background
+/// dispatch closure. Safety relies on the `DispatchGroup.wait()` happens-before
+/// edge in `ProcessRunner.run`; the box is read only after `group.wait()`.
+/// `nonisolated` is required so the `data` property can be both written from
+/// the dispatch closure and read back inline (otherwise the property inherits
+/// the app target's default `@MainActor` isolation).
+nonisolated private final class DataBox: @unchecked Sendable {
+    var data = Data()
 }

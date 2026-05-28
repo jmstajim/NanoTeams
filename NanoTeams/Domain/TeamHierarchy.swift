@@ -1,6 +1,6 @@
 import Foundation
 
-struct TeamHierarchy: Codable, Hashable {
+nonisolated struct TeamHierarchy: Codable, Hashable {
     /// Dictionary: role ID → supervisor role ID (nil = reports to Supervisor/user)
     var reportsTo: [String: String]
 

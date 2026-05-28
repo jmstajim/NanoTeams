@@ -117,7 +117,39 @@ extension LLMExecutionService {
 
     func toolSchemas(for role: Role, team: Team? = nil) -> [ToolSchema] {
         guard let delegate else { return [] }
+        // Schema-build is the earliest and most universal detection point for
+        // an orphan-coordinator (`reportOrphanCoordinatorIfNeeded` throttles
+        // per team so this is safe to call on every iteration). The meeting
+        // entry-point in `+TeamMeeting.swift` calls it too — defense in depth.
+        reportOrphanCoordinatorIfNeeded(team: team)
+        return Self.resolveToolSchemas(
+            for: role,
+            team: team,
+            allTeams: delegate.snapshot?.workFolder.teams ?? [],
+            selectedScheme: delegate.snapshot?.workFolder.settings.selectedScheme,
+            isVisionConfigured: delegate.visionLLMConfig != nil
+        )
+    }
 
+    /// Pure subset of `toolSchemas` — orchestrator-free. Inputs are explicit
+    /// instead of pulled from `delegate.snapshot`, so non-runtime callers
+    /// (FirstPromptRenderer, future preview/audit tools) can reuse the same
+    /// resolution logic without standing up an `LLMExecutionService` instance.
+    /// The instance method above is a thin shim that fills the explicit
+    /// parameters from the delegate's snapshot.
+    ///
+    /// `nonisolated` because the body touches no `@MainActor` state — all
+    /// inputs are passed in explicitly, all callees (`Team`, `Role`,
+    /// `ToolDefinitionRegistry.shared.allToolSchemas`, the per-role schema
+    /// builders) are themselves `nonisolated`. Lets the renderer call it
+    /// from a non-main-actor context.
+    nonisolated static func resolveToolSchemas(
+        for role: Role,
+        team: Team?,
+        allTeams: [Team] = [],
+        selectedScheme: String? = nil,
+        isVisionConfigured: Bool = false
+    ) -> [ToolSchema] {
         // 1. Find role definition — findRole handles id, systemRoleID, and name (custom roles
         // created via Role.fromDefinition carry the role's name, not its id, in `.custom(id:)`).
         let roleDefinition = team?.findRole(byIdentifier: role.baseID)
@@ -146,13 +178,28 @@ extension LLMExecutionService {
 
         let tn = ToolNames.self
 
+        // 3.0 Delegation tools (`delegate_to_team` + the 3 companions) NEVER come
+        // from `toolIDs` — they auto-inject in step 7 from delegation settings.
+        // Filter them out here defensively so any legacy `toolIDs` carrying them
+        // (pre-migration boot, hand-edited JSON, mid-rewire test fixtures) doesn't
+        // bypass the `delegationEnabled` gate. Legacy literal `"list_teams"` is
+        // also stripped — the tool was removed (catalog now embeds inline in
+        // `delegate_to_team`'s description), but stale `teams.json` may still
+        // carry it.
+        let delegationToolNames: Set<String> = [
+            tn.delegateToTeam,
+            tn.cancelDelegation, tn.resumeDelegation, tn.forwardToTeam,
+            "list_teams",
+        ]
+        allowedTools.removeAll { delegationToolNames.contains($0.name) }
+
         // 3.1 Dynamic filtering based on project settings
-        if let wf = delegate.snapshot?.workFolder, wf.settings.selectedScheme == nil {
+        if selectedScheme == nil {
             allowedTools.removeAll { $0.name == tn.runXcodebuild || $0.name == tn.runXcodetests }
         }
 
         // 3.2 Remove analyze_image if no vision model is configured
-        if delegate.visionLLMConfig == nil {
+        if !isVisionConfigured {
             allowedTools.removeAll { $0.name == tn.analyzeImage }
         }
 
@@ -165,28 +212,94 @@ extension LLMExecutionService {
             }
         }
 
-        // 5. Auto-inject create_artifact for roles that produce artifacts
+        // 5. Auto-inject create_artifact for roles that produce artifacts.
+        // Schema is built per-role (`CreateArtifactTool.buildSchema`) so the
+        // role's expected deliverables are inlined in the description AND
+        // constrained on the `name` parameter as a JSON-schema enum — same
+        // at-the-decision-point pattern as `delegate_to_team` (step 7). The
+        // static schema is reserved for callers without role context.
         if let roleDefinition,
            !roleDefinition.dependencies.producesArtifacts.isEmpty,
            !roleDefinition.isSupervisor {
-            if let artifactTool = allTools.first(where: { $0.name == tn.createArtifact }) {
-                if !allowedTools.contains(where: { $0.name == tn.createArtifact }) {
-                    allowedTools.append(artifactTool)
-                }
+            if !allowedTools.contains(where: { $0.name == tn.createArtifact }) {
+                allowedTools.append(CreateArtifactTool.buildSchema(role: roleDefinition))
             }
         }
 
-        // 6. Auto-inject conclude_meeting for the team's Meeting Coordinator,
-        // but only when the coordinator can actually start meetings
-        // (has request_team_meeting in their toolIDs). Otherwise conclude_meeting
-        // is dead weight — there's nothing to conclude.
+        // 6. Auto-inject conclude_meeting for roles that can start meetings.
+        // Coordinator mode (designated coordinator set & live): only the
+        // named coordinator gets it. Auto mode (`nil` OR orphan designation):
+        // every role with `request_team_meeting` gets it — under Auto, the
+        // role that starts a meeting becomes its effective coordinator and
+        // therefore needs to be able to close it. Orphan stored IDs (the
+        // designated role was removed) are normalized to nil here so the
+        // runtime self-heal in `effectiveCoordinator` matches the schema —
+        // without this normalization no role got `conclude_meeting` despite
+        // being able to start meetings.
         if let roleDefinition, let team,
-           let coordinatorID = team.settings.meetingCoordinatorRoleID,
-           coordinatorID == roleDefinition.id,
            roleDefinition.toolIDs.contains(tn.requestTeamMeeting) {
-            if let concludeTool = allTools.first(where: { $0.name == tn.concludeMeeting }) {
-                if !allowedTools.contains(where: { $0.name == tn.concludeMeeting }) {
-                    allowedTools.append(concludeTool)
+            let coordID = DesignatedCoordinatorResolver.normalize(
+                storedID: team.settings.meetingCoordinatorRoleID,
+                // Supervisor is filtered so a stored Supervisor ID
+                // self-heals to Auto-mode (symmetric with picker + runtime).
+                availableIDs: team.roles.filter { !$0.isSupervisor }.map(\.id)
+            )
+            let shouldInject = coordID == nil || coordID == roleDefinition.id
+            if shouldInject,
+               let concludeTool = allTools.first(where: { $0.name == tn.concludeMeeting }),
+               !allowedTools.contains(where: { $0.name == tn.concludeMeeting }) {
+                allowedTools.append(concludeTool)
+            }
+        }
+
+        // 7. Auto-inject the full 4-tool delegation pack when the role's
+        // delegation is enabled — peer-level with Supervisor AND has at least
+        // one configured target (whitelisted team OR generated permission).
+        // Settings are the single source of truth — `toolIDs` no longer carries
+        // `delegate_to_team`; the tool is delivered to the LLM only when usable.
+        //
+        // `delegate_to_team`'s schema is built per-role via
+        // `DelegateToTeamTool.buildSchema(role:allTeams:)` so the team catalog
+        // (filtered by `allowedDelegationTeamIDs`, with the `"generated"`
+        // sentinel appended iff allowed) is embedded inline in the description.
+        // This replaces the old `list_teams` discovery round-trip.
+        //
+        // The pack is mandatory as a unit:
+        //   - `delegate_to_team` — the entry point (catalog inline in description)
+        //   - `cancel_delegation` / `resume_delegation` / `forward_to_team` —
+        //     pause-and-decide control plane needed when `delegate_to_team`
+        //     returns with `status: "paused_by_supervisor"`. Without these
+        //     companions the role can't react to a Supervisor interrupt
+        //     during an in-flight delegation.
+        if let roleDefinition, let team, team.delegationEnabled(for: roleDefinition) {
+            // `delegationEnabled` only checks `hasDelegationConfigured` (i.e.
+            // whitelist non-empty OR generated permission). It does NOT check
+            // that whitelisted teams still EXIST in the catalog or are
+            // delegatable (chat-mode teams are filtered). If every whitelisted
+            // team has been deleted AND generated permission is off, injecting
+            // the pack would give the LLM a tool it can never call successfully
+            // — every invocation would hit `delegationDenied` at the handler
+            // and the LLM has no signal that its catalog is empty. Skip the
+            // entire pack in that case (companions are nonsensical without an
+            // active delegation entry point). `TeamValidationService.noDelegationTargets`
+            // already surfaces this configuration mistake at validation time;
+            // this guard is the runtime defense.
+            let allowedSet = Set(roleDefinition.allowedDelegationTeamIDs)
+            let hasUsableTeam = allTeams.contains { allowedSet.contains($0.id) && !$0.isChatMode }
+            let hasUsableTarget = hasUsableTeam || roleDefinition.allowDelegationToGeneratedTeams
+            if hasUsableTarget {
+                if !allowedTools.contains(where: { $0.name == tn.delegateToTeam }) {
+                    allowedTools.append(DelegateToTeamTool.buildSchema(role: roleDefinition, allTeams: allTeams))
+                }
+                let companionPack = [
+                    tn.cancelDelegation,
+                    tn.resumeDelegation,
+                    tn.forwardToTeam,
+                ]
+                for toolName in companionPack {
+                    guard !allowedTools.contains(where: { $0.name == toolName }) else { continue }
+                    guard let schema = allTools.first(where: { $0.name == toolName }) else { continue }
+                    allowedTools.append(schema)
                 }
             }
         }
@@ -195,7 +308,8 @@ extension LLMExecutionService {
     }
 
     /// Removes blocked tools from schemas when no real work folder is open.
-    static func filterForDefaultStorage(_ tools: [ToolSchema], isDefaultStorage: Bool) -> [ToolSchema] {
+    /// `nonisolated`: pure filter, no MainActor state touched.
+    nonisolated static func filterForDefaultStorage(_ tools: [ToolSchema], isDefaultStorage: Bool) -> [ToolSchema] {
         guard isDefaultStorage else { return tools }
         let blocked = ToolHandlerRegistry.defaultStorageBlocked
         return tools.filter { !blocked.contains($0.name) }
@@ -203,13 +317,14 @@ extension LLMExecutionService {
 
     /// True when `<workFolderRoot>/.git` exists (dir or worktree/submodule file).
     /// Does not walk upward: git tools always run with `workFolderRoot` as `cwd`.
-    static func isGitRepository(at workFolderRoot: URL, fileManager: FileManager = .default) -> Bool {
+    nonisolated static func isGitRepository(at workFolderRoot: URL, fileManager: FileManager = .default) -> Bool {
         fileManager.fileExists(atPath: workFolderRoot.appendingPathComponent(".git").path)
     }
 
     /// Strips git tools from schemas when the work folder isn't a git repository.
     /// `GitErrorClassifier.notARepositoryError` remains as a runtime fallback.
-    static func filterForGitAvailability(
+    /// `nonisolated`: pure filter (FileManager `.git` read is documented as thread-safe).
+    nonisolated static func filterForGitAvailability(
         _ tools: [ToolSchema],
         workFolderRoot: URL,
         fileManager: FileManager = .default

@@ -5,7 +5,7 @@ private typealias JS = JSONSchema
 
 // MARK: - create_team
 
-struct CreateTeamTool: ToolHandler {
+nonisolated struct CreateTeamTool: ToolHandler {
     static let name = TN.createTeam
     // The JSONSchema model only nests 2 deep (object → property → leaf), so the
     // recursive shape (team → roles → produces_artifacts) cannot be expressed
@@ -15,16 +15,13 @@ struct CreateTeamTool: ToolHandler {
     static let schema = ToolSchema(
         name: TN.createTeam,
         description: """
-            Create a new team configuration for this task. The team_config parameter is a JSON object with: \
-            name (string), description (string), supervisor_mode ("manual"|"autonomous"), acceptance_mode ("finalOnly"|"afterEachRole"|"afterEachArtifact"), \
-            roles (array of {name, prompt, produces_artifacts:[], requires_artifacts:[], tools:[], use_planning_phase?, icon?, icon_background?}), \
-            artifacts (array of {name, description, icon?}), supervisor_requires (array of artifact names the Supervisor reviews). \
-            Supervisor role is added automatically. Use "Supervisor Task" as requires_artifacts for roles that start first. \
-            Call exactly once — your step auto-completes and the generated team begins execution.
+            Create a new team configuration for this task. The Supervisor role is added automatically; \
+            give roles "Supervisor Task" in their requires_artifacts to start them first. Call exactly once — \
+            the step auto-completes and the generated team begins execution.
             """,
         parameters: JS.object(
             properties: [
-                "team_config": JS.string("Complete team configuration as a JSON object. See tool description for the schema."),
+                "team_config": JS.string("Complete team configuration as a JSON object: name, description, supervisor_mode, acceptance_mode, roles[], artifacts[], supervisor_requires[]."),
             ],
             required: ["team_config"]
         )
@@ -107,7 +104,7 @@ struct CreateTeamTool: ToolHandler {
 /// alone returns a generic phrase ("data couldn't be read"); we want the
 /// `debugDescription` so the LLM sees the actual validation failure ("Team must
 /// have at least one role.").
-private func decodingMessage(_ error: Error) -> String {
+nonisolated private func decodingMessage(_ error: Error) -> String {
     if let decoding = error as? DecodingError {
         switch decoding {
         case .dataCorrupted(let ctx),

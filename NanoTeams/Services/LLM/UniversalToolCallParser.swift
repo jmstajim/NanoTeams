@@ -1,13 +1,13 @@
 import Foundation
 
 /// Result of parsing a single tool call attempt.
-enum ToolCallParseResult {
+nonisolated enum ToolCallParseResult {
     case success(StepToolCall)
     case unknownFormat(rawText: String)
 }
 
 /// Universal parser that attempts multiple strategies to extract tool calls.
-struct UniversalToolCallParser {
+nonisolated struct UniversalToolCallParser {
     private let harmonyParser: HarmonyToolCallParser
 
     init(
@@ -37,18 +37,22 @@ struct UniversalToolCallParser {
         return (results, unknownFormats)
     }
 
-    /// Check if text contains markers that suggest a tool call was attempted
+    /// Check if text contains markers that suggest a tool call was attempted.
+    /// Combines the canonical Harmony marker set (single source of truth on
+    /// `HarmonyToolCallParser`) with broader "looks like a tool-call attempt"
+    /// heuristics — the latter catch OpenAI-style payloads where the model
+    /// emits raw JSON without Harmony framing.
     private func containsToolCallMarkers(in text: String) -> Bool {
-        let markers = [
-            "<|call|>",
-            "<|start|>",
-            "<|channel|>",
+        if HarmonyToolCallParser.harmonyMarkers.contains(where: { text.contains($0) }) {
+            return true
+        }
+        let extraHeuristics = [
             "to=",
             "\"function\"",
             "\"tool\"",
             "\"name\":",
             "\"arguments\":",
         ]
-        return markers.contains { text.contains($0) }
+        return extraHeuristics.contains { text.contains($0) }
     }
 }

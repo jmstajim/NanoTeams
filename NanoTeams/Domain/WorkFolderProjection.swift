@@ -12,7 +12,7 @@ import Foundation
 /// without rewrites. The only callsite-level change is that user settings
 /// (`context`, `contextPrompt`, `selectedScheme`) are now accessed through
 /// the `settings` sub-struct: `store.workFolder?.settings.context`.
-struct WorkFolderProjection: Hashable {
+nonisolated struct WorkFolderProjection: Hashable {
     var state: WorkFolderState
     var settings: ProjectSettings
     var teams: [Team]

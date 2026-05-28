@@ -1,6 +1,43 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+// MARK: - Team Editor Validation (pure, testable)
+
+/// Builds the rows shown in the Team Editor's validation banner. Extracted as a
+/// `nonisolated enum` (same testable-namespace style as
+/// `RoleEditorConcludeMeetingPredicate`) so the combine + severity mapping is
+/// unit-testable without rendering the view.
+nonisolated enum TeamEditorValidation {
+
+    /// One banner row — structural (missing role / empty name) or delegation
+    /// policy. `isError` drives the row icon + color and the banner's overall
+    /// tint (any error → error styling, else warning). `id` is assigned at
+    /// construction so two issues that resolve to the same text (duplicate role
+    /// display names, repeated whitelist ids) stay distinct rows in `ForEach`
+    /// instead of colliding under `id: \.self` (CLAUDE.md #22/#23).
+    struct Issue: Identifiable {
+        let id = UUID()
+        let isError: Bool
+        let message: String
+    }
+
+    /// Combines structural validation (`TeamManagementService.validate` — always
+    /// errors) with delegation policy (`TeamValidationService.validateDelegationPolicy`
+    /// — severity per `ValidationError.isError`), each rendered via
+    /// `displayMessage(in:)`. Dependency/orphan checks are intentionally excluded:
+    /// they were never surfaced in this banner and would light up warnings on
+    /// otherwise-valid teams.
+    static func issues(team: Team, allTeams: [Team]) -> [Issue] {
+        var issues = TeamManagementService.validate(team).map {
+            Issue(isError: true, message: $0.localizedDescription)
+        }
+        issues += TeamValidationService.validateDelegationPolicy(team: team, allTeams: allTeams).map {
+            Issue(isError: $0.isError, message: $0.displayMessage(in: team))
+        }
+        return issues
+    }
+}
+
 // MARK: - Team Editor View
 
 /// Main Team Editor with role/artifact management and visual graph.
@@ -17,7 +54,7 @@ struct TeamEditorView: View {
     @State private var showingNewTeamSheet = false
     @State private var showingGenerateTeamSheet = false
     @State private var showingDeleteConfirmation = false
-    @State private var validationErrors: [TeamValidationError] = []
+    @State private var validationIssues: [TeamEditorValidation.Issue] = []
     @State private var showingImportTeam = false
     @State var importError: ImportExportError? = nil
     @State private var selectedRoleID: String? = nil
@@ -25,7 +62,7 @@ struct TeamEditorView: View {
     var body: some View {
         VStack(spacing: 0) {
             // Validation Banner
-            if !validationErrors.isEmpty {
+            if !validationIssues.isEmpty {
                 validationBanner
             }
 
@@ -167,6 +204,12 @@ struct TeamEditorView: View {
         .onChange(of: activeTeam?.id) { _, _ in
             validateCurrentTeam()
         }
+        // `updatedAt` bumps on every role/delegation edit (CLAUDE.md #42), so
+        // this re-validates after a save even when the team id is unchanged —
+        // delegation fixes/regressions surface in the banner immediately.
+        .onChange(of: activeTeam?.updatedAt) { _, _ in
+            validateCurrentTeam()
+        }
         .onAppear {
             validateCurrentTeam()
         }
@@ -175,12 +218,13 @@ struct TeamEditorView: View {
     // MARK: - Validation Banner
 
     private var validationBanner: some View {
-        VStack(alignment: .leading, spacing: Spacing.s) {
-            ForEach(validationErrors, id: \.self) { error in
+        let hasError = validationIssues.contains(where: \.isError)
+        return VStack(alignment: .leading, spacing: Spacing.s) {
+            ForEach(validationIssues) { issue in
                 HStack(spacing: Spacing.s) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(Colors.warning)
-                    Text(error.localizedDescription)
+                    Image(systemName: issue.isError ? "exclamationmark.octagon.fill" : "exclamationmark.triangle.fill")
+                        .foregroundStyle(issue.isError ? Colors.error : Colors.warning)
+                    Text(issue.message)
                         .font(.callout)
                         .foregroundStyle(.primary)
                 }
@@ -188,11 +232,11 @@ struct TeamEditorView: View {
         }
         .padding(Spacing.m)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Colors.warningTint)
+        .background(hasError ? Colors.errorTint : Colors.warningTint)
         .overlay(
             Rectangle()
                 .frame(height: 1)
-                .foregroundStyle(Colors.warning),
+                .foregroundStyle(hasError ? Colors.error : Colors.warning),
             alignment: .bottom
         )
     }
@@ -257,10 +301,13 @@ struct TeamEditorView: View {
 
     func validateCurrentTeam() {
         guard let team = activeTeam else {
-            validationErrors = []
+            validationIssues = []
             return
         }
-        validationErrors = TeamManagementService.validate(team)
+        validationIssues = TeamEditorValidation.issues(
+            team: team,
+            allTeams: store.snapshot?.workFolder.teams ?? []
+        )
     }
 
     // MARK: - Supporting Types

@@ -81,41 +81,42 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         return result
     }
 
-    /// Replicates the per-tool-call notification creation from `buildTimelineItems()`.
-    /// Returns (question, answer, timestamp) for each ask_supervisor notification.
-    private func supervisorNotifications(for step: StepExecution) -> [(question: String, answer: String?, timestamp: Date)] {
-        let askCalls = step.toolCalls.filter { $0.name == "ask_supervisor" }
-        let answerMessages = step.llmConversation.filter { $0.sourceContext == .supervisorAnswer }
+    /// Returns `(question, answer, timestamp)` for each `ask_supervisor`
+    /// notification a step would produce in the activity feed, plus an entry
+    /// for the trailing active question (synthesized with `Date.distantFuture`
+    /// so tests can pin "active goes last" without reaching into the composer).
+    ///
+    /// Delegates to `ActivityFeedBuilder` instead of replicating the criterion
+    /// — otherwise a production refactor (e.g. the multi-round race fix) that
+    /// changes the active-question definition silently bypasses these tests.
+    ///
+    /// Timestamps for resolved entries come from `buildTimelineItems`'s emit
+    /// path: the matching `Supervisor answer: …` message's `createdAt`, falling
+    /// back to the tool call's `createdAt` when no message exists for that
+    /// index. Active entries pin to `Date.distantFuture`.
+    private func supervisorNotifications(
+        for step: StepExecution
+    ) -> [(question: String, answer: String?, timestamp: Date)] {
         var result: [(String, String?, Date)] = []
 
-        for (index, call) in askCalls.enumerated() {
-            let isLast = index == askCalls.count - 1
-            let question: String
-            if let parsed = parseQuestion(from: call.argumentsJSON) {
-                question = parsed
-            } else if isLast {
-                question = step.supervisorQuestion ?? "?"
-            } else {
-                question = "?"
-            }
-            let isActive = isLast && step.needsSupervisorInput && step.supervisorAnswer == nil
+        let items = ActivityFeedBuilder.buildTimelineItems(
+            steps: [step], run: nil,
+            stepArtifactContentCache: [:],
+            debugModeEnabled: false,
+            isStreaming: { _ in false }
+        )
+        for tagged in items {
+            guard case let .notification(_, _, type, _, _) = tagged.item,
+                  case let .supervisorInput(question, answer, _, _, _, _) = type
+            else { continue }
+            result.append((question, answer, tagged.item.createdAt))
+        }
 
-            let answer: String?
-            if isActive {
-                answer = nil
-            } else if index < answerMessages.count {
-                let content = answerMessages[index].content
-                answer = content.hasPrefix("Supervisor answer: ")
-                    ? String(content.dropFirst("Supervisor answer: ".count))
-                    : content
-            } else if isLast {
-                answer = step.supervisorAnswer
-            } else {
-                answer = "(answered)"
-            }
-
-            let timestamp = isActive ? Date.distantFuture : call.createdAt
-            result.append((question, answer, timestamp))
+        // Active question (skipped by `buildTimelineItems`, owned by the
+        // docked composer) — synthesize an entry so tests that pinned
+        // "active goes last" still work.
+        for q in ActivityFeedBuilder.activeSupervisorQuestions(steps: [step]) {
+            result.append((q.question, nil, Date.distantFuture))
         }
         return result
     }
@@ -305,17 +306,25 @@ final class TeamActivityFeedLogicTests: XCTestCase {
 
     // MARK: - Bug 7: Supervisor Notification — Per-Tool-Call
 
-    func testAnsweredSupervisorNotificationUsesToolCallTimestamp() {
+    func testAnsweredSupervisorNotificationUsesAnswerMessageTimestamp() {
         let toolCallTime = MonotonicClock.shared.now()
         let askCall = StepToolCall(
             createdAt: toolCallTime,
             name: "ask_supervisor",
             argumentsJSON: "{\"question\":\"What color?\"}"
         )
+        let answerTime = MonotonicClock.shared.now()
+        let answerMsg = LLMMessage(
+            createdAt: answerTime,
+            role: .user,
+            content: "Supervisor answer: Blue",
+            sourceRole: .supervisor,
+            sourceContext: .supervisorAnswer
+        )
 
         let laterTime = MonotonicClock.shared.now()
         var step = makeStep(
-            llmConversation: [LLMMessage(role: .user, content: "Supervisor answer: Blue", sourceRole: .supervisor, sourceContext: .supervisorAnswer)],
+            llmConversation: [answerMsg],
             toolCalls: [askCall],
             supervisorQuestion: "What color?",
             supervisorAnswer: "Blue"
@@ -324,8 +333,8 @@ final class TeamActivityFeedLogicTests: XCTestCase {
 
         let notifs = supervisorNotifications(for: step)
         XCTAssertEqual(notifs.count, 1)
-        XCTAssertEqual(notifs[0].timestamp, toolCallTime,
-            "Answered notification should use tool call timestamp, not step.updatedAt")
+        XCTAssertEqual(notifs[0].timestamp, answerTime,
+            "Answered notification should sort at the answer's createdAt (when the Supervisor responded), NOT step.updatedAt or the ask's tool-call time")
         XCTAssertEqual(notifs[0].answer, "Blue")
     }
 
@@ -349,10 +358,22 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         XCTAssertNil(notifs[0].answer)
     }
 
-    func testNoNotificationWhenNoToolCalls() {
+    /// Escalation-path answered Q&A: when the engine's drift/refusal/parse-cap
+    /// fires `setNeedsSupervisorInput` directly (no `ask_supervisor` tool call)
+    /// and the supervisor then answers, `emitItems` must still synthesize a
+    /// history notification from `step.supervisorQuestion` + `step.supervisorAnswer`.
+    /// Previously this test asserted the OPPOSITE — pinning the bug where
+    /// escalation Q&As silently vanished from feed history once answered.
+    /// Companion deep test: `ActivityFeedBuilderTests.testEmitItems_escalationPathAnswered_emitsHistoryNotification`.
+    func testEscalationPath_answeredQuestion_emitsHistoryNotification() {
         let step = makeStep(supervisorQuestion: "Manual question?", supervisorAnswer: "Yes")
         let notifs = supervisorNotifications(for: step)
-        XCTAssertTrue(notifs.isEmpty, "No notification without ask_supervisor tool calls")
+        XCTAssertEqual(
+            notifs.count, 1,
+            "Escalation-path answered Q&A MUST emit exactly one history notification — otherwise the Q&A disappears from the feed once answered."
+        )
+        XCTAssertEqual(notifs.first?.question, "Manual question?")
+        XCTAssertEqual(notifs.first?.answer, "Yes")
     }
 
     func testMultipleAskSupervisorCallsCreateMultipleNotifications() {
@@ -362,6 +383,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
             name: "ask_supervisor",
             argumentsJSON: "{\"question\":\"First question\"}"
         )
+        let firstAnswerTime = MonotonicClock.shared.now()
 
         let secondCallTime = MonotonicClock.shared.now()
         let secondCall = StepToolCall(
@@ -369,11 +391,14 @@ final class TeamActivityFeedLogicTests: XCTestCase {
             name: "ask_supervisor",
             argumentsJSON: "{\"question\":\"Second question\"}"
         )
+        let secondAnswerTime = MonotonicClock.shared.now()
 
         let step = makeStep(
             llmConversation: [
-                LLMMessage(role: .user, content: "Supervisor answer: answer1", sourceRole: .supervisor, sourceContext: .supervisorAnswer),
-                LLMMessage(role: .user, content: "Supervisor answer: answer2", sourceRole: .supervisor, sourceContext: .supervisorAnswer),
+                LLMMessage(createdAt: firstAnswerTime, role: .user, content: "Supervisor answer: answer1",
+                           sourceRole: .supervisor, sourceContext: .supervisorAnswer),
+                LLMMessage(createdAt: secondAnswerTime, role: .user, content: "Supervisor answer: answer2",
+                           sourceRole: .supervisor, sourceContext: .supervisorAnswer),
             ],
             toolCalls: [firstCall, secondCall],
             supervisorQuestion: "Second question",
@@ -385,11 +410,12 @@ final class TeamActivityFeedLogicTests: XCTestCase {
 
         XCTAssertEqual(notifs[0].question, "First question")
         XCTAssertEqual(notifs[0].answer, "answer1")
-        XCTAssertEqual(notifs[0].timestamp, firstCallTime)
+        XCTAssertEqual(notifs[0].timestamp, firstAnswerTime,
+            "Answered notification sorts at the answer's createdAt")
 
         XCTAssertEqual(notifs[1].question, "Second question")
         XCTAssertEqual(notifs[1].answer, "answer2")
-        XCTAssertEqual(notifs[1].timestamp, secondCallTime)
+        XCTAssertEqual(notifs[1].timestamp, secondAnswerTime)
     }
 
     func testMultipleCallsWithLastUnanswered() {
@@ -399,6 +425,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
             name: "ask_supervisor",
             argumentsJSON: "{\"question\":\"First question\"}"
         )
+        let firstAnswerTime = MonotonicClock.shared.now()
 
         let secondCallTime = MonotonicClock.shared.now()
         let secondCall = StepToolCall(
@@ -409,7 +436,8 @@ final class TeamActivityFeedLogicTests: XCTestCase {
 
         let step = makeStep(
             llmConversation: [
-                LLMMessage(role: .user, content: "Supervisor answer: answer1", sourceRole: .supervisor, sourceContext: .supervisorAnswer),
+                LLMMessage(createdAt: firstAnswerTime, role: .user, content: "Supervisor answer: answer1",
+                           sourceRole: .supervisor, sourceContext: .supervisorAnswer),
             ],
             toolCalls: [firstCall, secondCall],
             needsSupervisorInput: true,
@@ -420,12 +448,12 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         let notifs = supervisorNotifications(for: step)
         XCTAssertEqual(notifs.count, 2)
 
-        // First: answered, uses its tool call timestamp
+        // First: answered, sorts at the answer message's createdAt
         XCTAssertEqual(notifs[0].question, "First question")
         XCTAssertEqual(notifs[0].answer, "answer1")
-        XCTAssertEqual(notifs[0].timestamp, firstCallTime)
+        XCTAssertEqual(notifs[0].timestamp, firstAnswerTime)
 
-        // Second: active, pinned to bottom
+        // Second: active, pinned to bottom by the synthesized entry from `activeSupervisorQuestions`
         XCTAssertEqual(notifs[1].question, "Second question")
         XCTAssertNil(notifs[1].answer)
         XCTAssertEqual(notifs[1].timestamp, Date.distantFuture)
@@ -438,12 +466,14 @@ final class TeamActivityFeedLogicTests: XCTestCase {
             name: "ask_supervisor",
             argumentsJSON: "{\"question\":\"Any themes?\"}"
         )
+        let answerTime = MonotonicClock.shared.now()
 
         let artifactTime = MonotonicClock.shared.now()
 
         let step = makeStep(
             llmConversation: [
-                LLMMessage(role: .user, content: "Supervisor answer: no", sourceRole: .supervisor, sourceContext: .supervisorAnswer),
+                LLMMessage(createdAt: answerTime, role: .user, content: "Supervisor answer: no",
+                           sourceRole: .supervisor, sourceContext: .supervisorAnswer),
             ],
             toolCalls: [askCall],
             supervisorQuestion: "Any themes?",
@@ -454,7 +484,8 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         XCTAssertEqual(notifs.count, 1)
         XCTAssertTrue(notifs[0].timestamp <= artifactTime,
             "Notification should sort before artifact created after the answer")
-        XCTAssertEqual(notifs[0].timestamp, askTime)
+        XCTAssertEqual(notifs[0].timestamp, answerTime,
+            "Resolved notification sorts at the answer message's createdAt (when the Supervisor responded)")
     }
 
     func testParseQuestionFromArgumentsJSON() {
@@ -1110,5 +1141,136 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         XCTAssertFalse(TeamActivityFeedView.shouldShowComposer(
             isReadOnly: false, activeTaskID: nil, closedAt: nil,
             isChatMode: true, engineState: .paused))
+    }
+
+    // MARK: - runDataVersion (recompute trigger)
+
+    /// `runDataVersion` is the gate for `recomputeAndRebuild` — when it changes,
+    /// `.onChange(of: runDataVersion)` fires and the view model refreshes
+    /// `cachedSupervisorQuestions` so the composer chip and question card render.
+    /// Engine escalation paths (`setNeedsSupervisorInput` from drift/refusal/
+    /// parse-failure caps in `LLMExecutionService+StepFlowControl.swift`) flip
+    /// `step.needsSupervisorInput=true` WITHOUT appending a tool call or LLM
+    /// message — so a hash that only walks `toolCalls.count`/`llmConversation.count`
+    /// stays stable, the recompute never fires, and the user has to switch tasks
+    /// back and forth to force a fresh view rebuild.
+    ///
+    /// Pinned because the bug is invisible from the activeQuestions side:
+    /// `activeSupervisorQuestions` itself works correctly (companion test
+    /// `testEscalationPath_emptyAskCalls_flagSet_surfacesStoredQuestion`); the
+    /// cache just never gets recomputed.
+    func testComputeRunDataVersion_changesWhenNeedsSupervisorInputFlips() {
+        let stepOff = makeStep(needsSupervisorInput: false)
+        let stepOn = makeStep(needsSupervisorInput: true)
+        let runOff = Run(id: 0, steps: [stepOff])
+        let runOn = Run(id: 0, steps: [stepOn])
+
+        let versionOff = TeamActivityFeedView.computeRunDataVersion(run: runOff, descendants: [])
+        let versionOn = TeamActivityFeedView.computeRunDataVersion(run: runOn, descendants: [])
+
+        XCTAssertNotEqual(
+            versionOff, versionOn,
+            "needsSupervisorInput MUST contribute to runDataVersion — otherwise the escalation path silently fails to trigger recomputeAndRebuild."
+        )
+    }
+
+    /// `step.status` flipping `.running` → `.paused` / `.done` without any count
+    /// change (e.g. `pauseRun`, `finishAdvisoryRole`) must invalidate the hash —
+    /// otherwise the dispatcher's `resolveImplicitStreamTarget` keeps returning
+    /// `true` against a stale `cachedAllSteps[i].status`, and a residual
+    /// `processingProgress` would mis-surface "Processing" on a paused step.
+    func testComputeRunDataVersion_changesWhenStepStatusFlips() {
+        let stepRunning = makeStep(status: .running)
+        let stepPaused = makeStep(status: .paused)
+        let runRunning = Run(id: 0, steps: [stepRunning])
+        let runPaused = Run(id: 0, steps: [stepPaused])
+
+        XCTAssertNotEqual(
+            TeamActivityFeedView.computeRunDataVersion(run: runRunning, descendants: []),
+            TeamActivityFeedView.computeRunDataVersion(run: runPaused, descendants: []),
+            "step.status MUST contribute to runDataVersion — otherwise status-only transitions (pause/finish-advisory) leave cachedAllSteps stale"
+        )
+    }
+
+    /// Sibling regression: counts (toolCalls / llmConversation / artifacts) must
+    /// still affect the hash. Without this, a Green-phase implementation could
+    /// accidentally remove existing fields while adding needsSupervisorInput.
+    func testComputeRunDataVersion_changesWhenToolCallCountGrows() {
+        let step0 = makeStep(toolCalls: [])
+        let step1 = makeStep(toolCalls: [
+            StepToolCall(name: "read_file", argumentsJSON: "{}", resultJSON: "{}")
+        ])
+        let run0 = Run(id: 0, steps: [step0])
+        let run1 = Run(id: 0, steps: [step1])
+
+        let v0 = TeamActivityFeedView.computeRunDataVersion(run: run0, descendants: [])
+        let v1 = TeamActivityFeedView.computeRunDataVersion(run: run1, descendants: [])
+        XCTAssertNotEqual(v0, v1, "Tool call growth must change runDataVersion")
+    }
+
+    /// LLM conversation growth (each iteration appends a message) must propagate
+    /// to runDataVersion — the primary signal during normal streaming.
+    func testComputeRunDataVersion_changesWhenLLMConversationGrows() {
+        let step0 = makeStep(llmConversation: [])
+        let step1 = makeStep(llmConversation: [
+            LLMMessage(role: .assistant, content: "hello")
+        ])
+        let run0 = Run(id: 0, steps: [step0])
+        let run1 = Run(id: 0, steps: [step1])
+
+        XCTAssertNotEqual(
+            TeamActivityFeedView.computeRunDataVersion(run: run0, descendants: []),
+            TeamActivityFeedView.computeRunDataVersion(run: run1, descendants: []),
+            "LLM conversation growth must change runDataVersion"
+        )
+    }
+
+    /// Stability check: hash must NOT change when nothing relevant did. Without
+    /// this, future field additions could accidentally make runDataVersion
+    /// non-deterministic (e.g. timestamp-based hashing), spamming
+    /// recomputeAndRebuild every render.
+    func testComputeRunDataVersion_stableWhenNothingChanges() {
+        let step = makeStep(needsSupervisorInput: true, supervisorQuestion: "Q")
+        let run = Run(id: 0, steps: [step])
+
+        let v1 = TeamActivityFeedView.computeRunDataVersion(run: run, descendants: [])
+        let v2 = TeamActivityFeedView.computeRunDataVersion(run: run, descendants: [])
+        XCTAssertEqual(v1, v2, "Same input must produce same hash — otherwise recompute fires on every render")
+    }
+
+    /// Nil run must produce a stable, valid hash (not crash). Initial app load
+    /// passes nil before the active task is resolved.
+    func testComputeRunDataVersion_nilRun_returnsStableHash() {
+        let v1 = TeamActivityFeedView.computeRunDataVersion(run: nil, descendants: [])
+        let v2 = TeamActivityFeedView.computeRunDataVersion(run: nil, descendants: [])
+        XCTAssertEqual(v1, v2, "Nil run must be stable")
+    }
+
+    /// Critical regression: `needsSupervisorInput` flipping in a DELEGATED
+    /// descendant must also trigger recompute — otherwise child-team supervisor
+    /// questions stay invisible until task switch (the same bug as for the
+    /// active run, but in the descendant branch of the hash).
+    func testComputeRunDataVersion_changesWhenDescendantNeedsSupervisorInputFlips() {
+        let descTask = NTMSTask(id: 1, title: "Child", supervisorTask: "Child task")
+        let stepOff = makeStep(needsSupervisorInput: false)
+        let stepOn = makeStep(needsSupervisorInput: true)
+        let descRunOff = Run(id: 0, steps: [stepOff])
+        let descRunOn = Run(id: 0, steps: [stepOn])
+
+        let descOff = ActivityFeedBuilder.DescendantTask(
+            task: descTask, run: descRunOff, teamRoles: [],
+            teamName: "Child Team", delegationDepth: 1, delegatedFromRoleName: "Parent Role"
+        )
+        let descOn = ActivityFeedBuilder.DescendantTask(
+            task: descTask, run: descRunOn, teamRoles: [],
+            teamName: "Child Team", delegationDepth: 1, delegatedFromRoleName: "Parent Role"
+        )
+
+        let vOff = TeamActivityFeedView.computeRunDataVersion(run: nil, descendants: [descOff])
+        let vOn = TeamActivityFeedView.computeRunDataVersion(run: nil, descendants: [descOn])
+        XCTAssertNotEqual(
+            vOff, vOn,
+            "Descendant step's needsSupervisorInput must contribute — otherwise child-team escalations also stay hidden until task switch."
+        )
     }
 }

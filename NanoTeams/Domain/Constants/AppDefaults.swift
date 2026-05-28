@@ -1,7 +1,7 @@
 import Foundation
 
 /// Hard-coded default values used at app bootstrap (LLM, prompts).
-enum AppDefaults {
+nonisolated enum AppDefaults {
     static let llmBaseURL = "http://127.0.0.1:1234"
     static let llmModel = "openai/gpt-oss-20b"
 
@@ -57,5 +57,14 @@ enum AppDefaults {
         Be specific and factual — mention actual names, types, and patterns you observe.
         Do not invent content not present in the files.
         Return plain text. No markdown formatting beyond the file listing.
+        """
+
+    /// App-wide instruction appended to every LLM system prompt (step execution,
+    /// consultation, meeting, planning, supervisor auto-answer, work-folder
+    /// context, team generation, vision). Editable in Settings → LLM → Global
+    /// Context. Empty string disables the append (no separator emitted).
+    static let globalContext = """
+        One tool call per response.
+        Exception: 2–3 genuinely independent reads.
         """
 }

@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Bootstrap & Migration
 
-extension NTMSRepository {
+nonisolated extension NTMSRepository {
 
     // MARK: - Composite load/recover
 
@@ -150,6 +150,29 @@ extension NTMSRepository {
             teamsNeedsWrite = true
         }
 
+        // 2a. Structural invariant for delegation: any role with delegation
+        // settings populated (`hasDelegationConfigured == true`) is peer-level with
+        // Supervisor and MUST NOT have an upstream `reportsTo` entry. Enforced
+        // at construction time in `TeamTemplateFactory.buildSettings` and
+        // `GeneratedTeamBuilder`; legacy `teams.json` files predating that rule
+        // still carry stale entries. Self-healing on every load. Idempotent.
+        if normalizeDelegatorPeerStatus(teams: &teamsFile.teams) {
+            teamsNeedsWrite = true
+        }
+
+        // 2b. Structural invariant for delegation toolset: delegation tools
+        // (`delegate_to_team`, `cancel_delegation`, `resume_delegation`,
+        // `forward_to_team`) are NEVER part of stored `toolIDs` — they
+        // auto-inject into the LLM schema based on the role's delegation
+        // settings (see `LLMExecutionService+ToolResolution`). The legacy
+        // `list_teams` tool (removed; the catalog is now inline in
+        // `delegate_to_team`'s description) is also stripped here for the same
+        // reason — older `teams.json` files still carry it. Strip on every
+        // load so the invariant is self-healing. Idempotent.
+        if normalizeDelegationToolset(teams: &teamsFile.teams) {
+            teamsNeedsWrite = true
+        }
+
         // 3. Version-bump reconcile — overwrites scalar role fields, prompt
         //    templates, team settings, additively adds missing system roles and
         //    system artifacts, and re-syncs built-in tools.
@@ -203,6 +226,13 @@ extension NTMSRepository {
             }
         }
 
+        // Sweep orphan AtomicJSONStore temp files left over from process-kill or
+        // power-loss between `Data.write(to: tempURL)` and `replaceItemAt`. Per-call
+        // UUID names mean each crash leaves a unique file that the next successful
+        // write can't recycle (unlike the legacy shared-name pattern). Run BEFORE
+        // any writeIfMissing below so we never touch a temp this process created.
+        sweepOrphanTempFiles(under: paths.internalDir)
+
         let stateDefault = WorkFolderState(
             schemaVersion: 6,
             id: UUID(),
@@ -220,6 +250,32 @@ extension NTMSRepository {
 
         let tasksIndexDefault = TasksIndex()
         try store.writeIfMissing(tasksIndexDefault, to: paths.tasksIndexJSON)
+    }
+
+    // MARK: - Orphan temp-file sweep
+
+    /// Recursively removes every `.*.tmp` dotfile under `internalDir`. Targets the
+    /// `dir/.<filename>.<uuid>.tmp` files `AtomicJSONStore.write` creates as its
+    /// rename source — those should be consumed by `replaceItemAt`/`moveItem` on
+    /// every successful or failed write, but a process kill / power loss between
+    /// `Data.write(to: tempURL)` and the rename leaves a permanent orphan
+    /// (unlike the legacy shared-name pattern, which self-healed via the next
+    /// write recycling the slot). Caller must invoke this BEFORE any new writes
+    /// in the same bootstrap pass so we don't accidentally consume a temp this
+    /// process just created. Single-instance app + single-folder bootstrap means
+    /// no other writers race us at this point.
+    func sweepOrphanTempFiles(under internalDir: URL) {
+        guard let enumerator = fileManager.enumerator(
+            at: internalDir,
+            includingPropertiesForKeys: nil,
+            options: []
+        ) else { return }
+
+        for case let url as URL in enumerator {
+            let name = url.lastPathComponent
+            guard name.hasPrefix("."), name.hasSuffix(".tmp") else { continue }
+            try? fileManager.removeItem(at: url)
+        }
     }
 
     // MARK: - System Role Dependency Sync
@@ -243,5 +299,63 @@ extension NTMSRepository {
             ) { changed = true }
         }
         return changed
+    }
+
+    /// Strips `reportsTo[role.id]` for every role with delegation settings populated
+    /// (`hasDelegationConfigured == true`). The peer-with-Supervisor rule (see
+    /// `Team.roleIsTopLevelDelegator`) requires a delegating role to have NO upstream
+    /// entry; legacy `teams.json` files written before this invariant existed still
+    /// wire delegating roles as Supervisor subordinates, which makes `delegate_to_team`
+    /// always reject.
+    ///
+    /// Idempotent — once normalized, subsequent calls are no-ops. Returns true
+    /// iff any team's hierarchy was mutated, so the caller knows to write.
+    func normalizeDelegatorPeerStatus(teams: inout [Team]) -> Bool {
+        var anyChanged = false
+        for teamIndex in teams.indices {
+            var teamChanged = false
+            for role in teams[teamIndex].roles where role.hasDelegationConfigured {
+                if teams[teamIndex].settings.hierarchy.reportsTo.removeValue(forKey: role.id) != nil {
+                    teamChanged = true
+                }
+            }
+            if teamChanged {
+                teams[teamIndex].updatedAt = MonotonicClock.shared.now()
+                anyChanged = true
+            }
+        }
+        return anyChanged
+    }
+
+    /// Strips delegation tools from every role's `toolIDs`. Delegation tools
+    /// (`delegate_to_team`, `cancel_delegation`, `resume_delegation`,
+    /// `forward_to_team`) auto-inject into the LLM schema based on the role's
+    /// delegation settings — they are NEVER part of stored `toolIDs`. The
+    /// legacy `"list_teams"` literal (removed tool) is also stripped — older
+    /// `teams.json` files may still carry it. Legacy `teams.json` files or
+    /// hand-edited / imported team configs may carry any of these; this
+    /// normalizer is the single self-healing pass that keeps the invariant
+    /// true on every load.
+    ///
+    /// Idempotent — once normalized, subsequent calls are no-ops. Returns true
+    /// iff any role's `toolIDs` was mutated, so the caller knows to write.
+    func normalizeDelegationToolset(teams: inout [Team]) -> Bool {
+        let delegationTools = ToolHandlerRegistry.delegationToolsExcludedFromToolIDs
+        var anyChanged = false
+        for teamIndex in teams.indices {
+            var teamChanged = false
+            for roleIndex in teams[teamIndex].roles.indices {
+                let before = teams[teamIndex].roles[roleIndex].toolIDs.count
+                teams[teamIndex].roles[roleIndex].toolIDs.removeAll { delegationTools.contains($0) }
+                if teams[teamIndex].roles[roleIndex].toolIDs.count != before {
+                    teamChanged = true
+                }
+            }
+            if teamChanged {
+                teams[teamIndex].updatedAt = MonotonicClock.shared.now()
+                anyChanged = true
+            }
+        }
+        return anyChanged
     }
 }

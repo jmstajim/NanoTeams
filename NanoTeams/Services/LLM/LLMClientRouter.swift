@@ -3,7 +3,7 @@ import Foundation
 /// Routes LLM requests to the correct client based on provider.
 ///
 /// - LM Studio → NativeLMStudioClient (`/api/v1/chat`)
-struct LLMClientRouter: LLMClient {
+nonisolated struct LLMClientRouter: LLMClient {
     private let nativeClient: LLMClient
 
     init(nativeClient: LLMClient = NativeLMStudioClient()) {

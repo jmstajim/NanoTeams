@@ -155,6 +155,23 @@ final class SearchExploratoryHandlerEdgeCasesTests: XCTestCase {
                        "expand must remain optional — always-on would double charge every search.")
     }
 
+    func testSchema_exposesPathsAsArrayOfStrings() {
+        let paths = SearchTool.schema.parameters.properties?["paths"]
+        XCTAssertEqual(paths?.type, "array")
+        XCTAssertEqual(paths?.items?.type, "string")
+    }
+
+    func testSchema_exposesFileGlobAsString() {
+        let glob = SearchTool.schema.parameters.properties?["file_glob"]
+        XCTAssertEqual(glob?.type, "string")
+    }
+
+    func testSchema_pathsAndFileGlobAreOptional() {
+        let required = SearchTool.schema.parameters.required ?? []
+        XCTAssertFalse(required.contains("paths"))
+        XCTAssertFalse(required.contains("file_glob"))
+    }
+
     // MARK: - Aliases still land on SearchTool
 
     func testAlias_grep_resolvesToSearch() {

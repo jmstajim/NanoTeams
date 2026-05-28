@@ -148,15 +148,14 @@ import SwiftUI
     @Previewable @State var dictation = DictationService()
     let team = Team.default
     let crRole = team.roles.first(where: { $0.name == "Code Reviewer" })!
-    let pmRole = team.roles.first(where: { $0.name == "Product Manager" })!
     let sweRole = team.roles.first(where: { $0.name == "Software Engineer" })!
     let crStep = StepExecution(
         id: "preview",
         role: .codeReviewer,
         title: "Code Reviewer",
-        expectedArtifacts: ["Code Review"],
+        expectedArtifacts: ["Code Review Summary"],
         status: .done,
-        artifacts: [Artifact(name: "Code Review", icon: "checkmark.shield.fill", description: "Review completed")],
+        artifacts: [Artifact(name: "Code Review Summary", icon: "checkmark.shield.fill", description: "Review completed")],
         toolCalls: [
             StepToolCall(name: "read_file", argumentsJSON: "{\"path\": \"Sources/NotificationService.swift\"}", resultJSON: "{\"content\": \"class NotificationService { ... }\"}", isError: false),
             StepToolCall(name: "request_changes", argumentsJSON: "{\"target_role\": \"Software Engineer\", \"changes\": \"Missing error handling in WebSocket reconnection logic\"}", resultJSON: "{\"status\": \"approved\"}", isError: false)
@@ -186,7 +185,7 @@ import SwiftUI
         ),
         roleDefinitions: team.roles,
         supervisorReviewArtifacts: [],
-        producedArtifacts: ["Supervisor Task", "Product Requirements", "Code Review"],
+        producedArtifacts: ["Supervisor Task", "Product Requirements", "Code Review Summary"],
         isFinalReviewStage: false
     )
     .environment(store)
@@ -246,7 +245,6 @@ import SwiftUI
     @Previewable @State var engineState = OrchestratorEngineState()
     @Previewable @State var dictation = DictationService()
     let team = Team.default
-    let tpmRole = team.roles.first(where: { $0.name == "TPM" })!
     let step = StepExecution(
         id: "preview",
         role: .tpm,
@@ -262,7 +260,7 @@ import SwiftUI
             roleStatuses: team.roles.reduce(into: [:]) { $0[$1.id] = .done }
         ),
         roleDefinitions: team.roles,
-        supervisorReviewArtifacts: ["Release Notes", "Engineering Notes", "Build Diagnostics"],
+        supervisorReviewArtifacts: ["Release Notes", "Engineering Notes"],
         producedArtifacts: ["Release Notes", "Engineering Notes"],
         isFinalReviewStage: true
     )

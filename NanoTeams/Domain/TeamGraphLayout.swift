@@ -4,7 +4,7 @@ import Foundation
 // MARK: - Team Graph Transform
 
 /// Transform for panning and zooming the team graph
-struct TeamGraphTransform: Codable, Hashable {
+nonisolated struct TeamGraphTransform: Codable, Hashable {
     /// Horizontal offset (pan)
     var offsetX: CGFloat
 
@@ -50,7 +50,7 @@ struct TeamGraphTransform: Codable, Hashable {
 
 // MARK: - Team Graph Layout
 
-struct TeamGraphLayout: Codable, Hashable {
+nonisolated struct TeamGraphLayout: Codable, Hashable {
     var nodePositions: [TeamNodePosition]
 
     /// Transform for panning/zooming the graph view
@@ -159,7 +159,7 @@ struct TeamGraphLayout: Codable, Hashable {
 
 // MARK: - Team Node Position
 
-struct TeamNodePosition: Codable, Hashable, Identifiable {
+nonisolated struct TeamNodePosition: Codable, Hashable, Identifiable {
     var id: String { roleID }
     var roleID: String
     var x: CGFloat

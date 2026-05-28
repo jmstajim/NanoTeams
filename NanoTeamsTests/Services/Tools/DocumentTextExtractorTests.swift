@@ -92,6 +92,94 @@ final class DocumentTextExtractorTests: XCTestCase {
         XCTAssertTrue(result!.contains("[Could not extract text"))
     }
 
+    // MARK: - Process-lifetime cache (mtime+size keyed)
+
+    /// Repeat-extract of the same unchanged document returns identical content —
+    /// the second call should be a cache hit (process-lifetime `NSCache` keyed by
+    /// path + mtime + size). This is the dominant performance win when `search`
+    /// is invoked multiple times across a project containing PDFs / DOCX, where
+    /// the first call costs ~80 ms of `PDFKit` text walking and the second
+    /// returns the cached string in microseconds.
+    func testExtractText_pdf_repeatedCallsOnUnchangedFile_returnIdenticalContent() {
+        let pdfURL = createTestPDF(text: "Cached PDF body content")
+        let first = DocumentTextExtractor.extractText(from: pdfURL)
+        let second = DocumentTextExtractor.extractText(from: pdfURL)
+        XCTAssertNotNil(first)
+        XCTAssertNotNil(second)
+        XCTAssertEqual(first, second,
+                       "Cache hit on unchanged file must return byte-identical content")
+        XCTAssertTrue(first!.contains("Cached PDF body content"))
+    }
+
+    /// Failure messages MUST NOT be cached — a transient failure would
+    /// otherwise pin a misleading "couldn't extract" reply for the rest of
+    /// the process lifetime.
+    func testExtractText_failureMessage_isNotCached() throws {
+        let rtfURL = tempDir.appendingPathComponent("not-yet-created.rtf")
+        // First call on a missing file — failure message expected, must NOT
+        // poison the cache.
+        let firstAttempt = DocumentTextExtractor.extractText(from: rtfURL)
+        XCTAssertNotNil(firstAttempt)
+        XCTAssertTrue(
+            DocumentTextExtractor.isFailureMessage(firstAttempt!),
+            "First read on missing file must surface a failure message; got: \(firstAttempt!)"
+        )
+
+        // Now create the file with valid content and re-extract. If the
+        // failure message had been cached, this would (incorrectly) return
+        // the cached failure even though the file is now real and readable.
+        let content = #"{\rtf1\ansi Now this file exists and is readable}"#
+        try content.write(to: rtfURL, atomically: true, encoding: .utf8)
+
+        let secondAttempt = DocumentTextExtractor.extractText(from: rtfURL)
+        XCTAssertNotNil(secondAttempt)
+        XCTAssertFalse(
+            DocumentTextExtractor.isFailureMessage(secondAttempt!),
+            "After file becomes readable, extract must return real content (not cached failure). Got: \(secondAttempt!)"
+        )
+        XCTAssertTrue(
+            secondAttempt!.contains("Now this file exists"),
+            "Expected newly-written RTF content; got: \(secondAttempt!)"
+        )
+    }
+
+    /// When the file changes on disk, the next `extractText` MUST miss the cache
+    /// and re-extract — otherwise a `search` after an edit would silently return
+    /// stale content and the LLM would act on old data. The cache key is
+    /// `(path, mtime, size)`; this test rewrites the same RTF path with
+    /// different content (different size) for an unambiguous miss signal.
+    /// RTF is used over PDF because it's a single-shot text write (no PDFKit
+    /// rendering pipeline), so the test isn't sensitive to PDF authoring
+    /// quirks.
+    func testExtractText_rtf_replacedFile_missesCacheAndReturnsFresh() throws {
+        let rtfURL = tempDir.appendingPathComponent("changing.rtf")
+        let originalContent = #"{\rtf1\ansi Original RTF body content}"#
+        try originalContent.write(to: rtfURL, atomically: true, encoding: .utf8)
+        let first = DocumentTextExtractor.extractText(from: rtfURL)
+        XCTAssertNotNil(first)
+        XCTAssertTrue(first!.contains("Original RTF body content"),
+                      "First read must extract original content; got: \(first ?? "nil")")
+
+        // Sleep > 1 s so the file-system mtime (1-second precision on HFS+ /
+        // some APFS configurations) is guaranteed to advance — otherwise the
+        // rewrite can land in the same mtime second and the cache correctly
+        // reports a hit on the previous bytes.
+        Thread.sleep(forTimeInterval: 1.1)
+        let replacementContent = #"{\rtf1\ansi Replaced RTF body — must invalidate cache}"#
+        try replacementContent.write(to: rtfURL, atomically: true, encoding: .utf8)
+
+        let afterReplace = DocumentTextExtractor.extractText(from: rtfURL)
+        XCTAssertNotNil(afterReplace)
+        XCTAssertTrue(
+            afterReplace!.contains("Replaced RTF body"),
+            "Cache must miss after file replacement and return fresh content; got: \(afterReplace ?? "nil")"
+        )
+        XCTAssertFalse(
+            afterReplace!.contains("Original RTF body content"),
+            "Stale-cache regression: the replaced read still contains pre-replacement text. Got: \(afterReplace!)"
+        )
+    }
+
     // MARK: - RTF Extraction
 
     func testExtractText_rtf_extractsText() {

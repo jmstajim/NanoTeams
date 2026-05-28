@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Team Meeting
 
 /// Represents a formal team meeting initiated via request_team_meeting tool
-struct TeamMeeting: Codable, Identifiable {
+nonisolated struct TeamMeeting: Codable, Identifiable {
     var id: UUID
     var createdAt: Date
     var updatedAt: Date
@@ -88,7 +88,7 @@ struct TeamMeeting: Codable, Identifiable {
 
 // MARK: - Meeting Status
 
-enum MeetingStatus: String, Codable, Hashable {
+nonisolated enum MeetingStatus: String, Codable, Hashable {
     /// Meeting requested but not yet started
     case pending
 
@@ -122,7 +122,7 @@ enum MeetingStatus: String, Codable, Hashable {
 
 // MARK: - Meeting Helpers
 
-extension TeamMeeting {
+nonisolated extension TeamMeeting {
     /// Add a message to the meeting
     mutating func addMessage(_ message: TeamMessage) {
         messages.append(message)
@@ -172,7 +172,7 @@ extension TeamMeeting {
 
 // MARK: - Hashable
 
-extension TeamMeeting: Hashable {
+nonisolated extension TeamMeeting: Hashable {
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
     }

@@ -3,7 +3,7 @@ import SwiftUI
 // MARK: - Timeline Event Type
 
 /// Type of timeline event (step started or completed)
-enum TimelineEventType {
+nonisolated enum TimelineEventType {
     case started
     case completed
     case failed
@@ -12,7 +12,7 @@ enum TimelineEventType {
 // MARK: - Timeline Event
 
 /// Model for a timeline event
-struct TimelineEvent: Identifiable {
+nonisolated struct TimelineEvent: Identifiable {
     let id: UUID
     let taskID: Int
     let taskTitle: String
@@ -50,13 +50,13 @@ struct TimelineEvent: Identifiable {
         ))
     }
 
-    private static let displayFormatMap: [TimelineEventType: (String, String) -> String] = [
+    private static let displayFormatMap: [TimelineEventType: @Sendable (String, String) -> String] = [
         .started: { "\($0) started working on \($1)" },
         .completed: { "\($0) finished working on \($1)" },
         .failed: { "\($0) failed on \($1)" },
     ]
 
-    private static let chatModeFormatMap: [TimelineEventType: (String) -> String] = [
+    private static let chatModeFormatMap: [TimelineEventType: @Sendable (String) -> String] = [
         .started: { "Chat with \($0) started" },
         .completed: { "Chat with \($0) ended" },
         .failed: { "Chat with \($0) failed" },

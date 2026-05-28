@@ -31,6 +31,19 @@ final class StreamingPreviewManager {
     /// @ObservationIgnored — polled by TimelineView.
     @ObservationIgnored private(set) var processingProgress: [String: Double] = [:]
 
+    /// Per-step flag: `true` once ANY stream delta (thinking, content,
+    /// harmony tool-call buffered, OpenAI tool-call delta) has been
+    /// observed for the step. Lets the UI distinguish "Waiting" (no
+    /// activity yet — model still in prompt processing or hasn't started
+    /// emitting) from "Generating" (tokens flowing but landing in
+    /// harmony/tool-call buffer, invisible to content/thinking previews).
+    /// Without this flag the bubble shows "Waiting" while the model
+    /// actively emits a long tool-call argument JSON — confusing to the
+    /// user (LM Studio's loaded-models panel shows token counts climbing
+    /// but the activity feed appears stuck).
+    /// @ObservationIgnored — polled by TimelineView.
+    @ObservationIgnored private(set) var hasStreamActivity: [String: Bool] = [:]
+
     // MARK: - Inline Streaming
 
     /// Marks a message as actively streaming for a step.
@@ -121,6 +134,23 @@ final class StreamingPreviewManager {
         processingProgress[stepID] = nil
     }
 
+    /// Marks the step as having received at least one stream delta. Idempotent
+    /// — caller fires this on every delta without checking, the manager
+    /// short-circuits if the flag is already set. Call from any path that
+    /// observes stream activity, including tool-call deltas and
+    /// harmony-buffered content (where the delta produces no visible content
+    /// in the preview).
+    func markStreamActivity(stepID: String) {
+        hasStreamActivity[stepID] = true
+    }
+
+    /// Polled by `MessageBubbleStreamingIndicator` to distinguish "Waiting"
+    /// (no activity yet) from "Generating" (tokens flowing into invisible
+    /// buffers like harmony tool-call args).
+    func hasReceivedStreamActivity(for stepID: String) -> Bool {
+        hasStreamActivity[stepID] == true
+    }
+
     // MARK: - Commit / Clear
 
     /// Commits the streaming preview for a step and returns it.
@@ -135,6 +165,7 @@ final class StreamingPreviewManager {
         streamingMessageIDs[stepID] = nil
         thinkingPreviews[stepID] = nil
         processingProgress[stepID] = nil
+        hasStreamActivity[stepID] = nil
         structuralVersion &+= 1
 
         // Return nil if the preview content is empty after trimming
@@ -149,24 +180,28 @@ final class StreamingPreviewManager {
     /// - Parameter stepID: The step whose preview to clear.
     func clear(stepID: String) {
         guard previews[stepID] != nil || streamingMessageIDs[stepID] != nil
-                || thinkingPreviews[stepID] != nil || processingProgress[stepID] != nil else { return }
+                || thinkingPreviews[stepID] != nil || processingProgress[stepID] != nil
+                || hasStreamActivity[stepID] != nil else { return }
         if let msgID = streamingMessageIDs[stepID] { activeMessageIDs.remove(msgID) }
         previews[stepID] = nil
         streamingMessageIDs[stepID] = nil
         thinkingPreviews[stepID] = nil
         processingProgress[stepID] = nil
+        hasStreamActivity[stepID] = nil
         structuralVersion &+= 1
     }
 
     /// Clears all streaming previews.
     func clearAll() {
         guard !previews.isEmpty || !streamingMessageIDs.isEmpty
-                || !thinkingPreviews.isEmpty || !processingProgress.isEmpty else { return }
+                || !thinkingPreviews.isEmpty || !processingProgress.isEmpty
+                || !hasStreamActivity.isEmpty else { return }
         previews.removeAll()
         streamingMessageIDs.removeAll()
         activeMessageIDs.removeAll()
         thinkingPreviews.removeAll()
         processingProgress.removeAll()
+        hasStreamActivity.removeAll()
         structuralVersion &+= 1
     }
 

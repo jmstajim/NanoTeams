@@ -1,7 +1,7 @@
 import Foundation
 
 /// Builds a fully-configured `Team` from a `GeneratedTeamConfig` DTO produced by the LLM.
-enum GeneratedTeamBuilder {
+nonisolated enum GeneratedTeamBuilder {
 
     /// Outcome of a build: the team plus any non-fatal warnings (e.g. unknown tool
     /// names that were silently dropped — surfaced so the orchestrator can show them
@@ -20,6 +20,12 @@ enum GeneratedTeamBuilder {
         let teamSeed = NTMSID.from(name: config.name)
         let uniqueSuffix = String(UUID().uuidString.prefix(8))
         var warnings: [String] = []
+
+        // Drop file-shaped artifact names (see `stripFileShapedArtifactNames`).
+        let cleanup = stripFileShapedArtifactNames(from: config)
+        if !cleanup.warnings.isEmpty { warnings.append(contentsOf: cleanup.warnings) }
+        // Shadow `config` so all subsequent references operate on the cleaned form.
+        let config = cleanup.config
 
         let supervisorTemplate = SystemTemplates.roles["supervisor"]!
         var supervisorRole = SystemTemplates.createRole(from: supervisorTemplate, teamSeed: teamSeed)
@@ -96,20 +102,27 @@ enum GeneratedTeamBuilder {
             artifacts.append(artifact)
         }
 
-        // Flat hierarchy — every non-supervisor role reports to Supervisor.
+        // Flat hierarchy — every non-supervisor role reports to Supervisor,
+        // EXCEPT roles configured for delegation (whitelist or generated). Those
+        // are peer-level with Supervisor by the same rule `Team.roleIsTopLevelDelegator`
+        // enforces. Generated teams typically have no delegation settings, so this
+        // skip is rarely exercised here — but the predicate matches `buildSettings`
+        // for symmetry.
         let nonSupervisorRoles = roles.filter { !$0.isSupervisor }
         var reportsTo: [String: String] = [:]
-        for role in nonSupervisorRoles {
+        for role in nonSupervisorRoles where !role.hasDelegationConfigured {
             reportsTo[role.id] = supervisorRole.id
         }
         let invitableRoles = Set(nonSupervisorRoles.map(\.id))
 
-        // Coordinator = first non-supervisor role (or supervisor if none).
-        let coordinatorID = nonSupervisorRoles.first?.id ?? supervisorRole.id
-
+        // Auto mode by default: nil means the role that initiates each
+        // meeting becomes its effective coordinator (see `TeamSettings`).
+        // LLM-generated teams have no basis to pick a "good" designated
+        // coordinator; Auto is the first-class user-facing option that
+        // works without committing to a specific role.
         let settings = TeamSettings(
             hierarchy: TeamHierarchy(reportsTo: reportsTo),
-            meetingCoordinatorRoleID: coordinatorID,
+            meetingCoordinatorRoleID: nil,
             invitableRoles: invitableRoles,
             supervisorCanBeInvited: false,
             limits: .default,
@@ -188,5 +201,177 @@ enum GeneratedTeamBuilder {
 
     private static func isSupervisorName(_ name: String) -> Bool {
         name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "supervisor"
+    }
+
+    // MARK: - File-shaped Artifact Cleanup
+
+    private struct CleanupResult {
+        let config: GeneratedTeamConfig
+        let warnings: [String]
+    }
+
+    /// Filters file-shaped artifact names (e.g. `index.html`, `script.js`) out of
+    /// every produces/requires/supervisor_requires list and the team-level
+    /// `artifacts[]`. When a role's `produces_artifacts` is fully stripped, a
+    /// synthetic `"\(roleName) Summary"` artifact is injected so the role still
+    /// has a concrete deliverable to produce — otherwise it would silently fall
+    /// through to advisory mode and loop forever in autonomous teams.
+    ///
+    /// Downstream `requires_artifacts` referencing stripped names are rewritten
+    /// to point at the producing role's new Summary artifact (preserving the
+    /// dependency edge). Names whose producer has NO Summary fallback (because
+    /// the role kept other valid artifacts) are dropped from downstream lists.
+    ///
+    /// Per CORE_PRINCIPLES — covers the model's tendency to conflate "files to
+    /// create" with "artifacts to produce" without trying to teach the model
+    /// out of it (the prompt already warns against this anti-pattern; the model
+    /// ignores it on briefs that mention specific filenames).
+    private static func stripFileShapedArtifactNames(from config: GeneratedTeamConfig) -> CleanupResult {
+        var warnings: [String] = []
+
+        struct RoleSplit {
+            var kept: [String]
+            var stripped: [String]
+            var fallback: String?
+        }
+        var splits: [RoleSplit] = []
+        var rewriteMap: [String: String] = [:]   // strippedName → target (fallback, OR the role's first kept artifact)
+        var droppedNames: Set<String> = []        // strippedName → drop downstream refs (only when neither fallback nor kept exists)
+
+        for role in config.roles {
+            var kept: [String] = []
+            var stripped: [String] = []
+            for name in role.producesArtifacts {
+                if ArtifactConstants.isValidArtifactName(name) {
+                    kept.append(name)
+                } else {
+                    stripped.append(name)
+                }
+            }
+            let fallback: String? = (!stripped.isEmpty && kept.isEmpty)
+                ? "\(role.name) Summary"
+                : nil
+            // Preserve dependency edges: when the role kept ≥1 valid artifact, redirect
+            // every stripped name to its FIRST kept artifact instead of dropping the
+            // downstream reference. Pre-fix, dropping the reference let downstream
+            // roles become `.ready` immediately and advance out of dependency order
+            // (the warning surfaced only as `lastInfoMessage`, easily missed).
+            // The redirect target is the same producing role, so the edge still
+            // forces the downstream wait — only the artifact NAME changes.
+            for s in stripped {
+                if let fb = fallback {
+                    rewriteMap[s] = fb
+                } else if let firstKept = kept.first {
+                    rewriteMap[s] = firstKept
+                } else {
+                    // Truly orphan: role had zero valid produces (impossible reachable
+                    // since `kept.isEmpty && !stripped.isEmpty` triggers the fallback
+                    // branch above). Defensive only.
+                    droppedNames.insert(s)
+                }
+            }
+            splits.append(RoleSplit(kept: kept, stripped: stripped, fallback: fallback))
+            if !stripped.isEmpty {
+                let action: String
+                if let fb = fallback {
+                    action = "replaced with '\(fb)'"
+                } else if let firstKept = kept.first {
+                    action = "downstream references redirected to '\(firstKept)' (role's existing deliverable)"
+                } else {
+                    action = "dropped"
+                }
+                warnings.append(
+                    "Role '\(role.name)': stripped \(stripped.count) file-shaped artifact name(s) [\(stripped.joined(separator: ", "))] — \(action). Use write_file for actual files; artifacts are conceptual deliverables."
+                )
+            }
+        }
+
+        // No file-shaped names → original config passes through unchanged.
+        if rewriteMap.isEmpty && droppedNames.isEmpty {
+            return CleanupResult(config: config, warnings: [])
+        }
+
+        // Rewrites a list of artifact names through `rewriteMap` / `droppedNames`,
+        // de-duplicating the result. Self-loops (a role's own stripped output appearing
+        // in its own requires_artifacts) are filtered out for the producing role —
+        // the caller's `producingRole` parameter, when non-nil, suppresses any rewrite
+        // target that points back at one of its own kept/fallback artifacts.
+        func rewriteList(_ names: [String], excludingSelfFor selfArtifacts: Set<String> = []) -> [String] {
+            var result: [String] = []
+            var seen: Set<String> = []
+            for name in names {
+                let target: String?
+                if let fb = rewriteMap[name] {
+                    target = fb
+                } else if droppedNames.contains(name) {
+                    target = nil
+                } else {
+                    target = name
+                }
+                if let t = target, !seen.contains(t), !selfArtifacts.contains(t) {
+                    result.append(t)
+                    seen.insert(t)
+                }
+            }
+            return result
+        }
+
+        let newRoles: [GeneratedTeamConfig.RoleConfig] = zip(config.roles, splits).map { role, split in
+            var newProduces = split.kept
+            if let fb = split.fallback { newProduces.append(fb) }
+            // Self-loop guard: a role's own stripped output must NOT appear in its
+            // own requires_artifacts after rewrite. Without this, a role whose
+            // produces list and requires list both contain "calculator.html" would
+            // be rewritten to require its own "Engineer Summary" — a self-edge that
+            // makes the role never become `.ready`.
+            let selfArtifacts = Set(newProduces)
+            let originalRequiresCount = role.requiresArtifacts.count
+            let newRequires = rewriteList(role.requiresArtifacts, excludingSelfFor: selfArtifacts)
+            if originalRequiresCount > 0, newRequires.isEmpty {
+                warnings.append(
+                    "Role '\(role.name)': all requires_artifacts entries were stripped or filtered. The role will run immediately on team start — verify this is intended (advisory roles, no upstream dependencies)."
+                )
+            }
+            return GeneratedTeamConfig.RoleConfig(
+                name: role.name,
+                prompt: role.prompt,
+                producesArtifacts: newProduces,
+                requiresArtifacts: newRequires,
+                tools: role.tools,
+                usePlanningPhase: role.usePlanningPhase,
+                icon: role.icon,
+                iconBackground: role.iconBackground
+            )
+        }
+
+        var newArtifacts: [GeneratedTeamConfig.ArtifactConfig] = []
+        var seenArtifactNames: Set<String> = []
+        for art in config.artifacts where ArtifactConstants.isValidArtifactName(art.name) {
+            if !seenArtifactNames.contains(art.name) {
+                newArtifacts.append(art)
+                seenArtifactNames.insert(art.name)
+            }
+        }
+        for split in splits {
+            guard let fb = split.fallback, !seenArtifactNames.contains(fb) else { continue }
+            let desc = "Summary of work completed by this role (originally requested: \(split.stripped.joined(separator: ", "))). Files were written to disk via write_file; this artifact captures the role's notes/output for the Supervisor."
+            newArtifacts.append(GeneratedTeamConfig.ArtifactConfig(
+                name: fb,
+                description: desc,
+                icon: nil
+            ))
+            seenArtifactNames.insert(fb)
+        }
+
+        let newConfig = GeneratedTeamConfig(
+            name: config.name,
+            description: config.description,
+            supervisorMode: config.supervisorMode,
+            acceptanceMode: config.acceptanceMode,
+            roles: newRoles,
+            artifacts: newArtifacts,
+            supervisorRequires: rewriteList(config.supervisorRequires)
+        )
+        return CleanupResult(config: newConfig, warnings: warnings)
     }
 }

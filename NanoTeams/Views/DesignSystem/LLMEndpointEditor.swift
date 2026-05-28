@@ -4,7 +4,7 @@ import SwiftUI
 /// compute exactly one of these per render so that error / warning / info
 /// messages never compete with other inline rows scattered through the
 /// card body. Hidden when `nil`.
-enum EndpointStatus: Equatable {
+nonisolated enum EndpointStatus: Equatable {
     case error(String)
     case warning(String)
     case info(String)
@@ -19,7 +19,7 @@ enum EndpointStatus: Equatable {
     /// stale error while a fetch is in flight (spinner speaks), and
     /// surfaces the most recent error otherwise. Empty / whitespace-only
     /// strings collapse to nil so an empty status row never renders.
-    static func resolve(
+    nonisolated static func resolve(
         fetchError: String?,
         isFetching: Bool
     ) -> EndpointStatus? {

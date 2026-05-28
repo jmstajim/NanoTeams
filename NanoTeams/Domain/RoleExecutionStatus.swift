@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Role Execution Status
 
 /// Status of a role's work during a run
-enum RoleExecutionStatus: String, Codable, Hashable, CaseIterable {
+nonisolated enum RoleExecutionStatus: String, Codable, Hashable, CaseIterable {
     /// Waiting for dependencies (required artifacts)
     case idle
 
@@ -74,7 +74,7 @@ enum RoleExecutionStatus: String, Codable, Hashable, CaseIterable {
 // MARK: - Connection Status
 
 /// Status of artifact connection between roles
-enum ConnectionStatus: String, Codable, Hashable {
+nonisolated enum ConnectionStatus: String, Codable, Hashable {
     /// Waiting for artifact to be produced
     case waiting
 

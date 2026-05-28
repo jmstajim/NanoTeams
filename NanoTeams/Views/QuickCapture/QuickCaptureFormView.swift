@@ -21,12 +21,24 @@ struct SupervisorAnswerPayload {
 enum QuickCaptureMode {
     /// Floating overlay panel (forced dark, compact)
     case overlay
-    /// In-app sheet (follows system appearance)
-    case sheet
     /// Supervisor answer input — overlay shows LLM question + answer field
     case supervisorAnswer(payload: SupervisorAnswerPayload)
     /// Task is running (LLM working) — overlay shows a loader
     case taskWorking(roleName: String, isChatMode: Bool)
+
+    /// Will the rendered form for this mode include a focusable text field?
+    /// Drives `QuickCapturePanel.show(expectsFocusableField:)` so the focus-
+    /// retry banner only surfaces when the absence-of-field IS a regression.
+    /// Loader-only working mode (non-chat) is the single legitimate "no field"
+    /// case — every other mode renders a `MessageComposer` and must focus it.
+    var expectsFocusableField: Bool {
+        switch self {
+        case .overlay, .supervisorAnswer:
+            return true
+        case .taskWorking(_, let isChatMode):
+            return isChatMode
+        }
+    }
 }
 
 // MARK: - Quick Capture Form View
@@ -39,14 +51,20 @@ enum QuickCaptureMode {
 struct QuickCaptureFormView: View {
     let mode: QuickCaptureMode
     @Bindable var formState: QuickCaptureFormState
-    let onSubmit: () -> Void
-    let onCancel: () -> Void
+    let onSubmit: @MainActor @Sendable () -> Void
+    let onCancel: @MainActor @Sendable () -> Void
 
     @Environment(NTMSOrchestrator.self) private var store
     @Environment(StreamingPreviewManager.self) private var streamingManager
     @Environment(DictationService.self) private var dictation
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isShowingFilePicker = false
+
+    /// Measured panel content height — drives the dynamic line-limit upper bound so
+    /// the input field can grow up to roughly half of whatever the user has resized
+    /// the panel to. Starts at 0 (sentinel for "not yet measured"); falls back to the
+    /// historical 1...6 cap until the first geometry pass lands.
+    @State private var measuredFormHeight: CGFloat = 0
 
     /// Fixed vertical slot reserved for the streaming preview line in `.taskWorking`.
     /// Scales with Dynamic Type at the `.caption` metric so the preview Text (also
@@ -60,11 +78,6 @@ struct QuickCaptureFormView: View {
     private var answerPayload: SupervisorAnswerPayload? {
         if case .supervisorAnswer(let payload) = mode { return payload }
         return nil
-    }
-
-    private var isSheetMode: Bool {
-        if case .sheet = mode { return true }
-        return false
     }
 
     private var isWorkingMode: Bool {
@@ -83,11 +96,8 @@ struct QuickCaptureFormView: View {
         store.snapshot?.workFolder.teams ?? [Team.default]
     }
 
-    /// Teams offered in the picker. The "Generated Team" placeholder is reached via
-    /// the dedicated "Generate Team..." entry above — listing it here would let users
-    /// select the placeholder directly, which has no roles and would silently stall.
     private var selectableTeams: [Team] {
-        availableTeams.filter { $0.templateID != "generated" }
+        QuickCaptureFormLogic.selectableTeams(from: availableTeams)
     }
 
     private var selectedTeam: Team? {
@@ -98,12 +108,8 @@ struct QuickCaptureFormView: View {
         return availableTeams.first
     }
 
-    /// Mode label shown next to the team picker ("task" / "chat").
-    /// Generated Team template is a placeholder — the actual generated team determines
-    /// the real mode — so we always show "task" for it (it will generate a producing team).
     private var teamModeLabel: String {
-        if selectedTeam?.templateID == "generated" { return "task" }
-        return selectedTeam?.isChatMode == true ? "chat" : "task"
+        QuickCaptureFormLogic.teamModeLabel(for: selectedTeam)
     }
 
     /// Draft ID for attachment staging. Always uses the form state's UUID-based draft ID
@@ -116,18 +122,14 @@ struct QuickCaptureFormView: View {
         formState.canSubmit(mode: mode)
     }
 
-    private var contentSpacing: CGFloat {
-        !isSheetMode ? Spacing.s : Spacing.m
-    }
-
-    private var contentPadding: CGFloat {
-        !isSheetMode ? Spacing.m : Spacing.l
+    private var taskFieldMaxHeight: CGFloat {
+        QuickCaptureFormLogic.taskFieldMaxHeight(measuredFormHeight: measuredFormHeight)
     }
 
     // MARK: - Body
 
     var body: some View {
-        VStack(alignment: .leading, spacing: contentSpacing) {
+        VStack(alignment: .leading, spacing: Spacing.s) {
             header
             if isWorkingMode {
                 if isChatWorkingMode, let taskID = store.activeTaskID {
@@ -141,9 +143,33 @@ struct QuickCaptureFormView: View {
                 taskCreationBody
             }
         }
-        .padding(contentPadding)
+        // Fill the panel and top-align content — without this the VStack hugs
+        // its content and NSHostingView centers it vertically, leaving an empty
+        // band above the header when the user has sized the panel taller than
+        // the content needs. Internal `Spacer(minLength: 0)` in
+        // `taskCreationBody` still pushes the composer to the bottom because
+        // the VStack now accepts the proposed fill height.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(Spacing.m)
         .background(Colors.surfacePrimary)
-        .preferredColorScheme(!isSheetMode ? .dark : nil)
+        .preferredColorScheme(.dark)
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.height
+        } action: { newHeight in
+            // Dampen sub-pixel oscillation. `measuredFormHeight` feeds
+            // `taskFieldMaxHeight` which feeds the inner ScrollView height,
+            // which in turn affects the parent's measured height — a feedback
+            // loop without a threshold. First non-zero measurement is always
+            // accepted (0 is the no-geometry-yet sentinel); after that only
+            // ≥ 2pt deltas land so auto-layout jitter is absorbed but real
+            // resize gestures still tracked.
+            if let accepted = QuickCaptureFormLogic.acceptedMeasuredHeight(
+                current: measuredFormHeight,
+                incoming: newHeight
+            ) {
+                measuredFormHeight = accepted
+            }
+        }
         .fileImporter(
             isPresented: $isShowingFilePicker,
             allowedContentTypes: [.item],
@@ -167,6 +193,19 @@ struct QuickCaptureFormView: View {
             if let payload = answerPayload {
                 questionText(payload.question)
             }
+            // No `Spacer` here on purpose. The composer hugs the question
+            // directly so there is no "black band" between them at any panel
+            // size: empty space lives BELOW the composer (visually a small
+            // bottom margin) rather than mid-form.
+            //
+            // Composer carries `.layoutPriority(1)` so the VStack apportions
+            // its natural height first, then the flexible question gets
+            // whatever is left. This is what makes R4 hold ("composer always
+            // visible regardless of panel height"): when the user shrinks the
+            // panel below `header + composer`, the question collapses toward
+            // zero — its internal `ScrollView` still scrolls — instead of
+            // the composer falling off the bottom edge. Removing this priority
+            // re-introduces complaint #6 (composer goes missing on shrink).
             MessageComposer(
                 text: $formState.supervisorTask,
                 attachments: $formState.answerAttachments,
@@ -177,28 +216,28 @@ struct QuickCaptureFormView: View {
                 onSubmit: handleSubmit,
                 onStageAttachment: { url in store.stageAttachment(url: url, draftID: activeDraftID) },
                 onRemoveAttachment: { attachment in store.removeStagedAttachment(attachment) },
-                filePickerBinding: $isShowingFilePicker
+                filePickerBinding: $isShowingFilePicker,
+                maxTextFieldHeight: taskFieldMaxHeight
             ) {
-                if !isSheetMode {
-                    quickCaptureSettingsMenu
-                }
+                quickCaptureSettingsMenu
             }
+            .layoutPriority(1)
         }
     }
 
     // MARK: - Task Creation Mode
 
     private var taskCreationBody: some View {
+        // Escape-to-cancel is handled at the AppKit layer via
+        // `QuickCapturePanel.cancelOperation` → `onCancelKeyPressed` →
+        // `QuickCaptureController.cancelDraft`. We intentionally do NOT add a
+        // `.background { Button(...).keyboardShortcut(.cancelAction).hidden() }`
+        // wrapper here: that ViewBuilder background sat above the scrolling
+        // representable and made SwiftUI re-evaluate the form on every
+        // CoreAnimation frame the inner NSScrollView emitted during trackpad
+        // scroll (CLAUDE.md Swift Style #50).
         Group {
-            if !isSheetMode {
-                Spacer(minLength: 0)
-            }
-            if isSheetMode {
-                Text(SystemTemplates.supervisorTaskArtifactName)
-                    .font(Typography.subheadlineMedium)
-                    .foregroundStyle(.secondary)
-                teamPicker
-            }
+            Spacer(minLength: 0)
             MessageComposer(
                 text: $formState.supervisorTask,
                 attachments: $formState.attachments,
@@ -210,15 +249,11 @@ struct QuickCaptureFormView: View {
                 onStageAttachment: { url in store.stageAttachment(url: url, draftID: activeDraftID) },
                 onRemoveAttachment: { attachment in store.removeStagedAttachment(attachment) },
                 filePickerBinding: $isShowingFilePicker,
-                autofocusOnAppear: true
+                autofocusOnAppear: true,
+                maxTextFieldHeight: taskFieldMaxHeight
             ) {
-                if !isSheetMode { quickCaptureSettingsMenu }
+                quickCaptureSettingsMenu
             }
-        }
-        .background {
-            Button("", action: handleCancel)
-                .keyboardShortcut(.cancelAction)
-                .hidden()
         }
     }
 
@@ -230,15 +265,8 @@ struct QuickCaptureFormView: View {
                 overlayHeaderRow { SupervisorAnswerHeaderView(payload: payload) }
             } else if case .taskWorking(let roleName, _) = mode {
                 overlayHeaderRow { workingHeader(roleName: roleName) }
-            } else if !isSheetMode {
-                overlayHeaderRow { overlayHeader }
             } else {
-                SheetHeader(
-                    title: "New Task",
-                    subtitle: "Create a new task for your AI team",
-                    systemImage: "plus.square.fill",
-                    tintColor: Colors.accent
-                )
+                overlayHeaderRow { overlayHeader }
             }
         }
     }
@@ -399,9 +427,10 @@ struct QuickCaptureFormView: View {
                     onSubmit: handleSubmit,
                     onStageAttachment: { url in store.stageAttachment(url: url, draftID: activeDraftID) },
                     onRemoveAttachment: { attachment in store.removeStagedAttachment(attachment) },
-                    filePickerBinding: $isShowingFilePicker
+                    filePickerBinding: $isShowingFilePicker,
+                    maxTextFieldHeight: taskFieldMaxHeight
                 ) {
-                    if !isSheetMode { quickCaptureSettingsMenu }
+                    quickCaptureSettingsMenu
                 }
             }
         }
@@ -531,6 +560,19 @@ struct QuickCaptureFormView: View {
     // MARK: - Question Text
 
     private func questionText(_ text: String) -> some View {
+        // Chat-like layout: question fills whatever the VStack leaves between
+        // header and composer and scrolls internally when content is taller.
+        //
+        // No `minHeight` floor: composer's `.layoutPriority(1)` in
+        // `answerModeBody` already guarantees the composer's visibility, and a
+        // floor here would re-introduce overflow at minSize whenever the
+        // composer's natural height plus the floor exceeds the panel
+        // (complaint #6). The question is the give-first piece per R4.
+        //
+        // No `measuredFormHeight`-derived cap, no `onGeometryChange` on the
+        // Text — those create a measurement feedback loop and make the panel
+        // "breathe". `maxHeight: .infinity` lets the ScrollView absorb
+        // whatever the VStack hands it.
         ScrollView {
             Text(text)
                 .font(.body)
@@ -539,66 +581,11 @@ struct QuickCaptureFormView: View {
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(maxHeight: .infinity)
     }
 
     private var taskFieldPlaceholder: String {
-        if selectedTeam?.isChatMode == true { return "Send a message..." }
-        return "Describe your task..."
-    }
-
-    // MARK: - Team Picker
-
-    private var teamPicker: some View {
-        VStack(alignment: .leading, spacing: Spacing.xs) {
-            Text("Team")
-                .font(Typography.subheadlineMedium)
-                .foregroundStyle(.secondary)
-            Menu {
-                Button {
-                    selectGeneratedTeamTemplate()
-                } label: {
-                    Label("Generate Team...", systemImage: "wand.and.stars")
-                }
-
-                Divider()
-
-                ForEach(selectableTeams) { team in
-                    Button {
-                        withAnimation(Animations.quick) {
-                            formState.selectedTeamID = team.id
-                        }
-                    } label: {
-                        HStack {
-                            if team.id == formState.selectedTeamID {
-                                Image(systemName: "checkmark")
-                            }
-                            Text(team.name)
-                            Text("(\(team.memberCount) members)")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            } label: {
-                HStack(spacing: Spacing.s) {
-                    Image(systemName: "person.3.fill")
-                        .foregroundStyle(Colors.info)
-                    Text(selectedTeam?.name ?? "Select Team")
-                        .fontWeight(.medium)
-                    Text("(\(selectedTeam?.memberCount ?? 0))")
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.caption2).fontWeight(.medium)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(Spacing.m)
-                .background(
-                    RoundedRectangle.squircle(CornerRadius.small)
-                        .fill(Colors.surfaceCard)
-                )
-            }
-            .menuStyle(.borderlessButton)
-        }
+        QuickCaptureFormLogic.taskFieldPlaceholder(for: selectedTeam)
     }
 
     // Flushes any pending dictation (so the last spoken words land before

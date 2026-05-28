@@ -3,8 +3,8 @@ import XCTest
 @testable import NanoTeams
 
 /// Tests for LLMExecutionService+ToolExecution — tool execution pipeline,
-/// authorization, caching, result processing, memories injection, loop detection,
-/// and Supervisor auto-answer handling.
+/// authorization, identical-write rejection, result processing, memories injection,
+/// loop detection, and Supervisor auto-answer handling.
 @MainActor
 final class ToolExecutionTests: XCTestCase {
 
@@ -12,7 +12,7 @@ final class ToolExecutionTests: XCTestCase {
     var mockDelegate: MockLLMExecutionDelegate!
     var tempDir: URL!
     var runtime: ToolRuntime!
-    var memory: ToolCallCache!
+    var tracker: ToolCallTracker!
     var orphanService: LLMExecutionService!
 
     override func setUp() {
@@ -33,12 +33,12 @@ final class ToolExecutionTests: XCTestCase {
             isDefaultStorage: false
         )
         runtime = rt
-        memory = ToolCallCache()
+        tracker = ToolCallTracker()
     }
 
     override func tearDown() {
         runtime = nil
-        memory = nil
+        tracker = nil
         orphanService = nil
         service = nil
         mockDelegate = nil
@@ -68,145 +68,256 @@ final class ToolExecutionTests: XCTestCase {
         return NTMSTask(id: 0, title: "Test Task", supervisorTask: "Goal", runs: [run])
     }
 
+    /// Mutable reference cell for capturing booleans across the synchronous
+    /// handler/test boundary. The handler runs on a cooperative-pool thread;
+    /// the test reads back on `@MainActor` after `await batch.value`.
+    /// `@unchecked Sendable` is sound because there's no concurrent access —
+    /// the read happens-after the write via the await suspension point.
+    private final class ThreadCaptureBox: @unchecked Sendable {
+        var onMain: Bool?
+    }
+
     // MARK: - executeToolCalls: Authorization
 
-    func testExecuteToolCalls_unauthorizedTool_returnsError() {
+    func testExecuteToolCalls_unauthorizedTool_returnsError() async {
         let task = makeTask()
         let call = makeToolCall(name: "write_file", args: #"{"path":"/test.txt","content":"hi"}"#)
 
-        let batch = service.executeToolCalls(
+        let batch = await service.executeToolCalls(
             resolvedToolCalls: [call],
             allowedToolNames: ["read_file", "list_files"],
             runtime: runtime,
-            memory: memory,
+            tracker: tracker,
             task: task,
             runIndex: 0,
             roleID: "test_role"
         )
 
-        XCTAssertEqual(batch.results.count, 1)
-        XCTAssertTrue(batch.results[0].isError)
-        XCTAssertTrue(batch.results[0].outputJSON.contains("tool_not_authorized"))
+        XCTAssertEqual(batch.count, 1)
+        XCTAssertTrue(batch[0].isError)
+        XCTAssertTrue(batch[0].outputJSON.contains("tool_not_authorized"))
     }
 
-    func testExecuteToolCalls_authorizedTool_executes() {
+    func testExecuteToolCalls_authorizedTool_executes() async {
         let task = makeTask()
 
         // ls on the project root (relative path ".") should succeed
         let call = makeToolCall(name: "list_files", args: #"{"path":"."}"#)
 
-        let batch = service.executeToolCalls(
+        let batch = await service.executeToolCalls(
             resolvedToolCalls: [call],
             allowedToolNames: ["list_files"],
             runtime: runtime,
-            memory: memory,
+            tracker: tracker,
             task: task,
             runIndex: 0,
             roleID: "test_role"
         )
 
-        XCTAssertEqual(batch.results.count, 1)
-        XCTAssertFalse(batch.results[0].isError)
+        XCTAssertEqual(batch.count, 1)
+        XCTAssertFalse(batch[0].isError)
     }
 
-    func testExecuteToolCalls_aliasResolution_grepToSearch() {
+    func testExecuteToolCalls_aliasResolution_grepToSearch() async {
         let task = makeTask()
 
         // "grep" should alias to "search" — but "search" must be in allowed set
         let call = makeToolCall(name: "grep", args: #"{"query":"test"}"#)
 
-        let batch = service.executeToolCalls(
+        let batch = await service.executeToolCalls(
             resolvedToolCalls: [call],
             allowedToolNames: ["search"],
             runtime: runtime,
-            memory: memory,
+            tracker: tracker,
             task: task,
             runIndex: 0,
             roleID: "test_role"
         )
 
-        XCTAssertEqual(batch.results.count, 1)
+        XCTAssertEqual(batch.count, 1)
         // The alias should resolve to search, which is in allowed set
-        XCTAssertFalse(batch.results[0].isError,
+        XCTAssertFalse(batch[0].isError,
                        "Aliased tool 'grep' should resolve to 'search' and pass authorization")
     }
 
-    // MARK: - executeToolCalls: Caching
+    // MARK: - executeToolCalls: Re-execution (no cache) + identical-write guard
 
-    func testExecuteToolCalls_cachedResult_returnsFromCache() {
-        let task = makeTask()
+    /// Counts handler invocations across the synchronous handler/test boundary.
+    /// `@unchecked Sendable` is sound: each call is awaited before the next is issued,
+    /// so there's no concurrent access — reads happen-after writes via the await
+    /// suspension point. NSLock guards the rare case the runtime ever invokes the
+    /// handler on a different thread for the same call (defense in depth).
+    private final class CallCounterBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _count = 0
+        var count: Int {
+            lock.withLock { _count }
+        }
+        func increment() {
+            lock.withLock { _count += 1 }
+        }
+    }
 
-        // First: record a read_file call in memory
-        let readArgs = #"{"path":""# + tempDir.path + #"/test.txt"}"#
-        memory.record(
-            toolName: "read_file",
-            argumentsJSON: readArgs,
-            resultJSON: #"{"content":"hello"}"#,
-            isError: false
-        )
+    /// Regression pin (PT2): "every authorized call hits `ToolRuntime`" is a behavioural
+    /// guarantee — not a string-absence in the envelope. A counting probe handler is
+    /// invoked once per `executeToolCalls` pass with identical args. After two
+    /// sequential passes, `counter.count` MUST be 2. Any regression that re-introduces
+    /// a result-replay short-circuit (regardless of marker name) would observe 1.
+    func testExecuteToolCalls_repeatRead_runtimeInvokedEachTime() async {
+        let probeName = "probe_invocation_count"
+        let counter = CallCounterBox()
+        let registry = ToolRegistry()
+        registry.register(name: probeName) { _, _ in
+            counter.increment()
+            return ToolExecutionResult(
+                toolName: probeName,
+                argumentsJSON: "{}",
+                outputJSON: #"{"ok":true,"data":{}}"#,
+                isError: false
+            )
+        }
+        service.executionStates["test_role"] = LLMExecutionService.StepExecutionState(taskID: 0)
+        let probeRuntime = ToolRuntime(registry: registry, logger: nil)
 
-        // Now execute the same call — should be cached
-        let call = makeToolCall(name: "read_file", args: readArgs)
+        for _ in 0..<2 {
+            _ = await service.executeToolCalls(
+                resolvedToolCalls: [makeToolCall(name: probeName)],
+                allowedToolNames: [probeName],
+                runtime: probeRuntime,
+                tracker: tracker,
+                task: makeTask(),
+                runIndex: 0,
+                roleID: "test_role"
+            )
+        }
 
-        let batch = service.executeToolCalls(
-            resolvedToolCalls: [call],
-            allowedToolNames: ["read_file"],
+        XCTAssertEqual(counter.count, 2,
+                       "Probe handler must run on every executeToolCalls pass — no cache short-circuit. A regression that reintroduces result replay would observe 1.")
+    }
+
+    /// Regression pin (PT1): two `write_file` calls with identical `(path, content)`
+    /// emitted in ONE LLM response (same batch) MUST result in: index 0 executes once,
+    /// index 1 is rejected with `identical_write_loop`. The atomic
+    /// `tracker.checkAndRecordWrite` inside `executeToolCalls` is what makes the
+    /// second-call rejection structural rather than ordering-dependent. A regression
+    /// that reverts to two split calls (`isDuplicate?` then later `record`) where the
+    /// record happens AFTER the dispatch boundary would leak both writes to disk.
+    func testExecuteToolCalls_twoIdenticalWritesInSingleBatch_secondRejected() async {
+        // write_file requires relative paths (sandboxed under workFolderRoot).
+        let args = #"{"path":"dup.txt","content":"hello"}"#
+        let call1 = makeToolCall(name: "write_file", args: args)
+        let call2 = makeToolCall(name: "write_file", args: args)
+        service.executionStates["test_role"] = LLMExecutionService.StepExecutionState(taskID: 0)
+
+        let batch = await service.executeToolCalls(
+            resolvedToolCalls: [call1, call2],
+            allowedToolNames: ["write_file"],
             runtime: runtime,
-            memory: memory,
-            task: task,
+            tracker: tracker,
+            task: makeTask(),
             runIndex: 0,
             roleID: "test_role"
         )
 
-        XCTAssertEqual(batch.results.count, 1)
-        XCTAssertTrue(batch.cachedIndices.contains(0), "First call should be served from cache")
-        XCTAssertFalse(batch.results[0].isError)
+        XCTAssertEqual(batch.count, 2)
+        XCTAssertFalse(batch[0].isError, "First write_file must execute")
+        XCTAssertFalse(batch[0].outputJSON.contains("identical_write_loop"),
+                       "First write must NOT carry the identical-write envelope")
+        XCTAssertTrue(batch[1].isError, "Second identical write_file must be rejected")
+        XCTAssertTrue(batch[1].outputJSON.contains("identical_write_loop"),
+                      "Second-call rejection must carry the `identical_write_loop` envelope")
     }
 
-    func testExecuteToolCalls_emptyList_returnsEmpty() {
+    func testExecuteToolCalls_emptyList_returnsEmpty() async {
         let task = makeTask()
 
-        let batch = service.executeToolCalls(
+        let batch = await service.executeToolCalls(
             resolvedToolCalls: [],
             allowedToolNames: ["read_file"],
             runtime: runtime,
-            memory: memory,
+            tracker: tracker,
             task: task,
             runIndex: 0,
             roleID: "test_role"
         )
 
-        XCTAssertTrue(batch.results.isEmpty)
-        XCTAssertTrue(batch.cachedIndices.isEmpty)
+        XCTAssertTrue(batch.isEmpty)
     }
 
-    func testExecuteToolCalls_noDelegate_returnsEmpty() {
+    // MARK: - processToolResults: pre-finalize skip predicate
+
+    /// `processToolResults` skips its pre-record loop for `.exploratorySearch` and
+    /// `.visionAnalysis` signals — their async finalizers (`appendExploratorySearchResult`,
+    /// `appendVisionResult`) self-record the REAL envelope into the tracker once the
+    /// placeholder `{"status":"exploring"}` / `{"status":"analyzing"}` is rewritten.
+    /// Without this skip, the loop detector's `recentCalls` snapshot would see a
+    /// placeholder on the next iteration instead of the real result.
+    ///
+    /// Pinning the skip-predicate as a pure helper means the invariant is testable
+    /// without rebuilding the entire `processToolResults` pipeline (client, memoryStore,
+    /// conversation, delegate, etc.) — a regression that flips the predicate is caught
+    /// here directly.
+    func testShouldRecordInTrackerPreFinalize_skipsExploratorySearch() throws {
+        let payload = try ExploratorySearchPayload(
+            query: "x",
+            mode: .substring,
+            paths: nil,
+            fileGlob: nil,
+            contextBefore: 0,
+            contextAfter: 0,
+            maxResults: 10,
+            maxMatchLines: 10
+        )
+        let signal: ToolSignal = .exploratorySearch(payload)
+        XCTAssertFalse(LLMExecutionService.shouldRecordInTrackerPreFinalize(signal: signal),
+                       "Exploratory search placeholder must be skipped — finalizer self-records the real envelope")
+    }
+
+    func testShouldRecordInTrackerPreFinalize_skipsVisionAnalysis() {
+        let signal: ToolSignal = .visionAnalysis(imagePath: "x.png", prompt: "describe")
+        XCTAssertFalse(LLMExecutionService.shouldRecordInTrackerPreFinalize(signal: signal),
+                       "Vision analysis placeholder must be skipped — finalizer self-records the real envelope")
+    }
+
+    func testShouldRecordInTrackerPreFinalize_recordsRegularResult() {
+        XCTAssertTrue(LLMExecutionService.shouldRecordInTrackerPreFinalize(signal: nil),
+                      "Regular (non-async-finalized) results must be recorded in the pre-record loop")
+    }
+
+    func testShouldRecordInTrackerPreFinalize_recordsOtherSignals() {
+        // Collaboration / artifact / team-creation signals all carry their final envelope
+        // synchronously — the pre-record loop must capture them.
+        let teamMeeting: ToolSignal = .teamMeeting(topic: "x", participants: [], context: nil)
+        XCTAssertTrue(LLMExecutionService.shouldRecordInTrackerPreFinalize(signal: teamMeeting))
+    }
+
+    func testExecuteToolCalls_noDelegate_returnsEmpty() async {
         // Service with no delegate attached
         orphanService = LLMExecutionService(repository: NTMSRepository())
         let task = makeTask()
         let call = makeToolCall(name: "list_files", args: "{}")
 
-        let batch = orphanService.executeToolCalls(
+        let batch = await orphanService.executeToolCalls(
             resolvedToolCalls: [call],
             allowedToolNames: ["list_files"],
             runtime: runtime,
-            memory: memory,
+            tracker: tracker,
             task: task,
             runIndex: 0,
             roleID: "test_role"
         )
 
-        XCTAssertTrue(batch.results.isEmpty)
+        XCTAssertTrue(batch.isEmpty)
     }
 
     // MARK: - executeToolCalls: Mixed Batch
 
-    func testExecuteToolCalls_mixedBatch_correctOrdering() {
+    func testExecuteToolCalls_mixedBatch_correctOrdering() async {
         let task = makeTask()
 
-        // Cache a read_file result
+        // Pre-seed the tracker (simulating a prior iteration's read).
         let readArgs = #"{"path":""# + tempDir.path + #"/cached.txt"}"#
-        memory.record(
+        tracker.record(
             toolName: "read_file",
             argumentsJSON: readArgs,
             resultJSON: #"{"content":"cached"}"#,
@@ -214,31 +325,32 @@ final class ToolExecutionTests: XCTestCase {
         )
 
         let call1 = makeToolCall(name: "write_file") // unauthorized
-        let call2 = makeToolCall(name: "read_file", args: readArgs) // cached
+        let call2 = makeToolCall(name: "read_file", args: readArgs) // re-executes (no cache)
         let call3 = makeToolCall(name: "list_files", args: #"{"path":"."}"#) // fresh
 
-        let batch = service.executeToolCalls(
+        let batch = await service.executeToolCalls(
             resolvedToolCalls: [call1, call2, call3],
             allowedToolNames: ["read_file", "list_files"],
             runtime: runtime,
-            memory: memory,
+            tracker: tracker,
             task: task,
             runIndex: 0,
             roleID: "test_role"
         )
 
-        XCTAssertEqual(batch.results.count, 3)
+        XCTAssertEqual(batch.count, 3)
         // First: unauthorized
-        XCTAssertTrue(batch.results[0].isError)
-        XCTAssertTrue(batch.results[0].outputJSON.contains("tool_not_authorized"))
-        // Second: cached
-        XCTAssertTrue(batch.cachedIndices.contains(1))
-        XCTAssertFalse(batch.results[1].isError)
-        // Third: fresh (ls should succeed)
-        XCTAssertFalse(batch.results[2].isError)
+        XCTAssertTrue(batch[0].isError)
+        XCTAssertTrue(batch[0].outputJSON.contains("tool_not_authorized"))
+        // Second: re-executed through ToolRuntime — no `_cached` marker even though
+        // an identical entry exists in the tracker. (read_file on a missing path
+        // returns an error envelope; ordering preservation is what matters here.)
+        XCTAssertFalse(batch[1].outputJSON.contains("\"_cached\""))
+        // Third: fresh
+        XCTAssertFalse(batch[2].outputJSON.contains("\"_cached\""))
     }
 
-    func testExecuteToolCalls_allUnauthorized_allErrors() {
+    func testExecuteToolCalls_allUnauthorized_allErrors() async {
         let task = makeTask()
 
         let calls = [
@@ -247,18 +359,137 @@ final class ToolExecutionTests: XCTestCase {
             makeToolCall(name: "git_commit"),
         ]
 
-        let batch = service.executeToolCalls(
+        let batch = await service.executeToolCalls(
             resolvedToolCalls: calls,
             allowedToolNames: ["read_file"],
             runtime: runtime,
-            memory: memory,
+            tracker: tracker,
             task: task,
             runIndex: 0,
             roleID: "test_role"
         )
 
-        XCTAssertEqual(batch.results.count, 3)
-        XCTAssertTrue(batch.results.allSatisfy(\.isError))
+        XCTAssertEqual(batch.count, 3)
+        XCTAssertTrue(batch.allSatisfy(\.isError))
+    }
+
+    // MARK: - Off-main dispatch + end-to-end cancellation
+
+    /// Pins the off-main dispatch contract: a registered probe handler captures
+    /// `Thread.isMainThread` during `handle()`. Caller is `@MainActor`; the
+    /// handler must observe `false` because `executeToolCalls` wraps the runtime
+    /// dispatch in `Task.detached`. A regression that reverts to a synchronous
+    /// `runtime.executeAll(...)` would silently observe `true` — that's the
+    /// original main-thread-hang regression class.
+    func testExecuteToolCalls_runsHandlerOffMainActor() async {
+        let probeName = "probe_thread_isolation"
+        let captured = ThreadCaptureBox()
+        let registry = ToolRegistry()
+        registry.register(name: probeName) { _, _ in
+            captured.onMain = Thread.isMainThread
+            return ToolExecutionResult(
+                toolName: probeName,
+                argumentsJSON: "{}",
+                outputJSON: #"{"ok":true,"data":{}}"#,
+                isError: false
+            )
+        }
+        // Seed an execution state so `currentToolBatchTask` wiring uses the
+        // real path rather than the orphan-cancel branch.
+        service.executionStates["test_role"] = LLMExecutionService.StepExecutionState(taskID: 0)
+
+        let probeRuntime = ToolRuntime(registry: registry, logger: nil)
+        let batch = await service.executeToolCalls(
+            resolvedToolCalls: [makeToolCall(name: probeName)],
+            allowedToolNames: [probeName],
+            runtime: probeRuntime,
+            tracker: tracker,
+            task: makeTask(),
+            runIndex: 0,
+            roleID: "test_role"
+        )
+
+        XCTAssertEqual(batch.count, 1)
+        XCTAssertFalse(batch[0].isError)
+        XCTAssertNotNil(captured.onMain, "probe handler must have run")
+        XCTAssertFalse(captured.onMain ?? true,
+                       "Tool handler MUST execute off main actor (Task.detached). A regression to sync dispatch would freeze the run loop during file I/O / subprocess waits / document extraction.")
+    }
+
+    /// Pins the end-to-end cancel wiring: `cancelAllExecutions` cancels the
+    /// stored `currentToolBatchTask`; `ToolRuntime.executeAll` observes the
+    /// cancellation between calls and emits the unified `cancelled` envelope
+    /// for everything that hasn't run yet. Probe #1 holds the worker thread
+    /// long enough that the cancel arrives before probe #2 starts.
+    func testCancelAllExecutions_propagatesIntoMidBatchToolRuntime() async {
+        let probe1Name = "probe_slow"
+        let probe2Name = "probe_fast"
+        let registry = ToolRegistry()
+        registry.register(name: probe1Name) { _, _ in
+            // Sync sleep — handlers are non-async by contract, so cancellation
+            // can only be observed BETWEEN handlers in `ToolRuntime.executeAll`.
+            // The 250 ms hold gives the test time to call `cancelAllExecutions`
+            // while probe #1 is still running.
+            Thread.sleep(forTimeInterval: 0.25)
+            return ToolExecutionResult(
+                toolName: probe1Name,
+                argumentsJSON: "{}",
+                outputJSON: #"{"ok":true,"data":{}}"#,
+                isError: false
+            )
+        }
+        registry.register(name: probe2Name) { _, _ in
+            return ToolExecutionResult(
+                toolName: probe2Name,
+                argumentsJSON: "{}",
+                outputJSON: #"{"ok":true,"data":{}}"#,
+                isError: false
+            )
+        }
+
+        service.executionStates["test_role"] = LLMExecutionService.StepExecutionState(taskID: 0)
+        let probeRuntime = ToolRuntime(registry: registry, logger: nil)
+        let call1 = makeToolCall(name: probe1Name)
+        let call2 = makeToolCall(name: probe2Name)
+
+        // Spawn the batch on the main actor so executeToolCalls runs in our
+        // isolation context but suspends on `await batchTask.value`. The
+        // suspension is the window for `cancelAllExecutions` to run.
+        let executeTask = Task { @MainActor in
+            await self.service.executeToolCalls(
+                resolvedToolCalls: [call1, call2],
+                allowedToolNames: [probe1Name, probe2Name],
+                runtime: probeRuntime,
+                tracker: self.tracker,
+                task: self.makeTask(),
+                runIndex: 0,
+                roleID: "test_role"
+            )
+        }
+
+        // Wait for probe #1 to actually start running on the cooperative pool.
+        try? await Task.sleep(for: .milliseconds(80))
+        service.cancelAllExecutions()
+
+        let batch = await executeTask.value
+        XCTAssertEqual(batch.count, 2)
+        // Probe #1 was already running when cancel arrived — sync handlers
+        // don't observe in-flight cancellation, so it completes normally.
+        XCTAssertFalse(
+            batch[0].isError,
+            "probe #1 ran to completion before cancel boundary; got envelope: \(batch[0].outputJSON)"
+        )
+        // Probe #2 is the regression target: the cancel must reach
+        // `ToolRuntime.executeAll`'s between-calls check and emit the unified
+        // cancelled envelope for probe #2.
+        XCTAssertTrue(
+            batch[1].isError,
+            "probe #2 must be marked cancelled; got envelope: \(batch[1].outputJSON)"
+        )
+        XCTAssertTrue(
+            batch[1].outputJSON.contains(#""code":"CANCELLED""#),
+            "probe #2 envelope must carry the unified CANCELLED code; got: \(batch[1].outputJSON)"
+        )
     }
 
     // MARK: - buildCollaborationToolResult
@@ -306,6 +537,27 @@ final class ToolExecutionTests: XCTestCase {
 
     // MARK: - injectMemories
 
+    // TODO(memories-disabled, 2026-05-19): Every test below whose body begins
+    // with `try XCTSkipIf(true, Self.memoriesDisabledSkipReason)` covers the
+    // positive injection path and is SKIPPED while `injectMemories` is gated
+    // by `LLMExecutionService.isMemoriesInjectionEnabled = false`. Re-enable
+    // ordering matches the paired TODO in
+    // `Services/LLM/LLMExecutionService+ToolLoopState.swift`:
+    //   1. Flip `isMemoriesInjectionEnabled` to `true` there.
+    //   2. Restore the second sentence in
+    //      `PromptBuilder.buildConversationMechanicsGuidance` (paired TODO).
+    //   3. Remove the `XCTSkipIf` skip guard from each test below.
+    //   4. Delete `testInjectMemories_disabledFlag_skipsSeededStore` — its
+    //      assertion fails-on-flip and is the tripwire forcing this step.
+    // The empty-store test (`testInjectMemories_emptyStore_doesNotInject`) is
+    // left active because its assertion (0 messages) holds in both states —
+    // under the disable for the trivial reason, and under the enable for the
+    // generateMemories-returns-nil short-circuit it was originally written for.
+
+    private static let memoriesDisabledSkipReason =
+        "Memories injection currently disabled via " +
+        "LLMExecutionService.isMemoriesInjectionEnabled — see TODO(memories-disabled)."
+
     /// Seed one plan tag so `generateMemories` returns non-nil content;
     /// otherwise the injection short-circuits (as of the empty-store optimization).
     private func seededMemoryStore() -> MemoryTagStore {
@@ -314,7 +566,9 @@ final class ToolExecutionTests: XCTestCase {
         return store
     }
 
-    func testInjectMemories_stateful_appendsMessage() async {
+    func testInjectMemories_stateful_appendsMessage() async throws {
+        try XCTSkipIf(true, Self.memoriesDisabledSkipReason)
+
         let stepID = "test_step"
         let memoryStore = seededMemoryStore()
         let session = LLMSession(responseID: "test-session")
@@ -332,13 +586,15 @@ final class ToolExecutionTests: XCTestCase {
 
         XCTAssertEqual(messages.count, 1)
         XCTAssertEqual(messages[0].role, .user)
-        XCTAssertTrue(messages[0].content?.contains("MEMORIES") ?? false)
+        XCTAssertTrue(messages[0].content?.contains("Memories") ?? false)
     }
 
     /// Stateful dedup — same memory content in two successive injections
     /// produces only one appended message. The prior block is already in the
     /// server's response chain.
-    func testInjectMemories_stateful_dedupesUnchangedContent() async {
+    func testInjectMemories_stateful_dedupesUnchangedContent() async throws {
+        try XCTSkipIf(true, Self.memoriesDisabledSkipReason)
+
         let stepID = "test_step"
         let memoryStore = seededMemoryStore()
         let session = LLMSession(responseID: "test-session")
@@ -378,7 +634,35 @@ final class ToolExecutionTests: XCTestCase {
                        "Empty MemoryTagStore must not inject a bare header/footer block")
     }
 
-    func testInjectMemories_stateless_replacesInPlace() async {
+    /// Sole behavioral guardrail on `isMemoriesInjectionEnabled = false`.
+    /// Uses a SEEDED store (so the empty-store short-circuit cannot explain a
+    /// 0-message outcome) and asserts that `injectMemories` still appends
+    /// nothing — the only path to that result with a non-empty store is the
+    /// guard firing. When `isMemoriesInjectionEnabled` flips back to `true`,
+    /// THIS TEST will start failing — that is the intended re-enable tripwire:
+    /// delete this test together with the `try XCTSkipIf(true, ...)` lines in
+    /// the four positive-injection tests above.
+    func testInjectMemories_disabledFlag_skipsSeededStore() async {
+        let stepID = "test_step"
+        let memoryStore = seededMemoryStore()
+        let session = LLMSession(responseID: "test-session")
+        var messages: [ChatMessage] = []
+
+        service._testRegisterStepTask(stepID: stepID, taskID: Int())
+        setupDelegateWithTask(stepID: stepID)
+
+        await service.injectMemories(
+            stepID: stepID, memoryStore: memoryStore,
+            session: session, conversationMessages: &messages
+        )
+
+        XCTAssertEqual(messages.count, 0,
+                       "Guard must short-circuit seeded-store injection while flag is false")
+    }
+
+    func testInjectMemories_stateless_replacesInPlace() async throws {
+        try XCTSkipIf(true, Self.memoriesDisabledSkipReason)
+
         let stepID = "test_step"
         let memoryStore = seededMemoryStore()
         var messages: [ChatMessage] = [
@@ -398,10 +682,12 @@ final class ToolExecutionTests: XCTestCase {
 
         // Should replace in-place, not append
         XCTAssertEqual(messages.count, 1)
-        XCTAssertTrue(messages[0].content?.contains("MEMORIES") ?? false)
+        XCTAssertTrue(messages[0].content?.contains("Memories") ?? false)
     }
 
-    func testInjectMemories_stateless_firstCall_appendsAndTracksIndex() async {
+    func testInjectMemories_stateless_firstCall_appendsAndTracksIndex() async throws {
+        try XCTSkipIf(true, Self.memoriesDisabledSkipReason)
+
         let stepID = "test_step"
         let memoryStore = seededMemoryStore()
         var messages: [ChatMessage] = [
@@ -427,18 +713,17 @@ final class ToolExecutionTests: XCTestCase {
 
     func testCheckAndInjectLoopWarning_noLoop_noWarning() async {
         let stepID = "test_step"
-        let memory = ToolCallCache()
         var messages: [ChatMessage] = []
 
         service._testRegisterStepTask(stepID: stepID, taskID: Int())
         setupDelegateWithTask(stepID: stepID)
 
         // Record a single tool call — not enough for loop detection
-        memory.record(toolName: "read_file", argumentsJSON: "{}", resultJSON: "{}", isError: false)
+        tracker.record(toolName: "read_file", argumentsJSON: "{}", resultJSON: "{}", isError: false)
 
         await service.checkAndInjectLoopWarning(
             stepID: stepID,
-            memory: memory,
+            tracker: tracker,
             conversationMessages: &messages
         )
 
@@ -447,7 +732,6 @@ final class ToolExecutionTests: XCTestCase {
 
     func testCheckAndInjectLoopWarning_repetitiveTool_injectsWarning() async {
         let stepID = "test_step"
-        let memory = ToolCallCache()
         var messages: [ChatMessage] = []
 
         service._testRegisterStepTask(stepID: stepID, taskID: Int())
@@ -455,7 +739,7 @@ final class ToolExecutionTests: XCTestCase {
 
         // Record many identical calls to trigger loop detection
         for _ in 0..<10 {
-            memory.record(
+            tracker.record(
                 toolName: "read_file",
                 argumentsJSON: #"{"path":"/test.txt"}"#,
                 resultJSON: #"{"content":"same"}"#,
@@ -465,7 +749,7 @@ final class ToolExecutionTests: XCTestCase {
 
         await service.checkAndInjectLoopWarning(
             stepID: stepID,
-            memory: memory,
+            tracker: tracker,
             conversationMessages: &messages
         )
 
@@ -544,14 +828,14 @@ final class ToolExecutionTests: XCTestCase {
         XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: stepID))
     }
 
-    func testCancelStepExecution_cleansState() {
+    func testCancelStepExecution_cleansState() async {
         let stepID = "test_step"
 
         service._testSetPlanMessageIndex(stepID: stepID, index: 5)
         service._testSetMemoriesMessageIndex(stepID: stepID, index: 3)
         service._testSetOriginalSystemPrompt(stepID: stepID, prompt: "test")
 
-        service.cancelStepExecution(stepID: stepID)
+        await service.cancelStepExecution(stepID: stepID)
 
         XCTAssertNil(service._testGetPlanMessageIndex(stepID: stepID))
         XCTAssertNil(service._testGetMemoriesMessageIndex(stepID: stepID))

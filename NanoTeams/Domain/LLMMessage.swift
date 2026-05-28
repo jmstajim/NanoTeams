@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Message Source Context
 
 /// Context indicating how an injected message was produced.
-enum MessageSourceContext: String, Codable {
+nonisolated enum MessageSourceContext: String, Codable {
     case consultation
     case meeting
     case changeRequest
@@ -13,6 +13,17 @@ enum MessageSourceContext: String, Codable {
     /// from `.supervisorAnswer` — those are paired with `ask_supervisor` tool calls
     /// and rendered separately by `ActivityFeedBuilder`.
     case supervisorMessage
+    /// Question that arrived from a delegated child team's `ask_supervisor` call
+    /// while this role's `delegate_to_team` handler was awaiting completion. The
+    /// question is appended to this role's `step.llmConversation` for activity-feed
+    /// visibility; the actual stateful answering happens in
+    /// `DelegatedSupervisorAnswerService` on `parentStep.delegationSession`.
+    case delegatedQuestion
+    /// Question that bubbled up the delegation chain (a delegated team's role asked
+    /// `ask_supervisor`, the immediate parent role couldn't answer and itself called
+    /// `ask_supervisor`, escalating to its own supervisor). Tagged so the activity
+    /// feed of each ancestor can show the escalation chain.
+    case delegationEscalation
 
     private static let displayLabelMap: [MessageSourceContext: String] = [
         .consultation: "consultation",
@@ -20,6 +31,8 @@ enum MessageSourceContext: String, Codable {
         .changeRequest: "change request",
         .supervisorAnswer: "supervisor answer",
         .supervisorMessage: "message",
+        .delegatedQuestion: "delegated question",
+        .delegationEscalation: "escalation",
     ]
 
     var displayLabel: String { Self.displayLabelMap[self] ?? rawValue }
@@ -33,7 +46,7 @@ enum MessageSourceContext: String, Codable {
 // MARK: - LLM Role
 
 /// OpenAI-compatible role for LLM conversation messages.
-enum LLMRole: String, Codable, Hashable {
+nonisolated enum LLMRole: String, Codable, Hashable {
     case system
     case user
     case assistant
@@ -43,7 +56,7 @@ enum LLMRole: String, Codable, Hashable {
 // MARK: - LLM Message
 
 /// Represents a single message in the LLM conversation (full prompts sent to the model).
-struct LLMMessage: Codable, Identifiable, Hashable {
+nonisolated struct LLMMessage: Codable, Identifiable, Hashable {
     var id: UUID
     var createdAt: Date
     var role: LLMRole

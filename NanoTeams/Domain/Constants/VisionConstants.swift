@@ -1,7 +1,7 @@
 import Foundation
 
 /// Vision/image analysis size limits and supported formats.
-enum VisionConstants {
+nonisolated enum VisionConstants {
     /// Maximum image file size in bytes (10 MB).
     static let maxImageBytes = 10_485_760
 

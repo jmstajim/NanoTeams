@@ -10,7 +10,7 @@ import Foundation
 
 /// Represents an artifact produced by a step execution.
 /// Artifacts are identified by their name (e.g., "Product Requirements", "Implementation Plan").
-struct Artifact: Codable, Identifiable, Hashable {
+nonisolated struct Artifact: Codable, Identifiable, Hashable {
     /// Display name of the artifact (e.g., "Product Requirements")
     var name: String
 
@@ -93,7 +93,7 @@ struct Artifact: Codable, Identifiable, Hashable {
 
 // MARK: - Helper Methods
 
-extension Artifact {
+nonisolated extension Artifact {
     /// Slugify an artifact name for use as id and file paths
     static func slugify(_ name: String) -> String {
         name.lowercased()

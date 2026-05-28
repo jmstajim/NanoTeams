@@ -39,8 +39,8 @@ extension NTMSOrchestrator {
         // 1. Create a Supervisor step with the placeholder tool call.
         let stepID = "team_generation_\(UUID().uuidString)"
         let toolCallID = UUID()
-        let placeholderArgs = Self.makeGenerationArgsJSON(taskDescription: taskDescription)
-        let placeholderResult = Self.makeGeneratingEnvelope()
+        let placeholderArgs = TeamGenerationEnvelopes.makeGenerationArgsJSON(taskDescription: taskDescription)
+        let placeholderResult = TeamGenerationEnvelopes.makeGeneratingEnvelope()
 
         let step = StepExecution(
             id: stepID,
@@ -71,10 +71,37 @@ extension NTMSOrchestrator {
                 globalConfig: globalLLMConfig,
                 roleOverride: configuration.teamGenLLMOverride
             )
+            // Construct a logger pointed at the same per-task `network_log.json`
+            // the role's own LLM calls use, so the team-generation request +
+            // response land in the existing trace next to the surrounding
+            // delegating activity. Without this, an unparseable `create_team`
+            // envelope leaves nothing to diagnose. Keyed off `loggingEnabled`
+            // so the user's privacy toggle still controls capture.
+            //
+            // Invariant: `runTeamGeneration` is always invoked AFTER
+            // `createNewRun(taskID:)` (see `startRun` in
+            // `NTMSOrchestrator+RunControl.swift`), so the latest run exists by
+            // the time we reach here. If it doesn't, something upstream is
+            // out of order — surface it loudly in DEBUG and skip logging
+            // (rather than silently disabling logging on the call we most
+            // wanted to capture).
+            let networkLogger: NetworkLogger? = {
+                guard loggingEnabled else { return nil }
+                guard let runID = loadedTask(taskID)?.runs.last?.id,
+                      let url = networkLogURL(taskID: taskID, runID: runID)
+                else {
+                    assertionFailure("runTeamGeneration: latest run missing for task \(taskID); team-gen log will be skipped")
+                    lastErrorMessage = "Team generation log skipped — no run available for task \(taskID)"
+                    return nil
+                }
+                return NetworkLogger(logURL: url)
+            }()
             let raw = try await TeamGenerationService.generate(
                 taskDescription: taskDescription,
                 config: effectiveConfig,
-                systemPrompt: configuration.teamGenSystemPromptOrNil
+                systemPrompt: configuration.teamGenSystemPromptOrNil,
+                logger: networkLogger,
+                stepID: stepID
             )
             let buildResult = GeneratedTeamBuilder.applyForcedDefaults(
                 to: raw,
@@ -90,7 +117,7 @@ extension NTMSOrchestrator {
         switch generationResult {
         case .success(let buildResult):
             let team = buildResult.team
-            let successEnvelope = Self.makeSuccessEnvelope(team: team, warnings: buildResult.warnings)
+            let successEnvelope = TeamGenerationEnvelopes.makeSuccessEnvelope(team: team, warnings: buildResult.warnings)
             await mutateTask(taskID: taskID) { task in
                 guard let ri = task.runs.indices.last,
                       let si = task.runs[ri].steps.firstIndex(where: { $0.id == stepID })
@@ -130,7 +157,7 @@ extension NTMSOrchestrator {
             let message = isCancellation
                 ? "Team generation was cancelled"
                 : (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            let errorEnvelope = Self.makeErrorEnvelope(message: message)
+            let errorEnvelope = TeamGenerationEnvelopes.makeErrorEnvelope(message: message)
             await mutateTask(taskID: taskID) { task in
                 guard let ri = task.runs.indices.last,
                       let si = task.runs[ri].steps.firstIndex(where: { $0.id == stepID })
@@ -166,8 +193,17 @@ extension NTMSOrchestrator {
 
         await mutateTask(taskID: taskID) { task in
             guard let ri = task.runs.indices.last else { return }
+            // Narrow match: only synthetic team-generation steps
+            // (`team_generation_<UUID>` from `runTeamGeneration`). Matching by
+            // `toolCalls.contains { name == createTeam }` would also delete
+            // delegating-role steps that carry a synthetic `create_team`
+            // placeholder from `handleDelegateToTeam`'s generated branch — an
+            // entire role's step (llmConversation / messages / scratchpad /
+            // artifacts / delegationChildIDs) would vanish. The prefix is the
+            // literal format `runTeamGeneration` uses; no other code path
+            // produces step IDs with this shape.
             task.runs[ri].steps.removeAll { step in
-                step.toolCalls.contains { $0.name == ToolNames.createTeam }
+                step.id.hasPrefix("team_generation_")
             }
             task.runs[ri].updatedAt = MonotonicClock.shared.now()
         }
@@ -210,59 +246,22 @@ extension NTMSOrchestrator {
         return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
     }
 
-    // MARK: - Envelopes
-
-    private static func makeGenerationArgsJSON(taskDescription: String) -> String {
-        let payload: [String: Any] = ["task": taskDescription]
-        if let data = try? JSONSerialization.data(withJSONObject: payload),
-           let str = String(data: data, encoding: .utf8) {
-            return str
-        }
-        return "{}"
-    }
-
-    private static func makeGeneratingEnvelope() -> String {
-        #"{"ok":true,"status":"generating"}"#
-    }
-
-    private static func makeSuccessEnvelope(team: Team, warnings: [String] = []) -> String {
-        let roleCount = max(0, team.roles.count - 1) // exclude Supervisor
-        var data: [String: Any] = [
-            "team": team.name,
-            "roles": "\(roleCount)",
-            "status": "created",
-        ]
-        if !warnings.isEmpty {
-            data["warnings"] = warnings
-        }
-        let payload: [String: Any] = ["ok": true, "data": data]
-        if let blob = try? JSONSerialization.data(withJSONObject: payload),
-           let str = String(data: blob, encoding: .utf8) {
-            return str
-        }
-        return #"{"ok":true}"#
-    }
+    // MARK: - Envelopes (test accessors)
 
     #if DEBUG
     /// Test accessor — verifies the placeholder envelope string matches the substring
-    /// `StepToolCall.isGeneratingTeam` looks for. Without this guard the two strings
-    /// (in different files) can drift silently and the graph spinner would never appear.
-    static func _testGeneratingEnvelope() -> String { makeGeneratingEnvelope() }
+    /// `StepToolCall.isGeneratingTeam` looks for. The actual implementation lives in
+    /// `TeamGenerationEnvelopes` (shared with the `delegate_to_team` generated-flow
+    /// placeholder); these forwards keep `TeamGenerationOrchestratorTests` compiling
+    /// and continue to pin the cross-file substring contract.
+    static func _testGeneratingEnvelope() -> String {
+        TeamGenerationEnvelopes.makeGeneratingEnvelope()
+    }
     static func _testSuccessEnvelope(team: Team, warnings: [String] = []) -> String {
-        makeSuccessEnvelope(team: team, warnings: warnings)
+        TeamGenerationEnvelopes.makeSuccessEnvelope(team: team, warnings: warnings)
     }
-    static func _testErrorEnvelope(message: String) -> String { makeErrorEnvelope(message: message) }
+    static func _testErrorEnvelope(message: String) -> String {
+        TeamGenerationEnvelopes.makeErrorEnvelope(message: message)
+    }
     #endif
-
-    private static func makeErrorEnvelope(message: String) -> String {
-        let payload: [String: Any] = [
-            "ok": false,
-            "error": ["code": "GENERATION_FAILED", "message": message],
-        ]
-        if let data = try? JSONSerialization.data(withJSONObject: payload),
-           let str = String(data: data, encoding: .utf8) {
-            return str
-        }
-        return #"{"ok":false}"#
-    }
 }

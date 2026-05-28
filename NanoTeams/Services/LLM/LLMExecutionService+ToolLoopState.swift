@@ -6,6 +6,41 @@ extension LLMExecutionService {
 
     // MARK: - Memories Injection
 
+    // TODO(memories-disabled, 2026-05-19): The rolling `## Memories vN` index is
+    // temporarily NOT injected into the conversation. The underlying mechanism
+    // (`MemoryTagStore` — tag emission in tool results, dedup of repeat reads via
+    // `.reference` envelopes, OUTDATED/REPLACED status tracking, cascade
+    // invalidation of builds/git on edits) is left fully intact: tagged tool
+    // results still flow through `processToolResult`, and the compact
+    // `{status:"unchanged", ref:"<§Tag§>", _hint:"Do NOT re-read..."}` envelope
+    // continues to short-circuit repeat reads.
+    //
+    // Why disabled: the rendered index conflates R/E/W semantics into a single
+    // "trust CURRENT" instruction, lacks tags for `list_files`/`search`,
+    // surfaces a `"base":"?"` sentinel, and reuses tag IDs across snapshots —
+    // all of which need fixing before the index goes back on or the same
+    // failure modes return.
+    //
+    // (Observed instance: a single tool-loop iteration mis-applied read-tag
+    // semantics to a chain of `<§E§> CURRENT` edit markers and emitted a giant
+    // `edit_file` with stale `old_text`, wasting on the order of thousands of
+    // output tokens — a typical small/medium open-weight model under LM Studio.
+    // Treat as evidence the structural causes above are load-bearing, not the
+    // sole failure mode.)
+    //
+    // Prerequisite: land the planned structural fixes (split R/E/W semantics
+    // in the prompt, add `<§L§>` listing tags, drop the `"?"` sentinel) before
+    // re-enabling. Then:
+    //   1. Flip `isMemoriesInjectionEnabled` below to `true`.
+    //   2. Restore the second sentence in
+    //      `PromptBuilder.buildConversationMechanicsGuidance` (paired TODO).
+    //   3. Remove the skip guard at the top of each test under the
+    //      `// MARK: - injectMemories` section in
+    //      `NanoTeamsTests/Services/LLM/ToolExecutionTests.swift` (paired TODO).
+    //   4. Delete `testInjectMemories_disabledFlag_skipsSeededStore` — its
+    //      assertion fails-on-flip and is the tripwire forcing this step.
+    private static let isMemoriesInjectionEnabled = false
+
     /// Injects the Memories index into the conversation. Skipped when the store
     /// is empty (no tag-producing tools were called yet) and, in stateful mode,
     /// when the content hasn't changed since the last injection — the prior
@@ -17,6 +52,8 @@ extension LLMExecutionService {
         session: LLMSession?,
         conversationMessages: inout [ChatMessage]
     ) async {
+        guard Self.isMemoriesInjectionEnabled else { return }
+
         let nextVersion = (executionStates[stepID]?.memoriesVersion ?? 0) + 1
         executionStates[stepID]?.memoriesVersion = nextVersion
 
@@ -82,10 +119,10 @@ extension LLMExecutionService {
     /// Checks for looping patterns and injects a warning message if detected.
     func checkAndInjectLoopWarning(
         stepID: String,
-        memory: ToolCallCache,
+        tracker: ToolCallTracker,
         conversationMessages: inout [ChatMessage]
     ) async {
-        guard let loopDetection = ToolCallLoopDetector.detectLoopPattern(in: memory.recentCalls(limit: 6)) else { return }
+        guard let loopDetection = ToolCallLoopDetector.detectLoopPattern(in: tracker.recentCalls(limit: 6)) else { return }
 
         let warningMessage: String
         if case .repetitiveTool(let tool, let count, _) = loopDetection,

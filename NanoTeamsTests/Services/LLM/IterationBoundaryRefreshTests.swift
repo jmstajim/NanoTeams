@@ -124,13 +124,13 @@ final class IterationBoundaryRefreshTests: XCTestCase {
         XCTAssertNotNil(refreshedStep.scratchpad,
                         "Precondition: scratchpad must be persisted via delegate before iter 2")
 
-        let memory = ToolCallCache()
+        let tracker = ToolCallTracker()
         let (tools, resetSession) = await service.applyPlanningPhase(
             stepID: stepID,
             roleForMessage: .softwareEngineer,
             tools: fullTools,
             step: refreshedStep,
-            memory: memory,
+            tracker: tracker,
             conversationMessages: &conversation,
             roleDefinition: role
         )

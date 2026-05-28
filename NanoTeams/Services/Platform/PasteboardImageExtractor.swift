@@ -3,7 +3,7 @@ import Foundation
 
 /// Reads images from an `NSPasteboard` and writes each as a PNG temp file.
 /// Stateless; pasteboard, file manager, temp root, and clock are injectable for tests.
-enum PasteboardImageExtractor {
+nonisolated enum PasteboardImageExtractor {
 
     /// Outcome of an extraction call. `urls` are PNG files written successfully;
     /// `failures` are per-image error descriptions (encode or write failure) so the

@@ -34,7 +34,7 @@ final class FinishAdvisoryRoleTests: NTMSOrchestratorTestBase {
 
     /// Wait briefly for the fire-and-forget `Task { }` in `finishAdvisoryRole` to complete.
     private func waitForFinish() async {
-        try? await Task.sleep(nanoseconds: 200_000_000)
+        try? await Task.sleep(for: .milliseconds(200))
     }
 
     // MARK: - Running Step

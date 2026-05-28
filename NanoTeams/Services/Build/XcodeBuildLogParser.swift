@@ -1,6 +1,6 @@
 import Foundation
 
-struct XcodeBuildLogParser {
+nonisolated struct XcodeBuildLogParser {
     init() {}
 
     func parse(stdout: String, stderr: String) -> [ParsedBuildIssue] {

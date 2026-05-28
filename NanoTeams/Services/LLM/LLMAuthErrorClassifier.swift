@@ -6,7 +6,7 @@ import Foundation
 /// and they need to enter (or fix) their API token.
 ///
 /// Stateless on purpose so any HTTP error path can call it without plumbing.
-enum LLMAuthErrorClassifier {
+nonisolated enum LLMAuthErrorClassifier {
 
     /// Discrimination of which auth-failure shape we got. `missingOrInvalid`
     /// (401) and `forbidden` (403) need the same user-visible message but are

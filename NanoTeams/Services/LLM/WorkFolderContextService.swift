@@ -1,7 +1,7 @@
 import Foundation
 
 /// Service for generating work-folder context using LLM.
-final class WorkFolderContextService {
+nonisolated final class WorkFolderContextService: @unchecked Sendable {
 
     private let client: any LLMClient
 

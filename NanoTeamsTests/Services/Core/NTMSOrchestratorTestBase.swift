@@ -10,7 +10,7 @@ import XCTest
 /// tests via `UserDefaults.standard` and the order of execution starts to
 /// matter.
 @MainActor
-class NTMSOrchestratorTestBase: XCTestCase {
+class NTMSOrchestratorTestBase: XCTestCase, @unchecked Sendable {
 
     var sut: NTMSOrchestrator!
     var tempDir: URL!

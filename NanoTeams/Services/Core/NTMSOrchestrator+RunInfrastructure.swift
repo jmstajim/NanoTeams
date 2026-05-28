@@ -35,7 +35,15 @@ extension NTMSOrchestrator {
         do {
             var task = try repository.loadTask(at: url, taskID: taskID)
             if StatusRecoveryService.recoverStaleStatuses(in: &task) {
-                try? repository.updateTaskOnly(at: url, task: task)
+                // Persist recovered status. If this fails, memory and disk
+                // diverge — pause/resume cascades that re-read disk later see
+                // a different task than the in-memory snapshot. Surface the
+                // failure rather than silently swallowing via `try?`.
+                do {
+                    try repository.updateTaskOnly(at: url, task: task)
+                } catch {
+                    self.lastErrorMessage = "Could not persist recovered status for task #\(taskID): \(error.localizedDescription). In-memory state may diverge from disk."
+                }
             }
             snapshot?.loadedTasks[taskID] = task
             syncEngineStateFromRun(taskID: taskID, task: task)
@@ -51,7 +59,8 @@ extension NTMSOrchestrator {
     func conversationLogURL(taskID: Int, runID: Int) -> URL? {
         guard let workFolderRoot = workFolderURL else { return nil }
         let paths = NTMSPaths(workFolderRoot: workFolderRoot)
-        return paths.conversationLogURL(taskID: taskID, runID: runID)
+        let ancestors = snapshot?.tasksIndex.ancestorIDs(of: taskID) ?? []
+        return paths.conversationLogURL(taskID: taskID, runID: runID, ancestors: ancestors)
     }
 
     func conversationLogExists(taskID: Int, runID: Int) -> Bool {
@@ -62,7 +71,8 @@ extension NTMSOrchestrator {
     func networkLogURL(taskID: Int, runID: Int) -> URL? {
         guard let workFolderRoot = workFolderURL else { return nil }
         let paths = NTMSPaths(workFolderRoot: workFolderRoot)
-        return paths.networkLogJSON(taskID: taskID, runID: runID)
+        let ancestors = snapshot?.tasksIndex.ancestorIDs(of: taskID) ?? []
+        return paths.networkLogJSON(taskID: taskID, runID: runID, ancestors: ancestors)
     }
 
     func networkLogExists(taskID: Int, runID: Int) -> Bool {

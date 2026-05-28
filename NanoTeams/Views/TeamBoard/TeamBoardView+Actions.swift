@@ -17,11 +17,6 @@ extension TeamBoardView {
         }
     }
 
-    func handleAcceptance(roleID: String) {
-        guard let taskID = task?.id else { return }
-        Task { _ = await store.acceptRole(taskID: taskID, roleID: roleID) }
-    }
-
     func handleRevisionRequest(roleID: String, comment: String) {
         guard let taskID = task?.id else { return }
         Task { await store.requestRevision(taskID: taskID, roleID: roleID, comment: comment) }

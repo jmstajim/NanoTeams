@@ -2,7 +2,7 @@ import XCTest
 @testable import NanoTeams
 
 /// Tests for AtomicJSONStore persistence layer
-final class AtomicJSONStoreTests: XCTestCase {
+final class AtomicJSONStoreTests: XCTestCase, @unchecked Sendable {
 
     private var tempDir: URL!
     private var store: AtomicJSONStore!

@@ -205,7 +205,7 @@ struct ToolDefinitionEditorView: View {
 
     private func save() async {
         if parametersError != nil {
-            await store.setLastErrorMessageForUI("Fix the parameters JSON before saving.")
+            store.setLastErrorMessageForUI("Fix the parameters JSON before saving.")
             return
         }
         let merged = ToolDefinitionRecord.mergeWithDefaults(existing: tools)
@@ -236,9 +236,9 @@ struct ToolDetailEditor: View {
     @Binding var parametersDraft: String
     let parametersError: String?
     let isBuiltIn: Bool
-    let onNameChange: (String) -> Void
-    let onPromptChange: (String) -> Void
-    let onParametersChange: (String) -> Void
+    let onNameChange: @MainActor @Sendable (String) -> Void
+    let onPromptChange: @MainActor @Sendable (String) -> Void
+    let onParametersChange: @MainActor @Sendable (String) -> Void
 
     var body: some View {
         Form {
@@ -246,7 +246,7 @@ struct ToolDetailEditor: View {
                 if isBuiltIn {
                     LabeledContent("Name", value: nameDraft)
                 } else {
-                    TextField("Name", text: Binding(get: { nameDraft }, set: onNameChange))
+                    TextField("Name", text: Binding(get: { nameDraft }, set: { onNameChange($0) }))
                 }
             }
 
@@ -257,7 +257,7 @@ struct ToolDetailEditor: View {
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    TextEditor(text: Binding(get: { promptDraft }, set: onPromptChange))
+                    TextEditor(text: Binding(get: { promptDraft }, set: { onPromptChange($0) }))
                         .font(.system(.body, design: .monospaced))
                         .scrollContentBackground(.hidden)
                         .frame(minHeight: 80)
@@ -271,7 +271,7 @@ struct ToolDetailEditor: View {
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    TextEditor(text: Binding(get: { parametersDraft }, set: onParametersChange))
+                    TextEditor(text: Binding(get: { parametersDraft }, set: { onParametersChange($0) }))
                         .font(.system(.body, design: .monospaced))
                         .scrollContentBackground(.hidden)
                         .frame(minHeight: 120)

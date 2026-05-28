@@ -26,7 +26,7 @@ extension LLMExecutionService {
         task _: NTMSTask,
         runIndex _: Int,
         stepIndex _: Int,
-        memory _: ToolCallCache,
+        tracker _: ToolCallTracker,
         roleDefinition: TeamRoleDefinition?,
         conversationMessages: inout [ChatMessage]
     ) async -> LLMStepStop {
@@ -55,15 +55,20 @@ extension LLMExecutionService {
                 — please advise how to proceed (clarify the task, give an explicit next step, \
                 or mark the step failed).
                 """
-                await setNeedsSupervisorInput(stepID: stepID, question: question, sessionID: nil)
+                let escalated = await setNeedsSupervisorInput(stepID: stepID, question: question, sessionID: nil)
+                // If persistence failed, surface a real failure instead of transitioning to
+                // "needs Supervisor input" with no question rendered — which is strictly
+                // worse than the loop this branch replaced.
+                guard escalated else {
+                    return .toolFailure(message: "Drift cap exceeded but Supervisor escalation failed to persist; aborting step. Question would have been: \(question)")
+                }
                 return .needsSupervisorInput(question: question)
             }
             let nudge = """
             Your previous response had ~\(thinkingTrimmedLen / 1000)k characters of internal \
             reasoning but no tool call. Internal reasoning is not a tool call — it cannot write \
-            files, read anything, or submit artifacts. Take one concrete action now by calling \
-            a tool (e.g. `write_file`, `read_lines`, `create_artifact`, or `ask_supervisor` if \
-            you genuinely need input). Keep reasoning brief next turn.
+            files, read anything, or submit artifacts. Take one concrete action now. Keep \
+            reasoning brief next turn.
             """
             conversationMessages.append(ChatMessage(role: .user, content: nudge))
             await appendLLMMessage(stepID: stepID, role: .user, content: nudge)
@@ -91,7 +96,10 @@ extension LLMExecutionService {
                 Last message excerpt:
                 \(snippet)
                 """
-                await setNeedsSupervisorInput(stepID: stepID, question: question, sessionID: nil)
+                let escalated = await setNeedsSupervisorInput(stepID: stepID, question: question, sessionID: nil)
+                guard escalated else {
+                    return .toolFailure(message: "Refusal-loop cap exceeded but Supervisor escalation failed to persist; aborting step.")
+                }
                 return .needsSupervisorInput(question: question)
 
             case .repetitiveNonTool(let count):
@@ -119,9 +127,15 @@ extension LLMExecutionService {
         // unrelated retry.
         if result.sawHarmonyMarker {
             let issue = ToolCallParsingHelpers.classifyHarmonyCallIssue(in: result.assistantContent)
-            let retryMessage: String
+            let retryMessage: String?
             switch issue {
             case .missingToolName(let inferredToolName):
+                // `.missingToolName` is a different recoverable defect — the inferred-name
+                // nudge below usually self-corrects on the next attempt. Reset the
+                // malformed-JSON counter so a previous .malformedJSON streak doesn't
+                // pre-trigger escalation on the very next .malformedJSON turn after
+                // the model recovered to a parseable-but-name-missing shape.
+                executionStates[stepID]?.consecutiveHarmonyParseFailureCount = 0
                 let example = inferredToolName ?? "TOOL_NAME"
                 retryMessage = """
                 Your tool call JSON parsed, but it is missing the top-level `name` field. \
@@ -131,13 +145,59 @@ extension LLMExecutionService {
                 `<|call|>{"name":"\(example)","arguments":{…}}<|end|>`
                 """
             case .malformedJSON:
+                // Cap consecutive malformed-JSON retries — some models reproduce the
+                // same broken envelope every iteration (e.g. unescaped `"` inside HTML
+                // string literals) and can't self-correct from a generic nudge. After
+                // 3 attempts, escalate to the Supervisor with an actionable question
+                // instead of looping until `delegate_to_team`'s 30-min timeout.
+                //
+                // Skipped during revision — supervisor is already driving via the
+                // revision flow. Mirroring the drift-counter pattern, we ALSO reset
+                // the counter on the revision branch: an accumulated counter from
+                // before the revision shouldn't pre-trigger a post-revision escalation
+                // on the very first new malformed-JSON turn.
+                if isStepInRevision(stepID: stepID) {
+                    executionStates[stepID]?.consecutiveHarmonyParseFailureCount = 0
+                } else {
+                    let newCount = (executionStates[stepID]?.consecutiveHarmonyParseFailureCount ?? 0) + 1
+                    executionStates[stepID]?.consecutiveHarmonyParseFailureCount = newCount
+                    if newCount >= 3 {
+                        // Reset so a post-supervisor restart starts clean.
+                        executionStates[stepID]?.consecutiveHarmonyParseFailureCount = 0
+                        let question = """
+                        Role \(roleForMessage.displayName) produced 3 consecutive malformed \
+                        tool-call JSON envelopes (e.g. unescaped `"` inside string literals — \
+                        a common defect when models emit HTML/JS content inside `create_artifact`). \
+                        The model cannot self-correct from generic retry hints. Please advise: \
+                        restart the role with a different model, simplify the brief to avoid \
+                        embedded markup, or mark the step failed and re-plan.
+                        """
+                        let escalated = await setNeedsSupervisorInput(stepID: stepID, question: question, sessionID: nil)
+                        // Critical fallback: if persistence fails the engine would otherwise
+                        // transition to "needs Supervisor input" with no question rendered —
+                        // strictly worse than the loop the cap replaced.
+                        guard escalated else {
+                            return .toolFailure(message: "Parse-failure cap exceeded but Supervisor escalation failed to persist; aborting step. Question would have been: \(question)")
+                        }
+                        return .needsSupervisorInput(question: question)
+                    }
+                }
                 retryMessage = "Your previous tool call had malformed JSON and could not be parsed (e.g. a missing closing brace `}`, an unescaped quote inside a string, or a trailing comma). Retry with valid JSON, e.g. `<|call|>{\"name\":\"TOOL_NAME\",\"arguments\":{…}}<|end|>` — note the two closing braces before `<|end|>`."
+            case .noEnvelopeAttempt:
+                // Inlined role turn (`<|start|>userhello<|end|>` and similar) —
+                // the model didn't try to call a tool, just emitted a role
+                // marker. Fall through to the generic "did not call any tools"
+                // retry below; blaming "malformed JSON" would be misleading.
+                retryMessage = nil
             }
-            conversationMessages.append(
-                ChatMessage(role: .user, content: retryMessage)
-            )
-            await appendLLMMessage(stepID: stepID, role: .user, content: retryMessage)
-            return .continueLoop
+            if let retryMessage {
+                conversationMessages.append(
+                    ChatMessage(role: .user, content: retryMessage)
+                )
+                await appendLLMMessage(stepID: stepID, role: .user, content: retryMessage)
+                return .continueLoop
+            }
+            // .noEnvelopeAttempt falls through to the generic retry path.
         }
 
         // Check if content contains only model tokens (Issue #24, #32)
@@ -146,7 +206,7 @@ extension LLMExecutionService {
 
         if !originalContent.isEmpty && cleanedContent.isEmpty {
             // Content was entirely garbled tokens with no substantive text
-            let retryMessage = "Your previous response contained only model-internal tokens (<|...|>) with no actual content. Please provide a substantive response with proper tool calls or completion message."
+            let retryMessage = "Your previous response contained only model-internal tokens (<|...|>) with no actual content. Emit a tool call or a completion message."
             conversationMessages.append(
                 ChatMessage(role: .user, content: retryMessage)
             )
@@ -189,7 +249,7 @@ extension LLMExecutionService {
                 }
 
                 if isStepInRevision(stepID: stepID) {
-                    let retryMessage = "Please address the supervisor's feedback and submit updated artifacts via create_artifact."
+                    let retryMessage = "Address the supervisor's feedback and submit updated artifacts via create_artifact."
                     conversationMessages.append(ChatMessage(role: .user, content: retryMessage))
                     await appendLLMMessage(stepID: stepID, role: .user, content: retryMessage)
                     return .continueLoop
@@ -198,7 +258,7 @@ extension LLMExecutionService {
                 // Missing artifacts — retry. Names must be quoted and verbatim;
                 // extensions / prefixes / rewordings cause name-resolution misses.
                 let quoted = expected.map { "\"\($0)\"" }.joined(separator: ", ")
-                let retryMessage = "You haven't submitted all expected artifacts yet. Missing deliverables: \(quoted). Call create_artifact(name=\"<exact name from quotes>\", content=\"...\") for each. Do NOT add file extensions (.md), prefixes, or rewordings — use the quoted name verbatim."
+                let retryMessage = "You haven't submitted all expected artifacts yet. Missing deliverables: \(quoted). Submit each via create_artifact using the quoted name verbatim — do not add file extensions, prefixes, or rewordings."
                 conversationMessages.append(ChatMessage(role: .user, content: retryMessage))
                 await appendLLMMessage(stepID: stepID, role: .user, content: retryMessage)
                 return .continueLoop
@@ -213,7 +273,7 @@ extension LLMExecutionService {
 
         // No tool calls and no artifacts to produce — nudge to use tools.
         // Roles never self-terminate here; only artifact completion or Supervisor's "Finish Role" ends a step.
-        let retryMessage = "You responded with text but did not call any tools. Use your available tools to continue working. If you need input from the Supervisor, call ask_supervisor."
+        let retryMessage = "You responded with text but did not call any tools. Use a tool to continue."
         conversationMessages.append(ChatMessage(role: .user, content: retryMessage))
         await appendLLMMessage(stepID: stepID, role: .user, content: retryMessage)
         return .continueLoop
@@ -326,12 +386,12 @@ extension LLMExecutionService {
         roleForMessage: Role,
         tools: [ToolSchema],
         step: StepExecution,
-        memory: ToolCallCache,
+        tracker: ToolCallTracker,
         conversationMessages: inout [ChatMessage],
         roleDefinition: TeamRoleDefinition?
     ) async -> (tools: [ToolSchema], resetSession: Bool) {
         let usePlanningPhase = roleDefinition?.usePlanningPhase ?? true
-        let isFirstIteration = step.scratchpad == nil && memory.recentCalls(limit: 1).isEmpty
+        let isFirstIteration = step.scratchpad == nil && tracker.recentCalls(limit: 1).isEmpty
         let hasPriorConversation = !step.llmConversation.isEmpty
         let hasScratchpadTool = tools.contains { $0.name == ToolNames.updateScratchpad }
 
@@ -346,11 +406,10 @@ extension LLMExecutionService {
             // block (with the Harmony format + a concrete example) to every system
             // prompt, and a second inline example in a different syntax produces
             // mixed-format output on smaller models.
-            let planningSystemPrompt = """
+            let basePlanningPrompt = """
             You are \(roleForMessage.displayName).
 
-            PLANNING PHASE
-            ==============
+            ## PLANNING PHASE
             Before starting work, create your plan.
 
             Call `update_scratchpad` with a numbered list of steps you will take, for example:
@@ -361,6 +420,10 @@ extension LLMExecutionService {
 
             This is the only tool available now. After you create your plan, you will have access to all your tools.
             """
+            let planningSystemPrompt = TemplateResolver.appendingSeparator(
+                delegate?.globalLLMContext ?? "",
+                to: basePlanningPrompt
+            )
 
             if let systemIdx = conversationMessages.firstIndex(where: { $0.role == .system }) {
                 conversationMessages[systemIdx] = ChatMessage(

@@ -469,7 +469,7 @@ private enum TeamBoardPreviewData {
                     Artifact(name: "Engineering Notes")
                 ]),
                 TeamBoardPreviewData.step("codeReviewer", status: .done, artifacts: [
-                    Artifact(name: "Code Review")
+                    Artifact(name: "Code Review Summary")
                 ]),
                 TeamBoardPreviewData.step("sre", status: .done, artifacts: [
                     Artifact(name: "Production Readiness")

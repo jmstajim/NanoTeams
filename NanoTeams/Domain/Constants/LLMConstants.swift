@@ -1,7 +1,7 @@
 import Foundation
 
 /// LLM execution limits and retry/streaming knobs.
-enum LLMConstants {
+nonisolated enum LLMConstants {
     /// Maximum tool call iterations (0 = unlimited).
     /// Producing roles terminate via artifact completion; open-ended roles via Supervisor.
     static let maxToolIterations = 0
@@ -24,4 +24,12 @@ enum LLMConstants {
 
     /// Maximum tracked tool calls per step (oldest evicted when exceeded).
     static let maxTrackedToolCalls = 30
+
+    /// Timeout for `cancelStepExecution` to wait for the cancelled task's catch handler
+    /// to finish committing partial streaming content + persisting token usage. The
+    /// catch chain runs `commitStreamingContent` (in-memory) and `persistTokenUsage`
+    /// (one disk write via `mutateTask`). Disk I/O on a healthy filesystem completes
+    /// in milliseconds; this cap guards against a stalled disk / locked file leaving
+    /// Pause permanently frozen.
+    static let cancelHandlerTimeoutSeconds: TimeInterval = 3
 }

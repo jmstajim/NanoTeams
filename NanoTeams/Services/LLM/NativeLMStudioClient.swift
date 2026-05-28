@@ -11,7 +11,7 @@ import Foundation
 /// - SSE uses named `event:` lines (18 event types) instead of JSON `type` field
 /// - Token stats come from `stats.tokens_in/tokens_out`
 /// - Models endpoint is `/api/v1/models`
-struct NativeLMStudioClient: LLMClient {
+nonisolated struct NativeLMStudioClient: LLMClient {
 
     let session: any NetworkSession
     let tokenResolver: any LLMTokenResolver
@@ -36,7 +36,15 @@ struct NativeLMStudioClient: LLMClient {
         roleName: String? = nil
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         AsyncThrowingStream { continuation in
-            let streamTask = Task {
+            // `Task.detached` (vs `Task { … }`) runs on the global executor
+            // instead of inheriting the caller's actor. The caller is
+            // `@MainActor LLMExecutionService.performStreamingCall`, so an
+            // inheriting Task would do per-chunk UTF-8 decode and line-
+            // splitting (`bytes.lines`) on the main thread. Detaching moves
+            // all SSE parsing off main; the consumer's `continuation.yield`
+            // still hops events back to whichever actor iterates the
+            // AsyncThrowingStream.
+            let streamTask = Task.detached {
                 var requestRecord: NetworkLogRecord?
                 var startTime = Date()
                 do {

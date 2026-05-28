@@ -188,7 +188,7 @@ final class HeadlessRunner {
                 printProgress(taskID: taskID, elapsed: elapsed)
             }
 
-            try? await Task.sleep(nanoseconds: pollNanos)
+            try? await Task.sleep(for: .nanoseconds(pollNanos))
         }
     }
 

@@ -22,7 +22,7 @@ final class AnswerTextBuilderTests: XCTestCase {
 
     func testSingleClip_addsSection() {
         let result = AnswerTextBuilder.build(text: "answer", clips: ["code snippet"])
-        XCTAssertTrue(result.answer.contains("--- Clipped Text ---"))
+        XCTAssertTrue(result.answer.contains("## Clipped Text"))
         XCTAssertTrue(result.answer.contains("code snippet"))
         XCTAssertTrue(result.answer.hasPrefix("answer"))
     }
@@ -38,13 +38,13 @@ final class AnswerTextBuilderTests: XCTestCase {
     func testEmptyClips_filtered() {
         let result = AnswerTextBuilder.build(text: "answer", clips: ["", "  ", "real clip"])
         XCTAssertFalse(result.answer.contains("1 of"))
-        XCTAssertTrue(result.answer.contains("--- Clipped Text ---"))
+        XCTAssertTrue(result.answer.contains("## Clipped Text"))
         XCTAssertTrue(result.answer.contains("real clip"))
     }
 
     func testClipOnly_noText_clipBecomesAnswer() {
         let result = AnswerTextBuilder.build(text: "", clips: ["the clip"])
-        XCTAssertTrue(result.answer.hasPrefix("--- Clipped Text ---"))
+        XCTAssertTrue(result.answer.hasPrefix("## Clipped Text"))
         XCTAssertTrue(result.answer.contains("the clip"))
     }
 
@@ -55,7 +55,7 @@ final class AnswerTextBuilderTests: XCTestCase {
         let enriched = "\u{200B}// Source: MyFile.swift:10-20\nlet x = 42"
         let result = AnswerTextBuilder.build(text: "", clips: [enriched])
         XCTAssertTrue(result.answer.contains("let x = 42"))
-        XCTAssertTrue(result.answer.contains("--- Clipped Text ---"))
+        XCTAssertTrue(result.answer.contains("## Clipped Text"))
         // Sentinel stripped by trimming
         XCTAssertFalse(result.answer.contains("\u{200B}"))
     }
@@ -85,7 +85,7 @@ final class AnswerTextBuilderTests: XCTestCase {
             attachments: [attachment],
             embedFiles: true
         )
-        XCTAssertTrue(result.answer.contains("--- Attached File: test.txt ---"))
+        XCTAssertTrue(result.answer.contains("## Attached File: test.txt"))
         XCTAssertTrue(result.answer.contains("file content"))
         XCTAssertTrue(result.failedFiles.isEmpty)
         XCTAssertTrue(result.embeddedAttachmentIDs.contains(attachment.id))
@@ -146,7 +146,7 @@ final class AnswerTextBuilderTests: XCTestCase {
             attachments: [goodAttachment, badAttachment],
             embedFiles: true
         )
-        XCTAssertTrue(result.answer.contains("--- Attached File: good.txt ---"))
+        XCTAssertTrue(result.answer.contains("## Attached File: good.txt"))
         XCTAssertTrue(result.answer.contains("valid content"))
         XCTAssertEqual(result.failedFiles, ["bad.txt"])
     }
@@ -158,8 +158,8 @@ final class AnswerTextBuilderTests: XCTestCase {
         // In the multi-clip path, trimming strips the sentinel — this is existing behavior.
         // Test verifies numbering works for plain multi-clip case.
         let result = AnswerTextBuilder.build(text: "", clips: ["clip A", "clip B"])
-        XCTAssertTrue(result.answer.contains("Clipped Text (1 of 2)"))
-        XCTAssertTrue(result.answer.contains("Clipped Text (2 of 2)"))
+        XCTAssertTrue(result.answer.contains("Clipped Text \u{2014} 1 of 2"))
+        XCTAssertTrue(result.answer.contains("Clipped Text \u{2014} 2 of 2"))
         XCTAssertTrue(result.answer.contains("clip A"))
         XCTAssertTrue(result.answer.contains("clip B"))
     }
@@ -190,7 +190,7 @@ final class AnswerTextBuilderTests: XCTestCase {
             attachments: [imgAttachment, txtAttachment],
             embedFiles: true
         )
-        XCTAssertTrue(result.answer.contains("--- Attached File: notes.txt ---"))
+        XCTAssertTrue(result.answer.contains("## Attached File: notes.txt"))
         XCTAssertFalse(result.answer.contains("pic.png"))
         XCTAssertTrue(result.failedFiles.isEmpty)
         // Only text file embedded, image stays as attachment
@@ -213,8 +213,8 @@ final class AnswerTextBuilderTests: XCTestCase {
 
         // All three sections present in order
         let answerRange = result.answer.range(of: "my answer")
-        let clipRange = result.answer.range(of: "--- Clipped Text ---")
-        let fileRange = result.answer.range(of: "--- Attached File: data.txt ---")
+        let clipRange = result.answer.range(of: "## Clipped Text")
+        let fileRange = result.answer.range(of: "## Attached File: data.txt")
 
         XCTAssertNotNil(answerRange)
         XCTAssertNotNil(clipRange)

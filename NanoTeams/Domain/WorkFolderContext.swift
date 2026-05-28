@@ -7,7 +7,7 @@ import Foundation
 /// from their respective files. The `workFolder` accessor is an alias for back-compat
 /// with the large number of existing callsites that do `context.workFolder.teams`,
 /// `context.workFolder.activeTeam`, etc.
-struct WorkFolderContext: Hashable {
+nonisolated struct WorkFolderContext: Hashable {
     var projection: WorkFolderProjection
     var tasksIndex: TasksIndex
     var toolDefinitions: [ToolDefinitionRecord]

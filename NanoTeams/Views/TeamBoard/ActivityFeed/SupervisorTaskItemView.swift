@@ -35,9 +35,10 @@ struct SupervisorTaskItemView: View {
                 }
 
                 if !trimmedTask.isEmpty {
-                    Text(trimmedTask)
-                        .font(.body)
-                        .textSelection(.enabled)
+                    // NSTextView-backed body for stable height + bounded layout
+                    // cost on long supervisor briefs. Same rationale as
+                    // `MessageBubbleView`.
+                    SelectableMessageText(content: trimmedTask)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(ActivityCardTokens.cardPadding)
@@ -56,6 +57,20 @@ struct SupervisorTaskItemView: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Equatable
+
+/// See `MessageBubbleView`'s Equatable extension for full rationale.
+/// `onAvatarTap` excluded (closure; captures stable orchestrator state).
+extension SupervisorTaskItemView: Equatable {
+    static func == (lhs: SupervisorTaskItemView, rhs: SupervisorTaskItemView) -> Bool {
+        lhs.createdAt == rhs.createdAt
+            && lhs.supervisorTask == rhs.supervisorTask
+            && lhs.clippedTexts == rhs.clippedTexts
+            && lhs.attachmentPaths == rhs.attachmentPaths
+            && lhs.workFolderURL == rhs.workFolderURL
     }
 }
 

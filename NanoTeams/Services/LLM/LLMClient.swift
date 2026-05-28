@@ -4,12 +4,12 @@ import Foundation
 
 /// DIP abstraction over URLSession for testable network I/O.
 /// URLSession conforms automatically via its existing `data(for:)` and `bytes(for:)` overloads.
-protocol NetworkSession: Sendable {
+nonisolated protocol NetworkSession: Sendable {
     func sessionData(for request: URLRequest) async throws -> (Data, URLResponse)
     func sessionBytes(for request: URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse)
 }
 
-extension URLSession: @retroactive NetworkSession {
+extension URLSession: NetworkSession {
     // Bridge to URLSession methods which have an additional `delegate` parameter with default value.
     // Swift protocols don't match methods with extra defaulted parameters automatically.
     public func sessionData(for request: URLRequest) async throws -> (Data, URLResponse) {
@@ -24,7 +24,7 @@ extension URLSession: @retroactive NetworkSession {
 
 /// Protocol for all LLM clients (ChatCompletions, Responses API).
 /// Callers use this protocol — the router dispatches to the correct implementation.
-protocol LLMClient: Sendable {
+nonisolated protocol LLMClient: Sendable {
 
     /// Stream a chat completion from the LLM provider.
     ///
@@ -91,7 +91,7 @@ protocol LLMClient: Sendable {
 
 /// Server-side record of a loaded model instance. Returned by
 /// `LLMClient.listLoadedInstances`.
-struct LoadedModelInstance: Sendable, Equatable {
+nonisolated struct LoadedModelInstance: Sendable, Equatable {
     /// Canonical model name (LM Studio dedup suffix `:N` stripped). Match
     /// this against `EmbeddingConfig.modelName` to decide whether to adopt
     /// an existing instance.
@@ -103,7 +103,7 @@ struct LoadedModelInstance: Sendable, Equatable {
     let instanceID: String
 }
 
-extension LLMClient {
+nonisolated extension LLMClient {
     /// Default: no embedding-model listing. Test doubles inherit this so
     /// production use of `fetchEmbeddingModels` doesn't force every mock to
     /// implement it.

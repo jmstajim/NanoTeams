@@ -118,17 +118,17 @@ final class ActivityFeedPersistenceRoundTripTests: XCTestCase {
     private func signatures(_ items: [ActivityFeedBuilder.TaggedItem]) -> [String] {
         items.map { tagged in
             switch tagged.item {
-            case .llmMessage(let msg, _, _):
+            case .llmMessage(let msg, _, _, _):
                 return "msg:\(msg.content)"
-            case .toolCall(let call, _, _):
+            case .toolCall(let call, _, _, _):
                 return "tool:\(call.name):\(call.argumentsJSON)"
-            case .artifact(let artifact, _, _):
+            case .artifact(let artifact, _, _, _):
                 return "art:\(artifact.name)"
-            case .meetingMessage(let msg, _):
+            case .meetingMessage(let msg, _, _):
                 return "meet:\(msg.content)"
-            case .changeRequest(let req, _):
+            case .changeRequest(let req, _, _):
                 return "cr:\(req.changes)"
-            case .notification(_, _, let type, _):
+            case .notification(_, _, let type, _, _):
                 switch type {
                 case .supervisorInput(let q, _, _, _, _, _):
                     return "notif:input:\(q)"
@@ -292,6 +292,9 @@ final class ActivityFeedPersistenceRoundTripTests: XCTestCase {
                     argumentsJSON: #"{"question":"Ready?"}"#
                 )
             ]
+            // `step.supervisorAnswer` is intentionally NOT set: the new active-input
+            // predicate is count-based (`answerMessages.count < askCalls.count`),
+            // so both calls are correctly classified as resolved here without it.
         )
 
         let inMemory = signatures(build(steps: [step]))

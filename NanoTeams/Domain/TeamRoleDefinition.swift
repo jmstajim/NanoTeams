@@ -9,7 +9,7 @@ import Foundation
 
 /// A role definition that belongs to a specific team.
 /// Each team has its own set of roles with customized prompts, tools, and dependencies.
-struct TeamRoleDefinition: Codable, Identifiable {
+nonisolated struct TeamRoleDefinition: Codable, Identifiable {
     /// Unique identifier within the team
     var id: String
 
@@ -33,6 +33,25 @@ struct TeamRoleDefinition: Codable, Identifiable {
 
     /// Optional per-role LLM configuration override
     var llmOverride: LLMOverride?
+
+    /// Whitelist of team IDs this role may delegate to via `delegate_to_team`.
+    /// Empty array = no existing teams allowed. Enforced at `delegate_to_team`
+    /// schema-build time (catalog embedded in the tool description omits
+    /// disallowed teams) and at delegation time (defense-in-depth against
+    /// hallucinated `team_id`).
+    ///
+    /// Together with `allowDelegationToGeneratedTeams`, this drives `hasDelegationConfigured` —
+    /// the single source of truth for whether the 4-tool delegation pack auto-injects
+    /// into the role's LLM schema.
+    var allowedDelegationTeamIDs: [NTMSID]
+
+    /// When true, the role may pass `team_id == DelegationConstants.generatedTeamSentinel`
+    /// to `delegate_to_team` to generate a fresh team on the fly via `TeamGenerationService`.
+    /// Also controls whether the synthetic "generated" entry appears in the catalog
+    /// embedded in `delegate_to_team`'s description.
+    ///
+    /// Together with `allowedDelegationTeamIDs`, this drives `hasDelegationConfigured`.
+    var allowDelegationToGeneratedTeams: Bool
 
     /// True if this role was created from a built-in template
     var isSystemRole: Bool
@@ -64,6 +83,8 @@ struct TeamRoleDefinition: Codable, Identifiable {
         usePlanningPhase: Bool,
         dependencies: RoleDependencies,
         llmOverride: LLMOverride? = nil,
+        allowedDelegationTeamIDs: [NTMSID] = [],
+        allowDelegationToGeneratedTeams: Bool = false,
         isSystemRole: Bool = false,
         systemRoleID: String? = nil,
         iconColor: String = "#FFFFFF",
@@ -79,6 +100,8 @@ struct TeamRoleDefinition: Codable, Identifiable {
         self.usePlanningPhase = usePlanningPhase
         self.dependencies = dependencies
         self.llmOverride = llmOverride
+        self.allowedDelegationTeamIDs = allowedDelegationTeamIDs
+        self.allowDelegationToGeneratedTeams = allowDelegationToGeneratedTeams
         self.isSystemRole = isSystemRole
         self.systemRoleID = systemRoleID
         self.iconColor = iconColor
@@ -98,6 +121,8 @@ struct TeamRoleDefinition: Codable, Identifiable {
         case usePlanningPhase
         case dependencies
         case llmOverride
+        case allowedDelegationTeamIDs
+        case allowDelegationToGeneratedTeams
         case isSystemRole
         case systemRoleID
         case iconColor
@@ -123,6 +148,10 @@ struct TeamRoleDefinition: Codable, Identifiable {
             try container.decodeIfPresent(RoleDependencies.self, forKey: .dependencies)
             ?? RoleDependencies(requiredArtifacts: [], producesArtifacts: [])
         self.llmOverride = try container.decodeIfPresent(LLMOverride.self, forKey: .llmOverride)
+        self.allowedDelegationTeamIDs =
+            try container.decodeIfPresent([NTMSID].self, forKey: .allowedDelegationTeamIDs) ?? []
+        self.allowDelegationToGeneratedTeams =
+            try container.decodeIfPresent(Bool.self, forKey: .allowDelegationToGeneratedTeams) ?? false
         self.isSystemRole = try container.decodeIfPresent(Bool.self, forKey: .isSystemRole) ?? false
         self.systemRoleID = try container.decodeIfPresent(String.self, forKey: .systemRoleID)
         self.iconColor =
@@ -142,7 +171,7 @@ struct TeamRoleDefinition: Codable, Identifiable {
 // MARK: - Role Completion Type
 
 /// Describes how a role completes its work. Derived from artifact dependencies.
-enum RoleCompletionType: String, Codable {
+nonisolated enum RoleCompletionType: String, Codable {
     /// Role produces artifacts — auto-completes when all expected artifacts are submitted via create_artifact.
     case producing
     /// Role has required inputs but produces nothing — works until Supervisor explicitly finishes it.
@@ -165,7 +194,7 @@ enum RoleCompletionType: String, Codable {
 
 // MARK: - Helper Methods
 
-extension TeamRoleDefinition {
+nonisolated extension TeamRoleDefinition {
     /// Returns a copy of this role with updated timestamp
     func withUpdatedTimestamp() -> TeamRoleDefinition {
         var copy = self
@@ -213,6 +242,21 @@ extension TeamRoleDefinition {
     /// Note: the underlying enum case for "Chat" is `.advisory` (see `RoleCompletionType`).
     var completionTypeDisplayLabel: String { completionType.displayLabel }
 
+    /// True iff the user has configured at least one delegation target —
+    /// a whitelisted team OR generated-team permission. Single source of truth
+    /// for "is this role configured for delegation"; replaces the legacy
+    /// "delegate_to_team in toolIDs" coupling.
+    ///
+    /// Drives auto-injection of the 4-tool delegation pack
+    /// (`delegate_to_team`, `cancel_delegation`, `resume_delegation`,
+    /// `forward_to_team`) into the role's LLM schema —
+    /// see `LLMExecutionService+ToolResolution.toolSchemas`. Also drives
+    /// peer-status auto-derivation in `TeamTemplateFactory.buildSettings`
+    /// and `GeneratedTeamBuilder` (delegating roles skip `reportsTo` wiring).
+    var hasDelegationConfigured: Bool {
+        !allowedDelegationTeamIDs.isEmpty || allowDelegationToGeneratedTeams
+    }
+
     /// Human-readable summary of artifact dependencies (e.g. "Needs: Plan → produces: Code").
     var artifactSummary: String {
         var parts: [String] = []
@@ -230,7 +274,7 @@ extension TeamRoleDefinition {
 
 // MARK: - Hashable
 
-extension TeamRoleDefinition: Hashable {
+nonisolated extension TeamRoleDefinition: Hashable {
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
     }

@@ -1,7 +1,7 @@
 import Foundation
 
 /// Categorizes tools for UI display and behavioral grouping.
-enum ToolCategory: String, Codable {
+nonisolated enum ToolCategory: String, Codable {
     case fileRead
     case fileWrite
     case gitRead
@@ -12,13 +12,14 @@ enum ToolCategory: String, Codable {
     case collaboration
     case artifact
     case vision
+    case delegation
 }
 
 // MARK: - ToolHandlerDependencies
 
 /// Bundle of per-registry state passed to `ToolHandler.makeInstance(dependencies:)`.
 /// Each handler picks the fields it needs; there is no runtime cost for unused fields.
-struct ToolHandlerDependencies {
+nonisolated struct ToolHandlerDependencies {
     let workFolderRoot: URL
     let resolver: SandboxPathResolver
     let fileManager: FileManager
@@ -37,6 +38,28 @@ struct ToolHandlerDependencies {
     let searchContextBefore: Int
     /// Default `context_after` for `search` when the LLM omits the argument.
     let searchContextAfter: Int
+
+    init(
+        workFolderRoot: URL,
+        resolver: SandboxPathResolver,
+        fileManager: FileManager,
+        internalDir: URL,
+        searchExploratoryByDefault: Bool,
+        readFileMaxLines: Int,
+        searchMaxResults: Int,
+        searchContextBefore: Int,
+        searchContextAfter: Int
+    ) {
+        self.workFolderRoot = workFolderRoot
+        self.resolver = resolver
+        self.fileManager = fileManager
+        self.internalDir = internalDir
+        self.searchExploratoryByDefault = searchExploratoryByDefault
+        self.readFileMaxLines = readFileMaxLines
+        self.searchMaxResults = searchMaxResults
+        self.searchContextBefore = searchContextBefore
+        self.searchContextAfter = searchContextAfter
+    }
 }
 
 // MARK: - ToolHandler
@@ -47,11 +70,11 @@ struct ToolHandlerDependencies {
 /// automatically via `makeInstance(dependencies:)`.
 ///
 /// - Static metadata (`name`, `schema`, `category`, `excludedInMeetings`,
-///   `blockedInDefaultStorage`, `isCacheable`) is available without instantiation,
+///   `blockedInDefaultStorage`) is available without instantiation,
 ///   enabling schema lookup before any work folder is opened (bootstrap, settings UI).
 /// - Instance `handle(context:args:)` captures per-registry state (sandbox resolver,
 ///   file manager, work folder root) via `makeInstance`.
-protocol ToolHandler {
+nonisolated protocol ToolHandler {
     static var name: String { get }
     static var schema: ToolSchema { get }
     static var category: ToolCategory { get }
@@ -63,11 +86,6 @@ protocol ToolHandler {
     /// When `true`, the tool is blocked (replaced with an error stub) when no real
     /// work folder is open. Used for write/git/xcode tools.
     static var blockedInDefaultStorage: Bool { get }
-
-    /// When `true`, results of this tool can be cached and deduplicated across
-    /// tool-loop iterations. Defaults to `true` for `.fileRead` / `.gitRead`
-    /// categories (except `git_diff`, which overrides to `false`).
-    static var isCacheable: Bool { get }
 
     /// When `true`, the tool is never included in any role's tool schema offered to
     /// the LLM. Used by tools that are invoked through a dedicated control flow
@@ -84,17 +102,8 @@ protocol ToolHandler {
     func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult
 }
 
-extension ToolHandler {
+nonisolated extension ToolHandler {
     static var excludedInMeetings: Bool { false }
     static var blockedInDefaultStorage: Bool { false }
     static var availableToRoles: Bool { true }
-
-    /// Default: read-only file/git tools are cacheable; everything else is not.
-    /// `GitDiffTool` overrides to `false` because the working tree mutates between reads.
-    static var isCacheable: Bool {
-        switch category {
-        case .fileRead, .gitRead: return true
-        default: return false
-        }
-    }
 }

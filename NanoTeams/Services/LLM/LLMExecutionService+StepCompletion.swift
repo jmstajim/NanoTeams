@@ -65,13 +65,16 @@ extension LLMExecutionService {
            let activeTeam = projectContext.workFolder.activeTeam,
            let roleDefinition = activeTeam.findRole(byIdentifier: step.effectiveRoleID),
            roleDefinition.dependencies.producesArtifacts.contains(ArtifactConstants.buildDiagnosticsName) {
+            let ancestors = projectContext.tasksIndex.ancestorIDs(of: task.id)
             diagPath = artifactService.buildDiagnosticsRelativePath(
-                taskID: task.id, runID: run.id, roleID: step.effectiveRoleID, workFolderRoot: workFolderRoot
+                taskID: task.id, runID: run.id, roleID: step.effectiveRoleID,
+                workFolderRoot: workFolderRoot, ancestors: ancestors
             )
             // If no diagnostics path (successful build), create a summary artifact
             if diagPath == nil {
                 diagPath = try? artifactService.persistEmptyBuildDiagnostics(
-                    taskID: task.id, runID: run.id, roleID: step.effectiveRoleID, workFolderRoot: workFolderRoot
+                    taskID: task.id, runID: run.id, roleID: step.effectiveRoleID,
+                    workFolderRoot: workFolderRoot, ancestors: ancestors
                 )
             }
         }

@@ -59,11 +59,6 @@ final class QuickCaptureModeTests: XCTestCase {
         if case .overlay = mode { /* pass */ } else { XCTFail("Expected .overlay") }
     }
 
-    func testSheetMode() {
-        let mode = QuickCaptureMode.sheet
-        if case .sheet = mode { /* pass */ } else { XCTFail("Expected .sheet") }
-    }
-
     func testSupervisorAnswerMode_carriesPayload() {
         let payload = SupervisorAnswerPayload(
             stepID: "test_step", taskID: Int(), role: .techLead, roleDefinition: nil,
@@ -396,6 +391,258 @@ final class QuickCaptureModeResolutionTests: NTMSOrchestratorTestBase {
 
         XCTAssertTrue(controller._testForceNewTaskMode,
                       "Refresh on the same task must preserve force-new-task mode")
+    }
+
+    /// Explicit user navigation must clear `forceNewTaskMode` even when the
+    /// re-selected task ID matches the last-refreshed task ID (so `taskChanged
+    /// == false`). Without the explicit branch, the panel would stay stuck in
+    /// `.newTask` after the user re-selects the currently-active task.
+    func testRefresh_explicitTaskNavigation_clearsForceNewTaskModeEvenWhenTaskIDUnchanged() async {
+        await sut.openWorkFolder(tempDir)
+        guard let taskID = await sut.createTask(title: "T", supervisorTask: "G") else {
+            XCTFail("Failed to create task"); return
+        }
+        await sut.switchTask(to: taskID)
+        sut.engineState[taskID] = .running
+
+        controller.isTaskSelected = true
+        controller._testForceNewTaskMode = true
+        controller._testLastRefreshedTaskID = taskID
+        controller._testIsPanelVisible = true
+        defer { controller._testIsPanelVisible = false }
+
+        controller.refreshPanelIfVisible(explicitTaskNavigation: true)
+
+        XCTAssertFalse(controller._testForceNewTaskMode,
+                       "Explicit user navigation must clear force-new-task mode even on the same task")
+        if case .taskWorking = controller._testResolveMode() { /* pass */ } else {
+            XCTFail("Expected .taskWorking after explicit navigation clears the flag")
+        }
+    }
+
+    /// `currentTaskID != nil` guard inside the clear branch must hold even under
+    /// `explicitTaskNavigation: true`. Watchtower navigation (no active task)
+    /// must NEVER clear `forceNewTaskMode`, otherwise pressing `+` while on a
+    /// task X would lose the flag the moment `.navigateToWatchtower` lands
+    /// (`store.activeTaskID` can also be nil if no task was ever active).
+    func testRefresh_explicit_atWatchtowerWithNilActiveTask_preservesForceNewTaskMode() async {
+        await sut.openWorkFolder(tempDir)
+        await sut.switchTask(to: nil)
+
+        controller.isTaskSelected = false
+        controller._testForceNewTaskMode = true
+        controller._testLastRefreshedTaskID = 42
+        controller._testIsPanelVisible = true
+        defer { controller._testIsPanelVisible = false }
+
+        controller.refreshPanelIfVisible(explicitTaskNavigation: true)
+
+        XCTAssertTrue(controller._testForceNewTaskMode,
+                      "Explicit navigation with no active task must NOT clear force-new-task mode")
+        if case .overlay = controller._testResolveMode() { /* pass */ } else {
+            XCTFail("Expected .overlay when forceNewTaskMode preserved on Watchtower")
+        }
+    }
+
+    /// `isPanelVisible == false` is the load-bearing precondition of
+    /// `refreshPanelIfVisible`. Even an explicit nav must early-return without
+    /// touching `lastRefreshedTaskID` or `forceNewTaskMode` — otherwise an
+    /// off-screen state mutation can desync the tracker for the next real refresh.
+    func testRefresh_explicit_panelNotVisible_earlyReturnsWithoutMutation() async {
+        await sut.openWorkFolder(tempDir)
+        guard let taskID = await sut.createTask(title: "T", supervisorTask: "G") else {
+            XCTFail("Failed to create task"); return
+        }
+        await sut.switchTask(to: taskID)
+
+        let sentinel = 999
+        controller.isTaskSelected = true
+        controller._testForceNewTaskMode = true
+        controller._testLastRefreshedTaskID = sentinel
+        controller._testIsPanelVisible = false
+
+        controller.refreshPanelIfVisible(explicitTaskNavigation: true)
+
+        XCTAssertTrue(controller._testForceNewTaskMode,
+                      "Hidden panel: explicit nav must not clear force-new-task mode")
+        XCTAssertEqual(controller._testLastRefreshedTaskID, sentinel,
+                       "Hidden panel: explicit nav must not update the tracker")
+    }
+
+    /// Explicit nav covers all task-state branches of `resolveMode`, not just
+    /// `.taskWorking`. When the re-selected task has a pending Supervisor
+    /// question (`.needsSupervisorInput` step + question text), the panel must
+    /// land in answer mode after the flag clears.
+    func testRefresh_explicit_resolvesToSupervisorAnswerForPendingQuestion() async {
+        guard let (taskID, _) = await createTaskWithQuestionStep() else { return }
+
+        controller.isTaskSelected = true
+        controller._testForceNewTaskMode = true
+        controller._testLastRefreshedTaskID = taskID
+        controller._testIsPanelVisible = true
+        defer { controller._testIsPanelVisible = false }
+
+        controller.refreshPanelIfVisible(explicitTaskNavigation: true)
+
+        XCTAssertFalse(controller._testForceNewTaskMode,
+                       "Explicit nav must clear the flag regardless of resolved mode")
+        if case .supervisorAnswer = controller._testResolveMode() { /* pass */ } else {
+            XCTFail("Expected .supervisorAnswer when the re-selected task has a pending question")
+        }
+        XCTAssertTrue(controller._testIsInAnswerMode,
+                      "applyAnswerModeTransition must have entered answer mode")
+    }
+
+    /// Idempotency: calling explicit nav when `forceNewTaskMode` was already
+    /// `false` is a safe no-op. The flag stays `false`, no exception, mode
+    /// resolves based on real state. This pins the "explicit nav can be called
+    /// freely from any task-switch site without checking pre-conditions" contract.
+    func testRefresh_explicit_whenFlagAlreadyFalse_isIdempotent() async {
+        await sut.openWorkFolder(tempDir)
+        guard let taskID = await sut.createTask(title: "T", supervisorTask: "G") else {
+            XCTFail("Failed to create task"); return
+        }
+        await sut.switchTask(to: taskID)
+        sut.engineState[taskID] = .running
+
+        controller.isTaskSelected = true
+        controller._testForceNewTaskMode = false
+        controller._testLastRefreshedTaskID = taskID
+        controller._testIsPanelVisible = true
+        defer { controller._testIsPanelVisible = false }
+
+        controller.refreshPanelIfVisible(explicitTaskNavigation: true)
+
+        XCTAssertFalse(controller._testForceNewTaskMode,
+                       "Flag stays false — explicit nav is idempotent when nothing to clear")
+        if case .taskWorking = controller._testResolveMode() { /* pass */ } else {
+            XCTFail("Expected .taskWorking — resolveMode reads real state, not the explicit flag")
+        }
+    }
+
+    /// `lastRefreshedTaskID` must be updated even when the panel is visible and
+    /// nothing else changes — otherwise a stale tracker from a previous panel
+    /// session could mis-detect `taskChanged` on the next passive refresh after
+    /// re-open. The unconditional assignment at the top of
+    /// `refreshPanelIfVisible` is the contract.
+    func testRefresh_explicit_updatesLastRefreshedTaskID() async {
+        await sut.openWorkFolder(tempDir)
+        guard let taskID = await sut.createTask(title: "T", supervisorTask: "G") else {
+            XCTFail("Failed to create task"); return
+        }
+        await sut.switchTask(to: taskID)
+
+        controller.isTaskSelected = true
+        controller._testForceNewTaskMode = false
+        controller._testLastRefreshedTaskID = nil
+        controller._testIsPanelVisible = true
+        defer { controller._testIsPanelVisible = false }
+
+        controller.refreshPanelIfVisible(explicitTaskNavigation: true)
+
+        XCTAssertEqual(controller._testLastRefreshedTaskID, taskID,
+                       "Tracker must catch up to currentTaskID after any refresh, explicit or passive")
+    }
+
+    /// Isolates the `currentTaskID != nil` guard from `taskChanged`. Companion
+    /// to `testRefresh_explicit_atWatchtowerWithNilActiveTask_…` which sets
+    /// `lastRefreshedTaskID = 42` (so `taskChanged = true` and the test could
+    /// pass under a buggy `taskChanged && (currentTaskID != nil || explicit)`
+    /// rewrite). This test sets `lastRefreshedTaskID = nil` so `taskChanged
+    /// == false` — the outer `currentTaskID != nil` guard is the only thing
+    /// that can preserve the flag.
+    func testRefresh_explicit_cleanWatchtowerEntry_preservesForceNewTaskMode() async {
+        await sut.openWorkFolder(tempDir)
+        await sut.switchTask(to: nil)
+
+        controller.isTaskSelected = false
+        controller._testForceNewTaskMode = true
+        // nil == nil → taskChanged == false. Distinguishes this case from the
+        // sibling test where lastRefreshedTaskID is a non-nil sentinel.
+        controller._testLastRefreshedTaskID = nil
+        controller._testIsPanelVisible = true
+        defer { controller._testIsPanelVisible = false }
+
+        controller.refreshPanelIfVisible(explicitTaskNavigation: true)
+
+        XCTAssertTrue(controller._testForceNewTaskMode,
+                      "currentTaskID == nil must veto the clear regardless of taskChanged/explicit")
+    }
+
+    /// Symmetric to `testRefresh_explicit_resolvesToSupervisorAnswer…` which
+    /// pins the .working → .answer transition under explicit nav. This pins
+    /// the reverse: when the previously-asked question is resolved, explicit
+    /// re-selection of the same task must exit answer mode. Without the
+    /// `explicitTaskNavigation` bypass on the panel-update guard (line ~257),
+    /// the same-task case (`taskChanged == false` AND
+    /// `newVisualMode == currentVisualMode` only when the panel was already
+    /// in answer mode → it isn't) would skip the transition.
+    func testRefresh_explicit_exitsAnswerModeWhenQuestionResolved() async {
+        guard let (taskID, _) = await createTaskWithQuestionStep() else { return }
+
+        controller.isTaskSelected = true
+        controller._testForceNewTaskMode = false
+        controller._testLastRefreshedTaskID = taskID
+        controller._testIsPanelVisible = true
+        defer { controller._testIsPanelVisible = false }
+
+        // Step 1: enter answer mode via the pending question.
+        controller.refreshPanelIfVisible(explicitTaskNavigation: true)
+        XCTAssertTrue(controller._testIsInAnswerMode,
+                      "Setup: pending question must drive entry into answer mode")
+
+        // Step 2: resolve the question by clearing the step's input flag,
+        // then explicitly re-select the same task. resolveMode now returns
+        // .taskWorking (chat) or .overlay (non-chat) — not .supervisorAnswer.
+        await sut.mutateTask(taskID: taskID) { task in
+            guard var run = task.runs.last else { return }
+            for i in run.steps.indices {
+                run.steps[i].needsSupervisorInput = false
+                run.steps[i].supervisorQuestion = nil
+            }
+            task.runs.removeLast()
+            task.runs.append(run)
+        }
+        sut.engineState[taskID] = .running
+
+        controller.refreshPanelIfVisible(explicitTaskNavigation: true)
+
+        XCTAssertFalse(controller._testIsInAnswerMode,
+                       "Explicit re-selection after question resolved must exit answer mode")
+    }
+
+    /// Sequencing: after an explicit nav has cleared the flag, a subsequent
+    /// passive refresh (engine tick) on the same task must NOT re-set the flag
+    /// — `forceNewTaskMode` is only set by `showNewTask()` / `dismissPanel`.
+    /// Pins that the clear is permanent until a fresh `+` press.
+    func testRefresh_passiveAfterExplicit_doesNotReintroduceForceMode() async {
+        await sut.openWorkFolder(tempDir)
+        guard let taskID = await sut.createTask(title: "T", supervisorTask: "G") else {
+            XCTFail("Failed to create task"); return
+        }
+        await sut.switchTask(to: taskID)
+        sut.engineState[taskID] = .running
+
+        controller.isTaskSelected = true
+        controller._testForceNewTaskMode = true
+        controller._testLastRefreshedTaskID = taskID
+        controller._testIsPanelVisible = true
+        defer { controller._testIsPanelVisible = false }
+
+        // Explicit nav clears the flag.
+        controller.refreshPanelIfVisible(explicitTaskNavigation: true)
+        XCTAssertFalse(controller._testForceNewTaskMode)
+        if case .taskWorking = controller._testResolveMode() { /* pass */ } else {
+            XCTFail("Expected .taskWorking after explicit clear")
+        }
+
+        // Passive tick (engine status change emulation) — flag stays false, mode stable.
+        controller.refreshPanelIfVisible()
+        XCTAssertFalse(controller._testForceNewTaskMode,
+                       "Passive refresh after explicit clear must not re-arm the flag")
+        if case .taskWorking = controller._testResolveMode() { /* pass */ } else {
+            XCTFail("Passive refresh must not perturb the resolved mode")
+        }
     }
 }
 

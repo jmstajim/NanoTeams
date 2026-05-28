@@ -1,7 +1,7 @@
 import Foundation
 
 /// Service for step execution mutations (status changes, reset, Supervisor comment injection).
-enum StepExecutionService {
+nonisolated enum StepExecutionService {
 
     /// Prepares a step for execution by injecting Supervisor comments.
     static func prepareStepForExecution(

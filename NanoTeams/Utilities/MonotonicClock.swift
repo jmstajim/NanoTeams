@@ -3,7 +3,7 @@ import Foundation
 /// Thread-safe monotonic timestamp generator that guarantees strictly increasing timestamps.
 /// Ensures that each call to `now()` returns a Date greater than all previous calls.
 /// Uses NSLock for thread safety (synchronous, can be called from any context).
-public final class MonotonicClock {
+nonisolated public final class MonotonicClock: @unchecked Sendable {
     public static let shared = MonotonicClock()
 
     private let lock = NSLock()

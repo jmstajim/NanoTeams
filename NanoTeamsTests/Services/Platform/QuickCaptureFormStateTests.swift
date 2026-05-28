@@ -137,12 +137,6 @@ final class QuickCaptureFormStateTests: XCTestCase {
         XCTAssertTrue(sut.canSubmit(mode: .overlay))
     }
 
-    func testCanSubmit_sheetMode_requiresText() {
-        XCTAssertFalse(sut.canSubmit(mode: .sheet))
-        sut.supervisorTask = "Do X"
-        XCTAssertTrue(sut.canSubmit(mode: .sheet))
-    }
-
     func testCanSubmit_supervisorAnswer_acceptsTextOrClipsOrAttachments() {
         let mode = QuickCaptureMode.supervisorAnswer(payload: makePayload())
 

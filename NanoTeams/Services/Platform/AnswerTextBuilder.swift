@@ -44,12 +44,12 @@ enum AnswerTextBuilder {
                 let header: String
                 if let parsed {
                     header = nonEmptyClips.count == 1
-                        ? "--- Clipped Text (\(parsed.source)) ---"
-                        : "--- Clipped Text (\(index + 1) of \(nonEmptyClips.count), \(parsed.source)) ---"
+                        ? "## Clipped Text — \(parsed.source)"
+                        : "## Clipped Text — \(index + 1) of \(nonEmptyClips.count), \(parsed.source)"
                 } else {
                     header = nonEmptyClips.count == 1
-                        ? "--- Clipped Text ---"
-                        : "--- Clipped Text (\(index + 1) of \(nonEmptyClips.count)) ---"
+                        ? "## Clipped Text"
+                        : "## Clipped Text — \(index + 1) of \(nonEmptyClips.count)"
                 }
                 let body = parsed?.body ?? clip
                 return "\(header)\n\(body)"
@@ -80,7 +80,7 @@ enum AnswerTextBuilder {
                     continue
                 }
                 embeddedIDs.insert(attachment.id)
-                let section = "--- Attached File: \(attachment.fileName) ---\n\(content)"
+                let section = "## Attached File: \(attachment.fileName)\n\(content)"
                 fullAnswer = fullAnswer.isEmpty ? section : fullAnswer + "\n\n" + section
             }
         }

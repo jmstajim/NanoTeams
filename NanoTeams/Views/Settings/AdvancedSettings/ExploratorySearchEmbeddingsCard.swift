@@ -36,13 +36,6 @@ struct ExploratorySearchEmbeddingsCard: View {
     /// embedding URL.
     @State private var apiToken: String = ""
 
-    /// URL the picker reads from — override URL when typed, otherwise
-    /// the global LLM URL via `EmbeddingConfig.defaultNomicLMStudio`
-    /// fallback. Mirrors the runtime resolver.
-    private var effectiveFetchURL: String {
-        config.effectiveEmbeddingConfig.baseURLString
-    }
-
     private var inheritedURLPrompt: String {
         let global = config.llmBaseURLString.trimmingCharacters(in: .whitespaces)
         return global.isEmpty ? "http://127.0.0.1:1234" : global

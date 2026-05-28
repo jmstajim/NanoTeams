@@ -38,17 +38,20 @@ final class NTMSOrchestrator {
     }
 
     // periphery:ignore - protocol conformance (LLMStateDelegate)
+    var globalLLMContext: String {
+        configuration.globalContext
+    }
+
+    // periphery:ignore - protocol conformance (LLMStateDelegate)
     var maxLLMRetries: Int {
         get { configuration.maxLLMRetries }
         set { configuration.maxLLMRetries = newValue }
     }
 
-    // periphery:ignore - protocol conformance (LLMStateDelegate)
     var visionLLMConfig: LLMConfig? {
         configuration.visionLLMConfig
     }
 
-    // periphery:ignore - protocol conformance (LLMStateDelegate)
     var loggingEnabled: Bool {
         configuration.loggingEnabled
     }
@@ -57,22 +60,27 @@ final class NTMSOrchestrator {
         configuration.exploratorySearchEnabled
     }
 
+    // periphery:ignore - protocol conformance (LLMStateDelegate)
     var searchExploratoryByDefault: Bool {
         configuration.searchExploratoryByDefault
     }
 
+    // periphery:ignore - protocol conformance (LLMStateDelegate)
     var readFileMaxLines: Int {
         configuration.readFileMaxLines
     }
 
+    // periphery:ignore - protocol conformance (LLMStateDelegate)
     var searchMaxResults: Int {
         configuration.searchMaxResults
     }
 
+    // periphery:ignore - protocol conformance (LLMStateDelegate)
     var searchContextBefore: Int {
         configuration.searchContextBefore
     }
 
+    // periphery:ignore - protocol conformance (LLMStateDelegate)
     var searchContextAfter: Int {
         configuration.searchContextAfter
     }
@@ -141,8 +149,25 @@ final class NTMSOrchestrator {
     /// clobber the flag / handle of a freshly started new run.
     @ObservationIgnored var workFolderContextGenerationGeneration: Int = 0
 
-    /// All tasks currently in memory (active + background).
+    /// All top-level tasks currently in memory (active + background).
+    /// Child tasks created via `delegate_to_team` (`parentTaskID != nil`) are excluded —
+    /// they are internal to the parent's tool call and never surface as Supervisor work.
     var allLoadedTasks: [NTMSTask] {
+        var tasks: [NTMSTask] = []
+        if let active = activeTask, active.parentTaskID == nil {
+            tasks.append(active)
+        }
+        if let loaded = snapshot?.loadedTasks {
+            for (id, task) in loaded where id != activeTaskID && task.parentTaskID == nil {
+                tasks.append(task)
+            }
+        }
+        return tasks
+    }
+
+    /// Variant including delegated child tasks. Used by internal lifecycle code
+    /// (recursive removal, awaiter cleanup) that genuinely needs the full set.
+    var allLoadedTasksIncludingChildren: [NTMSTask] {
         var tasks: [NTMSTask] = []
         if let active = activeTask { tasks.append(active) }
         if let loaded = snapshot?.loadedTasks {
@@ -156,6 +181,18 @@ final class NTMSOrchestrator {
     @ObservationIgnored let repository: any NTMSRepositoryProtocol
     /// Engine instances keyed by task ID.
     @ObservationIgnored var taskEngines: [Int: TeamEngine] = [:]
+    /// Notification side-channel for synchronous delegation: `handleDelegateToTeam`
+    /// awaits this when it spawns a child task. Wired in `engineForTask` — the
+    /// engine's `onStateChanged` callback delivers terminal / `.needsSupervisorInput`
+    /// transitions here in addition to the normal `engineState[taskID]` write.
+    @ObservationIgnored let completionAwaiter: TaskCompletionAwaiter = TaskCompletionAwaiter()
+    /// Watches delegated child tasks for pathologically repetitive output and
+    /// auto-triggers Pause-and-Decide via `notifyDelegationInterrupt(...)`.
+    /// Hooks fire from streaming (throttled), `commitStreaming`, and
+    /// llmConversation appends — see `DelegationLoopWatcher`. The watcher
+    /// holds a weak ref back to the orchestrator (resolved via `bind` after
+    /// init since `self` isn't available in the property initializer).
+    @ObservationIgnored let delegationLoopWatcher: DelegationLoopWatcher = DelegationLoopWatcher()
     /// Atomic reserve flag for generated-team creation. Inserted by
     /// `beginTeamGeneration` before the detached Task is spawned so concurrent
     /// `startRun` / `retryTeamGeneration` callers see the slot as taken even
@@ -166,6 +203,24 @@ final class NTMSOrchestrator {
     /// `pauseRun` cancels these so an in-flight `TeamGenerationService.generate`
     /// stream stops before it can transition the engine.
     @ObservationIgnored private var teamGenerationTasks: [Int: Task<Void, Never>] = [:]
+    /// Serialization chain for `switchTask` cached-fast-path active-task pointer
+    /// writes. Each new fast-path call captures the prior Task into its own
+    /// closure as `previous` and awaits it before dispatching its own
+    /// off-MainActor `setActiveTaskID`, so two fast-path switches issued in
+    /// rapid succession commit to disk in MainActor-invocation order. Without
+    /// this the two `Task.detached` writes would race on the cooperative pool
+    /// and a "later-to-finish" A could leave disk pointing at the stale task
+    /// while the UI is on B. The orchestrator slot only points to the LATEST
+    /// Task — the chain is extended through closure captures, and prior links
+    /// are released when each new Task's `_ = try? await previous?.value`
+    /// returns and the closure-captured `previous` falls out of scope.
+    /// Cancelled (and nil'd) on `closeProject` / `resetAllData` so an
+    /// in-flight write doesn't fire against a torn-down workfolder.
+    /// Other writers of `activeTaskID` (slow-path `switchTask`, top-level
+    /// `createTask`, `deleteTask` active-task fallback) must
+    /// `await flushPendingActiveTaskWrite()` first — see that helper for
+    /// the ordering invariant they restore.
+    @ObservationIgnored var pendingActiveTaskWrite: Task<Void, Error>?
     @ObservationIgnored let llmExecutionService: LLMExecutionService
     @ObservationIgnored let settingsService: SettingsService
     @ObservationIgnored let taskService: TaskService
@@ -218,6 +273,12 @@ final class NTMSOrchestrator {
         self.embeddingLifecycle = embeddingLifecycle ?? EmbeddingModelLifecycleService()
         self.searchEmbeddingClient = searchEmbeddingClient ?? LMStudioEmbeddingClient()
         self.llmExecutionService.attach(delegate: self)
+        // Bind the delegation loop watcher AFTER `self` is fully initialized
+        // — its weak orchestrator ref can't be set in the property
+        // initializer. Watcher's hooks fire from streaming/commit paths and
+        // call `notifyDelegationInterrupt(...)` for child tasks that emit
+        // pathologically repetitive output.
+        self.delegationLoopWatcher.bind(orchestrator: self)
         // Wire soft-warning surfacing — VRAM-leak / transient-list failures
         // previously went silent. Use a weak self capture so the lifecycle
         // service doesn't keep the orchestrator alive after teardown.
@@ -262,7 +323,25 @@ final class NTMSOrchestrator {
         let adapter = TaskEngineStoreAdapter(orchestrator: self, taskID: taskID)
         engine.attach(store: adapter)
         engine.onStateChanged = { [weak self] state in
-            self?.engineState[taskID] = state
+            guard let self else { return }
+            self.engineState[taskID] = state
+            // Side-channel: wake any handler awaiting this child's completion or
+            // supervisor-input yield. UI observation via engineState is unaffected.
+            // Map the engine state to the narrow `TerminalOutcome` so the
+            // awaiter type can't carry non-terminal cases (which would
+            // wedge the handler into a tight loop).
+            switch state {
+            case .done:
+                self.completionAwaiter.deliver(taskID: taskID, outcome: .terminal(.done))
+            case .failed:
+                self.completionAwaiter.deliver(taskID: taskID, outcome: .terminal(.failed))
+            case .needsAcceptance:
+                self.completionAwaiter.deliver(taskID: taskID, outcome: .terminal(.needsAcceptance))
+            case .needsSupervisorInput:
+                self.completionAwaiter.deliver(taskID: taskID, outcome: .needsSupervisorInput)
+            default:
+                break
+            }
         }
         taskEngines[taskID] = engine
         return engine
@@ -273,6 +352,7 @@ final class NTMSOrchestrator {
         taskEngines.removeValue(forKey: taskID)
         engineState.removeEngine(for: taskID)
         engineState.clearMeetingParticipants(for: taskID)
+        completionAwaiter.cancelAll(taskID: taskID)
     }
 
     func stopAllEngines() {
@@ -281,6 +361,53 @@ final class NTMSOrchestrator {
         }
         taskEngines.removeAll()
         engineState.removeAllEngines()
+        completionAwaiter.cancelAll()
+    }
+
+    /// Awaits the next terminal or supervisor-input transition for `taskID`.
+    /// Fast-path: if the engine is already in a wakeable state, returns immediately
+    /// without registering — otherwise the awaiter would never fire (the engine
+    /// already raced past the transition before this call could register).
+    ///
+    /// Second fast-path covers the auto-accept loop in `handleDelegateToTeam`:
+    /// after the handler calls `closeTask(childID)` on `.needsAcceptance`, the
+    /// engine is torn down via `stopEngine` (which also drops `engineState[id]`).
+    /// The handler then loops back and re-enters this function — but with no
+    /// engine state and no transition to deliver, the awaiter would register
+    /// against a `cancelAll`'d slot and hang until the 30-minute timeout.
+    /// Reading the task's `closedAt` (set by `closeTask` before tearing down
+    /// the engine) lets us short-circuit to `.terminal(.done)`. Same idea for
+    /// `derivedStatus == .failed` — recovery paths can leave the engine gone
+    /// while the run carries a failed step.
+    func awaitTaskTerminalState(taskID: Int) async -> TaskCompletionAwaiter.WaitOutcome {
+        if let s = engineState.taskEngineStates[taskID] {
+            switch s {
+            case .done:
+                return .terminal(.done)
+            case .failed:
+                return .terminal(.failed)
+            case .needsAcceptance:
+                return .terminal(.needsAcceptance)
+            case .needsSupervisorInput:
+                return .needsSupervisorInput
+            default:
+                break
+            }
+        }
+        if let task = loadedTask(taskID) {
+            if task.closedAt != nil {
+                return .terminal(.done)
+            }
+            switch task.derivedStatusFromActiveRun() {
+            case .failed:
+                return .terminal(.failed)
+            case .done:
+                return .terminal(.done)
+            default:
+                break
+            }
+        }
+        return await completionAwaiter.register(taskID: taskID)
     }
 
     /// Reserves an in-flight slot for generated-team creation for the given task.
@@ -386,35 +513,53 @@ final class NTMSOrchestrator {
             return false
         }
 
+        // In-memory mutate + snapshot apply MUST run synchronously on
+        // `@MainActor` so concurrent callers (parallel role engines per
+        // CLAUDE.md invariant #45, streaming + tool-result writes on the
+        // same task) cannot read a stale `activeTask` between our mutate
+        // and apply. Only the JSON encode + atomic file write detaches —
+        // that's where the main-thread cost is. Trade-off: in-memory may
+        // be ahead of disk briefly; on disk failure we surface
+        // `lastErrorMessage` but keep the in-memory mutation. See plan
+        // C1 in `.claude/plans/snoopy-sprouting-tiger.md`.
         if taskID == activeTaskID {
-            // Active task: persist to disk and update in-memory snapshot directly
-            // (avoids re-reading project.json, roles.json, tools.json from disk)
             guard var task = activeTask else {
                 self.lastErrorMessage = "Cannot persist active task \(taskID): task not loaded."
                 return false
             }
             mutate(&task)
             task.updatedAt = MonotonicClock.shared.now()
+            applyTaskUpdate(task)
+            let repoCopy = repository
+            let taskCopy = task
             do {
-                try repository.updateTaskOnly(at: url, task: task)
-                applyTaskUpdate(task)
+                try await Task.detached(priority: .userInitiated) {
+                    try repoCopy.updateTaskOnly(at: url, task: taskCopy)
+                }.value
                 return true
+            } catch is CancellationError {
+                return false
             } catch {
                 self.lastErrorMessage = "Failed to save task: \(error.localizedDescription)"
                 return false
             }
         } else {
-            // Background task: lightweight persistence
             guard var task = loadedTask(taskID) else {
                 self.lastErrorMessage = "Cannot persist task \(taskID): task not loaded."
                 return false
             }
             mutate(&task)
             task.updatedAt = MonotonicClock.shared.now()
+            snapshot?.loadedTasks[taskID] = task
+            let repoCopy = repository
+            let taskCopy = task
             do {
-                try repository.updateTaskOnly(at: url, task: task)
-                snapshot?.loadedTasks[taskID] = task
+                try await Task.detached(priority: .userInitiated) {
+                    try repoCopy.updateTaskOnly(at: url, task: taskCopy)
+                }.value
                 return true
+            } catch is CancellationError {
+                return false
             } catch {
                 self.lastErrorMessage = "Failed to save task: \(error.localizedDescription)"
                 return false

@@ -1,4 +1,4 @@
-import AVFoundation
+@preconcurrency import AVFoundation
 import Foundation
 import Speech
 
@@ -243,13 +243,22 @@ final class DictationEngine: DictationEngineProtocol {
             }
         }
 
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { await drain() }
-            group.addTask {
-                try? await Task.sleep(nanoseconds: Self.flushTimeoutNanos)
+        // Race the drain against a bounded timeout. `withTaskGroup` won't accept
+        // a `@MainActor` closure here (the drain captures the actor's `slots`,
+        // and `Slot` holds non-`Sendable` Speech-framework types), so we use
+        // `OnceResolver` + two sibling `Task { … }` instances — same shape as
+        // `LLMExecutionService.awaitTaskWithTimeout`. Either branch resumes the
+        // continuation once; the other completes in the background.
+        let resolver = OnceResolver()
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            Task {
+                await drain()
+                if resolver.tryResolve() { cont.resume() }
             }
-            _ = await group.next()
-            group.cancelAll()
+            Task {
+                try? await Task.sleep(for: .nanoseconds(Self.flushTimeoutNanos))
+                if resolver.tryResolve() { cont.resume() }
+            }
         }
 
         for slot in slots {
@@ -338,15 +347,21 @@ private final class TapBridge: @unchecked Sendable {
         }
 
         var error: NSError?
-        var provided = false
+        // The converter calls this block synchronously, but its parameter is
+        // declared `@Sendable` so Swift 6 forbids capturing a local `var Bool`
+        // for mutation. Wrap the flag in a final class so the closure mutates
+        // through a reference (the class itself is captured by value, the
+        // boxed flag is the mutable state).
+        nonisolated final class ProvidedFlag: @unchecked Sendable { var value = false }
+        let provided = ProvidedFlag()
         let status = converter.convert(to: output, error: &error) { _, outStatus in
-            if provided {
+            if provided.value {
                 // `.noDataNow` keeps the converter's sample-rate filter alive
                 // across buffers. `.endOfStream` would close it permanently.
                 outStatus.pointee = .noDataNow
                 return nil
             }
-            provided = true
+            provided.value = true
             outStatus.pointee = .haveData
             return input
         }

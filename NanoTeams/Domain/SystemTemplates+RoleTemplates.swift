@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Role Templates
 
-extension SystemTemplates {
+nonisolated extension SystemTemplates {
 
     private typealias TN = ToolNames
 
@@ -63,13 +63,13 @@ extension SystemTemplates {
                        TN.runXcodebuild, TN.runXcodetests,
                        TN.requestTeamMeeting, TN.askTeammate, TN.askSupervisor],
              usePlanningPhase: true,
-             requires: ["Implementation Plan", "Design Spec"], produces: ["Engineering Notes", "Build Diagnostics"]),
+             requires: ["Implementation Plan", "Design Spec"], produces: ["Engineering Notes"]),
         role("codeReviewer", name: "Code Reviewer", icon: "doc.text.magnifyingglass",
              toolIDs: [TN.readFile, TN.readLines, TN.listFiles, TN.search,
                        TN.gitDiff, TN.gitLog, TN.askTeammate,
                        TN.requestTeamMeeting, TN.updateScratchpad, TN.requestChanges],
              usePlanningPhase: true,
-             requires: ["Implementation Plan", "Engineering Notes"], produces: ["Code Review", "Code Review Summary"]),
+             requires: ["Implementation Plan", "Engineering Notes"], produces: ["Code Review Summary"]),
         role("sre", name: "SRE", icon: "shield.checkered",
              toolIDs: [TN.readFile, TN.readLines, TN.listFiles, TN.search,
                        TN.askTeammate, TN.requestTeamMeeting,
@@ -119,6 +119,19 @@ extension SystemTemplates {
                        TN.gitAdd, TN.gitCommit, TN.gitCheckout, TN.gitBranch,
                        TN.gitMerge, TN.gitPull, TN.gitStash,
                        TN.runXcodebuild, TN.runXcodetests,
+                       TN.askSupervisor, TN.analyzeImage],
+             requires: [supervisorTaskArtifactName]),
+
+        // MARK: Coding Agent — hybrid: handles small edits directly, delegates complex work
+        // Delegation tools (delegate_to_team, cancel/resume/forward) are
+        // NOT in toolIDs — they auto-inject when `hasDelegationConfigured` is true (see
+        // `LLMExecutionService+ToolResolution`). The whitelist + generated permission
+        // are wired in `TeamTemplateFactory.codingAgent()`.
+        role("codingAgent", name: "Coding Agent", icon: "wand.and.rays",
+             toolIDs: [TN.readFile, TN.readLines, TN.listFiles, TN.search,
+                       TN.writeFile, TN.editFile, TN.deleteFile,
+                       TN.gitStatus, TN.gitDiff, TN.gitLog, TN.gitBranchList,
+                       TN.updateScratchpad,
                        TN.askSupervisor, TN.analyzeImage],
              requires: [supervisorTaskArtifactName]),
     ])

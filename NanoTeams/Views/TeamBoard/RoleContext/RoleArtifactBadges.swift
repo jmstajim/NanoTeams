@@ -7,7 +7,7 @@ struct RoleArtifactBadges: View {
     var body: some View {
         HStack(spacing: Spacing.xs) {
             ForEach(artifacts, id: \.id) { artifact in
-                Label(artifact.name, systemImage: artifact.icon ?? "doc.fill")
+                Label(artifact.name, systemImage: artifact.icon)
                     .font(.system(size: 10, weight: .medium))
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)

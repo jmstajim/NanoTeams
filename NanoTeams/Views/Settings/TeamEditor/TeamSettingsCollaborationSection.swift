@@ -1,5 +1,30 @@
 import SwiftUI
 
+/// Pure-logic backing for the Meeting Coordinator Picker — orphan tolerance
+/// + set-side sanitization. Kept on a nonisolated namespace so it can be
+/// unit-tested without a SwiftUI host. Get-binding delegates to
+/// `DesignatedCoordinatorResolver` so the picker shares the orphan-self-heal
+/// contract with the runtime schema-build path (single source of truth).
+enum MeetingCoordinatorPickerLogic {
+
+    /// Normalizes the stored `meetingCoordinatorRoleID` for the picker's
+    /// `get` binding: returns `nil` (= visually "Auto") when stored is nil,
+    /// empty, or references a role that no longer exists in `availableIDs`.
+    static func normalizedSelection(
+        stored: String?,
+        availableIDs: [String]
+    ) -> String? {
+        DesignatedCoordinatorResolver.normalize(storedID: stored, availableIDs: availableIDs)
+    }
+
+    /// Sanitizes the picker's `set` action: collapses empty strings to `nil`
+    /// so the model never persists `""` as a coordinator id.
+    static func sanitizedSelection(_ inbound: String?) -> String? {
+        guard let id = inbound, !id.isEmpty else { return nil }
+        return id
+    }
+}
+
 /// Collaboration settings section extracted from TeamSettingsDetailView (SRP).
 /// Configures Supervisor meeting access, coordinator role, and invitable roles.
 struct TeamSettingsCollaborationSection: View {
@@ -15,15 +40,30 @@ struct TeamSettingsCollaborationSection: View {
         Section {
             Toggle("Supervisor can join meetings", isOn: $supervisorCanBeInvited)
 
-            Picker("Meeting Coordinator", selection: Binding(
-                get: { team.settings.meetingCoordinatorRoleID ?? nonSupervisorRoles.first?.id ?? "" },
+            // Auto (= `meetingCoordinatorRoleID == nil`) means: no designated
+            // coordinator — the initiator of each meeting becomes its
+            // effective coordinator. See `TeamSettings`.
+            //
+            // `normalizedSelection` collapses orphan stored IDs (referenced
+            // role removed) to nil so the picker shows "Auto" instead of a
+            // blank selection, matching the runtime's silent self-heal in
+            // `LLMExecutionService.resolveCoordinatorRole`.
+            Picker("Meeting Coordinator", selection: Binding<String?>(
+                get: {
+                    MeetingCoordinatorPickerLogic.normalizedSelection(
+                        stored: team.settings.meetingCoordinatorRoleID,
+                        availableIDs: nonSupervisorRoles.map(\.id)
+                    )
+                },
                 set: { newRoleID in
-                    team.settings.meetingCoordinatorRoleID = newRoleID
+                    team.settings.meetingCoordinatorRoleID =
+                        MeetingCoordinatorPickerLogic.sanitizedSelection(newRoleID)
                     onSave()
                 }
             )) {
+                Text("Auto").tag(String?.none)
                 ForEach(nonSupervisorRoles) { role in
-                    Text(role.name).tag(role.id)
+                    Text(role.name).tag(String?.some(role.id))
                 }
             }
 

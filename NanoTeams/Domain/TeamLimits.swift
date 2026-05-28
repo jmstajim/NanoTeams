@@ -1,6 +1,6 @@
 import Foundation
 
-struct TeamLimits: Codable, Hashable {
+nonisolated struct TeamLimits: Codable, Hashable {
     /// Maximum consultations per step
     var maxConsultationsPerStep: Int
 

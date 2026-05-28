@@ -112,13 +112,35 @@ final class TaskEngineStoreAdapter: TeamEngineStore {
         }
     }
 
-    func setLastErrorMessageForUI(_ message: String) async {
-        await orchestrator?.setLastErrorMessageForUI(message)
+    func setLastErrorMessageForUI(_ message: String) {
+        orchestrator?.setLastErrorMessageForUI(message)
     }
 
     // MARK: - Private
 
-    /// Resolve the team for this task: task.generatedTeam → preferredTeamID → project's activeTeam.
+    /// Resolve the team for this task.
+    ///
+    /// Resolution order:
+    ///  1. `task.generatedTeam` — child tasks delegated with `team_id: "generated"`
+    ///     own their team in this slot, set via `adoptGeneratedTeam`.
+    ///  2. `workFolder.teams[preferredTeamID]` — existing-team delegations and
+    ///     normal user-created tasks.
+    ///  3. `workFolder.activeTeam` — the user's currently selected team for
+    ///     **top-level** tasks only.
+    ///
+    /// **Critical: child tasks MUST NOT fall through to step 3.** When a child
+    /// task is created via `delegate_to_team`, its `preferredTeamID` is either
+    /// the generated team's ephemeral id (not in `workFolder.teams`) or an
+    /// existing team's id (in `workFolder.teams`). If `generatedTeam` is nil
+    /// AND the preferredTeamID lookup misses, falling through to `activeTeam`
+    /// hands the child the PARENT's currently-selected team — which still has
+    /// `delegate_to_team` and the parent's tools intact. The child then
+    /// recursively re-delegates, producing the `Coding Agent.Coding Agent…`
+    /// infinite chain documented in `docs/delegation-feature.md` spec #91.
+    /// Returning `nil` here makes `TeamEngine+RunLoop.swift:71` transition the
+    /// child engine to `.failed`, which the parent's `delegate_to_team`
+    /// awaiter surfaces as a `.commandFailed` envelope — visible failure beats
+    /// silent recursion every time.
     private var resolvedTeam: Team? {
         let task = activeTask
         if let generated = task?.generatedTeam {
@@ -127,6 +149,13 @@ final class TaskEngineStoreAdapter: TeamEngineStore {
         if let preferredTeamID = task?.preferredTeamID,
            let team = orchestrator?.workFolder?.team(withID: preferredTeamID) {
             return team
+        }
+        // Child task lost its team reference — refuse to inherit the parent's
+        // active team. Surface a diagnostic so the parent's awaiter has
+        // something to report via `lastErrorMessageForTask(_:)`.
+        if let task, task.parentTaskID != nil {
+            orchestrator?.lastErrorMessage = "Child task \(task.id) has no resolvable team (generatedTeam=nil, preferredTeamID=\(task.preferredTeamID?.description ?? "nil") not in workFolder). Refusing to fall back to parent's active team to avoid Coding Agent self-recursion."
+            return nil
         }
         return orchestrator?.workFolder?.activeTeam
     }

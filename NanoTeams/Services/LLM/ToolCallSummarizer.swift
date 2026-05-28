@@ -1,15 +1,15 @@
 import Foundation
 
 /// Generates compact human-readable summaries of tool arguments and results.
-/// Used by ToolCallCache for tracked call display and dedup keys.
+/// Used by ToolCallTracker for tracked-call display.
 /// OCP: dictionary-based dispatch — add new tools by adding entries, not modifying switches.
-enum ToolCallSummarizer {
+nonisolated enum ToolCallSummarizer {
 
     private typealias TN = ToolNames
 
     // MARK: - Argument Summarization
 
-    private static let argumentSummarizers: [String: ([String: Any]) -> String] = {
+    nonisolated(unsafe) private static let argumentSummarizers: [String: ([String: Any]) -> String] = {
         let pathExtractor: ([String: Any]) -> String = { ($0["path"] as? String) ?? "?" }
         let schemeExtractor: ([String: Any]) -> String = { dict in
             if let scheme = dict["scheme"] as? String { return "scheme: \(scheme)" }
@@ -84,6 +84,23 @@ enum ToolCallSummarizer {
                 }
                 return ""
             },
+            TN.delegateToTeam: { dict in
+                let teamID = (dict["team_id"] as? String) ?? ""
+                let brief = (dict["task_brief"] as? String) ?? ""
+                let teamLabel: String
+                if teamID == DelegationConstants.generatedTeamSentinel {
+                    teamLabel = "Generated"
+                } else if teamID.isEmpty {
+                    teamLabel = "?"
+                } else {
+                    // Surface only the trailing component of the UUID-like id so the
+                    // chip stays scannable; full id is available in the expanded view.
+                    teamLabel = String(teamID.suffix(8))
+                }
+                let trimmedBrief = brief.count > 60 ? String(brief.prefix(60)) + "…" : brief
+                if trimmedBrief.isEmpty { return teamLabel }
+                return "\(teamLabel) · \(trimmedBrief)"
+            },
         ]
     }()
 
@@ -106,7 +123,7 @@ enum ToolCallSummarizer {
 
     // MARK: - Result Summarization
 
-    private static let resultSummarizers: [String: ([String: Any]) -> String] = [
+    nonisolated(unsafe) private static let resultSummarizers: [String: ([String: Any]) -> String] = [
         TN.gitStatus: { dict in
             if let data = dict["data"] as? [String: Any] {
                 let branch = (data["branch"] as? String) ?? "?"

@@ -5,15 +5,15 @@ private typealias JS = JSONSchema
 
 // MARK: - analyze_image
 
-struct AnalyzeImageTool: ToolHandler {
+nonisolated struct AnalyzeImageTool: ToolHandler {
     static let name = TN.analyzeImage
     static let schema = ToolSchema(
         name: TN.analyzeImage,
-        description: "Analyze an image file using a vision model. Returns a text description. Use for screenshots, diagrams, UI mockups. The image must be inside the work folder. Supported formats: PNG, JPEG, GIF, WebP, BMP.",
+        description: "Analyze an image file with a vision model. Returns a text description. Image must be inside the work folder.",
         parameters: JS.object(
             properties: [
-                "path": JS.string("Relative path to the image file (png, jpg, jpeg, gif, webp, bmp)"),
-                "prompt": JS.string("Question or instruction about the image"),
+                "path": JS.string("Relative path to the image."),
+                "prompt": JS.string("Question or instruction about the image."),
             ],
             required: ["path", "prompt"]
         )

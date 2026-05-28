@@ -272,7 +272,7 @@ final class TeamGenerationServiceStreamTests: XCTestCase {
             return AsyncThrowingStream { continuation in
                 Task {
                     for _ in 0..<count {
-                        try? await Task.sleep(nanoseconds: delay)
+                        try? await Task.sleep(for: .nanoseconds(delay))
                         continuation.yield(StreamEvent(contentDelta: "", toolCallDeltas: []))
                     }
                     continuation.finish()
@@ -315,7 +315,7 @@ final class TeamGenerationServiceStreamTests: XCTestCase {
                 AsyncThrowingStream { continuation in
                     Task {
                         continuation.yield(StreamEvent(contentDelta: "{\"name\":\"T\","))
-                        try? await Task.sleep(nanoseconds: 300_000_000) // 300ms > 100ms deadline
+                        try? await Task.sleep(for: .milliseconds(300)) // 300ms > 100ms deadline
                         continuation.yield(StreamEvent(contentDelta: "\"description\":\"x\",\"roles\":[{\"name\":\"R\",\"prompt\":\"p\",\"produces_artifacts\":[\"X\"],\"requires_artifacts\":[\"Supervisor Task\"],\"tools\":[]}],\"artifacts\":[{\"name\":\"X\",\"description\":\"d\"}],\"supervisor_requires\":[\"X\"]}"))
                         continuation.finish()
                     }

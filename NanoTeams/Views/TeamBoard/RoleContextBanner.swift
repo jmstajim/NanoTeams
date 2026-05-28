@@ -313,9 +313,9 @@ struct RoleContextBanner: View {
         id: "preview",
         role: .codeReviewer,
         title: "Code Reviewer",
-        expectedArtifacts: ["Code Review"],
+        expectedArtifacts: ["Code Review Summary"],
         status: .needsApproval,
-        artifacts: [Artifact(name: "Code Review", icon: "checkmark.shield.fill", description: "Review report")]
+        artifacts: [Artifact(name: "Code Review Summary", icon: "checkmark.shield.fill", description: "Review summary")]
     )
     RoleContextBanner(
         roleID: crRole.id,

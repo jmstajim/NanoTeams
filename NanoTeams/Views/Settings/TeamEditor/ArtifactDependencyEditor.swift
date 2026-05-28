@@ -149,7 +149,7 @@ struct ArtifactSelectorView: View {
         producedArtifacts: $produced,
         availableArtifacts: [
             "Supervisor Task", "Product Requirements", "Implementation Plan",
-            "Design Spec", "Engineering Notes", "Code Review"
+            "Design Spec", "Engineering Notes", "Code Review Summary"
         ],
         excludeFromProduced: ["Supervisor Task"]
     )

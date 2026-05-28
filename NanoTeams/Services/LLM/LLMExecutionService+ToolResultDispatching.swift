@@ -7,9 +7,27 @@ extension LLMExecutionService {
 
     // MARK: - Collaboration Signal Dispatch
 
-    /// Handles a collaboration tool result (ask_teammate, request_team_meeting, request_changes).
+    /// Handles a collaboration tool result (ask_teammate, request_team_meeting, request_changes,
+    /// delegate_to_team, cancel/resume/forward delegation).
+    ///
+    /// `toolCallID` identifies the persisted `StepToolCall` row written by
+    /// `processToolResults` from the placeholder envelope (`isError: false`,
+    /// `pending` status). After the deferred handler returns the real response,
+    /// we re-update that row only when `envelopeStatus(response) == .failure` —
+    /// i.e. the envelope explicitly carries `{"ok": false, ...}`. Malformed
+    /// JSON, missing `ok` field, or non-Bool `ok` (`.indeterminate`) are
+    /// treated as success and leave the placeholder green; this is intentional
+    /// because every collaboration handler in this dispatch goes through
+    /// `Tools+Envelope.makeSuccessResult` / `makeErrorResult`, so a non-failure
+    /// envelope means the parser couldn't read it — never that the operation
+    /// actually failed. Without this re-update, failed delegations /
+    /// consultations / meetings render as success because the placeholder is
+    /// the only thing ever persisted. `toolCallID` is `result.providerID`-
+    /// independent: `providerID: String?` is the OpenAI tool_call_id used for
+    /// chat correlation, NOT the row id.
     func appendCollaborationResult(
         result: ToolExecutionResult,
+        toolCallID: UUID,
         roleForMessage: Role,
         stepID: String,
         task: NTMSTask,
@@ -57,14 +75,12 @@ extension LLMExecutionService {
                 networkLogger: networkLogger
             )
             let team = resolveTeam(task: task)
-            let coordinatorRoleID = team?.settings.meetingCoordinatorRoleID
-                ?? team?.roles.first(where: { !$0.isSupervisor })?.id
-            attributionRole = coordinatorRoleID.flatMap { id in
-                if let systemRoleID = team?.roles.first(where: { $0.id == id })?.systemRoleID {
-                    return Role.builtInRole(for: systemRoleID)
-                }
-                return .custom(id: id)
-            } ?? .tpm
+            // Auto mode = initiator-as-coordinator. The meeting result is
+            // attributed to the same effective coordinator the runtime used
+            // for the meeting itself (designated coordinator if set,
+            // otherwise the initiating role). Replaces the previous silent
+            // `?? .tpm` fallback that masked misconfiguration.
+            attributionRole = effectiveCoordinator(team: team, initiator: roleForMessage)
             attributionContext = .meeting
 
         case .changeRequest(let targetRoleID, let changes, let reasoning):
@@ -84,8 +100,76 @@ extension LLMExecutionService {
             attributionRole = roleForMessage
             attributionContext = .changeRequest
 
+        case .delegateToTeam(let teamID, let taskBrief):
+            response = await handleDelegateToTeam(
+                stepID: stepID,
+                teamIDRaw: teamID,
+                taskBrief: taskBrief,
+                initiatingRole: roleForMessage,
+                task: task,
+                runIndex: runIndex,
+                stepIndex: stepIndex,
+                client: client,
+                config: config,
+                networkLogger: networkLogger
+            )
+            // No attribution turn — delegation result is the team's collective output,
+            // not a single role's voice. The activity feed renders the tool call card
+            // with the artifact summary; the parent's main loop sees the JSON envelope.
+
+        case .cancelDelegation(let childTaskID, let reason):
+            response = await handleCancelDelegation(
+                stepID: stepID,
+                childTaskID: childTaskID,
+                reason: reason
+            )
+
+        case .resumeDelegation(let childTaskID):
+            response = await handleResumeDelegation(
+                stepID: stepID,
+                childTaskID: childTaskID,
+                initiatingRole: roleForMessage,
+                task: task,
+                client: client,
+                config: config
+            )
+
+        case .forwardToTeam(let childTaskID, let message):
+            response = await handleForwardToTeam(
+                stepID: stepID,
+                childTaskID: childTaskID,
+                message: message,
+                initiatingRole: roleForMessage,
+                task: task,
+                client: client,
+                config: config
+            )
+
         default:
-            break
+            // Unhandled collaboration signal — `processToolResults` routed it
+            // here but no `case` matched. The empty `response` would silently
+            // pass `envelopeStatus("") == .indeterminate` (no isError flip)
+            // AND ship as the tool result content to the LLM. Crash in DEBUG
+            // so the missing case is loud during development; ship-build still
+            // falls through.
+            assertionFailure("appendCollaborationResult missing case for \(String(describing: result.signal))")
+        }
+
+        // Reflect the deferred handler's outcome onto the persisted `StepToolCall`.
+        // The placeholder written in `processToolResults` had `isError: false`
+        // (scheduling envelope, status `pending`); only the deferred response
+        // knows whether the actual collaboration succeeded. Without this re-update,
+        // failed delegations / consultations / meetings render with a green ✓.
+        if envelopeStatus(response) == .failure {
+            let updated = ToolExecutionResult(
+                providerID: result.providerID,
+                toolName: result.toolName,
+                argumentsJSON: result.argumentsJSON,
+                outputJSON: response,
+                isError: true,
+                signal: result.signal
+            )
+            await updateToolCallResult(stepID: stepID, toolCallID: toolCallID, result: updated)
         }
 
         let toolContent = buildCollaborationToolResult(toolName: result.toolName, response: response)

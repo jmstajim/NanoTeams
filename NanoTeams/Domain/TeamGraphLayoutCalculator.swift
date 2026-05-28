@@ -4,7 +4,7 @@ import CoreGraphics
 
 /// Pure algorithm for computing visual positions of role nodes from artifact dependencies.
 /// Separated from `TeamGraphLayout` (data model) per SRP.
-enum TeamGraphLayoutCalculator {
+nonisolated enum TeamGraphLayoutCalculator {
 
     /// Horizontal offset amplitude for single-node zigzag levels in auto-layout.
     /// Must be large enough that left/right columns don't overlap (amplitude > nodeMaxWidth/2).

@@ -12,7 +12,7 @@ import Foundation
 ///
 /// Services and views never read this type directly; they operate on
 /// `WorkFolderProjection`, an in-memory composite assembled by `NTMSRepository`.
-struct WorkFolderState: Codable, Hashable {
+nonisolated struct WorkFolderState: Codable, Hashable {
     var schemaVersion: Int
     var id: UUID
     var name: String
@@ -76,7 +76,7 @@ struct WorkFolderState: Codable, Hashable {
 /// Stored in `.nanoteams/internal/settings.json`. Mutates only when the user
 /// edits work folder context, contextPrompt, or selectedScheme — never written
 /// during task execution.
-struct ProjectSettings: Codable, Hashable {
+nonisolated struct ProjectSettings: Codable, Hashable {
     var schemaVersion: Int
     var context: String
     var contextPrompt: String
@@ -140,7 +140,7 @@ struct ProjectSettings: Codable, Hashable {
 /// (~100 KB for a full FAANG-style team set) — splitting it out keeps git diffs
 /// clean (editing one role only touches teams.json) and makes per-team inspection
 /// easier.
-struct TeamsFile: Codable, Hashable {
+nonisolated struct TeamsFile: Codable, Hashable {
     var schemaVersion: Int
     var teams: [Team]
 

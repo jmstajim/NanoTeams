@@ -224,6 +224,60 @@ final class TeamModelTests: XCTestCase {
         XCTAssertEqual(team.roles.first?.name, "Updated Name")
     }
 
+    // MARK: - Hierarchy Mutation Tests
+
+    /// `detachFromHierarchy(roleID:)` is the Information-Expert helper that
+    /// removes a role's upstream `reportsTo` entry (making it peer-level
+    /// with Supervisor) AND bumps `team.updatedAt` to satisfy the
+    /// id+updatedAt-shortcut `Team.==` contract (CLAUDE.md #42). Without
+    /// the bump, SwiftUI observers don't see the change and reopened
+    /// editors show stale hierarchy state.
+    func testTeam_DetachFromHierarchy_ExistingEntry_RemovesAndBumps() throws {
+        var team = Team(
+            name: "Test", roles: [], artifacts: [],
+            settings: TeamSettings(hierarchy: TeamHierarchy(reportsTo: [
+                "subordinate": "boss"
+            ])),
+            graphLayout: .default
+        )
+        let originalUpdatedAt = team.updatedAt
+
+        team.detachFromHierarchy(roleID: "subordinate")
+
+        XCTAssertNil(
+            team.settings.hierarchy.reportsTo["subordinate"],
+            "Detach must remove the role's reportsTo entry."
+        )
+        XCTAssertGreaterThan(
+            team.updatedAt, originalUpdatedAt,
+            "Detach must bump team.updatedAt so SwiftUI observers re-render."
+        )
+    }
+
+    /// No-op semantics: detaching an already-peer role must NOT bump
+    /// the timestamp (otherwise every Save click on a non-delegating role
+    /// would churn observers).
+    func testTeam_DetachFromHierarchy_MissingEntry_NoBump_NoChange() {
+        let originalReportsTo = ["other-role": "boss"]
+        var team = Team(
+            name: "Test", roles: [], artifacts: [],
+            settings: TeamSettings(hierarchy: TeamHierarchy(reportsTo: originalReportsTo)),
+            graphLayout: .default
+        )
+        let originalUpdatedAt = team.updatedAt
+
+        team.detachFromHierarchy(roleID: "not-in-dict")
+
+        XCTAssertEqual(
+            team.settings.hierarchy.reportsTo, originalReportsTo,
+            "No-op detach must leave reportsTo untouched."
+        )
+        XCTAssertEqual(
+            team.updatedAt, originalUpdatedAt,
+            "No-op detach must NOT bump updatedAt."
+        )
+    }
+
     // MARK: - Artifact Management Tests
 
     func testTeam_ArtifactByName() {
@@ -499,8 +553,23 @@ final class TeamModelTests: XCTestCase {
         let wf = WorkFolderProjection(state: WorkFolderState(name: "Test"), settings: .defaults, teams: Team.defaultTeams)
         let names = wf.teams.map(\.name)
 
-        XCTAssertEqual(wf.teams.count, 7)
-        XCTAssertEqual(names, ["Coding Assistant", "Personal Assistant", "FAANG Team", "Engineering Team", "Startup", "Quest Party", "Discussion Club"])
+        XCTAssertEqual(wf.teams.count, 8)
+        XCTAssertEqual(names, ["Coding Assistant", "Coding Agent", "Personal Assistant", "FAANG Team", "Engineering Team", "Startup", "Quest Party", "Discussion Club"])
+    }
+
+    func testFreshWorkFolder_activeTeamIsCodingAssistant() {
+        // Composes two structural invariants this PR depends on:
+        // (1) `Team.defaultTeams[0]` is Coding Assistant.
+        // (2) `WorkFolderProjection.activeTeam` falls back to `teams.first` when
+        //     `activeTeamID == nil` (the state of a freshly-constructed
+        //     `WorkFolderState` before `loadOrRecoverProjectState` repair writes it).
+        // Catches a future change to *either* layer.
+        let wf = WorkFolderProjection(
+            state: WorkFolderState(name: "Fresh"),
+            settings: .defaults,
+            teams: Team.defaultTeams
+        )
+        XCTAssertEqual(wf.activeTeam?.templateID, "codingAssistant")
     }
 
     func testDefaultTeams_codingAssistantIsFirst_byTemplateID() {
@@ -508,7 +577,7 @@ final class TeamModelTests: XCTestCase {
         // mask an accidental reorder.
         let templateIDs = Team.defaultTeams.map(\.templateID)
         XCTAssertEqual(templateIDs.first, "codingAssistant")
-        XCTAssertEqual(templateIDs, ["codingAssistant", "assistant", "faang", "engineering", "startup", "questParty", "discussionClub"])
+        XCTAssertEqual(templateIDs, ["codingAssistant", "codingAgent", "assistant", "faang", "engineering", "startup", "questParty", "discussionClub"])
     }
 
     func testTemplateMetadata_codingAssistantIsFirstRealTemplate() {
@@ -981,9 +1050,15 @@ final class TeamModelTests: XCTestCase {
     }
 
     func testTeamHierarchy_BootstrapTeamHasHierarchy() {
-        // First bootstrap team has hierarchy built from actual role IDs
-        let firstTeam = Team.defaultTeams[0]
-        XCTAssertFalse(firstTeam.settings.hierarchy.reportsTo.isEmpty)
+        // FAANG is picked because all 8 non-Supervisor roles flat-report to
+        // Supervisor (auto-wired by `TeamTemplateFactory.buildSettings`), giving
+        // the multi-entry shape the assertion observes. The single-role chat-mode
+        // templates at the front of `defaultTeams` either contribute 1 entry
+        // (Coding Assistant) or 0 entries (Coding Agent — its sole role is
+        // `hasDelegationConfigured`, peer with Supervisor, so `buildSettings`
+        // skips the `reportsTo` wiring).
+        let faang = Team.defaultTeams.first { $0.templateID == "faang" }!
+        XCTAssertFalse(faang.settings.hierarchy.reportsTo.isEmpty)
     }
 
     // MARK: - RoleDependencies via SystemTemplates Tests
@@ -1003,7 +1078,7 @@ final class TeamModelTests: XCTestCase {
     func testSystemTemplateDependencies_SoftwareEngineer() {
         let deps = SystemTemplates.roles["softwareEngineer"]!.dependencies
         XCTAssertEqual(deps.requiredArtifacts, ["Implementation Plan", "Design Spec"])
-        XCTAssertEqual(deps.producesArtifacts, ["Engineering Notes", "Build Diagnostics"])
+        XCTAssertEqual(deps.producesArtifacts, ["Engineering Notes"])
     }
 
     func testSystemTemplateDependencies_CustomRoleNotInTemplates() {

@@ -528,7 +528,7 @@ final class EndToEndTeamCustomizationTests: XCTestCase {
     func testBootstrapDefaults_AllTeamsHaveSupervisor() {
         let teams = Team.defaultTeams
 
-        XCTAssertEqual(teams.count, 7)
+        XCTAssertEqual(teams.count, 8)
 
         for team in teams {
             // Each team should have Supervisor as first role

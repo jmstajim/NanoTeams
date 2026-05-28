@@ -88,15 +88,20 @@ final class SearchIndexCoordinator {
         self.internalDir = internalDir
         self.embeddingConfigProvider = embeddingConfigProvider
         self.watcherDebounce = watcherDebounce
+        // FileManager isn't `Sendable`, and a `sending` parameter is consumed on
+        // the first hand-off. Construct fresh `.default` references for each
+        // actor so the original `fileManager` parameter (preserved for future
+        // injection / API compatibility) doesn't get sent twice.
+        _ = fileManager
         self.service = SearchIndexService(
             workFolderRoot: workFolderRoot,
             internalDir: internalDir,
-            fileManager: fileManager
+            fileManager: .default
         )
         self.vectorIndex = VocabVectorIndexService(
             internalDir: internalDir,
             client: embeddingClient,
-            fileManager: fileManager
+            fileManager: .default
         )
     }
 

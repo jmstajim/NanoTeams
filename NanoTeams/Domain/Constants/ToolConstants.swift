@@ -2,7 +2,7 @@ import Foundation
 
 /// Tool runtime limits and UI display categories.
 /// Tool name string constants live in the top-level `ToolNames` enum.
-enum ToolConstants {
+nonisolated enum ToolConstants {
     /// Maximum directory entries returned by `list_files` tool.
     static let maxDirectoryEntries = 1000
 
@@ -37,5 +37,11 @@ enum ToolConstants {
                             tools: [TN.askSupervisor]),
         ToolCategoryDisplay(id: "vision", name: "Vision", icon: "eye.fill",
                             tools: [TN.analyzeImage]),
+        // Delegation tools (delegate_to_team + 4 companions) are NEVER manually
+        // selectable — they auto-inject when the role's delegation settings
+        // (`allowedDelegationTeamIDs` / `allowDelegationToGeneratedTeams`) are
+        // populated. See `LLMExecutionService+ToolResolution` and the
+        // Auto-injected section in `ToolSelectionView`. The Delegation tab in
+        // the role editor is the only entry point.
     ]
 }

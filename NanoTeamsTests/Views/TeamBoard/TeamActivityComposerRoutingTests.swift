@@ -505,4 +505,131 @@ final class TeamActivityComposerRoutingTests: XCTestCase {
         XCTAssertEqual(q.askingRoleID, q.stepID)
         XCTAssertEqual(q.askingRoleID, "role-42")
     }
+
+    /// Symmetry: `paired == nil` vs `paired != nil` are unequal (the Optional
+    /// shape alone distinguishes them, independent of any `paired` field).
+    func testActiveQuestion_equatable_nilPairedVsNonNil_areNotEqual() {
+        let a = TeamActivityActiveQuestion(
+            stepID: "s", role: .productManager, question: "?", paired: nil
+        )
+        let b = TeamActivityActiveQuestion(
+            stepID: "s", role: .productManager, question: "?",
+            paired: PairedAssistantMessage(id: UUID(), thinking: nil)
+        )
+        XCTAssertNotEqual(a, b)
+    }
+
+    // MARK: - performAnswerSubmit (phase-ordering contract)
+
+    /// Pins the synchronous-clear-before-async-submit contract. If `clear` were
+    /// to run after the await (the old `nextComposerState` design), the
+    /// `.onChange(of: chipOptionsComputed.map(\.recipient))` reaction that
+    /// fires while the Answer chip disappears mid-submit would observe
+    /// `hasContent=true` and surface a false-positive "recipient no longer
+    /// waiting" info banner for a successful submit.
+    func testPerformAnswerSubmit_clearsSynchronouslyBeforeSubmit() async {
+        var events: [String] = []
+        await TeamActivityComposer.performAnswerSubmit(
+            snapshotText: "zxc",
+            snapshotAttachments: [],
+            snapshotClips: [],
+            clear: { events.append("clear") },
+            submit: { events.append("submit"); return true },
+            restore: { _, _, _ in events.append("restore") }
+        )
+        XCTAssertEqual(
+            events, ["clear", "submit"],
+            "Clear must run synchronously before the async submit — otherwise the chip-disappearance .onChange sees hasContent=true and fires a false-positive 'recipient no longer waiting' banner."
+        )
+    }
+
+    /// On failure the snapshot is restored AFTER the synchronous clear has run.
+    /// The user gets their draft back to retry without retyping, and the
+    /// recipient picker auto-resolves to the next chip via `.onChange`
+    /// sanitization (covered by `testSanitizeSelection_*`).
+    func testPerformAnswerSubmit_onFailure_restoresSnapshotAfterClear() async {
+        var events: [String] = []
+        var restoredText: String?
+        var restoredClips: [String]?
+        await TeamActivityComposer.performAnswerSubmit(
+            snapshotText: "zxc",
+            snapshotAttachments: [],
+            snapshotClips: ["clipA"],
+            clear: { events.append("clear") },
+            submit: { events.append("submit"); return false },
+            restore: { t, _, c in
+                events.append("restore")
+                restoredText = t
+                restoredClips = c
+            }
+        )
+        XCTAssertEqual(events, ["clear", "submit", "restore"])
+        XCTAssertEqual(restoredText, "zxc")
+        XCTAssertEqual(restoredClips, ["clipA"])
+    }
+
+    /// On success `restore` is NOT called — the draft stays cleared. Pinning
+    /// this prevents a future refactor from accidentally double-clearing or
+    /// re-running restore on `ok == true`.
+    func testPerformAnswerSubmit_onSuccess_doesNotRestore() async {
+        var events: [String] = []
+        await TeamActivityComposer.performAnswerSubmit(
+            snapshotText: "zxc",
+            snapshotAttachments: [],
+            snapshotClips: [],
+            clear: { events.append("clear") },
+            submit: { events.append("submit"); return true },
+            restore: { _, _, _ in events.append("restore") }
+        )
+        XCTAssertEqual(events, ["clear", "submit"])
+    }
+
+    // MARK: - clearedComposerState (post-submit reset contract)
+
+    /// Pins the post-submit reset contract: `clearComposer()` must reset
+    /// `selectedRecipient` to nil in addition to clearing text/attachments/clips.
+    /// Without this, a `.role(codingAgent)` lock from a previous queue submit
+    /// survives through to the next render — when a new `ask_supervisor` adds
+    /// an Answer chip to `chipOptions`, `resolveEffectiveRecipient` keeps the
+    /// stale `.role` lock (explicit-selection priority 1) and the Answer chip
+    /// never auto-selects. User sees only the queue chip and can't answer
+    /// without manually clicking the Answer chip.
+    func testClearedComposerState_resetsAllFieldsIncludingRecipient() {
+        let state = TeamActivityComposer.clearedComposerState()
+        XCTAssertEqual(state.text, "", "Text must be cleared")
+        XCTAssertTrue(state.attachments.isEmpty, "Attachments must be cleared")
+        XCTAssertTrue(state.clips.isEmpty, "Clips must be cleared")
+        XCTAssertNil(
+            state.selectedRecipient,
+            "selectedRecipient MUST be reset — otherwise the explicit-selection priority in resolveEffectiveRecipient keeps a stale .role lock from a previous queue submit, preventing auto-resolution to a newly-arrived Answer chip when the role asks again."
+        )
+    }
+
+    // MARK: - bannerForFailedFiles
+
+    /// Replaces the deleted VM coverage for the failedFiles banner. The exact
+    /// wording is asserted because changing it silently would degrade UX —
+    /// users rely on the "attached as paths" phrasing to know files were still
+    /// delivered (not lost).
+    func testBannerForFailedFiles_empty_returnsNil() {
+        XCTAssertNil(TeamActivityComposer.bannerForFailedFiles([]),
+                     "No failed files → no banner; submitting clean is a non-event")
+    }
+
+    func testBannerForFailedFiles_oneFile_explainsPathFallback() {
+        let banner = TeamActivityComposer.bannerForFailedFiles(["budget.xlsx"])
+        XCTAssertEqual(
+            banner,
+            "Could not embed 1 file(s) inline — attached as paths: budget.xlsx.",
+            "Banner must signal that the file was NOT lost — it was attached as a path"
+        )
+    }
+
+    func testBannerForFailedFiles_multipleFiles_listsAll() {
+        let banner = TeamActivityComposer.bannerForFailedFiles(["a.bin", "b.bin", "c.bin"])
+        XCTAssertEqual(
+            banner,
+            "Could not embed 3 file(s) inline — attached as paths: a.bin, b.bin, c.bin."
+        )
+    }
 }

@@ -41,7 +41,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
             providerID: providerID,
             toolName: ToolNames.search,
             argumentsJSON: #"{"query":"\#(query)","exploratory":true}"#,
-            outputJSON: #"{"ok":true,"data":{"query":"\#(query)","status":"expanding"}}"#,
+            outputJSON: #"{"ok":true,"data":{"query":"\#(query)","status":"exploring"}}"#,
             isError: false,
             signal: .exploratorySearch(try! ExploratorySearchPayload(
                 query: query,
@@ -471,35 +471,36 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
             "Short-circuit branch must still surface skipped_binary_count. Envelope: \(env)")
     }
 
-    // MARK: - I2: memory cache records the finalized envelope, not the interim
+    // MARK: - I2: tracker records the finalized envelope, not the interim
 
-    /// The interim `SearchTool` result carries `{"status":"expanding"}` — if
-    /// that were what the ToolCallCache captured, a subsequent identical
-    /// `expand` call would dedup against a placeholder and the LLM
-    /// would be served garbage. The finalize path must record the real
-    /// envelope after rewriting.
+    /// The interim `SearchTool` result carries `{"status":"exploring"}` — if
+    /// that were what the ToolCallTracker captured, a subsequent
+    /// `recentCalls` snapshot for the loop detector would see a placeholder
+    /// instead of the real result. The fixture above emits the same
+    /// `"status":"exploring"` envelope as the real `SearchTool`; the finalize
+    /// path must rewrite it to the actual result envelope before recording.
     func testMemoryCache_recordsFinalizedEnvelope_notInterimPlaceholder() async {
         service._testRegisterStepTask(stepID: "step1", taskID: 1)
         mock.exploratorySearchEnabled = false  // deterministic: disabled → plain executor
 
-        let cache = ToolCallCache()
+        let tracker = ToolCallTracker()
         var convo: [ChatMessage] = []
         await service.appendExploratorySearchResult(
             result: makeExploratorySearchToolResult(),
             toolCallID: UUID(),
             stepID: "step1",
             conversationMessages: &convo,
-            memory: cache
+            tracker: tracker
         )
 
-        // The cache must hold a finalized envelope (contains `exploratory_disabled`
-        // or `expanded_terms`), never the interim `"status":"expanding"` placeholder.
-        let recorded = cache.calls.first(where: { $0.toolName == ToolNames.search })
+        // The tracker must hold a finalized envelope (contains `exploratory_disabled`
+        // or `expanded_terms`), never the interim `"status":"exploring"` placeholder.
+        let recorded = tracker.snapshot().first(where: { $0.toolName == ToolNames.search })
         XCTAssertNotNil(recorded, "Finalize step must have recorded the call.")
-        XCTAssertFalse(recorded?.resultJSON.contains("\"status\":\"expanding\"") ?? true,
-            "Cache must NOT hold the interim placeholder. Got: \(recorded?.resultJSON ?? "")")
+        XCTAssertFalse(recorded?.resultJSON.contains("\"status\":\"exploring\"") ?? true,
+            "Tracker must NOT hold the interim placeholder. Got: \(recorded?.resultJSON ?? "")")
         XCTAssertTrue(recorded?.resultJSON.contains("\"exploratory_disabled\":true") ?? false,
-            "Cache must hold the finalized disabled-branch envelope.")
+            "Tracker must hold the finalized disabled-branch envelope.")
     }
 
     // MARK: - Filename matches in expand pipeline

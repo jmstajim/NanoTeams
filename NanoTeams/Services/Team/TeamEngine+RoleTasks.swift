@@ -113,7 +113,7 @@ extension TeamEngine {
 
                 guard let stepID = await store.findOrCreateStep(roleID: roleID) else {
                     await store.updateRoleStatus(roleID: roleID, status: .failed)
-                    await store.setLastErrorMessageForUI("Revision failed for '\(roleID)': step not found.")
+                    store.setLastErrorMessageForUI("Revision failed for '\(roleID)': step not found.")
                     self.onRoleStatusChanged?(roleID, .failed)
                     return
                 }
@@ -155,7 +155,7 @@ extension TeamEngine {
                 return
             case .pending, .running:
                 // Still running - wait a bit
-                try? await Task.sleep(nanoseconds: 250_000_000)
+                try? await Task.sleep(for: .milliseconds(250))
             }
         }
     }

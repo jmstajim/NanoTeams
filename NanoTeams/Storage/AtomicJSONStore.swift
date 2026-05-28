@@ -1,6 +1,6 @@
 import Foundation
 
-enum AtomicJSONStoreError: LocalizedError {
+nonisolated enum AtomicJSONStoreError: LocalizedError {
     case unableToCreateDirectory(URL)
     case atomicReplaceFailed(URL, underlying: Error)
 
@@ -14,7 +14,7 @@ enum AtomicJSONStoreError: LocalizedError {
     }
 }
 
-struct AtomicJSONStore {
+nonisolated struct AtomicJSONStore {
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     private let fileManager: FileManager
@@ -46,7 +46,18 @@ struct AtomicJSONStore {
 
         let data = try encoder.encode(value)
 
-        let tempURL = dir.appendingPathComponent(".\(url.lastPathComponent).tmp", isDirectory: false)
+        // Unique-per-call temp filename. A shared name (`.task.json.tmp`) raced
+        // under concurrent writes to the same target: writer A would create
+        // `.task.json.tmp`, writer B would overwrite it via `Data.write(.atomic)`,
+        // writer A's `replaceItemAt` would then move B's bytes into target
+        // (silently dropping A's write), and B's `replaceItemAt` would fail
+        // with `atomicReplaceFailed` because the temp had already been
+        // consumed. Net effect: dropped writes plus surfaced errors. Per-call
+        // UUID temp names eliminate the contention.
+        let tempURL = dir.appendingPathComponent(
+            ".\(url.lastPathComponent).\(UUID().uuidString).tmp",
+            isDirectory: false
+        )
         try data.write(to: tempURL, options: [.atomic])
 
         do {
@@ -59,8 +70,17 @@ struct AtomicJSONStore {
                 }
                 try fileManager.moveItem(at: tempURL, to: url)
             } catch {
-                // Clean up temp file to avoid orphaned files on disk.
-                try? fileManager.removeItem(at: tempURL)
+                // Both atomic-replace AND fallback move failed — surface the
+                // primary error to the caller and log any cleanup failure
+                // separately so we don't lose the diagnostic. (Bootstrap-time
+                // sweep in `NTMSRepository+Bootstrap.swift` reaps any orphan
+                // that the cleanup couldn't remove on the next app launch.)
+                do {
+                    try fileManager.removeItem(at: tempURL)
+                } catch {
+                    print("[AtomicJSONStore] WARNING: could not clean orphan temp "
+                        + "\(tempURL.lastPathComponent): \(error)")
+                }
                 throw AtomicJSONStoreError.atomicReplaceFailed(url, underlying: error)
             }
         }

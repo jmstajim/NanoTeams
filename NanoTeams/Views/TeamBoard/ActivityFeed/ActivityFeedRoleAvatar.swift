@@ -22,6 +22,12 @@ struct ActivityFeedRoleAvatar: View {
                 .font(.system(size: size * 0.4 * iconScale, weight: .semibold))
                 .foregroundStyle(fg)
         }
+        // Avatar has a known fixed frame (`size × size`). Without
+        // `.fixedSize()`, AppKit's constraint walk asks SwiftUI for
+        // `minSize()` on every NSHostingView, which round-trips through
+        // `_sizeThatFits` over the ZStack. `.fixedSize()` tells SwiftUI
+        // the answer is constant and short-circuits the query.
+        .fixedSize()
 
         if let onTap {
             Button(action: onTap) { avatar }

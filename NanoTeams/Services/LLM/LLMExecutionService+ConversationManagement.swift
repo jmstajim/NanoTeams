@@ -36,7 +36,8 @@ extension LLMExecutionService {
                 return ArtifactService.readContent(artifact: artifact, workFolderRoot: workFolderRoot)
             },
             activeTeam: resolvedTeam,
-            roleDefinition: resolvedTeam?.findRole(byIdentifier: step.effectiveRoleID)
+            roleDefinition: resolvedTeam?.findRole(byIdentifier: step.effectiveRoleID),
+            globalContext: delegate.globalLLMContext
         )
 
         return PromptBuilder.buildChatMessages(context: context, tools: tools)

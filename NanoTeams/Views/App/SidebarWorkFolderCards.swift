@@ -66,7 +66,7 @@ extension SidebarView {
     func projectInfoCard(folder: URL) -> some View {
         let hasContext = !(store.workFolder?.settings.context.isEmpty ?? true)
         return VStack(alignment: .leading, spacing: Spacing.s) {
-            HStack(spacing: Spacing.xs) {
+            HStack(spacing: Spacing.s) {
                 // Folder icon — tap to reveal in Finder
                 Button {
                     NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: folder.path)

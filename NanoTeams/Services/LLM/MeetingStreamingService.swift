@@ -54,14 +54,16 @@ enum MeetingStreamingService {
     static func buildMeetingMessages(
         speaker: Role,
         meeting: TeamMeeting,
-        context: TeamMeetingService.MeetingContext
+        context: TeamMeetingService.MeetingContext,
+        tools: [ToolSchema] = []
     ) -> [ChatMessage] {
         var messages: [ChatMessage] = []
 
         let systemPrompt = buildSpeakerSystemPrompt(
             speaker: speaker,
             meeting: meeting,
-            context: context
+            context: context,
+            tools: tools
         )
         messages.append(ChatMessage(role: .system, content: systemPrompt))
 
@@ -93,7 +95,7 @@ enum MeetingStreamingService {
             }
             turnPrompt = "Your turn, \(roleName(speaker, team: context.team)). \(conciseness) Build on what was said — don't repeat your earlier points."
         } else {
-            turnPrompt = "Please provide your input as \(roleName(speaker, team: context.team)). Be concise and focused on the topic."
+            turnPrompt = "Provide your input as \(roleName(speaker, team: context.team)). Be concise and focused on the topic."
         }
         messages.append(ChatMessage(role: .user, content: turnPrompt))
 
@@ -126,7 +128,8 @@ enum MeetingStreamingService {
     private static func buildSpeakerSystemPrompt(
         speaker: Role,
         meeting: TeamMeeting,
-        context: TeamMeetingService.MeetingContext
+        context: TeamMeetingService.MeetingContext,
+        tools: [ToolSchema] = []
     ) -> String {
         let rolePrompt = context.team?.findRole(byIdentifier: speaker.baseID)?.prompt
             ?? (SystemTemplates.roles[speaker.baseID]?.prompt ?? "")
@@ -153,9 +156,18 @@ enum MeetingStreamingService {
             "turnNumber": "\(meeting.turnCount + 1)",
             "coordinatorHint": coordinatorHint,
             "teamDescription": context.team?.description ?? "",
+            "globalContext": PromptBuilder.formatGlobalContext(context.globalContext),
+            "toolCalling": PromptBuilder.formatToolCallingBlock(tools: tools),
+            // Backwards-compat alias for stored templates with the older
+            // `{toolCallingBlock}` placeholder name.
+            "toolCallingBlock": PromptBuilder.formatToolCallingBlock(tools: tools),
         ]
 
-        return TemplateResolver.resolve(template, placeholders: placeholders)
+        return TemplateResolver.resolveSystemPrompt(
+            template,
+            placeholders: placeholders,
+            globalContext: context.globalContext
+        )
     }
 
     /// Resolve a role's display name using team context when available.

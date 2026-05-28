@@ -5,11 +5,11 @@ private typealias JS = JSONSchema
 
 // MARK: - write_file
 
-struct WriteFileTool: ToolHandler {
+nonisolated struct WriteFileTool: ToolHandler {
     static let name = TN.writeFile
     static let schema = ToolSchema(
         name: TN.writeFile,
-        description: "Write content to a file. Creates parent directories if needed. Replaces the ENTIRE file — always include the complete file content (imports, class declaration, ALL methods). Never write a partial file. Prefer edit_file for targeted changes.",
+        description: "Write content to a file. Creates parent directories if needed. Replaces the entire file with the new content — always include imports, class declaration, all methods.",
         parameters: JS.object(
             properties: [
                 "path": JS.string("Relative path to file"),
@@ -80,17 +80,17 @@ struct WriteFileTool: ToolHandler {
 
 // MARK: - edit_file
 
-struct EditFileTool: ToolHandler {
+nonisolated struct EditFileTool: ToolHandler {
     static let name = TN.editFile
     static let schema = ToolSchema(
         name: TN.editFile,
-        description: "Edit a file by replacing exact text matches. The old_text must match exactly including whitespace and indentation. If it fails with ANCHOR_NOT_FOUND, re-read the file with read_lines before retrying — the file content changed since your last read. For complex multi-step changes, prefer write_file instead.",
+        description: "Replace exact text in a file. `old_text` must match byte-for-byte (whitespace + indentation included).",
         parameters: JS.object(
             properties: [
                 "path": JS.string("Relative path to file"),
-                "old_text": JS.string("Exact text to find in the file (must match exactly including whitespace and indentation)"),
-                "new_text": JS.string("Text to replace old_text with"),
-                "replace_all": JS.boolean("Replace all occurrences (default: first only)"),
+                "old_text": JS.string("Text to find."),
+                "new_text": JS.string("Replacement text."),
+                "replace_all": JS.boolean("Replace every occurrence."),
             ],
             required: ["path", "old_text", "new_text"]
         )
@@ -214,7 +214,7 @@ struct EditFileTool: ToolHandler {
 
 // MARK: - delete_file
 
-struct DeleteFileTool: ToolHandler {
+nonisolated struct DeleteFileTool: ToolHandler {
     static let name = TN.deleteFile
     static let schema = ToolSchema(
         name: TN.deleteFile,

@@ -15,7 +15,9 @@ final class ModelCatalogTests: XCTestCase {
 
     private final class StubClient: LLMClient, @unchecked Sendable {
         var fetchCount: Int = 0
+        var lastVisionOnly: Bool = false
         var modelsToReturn: [String] = ["model-a", "model-b"]
+        var visionModelsToReturn: [String] = ["vision-model-a"]
         var errorToThrow: Error?
         /// Used to artificially extend a fetch so two concurrent calls
         /// can race the in-flight dedup check.
@@ -23,11 +25,12 @@ final class ModelCatalogTests: XCTestCase {
 
         func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] {
             fetchCount += 1
+            lastVisionOnly = visionOnly
             if fetchDelayNanos > 0 {
-                try? await Task.sleep(nanoseconds: fetchDelayNanos)
+                try? await Task.sleep(for: .nanoseconds(fetchDelayNanos))
             }
             if let err = errorToThrow { throw err }
-            return modelsToReturn
+            return visionOnly ? visionModelsToReturn : modelsToReturn
         }
 
         func streamChat(
@@ -159,6 +162,61 @@ final class ModelCatalogTests: XCTestCase {
         await catalog.refresh(url: "http://x:1234")
         XCTAssertNil(catalog.error(for: "http://x:1234"),
                      "Successful refresh must clear the prior error")
+    }
+
+    // MARK: - In-flight dedup
+
+    // MARK: - visionOnly cache split
+
+    func testVisionOnly_cachedSeparatelyFromAllModels() async {
+        let stub = StubClient()
+        let catalog = ModelCatalog(clientFactory: { stub })
+
+        await catalog.loadIfNeeded(url: "http://x:1234")
+        await catalog.loadIfNeeded(url: "http://x:1234", visionOnly: true)
+
+        XCTAssertEqual(stub.fetchCount, 2,
+                       "Same URL with different visionOnly must fetch twice — separate cache entries")
+        XCTAssertEqual(catalog.models(for: "http://x:1234"), ["model-a", "model-b"])
+        XCTAssertEqual(catalog.models(for: "http://x:1234", visionOnly: true), ["vision-model-a"])
+    }
+
+    func testVisionOnly_passesFlagToClient() async {
+        let stub = StubClient()
+        let catalog = ModelCatalog(clientFactory: { stub })
+
+        await catalog.loadIfNeeded(url: "http://x:1234", visionOnly: true)
+
+        XCTAssertTrue(stub.lastVisionOnly,
+                      "ModelCatalog must forward visionOnly to the LLMClient")
+    }
+
+    func testVisionOnly_cachedFetchDoesNotRepeat() async {
+        let stub = StubClient()
+        let catalog = ModelCatalog(clientFactory: { stub })
+
+        await catalog.loadIfNeeded(url: "http://x:1234", visionOnly: true)
+        await catalog.loadIfNeeded(url: "http://x:1234", visionOnly: true)
+
+        XCTAssertEqual(stub.fetchCount, 1,
+                       "Vision cache must dedup independently of the all-models cache")
+    }
+
+    func testVisionOnly_errorIsolatedFromAllModelsCache() async {
+        let stub = StubClient()
+        let catalog = ModelCatalog(clientFactory: { stub })
+
+        // All-models succeeds.
+        await catalog.loadIfNeeded(url: "http://x:1234")
+        XCTAssertNil(catalog.error(for: "http://x:1234"))
+
+        // Vision-only fails.
+        stub.errorToThrow = NSError(domain: "test", code: 1, userInfo: [NSLocalizedDescriptionKey: "vision fail"])
+        await catalog.loadIfNeeded(url: "http://x:1234", visionOnly: true)
+
+        XCTAssertNil(catalog.error(for: "http://x:1234"),
+                     "All-models cache error must not be polluted by vision-only failure")
+        XCTAssertEqual(catalog.error(for: "http://x:1234", visionOnly: true), "vision fail")
     }
 
     // MARK: - In-flight dedup

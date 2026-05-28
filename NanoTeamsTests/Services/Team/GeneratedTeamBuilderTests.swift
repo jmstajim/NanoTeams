@@ -72,6 +72,19 @@ final class GeneratedTeamBuilderTests: XCTestCase {
         XCTAssertEqual(team.roles.count, 3) // Supervisor + A + B
     }
 
+    // LLM-generated teams default to Auto mode (no designated coordinator):
+    // initiator of each meeting becomes its effective coordinator. Aligns
+    // with the user-facing "Auto" first-class option in Team Settings.
+    func testBuildTeam_meetingCoordinatorRoleID_defaultsToAuto() {
+        let config = makeConfig(roles: [
+            makeRoleConfig(name: "A"),
+            makeRoleConfig(name: "B"),
+        ])
+        let team = GeneratedTeamBuilder.buildTeam(from: config)
+        XCTAssertNil(team.settings.meetingCoordinatorRoleID,
+                     "Generated teams must default to Auto (nil), not force a designated coordinator")
+    }
+
     func testBuildTeam_usesConfigName() {
         let config = makeConfig(name: "Custom Team Name")
         let team = GeneratedTeamBuilder.buildTeam(from: config)

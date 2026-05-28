@@ -83,7 +83,7 @@ enum QuickCaptureVisualMode: Equatable {
         switch mode {
         case .supervisorAnswer: self = .answer
         case .taskWorking: self = .working
-        case .overlay, .sheet: self = .newTask
+        case .overlay: self = .newTask
         }
     }
 }

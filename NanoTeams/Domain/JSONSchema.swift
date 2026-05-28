@@ -3,7 +3,7 @@ import Foundation
 // MARK: - JSONSchemaLeaf
 
 /// Leaf schema — primitive types without nesting (level 2, deepest).
-struct JSONSchemaLeaf: Codable, Hashable {
+nonisolated struct JSONSchemaLeaf: Codable, Hashable {
     let type: String
     let description: String?
     let enumValues: [String]?
@@ -29,7 +29,7 @@ struct JSONSchemaLeaf: Codable, Hashable {
 // MARK: - JSONSchemaProperty
 
 /// Property schema — can be primitive or object with leaf properties (level 1).
-struct JSONSchemaProperty: Codable, Hashable {
+nonisolated struct JSONSchemaProperty: Codable, Hashable {
     let type: String
     let description: String?
     let properties: [String: JSONSchemaLeaf]?
@@ -46,7 +46,7 @@ struct JSONSchemaProperty: Codable, Hashable {
 // MARK: - JSONSchema
 
 /// Root schema — top-level object with property schemas (level 0, root).
-struct JSONSchema: Codable, Hashable {
+nonisolated struct JSONSchema: Codable, Hashable {
     let type: String
     let description: String?
     let properties: [String: JSONSchemaProperty]?

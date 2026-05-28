@@ -2,7 +2,7 @@ import Foundation
 
 /// Creates built-in Team instances from system templates.
 /// Use `Team.defaultTeams` or `Team.default` as entry points — they delegate here.
-enum TeamTemplateFactory {
+nonisolated enum TeamTemplateFactory {
 
     // MARK: - Template Metadata
 
@@ -18,6 +18,7 @@ enum TeamTemplateFactory {
     static let templateMetadata: [TeamTemplateMetadata] = [
         TeamTemplateMetadata(id: "empty", name: "Empty Team", icon: "plus.square.dashed", description: "Start with no roles or artifacts"),
         TeamTemplateMetadata(id: "codingAssistant", name: "Coding Assistant", icon: "curlybraces", description: "Interactive coding companion with files, git, and Xcode tools"),
+        TeamTemplateMetadata(id: "codingAgent", name: "Coding Agent", icon: "wand.and.rays", description: "Hybrid coding agent: handles small edits directly, delegates complex work to teams"),
         TeamTemplateMetadata(id: "assistant", name: "Personal Assistant", icon: "bubble.left.and.text.bubble.right", description: "Interactive assistant for any task"),
         TeamTemplateMetadata(id: "faang", name: "FAANG Team", icon: "building.2", description: "Full product development pipeline"),
         TeamTemplateMetadata(id: "engineering", name: "Engineering Team", icon: "wrench.and.screwdriver.fill", description: "Lean engineering pipeline"),
@@ -29,7 +30,7 @@ enum TeamTemplateFactory {
     // MARK: - Public API
 
     static var allTemplates: [Team] {
-        [codingAssistant(), assistant(), faang(), engineering(), startup(), questParty(), discussionClub()]
+        [codingAssistant(), codingAgent(), assistant(), faang(), engineering(), startup(), questParty(), discussionClub()]
     }
 
     static func faang() -> Team {
@@ -40,8 +41,8 @@ enum TeamTemplateFactory {
             roleIDs: ["productManager", "uxResearcher", "uxDesigner", "techLead",
                       "softwareEngineer", "codeReviewer", "sre", "tpm"],
             artifactNames: [SystemTemplates.supervisorTaskArtifactName, "Product Requirements", "Research Report", "Design Spec",
-                           "Implementation Plan", "Engineering Notes", "Build Diagnostics",
-                           "Code Review", "Code Review Summary", "Production Readiness", "Production Readiness Summary", "Release Notes"],
+                           "Implementation Plan", "Engineering Notes",
+                           "Code Review Summary", "Production Readiness", "Production Readiness Summary", "Release Notes"],
             coordinatorIndex: 8,
             supervisorRequires: ["Release Notes"],
             supervisorMode: .autonomous
@@ -55,8 +56,8 @@ enum TeamTemplateFactory {
             templateID: "engineering",
             roleIDs: ["techLead", "softwareEngineer", "codeReviewer", "tpm"],
             artifactNames: [SystemTemplates.supervisorTaskArtifactName,
-                           "Implementation Plan", "Engineering Notes", "Build Diagnostics",
-                           "Code Review", "Code Review Summary", "Release Notes"],
+                           "Implementation Plan", "Engineering Notes",
+                           "Code Review Summary", "Release Notes"],
             coordinatorIndex: 4,
             supervisorRequires: ["Release Notes"],
             supervisorMode: .autonomous
@@ -76,9 +77,9 @@ enum TeamTemplateFactory {
             description: "Lean two-person team where the Supervisor provides direction and a Software Engineer handles all implementation.",
             templateID: "startup",
             roleIDs: ["softwareEngineer"],
-            artifactNames: [SystemTemplates.supervisorTaskArtifactName, "Engineering Notes", "Build Diagnostics"],
+            artifactNames: [SystemTemplates.supervisorTaskArtifactName, "Engineering Notes"],
             coordinatorIndex: 1,
-            supervisorRequires: ["Engineering Notes", "Build Diagnostics"],
+            supervisorRequires: ["Engineering Notes"],
             supervisorCanBeInvited: true
         ) { roles in
             typealias TN = ToolNames
@@ -144,6 +145,42 @@ enum TeamTemplateFactory {
                 TN.askSupervisor, TN.analyzeImage,
             ]
             roles[1].dependencies.requiredArtifacts = [SystemTemplates.supervisorTaskArtifactName]
+        }
+    }
+
+    /// Coding Agent — hybrid coding agent that handles small edits directly and
+    /// delegates complex implementation work to other teams via `delegate_to_team`.
+    /// Default whitelist includes the built-in programming-focused teams except
+    /// FAANG: Engineering and Startup. Generated teams are enabled by default so
+    /// the agent can spawn a tailored team when no stored team is a good fit.
+    static func codingAgent() -> Team {
+        // Default delegation whitelist — IDs are deterministic via NTMSID.from(name:),
+        // so we can refer to siblings before they're built.
+        let engineeringID = NTMSID.from(name: "Engineering Team")
+        let startupID = NTMSID.from(name: "Startup")
+
+        return buildTeam(
+            name: "Coding Agent",
+            description: "Hybrid coding agent: edits files directly for small changes, delegates complex implementation to a chosen team.",
+            templateID: "codingAgent",
+            roleIDs: ["codingAgent"],
+            artifactNames: [SystemTemplates.supervisorTaskArtifactName],
+            coordinatorIndex: 1,
+            supervisorRequires: [],
+            supervisorCanBeInvited: true,
+            supervisorMode: .manual
+        ) { roles in
+            roles[1].dependencies.requiredArtifacts = [SystemTemplates.supervisorTaskArtifactName]
+            // Programming-focused teams except FAANG. Coding Assistant is chat-mode and
+            // therefore filtered out at delegate time even if listed — omit for clarity.
+            //
+            // These two assignments together flip `hasDelegationConfigured` to true, which
+            // (a) makes `buildSettings` skip the `reportsTo` wiring (peer-with-Supervisor),
+            // and (b) makes `LLMExecutionService+ToolResolution` auto-inject the 4-tool
+            // delegation pack into the LLM schema. The role's `toolIDs` does NOT contain
+            // `delegate_to_team` — that's an auto-injected tool now (like `ask_supervisor`).
+            roles[1].allowedDelegationTeamIDs = [engineeringID, startupID]
+            roles[1].allowDelegationToGeneratedTeams = true
         }
     }
 
@@ -258,8 +295,15 @@ enum TeamTemplateFactory {
         let nonSupervisorRoles = roles.filter { $0.id != supervisorID }
         let invitableRoles = Set(nonSupervisorRoles.map(\.id))
 
+        // Auto-wire non-Supervisor roles to report to Supervisor — EXCEPT roles
+        // configured for delegation (whitelist non-empty OR generated permission).
+        // Those are peer-level with the human Supervisor by definition (only peer-
+        // level roles may delegate; see `Team.roleIsTopLevelDelegator`). Skipping
+        // the entry here is the single source of truth: delegation settings alone
+        // decide peer status — no extra flag, no post-mutation. The toolset is
+        // independent (delegation tools auto-inject from settings, not toolIDs).
         var reportsTo: [String: String] = [:]
-        for role in nonSupervisorRoles {
+        for role in nonSupervisorRoles where !role.hasDelegationConfigured {
             reportsTo[role.id] = supervisorID
         }
 

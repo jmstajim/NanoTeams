@@ -266,11 +266,114 @@ final class QuickCaptureModeCoordinatorTests: XCTestCase {
         }
     }
 
+    // MARK: - QC ↔ Activity Feed sync contract
+
+    /// Both surfaces (QC overlay header + activity-feed question card / composer
+    /// chip preview) MUST display the same question text for the same step.
+    /// QC reads `step.supervisorQuestion` directly via this coordinator; the
+    /// activity feed reads through `ActivityFeedBuilder.activeSupervisorQuestions`.
+    /// They diverged when escalation overwrote `step.supervisorQuestion` while a
+    /// stale ask_supervisor tool call still sat in `step.toolCalls` — the user
+    /// saw two different texts for the same waiting step (see the bug
+    /// reproduction in `ActivityFeedBuilderTests.testActiveSupervisorQuestions_prefersStepSupervisorQuestionOverStaleToolCallArg`).
+    /// This test pins the contract end-to-end across both surfaces.
+    func testQCAndActivityFeed_agreeOnQuestion_afterEscalationOverwrite() {
+        // Build a task whose step has BOTH a stale ask_supervisor tool call
+        // (with original question text) AND an escalation-overwritten
+        // `step.supervisorQuestion`. Both surfaces must report the escalation
+        // text, not the stale tool-call argument.
+        let staleAsk = StepToolCall(
+            name: ToolNames.askSupervisor,
+            argumentsJSON: #"{"question":"Original ask before escalation"}"#,
+            resultJSON: "{}"
+        )
+        var task = NTMSTask(id: 0, title: "T", supervisorTask: "G")
+        var run = Run(id: 0, teamID: "t1")
+        var step = StepExecution.make(for: TeamRoleDefinition(
+            id: "eng", name: "Engineer",
+            prompt: "", toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies()
+        ))
+        step.needsSupervisorInput = true
+        step.supervisorQuestion = "ESCALATION: Role X emitted 3 refusal messages."
+        step.status = .needsSupervisorInput
+        step.toolCalls.append(staleAsk)
+        run.steps.append(step)
+        task.runs.append(run)
+
+        // QC surface
+        let qcMode = sut.resolveMode(
+            isTaskSelected: true, activeTask: task,
+            engineState: .needsSupervisorInput, activeTeam: makeTeam(),
+            forceNewTaskMode: false
+        )
+        guard case .supervisorAnswer(let qcPayload) = qcMode else {
+            XCTFail("Expected .supervisorAnswer mode"); return
+        }
+
+        // Activity-feed surface
+        let activeQuestions = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+        XCTAssertEqual(activeQuestions.count, 1)
+
+        // Contract: both surfaces show the SAME text.
+        XCTAssertEqual(
+            qcPayload.question, activeQuestions.first?.question,
+            "QC overlay and activity-feed composer must show the same question for the same step — divergence reintroduces the escalation/stale-tool-call desync bug."
+        )
+        XCTAssertEqual(
+            qcPayload.question, "ESCALATION: Role X emitted 3 refusal messages.",
+            "Both surfaces must show the CURRENT (escalation) text, not the stale tool-call argument."
+        )
+    }
+
+    /// Companion sync test for the normal path: when only a real ask_supervisor
+    /// call exists (no escalation), both surfaces still agree. Without this,
+    /// a Green-phase change to `activeSupervisorQuestions` could break the
+    /// normal path while fixing the escalation path — silently breaking the
+    /// common case.
+    func testQCAndActivityFeed_agreeOnQuestion_normalAskSupervisorPath() {
+        // step.supervisorQuestion mirrors the tool-call arg (what
+        // setNeedsSupervisorInput does on the normal ask_supervisor path).
+        let ask = StepToolCall(
+            name: ToolNames.askSupervisor,
+            argumentsJSON: #"{"question":"Which scheme should I use?"}"#,
+            resultJSON: "{}"
+        )
+        var task = NTMSTask(id: 0, title: "T", supervisorTask: "G")
+        var run = Run(id: 0, teamID: "t1")
+        var step = StepExecution.make(for: TeamRoleDefinition(
+            id: "eng", name: "Engineer",
+            prompt: "", toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies()
+        ))
+        step.needsSupervisorInput = true
+        step.supervisorQuestion = "Which scheme should I use?"
+        step.status = .needsSupervisorInput
+        step.toolCalls.append(ask)
+        run.steps.append(step)
+        task.runs.append(run)
+
+        let qcMode = sut.resolveMode(
+            isTaskSelected: true, activeTask: task,
+            engineState: .needsSupervisorInput, activeTeam: makeTeam(),
+            forceNewTaskMode: false
+        )
+        guard case .supervisorAnswer(let qcPayload) = qcMode else {
+            XCTFail("Expected .supervisorAnswer mode"); return
+        }
+
+        let activeQuestions = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+        XCTAssertEqual(activeQuestions.count, 1)
+        XCTAssertEqual(
+            qcPayload.question, activeQuestions.first?.question,
+            "Normal path: both surfaces show same question text"
+        )
+    }
+
     // MARK: - QuickCaptureVisualMode classification
 
     func testVisualMode_classification() {
         XCTAssertEqual(QuickCaptureVisualMode(.overlay), .newTask)
-        XCTAssertEqual(QuickCaptureVisualMode(.sheet), .newTask)
         XCTAssertEqual(QuickCaptureVisualMode(.taskWorking(roleName: "", isChatMode: false)), .working)
 
         let payload = SupervisorAnswerPayload(

@@ -22,6 +22,8 @@ struct RoleNodeRuntimeView: View {
     var roleTintColor: Color = Colors.neutral
 
     @State private var isHovered = false
+    @Environment(\.windowResizeMonitor) private var resizeMonitor
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var canRestart: Bool { onRestart != nil && status.canRestart }
     /// Matches `NTMSOrchestrator.correctRole` acceptance: the orchestrator only
@@ -62,6 +64,9 @@ struct RoleNodeRuntimeView: View {
                         .font(.caption.weight(.medium))
                         .foregroundStyle(status == .idle ? roleTintColor : statusDisplayColor)
                 }
+                // Known 32×32. Short-circuits the constraint-walk
+                // `minSize()` query for this NSHostingView's subtree.
+                .fixedSize()
 
                 // Role name
                 Text(roleName)
@@ -78,15 +83,24 @@ struct RoleNodeRuntimeView: View {
             .padding(8)
             .frame(minWidth: 80, maxWidth: Self.nodeMaxWidth, minHeight: 60)
             .fixedSize(horizontal: false, vertical: true)
-            .background(
-                RoundedRectangle(cornerRadius: CornerRadius.large, style: .continuous)
-                    .fill(isHovered ? Colors.surfaceElevated : Colors.surfaceCard)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: CornerRadius.large, style: .continuous)
-                    .stroke(nodeStyle.borderColor, lineWidth: nodeStyle.borderWidth)
-            )
-            
+            // Consolidate fill + stroke into a single `.background` so
+            // SwiftUI sees them as one structural unit. The two
+            // RoundedRectangle shape draws still happen, but they share
+            // the same modifier chain entry, which tends to coalesce into
+            // fewer CALayer allocations under CA::Transaction commit.
+            // Honest caveat: SwiftUI doesn't promise layer coalescing,
+            // and the saving here is modest (small per-node win × N
+            // nodes). Combined with the deferred-hydration change above
+            // it shaves a measurable chunk off the first-paint constraint
+            // walk — worth doing.
+            .background {
+                ZStack {
+                    RoundedRectangle(cornerRadius: CornerRadius.large, style: .continuous)
+                        .fill(isHovered ? Colors.surfaceElevated : Colors.surfaceCard)
+                    RoundedRectangle(cornerRadius: CornerRadius.large, style: .continuous)
+                        .stroke(nodeStyle.borderColor, lineWidth: nodeStyle.borderWidth)
+                }
+            }
             .overlay(alignment: .topTrailing) {
                 meetingBadge
             }
@@ -142,8 +156,20 @@ struct RoleNodeRuntimeView: View {
         }
         .accessibilityLabel("\(roleName), \(statusDisplayName)")
         .accessibilityHint("Tap to view role details. Right-click for more actions.")
-        .animationWithReduceMotion(.spring(response: 0.3), value: isSelected)
-        .animation(.easeInOut(duration: 0.15), value: isHovered)
+        // During NSWindow live-resize, suppress per-node spring/easeInOut
+        // animations. Spring rebounds firing mid-drag stack with the graph
+        // re-layout (same frame budget) and contribute to the hang. Passing
+        // `nil` to `.animation` disables it for the current state change.
+        // When NOT resizing, preserve the prior `animationWithReduceMotion`
+        // semantics: substitute `Animations.reducedMotion` when the user
+        // has Reduce Motion enabled.
+        .animation(
+            resizeMonitor.isResizing
+                ? nil
+                : (reduceMotion ? Animations.reducedMotion : .spring(response: 0.3)),
+            value: isSelected
+        )
+        .animation(resizeMonitor.isResizing ? nil : .easeInOut(duration: 0.15), value: isHovered)
     }
 
     // MARK: - Meeting Badge
@@ -154,6 +180,7 @@ struct RoleNodeRuntimeView: View {
             Circle()
                 .fill(Colors.purple)
                 .frame(width: 8, height: 8)
+                .fixedSize()  // known 8×8 — skip constraint-walk round-trip
                 .offset(x: 4, y: -4)
         }
     }

@@ -7,7 +7,7 @@ struct SettingsView: View {
     @Environment(StoreConfiguration.self) var config
     @AppStorage(UserDefaultsKeys.appAppearance) private var appAppearance: AppAppearance = .system
 
-    enum SettingsTab: String, CaseIterable, Identifiable, Codable {
+    nonisolated enum SettingsTab: String, CaseIterable, Identifiable, Codable {
         case llm = "LLM"
         case workFolder = "Work Folder"
         case general = "General"

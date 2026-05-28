@@ -32,7 +32,7 @@ final class StepExecutionAttachmentTests: XCTestCase {
 
         let result = step.effectiveSupervisorAnswer!
         XCTAssertTrue(result.hasPrefix("See attached screenshot"))
-        XCTAssertTrue(result.contains("--- Attached Files ---"))
+        XCTAssertTrue(result.contains("## Attached Files"))
         XCTAssertTrue(result.contains("- .nanoteams/tasks/abc/attachments/screenshot.png"))
     }
 
@@ -58,9 +58,9 @@ final class StepExecutionAttachmentTests: XCTestCase {
         let result = step.effectiveSupervisorAnswer
         XCTAssertNotNil(result)
         XCTAssertTrue(result!.contains("file.png"))
-        XCTAssertTrue(result!.contains("--- Attached Files ---"))
+        XCTAssertTrue(result!.contains("## Attached Files"))
         // Should NOT contain empty answer text prefix
-        XCTAssertTrue(result!.hasPrefix("--- Attached Files ---"))
+        XCTAssertTrue(result!.hasPrefix("## Attached Files"))
     }
 
     func testEffectiveSupervisorAnswer_nilAnswerAndNoAttachments_returnsNil() {

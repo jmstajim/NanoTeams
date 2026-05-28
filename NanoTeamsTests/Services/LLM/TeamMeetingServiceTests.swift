@@ -195,6 +195,35 @@ final class TeamMeetingServiceTests: XCTestCase {
         XCTAssertTrue(decision.nextSteps.isEmpty)
     }
 
+    // Regression pin for Auto-mode auto-conclusion attribution (PR review I2).
+    // The +TeamMeeting.swift call site passes `effectiveCoordinator` into
+    // `concludedBy:`, which equals `resolveCoordinatorRole(team) ?? initiator`.
+    // In Auto mode (designated == nil) the initiator therefore ends up on
+    // `TeamDecision.proposedBy`.
+    func testConcludeMeeting_concludedByInitiator_setsProposedBy() {
+        var meeting = TeamMeetingService.createMeeting(
+            topic: "Auto-mode topic",
+            initiatedBy: .softwareEngineer,
+            participants: [.uxDesigner, .sre],
+            context: nil
+        )
+        meeting.start()
+
+        // The +TeamMeeting.swift call site computes `effectiveCoordinator`
+        // for Auto mode (designated == nil → initiator). Simulate that here.
+        let effectiveCoordinator: Role = .softwareEngineer  // = initiator
+        TeamMeetingService.concludeMeeting(
+            meeting: &meeting,
+            decision: "Auto-mode decision",
+            rationale: nil,
+            nextSteps: nil,
+            concludedBy: effectiveCoordinator
+        )
+
+        XCTAssertEqual(meeting.decisions.first?.proposedBy, .softwareEngineer,
+                       "Auto mode: TeamDecision.proposedBy must equal the initiator")
+    }
+
     func testConcludeMeeting_SetsAgreedByToParticipants() {
         var meeting = TeamMeetingService.createMeeting(
             topic: "Test topic",

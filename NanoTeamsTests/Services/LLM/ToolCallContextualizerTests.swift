@@ -129,7 +129,7 @@ final class ToolCallContextualizerTests: XCTestCase {
     }
 
     func testGenerateStateContext_moreThan5Files_showsSuffix() {
-        var calls: [ToolCallCache.TrackedCall] = []
+        var calls: [ToolCallTracker.TrackedCall] = []
         for i in 0..<7 {
             calls.append(makeCall(TN.readFile, args: "file\(i).swift", result: "ok", success: true))
         }
@@ -173,8 +173,8 @@ final class ToolCallContextualizerTests: XCTestCase {
         result: String,
         success: Bool,
         resultJSON: String = "{}"
-    ) -> ToolCallCache.TrackedCall {
-        ToolCallCache.TrackedCall(
+    ) -> ToolCallTracker.TrackedCall {
+        ToolCallTracker.TrackedCall(
             toolName: toolName,
             argumentsSummary: args,
             resultSummary: result,

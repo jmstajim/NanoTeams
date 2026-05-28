@@ -46,7 +46,7 @@ extension LLMExecutionService {
         // is a snapshot captured at step start and doesn't reflect mutations from prior iterations).
         let run = task.runs[runIndex]
         let freshMeetings: [TeamMeeting]
-        if let freshTask = await { delegate.loadedTask(tid) }(),
+        if let freshTask = delegate.loadedTask(tid),
            runIndex < freshTask.runs.count {
             freshMeetings = freshTask.runs[runIndex].meetings
         } else {
@@ -85,15 +85,16 @@ extension LLMExecutionService {
         }
         availableArtifacts.append(contentsOf: step.artifacts)
 
-        // Resolve coordinator
-        let coordinatorRoleID = team?.settings.meetingCoordinatorRoleID
-            ?? team?.roles.first(where: { !$0.isSupervisor })?.id
-        let coordinator: Role = coordinatorRoleID.flatMap { id in
-            if let systemRoleID = team?.roles.first(where: { $0.id == id })?.systemRoleID {
-                return Role.builtInRole(for: systemRoleID)
-            }
-            return .custom(id: id)
-        } ?? .tpm
+        // Resolve the effective coordinator for THIS meeting. In Auto mode
+        // (no designated coordinator) or when the designated ID is orphaned
+        // (deleted role), the initiator becomes the coordinator of meetings
+        // they start — so wrap-up / steering / conclusion attribution all
+        // land on the initiating role. Never nil.
+        let coordinator: Role = effectiveCoordinator(team: team, initiator: initiatingRole)
+        // Orphan path is silent runtime self-heal; surface a one-shot info
+        // message so the Supervisor learns their explicit coordinator pick
+        // was dropped (and where to fix it).
+        reportOrphanCoordinatorIfNeeded(team: team)
 
         // Per-role LLM config resolver
         let meetingConfigResolver: (Role) -> LLMConfig = { speakerRole in
@@ -117,14 +118,16 @@ extension LLMExecutionService {
             },
             team: team,
             coordinatorRole: coordinator,
-            limits: teamSettings.limits
+            limits: teamSettings.limits,
+            globalContext: delegate.globalLLMContext
         )
 
         // Tool runtime for meeting tool calls
         let paths = NTMSPaths(workFolderRoot: workFolderRoot)
         let isDefaultStorage = workFolderRoot == NTMSOrchestrator.defaultStorageURL
         let meetingToolCallsLogURL: URL? = delegate.loggingEnabled
-            ? paths.toolCallsJSONL(taskID: tid, runID: run.id)
+            ? paths.toolCallsJSONL(taskID: tid, runID: run.id,
+                                    ancestors: delegate.snapshot?.tasksIndex.ancestorIDs(of: tid) ?? [])
             : nil
         let (_, runtime) = ToolRegistry.defaultRegistry(
             workFolderRoot: workFolderRoot, toolCallsLogURL: meetingToolCallsLogURL,
@@ -199,7 +202,11 @@ extension LLMExecutionService {
                     stepID: stepID
                 )
 
-                // Execute tool loop if needed
+                // The cancellation registrar gives the orchestrator a handle
+                // on the in-flight detached batch so `cancelAllExecutions` can
+                // stop a meeting tool turn mid-run — without it, pause-during-
+                // meeting would silently run the batch to completion.
+                let meetingStepID = stepID
                 let (finalContent, allThinking, toolSummaries) = try await MeetingToolExecutor.executeTurnToolLoop(
                     initialResult: streamResult,
                     speaker: speaker,
@@ -211,7 +218,15 @@ extension LLMExecutionService {
                     runtime: runtime,
                     toolContext: toolContext,
                     stepID: stepID,
-                    networkLogger: networkLogger
+                    networkLogger: networkLogger,
+                    cancellationRegistrar: { [weak self] batchTask in
+                        guard let self else { return }
+                        if let batchTask {
+                            self.executionStates[meetingStepID]?.currentToolBatchTask = batchTask
+                        } else if self.executionStates[meetingStepID]?.currentToolBatchTask != nil {
+                            self.executionStates[meetingStepID]?.currentToolBatchTask = nil
+                        }
+                    }
                 )
 
                 // Save speaker's response to consultation chat
@@ -240,7 +255,10 @@ extension LLMExecutionService {
                 await recordMeeting(stepID: stepID, meeting: meeting)
             }
 
-            // Auto-conclude if needed
+            // Auto-conclude if needed. The local `coordinator` is the
+            // effective coordinator computed above (designated coordinator,
+            // or initiator in Auto/orphan mode), so `TeamDecision.proposedBy`
+            // is always populated correctly without an extra fallback here.
             if meeting.status == .inProgress {
                 let summary = meeting.messages.last?.content
                     ?? "Meeting concluded after \(meeting.turnCount) turns."

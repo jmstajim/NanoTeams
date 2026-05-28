@@ -1,7 +1,7 @@
 import Foundation
 
 /// Helper type for executing tool implementations with standardized error handling.
-enum ToolErrorHandler {
+nonisolated enum ToolErrorHandler {
 
     /// Executes a tool implementation with standardized error handling.
     /// Catches common error types and converts them to appropriate error results.
@@ -32,6 +32,14 @@ enum ToolErrorHandler {
             return makeErrorResult(
                 toolName: toolName, args: args,
                 code: .permissionDenied, message: error.localizedDescription
+            )
+        } catch ProcessRunnerError.cancelled {
+            // SIGTERMed `xcodebuild` / `git`. Route through the unified cancel
+            // envelope so MemoryTagStore and downstream classifiers see one
+            // wire shape regardless of which layer cancelled.
+            return makeCancelledResult(
+                toolName: toolName,
+                argumentsJSON: encodeArgsToJSON(args)
             )
         } catch {
             return makeErrorResult(

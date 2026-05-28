@@ -9,20 +9,19 @@ final class SearchIndexInvariantsTests: XCTestCase {
 
     var tempDir: URL!
     var internalDir: URL!
-    let fm = FileManager.default
 
     override func setUpWithError() throws {
         try super.setUpWithError()
-        tempDir = fm.temporaryDirectory
+        tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
             .standardizedFileURL
         internalDir = tempDir.appendingPathComponent(".nanoteams/internal", isDirectory: true)
-        try fm.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        try fm.createDirectory(at: internalDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: internalDir, withIntermediateDirectories: true)
     }
 
     override func tearDownWithError() throws {
-        if let tempDir { try? fm.removeItem(at: tempDir) }
+        if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
         internalDir = nil
         try super.tearDownWithError()
@@ -30,14 +29,14 @@ final class SearchIndexInvariantsTests: XCTestCase {
 
     private func write(_ relPath: String, content: String) throws {
         let url = tempDir.appendingPathComponent(relPath)
-        try fm.createDirectory(
+        try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true
         )
         try content.write(to: url, atomically: true, encoding: .utf8)
     }
 
     private func makeService() -> SearchIndexService {
-        SearchIndexService(workFolderRoot: tempDir, internalDir: internalDir, fileManager: fm)
+        SearchIndexService(workFolderRoot: tempDir, internalDir: internalDir, fileManager: .default)
     }
 
     // MARK: - Postings invariants
@@ -164,7 +163,7 @@ final class SearchIndexInvariantsTests: XCTestCase {
         try write("A.swift", content: "x")
         _ = await makeService().loadOrBuild()
         let expected = internalDir.appendingPathComponent("search_index.json")
-        XCTAssertTrue(fm.fileExists(atPath: expected.path),
+        XCTAssertTrue(FileManager.default.fileExists(atPath: expected.path),
             "Index must persist to .nanoteams/internal/search_index.json")
     }
 

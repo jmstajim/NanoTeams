@@ -5,7 +5,7 @@ private typealias JS = JSONSchema
 
 // MARK: - git_status
 
-struct GitStatusTool: ToolHandler {
+nonisolated struct GitStatusTool: ToolHandler {
     static let name = TN.gitStatus
     static let schema = ToolSchema(
         name: TN.gitStatus,
@@ -88,7 +88,7 @@ struct GitStatusTool: ToolHandler {
 
 // MARK: - git_branch_list
 
-struct GitBranchListTool: ToolHandler {
+nonisolated struct GitBranchListTool: ToolHandler {
     static let name = TN.gitBranchList
     static let schema = ToolSchema(
         name: TN.gitBranchList,
@@ -175,7 +175,7 @@ struct GitBranchListTool: ToolHandler {
 
 // MARK: - git_log
 
-struct GitLogTool: ToolHandler {
+nonisolated struct GitLogTool: ToolHandler {
     static let name = TN.gitLog
     static let schema = ToolSchema(
         name: TN.gitLog,
@@ -269,11 +269,11 @@ struct GitLogTool: ToolHandler {
 
 // MARK: - git_diff
 
-struct GitDiffTool: ToolHandler {
+nonisolated struct GitDiffTool: ToolHandler {
     static let name = TN.gitDiff
     static let schema = ToolSchema(
         name: TN.gitDiff,
-        description: "Show git diff. Result includes `diff`, `files_changed`, and `untracked_files` (new files not yet `git add`-ed — these are NOT in `diff`; read them with `read_file` to see their contents).",
+        description: "Show git diff. Result includes `diff`, `files_changed`, and `untracked_files`. Untracked files are not part of `diff` — their content is not returned here.",
         parameters: JS.object(
             properties: [
                 "cached": JS.boolean("Show staged changes"),
@@ -284,8 +284,6 @@ struct GitDiffTool: ToolHandler {
     )
     static let category: ToolCategory = .gitRead
     static let blockedInDefaultStorage = true
-    /// Working-tree mutations between reads make diff results stale — do not cache.
-    static let isCacheable = false
 
     let workFolderRoot: URL
 

@@ -7,7 +7,7 @@ import Foundation
 /// indexing purposes. The set is intentionally generous toward noisy build /
 /// dependency folders — `node_modules` and the like can each blow up file
 /// counts by 10–100× without contributing relevant vocabulary.
-enum WalkSkipRules {
+nonisolated enum WalkSkipRules {
     /// Directory and file names skipped during recursive walks.
     ///
     /// Includes legacy dotfile noise (`.DS_Store`, `.git`, `.svn`, `.hg`,

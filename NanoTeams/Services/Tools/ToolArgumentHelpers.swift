@@ -17,7 +17,7 @@ import Foundation
 ///
 /// Otherwise return `args` unchanged. Applied once per call at the
 /// ToolRuntime dispatch boundary before the per-handler `handle(...)`.
-func unwrapReentrantEnvelope(_ args: [String: Any], expectedToolName: String) -> [String: Any] {
+nonisolated func unwrapReentrantEnvelope(_ args: [String: Any], expectedToolName: String) -> [String: Any] {
     guard let outerName = args["name"] as? String,
           let inner = args["arguments"] as? [String: Any]
     else {
@@ -35,7 +35,7 @@ func unwrapReentrantEnvelope(_ args: [String: Any], expectedToolName: String) ->
 
 // MARK: - Argument Extraction Helpers
 
-func requiredString(_ args: [String: Any], _ key: String) throws -> String {
+nonisolated func requiredString(_ args: [String: Any], _ key: String) throws -> String {
     if let value = args[key] as? String { return value }
     // Fallback: LLM passed a plain string instead of a JSON object
     if let raw = args["__raw_input__"] as? String {
@@ -50,11 +50,38 @@ func requiredString(_ args: [String: Any], _ key: String) throws -> String {
     throw ToolArgumentError.missingRequired(key)
 }
 
-func optionalString(_ args: [String: Any], _ key: String) -> String? {
+nonisolated func optionalString(_ args: [String: Any], _ key: String) -> String? {
     args[key] as? String
 }
 
-func optionalInt(_ args: [String: Any], _ key: String) -> Int? {
+/// Best-effort string extraction with model-friendly recovery paths.
+///
+/// Tries `args[key]`, then the same key inside a stringified-JSON
+/// `__raw_input__` blob. Non-String values are coerced via `String(describing:)` —
+/// strict type-rejection is a contract small models can't reliably honor, so
+/// coercion lets downstream validators (whitelists, ID matchers) produce the
+/// actionable error. Trims whitespace; returns nil for absent / empty results.
+nonisolated func extractString(_ args: [String: Any], _ key: String) -> String? {
+    func nonEmpty(_ s: String) -> String? {
+        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+    func lookup(in dict: [String: Any]) -> String? {
+        if let s = dict[key] as? String { return nonEmpty(s) }
+        if let v = dict[key] { return nonEmpty(String(describing: v)) }
+        return nil
+    }
+
+    if let result = lookup(in: args) { return result }
+
+    guard let raw = args["__raw_input__"] as? String,
+          let data = raw.data(using: .utf8),
+          let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else { return nil }
+    return lookup(in: parsed)
+}
+
+nonisolated func optionalInt(_ args: [String: Any], _ key: String) -> Int? {
     if let intVal = args[key] as? Int {
         return intVal
     }
@@ -64,7 +91,7 @@ func optionalInt(_ args: [String: Any], _ key: String) -> Int? {
     return nil
 }
 
-func requiredInt(_ args: [String: Any], _ key: String) throws -> Int {
+nonisolated func requiredInt(_ args: [String: Any], _ key: String) throws -> Int {
     if let intVal = args[key] as? Int {
         return intVal
     }
@@ -74,16 +101,16 @@ func requiredInt(_ args: [String: Any], _ key: String) throws -> Int {
     throw ToolArgumentError.missingRequired(key)
 }
 
-func optionalBool(_ args: [String: Any], _ key: String, default defaultValue: Bool = false) -> Bool
+nonisolated func optionalBool(_ args: [String: Any], _ key: String, default defaultValue: Bool = false) -> Bool
 {
     (args[key] as? Bool) ?? defaultValue
 }
 
-func optionalStringArray(_ args: [String: Any], _ key: String) -> [String]? {
+nonisolated func optionalStringArray(_ args: [String: Any], _ key: String) -> [String]? {
     args[key] as? [String]
 }
 
-func requiredStringArray(_ args: [String: Any], _ key: String) throws -> [String] {
+nonisolated func requiredStringArray(_ args: [String: Any], _ key: String) throws -> [String] {
     guard let value = args[key] as? [String] else {
         throw ToolArgumentError.missingRequired(key)
     }
@@ -93,7 +120,7 @@ func requiredStringArray(_ args: [String: Any], _ key: String) throws -> [String
 // MARK: - Resilient Content Resolution
 
 /// Known non-content keys that should never be treated as content fallbacks.
-private let nonContentKeys: Set<String> = [
+nonisolated private let nonContentKeys: Set<String> = [
     "path", "create_dirs", "encoding", "max_lines",
     "must_exist", "mode", "file_glob", "patch",
     "start_line", "end_line", "include_line_numbers",
@@ -104,7 +131,7 @@ private let nonContentKeys: Set<String> = [
 ]
 
 /// Common alternative argument names LLMs use instead of "content".
-private let contentAlternativeNames: [String] = [
+nonisolated private let contentAlternativeNames: [String] = [
     "text", "body", "file_content", "data", "value",
     "plan", "notes", "output", "message", "code", "source"
 ]
@@ -116,7 +143,7 @@ private let contentAlternativeNames: [String] = [
 /// 1. `args["content"]` (exact match)
 /// 2. Known alternative names: "text", "body", "file_content", etc.
 /// 3. If exactly one non-excluded string value remains, use it.
-func resolveContentString(_ args: [String: Any], excludeKeys: Set<String> = []) -> String? {
+nonisolated func resolveContentString(_ args: [String: Any], excludeKeys: Set<String> = []) -> String? {
     // 1. Exact match
     if let content = args["content"] as? String {
         return content

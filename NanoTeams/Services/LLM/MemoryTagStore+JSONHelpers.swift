@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - JSON Parsing Helpers
 
-extension MemoryTagStore {
+nonisolated extension MemoryTagStore {
 
     /// Extract "path" from arguments JSON: {"path": "..."}
     func extractPath(from argsJSON: String) -> String? {

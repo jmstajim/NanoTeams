@@ -48,7 +48,7 @@ struct TeamNotification: Codable, Identifiable, Hashable {
 
 // MARK: - Notification Type
 
-enum NotificationType: String, Codable, Hashable {
+nonisolated enum NotificationType: String, Codable, Hashable {
     /// Role completed work and needs acceptance
     case acceptanceRequired
 

@@ -4,6 +4,12 @@ import Foundation
 /// Handles the LLM → tools → LLM loop for meeting participants.
 enum MeetingToolExecutor {
 
+    /// Receives the in-flight batch task each time a turn dispatches tool calls
+    /// to the cooperative pool. The orchestrator stores the handle so a paused
+    /// run can cancel it; passing `nil` signals "no batch in flight, clear any
+    /// stored handle."
+    typealias BatchCancellationRegistrar = @MainActor (Task<[ToolExecutionResult], Never>?) -> Void
+
     /// Executes tool calls for a single meeting turn. If the LLM returns tool calls,
     /// executes them and re-calls the LLM with results, up to maxToolIterationsPerTurn.
     static func executeTurnToolLoop(
@@ -17,7 +23,8 @@ enum MeetingToolExecutor {
         runtime: ToolRuntime,
         toolContext: ToolExecutionContext,
         stepID: String? = nil,
-        networkLogger: NetworkLogger? = nil
+        networkLogger: NetworkLogger? = nil,
+        cancellationRegistrar: BatchCancellationRegistrar? = nil
     ) async throws -> (content: String, thinking: String, toolSummaries: [MeetingToolSummary]) {
         var currentResult = initialResult
         var allThinking = initialResult.thinking
@@ -53,8 +60,18 @@ enum MeetingToolExecutor {
 
             iteration += 1
 
-            // Execute valid tool calls; rejected results already built above
-            let freshResults = runtime.executeAll(context: toolContext, toolCalls: validCalls)
+            // Off-main dispatch. Same Sendable contract as
+            // `LLMExecutionService.executeToolCalls`. The registrar lets the
+            // orchestrator hold the batch handle so `cancelAllExecutions`
+            // reaches in — otherwise pause-during-meeting can't stop the
+            // detached batch.
+            let batchTask = Task.detached(priority: .userInitiated) {
+                [runtime, toolContext, validCalls] in
+                runtime.executeAll(context: toolContext, toolCalls: validCalls)
+            }
+            cancellationRegistrar?(batchTask)
+            let freshResults = await batchTask.value
+            cancellationRegistrar?(nil)
             let toolResults = freshResults + rejectedResults
 
             // Record tool summaries for both executed and rejected calls
@@ -71,7 +88,8 @@ enum MeetingToolExecutor {
             var followUpMessages = MeetingStreamingService.buildMeetingMessages(
                 speaker: speaker,
                 meeting: meeting,
-                context: meetingContext
+                context: meetingContext,
+                tools: tools
             )
 
             // Feed back every call the model made — both executed and rejected

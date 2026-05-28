@@ -1,6 +1,6 @@
 import Foundation
 
-enum Role: Hashable, Codable, Identifiable {
+nonisolated enum Role: Hashable, Codable, Identifiable {
     case supervisor
     case productManager
     case uxResearcher
@@ -22,10 +22,11 @@ enum Role: Hashable, Codable, Identifiable {
     case theNeurotic
     case assistant
     case codingAssistant
+    case codingAgent
     case custom(id: String)
 
     static var builtInCases: [Role] {
-        [.supervisor, .productManager, .uxResearcher, .uxDesigner, .techLead, .softwareEngineer, .codeReviewer, .sre, .tpm, .loreMaster, .npcCreator, .encounterArchitect, .rulesArbiter, .questMaster, .theAgreeable, .theOpen, .theConscientious, .theExtrovert, .theNeurotic, .assistant, .codingAssistant]
+        [.supervisor, .productManager, .uxResearcher, .uxDesigner, .techLead, .softwareEngineer, .codeReviewer, .sre, .tpm, .loreMaster, .npcCreator, .encounterArchitect, .rulesArbiter, .questMaster, .theAgreeable, .theOpen, .theConscientious, .theExtrovert, .theNeurotic, .assistant, .codingAssistant, .codingAgent]
     }
 
     /// Single source of truth for all built-in role metadata. Adding a new role case
@@ -57,6 +58,7 @@ enum Role: Hashable, Codable, Identifiable {
         .theNeurotic:      .init(displayName: "The Neurotic",      builtInID: "theNeurotic"),
         .assistant:        .init(displayName: "Assistant",          builtInID: "assistant"),
         .codingAssistant:  .init(displayName: "Coding Assistant",   builtInID: "codingAssistant"),
+        .codingAgent:      .init(displayName: "Coding Agent",       builtInID: "codingAgent"),
     ]
 
     /// Reverse lookup: builtInID string → Role. O(1) instead of O(n) scan.

@@ -4,7 +4,7 @@ import Foundation
 
 /// Stateless builder for watchtower timeline events.
 /// Extracts business logic (event collection, filtering, sorting) from WatchtowerTimeline view.
-enum WatchtowerTimelineBuilder {
+nonisolated enum WatchtowerTimelineBuilder {
 
     /// Collect and sort timeline events from a task (newest first).
     static func collectEvents(from task: NTMSTask, roleDefinitions: [TeamRoleDefinition]) -> [TimelineEvent] {

@@ -59,6 +59,14 @@ extension NTMSOrchestrator {
                 syncEngineStateFromRun(taskID: activeTask.id, task: activeTask)
             }
 
+            // Restore delegation history of the active task: pull every
+            // transitive descendant into `loadedTasks` so the parent's
+            // activity feed (`allLoadedTasksIncludingChildren`) and the
+            // graph stack (`GraphPanelView.resolveDelegationLayers`) render
+            // immediately after restart. Without this, child tasks only
+            // appear in memory when a fresh `delegate_to_team` runs.
+            await ensureDelegationDescendantsLoaded(of: self.activeTaskID)
+
             if !snapshot.deferredReconcileTeamIDs.isEmpty {
                 let count = snapshot.deferredReconcileTeamIDs.count
                 let noun = count == 1 ? "team" : "teams"
@@ -254,6 +262,12 @@ extension NTMSOrchestrator {
     func closeProject() async {
         stopAllEngines()
         llmExecutionService.cancelAllExecutions()
+        // Cancel any in-flight active-task pointer write — its captured URL
+        // is for the OLD workfolder, so letting it fire after we've opened
+        // the default storage would write a ghost `activeTaskID` into the
+        // old `workfolder.json` minutes after the user closed the project.
+        pendingActiveTaskWrite?.cancel()
+        pendingActiveTaskWrite = nil
         configuration.lastOpenedWorkFolderPath = nil
         let defaultURL = Self.defaultStorageURL
         try? fileManager.createDirectory(at: defaultURL, withIntermediateDirectories: true)
@@ -264,6 +278,13 @@ extension NTMSOrchestrator {
     func resetAllData() async {
         stopAllEngines()
         llmExecutionService.cancelAllExecutions()
+        // Cancel before the `.nanoteams/` delete below — otherwise the chain
+        // task can fire mid-delete and `setActiveTaskID` will throw
+        // `.fileNoSuchFile` once `workfolder.json` is gone, surfacing as a
+        // spurious "Could not save active-task pointer" banner immediately
+        // after the user hit "Reset All Data".
+        pendingActiveTaskWrite?.cancel()
+        pendingActiveTaskWrite = nil
         // Tear down BEFORE deleting the .nanoteams tree — otherwise the FS
         // watcher can fire against the half-deleted folder and kick off a
         // rebuild that races the re-bootstrap.

@@ -9,7 +9,7 @@ import Foundation
 
 /// An artifact that belongs to a specific team.
 /// Each team has its own set of artifacts that roles can require and produce.
-struct TeamArtifact: Codable, Identifiable {
+nonisolated struct TeamArtifact: Codable, Identifiable {
     /// Unique identifier within the team
     var id: String
 
@@ -100,7 +100,7 @@ struct TeamArtifact: Codable, Identifiable {
 
 // MARK: - Helper Methods
 
-extension TeamArtifact {
+nonisolated extension TeamArtifact {
     /// Returns a copy of this artifact with updated timestamp
     func withUpdatedTimestamp() -> TeamArtifact {
         var copy = self
@@ -143,7 +143,7 @@ extension TeamArtifact {
 
 // MARK: - Hashable
 
-extension TeamArtifact: Hashable {
+nonisolated extension TeamArtifact: Hashable {
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
     }

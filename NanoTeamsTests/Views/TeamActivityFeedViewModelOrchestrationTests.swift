@@ -50,13 +50,6 @@ final class TeamActivityFeedViewModelOrchestrationTests: XCTestCase {
         let firstItemCount = viewModel.cachedTimelineItems.count
         XCTAssertNotNil(firstFingerprint, "First call must seed the fingerprint")
 
-        // Mutate an unrelated cache the fingerprint does not track. The short-circuit
-        // should fire because `TimelineFingerprint` only tracks structural counts.
-        viewModel.loadArtifactContentIfNeeded(
-            Artifact(name: "x", createdAt: Date(), updatedAt: Date()),
-            workFolderURL: nil
-        )
-
         viewModel.recomputeAndRebuild(context: context)
         XCTAssertEqual(viewModel.lastFingerprint, firstFingerprint,
                        "Fingerprint must be unchanged when inputs are identical")
@@ -340,9 +333,6 @@ final class TeamActivityFeedViewModelOrchestrationTests: XCTestCase {
             supervisorProjectFolderURL: nil,
             workFolderURL: nil,
             debugModeEnabled: debug,
-            thinkingExpandedByDefault: false,
-            toolCallsExpandedByDefault: false,
-            artifactsExpandedByDefault: false,
             isStreaming: { _ in false }
         )
     }

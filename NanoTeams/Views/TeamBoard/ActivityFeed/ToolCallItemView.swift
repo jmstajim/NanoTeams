@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Renders a single tool call card with expandable arguments and result.
+/// Renders a single tool call card. Tap opens full untruncated arguments and
+/// result in a standalone window — there is no inline expansion or chevron.
 struct ToolCallItemView: View {
     let call: StepToolCall
     let role: Role
@@ -8,19 +9,29 @@ struct ToolCallItemView: View {
     let showHeader: Bool
     let teamRoles: [TeamRoleDefinition]
     var onAvatarTap: (() -> Void)? = nil
-    @Binding var toolCallsExpanded: Set<UUID>
+    /// Override role display name. `nil` falls back to roleDefinition.name.
+    var roleLabelOverride: String? = nil
+    /// Optional ` from <Team>` suffix in secondary gray for delegated
+    /// child-team items.
+    var roleTeamSuffix: String? = nil
+
+    @Environment(\.openWindow) private var openWindow
 
     // MARK: - Derived
 
-    private var roleName: String { roleDefinition?.name ?? role.displayName }
+    private var roleName: String { roleLabelOverride ?? roleDefinition?.name ?? role.displayName }
     private var tintColor: Color { roleDefinition?.resolvedTintColor ?? role.tintColor }
 
-    private var isExpanded: Bool { toolCallsExpanded.contains(call.id) }
+    /// Display + dispatch name with model-emitted namespace prefixes (`repo_browser.`,
+    /// `functions.`) and common aliases stripped. `call.name` stays as-emitted on the
+    /// model — that form is what the LLM saw in the rejection envelope and what error
+    /// messages quote; the UI and tool-name matching always work on the canonical form.
+    private var canonicalName: String { ToolRegistry.resolveToolName(call.name) }
 
     private static let customSummaryTools: Set<String> = [
         ToolNames.requestTeamMeeting,
     ]
-    private var hasCustomSummary: Bool { Self.customSummaryTools.contains(call.name) }
+    private var hasCustomSummary: Bool { Self.customSummaryTools.contains(canonicalName) }
 
     private var statusColor: Color {
         if call.resultJSON == nil || call.isAnalyzing || call.isGeneratingTeam { return Colors.info }
@@ -31,7 +42,7 @@ struct ToolCallItemView: View {
     /// the resolved `exploratory` value into `argumentsJSON` (covering both the explicit-arg
     /// case and the `searchExploratoryByDefault`-ON case), so this is a direct args check.
     private var isExploratorySearch: Bool {
-        guard call.name == ToolNames.search else { return false }
+        guard canonicalName == ToolNames.search else { return false }
         guard let args = JSONUtilities.parseJSONDictionary(call.argumentsJSON) else { return false }
         return args["exploratory"] as? Bool == true
     }
@@ -47,9 +58,7 @@ struct ToolCallItemView: View {
 
                 VStack(alignment: .leading, spacing: ActivityCardTokens.contentSpacing) {
                     HStack(spacing: 6) {
-                        Text(roleName)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(tintColor)
+                        roleNameText(roleName: roleName, teamSuffix: roleTeamSuffix, tintColor: tintColor)
                         Spacer()
                         Text(call.createdAt.formatted(date: .omitted, time: .shortened))
                             .font(.caption2)
@@ -70,7 +79,7 @@ struct ToolCallItemView: View {
         VStack(alignment: .leading, spacing: ActivityCardTokens.contentSpacing) {
             HStack(spacing: Spacing.s) {
                 statusIcon
-                Text(call.name)
+                Text(canonicalName)
                     .font(.caption.weight(.medium).monospaced())
                     .foregroundStyle(statusColor)
                     .lineLimit(1)
@@ -82,7 +91,7 @@ struct ToolCallItemView: View {
                 }
                 if !hasCustomSummary {
                     let argSummary = ToolCallSummarizer.summarizeArguments(
-                        toolName: call.name, json: call.argumentsJSON,
+                        toolName: canonicalName, json: call.argumentsJSON,
                         resolveRoleName: { teamRoles.roleName(for: $0) }
                     )
                     if !argSummary.isEmpty {
@@ -94,26 +103,20 @@ struct ToolCallItemView: View {
                     }
                 }
                 Spacer()
-                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                    .font(.caption2)
-                    .foregroundStyle(.quaternary)
             }
 
             callSummary
-
-            if isExpanded {
-                callDetails
-            }
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                if isExpanded {
-                    toolCallsExpanded.remove(call.id)
-                } else {
-                    toolCallsExpanded.insert(call.id)
-                }
-            }
+            openWindow(value: ActivityDetailWindow.toolCall(
+                id: call.id,
+                toolName: canonicalName,
+                argumentsJSON: call.argumentsJSON,
+                resultJSON: call.resultJSON,
+                isError: call.isError == true,
+                createdAt: call.createdAt
+            ))
         }
     }
 
@@ -135,75 +138,16 @@ struct ToolCallItemView: View {
 
     @ViewBuilder
     private var callSummary: some View {
-        ToolCallCustomSummaryView(toolName: call.name, argumentsJSON: call.argumentsJSON)
-    }
-
-    private var callDetails: some View {
-        let displayArgs = call.argumentsJSON.count > 500
-            ? String(call.argumentsJSON.prefix(500)) + "\n... [content truncated]"
-            : call.argumentsJSON
-
-        return VStack(alignment: .leading, spacing: ActivityCardTokens.contentSpacing) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Arguments").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                ScrollView {
-                    Text(formattedJSON(displayArgs))
-                        .font(.caption.monospaced())
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(maxHeight: ActivityCardTokens.toolArgsMaxHeight)
-                .padding(Spacing.s)
-                .background(Colors.surfaceOverlay)
-                .clipShape(RoundedRectangle(cornerRadius: ActivityCardTokens.innerCornerRadius, style: .continuous))
-            }
-
-            if let result = call.resultJSON {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text("Result").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                        if call.isError == true {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(Colors.error)
-                                .font(.caption2)
-                        }
-                    }
-                    ScrollView {
-                        Text(formattedJSON(result))
-                            .font(.caption.monospaced())
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .frame(maxHeight: ActivityCardTokens.toolResultMaxHeight)
-                    .padding(Spacing.s)
-                    .background(
-                        call.isError == true ? Colors.errorTint : Colors.surfaceOverlay
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: ActivityCardTokens.innerCornerRadius, style: .continuous))
-                }
-            }
-        }
-    }
-
-    // MARK: - Helpers
-
-    private func formattedJSON(_ json: String) -> String {
-        guard let data = json.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data),
-              let pretty = try? JSONSerialization.data(withJSONObject: obj, options: .prettyPrinted),
-              let formatted = String(data: pretty, encoding: .utf8)
-        else { return json }
-        return formatted
+        ToolCallCustomSummaryView(toolName: canonicalName, argumentsJSON: call.argumentsJSON)
     }
 }
 
 // MARK: - Custom Summary
 
-/// Inline summary rendered above the expandable details of a tool call card.
+/// Inline summary rendered next to the tool name in the card header.
 /// Handles `ask_teammate` (shows question) and `request_team_meeting` (shows topic + participants).
-/// Returns an empty view for tools without a custom summary.
+/// Returns an empty view for tools without a custom summary. Tap on the card
+/// (handled by the parent) opens full args + result in a standalone window.
 private struct ToolCallCustomSummaryView: View {
     let toolName: String
     let argumentsJSON: String
@@ -251,23 +195,42 @@ private struct ToolCallCustomSummaryView: View {
     }
 }
 
+// MARK: - Equatable
+
+/// See `MessageBubbleView`'s Equatable extension for the full rationale —
+/// `.equatable()` lets the timeline dispatcher skip diffing this card when
+/// nothing observable has changed. `teamRoles` is compared by id-array
+/// (`TeamRoleDefinition` is `Identifiable` but not `Hashable`); the role
+/// definitions are read for name resolution inside `summarizeArguments` and
+/// identity is the right granularity. `onAvatarTap` excluded (closure;
+/// captures only props that are themselves in `==`).
+extension ToolCallItemView: Equatable {
+    static func == (lhs: ToolCallItemView, rhs: ToolCallItemView) -> Bool {
+        lhs.call == rhs.call
+            && lhs.role == rhs.role
+            && lhs.roleDefinition?.id == rhs.roleDefinition?.id
+            && lhs.showHeader == rhs.showHeader
+            && lhs.teamRoles.map(\.id) == rhs.teamRoles.map(\.id)
+            && lhs.roleLabelOverride == rhs.roleLabelOverride
+            && lhs.roleTeamSuffix == rhs.roleTeamSuffix
+    }
+}
+
 // MARK: - Preview
 
-#Preview("Collapsed") {
-    @Previewable @State var expanded: Set<UUID> = []
+#Preview("Variants") {
     VStack(spacing: 16) {
         ToolCallItemView(
             call: StepToolCall(
                 name: "read_file",
                 argumentsJSON: "{\"path\": \"Sources/Sorting.swift\"}",
-                resultJSON: "{\"content\": \"import Foundation\\n\\nstruct Sorting {\\n    // TODO\\n}\"}",
+                resultJSON: "{\"content\": \"import Foundation\"}",
                 isError: false
             ),
             role: .softwareEngineer,
             roleDefinition: nil,
             showHeader: true,
-            teamRoles: [],
-            toolCallsExpanded: $expanded
+            teamRoles: []
         )
         ToolCallItemView(
             call: StepToolCall(
@@ -279,105 +242,19 @@ private struct ToolCallCustomSummaryView: View {
             role: .softwareEngineer,
             roleDefinition: nil,
             showHeader: false,
-            teamRoles: [],
-            toolCallsExpanded: $expanded
+            teamRoles: []
         )
-    }
-    .padding()
-    .frame(width: 500)
-    .background(Colors.surfacePrimary)
-}
-
-#Preview("Expanded") {
-    @Previewable @State var expanded: Set<UUID> = [UUID(uuidString: "00000000-0000-0000-0000-000000000001")!]
-    ToolCallItemView(
-        call: StepToolCall(
-            id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
-            name: "edit_file",
-            argumentsJSON: "{\"path\": \"Sources/Sorting.swift\", \"old_text\": \"// TODO\", \"new_text\": \"static func bubbleSort(_ arr: [Int]) -> [Int] { var a = arr; for i in 0..<a.count { for j in 0..<a.count-i-1 { if a[j] > a[j+1] { a.swapAt(j, j+1) } } }; return a }\"}",
-            resultJSON: "{\"success\": true, \"path\": \"Sources/Sorting.swift\"}",
-            isError: false
-        ),
-        role: .softwareEngineer,
-        roleDefinition: nil,
-        showHeader: true,
-        teamRoles: [],
-        toolCallsExpanded: $expanded
-    )
-    .padding()
-    .frame(width: 500)
-    .background(Colors.surfacePrimary)
-}
-
-#Preview("In Progress") {
-    @Previewable @State var expanded: Set<UUID> = []
-    ToolCallItemView(
-        call: StepToolCall(
-            name: "run_xcodebuild",
-            argumentsJSON: "{\"action\": \"build\"}",
-            resultJSON: nil,
-            isError: nil
-        ),
-        role: .softwareEngineer,
-        roleDefinition: nil,
-        showHeader: true,
-        teamRoles: [],
-        toolCallsExpanded: $expanded
-    )
-    .padding()
-    .frame(width: 500)
-    .background(Colors.surfacePrimary)
-}
-
-#Preview("Error Expanded") {
-    @Previewable @State var expanded: Set<UUID> = [UUID(uuidString: "00000000-0000-0000-0000-000000000002")!]
-    ToolCallItemView(
-        call: StepToolCall(
-            id: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!,
-            name: "git_commit",
-            argumentsJSON: "{\"message\": \"Add sorting implementation\"}",
-            resultJSON: "{\"error\": \"fatal: not a git repository (or any of the parent directories): .git\"}",
-            isError: true
-        ),
-        role: .softwareEngineer,
-        roleDefinition: nil,
-        showHeader: true,
-        teamRoles: [],
-        toolCallsExpanded: $expanded
-    )
-    .padding()
-    .frame(width: 500)
-    .background(Colors.surfacePrimary)
-}
-
-#Preview("Exploratory Search") {
-    @Previewable @State var expanded: Set<UUID> = []
-    VStack(spacing: 16) {
         ToolCallItemView(
             call: StepToolCall(
-                name: "search",
-                argumentsJSON: "{\"query\": \"advisory\", \"exploratory\": true}",
-                resultJSON: "{\"data\": {\"query\": \"advisory\", \"expanded_terms\": [\"советник\", \"consultant\"], \"matches\": [], \"count\": 0, \"hit_files\": 0}}",
-                isError: false
+                name: "run_xcodebuild",
+                argumentsJSON: "{\"action\": \"build\"}",
+                resultJSON: nil,
+                isError: nil
             ),
             role: .softwareEngineer,
             roleDefinition: nil,
             showHeader: true,
-            teamRoles: [],
-            toolCallsExpanded: $expanded
-        )
-        ToolCallItemView(
-            call: StepToolCall(
-                name: "search",
-                argumentsJSON: "{\"query\": \"advisory\"}",
-                resultJSON: "{\"data\": {\"query\": \"advisory\", \"matches\": [], \"count\": 0}}",
-                isError: false
-            ),
-            role: .softwareEngineer,
-            roleDefinition: nil,
-            showHeader: false,
-            teamRoles: [],
-            toolCallsExpanded: $expanded
+            teamRoles: []
         )
     }
     .padding()

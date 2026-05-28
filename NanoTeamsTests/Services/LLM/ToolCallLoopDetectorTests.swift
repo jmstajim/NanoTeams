@@ -10,8 +10,8 @@ final class ToolCallLoopDetectorTests: XCTestCase {
         MonotonicClock.shared.reset()
     }
 
-    private func makeCall(_ toolName: String, args: String = "args", successful: Bool = true) -> ToolCallCache.TrackedCall {
-        ToolCallCache.TrackedCall(
+    private func makeCall(_ toolName: String, args: String = "args", successful: Bool = true) -> ToolCallTracker.TrackedCall {
+        ToolCallTracker.TrackedCall(
             toolName: toolName,
             argumentsSummary: args,
             resultSummary: "result",

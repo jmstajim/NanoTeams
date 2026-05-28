@@ -1,20 +1,20 @@
 import Foundation
 
 /// Stateless generator of LLM-readable summaries from tool call history.
-/// Operates on a snapshot of calls from ToolCallCache.
-enum ToolCallContextualizer {
+/// Operates on a snapshot of calls from ToolCallTracker.
+nonisolated enum ToolCallContextualizer {
 
     private typealias TN = ToolNames
 
     // MARK: - Summary
 
     /// Generates a compact summary of all tool calls made in this step.
-    static func generateSummary(from calls: [ToolCallCache.TrackedCall]) -> String? {
+    static func generateSummary(from calls: [ToolCallTracker.TrackedCall]) -> String? {
         guard !calls.isEmpty else { return nil }
 
         var lines: [String] = ["Summary of tool calls made so far in this step:"]
 
-        var byTool: [String: [ToolCallCache.TrackedCall]] = [:]
+        var byTool: [String: [ToolCallTracker.TrackedCall]] = [:]
         for call in calls { byTool[call.toolName, default: []].append(call) }
 
         for (toolName, toolCalls) in byTool.sorted(by: { $0.key < $1.key }) {
@@ -44,7 +44,7 @@ enum ToolCallContextualizer {
     /// Generates a compact state summary (git branch, files modified, build status, etc.)
     /// to help the LLM understand where it is in the workflow.
     static func generateStateContext(
-        from calls: [ToolCallCache.TrackedCall],
+        from calls: [ToolCallTracker.TrackedCall],
         scratchpadSummary: String? = nil
     ) -> String? {
         var gitBranch: String?

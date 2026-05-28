@@ -78,8 +78,15 @@ final class DefaultToolSchemasTests: XCTestCase {
 
     // MARK: - Total Count
 
-    func testDefaultToolsCountIs29() {
-        XCTAssertEqual(tools.count, 29)
+    func testDefaultToolsCountIs33() {
+        // 29 baseline + delegate_to_team + cancel_delegation +
+        // resume_delegation + forward_to_team (the 3 follow-ups for the
+        // pause-and-decide Supervisor-interrupt flow on `delegate_to_team`).
+        // `delegate_to_team`'s description embeds the per-role team catalog
+        // inline at schema-build time — replaces the old `list_teams` tool.
+        // Update this count whenever a tool is added/removed from
+        // `ToolHandlerRegistry.allTypes`.
+        XCTAssertEqual(tools.count, 33)
     }
 
     /// `create_team` is in the registry (so handler tests can drive it via ToolRuntime),
@@ -111,33 +118,6 @@ final class DefaultToolSchemasTests: XCTestCase {
             ToolHandlerRegistry.meetingExcluded.isSuperset(of: requiredSignalingTools),
             "meetingExcluded must contain every signaling tool — missing: \(requiredSignalingTools.subtracting(ToolHandlerRegistry.meetingExcluded))"
         )
-    }
-
-    /// `git_diff` must NOT be cacheable (working tree mutates between reads). This
-    /// invariant is enforced via `GitDiffTool.isCacheable = false` on the handler
-    /// itself, not via a hardcoded subtraction in `ToolHandlerRegistry`.
-    func testCacheableTools_excludesGitDiff() {
-        XCTAssertFalse(
-            ToolHandlerRegistry.cacheableTools.contains("git_diff"),
-            "git_diff must not be cacheable — working tree mutates between reads"
-        )
-    }
-
-    /// Positive pins: file-read and typical git-read tools remain cacheable.
-    func testCacheableTools_includesReadTools() {
-        XCTAssertTrue(ToolHandlerRegistry.cacheableTools.contains("read_file"))
-        XCTAssertTrue(ToolHandlerRegistry.cacheableTools.contains("list_files"))
-        XCTAssertTrue(ToolHandlerRegistry.cacheableTools.contains("git_status"))
-        XCTAssertTrue(ToolHandlerRegistry.cacheableTools.contains("git_log"))
-    }
-
-    /// Write tools must never be cacheable.
-    func testCacheableTools_excludesWriteTools() {
-        for name in ToolHandlerRegistry.fileWriteTools.union(ToolHandlerRegistry.gitWriteTools) {
-            XCTAssertFalse(
-                ToolHandlerRegistry.cacheableTools.contains(name),
-                "\(name) must not be cacheable")
-        }
     }
 
     // MARK: - Names and Descriptions Non-Empty
@@ -236,9 +216,11 @@ final class DefaultToolSchemasTests: XCTestCase {
         XCTAssertEqual(requiredFields(for: "read_file"), ["path"])
     }
 
-    func testReadFileRangeRequiresPathStartLineEndLine() {
+    func testReadFileRangeRequiresPathAndStartLine() {
+        // `end_line` is optional: missing / 0 / negative all collapse to
+        // "read to EOF starting at start_line" (capped per-call by lineLimit).
         let required = Set(requiredFields(for: "read_lines"))
-        XCTAssertEqual(required, ["path", "start_line", "end_line"])
+        XCTAssertEqual(required, ["path", "start_line"])
     }
 
     func testWriteFileRequiresPathContent() {
@@ -516,8 +498,8 @@ final class DefaultToolSchemasTests: XCTestCase {
         XCTAssertEqual(propertyNames(for: "delete_file").count, 2)
     }
 
-    func testSearchProjectHasFiveProperties() {
-        XCTAssertEqual(propertyNames(for: "search").count, 5)
+    func testSearchProjectHasSevenProperties() {
+        XCTAssertEqual(propertyNames(for: "search").count, 7)
     }
 
     func testGitCommitHasTwoProperties() {
@@ -571,7 +553,7 @@ final class DefaultToolSchemasTests: XCTestCase {
     func testSearchProjectPropertyNames() {
         XCTAssertEqual(
             propertyNames(for: "search"),
-            ["query", "max_results", "context_before", "context_after", "exploratory"])
+            ["query", "paths", "file_glob", "max_results", "context_before", "context_after", "exploratory"])
     }
 
     func testGitBranchPropertyNames() {

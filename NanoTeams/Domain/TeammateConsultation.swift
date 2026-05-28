@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Teammate Consultation
 
 /// Represents a quick consultation between team members (via ask_teammate tool)
-struct TeammateConsultation: Codable, Identifiable {
+nonisolated struct TeammateConsultation: Codable, Identifiable {
     var id: UUID
     var createdAt: Date
 
@@ -78,7 +78,7 @@ struct TeammateConsultation: Codable, Identifiable {
 
 // MARK: - Consultation Status
 
-enum ConsultationStatus: String, Codable, Hashable {
+nonisolated enum ConsultationStatus: String, Codable, Hashable {
     /// Waiting for teammate response
     case pending
 
@@ -112,7 +112,7 @@ enum ConsultationStatus: String, Codable, Hashable {
 
 // MARK: - Consultation Helpers
 
-extension TeammateConsultation {
+nonisolated extension TeammateConsultation {
     /// Mark consultation as completed with response
     mutating func complete(with response: String, responseTimeMs: Int? = nil) {
         self.response = response
@@ -140,7 +140,7 @@ extension TeammateConsultation {
 
 // MARK: - Hashable
 
-extension TeammateConsultation: Hashable {
+nonisolated extension TeammateConsultation: Hashable {
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
     }

@@ -2,7 +2,7 @@ import Foundation
 
 /// Per-role LLM configuration override within a team.
 /// If a field is nil, the global default is used for that field.
-struct LLMOverride: Codable, Hashable {
+nonisolated struct LLMOverride: Codable, Hashable {
     var baseURLString: String?
     var modelName: String?
     var maxTokens: Int?

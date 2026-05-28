@@ -2,7 +2,7 @@ import XCTest
 @testable import NanoTeams
 
 @MainActor
-final class ToolRuntimeTests: XCTestCase {
+final class ToolRuntimeTests: XCTestCase, @unchecked Sendable {
     private let fileManager = FileManager.default
     private var workFolderRoot: URL!
     private var runtime: ToolRuntime!
@@ -229,6 +229,77 @@ final class ToolRuntimeTests: XCTestCase {
     }
 
     // MARK: - escapeJSON Control Characters (Round 5 regression)
+
+    // MARK: - Cancellation envelope emission
+
+    /// When the surrounding `Task` is cancelled before `executeAll` runs, every
+    /// call in the batch — including the first — must come back as a cancellation
+    /// envelope. The caller's index-paired interleave in
+    /// `LLMExecutionService.executeToolCalls` reads `freshResults[freshIdx++]`
+    /// per non-cached/non-rejected call; without 1:1 results-per-call,
+    /// `freshIdx += 1` walks off the end and crashes with an out-of-range trap.
+    func testExecuteAll_preCancelledTask_emitsCancellationEnvelopeForEveryCall() async {
+        let runtimeRef = self.runtime!
+        let contextRef = self.context!
+        let calls = [
+            StepToolCall(providerID: "p1", name: "list_files", argumentsJSON: #"{"path":"."}"#),
+            StepToolCall(providerID: "p2", name: "list_files", argumentsJSON: #"{"path":"."}"#),
+            StepToolCall(providerID: "p3", name: "list_files", argumentsJSON: #"{"path":"."}"#),
+        ]
+        let task = Task.detached { () -> [ToolExecutionResult] in
+            runtimeRef.executeAll(context: contextRef, toolCalls: calls)
+        }
+        task.cancel()
+        let results = await task.value
+
+        XCTAssertEqual(results.count, calls.count,
+                       "Cancellation must preserve 1:1 result-per-call mapping; the interleave at LLMExecutionService+ToolExecution depends on this invariant.")
+        for (idx, r) in results.enumerated() {
+            XCTAssertTrue(r.isError, "Cancelled result #\(idx) must be marked isError=true")
+            // Unified envelope shape: `{ok:false, error:{code:"CANCELLED", ...}}`.
+            // The same shape is emitted by `ToolErrorHandler` when it catches
+            // `ProcessRunnerError.cancelled` — downstream classifiers
+            // (`MemoryTagStore.processBuild` / `processTests`, the
+            // conversation-repair tail scanner) match on `error.code` and
+            // must see one signal regardless of the cancel source.
+            XCTAssertTrue(
+                r.outputJSON.contains(#""ok":false"#),
+                "Cancelled result #\(idx) must use the unified error envelope shape; got: \(r.outputJSON)"
+            )
+            XCTAssertTrue(
+                r.outputJSON.contains(#""code":"CANCELLED""#),
+                "Cancelled result #\(idx) must carry CANCELLED code (matches ToolErrorCode.cancelled.rawValue); got: \(r.outputJSON)"
+            )
+            XCTAssertEqual(r.toolName, calls[idx].name,
+                           "Envelope must carry the original tool name so the conversation feedback names what the model called.")
+            XCTAssertEqual(r.argumentsJSON, calls[idx].argumentsJSON,
+                           "Envelope must echo the original arguments so the conversation history stays consistent.")
+        }
+    }
+
+    /// On an UNCANCELLED batch, every call must still execute normally — pins
+    /// that the cancellation loop in `executeAll` doesn't accidentally short-
+    /// circuit the happy path (e.g. by reading a stale `Task.isCancelled` from
+    /// a parent context that wasn't ours).
+    func testExecuteAll_uncancelled_executesEveryCall() throws {
+        let fileURL = workFolderRoot.appendingPathComponent("present.txt")
+        try "present".write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let calls = [
+            StepToolCall(providerID: "p1", name: "list_files", argumentsJSON: #"{"path":"."}"#),
+            StepToolCall(providerID: "p2", name: "read_file", argumentsJSON: #"{"path":"present.txt"}"#),
+        ]
+        let results = runtime.executeAll(context: context, toolCalls: calls)
+        XCTAssertEqual(results.count, 2)
+        for (idx, r) in results.enumerated() {
+            XCTAssertFalse(r.isError,
+                           "Uncancelled call #\(idx) must succeed; got envelope: \(r.outputJSON)")
+            XCTAssertFalse(
+                r.outputJSON.contains("\"error\":\"cancelled\""),
+                "Uncancelled call #\(idx) must NOT carry a cancellation envelope; got: \(r.outputJSON)"
+            )
+        }
+    }
 
     func testEscapeJSON_ControlCharacters_ProducesValidJSON() throws {
         let root = try makeTempProjectRoot()

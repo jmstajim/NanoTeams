@@ -169,5 +169,20 @@ struct NanoTeamsApp: App {
         }
         .defaultSize(width: 1000, height: 700)
         .restorationBehavior(.disabled)
+
+        // Standalone window for any "open in new window" Activity Feed detail
+        // (LLM/meeting/supervisor thinking, tool calls, artifacts, meeting tools).
+        // SwiftUI dedups by `Hashable` value: clicking the same record again
+        // focuses the existing window rather than opening a duplicate.
+        WindowGroup(for: ActivityDetailWindow.self) { $detail in
+            if let detail {
+                ActivityDetailWindowView(detail: detail)
+                    .environment(store)
+                    .environment(store.configuration)
+                    .preferredColorScheme(appAppearance.colorScheme)
+            }
+        }
+        .defaultSize(width: 720, height: 560)
+        .restorationBehavior(.disabled)
     }
 }

@@ -13,9 +13,6 @@ final class StoreConfigurationTests: XCTestCase {
 
     private var originalLLMBaseURL: String?
     private var originalLLMModel: String?
-    private var originalThinkingExpanded: Bool?
-    private var originalToolCallsExpanded: Bool?
-    private var originalArtifactsExpanded: Bool?
     private var originalDebugModeEnabled: Bool?
     private var originalEnterSendsMessage: Bool?
     private var originalSidebarTaskFilter: String?
@@ -26,9 +23,6 @@ final class StoreConfigurationTests: XCTestCase {
         // Store original UserDefaults values to restore after tests
         originalLLMBaseURL = UserDefaults.standard.string(forKey: UserDefaultsKeys.llmBaseURL)
         originalLLMModel = UserDefaults.standard.string(forKey: UserDefaultsKeys.llmModel)
-        originalThinkingExpanded = UserDefaults.standard.object(forKey: UserDefaultsKeys.thinkingExpandedByDefault) as? Bool
-        originalToolCallsExpanded = UserDefaults.standard.object(forKey: UserDefaultsKeys.toolCallsExpandedByDefault) as? Bool
-        originalArtifactsExpanded = UserDefaults.standard.object(forKey: UserDefaultsKeys.artifactsExpandedByDefault) as? Bool
         originalDebugModeEnabled = UserDefaults.standard.object(forKey: UserDefaultsKeys.debugModeEnabled) as? Bool
         originalEnterSendsMessage = UserDefaults.standard.object(forKey: UserDefaultsKeys.enterSendsMessage) as? Bool
         originalSidebarTaskFilter = UserDefaults.standard.string(forKey: UserDefaultsKeys.sidebarTaskFilter)
@@ -37,9 +31,6 @@ final class StoreConfigurationTests: XCTestCase {
         // Clear UserDefaults for clean test state
         UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.llmBaseURL)
         UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.llmModel)
-        UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.thinkingExpandedByDefault)
-        UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.toolCallsExpandedByDefault)
-        UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.artifactsExpandedByDefault)
         UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.debugModeEnabled)
         UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.enterSendsMessage)
         UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.sidebarTaskFilter)
@@ -50,9 +41,6 @@ final class StoreConfigurationTests: XCTestCase {
     }
 
     override func tearDownWithError() throws {
-        // Clean up test subject
-//        config = nil
-
         // Restore original UserDefaults values
         if let original = originalLLMBaseURL {
             UserDefaults.standard.set(original, forKey: UserDefaultsKeys.llmBaseURL)
@@ -64,24 +52,6 @@ final class StoreConfigurationTests: XCTestCase {
             UserDefaults.standard.set(original, forKey: UserDefaultsKeys.llmModel)
         } else {
             UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.llmModel)
-        }
-
-        if let original = originalThinkingExpanded {
-            UserDefaults.standard.set(original, forKey: UserDefaultsKeys.thinkingExpandedByDefault)
-        } else {
-            UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.thinkingExpandedByDefault)
-        }
-
-        if let original = originalToolCallsExpanded {
-            UserDefaults.standard.set(original, forKey: UserDefaultsKeys.toolCallsExpandedByDefault)
-        } else {
-            UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.toolCallsExpandedByDefault)
-        }
-
-        if let original = originalArtifactsExpanded {
-            UserDefaults.standard.set(original, forKey: UserDefaultsKeys.artifactsExpandedByDefault)
-        } else {
-            UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.artifactsExpandedByDefault)
         }
 
         if let original = originalDebugModeEnabled {
@@ -194,80 +164,8 @@ final class StoreConfigurationTests: XCTestCase {
         // Verify StoreConfiguration uses @Observable (properties are readable)
         XCTAssertNotNil(config.llmBaseURLString)
         XCTAssertNotNil(config.llmModelName)
-        XCTAssertFalse(config.thinkingExpandedByDefault)
-        XCTAssertFalse(config.toolCallsExpandedByDefault)
-        XCTAssertFalse(config.artifactsExpandedByDefault)
         XCTAssertFalse(config.debugModeEnabled)
         XCTAssertTrue(config.enterSendsMessage)
-    }
-
-    // MARK: - Thinking Expanded By Default Tests
-
-    func testThinkingExpandedByDefault_defaultsToFalse() {
-        XCTAssertFalse(config.thinkingExpandedByDefault)
-    }
-
-    func testThinkingExpandedByDefault_persistsToUserDefaults() {
-        config.thinkingExpandedByDefault = true
-
-        let stored = UserDefaults.standard.bool(forKey: UserDefaultsKeys.thinkingExpandedByDefault)
-        XCTAssertTrue(stored)
-    }
-
-    var freshConfigThinkingLoads: StoreConfiguration!
-
-    func testThinkingExpandedByDefault_loadsFromUserDefaults() {
-        UserDefaults.standard.set(true, forKey: UserDefaultsKeys.thinkingExpandedByDefault)
-
-        freshConfigThinkingLoads = StoreConfiguration()
-
-        XCTAssertTrue(freshConfigThinkingLoads.thinkingExpandedByDefault)
-    }
-
-    // MARK: - Tool Calls Expanded By Default Tests
-
-    func testToolCallsExpandedByDefault_defaultsToFalse() {
-        XCTAssertFalse(config.toolCallsExpandedByDefault)
-    }
-
-    func testToolCallsExpandedByDefault_persistsToUserDefaults() {
-        config.toolCallsExpandedByDefault = true
-
-        let stored = UserDefaults.standard.bool(forKey: UserDefaultsKeys.toolCallsExpandedByDefault)
-        XCTAssertTrue(stored)
-    }
-
-    var freshConfigToolCallsLoads: StoreConfiguration!
-
-    func testToolCallsExpandedByDefault_loadsFromUserDefaults() {
-        UserDefaults.standard.set(true, forKey: UserDefaultsKeys.toolCallsExpandedByDefault)
-
-        freshConfigToolCallsLoads = StoreConfiguration()
-
-        XCTAssertTrue(freshConfigToolCallsLoads.toolCallsExpandedByDefault)
-    }
-
-    // MARK: - Artifacts Expanded By Default Tests
-
-    func testArtifactsExpandedByDefault_defaultsToFalse() {
-        XCTAssertFalse(config.artifactsExpandedByDefault)
-    }
-
-    func testArtifactsExpandedByDefault_persistsToUserDefaults() {
-        config.artifactsExpandedByDefault = true
-
-        let stored = UserDefaults.standard.bool(forKey: UserDefaultsKeys.artifactsExpandedByDefault)
-        XCTAssertTrue(stored)
-    }
-
-    var freshConfigArtifactsLoads: StoreConfiguration!
-
-    func testArtifactsExpandedByDefault_loadsFromUserDefaults() {
-        UserDefaults.standard.set(true, forKey: UserDefaultsKeys.artifactsExpandedByDefault)
-
-        freshConfigArtifactsLoads = StoreConfiguration()
-
-        XCTAssertTrue(freshConfigArtifactsLoads.artifactsExpandedByDefault)
     }
 
     // MARK: - Debug Mode Enabled Tests
@@ -321,17 +219,11 @@ final class StoreConfigurationTests: XCTestCase {
     var freshConfigUIPreferencesRoundTrip: StoreConfiguration!
 
     func testRoundTrip_uiPreferencesPersistAndReload() {
-        config.thinkingExpandedByDefault = true
-        config.toolCallsExpandedByDefault = true
-        config.artifactsExpandedByDefault = true
         config.debugModeEnabled = true
         config.enterSendsMessage = true
 
         freshConfigUIPreferencesRoundTrip = StoreConfiguration()
 
-        XCTAssertTrue(freshConfigUIPreferencesRoundTrip.thinkingExpandedByDefault)
-        XCTAssertTrue(freshConfigUIPreferencesRoundTrip.toolCallsExpandedByDefault)
-        XCTAssertTrue(freshConfigUIPreferencesRoundTrip.artifactsExpandedByDefault)
         XCTAssertTrue(freshConfigUIPreferencesRoundTrip.debugModeEnabled)
         XCTAssertTrue(freshConfigUIPreferencesRoundTrip.enterSendsMessage)
     }

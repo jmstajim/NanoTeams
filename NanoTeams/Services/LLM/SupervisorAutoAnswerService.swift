@@ -1,7 +1,7 @@
 import Foundation
 
 /// Service for generating automatic Supervisor answers to questions during LLM execution.
-enum SupervisorAutoAnswerService {
+nonisolated enum SupervisorAutoAnswerService {
 
     /// The default fallback answer when generation fails.
     static let fallbackAnswer = "Proceed with the most reasonable assumption and document the decision."

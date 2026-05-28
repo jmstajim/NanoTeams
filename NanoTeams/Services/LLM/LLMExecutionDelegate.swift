@@ -26,6 +26,9 @@ protocol LLMStateDelegate: TaskMutationDelegate {
     var workFolderURL: URL? { get }
     /// The global LLM configuration — provider, URL, model, maxTokens, temperature.
     var globalLLMConfig: LLMConfig { get }
+    /// App-wide instruction text appended to every LLM system prompt. Empty
+    /// string disables the append. Surfaced from `StoreConfiguration.globalContext`.
+    var globalLLMContext: String { get }
     /// Maximum consecutive LLM server error retries (0 = unlimited).
     var maxLLMRetries: Int { get }
     /// Vision model configuration (nil = vision not configured).
@@ -53,7 +56,7 @@ protocol LLMStateDelegate: TaskMutationDelegate {
     /// injection hook's `iterationNumber > 1 || session == nil` guard and the
     /// queue is consumed then. Do not "fix" this by adding role-level cleanup.
     ///
-    /// Returns the final prompt text (already including "--- Attached Files ---"
+    /// Returns the final prompt text (already including "## Attached Files"
     /// / embedded content per `AnswerTextBuilder`) the caller must append to
     /// the LLM conversation for this iteration. Returns `nil` if no eligible
     /// message exists OR if attachment finalization fails (in which case the
@@ -107,6 +110,101 @@ protocol LLMStateDelegate: TaskMutationDelegate {
     /// branch fell back to plain search — the LLM sees `searchError` in its
     /// envelope, but without this the human user would have no signal.
     func setLastInfoMessageForUI(_ message: String)
+
+    /// Surface a user-visible error banner. Used by delegation handlers when a
+    /// silent persistence failure would otherwise leave the parent role's
+    /// awaiter hung — the LLM sees the failure envelope but the human needs
+    /// the same signal in the UI banner channel.
+    func setLastErrorMessageForUI(_ message: String)
+
+    /// Trigger the queued-Supervisor-message backstop drain for `taskID`. Called
+    /// from `setNeedsSupervisorInput` after the step mutation persists,
+    /// regardless of whether the engine state transition fires.
+    ///
+    /// Background: `MainLayoutView.onChange(of: engineState.taskEngineStates)`
+    /// is the SwiftUI-driven trigger for
+    /// `QuickCaptureController.tryFlushQueuedMessages`. But per CLAUDE.md
+    /// "`TeamEngine.transition(to:)` guards same-state re-entry", the engine's
+    /// `didSet` short-circuits when `oldValue == newValue` — so when parallel
+    /// roles (CLAUDE.md "`TeamEngine` runs ready roles in parallel, not
+    /// serially") ask questions back-to-back, the engine stays in
+    /// `.needsSupervisorInput`, the dictionary value doesn't change, and queued
+    /// messages targeted at the newly-waiting role sit forever. This hook
+    /// closes that gap by calling the backstop directly from the step-mutation
+    /// side.
+    ///
+    /// Note: the drain is dispatched asynchronously inside
+    /// `tryFlushQueuedMessages` (each `.needsSupervisorInput` task gets its own
+    /// `Task { ... }`); failure surfaces via `lastErrorMessage` from inside
+    /// `flushQueuedChatMessage`, NOT synchronously to this call.
+    func notifyQueuedMessageBackstop(taskID: Int)
+
+    // MARK: - Delegation
+
+    /// Awaits the next terminal or supervisor-input transition for `taskID`. Used by
+    /// `handleDelegateToTeam` to block on child task completion. See
+    /// `TaskCompletionAwaiter` and `NTMSOrchestrator.awaitTaskTerminalState`.
+    func awaitTaskTerminalState(taskID: Int) async -> TaskCompletionAwaiter.WaitOutcome
+
+    /// Creates a child task with the given parentage and returns its task ID.
+    /// Caller must invoke `startRunForTask(taskID:)` separately to start its engine.
+    func createDelegatedTask(
+        parentTaskID: Int,
+        parentRoleID: String,
+        title: String,
+        supervisorTask: String,
+        preferredTeamID: NTMSID?,
+        depth: Int
+    ) async -> Int?
+
+    /// Starts a task's run (creates engine if needed and dispatches `engine.start()`).
+    /// Used by `handleDelegateToTeam` after creating the child task. Returns immediately
+    /// — completion is observed via `awaitTaskTerminalState`.
+    func startRunForTask(taskID: Int) async
+
+    /// Closes/accepts a task — sets `closedAt`, transitions engine to `.done`.
+    /// Used by `handleDelegateToTeam` to auto-accept the child when it reaches
+    /// `.needsAcceptance` (children are never reviewed by the human).
+    @discardableResult
+    func closeTask(taskID: Int) async -> Bool
+
+    /// Returns the most recent error message captured for `taskID`, if any.
+    /// Used by `handleDelegateToTeam` to surface child failure detail in the
+    /// envelope returned to the parent role.
+    func lastErrorMessageForTask(_ taskID: Int) -> String?
+
+    /// Hard-stops a task's engine and cancels any awaiter waiters. Used by
+    /// `handleDelegateToTeam` on timeout — the child has wedged past the
+    /// per-delegation deadline and we need to abort cleanly.
+    func stopEngineForTask(_ taskID: Int)
+
+    /// Pauses a task's engine and cascades to any in-flight child
+    /// delegations. Used by `handleDelegateToTeam` when the Supervisor
+    /// interrupts via queued chat message — the child engine is held in
+    /// `.paused` state while the parent role decides via
+    /// `cancel_delegation` / `resume_delegation` / `forward_to_team`.
+    /// Distinct from `stopEngineForTask` which tears down the engine
+    /// entirely.
+    func pauseRun(taskID: Int) async
+
+    /// Resumes a paused task's engine. Counterpart of `pauseRun`. Used by
+    /// `resume_delegation` and `forward_to_team` after the parent role
+    /// decides to keep the delegation running.
+    func resumeRun(taskID: Int) async
+
+    /// Returns the in-flight delegation child task id for `roleID` on
+    /// `taskID`, or `nil` if the role isn't mid-delegation. Used by the
+    /// `cancel_delegation` / `resume_delegation` / `forward_to_team`
+    /// handlers to validate the child id the LLM passed in matches the
+    /// actual paused delegation (defense against hallucinated ids).
+    func activeDelegationChildID(taskID: Int, roleID: String) -> Int?
+
+    /// Submits an answer to a step's `supervisorQuestion` and resumes the engine.
+    /// Used by `DelegatedSupervisorAnswerService` to deliver the parent role's
+    /// answer to a delegated child team's `ask_supervisor` call.
+    /// Returns `true` if the mutation persisted and the engine was nudged.
+    @discardableResult
+    func answerSupervisorQuestion(taskID: Int, stepID: String, answer: String) async -> Bool
 }
 
 // MARK: - LLMStreamingDelegate
@@ -136,6 +234,13 @@ protocol LLMStreamingDelegate: AnyObject {
     func updateStreamingProcessingProgress(stepID: String, progress: Double)
     /// Clears prompt processing progress for a step.
     func clearStreamingProcessingProgress(stepID: String)
+    /// Marks the step as having received at least one stream delta of any
+    /// kind. Called from the streaming service on EVERY delta (thinking,
+    /// content, tool-call, harmony-buffered) so the UI can distinguish
+    /// "Waiting" (nothing arrived yet) from "Generating" (tokens flowing
+    /// but landing in invisible buffers like harmony tool-call args).
+    /// Idempotent.
+    func markStreamActivity(stepID: String)
 }
 
 // MARK: - LLMMeetingDelegate

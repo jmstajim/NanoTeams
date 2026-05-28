@@ -1,12 +1,12 @@
 import Foundation
 
 /// Represents the location of a step within a task's run hierarchy.
-struct StepLocation {
+nonisolated struct StepLocation {
     let runIndex: Int
     let stepIndex: Int
 }
 
-extension NTMSTask {
+nonisolated extension NTMSTask {
 
     /// Locates a step by ID in the latest run.
     /// - Parameter stepID: The step ID to find.
@@ -95,7 +95,7 @@ extension NTMSTask {
     }
 }
 
-extension Run {
+nonisolated extension Run {
 
     /// Locates a step by ID in this run.
     /// - Parameter stepID: The step ID to find.

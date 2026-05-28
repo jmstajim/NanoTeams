@@ -150,7 +150,10 @@ final class ToolsFileSystemTests: XCTestCase {
         XCTAssertTrue(results[0].outputJSON.contains("INVALID_ARGS"))
     }
 
-    func testReadFileRange_endLineLessThanStartLine() throws {
+    // Transposed range (start > end): per CORE_PRINCIPLES the runtime silently
+    // swaps the bounds rather than erroring. `start_line: 3, end_line: 1` on a
+    // 2-line file → swap to 1..3, clamp to file length, read both lines.
+    func testReadFileRange_transposedRange_silentlySwaps() throws {
         let content = "Line 1\nLine 2"
         let filePath = tempDir.appendingPathComponent("test.txt")
         try content.write(to: filePath, atomically: true, encoding: .utf8)
@@ -161,12 +164,14 @@ final class ToolsFileSystemTests: XCTestCase {
         )
         let results = runtime.executeAll(context: context, toolCalls: [call])
 
-        XCTAssertTrue(results[0].isError)
-        // Error message must teach the EOF sentinel so the model can self-correct.
-        XCTAssertTrue(
-            results[0].outputJSON.contains("end_line=0 or -1"),
-            "Error should teach the EOF sentinel. Got: \(results[0].outputJSON)"
+        XCTAssertFalse(
+            results[0].isError,
+            "Transposed range must succeed (silent swap), not error. Got: \(results[0].outputJSON)"
         )
+        let json = results[0].outputJSON
+        XCTAssertTrue(json.contains("\"start_line\":1") || json.contains("\"start_line\" : 1"))
+        XCTAssertTrue(json.contains("\"end_line\":2") || json.contains("\"end_line\" : 2"))
+        XCTAssertTrue(json.contains("Line 1") && json.contains("Line 2"))
     }
 
     // Regression for Run 13: qwen3.5-35b-a3b emitted `end_line: -1` intending "to EOF"

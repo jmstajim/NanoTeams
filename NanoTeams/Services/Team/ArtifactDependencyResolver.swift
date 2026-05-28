@@ -5,7 +5,7 @@ import Foundation
 /// Resolves which roles are ready to execute based on artifact dependencies.
 /// Create an instance for repeated queries against the same role set (cached graph).
 /// Use static methods for one-off queries (backward-compatible API).
-struct ArtifactDependencyResolver {
+nonisolated struct ArtifactDependencyResolver {
 
     // MARK: - Role Readiness
 

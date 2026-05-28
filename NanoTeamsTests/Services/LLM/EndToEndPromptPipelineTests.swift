@@ -170,8 +170,16 @@ final class EndToEndPromptPipelineTests: XCTestCase {
 
         let meeting = schemas.first { $0.name == "request_team_meeting" }
         XCTAssertNotNil(meeting)
-        XCTAssertTrue(meeting!.description.contains("ONCE"),
-                      "request_team_meeting description should contain call-once guidance")
+        // Pin the load-bearing phrases — `Blocks until` documents synchronous
+        // semantics (model must NOT call again while running), `Limited per run`
+        // documents the rate limit. Both are the non-derivable behaviour the
+        // description exists to convey; a future edit dropping either would
+        // re-open the call-twice-while-running loop class. (`topic` alone was
+        // near-tautological — every schema with a `topic` parameter mentions it.)
+        XCTAssertTrue(meeting!.description.contains("Blocks until"),
+                      "request_team_meeting description should document synchronous semantics, got: \(meeting!.description)")
+        XCTAssertTrue(meeting!.description.contains("Limited per run"),
+                      "request_team_meeting description should document the rate limit, got: \(meeting!.description)")
     }
 
     // MARK: - Test 4: Pipeline context includes prior steps

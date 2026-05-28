@@ -36,7 +36,7 @@ final class TaskServiceTests: XCTestCase {
     func testCreateTaskReturnsUpdatedContext() throws {
         _ = try initializeProject()
 
-        let result = try service.createTask(
+        let (result, _) = try service.createTask(
             at: tempDir,
             title: "My First Task",
             supervisorTask: "Build something great"
@@ -53,7 +53,7 @@ final class TaskServiceTests: XCTestCase {
         _ = try initializeProject()
 
         _ = try service.createTask(at: tempDir, title: "Task 1", supervisorTask: "Goal 1")
-        let result = try service.createTask(at: tempDir, title: "Task 2", supervisorTask: "Goal 2")
+        let (result, _) = try service.createTask(at: tempDir, title: "Task 2", supervisorTask: "Goal 2")
 
         XCTAssertEqual(result.tasksIndex.tasks.count, 2)
         // Most recent task is the active one
@@ -63,14 +63,14 @@ final class TaskServiceTests: XCTestCase {
     func testCreateTaskWithEmptyTitle() throws {
         _ = try initializeProject()
 
-        let result = try service.createTask(at: tempDir, title: "", supervisorTask: "Goal")
+        let (result, _) = try service.createTask(at: tempDir, title: "", supervisorTask: "Goal")
         XCTAssertEqual(result.activeTask?.title, "")
     }
 
     func testCreateTaskWithEmptyCeoGoal() throws {
         _ = try initializeProject()
 
-        let result = try service.createTask(at: tempDir, title: "Task", supervisorTask: "")
+        let (result, _) = try service.createTask(at: tempDir, title: "Task", supervisorTask: "")
         XCTAssertEqual(result.activeTask?.supervisorTask, "")
     }
 
@@ -79,7 +79,7 @@ final class TaskServiceTests: XCTestCase {
     func testSwitchTaskToExisting() throws {
         _ = try initializeProject()
 
-        let ctx1 = try service.createTask(at: tempDir, title: "Task 1", supervisorTask: "Goal 1")
+        let (ctx1, _) = try service.createTask(at: tempDir, title: "Task 1", supervisorTask: "Goal 1")
         let task1ID = ctx1.activeTask!.id
 
         _ = try service.createTask(at: tempDir, title: "Task 2", supervisorTask: "Goal 2")
@@ -120,7 +120,7 @@ final class TaskServiceTests: XCTestCase {
     func testRemoveTask() throws {
         _ = try initializeProject()
 
-        let ctx = try service.createTask(at: tempDir, title: "Task to Remove", supervisorTask: "Goal")
+        let (ctx, _) = try service.createTask(at: tempDir, title: "Task to Remove", supervisorTask: "Goal")
         let taskID = ctx.activeTask!.id
 
         let result = try service.removeTask(at: tempDir, taskID: taskID)
@@ -132,7 +132,7 @@ final class TaskServiceTests: XCTestCase {
     func testRemoveOneOfMultipleTasks() throws {
         _ = try initializeProject()
 
-        let ctx1 = try service.createTask(at: tempDir, title: "Task 1", supervisorTask: "Goal 1")
+        let (ctx1, _) = try service.createTask(at: tempDir, title: "Task 1", supervisorTask: "Goal 1")
         let task1ID = ctx1.activeTask!.id
 
         _ = try service.createTask(at: tempDir, title: "Task 2", supervisorTask: "Goal 2")
@@ -228,7 +228,7 @@ final class TaskServiceTests: XCTestCase {
     func testCreateTaskPersistsToFileSystem() throws {
         _ = try initializeProject()
 
-        let ctx = try service.createTask(at: tempDir, title: "Persistent Task", supervisorTask: "Goal")
+        let (ctx, _) = try service.createTask(at: tempDir, title: "Persistent Task", supervisorTask: "Goal")
         let taskID = ctx.activeTask!.id
 
         // Verify file exists
@@ -245,7 +245,7 @@ final class TaskServiceTests: XCTestCase {
     func testRemoveTaskDeletesFromFileSystem() throws {
         _ = try initializeProject()
 
-        let ctx = try service.createTask(at: tempDir, title: "Task to Delete", supervisorTask: "Goal")
+        let (ctx, _) = try service.createTask(at: tempDir, title: "Task to Delete", supervisorTask: "Goal")
         let taskID = ctx.activeTask!.id
 
         let paths = NTMSPaths(workFolderRoot: tempDir)

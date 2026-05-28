@@ -6,15 +6,39 @@ import SwiftUI
 /// For team tasks `StepExecution.id == effectiveRoleID == roleID` (see CLAUDE.md
 /// §Common API pitfalls), so `askingRoleID` is a computed projection of `stepID`
 /// rather than a stored field — this keeps the two values from ever drifting.
+///
+/// `paired` carries the assistant turn that emitted the question — its `id`
+/// drives bubble-suppression in `ActivityFeedBuilder.emitItems` (so the same
+/// turn doesn't appear twice while the question is active) and its `thinking`
+/// feeds the composer's thinking disclosure. `paired == nil` means "no preamble
+/// turn" — there's no bubble to suppress and the thinking disclosure is hidden.
 struct TeamActivityActiveQuestion: Equatable {
     let stepID: String
     let role: Role
     let question: String
+    let paired: PairedAssistantMessage?
 
     /// Role id of the role currently asking. For team tasks this equals `stepID`
     /// by design (`StepExecution.id == roleID`); exposed as a computed property
     /// so callers don't accidentally pass different values.
     var askingRoleID: String { stepID }
+
+    /// Memberwise init expressed explicitly so `paired:` defaults to `nil` for
+    /// routing/ordering tests that don't exercise the thinking-disclosure path.
+    /// Production code always passes `paired:` from `ActiveSupervisorQuestion.paired`,
+    /// so no default is leaked into a silent-failure path.
+    init(
+        stepID: String,
+        role: Role,
+        question: String,
+        paired: PairedAssistantMessage? = nil
+    ) {
+        self.stepID = stepID
+        self.role = role
+        self.question = question
+        self.paired = paired
+    }
+
 }
 
 // MARK: - Team Activity Composer
@@ -46,6 +70,22 @@ struct TeamActivityComposer: View {
     /// Hard cap on overall composer height; the TextField scrolls internally past this.
     let maxHeight: CGFloat
 
+    /// Pane-anchored override for `MessageComposer.maxTextFieldHeight`. Tracks the pane
+    /// instead of using `MessageComposer`'s shared default — past the cap the field
+    /// scrolls internally and the cursor stays visible (iMessage-style). Floor and
+    /// chrome subtraction come from `MessageComposerLayout` (single source of truth
+    /// shared with `QuickCaptureFormView.taskFieldMaxHeight`); fallback when the
+    /// pane height is non-finite is the same default `MessageComposer` would have
+    /// applied on its own.
+    private var messageFieldMaxHeight: CGFloat {
+        guard maxHeight.isFinite else { return MessageComposerLayout.defaultMaxTextFieldHeight }
+        let halfPane = maxHeight * 0.5
+        return max(
+            MessageComposerLayout.minPaneAnchoredFieldHeight,
+            halfPane - MessageComposerLayout.paneAnchoredFieldChrome
+        )
+    }
+
     @State private var text: String = ""
     @State private var attachments: [StagedAttachment] = []
     @State private var clippedTexts: [String] = []
@@ -64,6 +104,10 @@ struct TeamActivityComposer: View {
     @State private var hoveredChipRecipient: Recipient? = nil
     /// Whether the question preview card is collapsed to a single header line.
     @State private var isQuestionCollapsed: Bool = false
+    /// Whether the paired-message thinking disclosure is expanded. Only relevant
+    /// when `q.paired?.thinking != nil`. Default collapsed: thinking is
+    /// supplementary; user reaches for it only when the body alone is unclear.
+    @State private var isThinkingExpanded: Bool = false
 
     @Environment(NTMSOrchestrator.self) private var store
     @Environment(StoreConfiguration.self) private var config
@@ -178,7 +222,8 @@ struct TeamActivityComposer: View {
                 onSubmit: handleSubmit,
                 onStageAttachment: { url in store.stageAttachment(url: url, draftID: UUID()) },
                 onRemoveAttachment: { staged in store.removeStagedAttachment(staged) },
-                textFieldLineLimit: 1...6
+                minLineCount: 1,
+                maxTextFieldHeight: messageFieldMaxHeight
             )
         }
         // Lock the recipient on first keystroke. Without this, `selectedRecipient`
@@ -330,9 +375,11 @@ struct TeamActivityComposer: View {
         let askingColor = roleDefinitions.first(where: { $0.id == q.askingRoleID })?.resolvedTintColor ?? Colors.accent
         let chromeOverhead: CGFloat = 120
         let maxPreviewHeight: CGFloat = maxHeight.isFinite ? max(80, maxHeight - chromeOverhead) : 200
+        let thinking = q.paired?.thinking
 
         return VStack(alignment: .leading, spacing: 0) {
-            // Header: role icon + "Role asks:" + collapse chevron
+            // Header: role icon + "Role asks:" + collapse chevron.
+            // Collapsed header truncates the question to a single line.
             Button {
                 withAnimation(Animations.spring) {
                     isQuestionCollapsed.toggle()
@@ -364,23 +411,28 @@ struct TeamActivityComposer: View {
             .padding(.horizontal, Spacing.s)
             .padding(.vertical, Spacing.xs + 2)
 
-            // Body: question text (hidden when collapsed)
+            // Body (hidden when collapsed): optional Thinking disclosure + question text.
             if !isQuestionCollapsed {
                 ScrollView {
-                    Text(q.question)
-                        .font(.callout)
-                        .foregroundStyle(Colors.textPrimary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, Spacing.s)
-                        .padding(.top, Spacing.xxs)
-                        .padding(.bottom, Spacing.xl)
-                        .onGeometryChange(for: CGFloat.self) { proxy in
-                            proxy.size.height
-                        } action: { newHeight in
-                            questionContentHeight = newHeight
+                    VStack(alignment: .leading, spacing: Spacing.xs) {
+                        if let thinking {
+                            thinkingDisclosure(thinking: thinking, tint: askingColor)
                         }
+                        Text(q.question)
+                            .font(.callout)
+                            .foregroundStyle(Colors.textPrimary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(.horizontal, Spacing.s)
+                    .padding(.top, Spacing.xxs)
+                    .padding(.bottom, Spacing.xl)
+                    .onGeometryChange(for: CGFloat.self) { proxy in
+                        proxy.size.height
+                    } action: { newHeight in
+                        questionContentHeight = newHeight
+                    }
                 }
                 .frame(height: min(questionContentHeight, maxPreviewHeight))
                 .mask {
@@ -405,6 +457,50 @@ struct TeamActivityComposer: View {
                 .fill(Colors.surfaceElevated)
         )
         .clipShape(RoundedRectangle.squircle(CornerRadius.small))
+    }
+
+    /// Collapsible thinking section above the body. Mirrors `MessageThinkingSection`
+    /// styling (left accent stripe, chevron, secondary text) at a more compact
+    /// scale so it fits inside the composer card. Local `@State` toggles
+    /// `isThinkingExpanded`; default collapsed.
+    @ViewBuilder
+    private func thinkingDisclosure(thinking: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(Animations.spring) {
+                    isThinkingExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: Spacing.xxs) {
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(tint.opacity(DynamicTintOpacity.stroke))
+                        .rotationEffect(.degrees(isThinkingExpanded ? 90 : 0))
+                    Text("Thinking")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Colors.textSecondary)
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isThinkingExpanded {
+                Text(thinking)
+                    .font(.caption)
+                    .foregroundStyle(Colors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, Spacing.s)
+                    .padding(.top, Spacing.xxs)
+                    .overlay(alignment: .leading) {
+                        RoundedRectangle.squircle(CornerRadius.micro)
+                            .fill(tint.opacity(DynamicTintOpacity.stroke))
+                            .frame(width: 2)
+                    }
+            }
+        }
     }
 
     /// Lists every queued message with its recipient and first-line preview. Each row
@@ -484,25 +580,34 @@ struct TeamActivityComposer: View {
             attachments: attachments,
             embedFiles: config.embedFilesInPrompt
         )
-        if !built.failedFiles.isEmpty {
-            // Be explicit about what happened to the failed files. `AnswerTextBuilder`
-            // falls back to path-attachment when inline embed fails, so the user's
-            // files ARE still delivered as file paths — the banner should say so.
-            store.lastErrorMessage = "Could not embed \(built.failedFiles.count) file(s) inline — attached as paths: \(built.failedFiles.joined(separator: ", "))."
+        if let banner = Self.bannerForFailedFiles(built.failedFiles) {
+            store.lastErrorMessage = banner
         }
 
         switch effectiveRecipient {
         case .answer(let stepID):
             // Compile-guaranteed: `.answer` always carries a step id (no runtime guard).
             let finalized = attachments
+            let snapshotText = text
+            let snapshotClips = clippedTexts
             Task {
-                let ok = await store.answerSupervisorQuestion(
-                    stepID: stepID, taskID: taskID,
-                    answer: built.answer, attachments: finalized
+                await Self.performAnswerSubmit(
+                    snapshotText: snapshotText,
+                    snapshotAttachments: finalized,
+                    snapshotClips: snapshotClips,
+                    clear: { clearComposer() },
+                    submit: {
+                        await store.answerSupervisorQuestion(
+                            stepID: stepID, taskID: taskID,
+                            answer: built.answer, attachments: finalized
+                        )
+                    },
+                    restore: { t, a, c in
+                        text = t
+                        attachments = a
+                        clippedTexts = c
+                    }
                 )
-                if ok {
-                    clearComposer()
-                }
                 // On failure `answerSupervisorQuestion` already set `lastErrorMessage`
                 // (specific — e.g. attachment finalize error). Don't clobber it with a
                 // generic message here.
@@ -528,9 +633,11 @@ struct TeamActivityComposer: View {
     }
 
     private func clearComposer() {
-        text = ""
-        attachments = []
-        clippedTexts = []
+        let cleared = Self.clearedComposerState()
+        text = cleared.text
+        attachments = cleared.attachments
+        clippedTexts = cleared.clips
+        selectedRecipient = cleared.selectedRecipient
     }
 
     // MARK: - Chip Option (internal for test access)
@@ -546,6 +653,16 @@ struct TeamActivityComposer: View {
 // MARK: - Pure Routing Helpers (unit-testable)
 
 extension TeamActivityComposer {
+    /// Banner to surface to `lastErrorMessage` when some files failed inline embedding.
+    /// `AnswerTextBuilder.build` falls back to path-attachment when inline embed fails,
+    /// so the files ARE still delivered — the wording must signal that, otherwise users
+    /// assume the files were lost. Returns `nil` for the empty case so callers can
+    /// unconditionally check `if let banner = …`.
+    static func bannerForFailedFiles(_ failedFiles: [String]) -> String? {
+        guard !failedFiles.isEmpty else { return nil }
+        return "Could not embed \(failedFiles.count) file(s) inline — attached as paths: \(failedFiles.joined(separator: ", "))."
+    }
+
     /// Auto-selects the effective recipient when the user hasn't explicitly chosen one.
     /// Priority order matches the chip row's left-to-right order, so "the first chip
     /// is always selected" holds when there is no explicit pick:
@@ -608,6 +725,48 @@ extension TeamActivityComposer {
         hasContent: Bool
     ) -> Bool {
         prior != nil && sanitized == nil && hasContent
+    }
+
+    /// Post-submit reset contract. Pinned by
+    /// `TeamActivityComposerRoutingTests.testClearedComposerState_*`:
+    /// resets `selectedRecipient` to nil along with text/attachments/clips.
+    /// Without the recipient reset, a `.role` lock from a previous queue submit
+    /// survives and the explicit-selection priority in
+    /// `resolveEffectiveRecipient` keeps the stale chip dominant — even when
+    /// a new `ask_supervisor` adds an Answer chip to `chipOptions`, the
+    /// Answer chip never auto-selects, the placeholder stays "Queue a
+    /// message…", and the user can't see they're answering until they
+    /// manually click the new chip.
+    static func clearedComposerState() -> (
+        text: String,
+        attachments: [StagedAttachment],
+        clips: [String],
+        selectedRecipient: Recipient?
+    ) {
+        ("", [], [], nil)
+    }
+
+    /// Phase-ordered runner for the `.answer` branch of `handleSubmit`.
+    /// `clear` MUST run synchronously before the `await` so SwiftUI's
+    /// `.onChange(of: chipOptionsComputed.map(\.recipient))` reaction
+    /// (which fires when the Answer chip disappears mid-submit) observes
+    /// `hasContent=false` and doesn't fire the false-positive "recipient
+    /// no longer waiting" banner for a successful submit. The rest of the
+    /// body is self-evident; contract pinned by
+    /// `TeamActivityComposerRoutingTests.testPerformAnswerSubmit_*`.
+    static func performAnswerSubmit(
+        snapshotText: String,
+        snapshotAttachments: [StagedAttachment],
+        snapshotClips: [String],
+        clear: () -> Void,
+        submit: () async -> Bool,
+        restore: (String, [StagedAttachment], [String]) -> Void
+    ) async {
+        clear()
+        let ok = await submit()
+        if !ok {
+            restore(snapshotText, snapshotAttachments, snapshotClips)
+        }
     }
 
     /// Currently-working, non-supervisor, non-observer roles, excluding any role

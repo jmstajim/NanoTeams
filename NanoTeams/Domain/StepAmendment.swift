@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Step Amendment
 
 /// Records a single amendment to a step (triggered by a change request from another role).
-struct StepAmendment: Codable, Identifiable, Hashable {
+nonisolated struct StepAmendment: Codable, Identifiable, Hashable {
     var id: UUID
     var createdAt: Date
     /// Role ID of the role that requested the change.
@@ -39,7 +39,7 @@ struct StepAmendment: Codable, Identifiable, Hashable {
 // MARK: - Artifact Snapshot
 
 /// Lightweight snapshot of an artifact at a point in time (stores path, not content).
-struct ArtifactSnapshot: Codable, Identifiable, Hashable {
+nonisolated struct ArtifactSnapshot: Codable, Identifiable, Hashable {
     var id: UUID
     var artifactName: String
     var relativePath: String?

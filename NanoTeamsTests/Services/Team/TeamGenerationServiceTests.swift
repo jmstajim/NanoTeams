@@ -3,6 +3,14 @@ import XCTest
 
 final class TeamGenerationServiceTests: XCTestCase {
 
+    override func setUp() {
+        super.setUp()
+        // Process-global counter — every test starts from zero so counter
+        // assertions are order-independent. Pinned by
+        // `testEntryCounter_isZero_acrossTests_viaSetUp`.
+        TeamGenerationService._resetSiblingMergeFireCount()
+    }
+
     // MARK: - extractJSONObject
 
     func testExtractJSON_rawObject() {
@@ -218,6 +226,303 @@ final class TeamGenerationServiceTests: XCTestCase {
         // Decoder reads outer fields, ignores `team_config` since it's not a dict.
         let result = try TeamGenerationService.decodeTeamConfig(from: json)
         XCTAssertEqual(result.team.name, "Flat")
+    }
+
+    // MARK: - decodeTeamConfig: misplaced sibling recovery
+
+    /// Verbatim payload shape from `network_log.json` — the FIRST attempt that
+    /// failed in the bug report. `qwen3.5-9b-mlx` placed `supervisor_requires`
+    /// as a sibling of `team_config` instead of inside it. Without the merge,
+    /// the auto-promote-orphans path can rescue artifacts that nobody consumes
+    /// (UI/UX + tests reports here) but NOT "Код калькулятора.html" — it has
+    /// consumers, so the user's primary deliverable would silently disappear
+    /// from the supervisor's review list.
+    func testDecodeTeamConfig_misplacedSupervisorRequires_verbatimNetworkLogPayload_recovers() throws {
+        let json = """
+        {
+            "name": "create_team",
+            "arguments": {
+                "team_config": {
+                    "name": "Команда разработки калькулятора",
+                    "description": "Разработка веб-калькулятора",
+                    "supervisor_mode": "autonomous",
+                    "acceptance_mode": "finalOnly",
+                    "roles": [
+                        {"name": "Разработчик Frontend", "prompt": "p", "produces_artifacts": ["Код калькулятора.html"], "requires_artifacts": ["Supervisor Task"], "tools": ["read_file", "write_file", "edit_file"]},
+                        {"name": "Тестировщик UI/UX", "prompt": "p", "produces_artifacts": ["Отчет по UI/UX"], "requires_artifacts": ["Код калькулятора.html"], "tools": ["read_file"]},
+                        {"name": "Тестировщик функционала", "prompt": "p", "produces_artifacts": ["Отчет по тестам"], "requires_artifacts": ["Код калькулятора.html", "Supervisor Task"], "tools": ["read_file"]}
+                    ],
+                    "artifacts": [
+                        {"name": "Код калькулятора.html", "description": "d"},
+                        {"name": "Отчет по UI/UX", "description": "d"},
+                        {"name": "Отчет по тестам", "description": "d"}
+                    ]
+                },
+                "supervisor_requires": ["Код калькулятора.html", "Отчет по UI/UX", "Отчет по тестам"]
+            }
+        }
+        """
+        let result = try TeamGenerationService.decodeTeamConfig(from: json)
+        XCTAssertEqual(result.team.name, "Команда разработки калькулятора")
+        let supReq = Set(result.team.supervisorRequiredArtifacts)
+        // Explicit count assertion: without the merge fix, only orphan-produced
+        // artifacts ("Отчет по UI/UX" and "Отчет по тестам", no consumers) reach
+        // supervisor_requires via the auto-promote path → count == 2. The third
+        // entry — "Разработчик Frontend Summary" (rewritten from the consumed
+        // "Код калькулятора.html" by stripFileShapedArtifactNames) — only lands
+        // here when the merge fix carries the misplaced supervisor_requires
+        // sibling into team_config. count == 3 is the load-bearing regression signal.
+        XCTAssertEqual(supReq.count, 3, "Without the merge fix, only orphan-produced artifacts (count=2) survive auto-promote; the consumed-artifact rewrite needs the fix to carry user intent through.")
+        XCTAssertTrue(supReq.contains("Отчет по UI/UX"))
+        XCTAssertTrue(supReq.contains("Отчет по тестам"))
+        XCTAssertTrue(supReq.contains("Разработчик Frontend Summary"))
+        // Counter signal: the merge actually fired during decode. Together with
+        // the count assertion above, this distinguishes "merge fix worked" from
+        // "auto-promote alone was enough" — the latter would leave the counter at 0.
+        XCTAssertEqual(TeamGenerationService.siblingMergeFireCount, 1,
+            "Decode must trigger exactly one merge fire on the misplaced supervisor_requires sibling")
+    }
+
+    /// Inside-team_config wins on conflict — if the model placed the same key
+    /// in BOTH locations, the structurally correct (inside) version is the
+    /// authoritative one. Without this rule the merge fix could turn a recovered
+    /// payload into a degraded one whenever the model second-guesses itself.
+    func testDecodeTeamConfig_misplacedSibling_innerValueWins_whenBothPresent() throws {
+        let json = """
+        {
+            "team_config": {
+                "name": "T", "description": "d",
+                "roles": [{"name": "R", "prompt": "p", "produces_artifacts": ["X"], "requires_artifacts": ["Supervisor Task"], "tools": []}],
+                "artifacts": [{"name": "X", "description": "d"}],
+                "supervisor_requires": ["X"]
+            },
+            "supervisor_requires": ["DECOY"]
+        }
+        """
+        let result = try TeamGenerationService.decodeTeamConfig(from: json)
+        let supReq = Set(result.team.supervisorRequiredArtifacts)
+        XCTAssertEqual(supReq, ["X"], "Inside-team_config supervisor_requires must win over wrapper-level sibling")
+        XCTAssertFalse(supReq.contains("DECOY"))
+    }
+
+    /// Table-driven: each canonical key from `teamConfigSiblingKeys` must be
+    /// recoverable when misplaced at the wrapper level. Locked to the same
+    /// 7-key set to catch regressions in `mergeMisplacedSiblings` ↔ whitelist
+    /// drift.
+    func testDecodeTeamConfig_misplacedSibling_eachCanonicalField_recovered() throws {
+        struct Case: Sendable {
+            let key: String
+            let json: String
+            let assertion: @Sendable (GeneratedTeamBuilder.BuildResult) throws -> Void
+        }
+        // Each case: the named field is misplaced as a sibling of team_config,
+        // and inner team_config has just enough to decode (roles required by
+        // GeneratedTeamConfig.init) without that field present.
+        let baseInner = #"""
+        "team_config": {
+            "description": "d",
+            "roles": [{"name":"R","prompt":"p","produces_artifacts":["X"],"requires_artifacts":["Supervisor Task"],"tools":[]}],
+            "artifacts": [{"name":"X","description":"d"}]
+        }
+        """#
+        let cases: [Case] = [
+            Case(key: "name", json: "{\(baseInner), \"name\": \"Outer Team\"}") { result in
+                XCTAssertEqual(result.team.name, "Outer Team")
+            },
+            Case(key: "description", json: """
+                {
+                    "team_config": {
+                        "name": "T",
+                        "roles": [{"name":"R","prompt":"p","produces_artifacts":["X"],"requires_artifacts":["Supervisor Task"],"tools":[]}],
+                        "artifacts": [{"name":"X","description":"d"}]
+                    },
+                    "description": "outer desc"
+                }
+                """) { result in
+                XCTAssertEqual(result.team.description, "outer desc")
+            },
+            Case(key: "supervisor_mode", json: """
+                {
+                    "team_config": {
+                        "name": "T", "description": "d",
+                        "roles": [{"name":"R","prompt":"p","produces_artifacts":["X"],"requires_artifacts":["Supervisor Task"],"tools":[]}],
+                        "artifacts": [{"name":"X","description":"d"}]
+                    },
+                    "supervisor_mode": "manual"
+                }
+                """) { result in
+                XCTAssertEqual(result.team.settings.supervisorMode, .manual)
+            },
+            Case(key: "acceptance_mode", json: """
+                {
+                    "team_config": {
+                        "name": "T", "description": "d",
+                        "roles": [{"name":"R","prompt":"p","produces_artifacts":["X"],"requires_artifacts":["Supervisor Task"],"tools":[]}],
+                        "artifacts": [{"name":"X","description":"d"}]
+                    },
+                    "acceptance_mode": "afterEachRole"
+                }
+                """) { result in
+                XCTAssertEqual(result.team.settings.defaultAcceptanceMode, .afterEachRole)
+            },
+            Case(key: "roles", json: """
+                {
+                    "team_config": {
+                        "name": "T", "description": "d",
+                        "artifacts": [{"name":"Y","description":"d"}]
+                    },
+                    "roles": [{"name":"R","prompt":"p","produces_artifacts":["Y"],"requires_artifacts":["Supervisor Task"],"tools":[]}]
+                }
+                """) { result in
+                XCTAssertNotNil(result.team.roles.first { $0.name == "R" })
+            },
+            Case(key: "artifacts", json: """
+                {
+                    "team_config": {
+                        "name": "T", "description": "d",
+                        "roles": [{"name":"R","prompt":"p","produces_artifacts":["Z"],"requires_artifacts":["Supervisor Task"],"tools":[]}]
+                    },
+                    "artifacts": [{"name":"Z","description":"sibling"}]
+                }
+                """) { result in
+                let names = Set(result.team.artifacts.map(\.name))
+                XCTAssertTrue(names.contains("Z"))
+            },
+            Case(key: "supervisor_requires", json: """
+                {
+                    "team_config": {
+                        "name": "T", "description": "d",
+                        "roles": [{"name":"R","prompt":"p","produces_artifacts":["X"],"requires_artifacts":["Supervisor Task"],"tools":[]}],
+                        "artifacts": [{"name":"X","description":"d"}]
+                    },
+                    "supervisor_requires": ["X"]
+                }
+                """) { result in
+                XCTAssertTrue(result.team.supervisorRequiredArtifacts.contains("X"))
+            },
+        ]
+        for c in cases {
+            try XCTContext.runActivity(named: "misplaced \(c.key)") { _ in
+                let result = try TeamGenerationService.decodeTeamConfig(from: c.json)
+                try c.assertion(result)
+            }
+        }
+    }
+
+    /// The model can promote multiple canonical fields at once (here: artifacts
+    /// AND supervisor_requires both as siblings). One decode pass must merge
+    /// them all — not stop at the first match.
+    func testDecodeTeamConfig_misplacedSibling_multipleFieldsAtOnce_allMerged() throws {
+        let json = """
+        {
+            "team_config": {
+                "name": "T", "description": "d",
+                "roles": [{"name": "R", "prompt": "p", "produces_artifacts": ["X"], "requires_artifacts": ["Supervisor Task"], "tools": []}]
+            },
+            "artifacts": [{"name": "X", "description": "d"}],
+            "supervisor_requires": ["X"]
+        }
+        """
+        let result = try TeamGenerationService.decodeTeamConfig(from: json)
+        // `team.artifacts` always carries the auto-injected "Supervisor Task" too —
+        // assert containment for "X" rather than equality.
+        let names = Set(result.team.artifacts.map(\.name))
+        XCTAssertTrue(names.contains("X"), "Misplaced artifacts sibling must be merged into team_config")
+        XCTAssertTrue(result.team.supervisorRequiredArtifacts.contains("X"),
+            "Misplaced supervisor_requires sibling must be merged into team_config")
+    }
+
+    /// Whitelist is narrow on purpose. Junk siblings (`foo`, `bar`) must NOT be
+    /// promoted into team_config — directly verified via the merge helper since
+    /// post-decode the unknown keys would be silently swallowed by JSONDecoder
+    /// regardless. Counter is the observable signal: zero merges → zero bumps.
+    func testMergeMisplacedSiblings_unknownField_isNotMerged() {
+        let inner: [String: Any] = ["name": "T"]
+        let wrapper: [String: Any] = ["foo": 123, "bar": ["junk"]]
+        let merged = TeamGenerationService.mergeMisplacedSiblings(into: inner, from: wrapper)
+        XCTAssertEqual(merged.count, 1, "Only inner keys should remain — junk siblings ignored")
+        XCTAssertNil(merged["foo"])
+        XCTAssertNil(merged["bar"])
+        XCTAssertEqual(TeamGenerationService.siblingMergeFireCount, 0,
+                       "No canonical key was merged → counter must NOT bump")
+    }
+
+    /// Counter bumps once per real merge — useful for the train-app skill audit
+    /// pass (empirical defect rate per model on the corpus).
+    func testMergeMisplacedSiblings_realMerge_bumpsCounter() {
+        let inner: [String: Any] = ["name": "T"]
+        let wrapper: [String: Any] = ["supervisor_requires": ["X", "Y"]]
+        _ = TeamGenerationService.mergeMisplacedSiblings(into: inner, from: wrapper)
+        XCTAssertEqual(TeamGenerationService.siblingMergeFireCount, 1)
+    }
+
+    /// Counter-pollution guard. `_siblingMergeFireCount` is process-global —
+    /// without `setUp` resetting it per-test, the bumping tests above
+    /// (`_misplacedSibling_*`, `_misplacedSupervisorRequires_*`, etc.) leak
+    /// non-zero state into any test that asserts on the counter value. Today
+    /// the helper tests work around it by resetting locally; this test catches
+    /// that workaround silently rotting if someone adds a counter-asserting test
+    /// without remembering the reset. Alphabetically positioned ("testEntry…"
+    /// > "testDecodeTeamConfig…") to actually run AFTER the polluters.
+    func testEntryCounter_isZero_acrossTests_viaSetUp() {
+        XCTAssertEqual(
+            TeamGenerationService.siblingMergeFireCount, 0,
+            "setUp must reset _siblingMergeFireCount; without it, prior tests' counter pollution leaks here and any new counter assertion becomes order-dependent."
+        )
+    }
+
+    /// Whitelist drift guard. The hard rule on `teamConfigSiblingKeys` ("MUST
+    /// stay in sync with `GeneratedTeamConfig.CodingKeys`") has no compiler
+    /// signal — `CodingKey` doesn't conform to `CaseIterable`. Without this
+    /// test, adding a top-level field to `GeneratedTeamConfig` and forgetting
+    /// to add it to the whitelist would silently re-create the original bug:
+    /// future misplacements of the new field would fall through merge unrecovered.
+    /// We round-trip a populated config through JSON and assert the resulting
+    /// top-level keys match the whitelist exactly — every `CodingKey` value
+    /// must be a sibling-recoverable key, and nothing else may be.
+    func testTeamConfigSiblingKeys_matchesEncodedJSONKeys() throws {
+        let cfg = GeneratedTeamConfig(
+            name: "T",
+            description: "d",
+            supervisorMode: .autonomous,
+            acceptanceMode: .finalOnly,
+            roles: [GeneratedTeamConfig.RoleConfig(
+                name: "R", prompt: "p",
+                producesArtifacts: ["X"],
+                requiresArtifacts: ["Supervisor Task"],
+                tools: []
+            )],
+            artifacts: [GeneratedTeamConfig.ArtifactConfig(
+                name: "X", description: "d", icon: nil
+            )],
+            supervisorRequires: ["X"]
+        )
+        let data = try JSONCoderFactory.makePersistenceEncoder().encode(cfg)
+        let json = try XCTUnwrap(String(data: data, encoding: .utf8))
+        let dict = try XCTUnwrap(JSONUtilities.parseJSONDictionary(json),
+            "Encoded GeneratedTeamConfig must round-trip as a JSON dictionary")
+        XCTAssertEqual(
+            Set(dict.keys),
+            TeamGenerationService.teamConfigSiblingKeys,
+            "Drift between GeneratedTeamConfig.CodingKeys and TeamGenerationService.teamConfigSiblingKeys would silently recreate the original misplaced-sibling bug for the drifted field. Update teamConfigSiblingKeys to match."
+        )
+    }
+
+    /// Idempotency: a second pass on already-merged input is a no-op. Without
+    /// this property a future refactor that recurses `unwrapTeamConfig` more
+    /// than once could double-count the counter or, worse, mishandle conflicts
+    /// when the same key appears at multiple levels.
+    func testMergeMisplacedSiblings_secondPass_isNoOp() {
+        let inner: [String: Any] = ["name": "T", "description": "d"]
+        let wrapper: [String: Any] = ["supervisor_requires": ["X"]]
+        let firstPass = TeamGenerationService.mergeMisplacedSiblings(into: inner, from: wrapper)
+        XCTAssertEqual(TeamGenerationService.siblingMergeFireCount, 1)
+        // Second pass: feed the merged result back as `inner`, same wrapper.
+        // Every canonical key the wrapper carries is now already present inside
+        // → no bump, no change.
+        let secondPass = TeamGenerationService.mergeMisplacedSiblings(into: firstPass, from: wrapper)
+        XCTAssertEqual(TeamGenerationService.siblingMergeFireCount, 1, "Second pass must be a no-op")
+        XCTAssertEqual((secondPass["supervisor_requires"] as? [String]).map(Set.init), Set(["X"]))
     }
 
     // MARK: - Warnings surface from decode

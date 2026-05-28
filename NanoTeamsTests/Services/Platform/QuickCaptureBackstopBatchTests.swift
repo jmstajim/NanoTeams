@@ -78,7 +78,7 @@ final class QuickCaptureBackstopBatchTests: NTMSOrchestratorTestBase {
     ) async {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline && !condition() {
-            try? await Task.sleep(nanoseconds: 5_000_000)  // 5ms
+            try? await Task.sleep(for: .milliseconds(5))
         }
     }
 
@@ -238,6 +238,100 @@ final class QuickCaptureBackstopBatchTests: NTMSOrchestratorTestBase {
                      "Second waiting role gets no answer — untargeted goes to first only")
         XCTAssertTrue(controller.formState.queuedMessages(for: taskID).isEmpty,
                       "Both untargeted messages drained")
+    }
+
+    // MARK: - Parallel-role same-state regression (new hook in setNeedsSupervisorInput)
+
+    /// Pins the bug the `notifyQueuedMessageBackstop` hook in
+    /// `LLMExecutionService.setNeedsSupervisorInput` fixes.
+    ///
+    /// Scenario (CLAUDE.md §45 parallel-role execution):
+    /// - Role A's step is already `.needsSupervisorInput`; the engine sits in
+    ///   `.needsSupervisorInput` because of A.
+    /// - Supervisor queues a message **targeted at Role B**, which is still
+    ///   working (not yet waiting). The backstop's
+    ///   `collectQueuedMessagesForFlush` skips it — B isn't in the waiting set.
+    /// - Role B's LLM iteration completes with its own `ask_supervisor`. The
+    ///   step mutates to `.needsSupervisorInput`, but the engine state
+    ///   `[taskID: .needsSupervisorInput]` does NOT change — `TeamEngine.transition(to:)`
+    ///   suppresses same-state re-entry (CLAUDE.md §39).
+    /// - The SwiftUI `onChange(of: taskEngineStates)` trigger in
+    ///   `MainLayoutView.handleEngineStateChanged` therefore doesn't fire and
+    ///   the queued message for B sits stranded.
+    ///
+    /// With the new hook, `setNeedsSupervisorInput` fires the backstop directly.
+    /// This test simulates that by mutating B's step status (as the production
+    /// `setNeedsSupervisorInput` does) and then calling
+    /// `tryFlushQueuedMessages()` (as the production hook does) — without ever
+    /// changing the engine-state dictionary. The drain must still happen.
+    func testBackstop_parallelRole_drainsTargetedMessage_whenEngineStateUnchanged() async {
+        let roleA = "role-a"
+        let roleB = "role-b"
+
+        // Setup: A waiting, B pending. Engine = .needsSupervisorInput (held by A).
+        let taskID = await setUpTaskWaitingForSupervisor(
+            roleIDs: [roleA, roleB], waitingRoleIDs: [roleA]
+        )
+
+        let controller = QuickCaptureController(formState: QuickCaptureFormState())
+        controller.store = sut
+
+        // Supervisor queues a message targeted at Role B (who isn't waiting yet).
+        controller.formState.appendQueuedMessage(msg("for-B", target: roleB), for: taskID)
+
+        // First flush attempt: B isn't in the waiting set yet, so the message
+        // is collected as "skipped — target not waiting" and stays queued.
+        controller.tryFlushQueuedMessages()
+        // Brief yield so any dispatched Task can run and confirm it no-ops.
+        await waitFor(timeout: 0.2) { false }
+
+        XCTAssertEqual(controller.formState.queuedMessages(for: taskID).count, 1,
+                       "Message targeted at B stays queued while B isn't waiting")
+        XCTAssertNil(
+            sut.loadedTask(taskID)?.runs.last?.steps
+                .first(where: { $0.effectiveRoleID == roleB })?.supervisorAnswer,
+            "B's step has no answer — backstop correctly didn't drain"
+        )
+
+        // Snapshot engine state BEFORE simulating Role B's setNeedsSupervisorInput.
+        let engineStateBefore = sut.engineState[taskID]
+        XCTAssertEqual(engineStateBefore, .needsSupervisorInput,
+                       "Precondition: engine is already `.needsSupervisorInput` (held by A)")
+
+        // Simulate Role B's `setNeedsSupervisorInput` call: mutate B's step status.
+        // (Production calls `delegate.mutateTask` with this same body.)
+        await sut.mutateTask(taskID: taskID) { task in
+            guard let runIdx = task.runs.indices.last,
+                  let stepIdx = task.runs[runIdx].steps.firstIndex(where: { $0.effectiveRoleID == roleB })
+            else { return }
+            task.runs[runIdx].steps[stepIdx].status = .needsSupervisorInput
+            task.runs[runIdx].steps[stepIdx].needsSupervisorInput = true
+            task.runs[runIdx].steps[stepIdx].supervisorQuestion = "B asking too"
+        }
+
+        // Verify engine state did NOT change — this is the same-state re-entry
+        // case (CLAUDE.md §39). Without the new hook, the SwiftUI onChange
+        // trigger would NOT fire and the queue would sit forever.
+        XCTAssertEqual(sut.engineState[taskID], engineStateBefore,
+                       "Engine state must NOT change — this is the bug condition")
+
+        // Now simulate the new hook: `setNeedsSupervisorInput` calls
+        // `delegate.notifyQueuedMessageBackstop(taskID:)` which forwards to
+        // `QuickCaptureController.shared.tryFlushQueuedMessages()`.
+        controller.tryFlushQueuedMessages()
+
+        // Drain must now succeed — B is in the waiting set.
+        await waitFor {
+            sut.loadedTask(taskID)?.runs.last?.steps
+                .first(where: { $0.effectiveRoleID == roleB })?.supervisorAnswer != nil
+        }
+
+        let bStep = sut.loadedTask(taskID)?.runs.last?.steps
+            .first(where: { $0.effectiveRoleID == roleB })
+        XCTAssertEqual(bStep?.supervisorAnswer, "for-B",
+                       "Role B's queued message drained via the explicit backstop trigger")
+        XCTAssertTrue(controller.formState.queuedMessages(for: taskID).isEmpty,
+                      "Queue is empty — the regression is fixed")
     }
 
     // MARK: - Concurrent invocation safety (atomic reserve)

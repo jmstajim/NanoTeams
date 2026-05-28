@@ -9,7 +9,7 @@ import Foundation
 ///    `/v1/embeddings` call).
 /// 4. Intersect posting lists to narrow the grep scope.
 /// 5. Run `SearchExecutor` over [original] + expanded terms.
-/// 6. Overwrite the interim "expanding" envelope with the final result.
+/// 6. Overwrite the interim "exploring" envelope with the final result.
 extension LLMExecutionService {
 
     func appendExploratorySearchResult(
@@ -17,7 +17,7 @@ extension LLMExecutionService {
         toolCallID: UUID,
         stepID: String,
         conversationMessages: inout [ChatMessage],
-        memory: ToolCallCache? = nil
+        tracker: ToolCallTracker? = nil
     ) async {
         guard case .exploratorySearch(let payload) = result.signal else { return }
         guard let delegate else { return }
@@ -37,7 +37,7 @@ extension LLMExecutionService {
                 toolCallID: toolCallID,
                 stepID: stepID,
                 conversationMessages: &conversationMessages,
-                memory: memory
+                tracker: tracker
             )
             return
         }
@@ -69,7 +69,7 @@ extension LLMExecutionService {
                 toolCallID: toolCallID,
                 stepID: stepID,
                 conversationMessages: &conversationMessages,
-                memory: memory
+                tracker: tracker
             )
             return
         }
@@ -104,7 +104,7 @@ extension LLMExecutionService {
                 toolCallID: toolCallID,
                 stepID: stepID,
                 conversationMessages: &conversationMessages,
-                memory: memory
+                tracker: tracker
             )
             return
         }
@@ -190,7 +190,7 @@ extension LLMExecutionService {
                 toolCallID: toolCallID,
                 stepID: stepID,
                 conversationMessages: &conversationMessages,
-                memory: memory
+                tracker: tracker
             )
             return
         }
@@ -228,7 +228,7 @@ extension LLMExecutionService {
             toolCallID: toolCallID,
             stepID: stepID,
             conversationMessages: &conversationMessages,
-            memory: memory
+            tracker: tracker
         )
     }
 
@@ -310,7 +310,7 @@ extension LLMExecutionService {
         toolCallID: UUID,
         stepID: String,
         conversationMessages: inout [ChatMessage],
-        memory: ToolCallCache? = nil
+        tracker: ToolCallTracker? = nil
     ) async {
         conversationMessages.append(ChatMessage(
             role: .tool, content: envelope, toolCallID: result.providerID
@@ -332,13 +332,13 @@ extension LLMExecutionService {
         )
         await updateToolCallResult(stepID: stepID, toolCallID: toolCallID, result: finalResult)
 
-        // Record the FINALIZED envelope in the tool-call cache. The upstream
+        // Record the FINALIZED envelope in the tool-call tracker. The upstream
         // `processToolResults` skipped this call for `.exploratorySearch` signals
         // because it only had the interim `{"status":"exploring"}` placeholder
-        // at that point; without this record, a subsequent identical
-        // `exploratory` call would either not dedup at all or dedup against
-        // the placeholder.
-        memory?.record(
+        // at that point — without this record, the next iteration's
+        // `recentCalls` snapshot for the loop detector would see the placeholder
+        // instead of the real envelope.
+        tracker?.record(
             toolName: result.toolName,
             argumentsJSON: result.argumentsJSON,
             resultJSON: envelope,

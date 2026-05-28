@@ -1,6 +1,6 @@
 import Foundation
 
-struct ConversationLogRenderer {
+nonisolated struct ConversationLogRenderer {
     private let dateFormatter: ISO8601DateFormatter
 
     init() {

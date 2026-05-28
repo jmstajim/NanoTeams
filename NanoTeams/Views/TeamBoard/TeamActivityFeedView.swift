@@ -23,6 +23,7 @@ struct TeamActivityFeedView: View {
     @Environment(StreamingPreviewManager.self) private var streamingManager
     @Environment(DictationService.self) private var dictation
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.windowResizeMonitor) private var resizeMonitor
 
     @State private var viewModel = TeamActivityFeedViewModel()
     @State private var revisionRoleID: String? = nil
@@ -35,46 +36,127 @@ struct TeamActivityFeedView: View {
     /// composer to zero (CLAUDE.md #18).
     @State private var paneHeight: CGFloat = .infinity
 
-    /// Creates a `Binding` into `viewModel.expansion` for a given key path.
-    private func expansionBinding<T>(_ keyPath: WritableKeyPath<TeamActivityFeedViewModel.ExpansionState, T>) -> Binding<T> {
-        Binding(
-            get: { viewModel.expansion[keyPath: keyPath] },
-            set: { viewModel.expansion[keyPath: keyPath] = $0 }
-        )
-    }
-
     // MARK: - Change Detection
 
-    /// Lightweight version hash derived from run data counts.
-    /// Used by `onChange` to detect structural changes without expensive `Run` equality checks.
-    /// Uses Hasher for collision resistance (simple sum is vulnerable to count swaps).
-    /// Note: supervisor-question lifecycle changes (`needsSupervisorInput` / `supervisorAnswer`)
-    /// don't bump this directly — invalidation rides on the subsequent `llmConversation` /
-    /// `toolCalls` append after the role resumes. `TimelineFingerprint` independently
-    /// includes `supervisorInputCount`, so the recompute does pick the answer up.
+    /// Lightweight version hash derived from run data counts (active run + all
+    /// loaded descendants). Used by `onChange` to detect structural changes
+    /// without expensive `Run` equality checks. Without descendant data the
+    /// parent feed wouldn't react to a child's mid-flight messages — the
+    /// interleaved timeline would freeze until the user manually scrolled.
     private var runDataVersion: Int {
-        guard let run else { return 0 }
+        Self.computeRunDataVersion(run: run, descendants: resolvedDescendantTasks())
+    }
+
+    /// Pure implementation of `runDataVersion` — extracted so it's testable
+    /// without instantiating the view. Pinned by
+    /// `TeamActivityFeedLogicTests.testComputeRunDataVersion_*`:
+    /// must respond to `step.needsSupervisorInput` flipping. The engine's
+    /// escalation path (`setNeedsSupervisorInput` from drift/refusal/parse-
+    /// failure caps in `LLMExecutionService+StepFlowControl.swift`) flips the
+    /// flag without appending a tool call or LLM message — so a hash that only
+    /// walked counts left `recomputeAndRebuild` un-triggered and the user had
+    /// to switch tasks to force a fresh view rebuild.
+    static func computeRunDataVersion(
+        run: Run?,
+        descendants: [ActivityFeedBuilder.DescendantTask]
+    ) -> Int {
         var hasher = Hasher()
-        hasher.combine(run.steps.count)
-        for step in run.steps {
-            hasher.combine(step.llmConversation.count)
-            hasher.combine(step.toolCalls.count)
-            hasher.combine(step.artifacts.count)
+        if let run {
+            hasher.combine(run.steps.count)
+            for step in run.steps {
+                hasher.combine(step.llmConversation.count)
+                hasher.combine(step.toolCalls.count)
+                hasher.combine(step.artifacts.count)
+                hasher.combine(step.needsSupervisorInput)
+                hasher.combine(step.status)
+            }
+            for meeting in run.meetings { hasher.combine(meeting.messages.count) }
+            hasher.combine(run.changeRequests.count)
         }
-        for meeting in run.meetings { hasher.combine(meeting.messages.count) }
-        hasher.combine(run.changeRequests.count)
+        // Fold in descendant runs so child progress triggers rebuilds.
+        for descendant in descendants {
+            hasher.combine(descendant.task.id)
+            hasher.combine(descendant.run.steps.count)
+            for step in descendant.run.steps {
+                hasher.combine(step.llmConversation.count)
+                hasher.combine(step.toolCalls.count)
+                hasher.combine(step.artifacts.count)
+                hasher.combine(step.needsSupervisorInput)
+                hasher.combine(step.status)
+            }
+            for meeting in descendant.run.meetings { hasher.combine(meeting.messages.count) }
+            hasher.combine(descendant.run.changeRequests.count)
+        }
         return hasher.finalize()
+    }
+
+    /// Resolve loaded descendants of the active task. Filters out descendants
+    /// whose task or run has been unloaded since the last build (graceful for
+    /// stale state during transitions). Each descendant carries everything the
+    /// builder needs (run, team roles, team name, delegating role).
+    private func resolvedDescendantTasks() -> [ActivityFeedBuilder.DescendantTask] {
+        guard let activeID = store.activeTaskID,
+              let snapshot = store.snapshot
+        else { return [] }
+        let descendantIDs = snapshot.tasksIndex.descendantIDs(of: activeID)
+        guard !descendantIDs.isEmpty else { return [] }
+
+        let allTasks = store.allLoadedTasksIncludingChildren
+        let tasksByID: [Int: NTMSTask] = Dictionary(uniqueKeysWithValues: allTasks.map { ($0.id, $0) })
+
+        var descendants: [ActivityFeedBuilder.DescendantTask] = []
+        descendants.reserveCapacity(descendantIDs.count)
+        for childID in descendantIDs {
+            guard let childTask = tasksByID[childID],
+                  let childRun = childTask.runs.last
+            else { continue }
+            let childTeam = store.resolvedTeam(for: childTask)
+            // Resolve the delegating role's name in the parent team for the
+            // boundary-band subtitle. `parentRoleID` on the child is the
+            // canonical seeded TeamRoleDefinition.id of the role that called
+            // delegate_to_team.
+            let parentRoleName: String?
+            if let parentRoleID = childTask.parentRoleID,
+               let parentTask = tasksByID[childTask.parentTaskID ?? -1] {
+                let parentTeam = store.resolvedTeam(for: parentTask)
+                parentRoleName = parentTeam.roles.roleName(for: parentRoleID)
+            } else {
+                parentRoleName = nil
+            }
+            descendants.append(ActivityFeedBuilder.DescendantTask(
+                task: childTask,
+                run: childRun,
+                teamRoles: childTeam.roles,
+                teamName: childTeam.name,
+                delegationDepth: childTask.delegationDepth,
+                delegatedFromRoleName: parentRoleName
+            ))
+        }
+        return descendants
     }
 
     /// Builds a `BuildContext` snapshot from current environment values.
     /// Called at every VM orchestration entry point so the VM never holds environment references.
     private func buildContext() -> TeamActivityFeedViewModel.BuildContext {
         let task = store.activeTask
+        let descendants = resolvedDescendantTasks()
+        let activeID = store.activeTaskID
+        let activeTeam = store.resolvedTeam(for: task)
+        var roleMap: [Int: [TeamRoleDefinition]] = [:]
+        var teamNameMap: [Int: String] = [:]
+        if let id = activeID {
+            roleMap[id] = activeTeam.roles
+            teamNameMap[id] = activeTeam.name
+        }
+        for d in descendants {
+            roleMap[d.task.id] = d.teamRoles
+            if let name = d.teamName { teamNameMap[d.task.id] = name }
+        }
         return TeamActivityFeedViewModel.BuildContext(
             run: run,
             roleDefinitions: roleDefinitions,
             filterRoleID: filterRoleID,
-            activeTaskID: store.activeTaskID,
+            activeTaskID: activeID,
             supervisorBrief: task?.effectiveSupervisorBrief,
             supervisorBriefDate: task?.createdAt,
             supervisorTask: task?.supervisorTask,
@@ -83,10 +165,11 @@ struct TeamActivityFeedView: View {
             supervisorProjectFolderURL: store.workFolderURL,
             workFolderURL: store.workFolderURL,
             debugModeEnabled: config.debugModeEnabled,
-            thinkingExpandedByDefault: config.thinkingExpandedByDefault,
-            toolCallsExpandedByDefault: config.toolCallsExpandedByDefault,
-            artifactsExpandedByDefault: config.artifactsExpandedByDefault,
-            isStreaming: { streamingManager.isStreaming(messageID: $0) }
+            isStreaming: { streamingManager.isStreaming(messageID: $0) },
+            descendantTasks: descendants,
+            roleDefinitionsByTaskID: roleMap,
+            teamNameByTaskID: teamNameMap,
+            composerVisible: shouldShowComposer
         )
     }
 
@@ -127,7 +210,8 @@ struct TeamActivityFeedView: View {
             TeamActivityActiveQuestion(
                 stepID: q.stepID,
                 role: q.role,
-                question: q.question
+                question: q.question,
+                paired: q.paired
             )
         }
     }
@@ -174,10 +258,44 @@ struct TeamActivityFeedView: View {
 
     // MARK: - Helpers
 
-    private func findRoleDefinition(for role: Role) -> TeamRoleDefinition? {
+    /// Resolves a `TeamRoleDefinition` for a `Role`, scoped to the team that
+    /// owns the timeline item. Falls back to the active team if the per-task
+    /// lookup map doesn't contain the originTaskID (defensive — e.g. during
+    /// a transition where the descendant has unloaded but a stale tagged item
+    /// is still in the cached timeline).
+    private func findRoleDefinition(for role: Role, originTaskID: Int) -> TeamRoleDefinition? {
         let baseID = role.baseID
-        if let def = roleDefinitions.first(where: { $0.id == baseID }) { return def }
-        return roleDefinitions.first(where: { $0.systemRoleID == baseID || $0.name == baseID })
+        let roster = viewModel.roleDefinitionsByTaskID[originTaskID] ?? roleDefinitions
+        if let def = roster.first(where: { $0.id == baseID }) { return def }
+        return roster.first(where: { $0.systemRoleID == baseID || $0.name == baseID })
+    }
+
+    /// True when `originTaskID` refers to a delegated descendant (not the active task).
+    /// Drives the `RoleName.TeamName` label suffix on child-team items.
+    private func isChildTeamOrigin(_ originTaskID: Int) -> Bool {
+        store.activeTaskID.map { $0 != originTaskID } ?? false
+    }
+
+    /// Render-time team name lookup for child-team labels.
+    private func teamName(for originTaskID: Int) -> String? {
+        viewModel.teamNameByTaskID[originTaskID]
+    }
+
+    /// Returns the bare role name override for delegated child-team items —
+    /// the resolved name from the child team's roster (so two teams sharing
+    /// a `Role` enum case still render under their own role labels).
+    /// `nil` for active-team items (caller falls through to roleDefinition.name).
+    private func childRoleLabel(for role: Role, originTaskID: Int) -> String? {
+        guard isChildTeamOrigin(originTaskID) else { return nil }
+        return findRoleDefinition(for: role, originTaskID: originTaskID)?.name ?? role.displayName
+    }
+
+    /// Returns the child team's name for delegated items, rendered as
+    /// ` from <Team>` in secondary gray after the role name. `nil` for
+    /// active-team items (no suffix needed).
+    private func childTeamSuffix(for originTaskID: Int) -> String? {
+        guard isChildTeamOrigin(originTaskID) else { return nil }
+        return teamName(for: originTaskID)
     }
 
     private var hasContent: Bool {
@@ -269,6 +387,16 @@ struct TeamActivityFeedView: View {
         .onChange(of: filterRoleID) { _, _ in
             Task { await viewModel.refreshAndRebuild(context: buildContext()) }
         }
+        // Composer visibility gates paired-message suppression. When the composer
+        // hides (engine `.failed`, task closed, view enters read-only), the
+        // previously-suppressed bubble must reappear in the feed — otherwise the
+        // LLM's `ask_supervisor`-paired reply is lost (no composer to surface it).
+        // The fingerprint includes `composerVisible`, so this onChange forces a
+        // rebuild even when no other state changed (e.g. terminal `.running` →
+        // `.failed` with no new tool calls / messages).
+        .onChange(of: shouldShowComposer) { _, _ in
+            viewModel.recomputeAndRebuild(context: buildContext())
+        }
         .sheet(isPresented: $isShowingRevisionSheet) {
             RevisionSheet(
                 roleName: revisionRoleName,
@@ -302,8 +430,13 @@ struct TeamActivityFeedView: View {
                         : tagged.showSectionHeader ? Spacing.s
                         : isToolCall ? 2
                         : Spacing.xs
-                    timelineItemView(for: tagged.item, showHeader: tagged.showSectionHeader)
-                        .padding(.top, topPadding)
+                    VStack(alignment: .leading, spacing: 0) {
+                        if let boundary = tagged.boundary {
+                            TeamBoundaryBandView(boundary: boundary)
+                        }
+                        timelineItemView(for: tagged.item, showHeader: tagged.showSectionHeader)
+                            .padding(.top, tagged.boundary == nil ? topPadding : 0)
+                    }
                 }
                 Color.clear.frame(height: 1).id("bottom")
                     .onAppear { viewModel.isNearBottom = true }
@@ -345,36 +478,26 @@ struct TeamActivityFeedView: View {
                 teamHeaderMenu
             }
             Spacer()
-            expansionControls
+            debugToggle
         }
         .padding(.horizontal, Spacing.standard)
         .padding(.vertical, filterRoleID != nil ? Spacing.xs : Spacing.s)
         .background(Colors.surfaceCard)
     }
 
-    private var expansionControls: some View {
-        ActivityFeedExpansionControls(
-            thinkingExpanded: Bindable(config).thinkingExpandedByDefault,
-            toolCallsExpanded: Bindable(config).toolCallsExpandedByDefault,
-            artifactsExpanded: Bindable(config).artifactsExpandedByDefault,
-            debugEnabled: Bindable(config).debugModeEnabled,
-            onThinkingToggle: {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    viewModel.applyExpansionToAll(thinking: config.thinkingExpandedByDefault, workFolderURL: store.workFolderURL)
-                }
-            },
-            onToolCallsToggle: {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    viewModel.applyExpansionToAll(toolCalls: config.toolCallsExpandedByDefault, workFolderURL: store.workFolderURL)
-                }
-            },
-            onArtifactsToggle: {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    viewModel.applyExpansionToAll(artifacts: config.artifactsExpandedByDefault, workFolderURL: store.workFolderURL)
-                }
-            },
-            onDebugToggle: { }
-        )
+    /// Debug-mode toggle (the only header control left after the inline expand
+    /// buttons were removed in favor of standalone-window detail viewers).
+    private var debugToggle: some View {
+        @Bindable var config = config
+        return Button {
+            config.debugModeEnabled.toggle()
+        } label: {
+            Image(systemName: config.debugModeEnabled ? "ladybug.fill" : "ladybug")
+                .font(.caption)
+                .foregroundStyle(config.debugModeEnabled ? Colors.warning : Colors.textTertiary)
+        }
+        .buttonStyle(.plain)
+        .help(config.debugModeEnabled ? "Hide debug info (input & artifacts)" : "Show debug info (input & artifacts)")
     }
 
     // MARK: - Team Header Menu
@@ -433,131 +556,365 @@ struct TeamActivityFeedView: View {
 
     // MARK: - Timeline Item Dispatcher
 
-    private func avatarTap(for role: Role) -> (() -> Void)? {
+    private func avatarTap(for role: Role, originTaskID: Int) -> (() -> Void)? {
         guard let onSelectRole else { return nil }
-        let resolvedID = findRoleDefinition(for: role)?.id ?? role.baseID
+        // Selection is scoped to the active team; tapping a child-team avatar
+        // is a no-op (V1 — keyboard nav and selection stay on layer 0).
+        guard let activeID = store.activeTaskID, activeID == originTaskID else { return nil }
+        let resolvedID = findRoleDefinition(for: role, originTaskID: originTaskID)?.id ?? role.baseID
         return { onSelectRole(resolvedID) }
     }
 
     @ViewBuilder
     private func timelineItemView(for item: TeamActivityTimelineItem, showHeader: Bool) -> some View {
         switch item {
-        case .llmMessage(let msg, let role, let stepID):
-            messageBubble(msg: msg, role: role, stepID: stepID, showHeader: showHeader)
+        case .llmMessage(let msg, let role, let stepID, let originTaskID):
+            messageBubble(msg: msg, role: role, stepID: stepID, originTaskID: originTaskID, showHeader: showHeader)
 
-        case .toolCall(let call, let role, _):
+        case .toolCall(let call, let role, _, let originTaskID):
             ToolCallItemView(
                 call: call, role: role,
-                roleDefinition: findRoleDefinition(for: role),
+                roleDefinition: findRoleDefinition(for: role, originTaskID: originTaskID),
                 showHeader: showHeader,
-                teamRoles: roleDefinitions,
-                onAvatarTap: showHeader ? avatarTap(for: role) : nil,
-                toolCallsExpanded: expansionBinding(\.toolCalls)
+                teamRoles: viewModel.roleDefinitionsByTaskID[originTaskID] ?? roleDefinitions,
+                onAvatarTap: showHeader ? avatarTap(for: role, originTaskID: originTaskID) : nil,
+                roleLabelOverride: childRoleLabel(for: role, originTaskID: originTaskID),
+                roleTeamSuffix: childTeamSuffix(for: originTaskID)
             )
+            .equatable()
 
-        case .artifact(let artifact, let role, _):
+        case .artifact(let artifact, let role, _, let originTaskID):
             ArtifactItemView(
                 artifact: artifact, role: role,
-                roleDefinition: findRoleDefinition(for: role),
+                roleDefinition: findRoleDefinition(for: role, originTaskID: originTaskID),
                 showHeader: showHeader,
-                content: viewModel.artifactContentCache[artifact.id],
+                originTaskID: originTaskID,
                 workFolderURL: store.workFolderURL,
-                onAvatarTap: showHeader ? avatarTap(for: role) : nil,
-                artifactsExpanded: expansionBinding(\.artifacts),
-                onExpand: { art in viewModel.loadArtifactContentIfNeeded(art, workFolderURL: store.workFolderURL) }
+                onAvatarTap: showHeader ? avatarTap(for: role, originTaskID: originTaskID) : nil,
+                roleLabelOverride: childRoleLabel(for: role, originTaskID: originTaskID),
+                roleTeamSuffix: childTeamSuffix(for: originTaskID)
             )
+            .equatable()
 
-        case .meetingMessage(let msg, _):
+        case .meetingMessage(let msg, _, let originTaskID):
             MeetingMessageItemView(
                 message: msg,
-                roleDefinition: findRoleDefinition(for: msg.role),
+                roleDefinition: findRoleDefinition(for: msg.role, originTaskID: originTaskID),
                 showHeader: showHeader,
-                onAvatarTap: showHeader ? avatarTap(for: msg.role) : nil,
-                meetingThinkingExpanded: expansionBinding(\.meetingThinking),
-                meetingToolsExpanded: expansionBinding(\.meetingTools)
+                onAvatarTap: showHeader ? avatarTap(for: msg.role, originTaskID: originTaskID) : nil,
+                roleLabelOverride: childRoleLabel(for: msg.role, originTaskID: originTaskID),
+                roleTeamSuffix: childTeamSuffix(for: originTaskID)
             )
+            .equatable()
 
-        case .changeRequest(let request, let targetRoleName):
+        case .changeRequest(let request, let targetRoleName, _):
             ChangeRequestItemView(request: request, targetRoleName: targetRoleName)
+                .equatable()
 
-        case .notification(let stepID, let role, let type, _):
-            let answerBinding = Binding<String>(
-                get: { viewModel.supervisorAnswerText[stepID] ?? "" },
-                set: { viewModel.supervisorAnswerText[stepID] = $0 }
-            )
-            let attachmentsBinding = Binding<[StagedAttachment]>(
-                get: { viewModel.supervisorAnswerAttachments[stepID] ?? [] },
-                set: { viewModel.supervisorAnswerAttachments[stepID] = $0 }
-            )
+        case .notification(let stepID, let role, let type, _, _):
             NotificationItemView(
                 stepID: stepID, role: role, type: type, isChatMode: isChatMode,
                 workFolderURL: store.workFolderURL,
-                thinkingExpanded: expansionBinding(\.thinking),
-                answerText: answerBinding,
-                answerAttachments: attachmentsBinding,
-                isSubmittingAnswer: viewModel.isSubmittingAnswer.contains(stepID),
-                isAutoAnswering: isAutonomousMode,
-                onSubmitAnswer: { viewModel.submitSupervisorAnswer(stepID: stepID, store: store, embedFiles: config.embedFilesInPrompt) },
-                onStageAttachment: { url in
-                    let draftUUID = UUID()
-                    return store.stageAttachment(url: url, draftID: draftUUID)
-                },
-                onRemoveAttachment: { attachment in
-                    store.removeStagedAttachment(attachment)
-                }
+                isAutoAnswering: isAutonomousMode
             )
 
-        case .supervisorTask(_, let taskCreatedAt, let taskText, let clips, let paths, let folderURL):
+        case .supervisorTask(_, let taskCreatedAt, let taskText, let clips, let paths, let folderURL, let originTaskID):
             SupervisorTaskItemView(
                 createdAt: taskCreatedAt,
                 supervisorTask: taskText,
                 clippedTexts: clips,
                 attachmentPaths: paths,
                 workFolderURL: folderURL,
-                onAvatarTap: avatarTap(for: .supervisor)
+                onAvatarTap: avatarTap(for: .supervisor, originTaskID: originTaskID)
             )
+            .equatable()
         }
     }
 
     // MARK: - Message Bubble (streaming wrapper)
 
     @ViewBuilder
-    private func messageBubble(msg: LLMMessage, role: Role, stepID: String, showHeader: Bool) -> some View {
-        let isStreaming = streamingManager.isStreaming(messageID: msg.id)
-        let tap = showHeader ? avatarTap(for: role) : nil
+    private func messageBubble(msg: LLMMessage, role: Role, stepID: String, originTaskID: Int, showHeader: Bool) -> some View {
+        // Hoisted outside the TimelineView closure — these don't change per
+        // tick. Pulling them inside would re-walk role/team lookups at 3.3Hz.
+        let tap = showHeader ? avatarTap(for: role, originTaskID: originTaskID) : nil
+        let labelOverride = childRoleLabel(for: role, originTaskID: originTaskID)
+        let teamSuffix = childTeamSuffix(for: originTaskID)
+        let resolvedDef = findRoleDefinition(for: role, originTaskID: originTaskID)
+        // Schedule re-arms only on parent body re-eval; capture-at-parent
+        // is correct here. The per-tick `snapshot.isStreaming` below reads
+        // live so the streaming → committed transition doesn't lag behind
+        // `streamingManager.commit` for up to one tick.
+        let scheduleIsStreaming = streamingManager.isStreaming(messageID: msg.id)
+        // Hoisted outside the TimelineView for the same reason as
+        // `scheduleIsStreaming`: a per-bubble value invariant across heartbeat
+        // ticks; recomputed on parent body re-eval via `runDataVersion`.
+        let isImplicitStreamTarget = Self.resolveImplicitStreamTarget(
+            stepID: stepID,
+            messageID: msg.id,
+            isPreviewTarget: scheduleIsStreaming,
+            allSteps: viewModel.cachedAllSteps
+        )
+        // During NSWindow live-resize, stretch the streaming heartbeat to
+        // effectively infinity so the TimelineView arm is preserved (per
+        // the structural-identity invariant documented below) but no new
+        // ticks are queued. Per-bubble width re-measure via
+        // `SelectableMessageText.sizeThatFits` still runs on every resize
+        // delta, but the bubble's content snapshot stays frozen — no
+        // streaming churn compounding the resize cost.
+        let streamingInterval = Self.resolveStreamingInterval(
+            isResizing: resizeMonitor.isResizing,
+            reduceMotion: reduceMotion
+        )
+        let schedule = BubbleSchedule(
+            isStreaming: scheduleIsStreaming,
+            streamingInterval: streamingInterval
+        )
 
-        if isStreaming {
-            TimelineView(.periodic(from: .now, by: reduceMotion ? 1.0 : 0.15)) { _ in
-                MessageBubbleView(
-                    message: msg, role: role,
-                    roleDefinition: findRoleDefinition(for: role),
-                    content: streamingManager.streamingContent(for: stepID) ?? "",
-                    thinking: streamingManager.streamingThinking(for: stepID),
-                    processingProgress: streamingManager.processingProgress[stepID],
-                    isStreaming: true,
-                    showHeader: showHeader,
-                    thinkingExpandedByDefault: config.thinkingExpandedByDefault,
-                    onAvatarTap: tap,
-                    thinkingExpanded: expansionBinding(\.thinking)
-                )
-            }
-        } else {
+        // Empty `.supervisorMessage` C4-race turns are filtered at
+        // `ActivityFeedBuilder.shouldSuppressEmptySupervisorMessage` so the
+        // dispatcher renders one structural slot — `MessageBubbleView` —
+        // unconditionally. Crossing two `_ConditionalContent` arms would
+        // remount `SelectableMessageText` on the streaming → committed flip
+        // and defeat the append-only optimization.
+        TimelineView(schedule) { _ in
+            let snapshot = StreamingSnapshot(
+                isStreaming: streamingManager.isStreaming(messageID: msg.id),
+                content: streamingManager.streamingContent(for: stepID),
+                thinking: streamingManager.streamingThinking(for: stepID),
+                processingProgress: streamingManager.processingProgress[stepID],
+                hasStreamActivity: streamingManager.hasReceivedStreamActivity(for: stepID)
+            )
+            let inputs = Self.resolveBubbleInputs(msg: msg, streaming: snapshot)
+            // `.equatable()` applied unconditionally rather than gated on
+            // `inputs.isStreaming`. Reason: gating would require a
+            // `_ConditionalContent` branch around the bubble, which would
+            // remount `SelectableMessageText` on the streaming → committed
+            // flip and defeat the append-only optimization (see the
+            // structural-identity comment above). The cost of an extra
+            // `==` per streaming tick is a handful of string compares;
+            // the cost of remounting NSTextView is full TextKit re-shape.
+            // For committed bubbles `==` returns true and SwiftUI skips
+            // the entire subtree — the actual goal of this change.
             MessageBubbleView(
                 message: msg, role: role,
-                roleDefinition: findRoleDefinition(for: role),
-                // `displayContent` strips the "Supervisor:\n" header for
-                // supervisor-injected turns — the role name is already in the
-                // bubble header, so the prefix would duplicate attribution.
-                content: msg.displayContent,
-                thinking: msg.thinking,
-                processingProgress: nil,
-                isStreaming: false,
+                roleDefinition: resolvedDef,
+                content: inputs.contentForBubble,
+                thinking: inputs.thinkingForBubble,
+                processingProgress: inputs.processingProgress,
+                hasStreamActivity: inputs.hasStreamActivity,
+                isStreaming: inputs.isStreaming,
+                isImplicitStreamTarget: isImplicitStreamTarget,
                 showHeader: showHeader,
-                thinkingExpandedByDefault: config.thinkingExpandedByDefault,
                 onAvatarTap: tap,
-                thinkingExpanded: expansionBinding(\.thinking)
+                roleLabelOverride: labelOverride,
+                roleTeamSuffix: teamSuffix,
+                attachmentPaths: inputs.attachmentPaths,
+                clippedTexts: inputs.clippedTexts,
+                workFolderURL: store.workFolderURL
+            )
+            .equatable()
+        }
+    }
+
+    /// Visible-message filter mirrors `ActivityFeedBuilder.emitItems` —
+    /// pinned by `testReturnsTrue_whenLatestVisibleMessage_evenIfToolTurnHasLaterTimestamp`.
+    static func resolveImplicitStreamTarget(
+        stepID: String,
+        messageID: UUID,
+        isPreviewTarget: Bool,
+        allSteps: [StepExecution]
+    ) -> Bool {
+        if isPreviewTarget { return false }
+        guard let step = allSteps.first(where: { $0.id == stepID }) else { return false }
+        guard step.status == .running else { return false }
+        let visible = step.llmConversation.filter { $0.role != .system && $0.role != .tool }
+        guard let latest = visible.max(by: { $0.createdAt < $1.createdAt }) else { return false }
+        return latest.id == messageID
+    }
+
+    // MARK: - Bubble inputs (testable resolver)
+
+    /// Per-tick inputs for `MessageBubbleView`. The two cases mirror the
+    /// two states the dispatcher resolves:
+    /// - `.streaming` carries content/thinking + progress indicators; never
+    ///   carries attachments (those belong to the committed turn only).
+    /// - `.committed` carries content/thinking + attachments/clips; never
+    ///   carries `processingProgress` or `hasStreamActivity`.
+    /// The discriminated union prevents illegal cross-mode field leakage
+    /// at compile time (no "streaming bubble with attachments").
+    enum BubbleInputs: Equatable {
+        case streaming(
+            content: String,
+            thinking: String?,
+            processingProgress: Double?,
+            hasStreamActivity: Bool
+        )
+        case committed(
+            content: String,
+            thinking: String?,
+            attachmentPaths: [String],
+            clippedTexts: [String]
+        )
+
+        var isStreaming: Bool {
+            if case .streaming = self { return true }
+            return false
+        }
+
+        // Case-derived accessors so `MessageBubbleView` has one call site.
+        // Streaming-only fields return their genuine empty value when the
+        // committed case is asked, and vice versa — never a sentinel.
+        var contentForBubble: String {
+            switch self {
+            case .streaming(let c, _, _, _): return c
+            case .committed(let c, _, _, _): return c
+            }
+        }
+
+        var thinkingForBubble: String? {
+            switch self {
+            case .streaming(_, let t, _, _): return t
+            case .committed(_, let t, _, _): return t
+            }
+        }
+
+        var processingProgress: Double? {
+            switch self {
+            case .streaming(_, _, let p, _): return p
+            case .committed: return nil
+            }
+        }
+
+        var hasStreamActivity: Bool {
+            switch self {
+            case .streaming(_, _, _, let a): return a
+            case .committed: return false
+            }
+        }
+
+        var attachmentPaths: [String] {
+            switch self {
+            case .streaming: return []
+            case .committed(_, _, let p, _): return p
+            }
+        }
+
+        var clippedTexts: [String] {
+            switch self {
+            case .streaming: return []
+            case .committed(_, _, _, let c): return c
+            }
+        }
+    }
+
+    /// Pure snapshot of streaming state passed into the static resolver,
+    /// so tests don't need to touch `StreamingPreviewManager`.
+    struct StreamingSnapshot: Equatable {
+        let isStreaming: Bool
+        let content: String?
+        let thinking: String?
+        let processingProgress: Double?
+        let hasStreamActivity: Bool
+    }
+
+    /// Adaptive `TimelineSchedule`:
+    /// - Streaming: emits at `streamingInterval` (3.3 Hz at 0.3s). Hot
+    ///   path drives `MessageBubbleView` re-evaluation so token deltas
+    ///   from `StreamingPreviewManager` (which is `@ObservationIgnored`)
+    ///   propagate to the bubble.
+    /// - Committed: emits exactly one entry, then terminates — no timer
+    ///   heartbeat. Body re-evaluations come from parent state changes.
+    ///
+    /// Single concrete schedule type means a single `TimelineView` generic
+    /// across both states, which preserves SwiftUI structural identity at
+    /// the streaming → committed transition. `Equatable` synthesis lets
+    /// SwiftUI's view diff fast-path skip TimelineView re-arming when
+    /// neither field changed.
+    struct BubbleSchedule: TimelineSchedule, Equatable {
+        let isStreaming: Bool
+        let streamingInterval: TimeInterval
+
+        func entries(from startDate: Date, mode: TimelineScheduleMode) -> Entries {
+            Entries(
+                startDate: startDate,
+                isStreaming: isStreaming,
+                interval: streamingInterval
             )
         }
+
+        nonisolated struct Entries: Sequence, IteratorProtocol {
+            let startDate: Date
+            let isStreaming: Bool
+            let interval: TimeInterval
+            var iteration: Int = 0
+
+            mutating func next() -> Date? {
+                guard isStreaming else {
+                    // Committed bubbles emit exactly one entry, then end.
+                    if iteration == 0 {
+                        iteration = 1
+                        return startDate
+                    }
+                    return nil
+                }
+                let entry = startDate.addingTimeInterval(Double(iteration) * interval)
+                iteration += 1
+                return entry
+            }
+        }
+    }
+
+    /// Resolves a per-tick `BubbleInputs` from `(msg, streaming snapshot)`.
+    /// Static + injectable snapshot so it's callable from XCTest.
+    ///
+    /// For `.supervisorMessage` turns (queued chat delivery +
+    /// `forward_to_team` injections — both producers tag with the same
+    /// context), strips the embedded `## Attached Files` /
+    /// `## Clipped Text` markers and surfaces their payloads as
+    /// thumbnail cards via the same `ReadOnlyAttachmentGrid` used by
+    /// `SupervisorTaskItemView` and `SupervisorInputCard`. Order
+    /// matters: `displayContent` first strips the leading
+    /// `Supervisor:\n` attribution prefix, then `stripAttachedFiles`
+    /// Streaming tick interval for `BubbleSchedule`. Three-way table:
+    ///
+    /// | isResizing | reduceMotion | interval                  | rationale |
+    /// |------------|--------------|---------------------------|-----------|
+    /// | true       | any          | `.greatestFiniteMagnitude`| Freeze: TimelineView arm preserved (structural identity invariant) but no new ticks fire while the user drags the window. |
+    /// | false      | true         | 1.0                       | Slower tick (1 Hz) for users with Reduce Motion — visible streaming progress without churn. |
+    /// | false      | false        | 0.3                       | Default 3.3 Hz heartbeat — fast enough that token deltas feel live, slow enough to avoid LazyVStack thrash. |
+    ///
+    /// `nonisolated` because the math is pure — tests pin the truth table
+    /// without instantiating the view. Pinned by `StreamingIntervalResolverTests`.
+    nonisolated static func resolveStreamingInterval(
+        isResizing: Bool,
+        reduceMotion: Bool
+    ) -> TimeInterval {
+        if isResizing { return .greatestFiniteMagnitude }
+        return reduceMotion ? 1.0 : 0.3
+    }
+
+    /// scans the remainder for marker sections.
+    static func resolveBubbleInputs(msg: LLMMessage, streaming: StreamingSnapshot) -> BubbleInputs {
+        if streaming.isStreaming {
+            return .streaming(
+                content: streaming.content ?? "",
+                thinking: streaming.thinking,
+                processingProgress: streaming.processingProgress,
+                hasStreamActivity: streaming.hasStreamActivity
+            )
+        }
+        let isSupervisorMsg = msg.sourceContext == .supervisorMessage
+        let inputs = ActivityFeedBuilder.bubbleDisplayInputs(
+            raw: msg.displayContent,
+            isSupervisorMessage: isSupervisorMsg
+        )
+        return .committed(
+            content: inputs.text,
+            thinking: msg.thinking,
+            attachmentPaths: inputs.paths,
+            clippedTexts: inputs.clippedTexts
+        )
     }
 }
 

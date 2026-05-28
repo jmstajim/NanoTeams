@@ -1,5 +1,20 @@
 import Foundation
 
+/// Thread-safe once-flag used by `LLMExecutionService.awaitTaskWithTimeout` to ensure
+/// the continuation resumes exactly once even when both racing child tasks complete.
+nonisolated final class OnceResolver: @unchecked Sendable {
+    private let lock = NSLock()
+    private var resolved = false
+
+    func tryResolve() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if resolved { return false }
+        resolved = true
+        return true
+    }
+}
+
 /// Service responsible for executing LLM steps including streaming, tool iterations,
 /// and step completion handling.
 ///
@@ -7,7 +22,7 @@ import Foundation
 /// - `+Streaming.swift` — LLM streaming, planning phase, post-stream processing
 /// - `+StepLifecycle.swift` — Step execution setup and tool loop orchestration
 /// - `+StepFlowControl.swift` — No-tool-call handling and planning phase management
-/// - `+ToolExecution.swift` — Tool call authorization, caching, execution batch
+/// - `+ToolExecution.swift` — Tool call authorization, identical-write rejection, runtime dispatch
 /// - `+ToolResultProcessing.swift` — Tool result orchestration (iterates, dispatches)
 /// - `+ToolResultDispatching.swift` — Collaboration signal routing + regular tool dispatch
 /// - `+ToolResultSideEffects.swift` — Scratchpad, artifact persistence, event recording
@@ -86,10 +101,42 @@ final class LLMExecutionService {
         ///    (e.g. via `restartRole`) starts clean.
         var consecutiveAdvisoryNoToolTurns: Int = 0
 
+        /// Count of consecutive turns where the model emitted a Harmony tool-call
+        /// marker (`<|call|>…<|end|>`) but the JSON envelope failed to parse —
+        /// classified as `.malformedJSON` by `ToolCallParsingHelpers`. Some models
+        /// have stable per-payload defects (e.g. `qwen3.5-9b-mlx` consistently
+        /// drops the closing escape on `onclick=\"appendOperator('-')\"` HTML
+        /// attributes), and they reproduce the same broken JSON every retry. The
+        /// generic retry nudge can't fix what the model can't see — we'd loop
+        /// indefinitely until `delegate_to_team`'s 30-min timeout fires, surfacing
+        /// only a wall of "Thinking" bubbles to the user.
+        ///
+        /// Reset paths (mirror `consecutiveDriftTurnCount`):
+        /// 1. Tool calls about to execute — the model produced a parseable call
+        ///    (`runOneLLMToolIteration` immediately before `executeToolCalls`).
+        /// 2. Inside the supervisor-escalation branch itself, so a post-supervisor
+        ///    restart starts clean.
+        /// 3. `cleanup()`.
+        ///
+        /// Only `.malformedJSON` increments — `.missingToolName` is a different
+        /// recoverable defect with its own targeted nudge that usually self-corrects
+        /// on the next attempt.
+        var consecutiveHarmonyParseFailureCount: Int = 0
+
+        /// In-flight detached tool-batch task spawned by `executeToolCalls`.
+        /// Stored so cancellation reaches the synchronous handler chain
+        /// (`ToolRuntime.executeAll` observes `Task.isCancelled` between calls;
+        /// `ProcessRunner.run` does the same in its cooperative wait). Without
+        /// the handle, `Task.detached` is unstructured and a paused run can't
+        /// stop in-flight subprocesses or file I/O.
+        var currentToolBatchTask: Task<[ToolExecutionResult], Never>?
+
         /// Cancels the running task and resets all fields to defaults.
         mutating func cleanup() {
             runningTask?.cancel()
             runningTask = nil
+            currentToolBatchTask?.cancel()
+            currentToolBatchTask = nil
             planMessageIndex = nil
             memoriesMessageIndex = nil
             memoriesVersion = 0
@@ -99,6 +146,7 @@ final class LLMExecutionService {
             finishRequested = false
             consecutiveDriftTurnCount = 0
             consecutiveAdvisoryNoToolTurns = 0
+            consecutiveHarmonyParseFailureCount = 0
         }
     }
 
@@ -107,6 +155,11 @@ final class LLMExecutionService {
     weak var delegate: LLMExecutionDelegate?
     /// All per-step execution state. Keyed by stepID. Entry present iff step is executing.
     var executionStates: [String: StepExecutionState] = [:]
+    /// Team IDs for which we have already surfaced the "designated coordinator
+    /// no longer exists" info message. Throttles
+    /// `reportOrphanCoordinatorIfNeeded` to one notification per team per
+    /// service lifetime so the banner doesn't spam on every meeting.
+    var orphanCoordinatorReportedTeams: Set<NTMSID> = []
     let repository: any NTMSRepositoryProtocol
     let artifactService: ArtifactService
     let harmonyParser: HarmonyToolCallParser
@@ -115,6 +168,16 @@ final class LLMExecutionService {
     func clearRunningTask(stepID: String) {
         executionStates[stepID]?.cleanup()
         executionStates[stepID] = nil
+    }
+
+    /// Centralized reset for retry-cap counters that fire when the model produced a
+    /// parseable tool call (the "drift" / "malformed-JSON" streaks are broken).
+    /// Called from `runOneLLMToolIteration` immediately before `executeToolCalls`.
+    /// Centralized so a refactor that accidentally drops one of the resets in the
+    /// inline path is caught by tests targeting this function.
+    func resetCountersOnParseableToolCall(stepID: String) {
+        executionStates[stepID]?.consecutiveDriftTurnCount = 0
+        executionStates[stepID]?.consecutiveHarmonyParseFailureCount = 0
     }
 
     /// Returns the taskID associated with a running step.
@@ -146,17 +209,64 @@ final class LLMExecutionService {
 
     // MARK: - Public API
 
-    /// Cancels execution for a specific step.
-    func cancelStepExecution(stepID: String) {
-        executionStates[stepID]?.cleanup()
+    /// Cancels execution for a specific step. Async because we wait for the cancelled
+    /// task's catch handler to run — that's where partial streaming content is committed
+    /// (via `commitStreamingContent` → `delegate.commitStreaming`) and token usage is
+    /// persisted (via `persistTokenUsage`). Both lookups go through `taskIDForStep`,
+    /// which reads `executionStates[stepID]?.taskID`, so we must NOT clear the entry
+    /// before the catch handler completes.
+    ///
+    /// The wait is bounded by `LLMConstants.cancelHandlerTimeoutSeconds`. If the catch
+    /// handler stalls (e.g. blocked disk I/O during `persistTokenUsage`), we surface a
+    /// banner and proceed to teardown so the user isn't permanently frozen on Pause —
+    /// the orphan task continues running but its mutations land on the (possibly
+    /// already-replaced) in-memory snapshot, which is harmless.
+    func cancelStepExecution(stepID: String) async {
+        let runningTask = executionStates[stepID]?.runningTask
+        runningTask?.cancel()
+        if let runningTask {
+            let finished = await Self.awaitTaskWithTimeout(
+                runningTask, seconds: LLMConstants.cancelHandlerTimeoutSeconds)
+            if !finished {
+                delegate?.setLastErrorMessageForUI(
+                    "Pause: cancellation handler timed out after \(Int(LLMConstants.cancelHandlerTimeoutSeconds))s — partial content may not be persisted."
+                )
+            }
+        }
         executionStates[stepID] = nil
         delegate?.clearStreamingPreview(stepID: stepID)
     }
 
+    /// Races `task.value` against a sleep timeout, returning `true` if the task finished
+    /// first. `Task<Void, Never>.value` doesn't honor cancellation propagation, so we use
+    /// a once-resolver to ensure the continuation resumes exactly once even when both
+    /// child tasks eventually complete.
+    nonisolated static func awaitTaskWithTimeout(
+        _ task: Task<Void, Never>,
+        seconds: TimeInterval
+    ) async -> Bool {
+        let resolver = OnceResolver()
+        return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+            Task {
+                await task.value
+                if resolver.tryResolve() {
+                    cont.resume(returning: true)
+                }
+            }
+            Task {
+                try? await Task.sleep(for: .seconds(seconds))
+                if resolver.tryResolve() {
+                    cont.resume(returning: false)
+                }
+            }
+        }
+    }
+
     /// Cancels all running step executions.
     func cancelAllExecutions() {
-        for (stepID, var state) in executionStates {
+        for (stepID, state) in executionStates {
             state.runningTask?.cancel()
+            state.currentToolBatchTask?.cancel()
             delegate?.clearStreamingPreview(stepID: stepID)
         }
         executionStates.removeAll()
@@ -192,7 +302,7 @@ final class LLMExecutionService {
     /// - `performStreamingCall` — executes the LLM streaming call and collects tokens
     /// - `processStreamingResult` — appends messages and detects completion signals
     /// - `handleNoToolCalls` — handles missing tool calls (learning + retry)
-    /// - `executeToolCalls` — executes tools with caching
+    /// - `executeToolCalls` — executes tools through `ToolRuntime`
     /// - `processToolResults` — processes results (teammate, meeting, scratchpad, errors)
     /// - `handleSupervisorAutoAnswer` — auto-answers Supervisor questions in autonomous mode
     /// - `injectMemories` — keeps the LLM oriented with tag index and plan context
@@ -209,7 +319,7 @@ final class LLMExecutionService {
         stepIndex: Int,
         supervisorMode: SupervisorMode,
         conversationMessages: inout [ChatMessage],
-        memory: ToolCallCache,
+        tracker: ToolCallTracker,
         memoryStore: MemoryTagStore,
         iterationNumber: Int,
         session: inout LLMSession?,
@@ -232,7 +342,7 @@ final class LLMExecutionService {
             roleForMessage: roleForMessage,
             tools: tools,
             step: step,
-            memory: memory,
+            tracker: tracker,
             conversationMessages: &conversationMessages,
             roleDefinition: roleDefinition
         )
@@ -319,15 +429,18 @@ final class LLMExecutionService {
                 task: task,
                 runIndex: runIndex,
                 stepIndex: stepIndex,
-                memory: memory,
+                tracker: tracker,
                 roleDefinition: roleDefinition,
                 conversationMessages: &conversationMessages
             )
         }
 
-        // 5. Execute tool calls (with caching + authorization)
-        // Reset drift counter: the model is acting, not just reasoning.
-        executionStates[stepID]?.consecutiveDriftTurnCount = 0
+        // 5. Execute tool calls (authorization + identical-write guard)
+        // Reset drift + Harmony parse-failure counters: the model is acting and
+        // produced a parseable tool call. Centralized so a refactor that drops
+        // the call here is also detected by `LLMExecutionServiceParseFailureCapTests`
+        // (regression: T1 — the helper-only reset was not exercising this prod path).
+        resetCountersOnParseableToolCall(stepID: stepID)
         // Reset advisory no-tool-call counter only when at least one tool call is
         // *productive*. `ask_supervisor` doesn't qualify under autonomous supervisor
         // mode — it gets auto-answered, and the model can ping itself in a loop with
@@ -347,22 +460,22 @@ final class LLMExecutionService {
             executionStates[stepID]?.consecutiveAdvisoryNoToolTurns = 0
         }
         let allowedToolNames = Set(toolsForIteration.map(\.name))
-        let batch = executeToolCalls(
+        let toolResults = await executeToolCalls(
             resolvedToolCalls: streamResult.resolvedToolCalls,
             allowedToolNames: allowedToolNames,
             runtime: runtime,
-            memory: memory,
+            tracker: tracker,
             task: task,
             runIndex: runIndex,
             roleID: step.effectiveRoleID
         )
 
-        toolObserver?(streamResult.resolvedToolCalls, batch.results)
+        toolObserver?(streamResult.resolvedToolCalls, toolResults)
 
         // 6. Process tool results (teammate, meeting, scratchpad, errors, learning)
         let outcome = await processToolResults(
             resolvedToolCalls: streamResult.resolvedToolCalls,
-            results: batch.results,
+            results: toolResults,
             stepID: stepID,
             roleForMessage: roleForMessage,
             task: task,
@@ -371,10 +484,9 @@ final class LLMExecutionService {
             assistantContent: streamResult.assistantContent,
             client: client,
             config: config,
-            memory: memory,
+            tracker: tracker,
             memoryStore: memoryStore,
             iterationNumber: iterationNumber,
-            cachedIndices: batch.cachedIndices,
             conversationMessages: &conversationMessages,
             networkLogger: networkLogger
         )
@@ -416,7 +528,7 @@ final class LLMExecutionService {
         // 9. Check for looping patterns
         await checkAndInjectLoopWarning(
             stepID: stepID,
-            memory: memory,
+            tracker: tracker,
             conversationMessages: &conversationMessages
         )
 
@@ -456,6 +568,41 @@ final class LLMExecutionService {
         return #"{"ok":true,"tool":"\#(toolName)","response":"(response available)"}"#
     }
 
+    /// Parses the top-level `ok` field of a tool envelope JSON string into a
+    /// three-state result. Used to reflect deferred collaboration-handler
+    /// outcomes (delegation, teammate, meeting, change request) onto the
+    /// persisted `StepToolCall.isError` so the activity-feed card renders red
+    /// on failure instead of the green ✓ from the placeholder result.
+    ///
+    /// Three states are distinct on purpose:
+    /// - `.success` on `{"ok": true, ...}` — leave placeholder as-is.
+    /// - `.failure` on `{"ok": false, ...}` — caller flips `isError = true`.
+    /// - `.indeterminate` on malformed JSON, missing `ok` field, non-Bool
+    ///   `ok`, or non-object root — treat as success (no UI change). Every
+    ///   collaboration handler routes through `Tools+Envelope.makeSuccessResult`
+    ///   / `makeErrorResult`, so an unreadable envelope means a parser miss,
+    ///   never a real operation failure.
+    ///
+    /// Caller pattern: `if envelopeStatus(response) == .failure { ... }`.
+    /// A bare `if !envelopeStatus(...).isSuccess` would mis-classify
+    /// `.indeterminate` as failure — use explicit `== .failure` checks.
+    func envelopeStatus(_ json: String) -> EnvelopeStatus {
+        guard let data = json.data(using: .utf8) else { return .indeterminate }
+        guard let parsed = try? JSONSerialization.jsonObject(with: data) else { return .indeterminate }
+        guard let dict = parsed as? [String: Any] else { return .indeterminate }
+        guard let ok = dict["ok"] as? Bool else { return .indeterminate }
+        return ok ? .success : .failure
+    }
+
     nonisolated deinit {}
+}
+
+/// Three-state outcome of `LLMExecutionService.envelopeStatus(_:)`. See that
+/// method for semantics. Defined at file scope so test fixtures and the
+/// dispatcher can pattern-match without re-stating the cases.
+enum EnvelopeStatus: Hashable {
+    case success
+    case failure
+    case indeterminate
 }
 

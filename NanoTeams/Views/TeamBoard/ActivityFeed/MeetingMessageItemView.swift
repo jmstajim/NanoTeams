@@ -1,17 +1,24 @@
 import SwiftUI
 
-/// Renders a single team meeting message with thinking and tool summaries sections.
+/// Renders a single team meeting message. Thinking and tool summaries are
+/// compact inline rows that open standalone windows on tap — no inline
+/// expansion or chevrons.
 struct MeetingMessageItemView: View {
     let message: TeamMessage
     let roleDefinition: TeamRoleDefinition?
     let showHeader: Bool
     var onAvatarTap: (() -> Void)? = nil
-    @Binding var meetingThinkingExpanded: Set<UUID>
-    @Binding var meetingToolsExpanded: Set<UUID>
+    /// Override role display name. `nil` falls back to roleDefinition.name.
+    var roleLabelOverride: String? = nil
+    /// Optional ` from <Team>` suffix in secondary gray for delegated
+    /// child-team items.
+    var roleTeamSuffix: String? = nil
+
+    @Environment(\.openWindow) private var openWindow
 
     // MARK: - Derived
 
-    private var roleName: String { roleDefinition?.name ?? message.role.displayName }
+    private var roleName: String { roleLabelOverride ?? roleDefinition?.name ?? message.role.displayName }
     private var tintColor: Color { roleDefinition?.resolvedTintColor ?? message.role.tintColor }
 
     // MARK: - Body
@@ -24,7 +31,7 @@ struct MeetingMessageItemView: View {
             VStack(alignment: .leading, spacing: Spacing.xs) {
                 if showHeader {
                     HStack(spacing: 6) {
-                        Text(roleName).font(.caption.weight(.semibold)).foregroundStyle(tintColor)
+                        roleNameText(roleName: roleName, teamSuffix: roleTeamSuffix, tintColor: tintColor)
                         messageTypeTag(message.messageType)
                         Spacer()
                         Text(message.createdAt.formatted(date: .omitted, time: .shortened))
@@ -33,11 +40,11 @@ struct MeetingMessageItemView: View {
                 }
 
                 if let thinking = message.thinking, !thinking.isEmpty {
-                    thinkingSection(thinking: thinking, msgID: message.id)
+                    thinkingRow(thinking: thinking)
                 }
 
                 if let toolSummaries = message.toolSummaries, !toolSummaries.isEmpty {
-                    toolSummariesSection(summaries: toolSummaries, msgID: message.id)
+                    toolSummariesRow(summaries: toolSummaries)
                 }
 
                 contentBubble
@@ -48,9 +55,9 @@ struct MeetingMessageItemView: View {
     // MARK: - Content Bubble
 
     private var contentBubble: some View {
-        Text(message.content)
-            .font(.body)
-            .textSelection(.enabled)
+        // NSTextView-backed body for stable height + bounded layout cost on
+        // long meeting messages. Same rationale as `MessageBubbleView`.
+        SelectableMessageText(content: message.content)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(ActivityCardTokens.cardPadding)
@@ -60,152 +67,77 @@ struct MeetingMessageItemView: View {
             )
     }
 
-    // MARK: - Thinking Section
+    // MARK: - Thinking Row
 
-    private func thinkingSection(thinking: String, msgID: UUID) -> some View {
-        let isExpanded = meetingThinkingExpanded.contains(msgID)
-
-        return VStack(alignment: .leading, spacing: Spacing.xs) {
+    private func thinkingRow(thinking: String) -> some View {
+        Button {
+            openWindow(value: ActivityDetailWindow.meetingThinking(
+                id: message.id,
+                roleName: roleName,
+                text: thinking
+            ))
+        } label: {
             HStack(spacing: Spacing.xs) {
-                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.tertiary)
                 Text("Thinking")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.tertiary)
                 Spacer()
             }
-
-            if isExpanded {
-                Text(thinking)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.leading, Spacing.s)
-                    .overlay(alignment: .leading) {
-                        Rectangle()
-                            .fill(Colors.neutral)
-                            .frame(width: 1.5)
-                    }
-            }
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                if isExpanded {
-                    meetingThinkingExpanded.remove(msgID)
-                } else {
-                    meetingThinkingExpanded.insert(msgID)
-                }
-            }
-        }
-    }
-
-    // MARK: - Tool Summaries Section
-
-    @ViewBuilder
-    private func toolSummariesSection(summaries: [MeetingToolSummary], msgID: UUID) -> some View {
-        let isExpanded = meetingToolsExpanded.contains(msgID)
-
-        if summaries.count == 1, let summary = summaries.first {
-            // Single tool call — flat row matching ToolCallItemView style
-            singleToolRow(summary: summary, msgID: msgID, isExpanded: isExpanded)
-        } else {
-            // Multiple tool calls — card with background/border
-            multipleToolsCard(summaries: summaries, msgID: msgID, isExpanded: isExpanded)
-        }
-    }
-
-    private func singleToolRow(summary: MeetingToolSummary, msgID: UUID, isExpanded: Bool) -> some View {
-        Button {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                if isExpanded {
-                    meetingToolsExpanded.remove(msgID)
-                } else {
-                    meetingToolsExpanded.insert(msgID)
-                }
-            }
-        } label: {
-            VStack(alignment: .leading, spacing: ActivityCardTokens.contentSpacing) {
-                HStack(spacing: Spacing.s) {
-                    Image(systemName: summary.isError ? "xmark.circle.fill" : "checkmark.circle.fill")
-                        .font(.caption2)
-                        .foregroundStyle(summary.isError ? Colors.error : Colors.success)
-                        .frame(width: 14, height: 14)
-                    Text(summary.toolName)
-                        .font(.caption.weight(.medium).monospaced())
-                        .foregroundStyle(summary.isError ? Colors.error : Colors.success)
-                    Spacer()
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.caption2)
-                        .foregroundStyle(.quaternary)
-                }
-
-                if isExpanded {
-                    VStack(alignment: .leading, spacing: 2) {
-                        if !summary.arguments.isEmpty {
-                            Text(summary.arguments.prefix(200))
-                                .font(.caption2.monospaced()).foregroundStyle(.tertiary).lineLimit(2)
-                        }
-                        if !summary.result.isEmpty {
-                            Text(summary.result.prefix(300))
-                                .font(.caption2.monospaced()).foregroundStyle(.secondary).lineLimit(3)
-                        }
-                    }
-                    .padding(.leading, 4)
-                }
-            }
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
 
-    private func multipleToolsCard(summaries: [MeetingToolSummary], msgID: UUID, isExpanded: Bool) -> some View {
-        Button {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                if isExpanded {
-                    meetingToolsExpanded.remove(msgID)
-                } else {
-                    meetingToolsExpanded.insert(msgID)
-                }
-            }
-        } label: {
-            VStack(alignment: .leading, spacing: ActivityCardTokens.contentSpacing) {
-                HStack(spacing: Spacing.s) {
-                    Image(systemName: "wrench.and.screwdriver").font(.caption).foregroundStyle(Colors.purple)
-                    Text("\(summaries.count) tool calls")
-                        .font(.caption.weight(.medium).monospaced())
-                        .foregroundStyle(Colors.purple)
-                    Spacer()
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.caption2).foregroundStyle(.quaternary)
-                }
+    // MARK: - Tool Summaries Row
 
-                if isExpanded {
-                    ForEach(summaries) { summary in
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 4) {
-                                Image(systemName: summary.isError ? "xmark.circle.fill" : "checkmark.circle.fill")
-                                    .font(.caption2)
-                                    .foregroundStyle(summary.isError ? Colors.error : Colors.success)
-                                Text(summary.toolName)
-                                    .font(.caption.weight(.semibold).monospaced())
-                                    .foregroundStyle(summary.isError ? Colors.error : Colors.success)
-                            }
-                            if !summary.arguments.isEmpty {
-                                Text(summary.arguments.prefix(200))
-                                    .font(.caption2.monospaced()).foregroundStyle(.tertiary).lineLimit(2)
-                            }
-                            if !summary.result.isEmpty {
-                                Text(summary.result.prefix(300))
-                                    .font(.caption2.monospaced()).foregroundStyle(.secondary).lineLimit(3)
-                            }
-                        }
-                        .padding(.leading, 4)
-                    }
-                }
+    @ViewBuilder
+    private func toolSummariesRow(summaries: [MeetingToolSummary]) -> some View {
+        if summaries.count == 1, let summary = summaries.first {
+            singleToolRow(summary: summary)
+        } else {
+            multipleToolsRow(summaries: summaries)
+        }
+    }
+
+    private func singleToolRow(summary: MeetingToolSummary) -> some View {
+        Button {
+            openWindow(value: ActivityDetailWindow.meetingTool(
+                id: summary.id,
+                summary: summary
+            ))
+        } label: {
+            HStack(spacing: Spacing.s) {
+                Image(systemName: summary.isError ? "xmark.circle.fill" : "checkmark.circle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(summary.isError ? Colors.error : Colors.success)
+                    .frame(width: 14, height: 14)
+                Text(summary.toolName)
+                    .font(.caption.weight(.medium).monospaced())
+                    .foregroundStyle(summary.isError ? Colors.error : Colors.success)
+                Spacer()
             }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func multipleToolsRow(summaries: [MeetingToolSummary]) -> some View {
+        Button {
+            openWindow(value: ActivityDetailWindow.meetingTools(
+                id: message.id,
+                summaries: summaries
+            ))
+        } label: {
+            HStack(spacing: Spacing.s) {
+                Image(systemName: "wrench.and.screwdriver")
+                    .font(.caption)
+                    .foregroundStyle(Colors.purple)
+                Text("\(summaries.count) tool calls")
+                    .font(.caption.weight(.medium).monospaced())
+                    .foregroundStyle(Colors.purple)
+                Spacer()
+            }
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
@@ -226,11 +158,37 @@ struct MeetingMessageItemView: View {
     }
 }
 
+// MARK: - Equatable
+
+/// `TeamMessage` is `Identifiable` but not `Hashable`/`Equatable`, so we
+/// hand-compare the fields the body actually reads (`id`, `content`,
+/// `thinking`, `role`, `messageType`, `toolSummaries`). `MeetingToolSummary`
+/// IS `Hashable`, so the array compare is structural — needed because an
+/// in-place `isError` flip (red ↔ green badge) leaves `count` unchanged
+/// and a count-only compare would silently drop the update. `nil` and `[]`
+/// for `toolSummaries` render identically (the body gates on
+/// `!isEmpty`), so we normalize both sides via `?? []` to preserve that
+/// observability — pinned by `testNotEqual_whenToolSummariesNilVsEmpty`.
+/// `onAvatarTap` is intentionally excluded (closures aren't Equatable;
+/// the closure captures only props that ARE in `==`).
+extension MeetingMessageItemView: Equatable {
+    static func == (lhs: MeetingMessageItemView, rhs: MeetingMessageItemView) -> Bool {
+        lhs.message.id == rhs.message.id
+            && lhs.message.content == rhs.message.content
+            && lhs.message.thinking == rhs.message.thinking
+            && lhs.message.role == rhs.message.role
+            && lhs.message.messageType == rhs.message.messageType
+            && (lhs.message.toolSummaries ?? []) == (rhs.message.toolSummaries ?? [])
+            && lhs.roleDefinition?.id == rhs.roleDefinition?.id
+            && lhs.showHeader == rhs.showHeader
+            && lhs.roleLabelOverride == rhs.roleLabelOverride
+            && lhs.roleTeamSuffix == rhs.roleTeamSuffix
+    }
+}
+
 // MARK: - Preview
 
 #Preview("Discussion") {
-    @Previewable @State var thinkingExp: Set<UUID> = []
-    @Previewable @State var toolsExp: Set<UUID> = []
     MeetingMessageItemView(
         message: TeamMessage(
             role: .techLead,
@@ -238,9 +196,7 @@ struct MeetingMessageItemView: View {
             messageType: .proposal
         ),
         roleDefinition: nil,
-        showHeader: true,
-        meetingThinkingExpanded: $thinkingExp,
-        meetingToolsExpanded: $toolsExp
+        showHeader: true
     )
     .padding()
     .frame(width: 500)
@@ -248,55 +204,43 @@ struct MeetingMessageItemView: View {
 }
 
 #Preview("With Thinking") {
-    @Previewable @State var thinkingExp: Set<UUID> = []
-    @Previewable @State var toolsExp: Set<UUID> = []
-    let msgID = UUID()
-    VStack(spacing: 16) {
-        MeetingMessageItemView(
-            message: TeamMessage(
-                id: msgID,
-                role: .productManager,
-                content: "We need to prioritize push notifications first — 80% of our users have the mobile app installed.",
-                messageType: .agreement,
-                thinking: "Looking at the analytics data, mobile engagement is significantly higher than email. Push notifications would give us the best ROI for the first milestone."
-            ),
-            roleDefinition: nil,
-            showHeader: true,
-            meetingThinkingExpanded: $thinkingExp,
-            meetingToolsExpanded: $toolsExp
-        )
-    }
+    MeetingMessageItemView(
+        message: TeamMessage(
+            role: .productManager,
+            content: "We need to prioritize push notifications first — 80% of our users have the mobile app installed.",
+            messageType: .agreement,
+            thinking: "Looking at the analytics data, mobile engagement is significantly higher than email."
+        ),
+        roleDefinition: nil,
+        showHeader: true
+    )
     .padding()
     .frame(width: 500)
     .background(Colors.surfacePrimary)
 }
 
 #Preview("With Tool Calls") {
-    @Previewable @State var thinkingExp: Set<UUID> = []
-    @Previewable @State var toolsExp: Set<UUID> = []
     MeetingMessageItemView(
         message: TeamMessage(
             role: .softwareEngineer,
-            content: "I checked the existing codebase — we already have a notification model in the data layer that we can extend.",
+            content: "I checked the existing codebase — we already have a notification model in the data layer.",
             messageType: .discussion,
             toolSummaries: [
                 MeetingToolSummary(
                     toolName: "read_file",
                     arguments: "{\"path\": \"Sources/Models/Notification.swift\"}",
-                    result: "struct Notification: Codable { var id: UUID; var title: String; var body: String }"
+                    result: "struct Notification: Codable { var id: UUID; var title: String }"
                 ),
                 MeetingToolSummary(
                     toolName: "search",
-                    arguments: "{\"pattern\": \"NotificationService\", \"path\": \"Sources/\"}",
-                    result: "Sources/Services/NotificationService.swift:class NotificationService {",
+                    arguments: "{\"pattern\": \"NotificationService\"}",
+                    result: "Sources/Services/NotificationService.swift",
                     isError: false
                 )
             ]
         ),
         roleDefinition: nil,
-        showHeader: true,
-        meetingThinkingExpanded: $thinkingExp,
-        meetingToolsExpanded: $toolsExp
+        showHeader: true
     )
     .padding()
     .frame(width: 500)
@@ -304,18 +248,14 @@ struct MeetingMessageItemView: View {
 }
 
 #Preview("Objection") {
-    @Previewable @State var thinkingExp: Set<UUID> = []
-    @Previewable @State var toolsExp: Set<UUID> = []
     MeetingMessageItemView(
         message: TeamMessage(
             role: .codeReviewer,
-            content: "I'm worried about the scalability of this approach. WebSockets are stateful — if we need to handle 100K concurrent connections, we'll need a dedicated gateway service with proper load balancing.",
+            content: "I'm worried about the scalability of this approach.",
             messageType: .objection
         ),
         roleDefinition: nil,
-        showHeader: true,
-        meetingThinkingExpanded: $thinkingExp,
-        meetingToolsExpanded: $toolsExp
+        showHeader: true
     )
     .padding()
     .frame(width: 500)

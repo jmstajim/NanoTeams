@@ -183,19 +183,87 @@ extension LLMExecutionService {
     // MARK: - Error Guidance
 
     func buildToolErrorGuidance(result: ToolExecutionResult) -> String {
-        let errorDetail: String = {
-            if let dict = JSONUtilities.parseJSONDictionary(result.outputJSON),
-               let errorObj = dict["error"] as? [String: Any],
-               let msg = errorObj["message"] as? String {
-                return msg
-            }
-            if let dict = JSONUtilities.parseJSONDictionary(result.outputJSON),
-               let msg = dict["message"] as? String {
-                return msg
-            }
-            return "unknown error"
+        let dict = JSONUtilities.parseJSONDictionary(result.outputJSON)
+
+        // Two envelope shapes carry the error code in different places:
+        // executor-emitted errors store a top-level string ("tool_not_authorized",
+        // "identical_write_loop"); ToolErrorHandler-emitted errors store a nested
+        // object ({"error":{"code":"INVALID_ARGS",...}}).
+        let errorCode: String? = {
+            if let topLevel = dict?["error"] as? String { return topLevel }
+            if let nested = (dict?["error"] as? [String: Any])?["code"] as? String { return nested }
+            return nil
         }()
-        return "Tool '\(result.toolName)' failed: \(errorDetail). Retry the tool call with the correct arguments."
+
+        // Normalize to lowercase so handler-emitted UPPERCASE codes
+        // (`TOOL_NOT_AUTHORIZED`) and executor-emitted lowercase literals
+        // (`tool_not_authorized`) reach the same branch.
+        switch errorCode?.lowercased() {
+        case "tool_not_authorized":
+            // Args aren't the cause — the tool isn't in this role's schema. The
+            // generic "retry with correct arguments" suffix actively misleads
+            // weaker models into looping on the same unavailable tool.
+            //
+            // Prefer the envelope's `message` field — it carries the scope
+            // distinction the executor and `MeetingToolExecutor` composed
+            // ("for this role" vs "in this meeting"). Synthesizing here would
+            // misreport meeting-scope rejections as role-level rejections,
+            // sending the model to retry outside the meeting context.
+            let toolName = (dict?["tool"] as? String) ?? result.toolName
+            let intro = (dict?["message"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                ?? "Tool '\(toolName)' is not available."
+            return "\(intro) Choose a different tool from the list in your system prompt; do not retry '\(toolName)'."
+
+        case "precondition_failed":
+            // Like `tool_not_authorized`, args aren't the cause — the work
+            // folder lacks a precondition (no .git, no vision model, no
+            // xcode scheme, no opened folder). The LLM can't fix any of
+            // those from inside the role, so retrying with different args
+            // is wasted work. Surface the envelope's actionable message
+            // (it names the missing prerequisite) and tell the model to
+            // pick a different approach.
+            let toolName = (dict?["tool"] as? String) ?? result.toolName
+            let intro = (dict?["message"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                ?? "Tool '\(toolName)' is unavailable."
+            return "\(intro) Do not retry '\(toolName)' — the precondition is set by the work folder, not by your arguments. Pick a different tool or proceed without this step."
+
+        case "identical_write_loop":
+            // The args ARE the rejected duplicate — retrying with the same args
+            // hits the loop guard again. The model needs to verify state, not
+            // re-issue. `"?"` is the executor's sentinel when args lack a
+            // parseable `path`; collapse it to the generic placeholder so the
+            // LLM doesn't see it as a literal path.
+            let path = (dict?["path"] as? String)
+                .flatMap { ($0.isEmpty || $0 == "?") ? nil : $0 }
+            let target = path.map { "'\($0)'" } ?? "the file"
+            return "Identical write to \(target) was already attempted in this step. Read the file's current state to verify whether the change is needed; do not re-issue the same write."
+
+        case "anchor_not_found":
+            // `old_text` didn't match — the file changed since the last read.
+            // Args ARE the cause (stale anchor), but the fix is "re-read", not
+            // "retry with corrected args" out of thin air. The generic suffix
+            // would push the model to fuzz `old_text` blindly instead of
+            // grounding in the file's current content. Path comes from args
+            // (handler envelope doesn't include it in details).
+            let argsDict = JSONUtilities.parseJSONDictionary(result.argumentsJSON)
+            let path = (argsDict?["path"] as? String)
+                .flatMap { $0.isEmpty ? nil : $0 }
+            let target = path.map { "'\($0)'" } ?? "the file"
+            return "old_text not found in \(target) — the content changed since your last read. Re-read the relevant range, then issue a fresh edit using the current text."
+
+        default:
+            let errorObj = dict?["error"] as? [String: Any]
+            let msg = (errorObj?["message"] as? String)
+                ?? (dict?["message"] as? String)
+                ?? "unknown error"
+            // Surface the typed code (when present) so the LLM can disambiguate
+            // recovery — e.g. `DELEGATION_DENIED` (don't retry) vs
+            // `DELEGATION_TIMED_OUT` (maybe retry later) vs `INVALID_ARGS`
+            // (fix args). Only handler-shape envelopes carry `code`; the
+            // legacy `{message:...}` shape gets no prefix to avoid `[]` artifacts.
+            let codePrefix = (errorObj?["code"] as? String).map { "[\($0)] " } ?? ""
+            return "Tool '\(result.toolName)' failed: \(codePrefix)\(msg). Retry the tool call with the correct arguments."
+        }
     }
 
 }

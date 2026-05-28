@@ -50,11 +50,13 @@ extension LLMExecutionService {
 
         let paths = NTMSPaths(workFolderRoot: workFolderRoot)
         let runID = task.runs[runIndex].id
+        // For delegated child tasks, log paths nest under the parent's directory tree.
+        let ancestors = delegate.snapshot?.tasksIndex.ancestorIDs(of: task.id) ?? []
         let networkLogger: NetworkLogger? = delegate.loggingEnabled
-            ? NetworkLogger(logURL: paths.networkLogJSON(taskID: task.id, runID: runID))
+            ? NetworkLogger(logURL: paths.networkLogJSON(taskID: task.id, runID: runID, ancestors: ancestors))
             : nil
         let toolCallsLogURL: URL? = delegate.loggingEnabled
-            ? paths.toolCallsJSONL(taskID: task.id, runID: runID)
+            ? paths.toolCallsJSONL(taskID: task.id, runID: runID, ancestors: ancestors)
             : nil
         let (_, runtime) = ToolRegistry.defaultRegistry(
             workFolderRoot: workFolderRoot, toolCallsLogURL: toolCallsLogURL,
@@ -63,7 +65,8 @@ extension LLMExecutionService {
             readFileMaxLines: delegate.readFileMaxLines,
             searchMaxResults: delegate.searchMaxResults,
             searchContextBefore: delegate.searchContextBefore,
-            searchContextAfter: delegate.searchContextAfter)
+            searchContextAfter: delegate.searchContextAfter
+        )
 
         let fullConversation = buildChatMessages(
             for: task, stepID: stepID, tools: tools, supervisorMode: supervisorMode)
@@ -98,12 +101,10 @@ extension LLMExecutionService {
             var cumulativeUsage = TokenUsage()
 
             do {
-                let role = roleForMessage
-
                 // LLM run with tool loop, capped to prevent infinite cycling.
                 var safetyIterations = 0
                 var conversation: [ChatMessage]
-                let memory = ToolCallCache()
+                let tracker = ToolCallTracker()
                 let memoryStore = MemoryTagStore()
                 var llmErrorCount = 0
                 var session: LLMSession?
@@ -111,6 +112,12 @@ extension LLMExecutionService {
 
                 if hasSupervisorContinuation, let sid = savedSessionID {
                     // Stateful continuation — send only the tool result with the Supervisor's answer.
+                    // The `.supervisorAnswer` LLMMessage was appended to
+                    // `step.llmConversation` atomically by
+                    // `StepMessagingService.answerSupervisorQuestion`, so no
+                    // duplicate append here. (Auto-answer path appends from
+                    // `handleAutoSupervisorAnswer` within the same iteration
+                    // and doesn't re-enter through here.)
                     session = LLMSession(responseID: sid)
                     let answer = step.effectiveSupervisorAnswer ?? ""
                     let answerJSON = self.buildCollaborationToolResult(
@@ -118,13 +125,6 @@ extension LLMExecutionService {
                         response: answer)
                     conversation = [ChatMessage(role: .tool, content: answerJSON)]
                     needsSessionFallback = true
-
-                    // Persist the supervisor answer to llmConversation for UI display
-                    await self.appendLLMMessage(
-                        stepID: stepID, role: .user,
-                        content: "Supervisor answer: \(answer)",
-                        sourceRole: .supervisor,
-                        sourceContext: .supervisorAnswer)
                 } else if hasRevisionContinuation, let sid = savedSessionID,
                           let feedback = step.revisionComment {
                     // Revision continuation — send only the Supervisor's feedback via stateful session.
@@ -180,7 +180,7 @@ extension LLMExecutionService {
                             stepIndex: stepIndex,
                             supervisorMode: supervisorMode,
                             conversationMessages: &conversation,
-                            memory: memory,
+                            tracker: tracker,
                             memoryStore: memoryStore,
                             iterationNumber: safetyIterations,
                             session: &session,
@@ -208,7 +208,7 @@ extension LLMExecutionService {
                         await appendLLMMessage(stepID: stepID, role: .assistant, content: retryNote)
                         ConversationRepairService.repairConversationIfNeeded(&conversation)
                         ConversationRepairService.collapseRedundantAssistantTextRuns(&conversation)
-                        try await Task.sleep(nanoseconds: LLMConstants.llmRetryDelaySeconds * 1_000_000_000)
+                        try await Task.sleep(for: .seconds(LLMConstants.llmRetryDelaySeconds))
                         continue
                     }
                     llmErrorCount = 0
@@ -222,9 +222,19 @@ extension LLMExecutionService {
                         return
                     case .needsSupervisorInput(let question):
                         await self.persistTokenUsage(stepID: stepID, usage: cumulativeUsage)
-                        await self.setNeedsSupervisorInput(
+                        let persisted = await self.setNeedsSupervisorInput(
                             stepID: stepID, question: question,
                             sessionID: session?.responseID)
+                        // Defense-in-depth: the inner caller (handleNoToolCalls cap branches)
+                        // already handles persistence failures; this outer call is the last
+                        // line of defense for ask_supervisor and other direct paths. Without
+                        // this, a silent no-op leaves the engine pinned to .needsSupervisorInput
+                        // with no question and no recovery.
+                        if !persisted {
+                            await self.completeStepFailure(
+                                stepID: stepID,
+                                errorMessage: "Failed to persist Supervisor question; step aborted.")
+                        }
                         return
                     case .continueLoop:
                         continue

@@ -173,11 +173,11 @@ final class ActivityFeedBuilderTests: XCTestCase {
         XCTAssertEqual(result.count, 3)
         assertOrdered(result)
 
-        if case .llmMessage(let msg, _, _) = result[0].item { XCTAssertEqual(msg.content, "First") }
+        if case .llmMessage(let msg, _, _, _) = result[0].item { XCTAssertEqual(msg.content, "First") }
         else { XCTFail("Expected llmMessage at index 0") }
-        if case .llmMessage(let msg, _, _) = result[1].item { XCTAssertEqual(msg.content, "Second") }
+        if case .llmMessage(let msg, _, _, _) = result[1].item { XCTAssertEqual(msg.content, "Second") }
         else { XCTFail("Expected llmMessage at index 1") }
-        if case .llmMessage(let msg, _, _) = result[2].item { XCTAssertEqual(msg.content, "Third") }
+        if case .llmMessage(let msg, _, _, _) = result[2].item { XCTAssertEqual(msg.content, "Third") }
         else { XCTFail("Expected llmMessage at index 2") }
     }
 
@@ -210,17 +210,17 @@ final class ActivityFeedBuilderTests: XCTestCase {
         XCTAssertEqual(result.count, 3)
         assertOrdered(result)
 
-        if case .llmMessage(let msg, let role, _) = result[0].item {
+        if case .llmMessage(let msg, let role, _, _) = result[0].item {
             XCTAssertEqual(msg.content, "PM first")
             XCTAssertEqual(role, .productManager)
         } else { XCTFail("Expected PM message at 0") }
 
-        if case .llmMessage(let msg, let role, _) = result[1].item {
+        if case .llmMessage(let msg, let role, _, _) = result[1].item {
             XCTAssertEqual(msg.content, "SWE second")
             XCTAssertEqual(role, .softwareEngineer)
         } else { XCTFail("Expected SWE message at 1") }
 
-        if case .llmMessage(let msg, let role, _) = result[2].item {
+        if case .llmMessage(let msg, let role, _, _) = result[2].item {
             XCTAssertEqual(msg.content, "PM third")
             XCTAssertEqual(role, .productManager)
         } else { XCTFail("Expected PM message at 2") }
@@ -239,13 +239,13 @@ final class ActivityFeedBuilderTests: XCTestCase {
         XCTAssertEqual(result.count, 4)
         assertOrdered(result)
 
-        if case .toolCall(_, let role, _) = result[0].item { XCTAssertEqual(role, .productManager) }
+        if case .toolCall(_, let role, _, _) = result[0].item { XCTAssertEqual(role, .productManager) }
         else { XCTFail("Expected PM toolCall at 0") }
-        if case .llmMessage(_, let role, _) = result[1].item { XCTAssertEqual(role, .softwareEngineer) }
+        if case .llmMessage(_, let role, _, _) = result[1].item { XCTAssertEqual(role, .softwareEngineer) }
         else { XCTFail("Expected SWE message at 1") }
-        if case .toolCall(_, let role, _) = result[2].item { XCTAssertEqual(role, .softwareEngineer) }
+        if case .toolCall(_, let role, _, _) = result[2].item { XCTAssertEqual(role, .softwareEngineer) }
         else { XCTFail("Expected SWE toolCall at 2") }
-        if case .artifact(_, let role, _) = result[3].item { XCTAssertEqual(role, .productManager) }
+        if case .artifact(_, let role, _, _) = result[3].item { XCTAssertEqual(role, .productManager) }
         else { XCTFail("Expected PM artifact at 3") }
     }
 
@@ -267,7 +267,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
         assertOrdered(result)
 
         let contents = result.compactMap { item -> String? in
-            if case .llmMessage(let msg, _, _) = item.item { return msg.content }
+            if case .llmMessage(let msg, _, _, _) = item.item { return msg.content }
             return nil
         }
         XCTAssertEqual(contents, ["PM", "TL", "SWE", "TL late", "SWE late", "PM late"])
@@ -287,11 +287,11 @@ final class ActivityFeedBuilderTests: XCTestCase {
         XCTAssertEqual(result.count, 3)
         assertOrdered(result)
 
-        if case .llmMessage(let msg, _, _) = result[0].item { XCTAssertEqual(msg.content, "Before") }
+        if case .llmMessage(let msg, _, _, _) = result[0].item { XCTAssertEqual(msg.content, "Before") }
         else { XCTFail("Expected llmMessage at 0") }
-        if case .meetingMessage(let msg, _) = result[1].item { XCTAssertEqual(msg.content, "Meeting msg") }
+        if case .meetingMessage(let msg, _, _) = result[1].item { XCTAssertEqual(msg.content, "Meeting msg") }
         else { XCTFail("Expected meetingMessage at 1") }
-        if case .llmMessage(let msg, _, _) = result[2].item { XCTAssertEqual(msg.content, "After") }
+        if case .llmMessage(let msg, _, _, _) = result[2].item { XCTAssertEqual(msg.content, "After") }
         else { XCTFail("Expected llmMessage at 2") }
     }
 
@@ -304,7 +304,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
         XCTAssertEqual(result.count, 2)
         assertOrdered(result)
 
-        if case .meetingMessage(let msg, _) = result[0].item { XCTAssertEqual(msg.content, "First") }
+        if case .meetingMessage(let msg, _, _) = result[0].item { XCTAssertEqual(msg.content, "First") }
         else { XCTFail("Expected First at 0") }
     }
 
@@ -322,7 +322,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
         assertOrdered(result)
 
         let contents = result.compactMap { item -> String? in
-            if case .meetingMessage(let msg, _) = item.item { return msg.content }
+            if case .meetingMessage(let msg, _, _) = item.item { return msg.content }
             return nil
         }
         XCTAssertEqual(contents, ["A1", "B1", "A2", "B2"])
@@ -370,7 +370,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
 
         // Active notification should NOT be in the timeline (shown as banner instead)
         let notifications = result.filter {
-            if case .notification(_, _, .supervisorInput, _) = $0.item { return true }
+            if case .notification(_, _, .supervisorInput, _, _) = $0.item { return true }
             return false
         }
         XCTAssertEqual(notifications.count, 0, "Active notifications should be excluded from timeline")
@@ -396,7 +396,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
 
         let result = build(steps: [step1, step2])
         let supervisorNotifications = result.filter {
-            if case .notification(_, _, .supervisorInput, _) = $0.item { return true }
+            if case .notification(_, _, .supervisorInput, _, _) = $0.item { return true }
             return false
         }
         XCTAssertEqual(supervisorNotifications.count, 0, "All active notifications excluded from timeline")
@@ -422,7 +422,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
         assertOrdered(result)
 
         let notifItem = result.first {
-            if case .notification(_, _, .supervisorInput, _) = $0.item { return true }
+            if case .notification(_, _, .supervisorInput, _, _) = $0.item { return true }
             return false
         }
         XCTAssertNotNil(notifItem)
@@ -454,12 +454,640 @@ final class ActivityFeedBuilderTests: XCTestCase {
         let result = build(steps: [step1, step2])
 
         let notifications = result.filter {
-            if case .notification(_, _, .supervisorInput, _) = $0.item { return true }
+            if case .notification(_, _, .supervisorInput, _, _) = $0.item { return true }
             return false
         }
         // Only answered notification in timeline; active excluded
         XCTAssertEqual(notifications.count, 1)
         XCTAssertEqual(notifications[0].item.createdAt, date(150), "Answered notification at answer timestamp")
+    }
+
+    /// In-flight window: the engine has appended the `ask_supervisor` tool call but
+    /// has not yet called `setNeedsSupervisorInput`. The docked composer already
+    /// considers the question active (via `activeSupervisorQuestions`'s
+    /// `needsSupervisorInput || trailingIsAsk` rule), so emitting a card would
+    /// duplicate the answering surface. `emitItems` must skip the same window.
+    func testInFlightNotificationExcluded_trailingAskWithoutFlag() {
+        let askCall = makeToolCall(name: TN.askSupervisor, at: date(100), argumentsJSON: #"{"question":"In-flight?"}"#)
+        // Step is `.running` (not yet `.needsSupervisorInput`) and the flag is
+        // false — but the trailing tool call IS ask_supervisor and there's no
+        // supervisorAnswer yet.
+        let step = makeStep(
+            toolCalls: [askCall],
+            status: .running,
+            needsSupervisorInput: false,
+            supervisorAnswer: nil
+        )
+        let result = build(steps: [step])
+
+        let notifications = result.filter {
+            if case .notification(_, _, .supervisorInput, _, _) = $0.item { return true }
+            return false
+        }
+        XCTAssertEqual(
+            notifications.count, 0,
+            "In-flight ask_supervisor (trailing call, no flag, no answer) must be skipped — owned by the docked composer"
+        )
+    }
+
+    /// Trailing call is `ask_supervisor`, no flag, but the answer is already
+    /// committed — this is a fully resolved historical question and SHOULD be
+    /// emitted as a card.
+    func testInFlightFalsePositive_resolvedAnswerStillEmits() {
+        let askCall = makeToolCall(name: TN.askSupervisor, at: date(100), argumentsJSON: #"{"question":"Resolved?"}"#)
+        let answerMsg = makeMessage(role: .user, content: "Supervisor answer: ok", at: date(150),
+                                     sourceContext: .supervisorAnswer)
+        let step = makeStep(
+            messages: [answerMsg],
+            toolCalls: [askCall],
+            status: .running,
+            needsSupervisorInput: false,
+            supervisorAnswer: "ok"
+        )
+        let result = build(steps: [step])
+
+        let notifications = result.filter {
+            if case .notification(_, _, .supervisorInput, _, _) = $0.item { return true }
+            return false
+        }
+        XCTAssertEqual(notifications.count, 1, "Resolved supervisor-input card must still appear in history")
+    }
+
+    /// Multi-round race: supervisor answered iter N, LLM emitted iter N+1's
+    /// `ask_supervisor` (so `appendToolCalls` ran), but `setNeedsSupervisorInput`
+    /// has not yet cleared `step.supervisorAnswer`. The stale answer survives on
+    /// the step field but `answerMessages.count == 1 < askCalls.count == 2`, so
+    /// the trailing call is correctly identified as in-flight. Without this we
+    /// would emit a second card in the feed showing the stale answer attached
+    /// to the new (unanswered) question.
+    func testInFlightSkipsTrailingWhenSupervisorAnswerStaleFromPriorRound() {
+        let ask1 = makeToolCall(name: TN.askSupervisor, at: date(100), argumentsJSON: #"{"question":"first?"}"#)
+        let answer1 = makeMessage(role: .user, content: "Supervisor answer: yes", at: date(150),
+                                   sourceContext: .supervisorAnswer)
+        let ask2 = makeToolCall(name: TN.askSupervisor, at: date(200), argumentsJSON: #"{"question":"second?"}"#)
+        // The stale-`supervisorAnswer` window: iter 1 answered (message in
+        // conversation, step.supervisorAnswer still set), iter 2 ask landed,
+        // setNeedsSupervisorInput has not yet fired for iter 2.
+        let step = makeStep(
+            messages: [answer1],
+            toolCalls: [ask1, ask2],
+            status: .running,
+            needsSupervisorInput: false,
+            supervisorAnswer: "yes"  // stale carry-over from iter 1
+        )
+        let result = build(steps: [step])
+
+        let notifications: [ActivityNotificationType] = result.compactMap {
+            if case .notification(_, _, let type, _, _) = $0.item { return type }
+            return nil
+        }
+        XCTAssertEqual(notifications.count, 1, "Only iter 1 should appear as history; iter 2 is in-flight")
+
+        // Attribution: the surviving card must carry iter 1's question + answer,
+        // NOT iter 2's question (the stale `supervisorAnswer` could be
+        // mis-pinned to ask 2 if the indexing logic regressed — see the
+        // screenshot bug from the original report).
+        guard case let .supervisorInput(question, answer, _, _, _, _) = notifications[0] else {
+            return XCTFail("Expected .supervisorInput notification")
+        }
+        XCTAssertEqual(question, "first?", "Card must carry iter 1's question, NOT iter 2's")
+        XCTAssertEqual(answer, "yes", "Card must carry iter 1's answer, NOT a stale value or `(answered)` placeholder")
+    }
+
+    /// Companion to the above: `activeSupervisorQuestions` must still surface
+    /// iter 2 so the docked composer has a chip — without this fix the dock
+    /// would also miss the trailing call (`supervisorAnswer != nil` guard).
+    func testActiveSupervisorQuestions_returnsTrailingUnansweredEvenWithStaleAnswer() {
+        let ask1 = makeToolCall(name: TN.askSupervisor, at: date(100), argumentsJSON: #"{"question":"first?"}"#)
+        let answer1 = makeMessage(role: .user, content: "Supervisor answer: yes", at: date(150),
+                                   sourceContext: .supervisorAnswer)
+        let ask2 = makeToolCall(name: TN.askSupervisor, at: date(200), argumentsJSON: #"{"question":"second?"}"#)
+        let step = makeStep(
+            messages: [answer1],
+            toolCalls: [ask1, ask2],
+            status: .running,
+            needsSupervisorInput: false,
+            supervisorAnswer: "yes"
+        )
+
+        let active = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+        XCTAssertEqual(active.count, 1, "Trailing unanswered call must be reported as active")
+        XCTAssertEqual(active.first?.question, "second?", "The TRAILING call is the active one, not the answered first")
+    }
+
+    /// Earlier `ask_supervisor` calls in the same step (i.e. non-trailing) are
+    /// always historical and should always be emitted, regardless of whether
+    /// the trailing tool call is ask_supervisor or anything else.
+    func testInFlightDoesNotSuppressEarlierAnsweredCall() {
+        let ask1 = makeToolCall(name: TN.askSupervisor, at: date(100), argumentsJSON: #"{"question":"first?"}"#)
+        let answer1 = makeMessage(role: .user, content: "Supervisor answer: A1", at: date(150),
+                                   sourceContext: .supervisorAnswer)
+        let ask2 = makeToolCall(name: TN.askSupervisor, at: date(200), argumentsJSON: #"{"question":"second?"}"#)
+        // Trailing ask is ask2 (in-flight), but ask1 was already answered.
+        let step = makeStep(
+            messages: [answer1],
+            toolCalls: [ask1, ask2],
+            status: .running,
+            needsSupervisorInput: false,
+            supervisorAnswer: nil
+        )
+        let result = build(steps: [step])
+
+        let notifications = result.filter {
+            if case .notification(_, _, .supervisorInput, _, _) = $0.item { return true }
+            return false
+        }
+        XCTAssertEqual(notifications.count, 1, "Earlier answered ask is historical and still appears")
+    }
+
+    /// `needsSupervisorInput` is an OR'd defensive backstop in the active-input
+    /// predicate. This test exercises it ALONE: the engine flag is set but the
+    /// trailing-unanswered count-check WOULD return false. The backstop covers
+    /// any engine path that flips the flag without a matching `ask_supervisor`
+    /// tool call (e.g. legacy state, recovery flow, manual question injection).
+    ///
+    /// Without the backstop, this test would emit a card AND `activeSupervisorQuestions`
+    /// would return `[]` — both surfaces would silently disagree with the flag.
+    func testNeedsSupervisorInputBackstop_firesAloneWithoutTrailingAsk() {
+        // Tool calls present but trailing call is NOT ask_supervisor.
+        let read = makeToolCall(name: TN.readFile, at: date(100), argumentsJSON: "{}")
+        let ask = makeToolCall(name: TN.askSupervisor, at: date(150), argumentsJSON: #"{"question":"legacy?"}"#)
+        let answer = makeMessage(role: .user, content: "Supervisor answer: yes", at: date(170),
+                                  sourceContext: .supervisorAnswer)
+        // ask was answered (count-check returns false), but the flag is still
+        // set — a stuck-flag legacy state we want to detect, not ignore.
+        let step = makeStep(
+            messages: [answer],
+            toolCalls: [ask, read],  // trailing = read_file, NOT ask
+            status: .needsSupervisorInput,
+            needsSupervisorInput: true,
+            supervisorAnswer: "yes"
+        )
+
+        // Emit-side: the backstop is at the step level, but emit-side skip is
+        // only applied to the LAST ask in the per-call loop. Here the only ask
+        // is at index 0 (which is also `isLast` for the askCalls subset), so
+        // the backstop kicks in and the card is suppressed.
+        let result = build(steps: [step])
+        let notifications = result.filter {
+            if case .notification(_, _, .supervisorInput, _, _) = $0.item { return true }
+            return false
+        }
+        XCTAssertEqual(notifications.count, 0,
+            "Emit-side skip must honor the needsSupervisorInput backstop even when trailing call isn't ask_supervisor")
+
+        // Activity-side: the dock must report a question so the user has a chip.
+        // (Without ask calls there's no `lastCall` to surface, so the dock falls
+        // back to the step's stored question. This test pins that fall-through.)
+        let active = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+        XCTAssertEqual(active.count, 1, "Backstop must surface the active question to the dock too")
+    }
+
+    /// Defensive edge case: a step with zero `ask_supervisor` tool calls but
+    /// the engine flag is set. Real engine paths shouldn't produce this state
+    /// (the flag is set as part of appending an ask call), but the predicate
+    /// must not crash. Asserts no-op for both surfaces, except that the dock
+    /// has the question to surface — confirmed via the backstop above.
+    func testEmptyAskCalls_emitsNoNotifications_evenWithFlagSet() {
+        let step = makeStep(
+            toolCalls: [],
+            status: .needsSupervisorInput,
+            needsSupervisorInput: true,
+            supervisorQuestion: "Manual?",
+            supervisorAnswer: nil
+        )
+        let result = build(steps: [step])
+        let notifications = result.filter {
+            if case .notification(_, _, .supervisorInput, _, _) = $0.item { return true }
+            return false
+        }
+        XCTAssertEqual(notifications.count, 0, "No ask calls → no cards (nothing to enumerate)")
+    }
+
+    func testEmptyAskCalls_activeQuestions_isEmpty_whenFlagAlsoOff() {
+        let step = makeStep(toolCalls: [], status: .running, needsSupervisorInput: false)
+        let active = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+        XCTAssertTrue(active.isEmpty, "Truly idle step is not active")
+    }
+
+    // MARK: - activeSupervisorQuestions edge cases
+
+    /// Transient mid-stream window between rounds — the source of the visual
+    /// flicker reported in the bug screenshot. Sequence:
+    ///   1. Round N-1: `setNeedsSupervisorInput("Q1")` → `supervisorQuestion="Q1"`, `needsSupervisorInput=true`
+    ///   2. User answers → `needsSupervisorInput=false`. `supervisorQuestion="Q1"` STAYS
+    ///      (`StepMessagingService.answerSupervisorQuestion` deliberately doesn't clear it).
+    ///   3. Round N starts. `appendToolCalls(ask("Q2"))` fires → `step.toolCalls.last="Q2"`
+    ///      and `runDataVersion` changes (toolCalls.count grew). Recompute runs.
+    ///   4. BEFORE `setNeedsSupervisorInput("Q2")` lands, the cache sees:
+    ///         `needsSupervisorInput=false`, `supervisorQuestion="Q1"` (stale), trailing ask="Q2".
+    ///   5. `setNeedsSupervisorInput("Q2")` → `supervisorQuestion="Q2"`, `needsSupervisorInput=true`.
+    ///
+    /// Without `needsSupervisorInput` as the gate, step 4 would surface the
+    /// stale "Q1" briefly until step 5 lands — visible as a flash of the
+    /// previous question. The preference for `step.supervisorQuestion` must
+    /// fire only when `setNeedsSupervisorInput` has confirmed it as fresh.
+    func testActiveSupervisorQuestions_transientWindow_staleSupervisorQuestion_doesNotShadowNewToolCall() {
+        let ask1 = makeToolCall(name: TN.askSupervisor, at: date(100), argumentsJSON: #"{"question":"Q1 (prev round)"}"#)
+        let answer1 = makeMessage(
+            role: .user, content: "Supervisor answer: a1", at: date(150),
+            sourceContext: .supervisorAnswer
+        )
+        let ask2 = makeToolCall(name: TN.askSupervisor, at: date(200), argumentsJSON: #"{"question":"Q2 (current round)"}"#)
+
+        let step = makeStep(
+            messages: [answer1],
+            toolCalls: [ask1, ask2],
+            status: .running,
+            // KEY: false, because setNeedsSupervisorInput("Q2") hasn't landed yet.
+            // Q1's `true` was flipped to `false` by the user's answer to Q1.
+            needsSupervisorInput: false,
+            // KEY: still Q1 — answerSupervisorQuestion doesn't clear it,
+            // and setNeedsSupervisorInput("Q2") hasn't fired yet.
+            supervisorQuestion: "Q1 (prev round)",
+            supervisorAnswer: "a1"
+        )
+
+        let active = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+        XCTAssertEqual(active.count, 1, "Trailing-unanswered path activates the step")
+        XCTAssertEqual(
+            active.first?.question, "Q2 (current round)",
+            "In the trailing-unanswered transient window, the new tool-call argument is fresher than the stale supervisorQuestion — needsSupervisorInput must gate the storedQ preference, otherwise the user sees a flash of the previous question."
+        )
+    }
+
+    /// Last-resort fallback: when `step.supervisorQuestion` is nil AND the
+    /// trailing `ask_supervisor` tool call's `argumentsJSON` is unparseable,
+    /// the chip MUST render the literal `"?"` so the user knows there's a
+    /// pending question even if the text is lost. Pinning this prevents a
+    /// regression to `""` (empty chip label, indistinguishable from no
+    /// pending question at all) — the only path that puts a `"?"` in front
+    /// of the user, otherwise untested.
+    func testActiveSupervisorQuestions_nilStoredQuestion_unparseableJSON_fallsBackToQuestionMark() {
+        let askWithBadJSON = makeToolCall(
+            name: TN.askSupervisor, at: date(100),
+            argumentsJSON: "not valid json {"
+        )
+        let step = makeStep(
+            toolCalls: [askWithBadJSON],
+            status: .needsSupervisorInput,
+            needsSupervisorInput: true,
+            supervisorQuestion: nil
+        )
+        let active = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+        XCTAssertEqual(active.count, 1)
+        XCTAssertEqual(
+            active.first?.question, "?",
+            "Last-resort fallback MUST be \"?\" so the user sees a pending-question signal. Empty string would render an invisible chip — regression to silent failure."
+        )
+    }
+
+    /// Whitespace-only `step.supervisorQuestion` must NOT shadow the tool-call
+    /// argument. Trimming + emptiness check is the gate — without it, an
+    /// engine path that accidentally writes `" "` would silently override the
+    /// real ask_supervisor question with a blank prompt in the activity feed
+    /// while QC overlay (which has its own non-nil guard) would still show
+    /// the real question — re-introducing the desync this whole layer fixes.
+    func testActiveSupervisorQuestions_whitespaceOnlyStoredQuestion_fallsBackToToolCallArg() {
+        let ask = makeToolCall(
+            name: TN.askSupervisor, at: date(100),
+            argumentsJSON: #"{"question":"Real question from tool call"}"#
+        )
+        let step = makeStep(
+            toolCalls: [ask],
+            status: .needsSupervisorInput,
+            needsSupervisorInput: true,
+            supervisorQuestion: "   \n  \t  "
+        )
+        let active = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+        XCTAssertEqual(active.count, 1)
+        XCTAssertEqual(
+            active.first?.question, "Real question from tool call",
+            "Whitespace-only supervisorQuestion must NOT shadow the tool-call argument"
+        )
+    }
+
+    /// Pre-escalation regression guard: when `step.supervisorQuestion` is nil
+    /// (the normal mid-stream state right after appendToolCalls but before
+    /// setNeedsSupervisorInput), the question text MUST come from the tool
+    /// call's argumentsJSON. Otherwise normal `ask_supervisor` flows show "?"
+    /// during the brief window when the question card materializes.
+    func testActiveSupervisorQuestions_nilStoredQuestion_usesToolCallArg() {
+        let ask = makeToolCall(
+            name: TN.askSupervisor, at: date(100),
+            argumentsJSON: #"{"question":"What scheme should I use?"}"#
+        )
+        // needsSupervisorInput=true via flag, but supervisorQuestion not yet
+        // persisted to the step (transient window).
+        let step = makeStep(
+            toolCalls: [ask],
+            status: .needsSupervisorInput,
+            needsSupervisorInput: true,
+            supervisorQuestion: nil
+        )
+        let active = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+        XCTAssertEqual(active.count, 1)
+        XCTAssertEqual(active.first?.question, "What scheme should I use?")
+    }
+
+    /// Escalation path pairs with the last assistant turn so the composer's
+    /// preview shows what the LLM actually said (the refusal that triggered
+    /// the cap), not just the system-generated escalation prompt. Without this,
+    /// users would see only "Role X emitted 3 refusal messages…" with no
+    /// context of WHAT the model said.
+    func testActiveSupervisorQuestions_escalationPath_pairsWithLastAssistantMessage() {
+        let refusal = makeMessage(
+            role: .assistant,
+            content: "I'm sorry, but I can't identify a clear task to work on.",
+            at: date(50)
+        )
+        let step = makeStep(
+            messages: [refusal],
+            toolCalls: [],  // escalation path = no tool call
+            status: .needsSupervisorInput,
+            needsSupervisorInput: true,
+            supervisorQuestion: "Role Coding Agent emitted 3 consecutive refusal messages. Please advise."
+        )
+        let active = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+        XCTAssertEqual(active.count, 1)
+        XCTAssertEqual(active.first?.paired?.id, refusal.id,
+            "Escalation must pair with last assistant turn so user sees the LLM's refusal context")
+    }
+
+    /// Mixed batch: one step with a real ask_supervisor (normal path) + one
+    /// step with escalation (no tool call). Both must surface, and sort order
+    /// by askedAt must be deterministic across surfaces (CLAUDE.md notes the
+    /// chip-row order matters for auto-selection).
+    func testActiveSupervisorQuestions_mixedNormalAndEscalation_bothSurface() {
+        let ask = makeToolCall(
+            name: TN.askSupervisor, at: date(100),
+            argumentsJSON: #"{"question":"Normal path question?"}"#
+        )
+        let stepNormal = StepExecution(
+            id: "step-normal",
+            role: .softwareEngineer,
+            title: "SWE Step",
+            status: .needsSupervisorInput,
+            updatedAt: date(110),
+            toolCalls: [ask],
+            needsSupervisorInput: true,
+            supervisorQuestion: "Normal path question?",
+            llmConversation: []
+        )
+
+        let stepEscalation = StepExecution(
+            id: "step-escalation",
+            role: .codeReviewer,
+            title: "CR Step",
+            status: .needsSupervisorInput,
+            updatedAt: date(200),
+            toolCalls: [],
+            needsSupervisorInput: true,
+            supervisorQuestion: "Escalation question — please advise.",
+            llmConversation: []
+        )
+
+        let active = ActivityFeedBuilder.activeSupervisorQuestions(steps: [stepEscalation, stepNormal])
+        XCTAssertEqual(active.count, 2, "Both normal and escalation steps must surface")
+        // Sort order: askedAt ascending. Normal step has askedAt = tool call timestamp (100),
+        // escalation step has askedAt = step.updatedAt (200). Normal comes first.
+        XCTAssertEqual(active.first?.question, "Normal path question?")
+        XCTAssertEqual(active.last?.question, "Escalation question — please advise.")
+    }
+
+    /// Determinism guard: two simultaneous escalation steps with identical
+    /// askedAt timestamps must sort by stepID for stable chip ordering. The
+    /// sort tie-breaker uses stepID per `activeSupervisorQuestions`'s
+    /// comment — without this, the leftmost Answer chip could flip on each
+    /// recompute and retarget user typing to a different role.
+    func testActiveSupervisorQuestions_sameAskedAt_sortsByStepID() {
+        let sameTimestamp = date(100)
+        let stepA = StepExecution(
+            id: "aaa-step",
+            role: .softwareEngineer,
+            title: "A", status: .needsSupervisorInput,
+            updatedAt: sameTimestamp,
+            toolCalls: [],
+            needsSupervisorInput: true,
+            supervisorQuestion: "From A",
+            llmConversation: []
+        )
+        let stepB = StepExecution(
+            id: "zzz-step",
+            role: .codeReviewer,
+            title: "B", status: .needsSupervisorInput,
+            updatedAt: sameTimestamp,
+            toolCalls: [],
+            needsSupervisorInput: true,
+            supervisorQuestion: "From B",
+            llmConversation: []
+        )
+
+        // Pass in non-sorted input order; result must still be aaa < zzz.
+        let active = ActivityFeedBuilder.activeSupervisorQuestions(steps: [stepB, stepA])
+        XCTAssertEqual(active.count, 2)
+        XCTAssertEqual(active[0].stepID, "aaa-step", "Tie-break by stepID ascending")
+        XCTAssertEqual(active[1].stepID, "zzz-step")
+    }
+
+    /// Escalation-after-ask: a real `ask_supervisor` tool call landed earlier,
+    /// then the engine's refusal-loop / drift / parse-failure cap fired and
+    /// `setNeedsSupervisorInput` overwrote `step.supervisorQuestion` with the
+    /// escalation text. The activity-feed composer must surface the CURRENT
+    /// (escalation) question, NOT the stale tool-call argument — otherwise it
+    /// disagrees with the QuickCapture overlay (which reads
+    /// `step.supervisorQuestion` directly in
+    /// `DefaultQuickCaptureModeCoordinator.resolveMode`) and the user sees
+    /// two different questions for the same waiting step.
+    func testActiveSupervisorQuestions_prefersStepSupervisorQuestionOverStaleToolCallArg() {
+        let askWithStaleQ = makeToolCall(
+            name: TN.askSupervisor,
+            at: date(100),
+            argumentsJSON: #"{"question":"I've reviewed the repository contents, but there's no code or clear task to act on."}"#
+        )
+        let answer = makeMessage(
+            role: .user, content: "Supervisor answer: йцу", at: date(150),
+            sourceContext: .supervisorAnswer
+        )
+        let step = makeStep(
+            messages: [answer],
+            toolCalls: [askWithStaleQ],
+            status: .needsSupervisorInput,
+            needsSupervisorInput: true,
+            // Escalation overwrote supervisorQuestion with a different text:
+            supervisorQuestion: "Role Coding Agent emitted 3 consecutive refusal messages without calling any tools. The model appears stuck — please advise how to proceed."
+        )
+
+        let active = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+        XCTAssertEqual(active.count, 1)
+        XCTAssertEqual(
+            active.first?.question,
+            "Role Coding Agent emitted 3 consecutive refusal messages without calling any tools. The model appears stuck — please advise how to proceed.",
+            "When step.supervisorQuestion is set, it MUST win over a stale tool-call argument — setNeedsSupervisorInput is the authoritative writer for the current question text, and QC overlay reads it directly. Both surfaces must agree."
+        )
+    }
+
+    /// Escalation path: when the engine calls `setNeedsSupervisorInput` from a
+    /// drift cap / refusal-loop cap / parse-failure cap (in
+    /// `LLMExecutionService+StepFlowControl.swift`), it sets
+    /// `needsSupervisorInput=true` + `supervisorQuestion=q` but does NOT append
+    /// an `ask_supervisor` tool call to `step.toolCalls`. `activeSupervisorQuestions`
+    /// must surface the stored question so the composer chip + question card
+    /// render — otherwise the user sees the role pause silently with no question
+    /// to answer. Pinned because the engine's no-tool-call escape hatch is the
+    /// ONLY path through which this state legally arises (CLAUDE.md §7's
+    /// `setNeedsSupervisorInput` doc explicitly calls it out).
+    func testEscalationPath_emptyAskCalls_flagSet_surfacesStoredQuestion() {
+        let step = makeStep(
+            toolCalls: [],
+            status: .needsSupervisorInput,
+            needsSupervisorInput: true,
+            supervisorQuestion: "Role X produced two consecutive long reasoning responses without calling any tool. Please advise."
+        )
+        let active = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+        XCTAssertEqual(active.count, 1, "Escalation must surface the stored question to the dock")
+        XCTAssertEqual(
+            active.first?.question,
+            "Role X produced two consecutive long reasoning responses without calling any tool. Please advise.",
+            "Question text must come from step.supervisorQuestion when no ask_supervisor tool call exists"
+        )
+    }
+
+    /// Defense-in-depth at the view layer. The companion writer at
+    /// `LLMExecutionService+TaskStateMutations.swift:140` currently guards the
+    /// `setNeedsSupervisorInput` path against empty question text — but future
+    /// engine paths (or accidental edits) could set `needsSupervisorInput=true`
+    /// with a nil/empty `supervisorQuestion` and no tool call. Today's
+    /// `activeSupervisorQuestions` silently drops such steps via
+    /// `guard !trimmedQ.isEmpty else { continue }`, wedging the engine in
+    /// `.needsSupervisorInput` forever with no UI signal — no composer chip,
+    /// no question card, no error banner. This test pins the contract that the
+    /// composer MUST surface a placeholder chip so the supervisor can unblock
+    /// the step instead.
+    func testActiveSupervisorQuestions_emptyStoredQuestion_noToolCall_emitsPlaceholderChip() {
+        let step = makeStep(
+            toolCalls: [],
+            status: .needsSupervisorInput,
+            needsSupervisorInput: true,
+            supervisorQuestion: nil
+        )
+        let active = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+        XCTAssertEqual(
+            active.count, 1,
+            "Empty-question waiting step MUST surface a placeholder chip — silent drop wedges the engine forever with no UI signal."
+        )
+        XCTAssertEqual(
+            active.first?.question, ActivityFeedBuilder.escalationFallbackQuestion,
+            "Placeholder text must come from the canonical constant so UI/log surfaces stay in sync."
+        )
+    }
+
+    /// Whitespace-only `step.supervisorQuestion` on the escalation path (no
+    /// tool call) must also fall back to the placeholder rather than silently
+    /// dropping the step. Without this, an engine path that writes `"  \n  "`
+    /// would also wedge the step.
+    func testActiveSupervisorQuestions_whitespaceOnlyStoredQuestion_noToolCall_emitsPlaceholderChip() {
+        let step = makeStep(
+            toolCalls: [],
+            status: .needsSupervisorInput,
+            needsSupervisorInput: true,
+            supervisorQuestion: "   \n  \t  "
+        )
+        let active = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+        XCTAssertEqual(active.count, 1)
+        XCTAssertEqual(active.first?.question, ActivityFeedBuilder.escalationFallbackQuestion)
+    }
+
+    /// Companion to `testEscalationPath_emptyAskCalls_flagSet_surfacesStoredQuestion`:
+    /// once the supervisor ANSWERS an escalation question, the answered Q&A must
+    /// appear in feed history. The history builder (`emitItems`) walks
+    /// `step.toolCalls.filter { $0.name == ToolNames.askSupervisor }` — which is
+    /// empty on the escalation path — so without a synthesized notification the
+    /// Q&A vanishes entirely once `needsSupervisorInput` flips back to false.
+    /// Pinned because the bug is silent: composer chip disappears (correct
+    /// behavior for the active→answered transition), but the answered card
+    /// never materializes (incorrect — leaves the supervisor with no record
+    /// of the question or their own answer).
+    func testEmitItems_escalationPathAnswered_emitsHistoryNotification() {
+        let refusal = makeMessage(
+            role: .assistant,
+            content: "I'm sorry, but I can't identify a clear task to work on.",
+            at: date(50)
+        )
+        let answer = makeMessage(
+            role: .user,
+            content: "Supervisor answer: Please read CLAUDE.md and propose 3 small fixes.",
+            at: date(200),
+            sourceContext: .supervisorAnswer
+        )
+        let step = makeStep(
+            messages: [refusal, answer],
+            toolCalls: [],                       // escalation path = no ask_supervisor call
+            status: .running,                    // answered, role has resumed
+            needsSupervisorInput: false,
+            supervisorQuestion: "Role Coding Agent emitted 3 consecutive refusal messages. Please advise.",
+            supervisorAnswer: "Please read CLAUDE.md and propose 3 small fixes.",
+            updatedAt: date(210)
+        )
+
+        let result = build(steps: [step])
+
+        let supervisorNotifs: [(question: String, answer: String?)] = result.compactMap {
+            if case let .notification(_, _, .supervisorInput(question, answer, _, _, _, _), _, _) = $0.item {
+                return (question, answer)
+            }
+            return nil
+        }
+        XCTAssertEqual(
+            supervisorNotifs.count, 1,
+            "Escalation-path answered Q&A MUST surface one supervisorInput notification — otherwise the Q&A disappears from feed history once the supervisor answers."
+        )
+        XCTAssertEqual(
+            supervisorNotifs.first?.question,
+            "Role Coding Agent emitted 3 consecutive refusal messages. Please advise.",
+            "Question text must come from step.supervisorQuestion (no tool-call args on the escalation path)"
+        )
+        XCTAssertEqual(
+            supervisorNotifs.first?.answer,
+            "Please read CLAUDE.md and propose 3 small fixes.",
+            "Answer text must come from the supervisor-answer message body (with `Supervisor answer: ` prefix stripped)"
+        )
+    }
+
+    /// Discriminating test for the new gate vs the old `supervisorAnswer == nil`
+    /// gate: a step where the OLD criterion would emit (`supervisorAnswer == nil`
+    /// passes) AND the NEW count criterion also emits (`answerMessages.count(0)
+    /// < askCalls.count(0)` is false → not in-flight → emit). Crafted so the
+    /// `isResolved` branch in `SupervisorInputCard` is exercised.
+    ///
+    /// Companion: `testInFlightFalsePositive_resolvedAnswerStillEmits` covered
+    /// the case where both gates emit; this version adds the discriminating
+    /// scenario where the OLD gate would have skipped but the new one emits.
+    func testFalsePositiveDiscriminator_oldCriterionWouldSkip_newCriterionEmits() {
+        let ask = makeToolCall(name: TN.askSupervisor, at: date(100), argumentsJSON: #"{"question":"q?"}"#)
+        let answerMsg = makeMessage(role: .user, content: "Supervisor answer: ok", at: date(150),
+                                     sourceContext: .supervisorAnswer)
+        // The discriminator: a step with the answer message committed, but
+        // `step.supervisorAnswer` cleared (this only happens transiently if
+        // the engine clears it on a follow-up — but happens often in unit
+        // fixtures that build state in pieces). Old criterion: `supervisorAnswer
+        // == nil` AND `needsSupervisorInput == false` → emit. New criterion:
+        // `answerMessages.count(1) >= askCalls.count(1)` → emit. Both emit,
+        // but for different reasons — pin both paths.
+        let step = makeStep(
+            messages: [answerMsg],
+            toolCalls: [ask],
+            status: .done,
+            needsSupervisorInput: false,
+            supervisorAnswer: nil
+        )
+        let result = build(steps: [step])
+        let notifications = result.filter {
+            if case .notification(_, _, .supervisorInput, _, _) = $0.item { return true }
+            return false
+        }
+        XCTAssertEqual(notifications.count, 1,
+            "New criterion (count-based) must emit when there's a matching answer message")
     }
 
     // MARK: - 6b. Active Supervisor Questions (banner data)
@@ -481,10 +1109,17 @@ final class ActivityFeedBuilderTests: XCTestCase {
             needsSupervisorInput: true
         )
 
-        // Answered step — should NOT appear in active questions
+        // Answered step — should NOT appear in active questions.
+        // In production both `step.supervisorAnswer` AND a matching
+        // `Supervisor answer: …` LLMMessage are written together (see
+        // `LLMExecutionService+StepLifecycle.swift:124-128`); the count check
+        // distinguishes a real answered state from a stale-carry race window.
         let ask3 = makeToolCall(name: TN.askSupervisor, at: date(300), argumentsJSON: #"{"question":"Q3?"}"#)
+        let answer3 = makeMessage(role: .user, content: "Supervisor answer: Done",
+                                   at: date(350), sourceContext: .supervisorAnswer)
         let step3 = makeStep(
             role: .softwareEngineer,
+            messages: [answer3],
             toolCalls: [ask3],
             supervisorAnswer: "Done"
         )
@@ -588,7 +1223,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
         assertOrdered(result)
 
         let notif = result.first {
-            if case .notification(_, _, .failed, _) = $0.item { return true }
+            if case .notification(_, _, .failed, _, _) = $0.item { return true }
             return false
         }
         XCTAssertNotNil(notif)
@@ -605,7 +1240,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
         let result = build(steps: [step])
 
         let notif = result.first {
-            if case .notification(_, _, .failed, _) = $0.item { return true }
+            if case .notification(_, _, .failed, _, _) = $0.item { return true }
             return false
         }
         XCTAssertNotNil(notif)
@@ -664,7 +1299,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
 
         // Find notification index
         let notifIndex = result.firstIndex {
-            if case .notification(_, _, .supervisorInput, _) = $0.item { return true }
+            if case .notification(_, _, .supervisorInput, _, _) = $0.item { return true }
             return false
         }
         XCTAssertNotNil(notifIndex)
@@ -719,9 +1354,9 @@ final class ActivityFeedBuilderTests: XCTestCase {
         XCTAssertEqual(result.count, 2, "Plain user message without sourceRole should be filtered")
         assertOrdered(result)
 
-        if case .llmMessage(let msg, _, _) = result[0].item { XCTAssertEqual(msg.content, "Visible") }
+        if case .llmMessage(let msg, _, _, _) = result[0].item { XCTAssertEqual(msg.content, "Visible") }
         else { XCTFail("Expected Visible at 0") }
-        if case .llmMessage(let msg, _, _) = result[1].item { XCTAssertEqual(msg.content, "Also visible") }
+        if case .llmMessage(let msg, _, _, _) = result[1].item { XCTAssertEqual(msg.content, "Also visible") }
         else { XCTFail("Expected Also visible at 1") }
     }
 
@@ -740,7 +1375,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
 
         // The message with artifact content should be filtered
         let messageContents = result.compactMap { item -> String? in
-            if case .llmMessage(let msg, _, _) = item.item { return msg.content }
+            if case .llmMessage(let msg, _, _, _) = item.item { return msg.content }
             return nil
         }
         XCTAssertFalse(messageContents.contains(artifactContent),
@@ -771,12 +1406,24 @@ final class ActivityFeedBuilderTests: XCTestCase {
             makeMessage(content: "After", at: date(300))
         ])
         let result = build(steps: [step]) { id in id == streamingMsgID }
-        // Empty streaming message should be kept
         XCTAssertEqual(result.count, 3)
-        assertOrdered(result)
+        if case .llmMessage(let msg, _, _, _) = result[0].item {
+            XCTAssertEqual(msg.content, "Before")
+        } else { XCTFail("Expected 'Before' at position 0") }
+        if case .llmMessage(let msg, _, _, _) = result[1].item {
+            XCTAssertEqual(msg.content, "After")
+        } else { XCTFail("Expected 'After' at position 1") }
+        if case .llmMessage(let msg, _, _, _) = result[2].item {
+            XCTAssertEqual(msg.id, streamingMsgID,
+                           "Empty streaming preview kept AND pinned to end")
+        } else { XCTFail("Expected streaming message at end") }
     }
 
-    func testStreamingMessagePositionedByTimestamp() {
+    /// A streaming item's `createdAt` is the moment streaming began, which is not
+    /// guaranteed to be the latest timestamp in the step — later non-streaming
+    /// messages can land while the preview is still alive. The live bubble must
+    /// stay at the bottom of the feed in that case, not slot back into chronology.
+    func testStreamingMessagePinnedToEnd() {
         let streamingMsgID = UUID()
         let step = makeStep(messages: [
             makeMessage(content: "First", at: date(100)),
@@ -785,11 +1432,87 @@ final class ActivityFeedBuilderTests: XCTestCase {
         ])
         let result = build(steps: [step]) { id in id == streamingMsgID }
         XCTAssertEqual(result.count, 3)
-        assertOrdered(result)
 
-        if case .llmMessage(let msg, _, _) = result[1].item {
-            XCTAssertEqual(msg.content, "Streaming")
-        } else { XCTFail("Expected streaming message at position 1") }
+        if case .llmMessage(let msg, _, _, _) = result[0].item {
+            XCTAssertEqual(msg.content, "First")
+        } else { XCTFail("Expected 'First' at position 0") }
+        if case .llmMessage(let msg, _, _, _) = result[1].item {
+            XCTAssertEqual(msg.content, "Third",
+                           "Non-streaming items keep chronological order")
+        } else { XCTFail("Expected 'Third' at position 1") }
+        if case .llmMessage(let msg, _, _, _) = result[2].item {
+            XCTAssertEqual(msg.content, "Streaming",
+                           "Streaming message must be pinned to the end")
+        } else { XCTFail("Expected streaming message at position 2 (end)") }
+    }
+
+    /// Streaming bubble stays at the bottom even when newer non-streaming messages
+    /// (e.g. retry notices) land with a later `createdAt` than the stream's start time.
+    func testStreamingMessage_pinnedToEnd_evenWhenLaterMessagesAppended() {
+        let streamingID = UUID()
+        let step = makeStep(messages: [
+            makeMessage(content: "Earlier note", at: date(100)),
+            LLMMessage(id: streamingID, createdAt: date(200), role: .assistant, content: ""),
+            makeMessage(content: "Later note", at: date(300)),
+        ])
+        let result = build(steps: [step]) { id in id == streamingID }
+        XCTAssertEqual(result.count, 3)
+        if case .llmMessage(let msg, _, _, _) = result[2].item {
+            XCTAssertEqual(msg.id, streamingID,
+                           "Streaming preview pinned to end of feed even after newer messages land")
+        } else { XCTFail("Streaming bubble should be the last item") }
+    }
+
+    /// Two concurrent streaming items (different steps in the same team, possible when
+    /// dependency graph has parallel branches) must both pin to the end AND order among
+    /// themselves by `createdAt`, matching the order in which their streams began.
+    func testMultipleStreamingItems_pinnedToEnd_orderedByStartTime() {
+        let streamingA = UUID()
+        let streamingB = UUID()
+        let stepA = makeStep(role: .productManager, messages: [
+            makeMessage(content: "Committed A1", at: date(100)),
+            LLMMessage(id: streamingA, createdAt: date(150), role: .assistant, content: ""),
+        ])
+        let stepB = makeStep(role: .softwareEngineer, messages: [
+            makeMessage(content: "Committed B1", at: date(120)),
+            LLMMessage(id: streamingB, createdAt: date(170), role: .assistant, content: ""),
+            makeMessage(content: "Committed B2", at: date(300)),
+        ])
+        let result = build(steps: [stepA, stepB]) { id in id == streamingA || id == streamingB }
+        XCTAssertEqual(result.count, 5)
+        // Last two items must be the streaming previews, with A before B (earlier start)
+        if case .llmMessage(let msg, _, _, _) = result[3].item {
+            XCTAssertEqual(msg.id, streamingA, "Earlier-started streaming preview comes first within the pinned partition")
+        } else { XCTFail("Expected streamingA at position 3") }
+        if case .llmMessage(let msg, _, _, _) = result[4].item {
+            XCTAssertEqual(msg.id, streamingB, "Later-started streaming preview comes last")
+        } else { XCTFail("Expected streamingB at position 4") }
+    }
+
+    /// When a stream finalizes, `isStreaming(id)` flips to false. The item must slot back
+    /// into its chronological position (defined by its `createdAt`) rather than remain
+    /// pinned to the end.
+    func testStreaming_committedTransition_returnsToChronologicalPosition() {
+        let messageID = UUID()
+        let step = makeStep(messages: [
+            makeMessage(content: "Before", at: date(100)),
+            LLMMessage(id: messageID, createdAt: date(200), role: .assistant, content: "Finalized content"),
+            makeMessage(content: "After", at: date(300)),
+        ])
+
+        // While streaming: pinned to end.
+        let streaming = build(steps: [step]) { id in id == messageID }
+        XCTAssertEqual(streaming.count, 3)
+        if case .llmMessage(let msg, _, _, _) = streaming[2].item {
+            XCTAssertEqual(msg.id, messageID, "Streaming item pinned to end")
+        } else { XCTFail("Expected streaming at end") }
+
+        // After commit (isStreaming flips false): slots back into chronology.
+        let committed = build(steps: [step]) { _ in false }
+        XCTAssertEqual(committed.count, 3)
+        if case .llmMessage(let msg, _, _, _) = committed[1].item {
+            XCTAssertEqual(msg.id, messageID, "Committed item slots back to its createdAt position")
+        } else { XCTFail("Expected committed item at chronological position 1") }
     }
 
     // MARK: - 11. Consultation / Meeting Context Messages
@@ -806,7 +1529,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
         assertOrdered(result)
 
         // Consultation message should use sourceRole as display role
-        if case .llmMessage(_, let role, _) = result[1].item {
+        if case .llmMessage(_, let role, _, _) = result[1].item {
             XCTAssertEqual(role, .techLead, "Display role should be sourceRole (techLead)")
         } else { XCTFail("Expected consultation message at 1") }
     }
@@ -823,11 +1546,11 @@ final class ActivityFeedBuilderTests: XCTestCase {
         assertOrdered(result)
 
         // "After meeting" at t=200 should come before "Meeting result" at t=300
-        if case .llmMessage(let msg, _, _) = result[1].item {
+        if case .llmMessage(let msg, _, _, _) = result[1].item {
             XCTAssertEqual(msg.content, "After meeting")
         } else { XCTFail("Expected 'After meeting' at 1") }
 
-        if case .llmMessage(let msg, let role, _) = result[2].item {
+        if case .llmMessage(let msg, let role, _, _) = result[2].item {
             XCTAssertEqual(msg.content, "Meeting result")
             XCTAssertEqual(role, .productManager)
         } else { XCTFail("Expected 'Meeting result' at 2") }
@@ -847,7 +1570,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
         XCTAssertEqual(result.count, 2)
         assertOrdered(result)
 
-        if case .supervisorTask(let brief, let taskDate, _, _, _, _) = result[0].item {
+        if case .supervisorTask(let brief, let taskDate, _, _, _, _, _) = result[0].item {
             XCTAssertEqual(brief, "Build a sorting algorithm")
             XCTAssertEqual(taskDate, date(10))
         } else {
@@ -864,7 +1587,8 @@ final class ActivityFeedBuilderTests: XCTestCase {
         XCTAssertEqual(result.count, 1)
 
         let item = result[0].item
-        XCTAssertEqual(item.id, "supervisor-task")
+        // ID now includes originTaskID for cross-team uniqueness (delegation V1).
+        XCTAssertEqual(item.id, "supervisor-task-0")
         XCTAssertEqual(item.roleID, Role.supervisor.baseID)
         XCTAssertEqual(item.createdAt, date(50))
     }
@@ -916,7 +1640,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
     }
 
     func testStripAttachedFiles_extractsFilePaths() {
-        let input = "Answer text\n\n--- Attached Files ---\n- .nanoteams/tasks/1/a.txt\n- .nanoteams/tasks/1/b.png"
+        let input = "Answer text\n\n## Attached Files\n- .nanoteams/tasks/1/a.txt\n- .nanoteams/tasks/1/b.png"
         let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
         XCTAssertEqual(result.text, "Answer text")
         XCTAssertEqual(result.paths, [".nanoteams/tasks/1/a.txt", ".nanoteams/tasks/1/b.png"])
@@ -924,14 +1648,14 @@ final class ActivityFeedBuilderTests: XCTestCase {
     }
 
     func testStripAttachedFiles_extractsSingleClip() {
-        let input = "My answer\n\n--- Clipped Text ---\nsome code snippet"
+        let input = "My answer\n\n## Clipped Text\nsome code snippet"
         let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
         XCTAssertEqual(result.text, "My answer")
         XCTAssertEqual(result.clippedTexts, ["some code snippet"])
     }
 
     func testStripAttachedFiles_extractsNumberedClips() {
-        let input = "Answer\n\n--- Clipped Text (1 of 2) ---\nclip one\n\n--- Clipped Text (2 of 2) ---\nclip two"
+        let input = "Answer\n\n## Clipped Text \u{2014} 1 of 2\nclip one\n\n## Clipped Text \u{2014} 2 of 2\nclip two"
         let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
         XCTAssertEqual(result.text, "Answer")
         XCTAssertEqual(result.clippedTexts.count, 2)
@@ -940,14 +1664,14 @@ final class ActivityFeedBuilderTests: XCTestCase {
     }
 
     func testStripAttachedFiles_extractsClipWithSourceContext() {
-        let input = "Answer\n\n--- Clipped Text (MyFile.swift:10-20) ---\nfunc hello() { }"
+        let input = "Answer\n\n## Clipped Text \u{2014} MyFile.swift:10-20\nfunc hello() { }"
         let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
         XCTAssertEqual(result.text, "Answer")
         XCTAssertEqual(result.clippedTexts, ["func hello() { }"])
     }
 
     func testStripAttachedFiles_extractsClipsAndFilesTogether() {
-        let input = "Answer\n\n--- Clipped Text ---\nsnippet\n\n--- Attached Files ---\n- file.txt"
+        let input = "Answer\n\n## Clipped Text\nsnippet\n\n## Attached Files\n- file.txt"
         let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
         XCTAssertEqual(result.text, "Answer")
         XCTAssertEqual(result.clippedTexts, ["snippet"])
@@ -955,19 +1679,19 @@ final class ActivityFeedBuilderTests: XCTestCase {
     }
 
     func testStripAttachedFiles_stripsEmbeddedFileContent() {
-        let input = "Answer\n\n--- Attached File: data.swift ---\nlet x = 1"
+        let input = "Answer\n\n## Attached File: data.swift\nlet x = 1"
         let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
         XCTAssertEqual(result.text, "Answer")
     }
 
     func testStripAttachedFiles_stripsEmbeddedFileWithHyphenatedName() {
-        let input = "Answer\n\n--- Attached File: my-component.swift ---\nlet x = 1"
+        let input = "Answer\n\n## Attached File: my-component.swift\nlet x = 1"
         let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
         XCTAssertEqual(result.text, "Answer")
     }
 
     func testStripAttachedFiles_clipsOnlyNoText_returnsEmptyText() {
-        let input = "--- Clipped Text ---\nonly a clip"
+        let input = "## Clipped Text\nonly a clip"
         let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
         XCTAssertNil(result.text)
         XCTAssertEqual(result.clippedTexts, ["only a clip"])
@@ -976,7 +1700,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
     // MARK: - Regression: Issue #1 — Embedded file with hyphenated filename
 
     func testStripAttachedFiles_embeddedFile_multipleHyphens() {
-        let input = "Answer\n\n--- Attached File: my-data-model.swift ---\nstruct Foo {}"
+        let input = "Answer\n\n## Attached File: my-data-model.swift\nstruct Foo {}"
         let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
         XCTAssertEqual(result.text, "Answer")
         // Embedded file content must NOT leak into displayed text
@@ -986,7 +1710,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
     // MARK: - Regression: Issue #3 — Embedded file content leaks into last clip
 
     func testStripAttachedFiles_clipThenEmbeddedFile_noContentLeak() {
-        let input = "Answer\n\n--- Clipped Text ---\nsnippet\n\n--- Attached File: data.swift ---\nlet x = 1"
+        let input = "Answer\n\n## Clipped Text\nsnippet\n\n## Attached File: data.swift\nlet x = 1"
         let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
         XCTAssertEqual(result.text, "Answer")
         XCTAssertEqual(result.clippedTexts.count, 1)
@@ -998,14 +1722,17 @@ final class ActivityFeedBuilderTests: XCTestCase {
     // MARK: - Regression: Issue #5 — Clip header with parentheses in path
 
     func testStripAttachedFiles_clipWithParenthesesInPath() {
-        let input = "Answer\n\n--- Clipped Text (MyFile(iOS).swift:10-20) ---\nfunc run() {}"
+        // Parentheses inside the metadata tail (e.g. `MyFile(iOS).swift:10-20`)
+        // are fine — the new em-dash separator removes the previous concern
+        // that the trailing `---` could collide with file paths containing `(`.
+        let input = "Answer\n\n## Clipped Text \u{2014} MyFile(iOS).swift:10-20\nfunc run() {}"
         let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
         XCTAssertEqual(result.text, "Answer")
         XCTAssertEqual(result.clippedTexts, ["func run() {}"])
     }
 
     func testStripAttachedFiles_numberedClipWithSourceAndParentheses() {
-        let input = "Answer\n\n--- Clipped Text (1 of 2, App(iOS).swift:5-10) ---\nfirst\n\n--- Clipped Text (2 of 2) ---\nsecond"
+        let input = "Answer\n\n## Clipped Text \u{2014} 1 of 2, App(iOS).swift:5-10\nfirst\n\n## Clipped Text \u{2014} 2 of 2\nsecond"
         let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
         XCTAssertEqual(result.text, "Answer")
         XCTAssertEqual(result.clippedTexts.count, 2)
@@ -1019,13 +1746,13 @@ final class ActivityFeedBuilderTests: XCTestCase {
         let input = """
         My answer
 
-        --- Clipped Text (src/main.swift:1-5) ---
+        ## Clipped Text \u{2014} src/main.swift:1-5
         import Foundation
 
-        --- Attached File: my-helper.swift ---
+        ## Attached File: my-helper.swift
         func helper() {}
 
-        --- Attached Files ---
+        ## Attached Files
         - .nanoteams/tasks/1/attachments/image.png
         """
         let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
@@ -1042,7 +1769,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
         let taskWithEmbed = """
         опиши логику
 
-        --- Attached File: Логика.pdf ---
+        ## Attached File: Логика.pdf
         Page 1: The offline logic...
         Page 2: When connectivity returns...
         """
@@ -1057,7 +1784,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
             isStreaming: { _ in false }
         )
         XCTAssertEqual(result.count, 1)
-        if case .supervisorTask(_, _, let displayText, _, _, _) = result[0].item {
+        if case .supervisorTask(_, _, let displayText, _, _, _, _) = result[0].item {
             XCTAssertEqual(displayText, "опиши логику")
             XCTAssertFalse(displayText.contains("Attached File"))
             XCTAssertFalse(displayText.contains("offline logic"))
@@ -1070,10 +1797,10 @@ final class ActivityFeedBuilderTests: XCTestCase {
         let taskWithEmbed = """
         check this
 
-        --- Attached File: report.pdf ---
+        ## Attached File: report.pdf
         Report content here
 
-        --- Attached Files ---
+        ## Attached Files
         - .nanoteams/tasks/1/attachments/report.pdf
         """
         let result = ActivityFeedBuilder.buildTimelineItems(
@@ -1086,7 +1813,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
             debugModeEnabled: false,
             isStreaming: { _ in false }
         )
-        guard case .supervisorTask(_, _, let displayText, _, let paths, _) = result.first?.item else {
+        guard case .supervisorTask(_, _, let displayText, _, let paths, _, _) = result.first?.item else {
             return XCTFail("Expected supervisorTask")
         }
         XCTAssertEqual(displayText, "check this")
@@ -1097,7 +1824,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
         let taskWithClips = """
         do this
 
-        --- Clipped Text ---
+        ## Clipped Text
         let x = 42
         """
         let result = ActivityFeedBuilder.buildTimelineItems(
@@ -1110,7 +1837,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
             debugModeEnabled: false,
             isStreaming: { _ in false }
         )
-        guard case .supervisorTask(_, _, let displayText, let clips, _, _) = result.first?.item else {
+        guard case .supervisorTask(_, _, let displayText, let clips, _, _, _) = result.first?.item else {
             return XCTFail("Expected supervisorTask")
         }
         XCTAssertEqual(displayText, "do this")
@@ -1121,7 +1848,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
     func testSupervisorTask_structuredFieldsTakePriority() {
         // When structured fields (supervisorClippedTexts, supervisorAttachmentPaths) are provided,
         // they take priority over fields extracted from the text.
-        let taskWithEmbed = "task text\n\n--- Clipped Text ---\ninline clip"
+        let taskWithEmbed = "task text\n\n## Clipped Text\ninline clip"
         let result = ActivityFeedBuilder.buildTimelineItems(
             steps: [],
             run: nil,
@@ -1134,7 +1861,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
             debugModeEnabled: false,
             isStreaming: { _ in false }
         )
-        guard case .supervisorTask(_, _, _, let clips, let paths, _) = result.first?.item else {
+        guard case .supervisorTask(_, _, _, let clips, let paths, _, _) = result.first?.item else {
             return XCTFail("Expected supervisorTask")
         }
         // Structured fields win over stripped-from-text fields
@@ -1154,11 +1881,339 @@ final class ActivityFeedBuilderTests: XCTestCase {
             debugModeEnabled: false,
             isStreaming: { _ in false }
         )
-        guard case .supervisorTask(_, _, let displayText, let clips, let paths, _) = result.first?.item else {
+        guard case .supervisorTask(_, _, let displayText, let clips, let paths, _, _) = result.first?.item else {
             return XCTFail("Expected supervisorTask")
         }
         XCTAssertEqual(displayText, "simple task description")
         XCTAssertTrue(clips.isEmpty)
         XCTAssertTrue(paths.isEmpty)
+    }
+
+    // MARK: - PairedAssistantMessage invariants
+
+    /// Trim-to-nil at construction: whitespace-only `thinking` collapses to nil
+    /// so consumers can use `paired?.thinking != nil` directly as "show the
+    /// disclosure" without re-trimming. Mirrors the invariant the removed
+    /// `content` field used to enforce.
+    func testPairedAssistantMessage_whitespaceOnlyThinking_collapsesToNil() {
+        let paired = PairedAssistantMessage(id: UUID(), thinking: "   \n  ")
+        XCTAssertNil(paired.thinking)
+    }
+
+    /// Edge-trim preserves interior whitespace — only leading/trailing collapse.
+    func testPairedAssistantMessage_thinking_trimsEdgesOnly() {
+        let paired = PairedAssistantMessage(
+            id: UUID(), thinking: "  line one\n  line two  "
+        )
+        XCTAssertEqual(paired.thinking, "line one\n  line two")
+    }
+
+    /// Nil thinking stays nil.
+    func testPairedAssistantMessage_nilThinking_staysNil() {
+        let paired = PairedAssistantMessage(id: UUID(), thinking: nil)
+        XCTAssertNil(paired.thinking)
+    }
+
+    // MARK: - Paired-message lift (composer takes the reply, feed suppresses bubble)
+
+    /// Pairs `paired.id` / `paired.thinking` with the assistant turn whose
+    /// `createdAt <= lastCall.createdAt`. `id` drives bubble-suppression in the
+    /// feed; `thinking` feeds the composer's thinking disclosure.
+    func testActiveSupervisorQuestions_populatesPairedIDAndThinking() {
+        let reply = makeMessage(
+            content: "Explanation of findings.",
+            at: date(90),
+            thinking: "Reasoning."
+        )
+        let ask = makeToolCall(
+            name: TN.askSupervisor,
+            at: date(100),
+            argumentsJSON: #"{"question":"What next?"}"#
+        )
+        let step = makeStep(
+            role: .productManager,
+            messages: [reply],
+            toolCalls: [ask],
+            status: .needsSupervisorInput,
+            needsSupervisorInput: true
+        )
+
+        let questions = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+        XCTAssertEqual(questions.count, 1)
+        XCTAssertEqual(questions[0].paired?.id, reply.id)
+        XCTAssertEqual(questions[0].paired?.thinking, "Reasoning.")
+        XCTAssertEqual(questions[0].question, "What next?")
+    }
+
+    /// In-flight window: `commitStreaming` and `appendToolCalls` have landed but
+    /// `setNeedsSupervisorInput` hasn't fired yet (tool execution is still running).
+    /// Without this branch the bubble would flash visible for ~50-1000ms before
+    /// the composer takes over. See `replied-structured-petal.md`.
+    func testActiveSupervisorQuestions_inFlight_pendingToolCallStillReturnsQuestion() {
+        let reply = makeMessage(content: "Body.", at: date(90))
+        let ask = makeToolCall(
+            name: TN.askSupervisor,
+            at: date(100),
+            argumentsJSON: #"{"question":"What next?"}"#
+        )
+        let step = makeStep(
+            role: .productManager,
+            messages: [reply],
+            toolCalls: [ask],
+            status: .running,
+            // Flag NOT yet flipped — we're between appendToolCalls and setNeedsSupervisorInput.
+            needsSupervisorInput: false,
+            supervisorAnswer: nil
+        )
+
+        let questions = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+        XCTAssertEqual(questions.count, 1, "Trailing ask_supervisor call alone must activate the chip")
+        XCTAssertEqual(questions[0].paired?.id, reply.id)
+    }
+
+    /// Pairing must NOT activate when the trailing call is something other than
+    /// `ask_supervisor` (e.g. the LLM asked once, supervisor answered, then the role
+    /// emitted more tool calls). Without this guard, any leftover `ask_supervisor`
+    /// somewhere in the call list would keep suppressing replies forever.
+    func testActiveSupervisorQuestions_trailingNonAskCall_doesNotActivate() {
+        let ask = makeToolCall(
+            name: TN.askSupervisor,
+            at: date(100),
+            argumentsJSON: #"{"question":"old?"}"#
+        )
+        let trailing = makeToolCall(name: "read_file", at: date(150))
+        let step = makeStep(
+            role: .productManager,
+            toolCalls: [ask, trailing],
+            status: .running,
+            needsSupervisorInput: false,
+            supervisorAnswer: nil
+        )
+
+        let questions = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+        XCTAssertTrue(questions.isEmpty,
+                      "ask_supervisor is no longer the trailing call (a later read_file landed); chip must not appear")
+    }
+
+    /// While the paired-question is active, the assistant bubble is suppressed
+    /// from the timeline — the composer's preview is the only place it appears.
+    /// Once `supervisorAnswer` is set, the bubble reappears (existing
+    /// active-hidden, answered-visible convention).
+    func testEmitItems_suppressesPairedAssistantMessage_whileActive_thenReappears() {
+        let reply = makeMessage(content: "Explanation.", at: date(90))
+        let ask = makeToolCall(
+            name: TN.askSupervisor,
+            at: date(100),
+            argumentsJSON: #"{"question":"What next?"}"#
+        )
+        let step = makeStep(
+            role: .productManager,
+            messages: [reply],
+            toolCalls: [ask],
+            status: .needsSupervisorInput,
+            needsSupervisorInput: true
+        )
+        let questions = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+
+        let active = ActivityFeedBuilder.buildTimelineItems(
+            steps: [step], run: nil,
+            stepArtifactContentCache: [:], debugModeEnabled: false,
+            activeQuestions: questions,
+            isStreaming: { _ in false }
+        )
+        let activeBubbles = active.filter {
+            if case .llmMessage = $0.item { return true } else { return false }
+        }
+        XCTAssertTrue(activeBubbles.isEmpty,
+                      "Paired assistant bubble must be suppressed while question is active")
+
+        // Answer the question → suppression deactivates, bubble reappears.
+        // Both the `step.supervisorAnswer` field AND the `Supervisor answer: …`
+        // LLMMessage are appended in production (see
+        // `LLMExecutionService+StepLifecycle.swift:124-128`).
+        let answerMsg = makeMessage(role: .user, content: "Supervisor answer: Proceed",
+                                     at: date(110), sourceContext: .supervisorAnswer)
+        let answered = makeStep(
+            role: .productManager,
+            messages: [reply, answerMsg],
+            toolCalls: [ask],
+            status: .done,
+            needsSupervisorInput: false,
+            supervisorQuestion: "What next?",
+            supervisorAnswer: "Proceed"
+        )
+        let answeredQuestions = ActivityFeedBuilder.activeSupervisorQuestions(steps: [answered])
+        XCTAssertTrue(answeredQuestions.isEmpty, "Answered question is not in the active set")
+
+        let afterAnswer = ActivityFeedBuilder.buildTimelineItems(
+            steps: [answered], run: nil,
+            stepArtifactContentCache: [:], debugModeEnabled: false,
+            activeQuestions: answeredQuestions,
+            isStreaming: { _ in false }
+        )
+        let answeredBubbles = afterAnswer.filter {
+            if case .llmMessage = $0.item { return true } else { return false }
+        }
+        XCTAssertEqual(answeredBubbles.count, 1,
+                       "Paired bubble must reappear once the question is answered (history preserved)")
+    }
+
+    /// Streaming exemption: the paired assistant message is still rendering deltas
+    /// (preview manager owns the live bubble). Even though it matches the suppressed
+    /// id set, we must NOT skip it — otherwise the bubble disappears mid-stream when
+    /// the engine flips state, and the composer hasn't yet caught up.
+    func testEmitItems_streamingPairedMessage_isNotSuppressed() {
+        let streamingReply = makeMessage(content: "...streaming...", at: date(90))
+        let ask = makeToolCall(
+            name: TN.askSupervisor,
+            at: date(100),
+            argumentsJSON: #"{"question":"?"}"#
+        )
+        let step = makeStep(
+            role: .productManager,
+            messages: [streamingReply],
+            toolCalls: [ask],
+            status: .needsSupervisorInput,
+            needsSupervisorInput: true
+        )
+        let questions = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+        let streamingID = streamingReply.id
+
+        let result = ActivityFeedBuilder.buildTimelineItems(
+            steps: [step], run: nil,
+            stepArtifactContentCache: [:], debugModeEnabled: false,
+            activeQuestions: questions,
+            isStreaming: { $0 == streamingID }
+        )
+        let bubbles = result.filter {
+            if case .llmMessage = $0.item { return true } else { return false }
+        }
+        XCTAssertEqual(bubbles.count, 1,
+                       "Streaming bubble must remain visible even when matching the suppressed set")
+    }
+
+    /// Pairs strictly by `createdAt <= lastCall.createdAt` — a stray assistant
+    /// message that lands AFTER the active `ask_supervisor` (e.g. an in-flight
+    /// streaming artifact written by the next iteration before suppression
+    /// re-evaluates) must NOT be picked as the paired reply.
+    func testActiveSupervisorQuestions_pairedLookup_excludesAssistantsAfterAskTimestamp() {
+        let earlier = makeMessage(content: "Legit reply.", at: date(50))
+        let ask = makeToolCall(
+            name: TN.askSupervisor,
+            at: date(100),
+            argumentsJSON: #"{"question":"What next?"}"#
+        )
+        // Future-timestamped assistant message — must not be the paired one.
+        let later = makeMessage(content: "Stray future message.", at: date(150))
+        let step = makeStep(
+            role: .productManager,
+            messages: [earlier, later],
+            toolCalls: [ask],
+            status: .needsSupervisorInput,
+            needsSupervisorInput: true
+        )
+
+        let questions = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+        XCTAssertEqual(questions.count, 1)
+        XCTAssertEqual(questions[0].paired?.id, earlier.id,
+                       "Paired message must be the most-recent assistant turn ≤ lastCall.createdAt")
+    }
+
+    /// Paired lookup is filtered to `.assistant` role. A `.user` turn (e.g. a
+    /// consultation reply with `sourceContext: .consultation`) sitting right before
+    /// `ask_supervisor` must not be lifted into the composer's preview — that
+    /// would surface another role's words under the asking role's chip.
+    func testActiveSupervisorQuestions_pairedLookup_filtersByAssistantRole() {
+        let assistantReply = makeMessage(content: "Assistant's reasoning.", at: date(80))
+        let userTurn = makeMessage(
+            role: .user, content: "Consultation answer.", at: date(95),
+            sourceRole: .productManager, sourceContext: .consultation
+        )
+        let ask = makeToolCall(
+            name: TN.askSupervisor,
+            at: date(100),
+            argumentsJSON: #"{"question":"What next?"}"#
+        )
+        let step = makeStep(
+            role: .softwareEngineer,
+            messages: [assistantReply, userTurn],
+            toolCalls: [ask],
+            status: .needsSupervisorInput,
+            needsSupervisorInput: true
+        )
+
+        let questions = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+        XCTAssertEqual(questions[0].paired?.id, assistantReply.id,
+                       "Paired lookup must skip .user turns even when they're closer to the ask timestamp")
+    }
+
+    /// Composer-hidden fallthrough: when the consumer (viewmodel / view) decides
+    /// the composer can't be rendered (engine `.failed`, read-only, closed task)
+    /// it passes `activeQuestions: []` — suppression must not fire, otherwise the
+    /// LLM's reply is lost (no composer card to surface it).
+    func testEmitItems_emptyActiveQuestions_doesNotSuppressAnyBubble() {
+        let reply = makeMessage(content: "Explanation.", at: date(90))
+        let ask = makeToolCall(
+            name: TN.askSupervisor,
+            at: date(100),
+            argumentsJSON: #"{"question":"?"}"#
+        )
+        let step = makeStep(
+            role: .productManager,
+            messages: [reply],
+            toolCalls: [ask],
+            status: .needsSupervisorInput,
+            needsSupervisorInput: true
+        )
+
+        let result = ActivityFeedBuilder.buildTimelineItems(
+            steps: [step], run: nil,
+            stepArtifactContentCache: [:], debugModeEnabled: false,
+            // Caller intentionally passes [] (composer hidden) — bubble must stay.
+            activeQuestions: [],
+            isStreaming: { _ in false }
+        )
+        let bubbles = result.filter {
+            if case .llmMessage = $0.item { return true } else { return false }
+        }
+        XCTAssertEqual(bubbles.count, 1,
+                       "Empty activeQuestions disables suppression; reply stays visible in the feed")
+    }
+
+    /// Multi-turn step (Q1 answered → Q2 active). Q1's paired reply (older) must stay
+    /// visible as history; only Q2's paired reply (latest) is suppressed.
+    func testEmitItems_doesNotSuppressOlderPairedMessages_whenLaterQuestionActive() {
+        let oldReply = makeMessage(content: "First explanation.", at: date(50))
+        let oldAsk = makeToolCall(name: TN.askSupervisor, at: date(60), argumentsJSON: #"{"question":"Q1?"}"#)
+        let newReply = makeMessage(content: "Second explanation.", at: date(190))
+        let newAsk = makeToolCall(name: TN.askSupervisor, at: date(200), argumentsJSON: #"{"question":"Q2?"}"#)
+
+        let step = makeStep(
+            role: .productManager,
+            messages: [oldReply, newReply],
+            toolCalls: [oldAsk, newAsk],
+            status: .needsSupervisorInput,
+            needsSupervisorInput: true,
+            supervisorQuestion: "Q2?",
+            supervisorAnswer: nil // Q1 was answered earlier; setNeedsSupervisorInput cleared answer
+        )
+        let questions = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+        XCTAssertEqual(questions.first?.paired?.id, newReply.id,
+                       "Active paired message must be the latest assistant turn before the last ask")
+
+        let result = ActivityFeedBuilder.buildTimelineItems(
+            steps: [step], run: nil,
+            stepArtifactContentCache: [:], debugModeEnabled: false,
+            activeQuestions: questions,
+            isStreaming: { _ in false }
+        )
+        let bubbleMessageIDs: Set<UUID> = Set(result.compactMap {
+            if case .llmMessage(let msg, _, _, _) = $0.item { return msg.id }
+            return nil
+        })
+        XCTAssertTrue(bubbleMessageIDs.contains(oldReply.id),
+                      "Older paired reply must remain visible as conversation history")
+        XCTAssertFalse(bubbleMessageIDs.contains(newReply.id),
+                       "Latest paired reply must be suppressed (lives in composer preview)")
     }
 }

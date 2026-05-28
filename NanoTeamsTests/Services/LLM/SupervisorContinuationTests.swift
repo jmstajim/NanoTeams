@@ -60,7 +60,7 @@ final class SupervisorContinuationTests: XCTestCase {
         ]
 
         let step = task.runs[0].steps[0]
-        let memory = ToolCallCache()
+        let tracker = ToolCallTracker()
 
         // applyPlanningPhase should NOT replace the conversation because hasPriorConversation = true
         _ = await service.applyPlanningPhase(
@@ -68,7 +68,7 @@ final class SupervisorContinuationTests: XCTestCase {
             roleForMessage: .questMaster,
             tools: [],
             step: step,
-            memory: memory,
+            tracker: tracker,
             conversationMessages: &conversation,
             roleDefinition: nil
         )
@@ -95,14 +95,14 @@ final class SupervisorContinuationTests: XCTestCase {
         ]
 
         let step = task.runs[0].steps[0]
-        let memory = ToolCallCache()
+        let tracker = ToolCallTracker()
 
         _ = await service.applyPlanningPhase(
             stepID: stepID,
             roleForMessage: .questMaster,
             tools: [],
             step: step,
-            memory: memory,
+            tracker: tracker,
             conversationMessages: &conversation,
             roleDefinition: nil
         )

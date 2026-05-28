@@ -4,9 +4,9 @@ import QuickLook
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Unified message/answer composer used by all four message-entry surfaces:
-/// ActivityFeed (`SupervisorInputCard`), Watchtower banner, QuickCapture answer mode,
-/// and QuickCapture task creation.
+/// Unified message/answer composer used by all message-entry surfaces:
+/// ActivityFeed dock (`TeamActivityComposer`), Watchtower banner, QuickCapture
+/// answer mode, and QuickCapture task creation.
 ///
 /// Layout:
 /// ```
@@ -28,7 +28,7 @@ struct MessageComposer<SettingsMenu: View>: View {
     let placeholder: String
     let canSubmit: Bool
     let isSubmitting: Bool
-    var onSubmit: () -> Void
+    var onSubmit: @MainActor @Sendable () -> Void
     var onStageAttachment: (URL) -> StagedAttachment?
     var onRemoveAttachment: (StagedAttachment) -> Void
 
@@ -41,11 +41,22 @@ struct MessageComposer<SettingsMenu: View>: View {
     /// answer-mode surfaces (which show a question first) don't steal the cursor.
     var autofocusOnAppear: Bool = false
 
-    /// Line-count range for the inner `TextField(axis: .vertical)`. Default `1...6`
-    /// matches the historical cap used by Watchtower / SupervisorInputCard / QuickCapture.
-    /// Surfaces that want the field to grow further (e.g. the activity-feed composer
-    /// constrained by an outer `maxHeight`) can pass a wider range.
-    var textFieldLineLimit: ClosedRange<Int> = 1...6
+    /// Minimum visible line count when the field is empty. Threaded through
+    /// to `EditableMessageTextView` which clamps its intrinsic height to
+    /// `lineHeight * minLineCount + insets`. Must be ≥ 1 — clamped by
+    /// `clampMinLines(_:)` because negative / zero values would otherwise
+    /// collapse the field to nothing.
+    var minLineCount: Int = 1
+
+    /// Pixel cap for the message field. Past the cap the underlying
+    /// `EditableMessageTextView` (native `NSTextView` inside an `NSScrollView`)
+    /// scrolls internally and NSTextView's native `scrollRangeToVisible` keeps
+    /// the caret visible no matter where the user is editing.
+    ///
+    /// Defaults to `MessageComposerLayout.defaultMaxTextFieldHeight`. Surfaces
+    /// with a known pane height (`TeamActivityComposer`, `QuickCaptureFormView`)
+    /// override with a computed value that tracks their pane.
+    var maxTextFieldHeight: CGFloat = MessageComposerLayout.defaultMaxTextFieldHeight
 
     // Declared last so QuickCapture's trailing-closure call sites bind to
     // `settingsMenu` via SE-0286 forward-scan. Other surfaces use the
@@ -61,14 +72,15 @@ struct MessageComposer<SettingsMenu: View>: View {
     @State private var quickLookURL: URL?
     @State private var popoverClipIndex: Int?
     @State private var importErrorMessage: String?
-    @FocusState private var internalFocus: Bool
+
+    /// Bridges AppKit first-responder state into SwiftUI so
+    /// `.onChange(of: isFocused)` can gate the Cmd+V paste-monitor
+    /// lifecycle. Native caret focus is handled by the responder chain
+    /// directly.
+    @State private var isFocused: Bool = false
     @State private var internalShowingFilePicker = false
     @State private var pasteMonitorOwnerID = UUID()
     @State private var hasRegisteredMonitor: Bool = false
-
-    private var isShowingFilePicker: Binding<Bool> {
-        filePickerBinding ?? $internalShowingFilePicker
-    }
 
     private var clipTexts: [String] {
         clips?.wrappedValue ?? []
@@ -76,6 +88,14 @@ struct MessageComposer<SettingsMenu: View>: View {
 
     private var hasAttachments: Bool {
         !attachments.isEmpty || !clipTexts.isEmpty
+    }
+
+    /// Clamps a caller-supplied `minLineCount` to the SwiftUI-safe floor of 1.
+    /// `.lineLimit(0...)` / `.lineLimit(-1...)` are undefined; clamping degrades
+    /// invalid input to a defined 1-line floor without crashing the app.
+    /// Static so tests can pin the clamp without rendering the view.
+    nonisolated static func clampMinLines(_ value: Int) -> Int {
+        max(1, value)
     }
 
     var body: some View {
@@ -119,31 +139,11 @@ struct MessageComposer<SettingsMenu: View>: View {
                 attachmentGrid
             }
 
-            TextField(placeholder, text: $text, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(.body)
-                .lineLimit(textFieldLineLimit)
-                .accessibilityLabel("Message input")
-                .padding(Spacing.s)
-                .background(
-                    RoundedRectangle.squircle(CornerRadius.small)
-                        .fill(Colors.surfacePrimary)
-                )
-                .overlay(
-                    RoundedRectangle.squircle(CornerRadius.small)
-                        .strokeBorder(Colors.borderSubtle, lineWidth: 0.5)
-                )
-                .focused($internalFocus)
-                .enterSendsMessage(
-                    config.enterSendsMessage,
-                    canSubmit: canSubmit,
-                    isSubmitting: isSubmitting,
-                    onSubmit: handleSubmit
-                )
+            messageField
 
             HStack {
                 Button {
-                    isShowingFilePicker.wrappedValue = true
+                    presentOpenPanel()
                 } label: {
                     Image(systemName: "plus.circle")
                         .font(.title2)
@@ -211,10 +211,7 @@ struct MessageComposer<SettingsMenu: View>: View {
             }
         }
         .animation(Animations.quick, value: isDropTargeted)
-        .task {
-            if autofocusOnAppear { internalFocus = true }
-        }
-        .onChange(of: internalFocus) { _, focused in
+        .onChange(of: isFocused) { _, focused in
             if focused {
                 installPasteMonitor()
             } else {
@@ -224,6 +221,55 @@ struct MessageComposer<SettingsMenu: View>: View {
         .onDisappear {
             removePasteMonitor()
         }
+    }
+
+    // MARK: - Message Field
+
+    /// Message field. Return-key policy delegates to `MessageKeyPolicy`;
+    /// focus is bridged through `$isFocused` so the paste-monitor lifecycle
+    /// above sees AppKit-driven transitions.
+    private var messageField: some View {
+        // `.background` and `.clipShape` are deliberately omitted — they
+        // pulled SwiftUI into every CoreAnimation frame the inner scroll
+        // view emitted (`.clipShape` requires an offscreen rounded-rect
+        // mask pass per frame; `.background` adds another SwiftUI-managed
+        // layer per frame). The field's background is transparent — the
+        // parent panel's `surfacePrimary` shows through, matching the
+        // intended visual. Only `.overlay` for the border survives: it's
+        // a single SwiftUI layer above the representable with no clip
+        // mask, no offscreen pass, and SwiftUI treats it as static
+        // (doesn't re-evaluate per CA frame).
+        EditableMessageTextView(
+            text: $text,
+            isFocused: $isFocused,
+            placeholder: placeholder,
+            maxHeight: maxTextFieldHeight,
+            minLineCount: Self.clampMinLines(minLineCount),
+            autofocusOnAppear: autofocusOnAppear,
+            onReturnKey: { hasShift, hasCommand in
+                let action = MessageKeyPolicy.resolveReturnKey(
+                    enterSendsMessage: config.enterSendsMessage,
+                    hasShift: hasShift,
+                    hasCommand: hasCommand,
+                    canSubmit: canSubmit,
+                    isSubmitting: isSubmitting
+                )
+                switch action {
+                case .submit:
+                    handleSubmit()
+                    return true
+                case .insertNewline:
+                    return false
+                case .ignore:
+                    return true
+                }
+            }
+        )
+        .overlay(
+            RoundedRectangle.squircle(CornerRadius.small)
+                .strokeBorder(Colors.borderSubtle, lineWidth: 1)
+        )
+        .accessibilityLabel("Message input")
     }
 
     // MARK: - Attachment Grid
@@ -349,6 +395,11 @@ struct MessageComposer<SettingsMenu: View>: View {
     // MARK: - Helpers
 
     private func handleSubmit() { dictation.flushAndThen(onSubmit) }
+
+    private func presentOpenPanel() {
+        guard let urls = FilePickerWarmup.present(), !urls.isEmpty else { return }
+        stageURLs(urls)
+    }
 
     private func stageURLs(_ urls: [URL]) {
         var rejectedNames: [String] = []
@@ -492,11 +543,12 @@ extension MessageComposer where SettingsMenu == EmbedFilesSettingsButton<EmptyVi
         placeholder: String = "Send a message...",
         canSubmit: Bool,
         isSubmitting: Bool = false,
-        onSubmit: @escaping () -> Void,
+        onSubmit: @MainActor @Sendable @escaping () -> Void,
         onStageAttachment: @escaping (URL) -> StagedAttachment?,
         onRemoveAttachment: @escaping (StagedAttachment) -> Void,
         autofocusOnAppear: Bool = false,
-        textFieldLineLimit: ClosedRange<Int> = 1...6
+        minLineCount: Int = 1,
+        maxTextFieldHeight: CGFloat = MessageComposerLayout.defaultMaxTextFieldHeight
     ) {
         self._text = text
         self._attachments = attachments
@@ -508,7 +560,8 @@ extension MessageComposer where SettingsMenu == EmbedFilesSettingsButton<EmptyVi
         self.onStageAttachment = onStageAttachment
         self.onRemoveAttachment = onRemoveAttachment
         self.autofocusOnAppear = autofocusOnAppear
-        self.textFieldLineLimit = textFieldLineLimit
+        self.minLineCount = minLineCount
+        self.maxTextFieldHeight = maxTextFieldHeight
         self.settingsMenu = EmbedFilesSettingsButton()
     }
 }

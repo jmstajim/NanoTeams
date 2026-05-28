@@ -1,6 +1,6 @@
 import Foundation
 
-struct Run: Codable, Identifiable, Hashable {
+nonisolated struct Run: Codable, Identifiable, Hashable {
     var id: Int
     var createdAt: Date
     var updatedAt: Date
@@ -84,7 +84,7 @@ struct Run: Codable, Identifiable, Hashable {
     }
 }
 
-extension Run {
+nonisolated extension Run {
     // MARK: - Lookup Helpers
 
     /// Build a dictionary of roleBaseID → StepExecution for O(1) lookups.
@@ -203,7 +203,7 @@ extension Run {
 
 // MARK: - Role Status Queries
 
-extension Run {
+nonisolated extension Run {
     /// Roles with advisory completion type that are currently finishable (ready or working).
     func finishableAdvisoryRoles(definitions: [TeamRoleDefinition], isChatMode: Bool = false) -> [(roleID: String, roleName: String)] {
         guard !isChatMode else { return [] }
@@ -230,7 +230,7 @@ extension Run {
 // MARK: - Change Request
 
 /// A formal request from one role to change another role's completed work.
-struct ChangeRequest: Codable, Identifiable, Hashable {
+nonisolated struct ChangeRequest: Codable, Identifiable, Hashable {
     var id: UUID
     var createdAt: Date
     /// Role ID of the role requesting changes.
@@ -267,7 +267,7 @@ struct ChangeRequest: Codable, Identifiable, Hashable {
     }
 }
 
-enum ChangeRequestStatus: String, Codable, Hashable {
+nonisolated enum ChangeRequestStatus: String, Codable, Hashable {
     case pending
     case approved
     case rejected

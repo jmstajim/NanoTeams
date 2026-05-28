@@ -127,11 +127,22 @@ extension LLMExecutionService {
 
     // MARK: - Supervisor Input Handling
 
-    func setNeedsSupervisorInput(stepID: String, question: String, sessionID: String?) async {
-        guard let delegate, let tid = taskIDForStep(stepID) else { return }
+    /// Persists a Supervisor question on the step and transitions it to
+    /// `.needsSupervisorInput`. Returns `true` only when the mutation actually
+    /// landed — i.e. delegate + step→task map + run/step indices all resolved
+    /// AND `mutateTask` persisted. Per CLAUDE.md §7, `mutateTask`'s `Bool`
+    /// alone only proves persistence; the closure can short-circuit and still
+    /// return `true`. Without the capture flag, callers using this as the
+    /// escape hatch from a retry loop (parse-failure cap, drift cap) can
+    /// transition the engine to "needs Supervisor input" with NO question
+    /// rendered — which is strictly worse than the loop they replaced.
+    @discardableResult
+    func setNeedsSupervisorInput(stepID: String, question: String, sessionID: String?) async -> Bool {
+        guard let delegate, let tid = taskIDForStep(stepID) else { return false }
         let clean = question.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        await delegate.mutateTask(taskID: tid) { task in
+        var didApply = false
+        let mutated = await delegate.mutateTask(taskID: tid) { task in
             guard let runIndex = task.runs.indices.last else { return }
             guard let stepIndex = task.runs[runIndex].steps.firstIndex(where: { $0.id == stepID })
             else { return }
@@ -144,8 +155,25 @@ extension LLMExecutionService {
             task.runs[runIndex].steps[stepIndex].status = .needsSupervisorInput
 
             task.runs[runIndex].steps[stepIndex].updatedAt = MonotonicClock.shared.now()
+            didApply = true
         }
 
         executionStates[stepID]?.runningTask = nil
+        let success = mutated && didApply
+        if success {
+            // Backstop trigger: when a parallel role (CLAUDE.md "`TeamEngine`
+            // runs ready roles in parallel, not serially") lands a question
+            // while the engine is already `.needsSupervisorInput` (held there
+            // by another step), `TeamEngine.transition(to:)` suppresses
+            // same-state re-entry (CLAUDE.md "`TeamEngine.transition(to:)`
+            // guards same-state re-entry"). The SwiftUI
+            // `onChange(of: engineState.taskEngineStates)` trigger in
+            // `MainLayoutView.handleEngineStateChanged` then doesn't fire and
+            // queued messages stranded for this newly-waiting role would sit
+            // until an unrelated state change surfaced them. Fire the backstop
+            // directly from the mutation side.
+            delegate.notifyQueuedMessageBackstop(taskID: tid)
+        }
+        return success
     }
 }

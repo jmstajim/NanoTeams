@@ -5,8 +5,9 @@ import SwiftUI
 struct RoleEditorPromptTab: View {
     @Binding var editorState: RoleEditorState
     let mode: EditorMode<TeamRoleDefinition>
-    let toolDefinitions: [ToolDefinitionRecord]
     let team: Team
+
+    @Environment(NTMSOrchestrator.self) private var store
 
     private var currentRoleDefinition: TeamRoleDefinition {
         TeamRoleDefinition(
@@ -80,8 +81,8 @@ struct RoleEditorPromptTab: View {
         .sheet(isPresented: $editorState.showingPromptPreview) {
             PromptPreviewSheet(
                 roleDefinition: currentRoleDefinition,
-                toolDefinitions: toolDefinitions,
-                team: team
+                team: team,
+                workFolder: store.snapshot?.projection
             )
         }
     }
@@ -100,9 +101,9 @@ struct RoleEditorPromptTab: View {
     RoleEditorPromptTab(
         editorState: $editorState,
         mode: .edit(role),
-        toolDefinitions: [],
         team: Team(name: "Preview Team")
     )
     .frame(width: 600, height: 250)
     .background(Colors.surfacePrimary)
+    .environment(NTMSOrchestrator(repository: NTMSRepository()))
 }

@@ -1,7 +1,7 @@
 import Foundation
 
 /// Wire types for NativeLMStudioClient: request/response serialization structs.
-extension NativeLMStudioClient {
+nonisolated extension NativeLMStudioClient {
 
     // MARK: - Polymorphic Input (OCP)
 

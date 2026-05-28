@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Acceptance Service
 
 /// Handles Supervisor acceptance workflow for role work.
-enum AcceptanceService {
+nonisolated enum AcceptanceService {
 
     // MARK: - Acceptance Decision
 
@@ -14,7 +14,7 @@ enum AcceptanceService {
 
     // MARK: - Supervisor Feedback
 
-    struct SupervisorFeedback: Codable, Identifiable {
+    nonisolated struct SupervisorFeedback: Codable, Identifiable {
         var id: UUID
         var createdAt: Date
         var roleID: String
@@ -39,7 +39,7 @@ enum AcceptanceService {
 
 // MARK: - SupervisorFeedback Hashable
 
-extension AcceptanceService.SupervisorFeedback: Hashable {
+nonisolated extension AcceptanceService.SupervisorFeedback: Hashable {
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
     }

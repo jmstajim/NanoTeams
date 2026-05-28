@@ -14,7 +14,7 @@ import Foundation
 ///    `---` that come from Markdown horizontal rules, and mixed digit/dash
 ///    tokens like `-100000` or `-04-21` that have no semantic value as
 ///    vocabulary candidates).
-enum TokenExtractor {
+nonisolated enum TokenExtractor {
     /// Minimum token length we keep — 1-char tokens add cardinality without
     /// signal (users don't search for "k" or "x").
     static let minTokenLength = 2

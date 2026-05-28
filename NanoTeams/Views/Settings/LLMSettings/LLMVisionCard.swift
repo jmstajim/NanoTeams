@@ -86,16 +86,16 @@ struct LLMVisionCard: View {
                     onTokenSaveError: onTokenSaveError,
                     onTokenLoadError: onTokenLoadError,
                     onURLCommit: {
-                        Task { await modelCatalog.loadIfNeeded(url: effectiveFetchURL) }
+                        Task { await modelCatalog.loadIfNeeded(url: effectiveFetchURL, visionOnly: true) }
                     },
-                    availableModels: modelCatalog.models(for: effectiveFetchURL),
-                    isFetchingModels: modelCatalog.isFetching(effectiveFetchURL),
+                    availableModels: modelCatalog.models(for: effectiveFetchURL, visionOnly: true),
+                    isFetchingModels: modelCatalog.isFetching(effectiveFetchURL, visionOnly: true),
                     status: EndpointStatus.resolve(
-                        fetchError: modelCatalog.error(for: effectiveFetchURL),
-                        isFetching: modelCatalog.isFetching(effectiveFetchURL)
+                        fetchError: modelCatalog.error(for: effectiveFetchURL, visionOnly: true),
+                        isFetching: modelCatalog.isFetching(effectiveFetchURL, visionOnly: true)
                     ),
                     onRefreshModels: {
-                        Task { await modelCatalog.refresh(url: effectiveFetchURL) }
+                        Task { await modelCatalog.refresh(url: effectiveFetchURL, visionOnly: true) }
                     }
                 )
 
@@ -114,7 +114,7 @@ struct LLMVisionCard: View {
             // keystroke. The Refresh button + URL field's onCommit are the
             // user-driven re-fetch paths.
             guard config.visionEnabled else { return }
-            await modelCatalog.loadIfNeeded(url: effectiveFetchURL)
+            await modelCatalog.loadIfNeeded(url: effectiveFetchURL, visionOnly: true)
         }
     }
 }

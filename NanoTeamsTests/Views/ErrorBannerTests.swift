@@ -116,6 +116,7 @@ final class ErrorBannerModifierTests: XCTestCase {
 
 // MARK: - ErrorBannerView Tests
 
+@MainActor
 final class ErrorBannerViewTests: XCTestCase {
 
     func testOnDismiss_defaultIsNoOp() {

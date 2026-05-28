@@ -536,10 +536,10 @@ final class NTMSTaskLogicTests: XCTestCase {
             """
             Implement import flow
 
-            --- Clipped Text ---
+            ## Clipped Text
             Use the selected API response shape
 
-            --- Attached Files ---
+            ## Attached Files
             - .nanoteams/tasks/123/attachments/spec.pdf
             - .nanoteams/tasks/123/attachments/mock.png
             """
@@ -554,7 +554,7 @@ final class NTMSTaskLogicTests: XCTestCase {
 
         XCTAssertEqual(
             task.effectiveSupervisorBrief,
-            "--- Clipped Text ---\nSelected text from app"
+            "## Clipped Text\nSelected text from app"
         )
     }
 
@@ -585,7 +585,7 @@ final class NTMSTaskLogicTests: XCTestCase {
 
         XCTAssertEqual(
             task.effectiveSupervisorBrief,
-            "--- Attached Files ---\n- .nanoteams/tasks/1/attachments/spec.pdf"
+            "## Attached Files\n- .nanoteams/tasks/1/attachments/spec.pdf"
         )
     }
 
@@ -597,7 +597,7 @@ final class NTMSTaskLogicTests: XCTestCase {
 
         XCTAssertEqual(
             task.effectiveSupervisorBrief,
-            "Build feature\n\n--- Attached Files ---\n- file.pdf"
+            "Build feature\n\n## Attached Files\n- file.pdf"
         )
     }
 
@@ -666,10 +666,10 @@ final class NTMSTaskLogicTests: XCTestCase {
             """
             Goal
 
-            --- Clipped Text (1 of 2) ---
+            ## Clipped Text \u{2014} 1 of 2
             First clip
 
-            --- Clipped Text (2 of 2) ---
+            ## Clipped Text \u{2014} 2 of 2
             Second clip
             """
         )

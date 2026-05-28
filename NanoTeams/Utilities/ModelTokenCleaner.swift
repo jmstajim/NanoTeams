@@ -5,7 +5,7 @@ import Foundation
 /// Some models (gpt-oss in LM Studio, DeepSeek) emit internal tokens like `<|channel|>`,
 /// `<|constrain|>`, `<|message|>` as plain text when their tool calling mechanism fails
 /// or in edge cases. This utility strips those tokens from content.
-enum ModelTokenCleaner {
+nonisolated enum ModelTokenCleaner {
     /// Strip model-specific tokens (e.g. `<|channel|>`, `<|constrain|>`) from content.
     ///
     /// Removes all `<|...|>` style tokens, which are internal to the model and

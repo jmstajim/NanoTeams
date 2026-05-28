@@ -138,15 +138,27 @@ final class QuickCaptureController {
         if isPanelVisible {
             currentVisualMode = .newTask
             updatePanelContent()
+            // `updatePanelContent` rebuilds the NSHostingView, which drops the
+            // AppKit first responder; the panel's retry loop reacquires it
+            // (SwiftUI `@FocusState` inside `NSHostingView` is unreliable).
+            panel?.refocusInputField()
         } else {
             Task { await showPanel(withClip: false) }
         }
     }
 
     /// Toggles the overlay: hides if visible, shows if hidden.
+    ///
+    /// The warm path (work folder already open, no clipboard capture) runs
+    /// synchronously to avoid the Task-hop dispatch latency. The cold path
+    /// awaits `bootstrapDefaultStorageIfNeeded` first.
     func togglePanel() {
         if isPanelVisible {
             dismissPanel()
+            return
+        }
+        if store?.workFolderURL != nil {
+            presentPanelSync()
         } else {
             Task { await showPanel(withClip: false) }
         }
@@ -160,19 +172,30 @@ final class QuickCaptureController {
             await store?.bootstrapDefaultStorageIfNeeded()
         }
 
-        // Resolve mode before clipboard handling so clips go to the right destination
+        if withClip {
+            // Resolve mode once so clips go to the right destination
+            // (answer vs new-task fields). `presentPanelSync` resolves
+            // again — that call is sub-ms.
+            let preResolvedMode = resolveMode()
+            let preNeedsAnswerMode: Bool
+            if case .supervisorAnswer = preResolvedMode { preNeedsAnswerMode = true } else { preNeedsAnswerMode = false }
+            await captureClipboardContent(mode: preResolvedMode, needsAnswerMode: preNeedsAnswerMode)
+        }
+
+        presentPanelSync()
+    }
+
+    /// Synchronous panel-show pipeline. Shared by the warm `togglePanel` path
+    /// (called directly) and the async `showPanel` path (called after
+    /// bootstrap + optional clipboard capture).
+    private func presentPanelSync() {
         let resolvedMode = resolveMode()
         let needsAnswerMode: Bool
         if case .supervisorAnswer = resolvedMode { needsAnswerMode = true } else { needsAnswerMode = false }
 
-        if withClip {
-            await captureClipboardContent(mode: resolvedMode, needsAnswerMode: needsAnswerMode)
-        }
-
-        // Already visible — clip was appended above, bindings update the UI
+        // Already visible — bindings update the UI directly.
         guard !isPanelVisible else { return }
 
-        // Detect mode change and rebuild content if needed
         let newVisualMode = QuickCaptureVisualMode(resolvedMode)
         let modeChanged = newVisualMode != currentVisualMode
         applyAnswerModeTransition(needsAnswerMode: needsAnswerMode, resolvedMode: resolvedMode)
@@ -184,14 +207,19 @@ final class QuickCaptureController {
         if isNewPanel || modeChanged {
             updatePanelContent()
         }
-        capturePanel.showWithAnimation()
+        // `expectsFocusableField` is passed as a parameter (not a panel property)
+        // so it locks in at show-time — a concurrent re-show can't race the
+        // in-flight retry through a mutable flag. Loader-only working mode is
+        // the single legitimate "no field" case; every other mode renders a
+        // composer whose absence would be a real form-rendering regression.
+        capturePanel.show(expectsFocusableField: resolvedMode.expectsFocusableField)
         isPanelVisible = true
     }
 
     /// Hides the overlay. Preserves both task draft and answer drafts across open/close cycles.
     /// Answer-mode state is saved per-task so reopening restores attachments/clips.
     func dismissPanel() {
-        panel?.hideWithAnimation()
+        panel?.hide()
         isPanelVisible = false
         forceNewTaskMode = false
         if formState.isInAnswerMode {
@@ -202,25 +230,32 @@ final class QuickCaptureController {
     }
 
     /// Rebuilds panel content if visible and mode or active task has changed.
-    func refreshPanelIfVisible() {
+    ///
+    /// Pass `explicitTaskNavigation: true` when the caller is an explicit user
+    /// navigation INTO a task (sidebar click). Passive refreshes (engine ticks,
+    /// status changes, Watchtower nav, close-at observers) use the default.
+    func refreshPanelIfVisible(explicitTaskNavigation: Bool = false) {
         guard isPanelVisible else { return }
 
-        // Detect task switch: even if visual mode is the same, the payload/context may differ
         let currentTaskID = store?.activeTaskID
         let taskChanged = currentTaskID != lastRefreshedTaskID
         lastRefreshedTaskID = currentTaskID
 
-        // Navigating INTO a specific task cancels force-new-task mode — the panel should
-        // reflect that task's state. Watchtower (currentTaskID == nil) preserves the flag
-        // so the new-task form stays visible after `showNewTask()`.
-        if taskChanged, currentTaskID != nil {
+        // Two triggers for clearing forceNewTaskMode:
+        //   (a) taskChanged — passive refresh detected the active task changed.
+        //   (b) explicitTaskNavigation — explicit re-selection covers the case
+        //       where `switchTask(X)` short-circuits because activeTaskID is
+        //       already X, so taskChanged stays false.
+        // Watchtower (currentTaskID == nil) preserves the flag so the new-task
+        // form stays visible.
+        if currentTaskID != nil, taskChanged || explicitTaskNavigation {
             forceNewTaskMode = false
         }
 
         let resolvedMode = resolveMode()
         let newVisualMode = QuickCaptureVisualMode(resolvedMode)
 
-        if newVisualMode != currentVisualMode || taskChanged {
+        if newVisualMode != currentVisualMode || taskChanged || explicitTaskNavigation {
             let needsAnswerMode = newVisualMode == .answer
             applyAnswerModeTransition(needsAnswerMode: needsAnswerMode, resolvedMode: resolvedMode)
             currentVisualMode = newVisualMode
@@ -411,6 +446,34 @@ final class QuickCaptureController {
             return false
         }
         formState.appendQueuedMessage(message, for: taskID)
+        // Delegation-interrupt path: when the message is targeted at a role
+        // that's currently mid-`delegate_to_team`, the role's tool loop is
+        // suspended on `awaitTaskTerminalState` — the normal queue
+        // consumption paths (next-iteration injection, supervisor-input
+        // backstop) can't fire because the role isn't iterating and its
+        // engine isn't transitioning. Wake the handler instead so it can
+        // pause the child engine and surface the message text inside a
+        // `paused_by_supervisor` success envelope on the parent role's next
+        // iteration. This is the "team is looping, stop it" feedback loop.
+        if let role = targetRoleID,
+           let store,
+           store.notifyDelegationInterrupt(
+               parentTaskID: taskID,
+               parentRoleID: role,
+               text: text
+           )
+        {
+            // The interrupt embedded `text` in the paused envelope returned
+            // to the role. Drop the queue entry now — without this the
+            // role's next iteration would hit `injectQueuedSupervisorMessage`
+            // and consume the same message a second time, delivering the
+            // Supervisor's guidance twice (once via the envelope, once as a
+            // fresh user turn). Skip `tryFlushQueuedMessages` since the
+            // role is mid-delegation, not in any state the flush paths
+            // handle.
+            formState.removeQueuedMessage(withID: message.id, for: taskID)
+            return true
+        }
         // Drive the wake-up immediately so a `.paused` engine doesn't leave the
         // message hanging until the next unrelated `engineState` onChange. Cheap
         // for `.running`/`.needsAcceptance` (default branch is no-op); for
@@ -756,6 +819,21 @@ final class QuickCaptureController {
         newPanel.onPanelHidden = { [weak self] in
             self?.isPanelVisible = false
         }
+        newPanel.onFocusRestorationFailed = { [weak self] in
+            // Panel saw a focusable field but AppKit refused
+            // `makeFirstResponder` across every retry — the caret never
+            // landed and keystrokes will be dropped. Surface so the user
+            // isn't stuck typing into the void.
+            self?.store?.lastErrorMessage = "Quick Capture could not focus the input field. Click into the field again."
+        }
+        // AppKit-side Escape route. `cancelDraft` performs the staged-attachment
+        // cleanup before calling `dismissPanel`, so we host this here rather
+        // than via a SwiftUI hidden Cancel button — that pattern's `.background
+        // { Button(...) }` wrapper made the composer re-evaluate per CA frame
+        // during NSScrollView scroll (CLAUDE.md Swift Style #50).
+        newPanel.onCancelKeyPressed = { [weak self] in
+            self?.cancelDraft()
+        }
         return newPanel
     }
 
@@ -770,7 +848,7 @@ final class QuickCaptureController {
             currentMode = resolveMode()
         }
 
-        let submitAction: () -> Void
+        let submitAction: @MainActor @Sendable () -> Void
         if case .supervisorAnswer = currentMode {
             submitAction = { [weak self] in
                 Task { @MainActor in await self?.submitAnswer() }
@@ -778,9 +856,11 @@ final class QuickCaptureController {
         } else if case .taskWorking(_, let isChatMode) = currentMode {
             // Chat-mode working lets the user queue a message for the next prompt.
             // Non-chat working is loader-only — submit is disabled.
-            submitAction = isChatMode
-                ? { [weak self] in self?.submitQueuedMessageFromForm() }
-                : {}
+            if isChatMode {
+                submitAction = { [weak self] in self?.submitQueuedMessageFromForm() }
+            } else {
+                submitAction = {}
+            }
         } else {
             submitAction = { [weak self] in
                 Task { @MainActor in await self?.createTask() }
@@ -829,6 +909,14 @@ final class QuickCaptureController {
         get { lastRefreshedTaskID }
         set { lastRefreshedTaskID = newValue }
     }
+    /// Access to the underlying panel for wiring tests
+    /// (`QuickCaptureControllerWiringTests` — assert
+    /// `show(expectsFocusableField:)` is called with the value derived from
+    /// the resolved mode).
+    var _testPanel: QuickCapturePanel? { panel }
+    /// Drives the synchronous show pipeline from a test, bypassing the async
+    /// `showPanel`/`togglePanel` paths' clipboard capture and hotkey wiring.
+    func _testPresentPanelSync() { presentPanelSync() }
     #endif
     nonisolated deinit {}
 

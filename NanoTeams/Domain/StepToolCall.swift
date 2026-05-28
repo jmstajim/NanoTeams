@@ -1,6 +1,6 @@
 import Foundation
 
-struct StepToolCall: Codable, Identifiable, Hashable {
+nonisolated struct StepToolCall: Codable, Identifiable, Hashable {
     var id: UUID
     var createdAt: Date
     /// Optional provider tool_call id (OpenAI field).

@@ -20,7 +20,7 @@ import AppKit
 ///
 /// All extract methods return a silent fallback message on failure —
 /// `"[Could not extract text from <filename>: <reason>]"`.
-enum DocumentTextExtractor {
+nonisolated enum DocumentTextExtractor {
 
     /// Supported export formats for `create_artifact(format:)`.
     enum ExportFormat: String {
@@ -35,11 +35,69 @@ enum DocumentTextExtractor {
 
     // MARK: - Text Extraction
 
+    /// Process-lifetime cache for extracted document text. Keyed by absolute
+    /// path with a stored `(mtime, size)` so a file changed on disk reports a
+    /// miss and re-extracts. `NSCache` is documented thread-safe; entries are
+    /// fully immutable, so `nonisolated(unsafe)` is sound.
+    ///
+    /// Bounds: `countLimit=128` AND `totalCostLimit≈256MB`. Without the cost
+    /// limit, 128 entries of multi-MB Office documents could pin > 2 GB of
+    /// RAM — `NSCache` only enforces count when no cost is set.
+    nonisolated(unsafe) private static let cache: NSCache<NSString, CachedDocumentText> = {
+        let c = NSCache<NSString, CachedDocumentText>()
+        c.countLimit = 128
+        c.totalCostLimit = 256 * 1024 * 1024
+        return c
+    }()
+
+    nonisolated private final class CachedDocumentText: Sendable {
+        let text: String
+        let mtime: Date
+        let size: UInt64
+        init(text: String, mtime: Date, size: UInt64) {
+            self.text = text
+            self.mtime = mtime
+            self.size = size
+        }
+    }
+
+    /// Reads `(mtime, size)` via `lstat`. Returns `nil` on permission errors,
+    /// missing files, or network-volume stalls. Loud diagnostic so a regression
+    /// that silently disables the cache for a whole class of files (e.g. a
+    /// new sandbox restriction) is visible in the network log.
+    nonisolated private static func mtimeAndSize(for url: URL) -> (mtime: Date, size: UInt64)? {
+        do {
+            let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
+            guard let mtime = attrs[.modificationDate] as? Date else { return nil }
+            let size = (attrs[.size] as? NSNumber)?.uint64Value ?? 0
+            return (mtime, size)
+        } catch {
+            // Per-call extraction still works (we just bypass the cache).
+            // Surface so a stat-failing class of files is visible in logs.
+            NSLog("DocumentTextExtractor: stat failed for \(url.lastPathComponent): \(error.localizedDescription) — cache disabled for this read")
+            return nil
+        }
+    }
+
     /// Returns extracted plain text, or a `[Could not extract text ...]` message on failure.
     /// Returns `nil` only if the extension is not a supported document format (caller falls back to UTF-8).
     static func extractText(from fileURL: URL) -> String? {
         let ext = fileURL.pathExtension.lowercased()
         guard DocumentConstants.supportedReadExtensions.contains(ext) else { return nil }
+
+        // mtime+size cache lookup. Stat lives one block up because we use the
+        // same values for both the hit/miss check and the write back, so
+        // there's no TOCTOU window where the file changes between miss and
+        // write — even if it does, the next call will re-stat and miss again.
+        let key = fileURL.path as NSString
+        let stat = mtimeAndSize(for: fileURL)
+        if let stat,
+           let cached = cache.object(forKey: key),
+           cached.mtime == stat.mtime,
+           cached.size == stat.size
+        {
+            return cached.text
+        }
 
         let result: String
         switch ext {
@@ -64,11 +122,29 @@ enum DocumentTextExtractor {
         }
 
         let maxBytes = DocumentConstants.maxExtractionBytes
+        let finalResult: String
         if result.utf8.count > maxBytes {
             let head = truncateToUTF8Bytes(result, maxBytes: maxBytes)
-            return head + "\n\n... (truncated at \(maxBytes) bytes)"
+            finalResult = head + "\n\n... (truncated at \(maxBytes) bytes)"
+        } else {
+            finalResult = result
         }
-        return result
+
+        // Only cache successful extractions. Failure messages are typically
+        // transient (locked file, disk error, malformed XML at boot time) —
+        // pinning them would defeat retry.
+        if let stat, !isFailureMessage(finalResult) {
+            cache.setObject(
+                CachedDocumentText(text: finalResult, mtime: stat.mtime, size: stat.size),
+                forKey: key,
+                // Cost = UTF-8 byte count; pairs with `totalCostLimit`. NSCache
+                // evicts least-recently-used entries when the sum exceeds the
+                // cap, so an unexpectedly large doc can't pin the cache.
+                cost: finalResult.utf8.count
+            )
+        }
+
+        return finalResult
     }
 
     /// Truncates `s` to at most `maxBytes` UTF-8 bytes, snapping back to the
@@ -417,7 +493,7 @@ enum DocumentTextExtractor {
 // MARK: - XML Parsers
 
 /// Collects text content from all occurrences of a specific XML element.
-private final class XMLTextCollector: NSObject, XMLParserDelegate {
+nonisolated private final class XMLTextCollector: NSObject, XMLParserDelegate {
     private let targetTag: String
     private(set) var texts: [String] = []
     private var isInTag = false
@@ -455,7 +531,7 @@ private final class XMLTextCollector: NSObject, XMLParserDelegate {
 /// Parses XLSX `sharedStrings.xml` into an array of string values.
 /// Handles rich-text entries (`<si><r><t>bold</t></r><r><t> normal</t></r></si>`)
 /// by concatenating all `<t>` text within each `<si>` element.
-private final class SharedStringsParser: NSObject, XMLParserDelegate {
+nonisolated private final class SharedStringsParser: NSObject, XMLParserDelegate {
     private(set) var strings: [String] = []
     private var inSI = false
     private var inT = false
@@ -492,7 +568,7 @@ private final class SharedStringsParser: NSObject, XMLParserDelegate {
 }
 
 /// Parses XLSX worksheet XML into a 2D array of cell display strings.
-private final class XLSXSheetParser: NSObject, XMLParserDelegate {
+nonisolated private final class XLSXSheetParser: NSObject, XMLParserDelegate {
     private let sharedStrings: [String]
     private(set) var rows: [[String]] = []
     private var currentRow: [String] = []
@@ -573,7 +649,7 @@ private final class XLSXSheetParser: NSObject, XMLParserDelegate {
 /// Parses DOCX `word/document.xml` into plain text.
 /// Joins `<w:t>` contents; `<w:p>` boundaries emit `"\n"`. `<w:br/>` emits
 /// a newline inside a paragraph. Ignores drawings and everything outside `<w:t>`.
-private final class DOCXTextCollector: NSObject, XMLParserDelegate {
+nonisolated private final class DOCXTextCollector: NSObject, XMLParserDelegate {
     private var accumulator = ""
     private var inText = false
     private var runBuffer = ""
@@ -640,7 +716,7 @@ private final class DOCXTextCollector: NSObject, XMLParserDelegate {
 /// `<text:notes-configuration>`, and similar metadata wrappers is suppressed
 /// — their child `<text:p>` elements would otherwise mix revision/annotation
 /// content into the main body.
-private final class ODTTextCollector: NSObject, XMLParserDelegate {
+nonisolated private final class ODTTextCollector: NSObject, XMLParserDelegate {
     private var accumulator = ""
     private var textDepth = 0         // > 0 inside text:p / text:h / text:span
     private var suppressionDepth = 0  // > 0 inside annotation / tracked-changes / notes metadata

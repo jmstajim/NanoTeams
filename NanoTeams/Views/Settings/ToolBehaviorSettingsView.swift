@@ -22,7 +22,7 @@ struct ToolBehaviorSettingsView: View {
     private var readFileCard: some View {
         @Bindable var config = config
         return SettingsCard(
-            header: "`read_file`",
+            header: "File reads",
             systemImage: "doc.text"
         ) {
             VStack(spacing: 0) {
@@ -34,7 +34,7 @@ struct ToolBehaviorSettingsView: View {
                     step: 25
                 )
 
-                Text("When a file exceeds this line count, `read_file` returns an error and the LLM is directed to use `read_lines` with explicit ranges. Set to 0 (Unlimited) to allow `read_file` to read any file regardless of size.")
+                Text("Caps the number of lines a single `read_file` or `read_lines` call can return. `read_file` rejects oversized files with a hint pointing the LLM at `read_lines`; `read_lines` silently truncates oversized ranges (the LLM paginates via `start_line`). Set to 0 (Unlimited) to disable the cap.")
                     .font(Typography.caption)
                     .foregroundStyle(Colors.textTertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)

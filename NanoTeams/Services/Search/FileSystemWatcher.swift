@@ -9,7 +9,7 @@ import CoreServices
 /// Used by `SearchIndexCoordinator` to trigger signature checks when the work
 /// folder changes. The callback is fired no more than once per `debounce`
 /// window even if FSEvents reports a burst of changes.
-final class FileSystemWatcher: @unchecked Sendable {
+nonisolated final class FileSystemWatcher: @unchecked Sendable {
     typealias Handler = @Sendable () -> Void
 
     private let paths: [URL]

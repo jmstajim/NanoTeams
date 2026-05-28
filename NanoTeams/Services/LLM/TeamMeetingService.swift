@@ -3,7 +3,7 @@ import Foundation
 /// Service for managing team meeting lifecycle.
 /// Handles meeting creation, turn completion, conclusion, and summary generation.
 /// Streaming and message construction are in MeetingStreamingService.
-struct TeamMeetingService {
+nonisolated struct TeamMeetingService {
 
     /// Context required for a team meeting
     struct MeetingContext {
@@ -15,8 +15,43 @@ struct TeamMeetingService {
         let availableArtifacts: [Artifact]
         let artifactReader: (Artifact) -> String?
         let team: Team?
+        /// The **effective** coordinator for this meeting: the team's
+        /// designated coordinator (`team.settings.meetingCoordinatorRoleID`)
+        /// when set, otherwise the meeting's initiating role (Auto mode =
+        /// initiator-as-coordinator of meetings they start). Resolved at the
+        /// call site via `LLMExecutionService.effectiveCoordinator(team:initiator:)`
+        /// so this stays non-optional and the runtime never branches on nil.
         let coordinatorRole: Role
         let limits: TeamLimits
+        /// App-wide instruction appended to the resolved system prompt.
+        /// Default `""` keeps existing test call sites compiling.
+        let globalContext: String
+
+        init(
+            topic: String,
+            initiatedBy: Role,
+            participants: [Role],
+            additionalContext: String?,
+            task: NTMSTask,
+            availableArtifacts: [Artifact],
+            artifactReader: @escaping (Artifact) -> String?,
+            team: Team?,
+            coordinatorRole: Role,
+            limits: TeamLimits,
+            globalContext: String = ""
+        ) {
+            self.topic = topic
+            self.initiatedBy = initiatedBy
+            self.participants = participants
+            self.additionalContext = additionalContext
+            self.task = task
+            self.availableArtifacts = availableArtifacts
+            self.artifactReader = artifactReader
+            self.team = team
+            self.coordinatorRole = coordinatorRole
+            self.limits = limits
+            self.globalContext = globalContext
+        }
     }
 
     /// Result of a single LLM streaming call within a meeting turn.

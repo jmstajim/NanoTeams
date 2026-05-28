@@ -1,7 +1,7 @@
 import Foundation
 
 /// Builds chat messages and prompts for LLM interactions.
-struct PromptBuilder {
+nonisolated struct PromptBuilder {
 
     /// Context required for building prompts.
     struct Context {
@@ -13,6 +13,31 @@ struct PromptBuilder {
         let artifactReader: (Artifact) -> String?
         let activeTeam: Team?
         let roleDefinition: TeamRoleDefinition?
+        /// App-wide instruction appended to the resolved system prompt.
+        /// Default `""` keeps existing test call sites compiling.
+        let globalContext: String
+
+        init(
+            task: NTMSTask,
+            step: StepExecution,
+            stepIndex: Int,
+            run: Run,
+            workFolder: WorkFolderProjection?,
+            artifactReader: @escaping (Artifact) -> String?,
+            activeTeam: Team?,
+            roleDefinition: TeamRoleDefinition?,
+            globalContext: String = ""
+        ) {
+            self.task = task
+            self.step = step
+            self.stepIndex = stepIndex
+            self.run = run
+            self.workFolder = workFolder
+            self.artifactReader = artifactReader
+            self.activeTeam = activeTeam
+            self.roleDefinition = roleDefinition
+            self.globalContext = globalContext
+        }
     }
 
     /// Builds the system prompt and initial chat messages for a step.
@@ -28,7 +53,7 @@ struct PromptBuilder {
         let run = context.run
         let stepIndex = context.stepIndex
         let toolNames = tools.map { $0.name }.sorted()
-        let toolList = toolNames.isEmpty ? "No tools are available for this step." : ""
+        let toolList = renderToolListPlaceholder(toolNames: toolNames)
 
         // Build role guidance
         let roleGuidance = rolePrompt(for: step.role, roleDefinition: context.roleDefinition)
@@ -44,11 +69,11 @@ struct PromptBuilder {
             teamArtifacts: context.activeTeam?.artifacts ?? []
         )
 
-        // Build context awareness guidance. The resource-tracking sentence is
+        // Build conversation-mechanics guidance. The resource-tracking sentence is
         // only emitted when the role can actually produce tagged tool results.
         let toolNameSet = Set(toolNames)
         let hasFileReadTools = !toolNameSet.isDisjoint(with: ToolHandlerRegistry.fileReadTools)
-        let contextAwareness = buildContextAwarenessGuidance(hasFileReadTools: hasFileReadTools)
+        let conversationMechanics = buildConversationMechanicsGuidance(hasFileReadTools: hasFileReadTools)
 
         // Resolve system prompt from team template
         let template = context.activeTeam?.systemPromptTemplate ?? SystemTemplates.genericTemplate
@@ -61,14 +86,34 @@ struct PromptBuilder {
             "stepInfo": "You are step \(stepIndex + 1) of \(run.steps.count).",
             "positionContext": positionContext,
             "roleGuidance": roleGuidance,
-            "contextAwareness": contextAwareness,
+            "conversationMechanics": conversationMechanics,
+            // Backwards-compat alias for stored team templates created before the
+            // 2026-05 rename. Stored teams.json files round-trip user-edited
+            // `systemPromptTemplate` text — renaming the placeholder without an
+            // alias would leave a literal `{contextAwareness}` token in the
+            // rendered prompt of every pre-existing team.
+            "contextAwareness": conversationMechanics,
             "workFolderContext": workFolderContext,
             "toolList": toolList,
             "expectedArtifacts": expectedArtifactsLine,
             "artifactInstructions": artifactInstructionsBlock,
+            "globalContext": formatGlobalContext(context.globalContext),
+            // Merged tool block: when role has tools → Harmony format spec + per-tool
+            // entries; when role has none → "no tools" notice. One section in the
+            // template covers both cases, so the `## Tool Calling` header is never
+            // orphan-stripped and the editor's `{toolCalling}` chip always ships
+            // meaningful content.
+            "toolCalling": Self.formatToolCallingBlock(tools: tools),
+            // Backwards-compat alias for stored templates created before the
+            // 2026-05 rename (was `{toolCallingBlock}`).
+            "toolCallingBlock": Self.formatToolCallingBlock(tools: tools),
         ]
 
-        var system = TemplateResolver.resolve(template, placeholders: placeholders)
+        let system = TemplateResolver.resolveSystemPrompt(
+            template,
+            placeholders: placeholders,
+            globalContext: context.globalContext
+        )
 
         // Tool schemas are sent via the API request — no need to duplicate in system prompt
 
@@ -170,17 +215,68 @@ struct PromptBuilder {
         return SystemTemplates.roles[role.baseID]?.prompt ?? ""
     }
 
-    /// Builds context-awareness guidance for the system prompt. Kept short on
-    /// purpose — verbose self-help rules are ignored by small models and waste
-    /// tokens across every fresh chain. The resource-tracking half is only
-    /// injected when the role actually has file-read tools that produce tags.
-    static func buildContextAwarenessGuidance(hasFileReadTools: Bool) -> String {
+    /// `{toolList}` is deprecated as of 2026-05 — the no-tools notice and the
+    /// Harmony tool catalog were merged into a single `{toolCalling}` chip
+    /// (see `PromptBuilder.buildChatMessages` placeholders dict; the legacy
+    /// `{toolCallingBlock}` placeholder name resolves to the same value for
+    /// backwards-compat with stored teams.json files). Returns "" so any
+    /// legacy stored template with `## Tools\n{toolList}` gets stripped
+    /// quietly via `TemplateResolver.stripOrphanHeaders`. Kept on the
+    /// placeholder list so legacy chips don't render as a literal `{toolList}`
+    /// token in the editor / wire payload.
+    static func renderToolListPlaceholder(toolNames _: [String]) -> String {
+        ""
+    }
+
+    /// Returns the bare trimmed `globalContext` value (no `## Global guidance`
+    /// wrap). The `## Global guidance` header lives in the template — author
+    /// renames / repositions it there. Empty input returns `""` so the
+    /// surrounding template header gets stripped by
+    /// `TemplateResolver.stripOrphanHeaders`.
+    static func formatGlobalContext(_ raw: String) -> String {
+        raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Single source of truth for the merged `{toolCalling}` chip value.
+    /// Returns the Harmony format spec + per-tool entries when the role has
+    /// tools; returns the "no tools available" notice otherwise. Same value
+    /// powers the deprecated `{toolCallingBlock}` alias for stored templates.
+    ///
+    /// Function name retains `Block` suffix from the pre-rename era (was
+    /// `formatToolCallingBlock` when `{toolCallingBlock}` was the primary
+    /// chip name). The PRIMARY chip is now `{toolCalling}`; the function
+    /// name stayed to minimise churn at the call sites.
+    static func formatToolCallingBlock(tools: [ToolSchema]) -> String {
+        tools.isEmpty
+            ? "None available — respond directly without tool calls."
+            : NativeLMStudioClient.buildToolSchemaBody(tools: tools)
+    }
+
+    /// Returns the bare body of the conversation-mechanics section (no
+    /// `## Conversation mechanics` wrap). The header lives in the template
+    /// — author controls naming and position. NOT role guidance: the content
+    /// is invariant across roles. The resource-tracking sentence is only
+    /// emitted when the role actually has file-read tools that produce tags.
+    static func buildConversationMechanicsGuidance(hasFileReadTools: Bool) -> String {
         var parts = [
             "The Supervisor Task and upstream artifacts are already in the conversation — act on them directly, don't re-search or re-summarize.",
         ]
         if hasFileReadTools {
+            // TODO(memories-disabled, 2026-05-19): paired with the injection guard
+            // in `LLMExecutionService+ToolLoopState.swift` (search for
+            // `isMemoriesInjectionEnabled`). The rolling `## Memories vN` index is
+            // not currently appended to the conversation, so the prior wording
+            // ("The Memories index at the end of the conversation marks stale
+            // entries — trust CURRENT tags, don't re-read unchanged content.")
+            // pointed the model at a section that no longer exists. Tag emission
+            // in tool results (`{"tag":"<§R1§>", ...}`) and the compact unchanged
+            // envelope (`{"status":"unchanged","ref":"<§R1§>","_hint":"Do NOT
+            // re-read. See <§R1§> above."}`) are intentionally still active — the
+            // per-result hint covers the de-dup case without the rolling index.
+            // To restore the index sentence, flip `isMemoriesInjectionEnabled`
+            // back to `true` and re-append the original wording here.
             parts.append(
-                "Tool results carry tags: <§R1§> reads, <§E1§> edits, <§W1§> writes, <§B1§> builds, <§G1§> git, <§P1§> plans. The MEMORIES index at the end of the conversation marks stale entries — trust CURRENT tags, don't re-read unchanged content."
+                "Tool results carry tags: <§R1§> reads, <§E1§> edits, <§W1§> writes, <§B1§> builds, <§G1§> git, <§P1§> plans. Repeat reads of an unchanged resource return `{\"status\":\"unchanged\",\"ref\":\"<§Tag§>\"}` — locate the referenced tag in the earlier tool result instead of re-reading."
             )
         }
         return parts.joined(separator: "\n")

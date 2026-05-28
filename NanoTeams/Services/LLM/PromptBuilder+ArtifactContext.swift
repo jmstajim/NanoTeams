@@ -1,7 +1,7 @@
 import Foundation
 
 /// Artifact-related prompt building: Supervisor task, required artifacts, artifact sections.
-extension PromptBuilder {
+nonisolated extension PromptBuilder {
 
     /// Builds the Supervisor Task section.
     static func buildSupervisorTaskSection(supervisorTask: String) -> String? {

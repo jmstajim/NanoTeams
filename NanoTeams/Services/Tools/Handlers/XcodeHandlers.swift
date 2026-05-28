@@ -5,7 +5,7 @@ private typealias JS = JSONSchema
 
 // MARK: - run_xcodebuild
 
-struct RunXcodebuildTool: ToolHandler {
+nonisolated struct RunXcodebuildTool: ToolHandler {
     static let name = TN.runXcodebuild
     static let schema = ToolSchema(
         name: TN.runXcodebuild,
@@ -109,7 +109,7 @@ struct RunXcodebuildTool: ToolHandler {
 
 // MARK: - run_xcodetests
 
-struct RunXcodetestsTool: ToolHandler {
+nonisolated struct RunXcodetestsTool: ToolHandler {
     static let name = TN.runXcodetests
     static let schema = ToolSchema(
         name: TN.runXcodetests,

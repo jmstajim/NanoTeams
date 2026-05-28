@@ -105,31 +105,6 @@ final class TeamBoardLogicTests: XCTestCase {
         XCTAssertTrue(state == .pending || state == nil, "Nil should show Start Run")
     }
 
-    /// Keyboard shortcut (togglePauseResume) must match toolbar button logic.
-    func testKeyboardShortcut_matchesToolbar_allStates() {
-        // The keyboard shortcut uses: .running/.needsSupervisorInput/.needsAcceptance → pause,
-        // .paused → resume, .pending → start. All other states: no action.
-        for state in TeamEngineState.allCases {
-            let toolbarShowsPause = state == .running || state == .needsSupervisorInput || state == .needsAcceptance
-            let toolbarShowsResume = state == .paused
-            let toolbarShowsStart = state == .pending
-
-            // Keyboard: pause for same states
-            let keyboardPauses = state == .running || state == .needsSupervisorInput || state == .needsAcceptance
-            // Keyboard: resume for .paused
-            let keyboardResumes = state == .paused
-            // Keyboard: start for .pending
-            let keyboardStarts = state == .pending
-
-            XCTAssertEqual(toolbarShowsPause, keyboardPauses,
-                           "Pause mismatch for \(state)")
-            XCTAssertEqual(toolbarShowsResume, keyboardResumes,
-                           "Resume mismatch for \(state)")
-            XCTAssertEqual(toolbarShowsStart, keyboardStarts,
-                           "Start mismatch for \(state)")
-        }
-    }
-
     // MARK: - Advisory Role Finish Visibility
 
     /// Finish should show for advisory roles that are working (not in chat mode).

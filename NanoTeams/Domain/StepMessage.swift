@@ -1,6 +1,6 @@
 import Foundation
 
-struct StepMessage: Codable, Identifiable, Hashable {
+nonisolated struct StepMessage: Codable, Identifiable, Hashable {
     var id: UUID
     var createdAt: Date
     var role: Role

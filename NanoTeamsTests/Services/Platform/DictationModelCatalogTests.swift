@@ -129,14 +129,14 @@ final class DictationModelCatalogTests: XCTestCase {
         let task = Task<Void, Error> {
             try await withTaskCancellationHandler {
                 // Long sleep stands in for the network-bound download.
-                try await Task.sleep(nanoseconds: 10_000_000_000)
+                try await Task.sleep(for: .seconds(10))
             } onCancel: {
                 onCancelFired.fulfill()
             }
         }
 
         // Let the Task reach the first suspension point.
-        try await Task.sleep(nanoseconds: 20_000_000)
+        try await Task.sleep(for: .milliseconds(20))
         task.cancel()
 
         await fulfillment(of: [onCancelFired], timeout: 1.0)
@@ -169,7 +169,7 @@ final class DictationModelCatalogTests: XCTestCase {
         let task = Task {
             // Yield once so the outer code can race with `cancel()`.
             reachedCheck.fulfill()
-            try? await Task.sleep(nanoseconds: 100_000_000)
+            try? await Task.sleep(for: .milliseconds(100))
             if Task.isCancelled {
                 sawCancellation.fulfill()
             }

@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - LLMProvider
 
-enum LLMProvider: String, Codable, Hashable, CaseIterable, Identifiable {
+nonisolated enum LLMProvider: String, Codable, Hashable, CaseIterable, Identifiable {
     case lmStudio
 
     var id: String { rawValue }
@@ -42,7 +42,7 @@ enum LLMProvider: String, Codable, Hashable, CaseIterable, Identifiable {
 
 // MARK: - LLMConfig
 
-struct LLMConfig: Hashable {
+nonisolated struct LLMConfig: Hashable {
     var provider: LLMProvider
     var baseURLString: String
     var modelName: String
@@ -71,7 +71,7 @@ struct LLMConfig: Hashable {
 
 // MARK: - MessageRole
 
-enum MessageRole: String, Codable, Hashable {
+nonisolated enum MessageRole: String, Codable, Hashable {
     case system
     case user
     case assistant
@@ -80,14 +80,14 @@ enum MessageRole: String, Codable, Hashable {
 
 // MARK: - ImageContent
 
-struct ImageContent: Codable, Hashable {
+nonisolated struct ImageContent: Codable, Hashable {
     var base64Data: String
     var mimeType: String
 }
 
 // MARK: - ChatMessage
 
-struct ChatMessage: Codable, Hashable {
+nonisolated struct ChatMessage: Codable, Hashable {
     var role: MessageRole
     var content: String?
     var toolCallID: String?
@@ -132,7 +132,7 @@ struct ChatMessage: Codable, Hashable {
 
 // MARK: - ChatToolCall
 
-struct ChatToolCall: Codable, Hashable {
+nonisolated struct ChatToolCall: Codable, Hashable {
     var id: String
     var name: String
     var argumentsJSON: String
@@ -151,7 +151,7 @@ struct ChatToolCall: Codable, Hashable {
 
 // MARK: - ToolSchema
 
-struct ToolSchema: Hashable {
+nonisolated struct ToolSchema: Hashable, Codable {
     var name: String
     var description: String
     var parameters: JSONSchema
@@ -165,7 +165,7 @@ struct ToolSchema: Hashable {
 
 // MARK: - StreamEvent
 
-struct StreamEvent: Hashable {
+nonisolated struct StreamEvent: Hashable {
     var contentDelta: String
     var thinkingDelta: String
     var toolCallDeltas: [ToolCallDelta]
@@ -205,7 +205,7 @@ struct StreamEvent: Hashable {
 
 // MARK: - TokenUsage
 
-struct TokenUsage: Codable, Hashable {
+nonisolated struct TokenUsage: Codable, Hashable {
     var inputTokens: Int
     var outputTokens: Int
 
@@ -223,13 +223,13 @@ struct TokenUsage: Codable, Hashable {
 
 // MARK: - LLMSession
 
-struct LLMSession: Sendable, Hashable {
+nonisolated struct LLMSession: Sendable, Hashable {
     var responseID: String
 }
 
 // MARK: - LLMClientError
 
-enum LLMClientError: LocalizedError, Equatable {
+nonisolated enum LLMClientError: LocalizedError, Equatable {
     case invalidBaseURL(String)
     case badHTTPStatus(Int, String?)
     case missingResponse

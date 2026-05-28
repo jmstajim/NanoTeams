@@ -3,17 +3,17 @@ import Foundation
 /// Single source of truth for all built-in tools.
 ///
 /// Each handler type declares its own schema, category, and behavioral flags
-/// (`excludedInMeetings`, `blockedInDefaultStorage`, `isCacheable`). Schema/metadata
+/// (`excludedInMeetings`, `blockedInDefaultStorage`). Schema/metadata
 /// queries iterate `allTypes` statically. Runtime dispatch uses `buildHandlers(...)`
 /// which drives the same `allTypes` list via `makeInstance(dependencies:)` — adding
 /// a new tool is one append to `allTypes` and one conforming struct.
-enum ToolHandlerRegistry {
+nonisolated enum ToolHandlerRegistry {
 
     // MARK: - All Built-in Handlers (single source of truth)
 
     /// Every built-in tool type, in display order. Add a new tool by appending here
     /// and creating a conforming `ToolHandler` struct — no other edits required.
-    static let allTypes: [any ToolHandler.Type] = [
+    nonisolated(unsafe) static let allTypes: [any ToolHandler.Type] = [
         // File read (always available)
         ReadFileTool.self,
         ReadLinesTool.self,
@@ -66,6 +66,12 @@ enum ToolHandlerRegistry {
 
         // Team
         CreateTeamTool.self,
+
+        // Delegation
+        DelegateToTeamTool.self,
+        CancelDelegationTool.self,
+        ResumeDelegationTool.self,
+        ForwardToTeamTool.self,
     ]
 
     // MARK: - Schema & Metadata Queries (cached)
@@ -81,16 +87,26 @@ enum ToolHandlerRegistry {
     static let defaultStorageBlocked: Set<String> =
         Set(allTypes.filter { $0.blockedInDefaultStorage }.map { $0.name })
 
-    /// Read-only tools whose results can be cached across tool-loop iterations.
-    /// Metadata-driven — `GitDiffTool` overrides `isCacheable` to `false`, so no
-    /// hardcoded subtraction is needed here.
-    static let cacheableTools: Set<String> =
-        Set(allTypes.filter { $0.isCacheable }.map { $0.name })
-
     /// Tools that must NEVER be offered to a team role's LLM schema. Used by control-flow
     /// tools (e.g. `create_team`) that have a dedicated invocation path outside the runtime.
     static let unavailableToRoles: Set<String> =
         Set(allTypes.filter { !$0.availableToRoles }.map { $0.name })
+
+    /// Tool names that must NEVER appear in stored `TeamRoleDefinition.toolIDs`.
+    /// The 4 live delegation tools auto-inject from settings
+    /// (`allowedDelegationTeamIDs` / `allowDelegationToGeneratedTeams`) in
+    /// `LLMExecutionService+ToolResolution`; the legacy `"list_teams"` literal
+    /// is the removed discovery tool (catalog now embedded inline in
+    /// `delegate_to_team`'s description). Used by `RoleEditorMutations` at
+    /// save time and by `NTMSRepository.normalizeDelegationToolset` at load
+    /// time — single source of truth keeps the two enforcement points in sync.
+    static let delegationToolsExcludedFromToolIDs: Set<String> = [
+        ToolNames.delegateToTeam,
+        ToolNames.cancelDelegation,
+        ToolNames.resumeDelegation,
+        ToolNames.forwardToTeam,
+        "list_teams",
+    ]
 
     /// Tool names in a given category. Stable, single source of truth.
     static func names(in category: ToolCategory) -> Set<String> {

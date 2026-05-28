@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Error Recovery Service
 
 /// Service for handling role execution errors with recovery strategies
-struct ErrorRecoveryService {
+nonisolated struct ErrorRecoveryService {
 
     /// Determine the appropriate error type from an error description
     /// Ordered pattern map for error classification (first match wins).
@@ -92,7 +92,7 @@ extension ErrorRecoveryService {
     }
 
     /// Recovery option for UI display
-    struct RecoveryOption: Identifiable {
+    nonisolated struct RecoveryOption: Identifiable {
         let id = UUID()
         let strategy: RoleErrorStrategy
         let title: String

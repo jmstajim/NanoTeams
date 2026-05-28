@@ -23,7 +23,7 @@ extension NTMSOrchestrator {
         // Cancel LLM for steps being reset
         if let task = loadedTask(taskID), let run = task.runs.last {
             for step in run.steps where rolesToReset.contains(step.effectiveRoleID) {
-                llmExecutionService.cancelStepExecution(stepID: step.id)
+                await llmExecutionService.cancelStepExecution(stepID: step.id)
             }
         }
 
@@ -67,7 +67,7 @@ extension NTMSOrchestrator {
         Task {
             // 1. Cancel running LLM task if step is active
             if let step = loadedTask(taskID)?.runs.last?.stepsByRoleBaseID()[roleID] {
-                llmExecutionService.cancelStepExecution(stepID: step.id)
+                await llmExecutionService.cancelStepExecution(stepID: step.id)
                 clearStreamingPreview(stepID: step.id)
             }
 

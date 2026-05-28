@@ -92,18 +92,6 @@ final class StoreConfiguration {
         }
     }
 
-    var thinkingExpandedByDefault: Bool {
-        didSet { storage.set(thinkingExpandedByDefault, forKey: Keys.thinkingExpandedByDefault) }
-    }
-
-    var toolCallsExpandedByDefault: Bool {
-        didSet { storage.set(toolCallsExpandedByDefault, forKey: Keys.toolCallsExpandedByDefault) }
-    }
-
-    var artifactsExpandedByDefault: Bool {
-        didSet { storage.set(artifactsExpandedByDefault, forKey: Keys.artifactsExpandedByDefault) }
-    }
-
     var enterSendsMessage: Bool {
         didSet { storage.set(enterSendsMessage, forKey: Keys.enterSendsMessage) }
     }
@@ -148,6 +136,41 @@ final class StoreConfiguration {
         dismissedNotificationIDs.remove(id)
     }
 
+    /// Persisted sidebar "read" markers. Each entry is `"<workFolderUUID>:<taskID>"`.
+    var seenSupervisorInputKeys: Set<String> {
+        didSet {
+            storage.set(Array(seenSupervisorInputKeys), forKey: Keys.seenSupervisorInputKeys)
+        }
+    }
+
+    func markTaskSeen(workFolderID: UUID, taskID: Int) {
+        seenSupervisorInputKeys.insert(Self.seenKey(workFolderID: workFolderID, taskID: taskID))
+    }
+
+    func unmarkTaskSeen(workFolderID: UUID, taskID: Int) {
+        seenSupervisorInputKeys.remove(Self.seenKey(workFolderID: workFolderID, taskID: taskID))
+    }
+
+    func isTaskSeen(workFolderID: UUID, taskID: Int) -> Bool {
+        seenSupervisorInputKeys.contains(Self.seenKey(workFolderID: workFolderID, taskID: taskID))
+    }
+
+    func seenTaskIDs(forWorkFolder workFolderID: UUID) -> Set<Int> {
+        let prefix = "\(workFolderID.uuidString):"
+        var result: Set<Int> = []
+        for entry in seenSupervisorInputKeys where entry.hasPrefix(prefix) {
+            let suffix = entry.dropFirst(prefix.count)
+            if let id = Int(suffix) {
+                result.insert(id)
+            }
+        }
+        return result
+    }
+
+    private static func seenKey(workFolderID: UUID, taskID: Int) -> String {
+        "\(workFolderID.uuidString):\(taskID)"
+    }
+
     var dismissedFeatureTipIDs: Set<String> {
         didSet {
             storage.set(Array(dismissedFeatureTipIDs), forKey: Keys.dismissedFeatureTipIDs)
@@ -175,9 +198,12 @@ final class StoreConfiguration {
     /// User's intent to enable Vision — persisted independently from the
     /// concrete URL / model fields so the toggle survives tab switches even
     /// before the user fills in any override field. `isVisionConfigured`
-    /// stays gated on `visionModelName.isEmpty` because it's the predicate
-    /// the runtime uses to decide whether to actually invoke the vision
-    /// endpoint (see `visionLLMConfig`).
+    /// requires both `visionEnabled` AND a model to call: either an explicit
+    /// override (`visionModelName`) or — when the picker shows "Use global"
+    /// (empty `visionModelName`) — a non-empty `llmModelName` to inherit
+    /// from. Without this fallback, picking "Use global" silently drops
+    /// `analyze_image` from role toolsets even though the UI shows vision
+    /// active (see `visionLLMConfig` for the request-time fallback).
     var visionEnabled: Bool {
         didSet { storage.set(visionEnabled, forKey: Keys.visionEnabled) }
     }
@@ -194,14 +220,35 @@ final class StoreConfiguration {
         didSet { storage.set(visionMaxTokens, forKey: Keys.visionMaxTokens) }
     }
 
-    var isVisionConfigured: Bool { !visionModelName.isEmpty }
+    var isVisionConfigured: Bool {
+        guard visionEnabled else { return false }
+        // I3: trim both branches symmetrically. Pre-fix the override branch
+        // accepted "   " as a real model name while the global-fallback
+        // branch trimmed first — caller behaviour diverged on whitespace.
+        let trimmedVision = visionModelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedVision.isEmpty { return true }
+        return !llmModelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     var visionLLMConfig: LLMConfig? {
         guard isVisionConfigured else { return nil }
+        // I3: also gate on a non-empty base URL. Without this, a fully-blank
+        // vision setup with an empty global URL still produced an LLMConfig
+        // with `baseURLString == ""`, slipping past schema-time filtering and
+        // failing later at request construction with a generic transport
+        // error. Trim both URLs symmetrically with the model-name fallback.
+        let trimmedVisionURL = visionBaseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedGlobalURL = llmBaseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedURL = trimmedVisionURL.isEmpty ? trimmedGlobalURL : trimmedVisionURL
+        guard !resolvedURL.isEmpty else { return nil }
+
+        let trimmedVisionModel = visionModelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedGlobalModel = llmModelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedModel = trimmedVisionModel.isEmpty ? trimmedGlobalModel : trimmedVisionModel
         return LLMConfig(
             provider: llmProvider,
-            baseURLString: visionBaseURLString.isEmpty ? llmBaseURLString : visionBaseURLString,
-            modelName: visionModelName,
+            baseURLString: resolvedURL,
+            modelName: resolvedModel,
             maxTokens: visionMaxTokens,
             requestTimeoutSeconds: llmRequestTimeoutSeconds
         )
@@ -282,6 +329,28 @@ final class StoreConfiguration {
                 storage.removeObject(forKey: Keys.teamGenForcedAcceptanceMode)
             }
         }
+    }
+
+    // MARK: - Global LLM Context
+
+    /// App-wide instruction appended to the system prompt of every LLM call
+    /// (step execution, consultation, meeting, planning, supervisor auto-answer,
+    /// work-folder context generation, team generation, vision). Empty string
+    /// disables the append (no separator emitted).
+    ///
+    /// Persistence semantics intentionally diverge from `teamGenSystemPrompt`:
+    /// empty string is persisted AS empty (not removed) so the user can clear
+    /// the field and have the cleared state stick. First launch with no stored
+    /// key reads `AppDefaults.globalContext` via `object(forKey:) as? String ??
+    /// AppDefaults.globalContext`. `resetToDefaults()` removes the key AND
+    /// re-assigns to `AppDefaults.globalContext`.
+    ///
+    /// LM Studio session caveat: changes only take effect on fresh sessions
+    /// (new run, restart role, revision, planning reset, HTTP 400 fallback).
+    /// `system_prompt` is omitted on stateful continuations, so an in-flight
+    /// step's response chain still uses the value baked in at session start.
+    var globalContext: String {
+        didSet { storage.set(globalContext, forKey: Keys.globalContext) }
     }
 
     // MARK: - App Update
@@ -499,9 +568,6 @@ final class StoreConfiguration {
         static let llmModel = UserDefaultsKeys.llmModel
         static let llmMaxTokens = "llmMaxTokens"
         static let llmTemperature = "llmTemperature"
-        static let thinkingExpandedByDefault = UserDefaultsKeys.thinkingExpandedByDefault
-        static let toolCallsExpandedByDefault = UserDefaultsKeys.toolCallsExpandedByDefault
-        static let artifactsExpandedByDefault = UserDefaultsKeys.artifactsExpandedByDefault
         static let debugModeEnabled = UserDefaultsKeys.debugModeEnabled
         static let maxLLMRetries = UserDefaultsKeys.maxLLMRetries
         static let llmRequestTimeoutSeconds = UserDefaultsKeys.llmRequestTimeoutSeconds
@@ -512,6 +578,7 @@ final class StoreConfiguration {
         static let visionMaxTokens = UserDefaultsKeys.visionMaxTokens
         static let dismissedNotificationIDs = UserDefaultsKeys.dismissedNotificationIDs
         static let dismissedFeatureTipIDs = UserDefaultsKeys.dismissedFeatureTipIDs
+        static let seenSupervisorInputKeys = UserDefaultsKeys.seenSupervisorInputKeys
         static let enterSendsMessage = UserDefaultsKeys.enterSendsMessage
         static let embedFilesInPrompt = UserDefaultsKeys.quickCaptureEmbedFiles
         static let loggingEnabled = UserDefaultsKeys.loggingEnabled
@@ -535,6 +602,7 @@ final class StoreConfiguration {
         static let searchIndexWatcherDebounceSeconds = UserDefaultsKeys.searchIndexWatcherDebounceSeconds
         static let searchContextBefore = UserDefaultsKeys.searchContextBefore
         static let searchContextAfter = UserDefaultsKeys.searchContextAfter
+        static let globalContext = UserDefaultsKeys.globalContext
     }
 
     init(storage: any ConfigurationStorage = UserDefaults.standard) {
@@ -547,9 +615,6 @@ final class StoreConfiguration {
         self.llmModelName = storage.string(forKey: Keys.llmModel) ?? provider.defaultModel
         self.llmMaxTokens = (storage.object(forKey: Keys.llmMaxTokens) as? Int) ?? provider.defaultMaxTokens
         self.llmTemperature = storage.object(forKey: Keys.llmTemperature) as? Double
-        self.thinkingExpandedByDefault = storage.bool(forKey: Keys.thinkingExpandedByDefault)
-        self.toolCallsExpandedByDefault = storage.bool(forKey: Keys.toolCallsExpandedByDefault)
-        self.artifactsExpandedByDefault = storage.bool(forKey: Keys.artifactsExpandedByDefault)
         self.enterSendsMessage = (storage.object(forKey: Keys.enterSendsMessage) as? Bool) ?? true
         self.embedFilesInPrompt = storage.bool(forKey: Keys.embedFilesInPrompt)
         self.debugModeEnabled = storage.bool(forKey: Keys.debugModeEnabled)
@@ -572,6 +637,8 @@ final class StoreConfiguration {
         self.dismissedNotificationIDs = Set(rawIDs)
         let rawTipIDs = (storage.object(forKey: Keys.dismissedFeatureTipIDs) as? [String]) ?? []
         self.dismissedFeatureTipIDs = Set(rawTipIDs)
+        let rawSeenKeys = (storage.object(forKey: Keys.seenSupervisorInputKeys) as? [String]) ?? []
+        self.seenSupervisorInputKeys = Set(rawSeenKeys)
         if let data = storage.data(forKey: Keys.teamGenLLMOverride),
            let decoded = try? JSONCoderFactory.makeDateDecoder().decode(LLMOverride.self, from: data),
            !decoded.isEmpty {
@@ -640,6 +707,11 @@ final class StoreConfiguration {
         self.searchContextBefore = min(max(storedSearchContextBefore, AppDefaults.searchContextMin), AppDefaults.searchContextMax)
         let storedSearchContextAfter = (storage.object(forKey: Keys.searchContextAfter) as? Int) ?? AppDefaults.searchContextAfter
         self.searchContextAfter = min(max(storedSearchContextAfter, AppDefaults.searchContextMin), AppDefaults.searchContextMax)
+        // `object(forKey:) as? String` (not `string(forKey:)`) — distinguishes
+        // "key absent" (default applies) from "stored empty string" (cleared
+        // by user, must persist).
+        self.globalContext = (storage.object(forKey: Keys.globalContext) as? String)
+            ?? AppDefaults.globalContext
         let storedSearchIndexWatcherDebounce = (storage.object(forKey: Keys.searchIndexWatcherDebounceSeconds) as? Double)
             ?? AppDefaults.searchIndexWatcherDebounceSeconds
         self.searchIndexWatcherDebounceSeconds = min(
@@ -680,9 +752,6 @@ final class StoreConfiguration {
         storage.removeObject(forKey: Keys.llmModel)
         storage.removeObject(forKey: Keys.llmMaxTokens)
         storage.removeObject(forKey: Keys.llmTemperature)
-        storage.removeObject(forKey: Keys.thinkingExpandedByDefault)
-        storage.removeObject(forKey: Keys.toolCallsExpandedByDefault)
-        storage.removeObject(forKey: Keys.artifactsExpandedByDefault)
         storage.removeObject(forKey: Keys.enterSendsMessage)
         storage.removeObject(forKey: Keys.embedFilesInPrompt)
         storage.removeObject(forKey: Keys.debugModeEnabled)
@@ -695,6 +764,7 @@ final class StoreConfiguration {
         storage.removeObject(forKey: Keys.visionMaxTokens)
         storage.removeObject(forKey: Keys.dismissedNotificationIDs)
         storage.removeObject(forKey: Keys.dismissedFeatureTipIDs)
+        storage.removeObject(forKey: Keys.seenSupervisorInputKeys)
         storage.removeObject(forKey: Keys.sidebarTaskFilter)
         storage.removeObject(forKey: Keys.teamGenLLMOverride)
         storage.removeObject(forKey: Keys.teamGenSystemPrompt)
@@ -715,6 +785,7 @@ final class StoreConfiguration {
         storage.removeObject(forKey: Keys.searchContextBefore)
         storage.removeObject(forKey: Keys.searchContextAfter)
         storage.removeObject(forKey: Keys.searchIndexWatcherDebounceSeconds)
+        storage.removeObject(forKey: Keys.globalContext)
 
         let provider = LLMProvider.lmStudio
         llmProvider = provider
@@ -722,9 +793,6 @@ final class StoreConfiguration {
         llmModelName = provider.defaultModel
         llmMaxTokens = provider.defaultMaxTokens
         llmTemperature = nil
-        thinkingExpandedByDefault = false
-        toolCallsExpandedByDefault = false
-        artifactsExpandedByDefault = false
         enterSendsMessage = true
         embedFilesInPrompt = false
         debugModeEnabled = false
@@ -737,6 +805,7 @@ final class StoreConfiguration {
         visionMaxTokens = 0
         dismissedNotificationIDs = []
         dismissedFeatureTipIDs = []
+        seenSupervisorInputKeys = []
         sidebarTaskFilter = .all
         teamGenLLMOverride = nil
         teamGenSystemPrompt = ""
@@ -757,6 +826,7 @@ final class StoreConfiguration {
         searchContextBefore = AppDefaults.searchContextBefore
         searchContextAfter = AppDefaults.searchContextAfter
         searchIndexWatcherDebounceSeconds = AppDefaults.searchIndexWatcherDebounceSeconds
+        globalContext = AppDefaults.globalContext
     }
 
     // MARK: - Work Folder Path

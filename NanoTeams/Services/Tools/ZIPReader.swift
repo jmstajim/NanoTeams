@@ -21,7 +21,7 @@ import Compression
 ///
 /// Thread-safety: stateless enum. Each call creates its own `compression_stream`.
 /// Parallel invocations from different roles are safe by construction.
-enum ZIPReader {
+nonisolated enum ZIPReader {
     /// One entry in the archive's Central Directory.
     ///
     /// `Method` is a closed enum because only STORED/DEFLATE reach this type —
@@ -95,7 +95,7 @@ enum ZIPReader {
 
 // MARK: - Archive loading + top-level parsing
 
-private extension ZIPReader {
+nonisolated private extension ZIPReader {
     /// Loads the archive file into memory after enforcing the size cap.
     ///
     /// `attributesOfItem` is allowed to `throw` here — a stat failure
@@ -199,7 +199,7 @@ private extension ZIPReader {
 
 // MARK: - Central Directory parsing
 
-private extension ZIPReader {
+nonisolated private extension ZIPReader {
     static func parseCentralDirectory(
         in data: Data, cdOffset: Int, cdSize: Int, entryCount: Int
     ) throws -> [Entry] {
@@ -275,7 +275,7 @@ private extension ZIPReader {
 
 // MARK: - Entry data extraction
 
-private extension ZIPReader {
+nonisolated private extension ZIPReader {
     static func extractData(for entry: Entry, from data: Data) throws -> Data {
         let lfhStart = Int(entry.localHeaderOffset)
         guard lfhStart + 30 <= data.count else {
@@ -444,7 +444,7 @@ private extension ZIPReader {
 ///
 /// Exposed as `internal` so the test-only `ZIPArchiveWriter` can share the
 /// implementation rather than duplicating the table.
-enum CRC32 {
+nonisolated enum CRC32 {
     static let table: [UInt32] = {
         (0..<256).map { (i: UInt32) -> UInt32 in
             (0..<8).reduce(i) { c, _ in
@@ -466,7 +466,7 @@ enum CRC32 {
 
 // MARK: - Little-endian read helpers
 
-private extension Data {
+nonisolated private extension Data {
     /// Reads a little-endian UInt16 at a byte offset from `startIndex`.
     ///
     /// Callers must pass `Data` values whose `startIndex == 0` (full files,

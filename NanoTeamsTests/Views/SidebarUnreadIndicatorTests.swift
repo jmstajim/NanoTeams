@@ -34,7 +34,7 @@ final class SidebarUnreadIndicatorTests: XCTestCase {
     func testRemoveSeen_clearsTaskID() {
         let taskID = 0
         sut.markSupervisorInputSeen(taskID: taskID)
-        sut.seenSupervisorInputTaskIDs.remove(taskID)
+        sut.unmarkSupervisorInputSeen(taskID: taskID)
         XCTAssertFalse(sut.seenSupervisorInputTaskIDs.contains(taskID))
     }
 
@@ -43,7 +43,7 @@ final class SidebarUnreadIndicatorTests: XCTestCase {
         let taskB = 20
         sut.markSupervisorInputSeen(taskID: taskA)
         sut.markSupervisorInputSeen(taskID: taskB)
-        sut.seenSupervisorInputTaskIDs.remove(taskA)
+        sut.unmarkSupervisorInputSeen(taskID: taskA)
         XCTAssertFalse(sut.seenSupervisorInputTaskIDs.contains(taskA))
         XCTAssertTrue(sut.seenSupervisorInputTaskIDs.contains(taskB))
     }
@@ -91,7 +91,7 @@ final class SidebarUnreadIndicatorTests: XCTestCase {
         let taskID = 0
         sut.markSupervisorInputSeen(taskID: taskID)
         // Simulate: status left needsSupervisorInput (user answered) → remove from seen
-        sut.seenSupervisorInputTaskIDs.remove(taskID)
+        sut.unmarkSupervisorInputSeen(taskID: taskID)
         // Simulate: assistant replies again → new needsSupervisorInput
         let result = computeHasUnread(isChatMode: true, status: .needsSupervisorInput, taskID: taskID)
         XCTAssertTrue(result)
@@ -238,7 +238,7 @@ final class SidebarUnreadIndicatorTests: XCTestCase {
     /// unread badge clears.
     func testUserPath_chatUserAnswered_pulseResumes() {
         sut.markSupervisorInputSeen(taskID: 0) // simulate user viewed the question
-        sut.seenSupervisorInputTaskIDs.remove(0) // simulate clear-on-answer in the orchestrator
+        sut.unmarkSupervisorInputSeen(taskID: 0) // simulate clear-on-answer in the orchestrator
         let item = SidebarTaskItem(
             id: 0, title: "Chat", status: .running, updatedAt: Date(),
             isChatMode: true, hasUnreadInput: false, isEngineRunning: true

@@ -23,7 +23,7 @@ import Foundation
 /// `NetworkLogger` and `stepID` are passed per-call, not stored on the struct,
 /// so `LMStudioEmbeddingClient` conforms to the `Sendable` constraint from
 /// `EmbeddingClient` without a `@unchecked` escape hatch.
-struct LMStudioEmbeddingClient: EmbeddingClient {
+nonisolated struct LMStudioEmbeddingClient: EmbeddingClient {
 
     let session: any NetworkSession
     let tokenResolver: any LLMTokenResolver
@@ -256,14 +256,14 @@ struct LMStudioEmbeddingClient: EmbeddingClient {
 /// Outgoing request body. LM Studio accepts either a string or an array of
 /// strings for `input`; we always send an array for consistent response
 /// shape (`data: [Item]` even for single-text calls).
-private struct EmbeddingRequest: Encodable {
+private nonisolated struct EmbeddingRequest: Encodable {
     let model: String
     let input: [String]
 }
 
 /// Incoming response body. `data` length matches `input` length; `index`
 /// preserves per-item ordering even if the server processes in parallel.
-struct EmbeddingResponse: Decodable, Equatable {
+nonisolated struct EmbeddingResponse: Decodable, Equatable {
     let data: [Item]
 
     struct Item: Decodable, Equatable {
@@ -275,10 +275,10 @@ struct EmbeddingResponse: Decodable, Equatable {
 /// Shape LM Studio uses for non-2xx responses — mirrors OpenAI. `type` is
 /// sometimes absent depending on which code path inside LM Studio emitted the
 /// error, so it's optional.
-struct EmbeddingErrorResponse: Decodable {
+nonisolated struct EmbeddingErrorResponse: Decodable {
     let error: Body
 
-    struct Body: Decodable {
+    nonisolated struct Body: Decodable {
         let message: String
         let type: String?
     }

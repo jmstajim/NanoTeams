@@ -4,12 +4,9 @@ import Foundation
 /// New keys use the `NanoTeams.<area>.<name>.v1` convention. Legacy keys below
 /// (without the prefix/suffix) were introduced before the convention and are
 /// kept verbatim so existing installs keep reading their stored values.
-enum UserDefaultsKeys {
+nonisolated enum UserDefaultsKeys {
     static let llmBaseURL = "NanoTeams.llm.baseURL.v1"
     static let llmModel = "NanoTeams.llm.model.v1"
-    static let thinkingExpandedByDefault = "NanoTeams.ui.thinkingExpandedByDefault.v1"
-    static let toolCallsExpandedByDefault = "NanoTeams.ui.toolCallsExpandedByDefault.v1"
-    static let artifactsExpandedByDefault = "NanoTeams.ui.artifactsExpandedByDefault.v1"
     static let debugModeEnabled = "NanoTeams.ui.debugModeEnabled.v1"
     static let maxLLMRetries = "NanoTeams.llm.maxRetries.v1"
     static let llmRequestTimeoutSeconds = "NanoTeams.llm.requestTimeoutSeconds.v1"
@@ -24,6 +21,12 @@ enum UserDefaultsKeys {
     static let quickCapturePanelFrame = "NanoTeams.QuickCapturePanel"
     static let dismissedNotificationIDs = "NanoTeams.ui.dismissedNotificationIDs.v1"
     static let dismissedFeatureTipIDs = "NanoTeams.ui.dismissedFeatureTipIDs.v1"
+    /// Persisted sidebar "read" markers for chat tasks awaiting Supervisor input.
+    /// Stored as `Set<String>` of `"<workFolderUUID>:<taskID>"`. Namespacing by
+    /// work folder is required because task IDs are per-folder sequential `Int`s
+    /// starting at 1 — without it, opening a different folder would mis-attribute
+    /// seen state to unrelated tasks.
+    static let seenSupervisorInputKeys = "NanoTeams.ui.seenSupervisorInputKeys.v1"
     static let graphPanelVisible = "NanoTeams.ui.graphPanelVisible.v1"
     static let quickCaptureKeepOpenInChat = "NanoTeams.ui.quickCaptureKeepOpenInChat.v1"
     static let enterSendsMessage = "NanoTeams.ui.enterSendsMessage.v1"
@@ -52,4 +55,5 @@ enum UserDefaultsKeys {
     static let searchMaxResults = "NanoTeams.search.maxResults.v1"
     static let searchContextBefore = "NanoTeams.search.contextBefore.v1"
     static let searchContextAfter = "NanoTeams.search.contextAfter.v1"
+    static let globalContext = "NanoTeams.llm.globalContext.v1"
 }

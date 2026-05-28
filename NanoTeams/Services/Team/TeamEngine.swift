@@ -2,6 +2,7 @@ import Foundation
 
 // MARK: - Team Engine Store Protocol
 
+@MainActor
 protocol TeamEngineStoreReading: AnyObject {
     var activeTask: NTMSTask? { get }
     var teamSettings: TeamSettings { get }
@@ -11,6 +12,7 @@ protocol TeamEngineStoreReading: AnyObject {
     func producedArtifactNames() -> Set<String>
 }
 
+@MainActor
 protocol TeamEngineStoreMutating: AnyObject {
     func updateRoleStatus(roleID: String, status: RoleExecutionStatus) async
     func prepareStepForExecution(stepID: String) async
@@ -19,8 +21,9 @@ protocol TeamEngineStoreMutating: AnyObject {
     func resetStepForRevision(stepID: String) async
 }
 
+@MainActor
 protocol TeamEngineStoreReporting: AnyObject {
-    func setLastErrorMessageForUI(_ message: String) async
+    func setLastErrorMessageForUI(_ message: String)
 }
 
 typealias TeamEngineStore = TeamEngineStoreReading & TeamEngineStoreMutating & TeamEngineStoreReporting

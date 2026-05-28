@@ -24,4 +24,8 @@ enum GraphTokens {
     static let edgePadding: CGFloat = 20
     /// Fraction of node width used for distributing multiple connection ports (0.0-1.0)
     static let portSpreadFraction: CGFloat = 0.4
+    /// Spacing between centered round dots on dashed connection strokes.
+    /// Pairs with `StrokeStyle(dash: [0.01, dotSpacing], lineCap: .round)` so
+    /// each "dash" collapses into a circular dot with diameter = lineWidth.
+    static let dotSpacing: CGFloat = 6
 }

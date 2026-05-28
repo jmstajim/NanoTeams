@@ -6,7 +6,7 @@ import Foundation
 /// configured, the URL is malformed, or the host app is denied launch services
 /// access — without surfacing, the user clicks "Update Now" / "Star on GitHub"
 /// and nothing happens with no explanation.
-enum URLOpener {
+nonisolated enum URLOpener {
 
     /// Opens `url`; routes a generic failure description through `surfacing`
     /// when AppKit refuses. The default message names the URL host so the user

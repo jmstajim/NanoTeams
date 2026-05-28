@@ -18,7 +18,7 @@ import Accelerate
 /// Why unit-normalized? cosine similarity between unit vectors = dot product,
 /// computable with a single `vDSP_dotpr` call over the whole corpus in a tight
 /// loop. ~10-30ms for 50k vectors on Apple Silicon.
-struct VocabVectorIndex: Sendable {
+nonisolated struct VocabVectorIndex: Sendable {
 
     // MARK: - Types
 
@@ -236,7 +236,7 @@ struct VocabVectorIndex: Sendable {
 
 /// Codec for `vocab_vectors.bin`. Pure functions — no file I/O. The caller
 /// (`VocabVectorIndexService`) handles atomic persistence and mmap lifecycle.
-enum VocabVectorBinaryCodec {
+nonisolated enum VocabVectorBinaryCodec {
 
     /// ASCII `"NTVE"` — NanoTeams Vector Embeddings. Serves as a sanity check
     /// that we're reading our own format, not an unrelated file with the
@@ -342,7 +342,7 @@ enum VocabVectorBinaryCodec {
 /// Unit-normalize a vector in place-ish. Returns a fresh array. Zero-magnitude
 /// vectors come through unchanged — they produce a zero dot product with
 /// anything, which is the correct "no similarity" outcome.
-enum VectorMath {
+nonisolated enum VectorMath {
     static func normalize(_ v: [Float]) -> [Float] {
         guard !v.isEmpty else { return v }
         var magnitude: Float = 0

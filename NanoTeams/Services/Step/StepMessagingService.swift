@@ -1,7 +1,7 @@
 import Foundation
 
 /// Service for managing step messaging operations (Supervisor comments, answers).
-enum StepMessagingService {
+nonisolated enum StepMessagingService {
     static func setSupervisorCommentForNext(stepID: String, comment: String, in task: inout NTMSTask) {
         guard let location = task.locateStepInLatestRun(stepID: stepID) else { return }
         let clean = comment.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -27,6 +27,24 @@ enum StepMessagingService {
         task.runs[location.runIndex].steps[location.stepIndex].supervisorAnswer = clean.isEmpty ? nil : clean
         task.runs[location.runIndex].steps[location.stepIndex].supervisorAnswerAttachmentPaths = attachmentPaths
         task.runs[location.runIndex].steps[location.stepIndex].needsSupervisorInput = false
+
+        // Append the supervisor answer to llmConversation in the SAME mutation
+        // that clears `needsSupervisorInput`. Without this, the count-based
+        // active-input predicate (`ActivityFeedBuilder.stepHasActiveSupervisorInput`)
+        // sees `askCalls.count > answerMessages.count` between this mutation and
+        // the engine's subsequent runStep continuation — the Watchtower banner
+        // and feed composer chip would re-surface for ~one event-loop tick after
+        // the user already answered. Empty answer skips the append (no
+        // "Supervisor answer: " noise).
+        if !clean.isEmpty {
+            let answerMessage = LLMMessage(
+                role: .user,
+                content: "Supervisor answer: \(clean)",
+                sourceRole: .supervisor,
+                sourceContext: .supervisorAnswer
+            )
+            task.runs[location.runIndex].steps[location.stepIndex].llmConversation.append(answerMessage)
+        }
 
         // Normal flow: status was .needsSupervisorInput → .pending so the engine's
         // reconcileAfterPause picks it up. After app restart, StatusRecoveryService has

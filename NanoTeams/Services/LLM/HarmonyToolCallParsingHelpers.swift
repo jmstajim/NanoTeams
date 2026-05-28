@@ -1,9 +1,10 @@
 import Foundation
+import Synchronization
 
 // MARK: - Shared Parsing Helpers
 
 /// Stateless utilities shared across all parsing strategies.
-enum ToolCallParsingHelpers {
+nonisolated enum ToolCallParsingHelpers {
 
     static func skipWhitespace(in s: Substring, from index: String.Index) -> String.Index {
         var i = index
@@ -157,9 +158,19 @@ enum ToolCallParsingHelpers {
     static func parseToolCallFromJSON(_ jsonText: String) -> StepToolCall? {
         let sanitized = JSONUtilities.sanitizeJSONControlCharacters(jsonText)
         guard let data = sanitized.data(using: .utf8) else { return nil }
-        guard let object = try? JSONSerialization.jsonObject(with: data, options: []),
-            let dict = object as? [String: Any]
-        else {
+        let dict: [String: Any]
+        if let object = try? JSONSerialization.jsonObject(with: data, options: []),
+           let strictDict = object as? [String: Any]
+        {
+            dict = strictDict
+        } else if let repairedDict = parseAfterRepair(sanitized) {
+            // Strict parse failed. Apply known model-defect repairs and retry —
+            // the program covers the model's weakness rather than asking it to
+            // fix what it can't see (CORE_PRINCIPLES). When a repair succeeds,
+            // the tool call dispatches normally and the model never knows its
+            // first-emit JSON was broken.
+            dict = repairedDict
+        } else {
             return nil
         }
 
@@ -308,6 +319,126 @@ enum ToolCallParsingHelpers {
         return nil
     }
 
+    // MARK: - Defect Repair (covers known model weaknesses)
+
+    /// Counts how many times `parseAfterRepair` recovered a parseable envelope
+    /// from a strict-broken payload. Bumped on every successful repair, never
+    /// on no-op transforms. Read via `repairFireCount` for diagnostics; reset
+    /// via `_resetRepairFireCount()` in tests.
+    ///
+    /// The counter is **process-global** (the parser is stateless), so it
+    /// reflects total repair activity across all roles and tasks in the current
+    /// run of the app. That's enough granularity for the train-app skill audit
+    /// pass ("compare repair-rate across model versions") which is the primary
+    /// motivating consumer. A future refinement could move this to a
+    /// per-`StepExecutionState` counter if finer attribution is needed.
+    private static let _repairFireCount = Atomic<Int>(0)
+
+    /// Number of times a JSON repair fix recovered a strict-broken envelope.
+    /// Read-only; update via the internal `_bumpRepairFireCount` helper.
+    static var repairFireCount: Int {
+        _repairFireCount.load(ordering: .relaxed)
+    }
+
+    #if DEBUG
+    static func _resetRepairFireCount() {
+        _repairFireCount.store(0, ordering: .relaxed)
+    }
+    #endif
+
+    private static func _bumpRepairFireCount() {
+        _repairFireCount.wrappingAdd(1, ordering: .relaxed)
+    }
+
+    /// Repairs known stable JSON defects emitted by specific models, then
+    /// returns the parsed object dict (or nil if no repair recovers a valid
+    /// envelope). Used as a fallback after strict `JSONSerialization` failure.
+    ///
+    /// Per CORE_PRINCIPLES the program covers model weaknesses rather than
+    /// teaching the model — the model can't observe its own broken-byte
+    /// output, so retry nudges asking it to "use valid JSON" loop forever.
+    /// Each repair targets ONE concrete payload pattern observed in a network
+    /// trace, never a generic "best-effort fix" that could corrupt valid JSON.
+    static func parseAfterRepair(_ sanitized: String) -> [String: Any]? {
+        let repaired = repairCommonJSONDefects(sanitized)
+        guard repaired != sanitized,
+              let data = repaired.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data, options: []),
+              let dict = object as? [String: Any]
+        else {
+            return nil
+        }
+        _bumpRepairFireCount()
+        return dict
+    }
+
+    /// Applies all known repair patterns. Pure string transform — does NOT
+    /// validate the result. The caller re-parses with `JSONSerialization` and
+    /// falls back to `nil` if repair didn't help. Both repairs are idempotent
+    /// on already-fixed input, so the order is not load-bearing today.
+    static func repairCommonJSONDefects(_ raw: String) -> String {
+        var s = raw
+        s = repairUnescapedHTMLAttributeClose(s)
+        s = repairMissingQuoteBeforeJSONKey(s)
+        return s
+    }
+
+    /// `qwen3.5-9b-mlx` defect: inside a JSON string holding HTML, the model
+    /// emits attribute closes as `\"foo('-')">` instead of `\"foo('-')\">` —
+    /// the closing escape backslash before `"` is dropped when an attribute
+    /// value ends with a parenthesised JS argument. The bare `"` then closes
+    /// the JSON string mid-value and `>...` becomes a syntax error. Verbatim
+    /// broken payload pinned in `HarmonyJSONDefectRepairTests.verbatimBrokenPayload`.
+    ///
+    /// Detection: `)">` immediately followed by something that is NOT JSON
+    /// syntax (`,`/`}`/`]`/`:`/whitespace). The lookahead is critical —
+    /// without it we would corrupt valid JSON like `{"key":"f()"} `, where
+    /// `)` followed by `"` followed by `}` is a legitimate property close.
+    /// All three characters (`)` + `"` + `>`) must appear together; a stray
+    /// `>` after a quoted string close is exotic enough that mismatching it
+    /// is far less likely than the attribute defect we are repairing.
+    ///
+    /// Replacement inserts a backslash before the bare `"`, recreating the
+    /// escape the model omitted.
+    static func repairUnescapedHTMLAttributeClose(_ raw: String) -> String {
+        // Pattern is a compile-time literal that cannot fail. `try!` turns a
+        // future typo into a deterministic crash in dev/CI rather than silently
+        // disabling repairs for everyone (`try?` would collapse "regex broken"
+        // into "no repair needed" with no signal).
+        let regex = try! NSRegularExpression(pattern: #"\)">(?=[^,}\]:\s])"#)
+        let range = NSRange(raw.startIndex..., in: raw)
+        return regex.stringByReplacingMatches(
+            in: raw, range: range, withTemplate: #")\\">"#)
+    }
+
+    /// `qwen3.5-9b-mlx` defect (Team Generator emitting `team_config`):
+    /// at a JSON-object property boundary the model drops the OPENING quote of
+    /// a key while keeping the closing quote and colon intact. Observed shapes:
+    ///   - `}],artifacts":[...`   ← should be `}],"artifacts":[`
+    ///   - `}],supervisor_requires":[...]`
+    ///   - `,description":"..."` (less commonly)
+    /// The closing quote is always present (the model keeps `":` together as
+    /// a unit), only the opening one disappears. This is **stochastic**: the
+    /// same request can drop the quote on attempts 1+2 and emit it correctly
+    /// on attempt 3 — costing wasted retry traffic before delegation can
+    /// proceed. Verbatim broken payload pinned in
+    /// `HarmonyJSONDefectRepairTests.verbatimMissingKeyQuotePayload`.
+    ///
+    /// Detection: a JSON property separator (`{` or `,`) followed *directly*
+    /// (no intervening `"`) by an unquoted identifier-shape token, then a
+    /// closing `":`. Identifier shape (`[A-Za-z_][A-Za-z0-9_]*`) is narrow
+    /// enough to avoid matching free-text inside string values; the trailing
+    /// `":` confirms the model intended this as a key.
+    ///
+    /// Replacement re-inserts the missing opening quote.
+    static func repairMissingQuoteBeforeJSONKey(_ raw: String) -> String {
+        // Same try!-on-compile-time-literal rationale as above.
+        let regex = try! NSRegularExpression(pattern: #"([{,])([A-Za-z_][A-Za-z0-9_]*)":"#)
+        let range = NSRange(raw.startIndex..., in: raw)
+        return regex.stringByReplacingMatches(
+            in: raw, range: range, withTemplate: #"$1"$2":"#)
+    }
+
     // MARK: - Nudge Classification
 
     /// Classifies *why* a Harmony-markered response produced no parsed tool call.
@@ -321,12 +452,22 @@ enum ToolCallParsingHelpers {
         /// name. `inferredToolName` is non-nil when shape inference recognises the
         /// payload — used to craft a concrete retry example for the model.
         case missingToolName(inferredToolName: String?)
+        /// The buffer contains Harmony markers (specifically, `<|start|>`
+        /// followed by a role identifier — `user`/`assistant`/`system`/
+        /// `developer`/`tool`) but no envelope shape at all. The model emitted
+        /// an inlined role turn rather than attempting to call a tool. Callers
+        /// should fall through to the generic "did not call any tools" retry
+        /// instead of falsely accusing the model of malformed JSON.
+        case noEnvelopeAttempt
     }
 
     /// Scans the assistant's text for the first `<|call|>…<|end|>` block and
     /// reports the nature of the parse failure. Safe to call on responses where
     /// only `<|channel|>` markers appear (returns `.malformedJSON`).
     static func classifyHarmonyCallIssue(in text: String) -> HarmonyCallIssue {
+        if containsOnlyRoleMarkerStarts(in: text) {
+            return .noEnvelopeAttempt
+        }
         let callMarker = CallMarkerStrategy.callMarker
         guard let callRange = text.range(of: callMarker) else { return .malformedJSON }
 
@@ -339,10 +480,19 @@ enum ToolCallParsingHelpers {
             return .malformedJSON
         }
         let sanitized = JSONUtilities.sanitizeJSONControlCharacters(jsonText)
-        guard let data = sanitized.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data, options: []),
-              let dict = object as? [String: Any]
-        else {
+        let dict: [String: Any]
+        if let data = sanitized.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data, options: []),
+           let strictDict = object as? [String: Any]
+        {
+            dict = strictDict
+        } else if let repairedDict = parseAfterRepair(sanitized) {
+            // Strict parse failed but a known-defect repair recovered the
+            // envelope. The actual tool call dispatch path (`parseToolCallFromJSON`)
+            // will also rescue it, so this is not a real "malformed" failure
+            // from the role's perspective.
+            dict = repairedDict
+        } else {
             return .malformedJSON
         }
 
@@ -360,5 +510,35 @@ enum ToolCallParsingHelpers {
         }
 
         return .missingToolName(inferredToolName: inferToolNameFromShape(dict)?.name)
+    }
+
+    /// Returns true when the buffer's only envelope-shaped markers are
+    /// `<|start|>` openings followed by role identifiers. Used by
+    /// `classifyHarmonyCallIssue` to distinguish "inlined role turn"
+    /// (no envelope attempt) from "envelope present but malformed."
+    ///
+    /// Predicate is intentionally narrow: any `<|call|>` or `<|channel|>` in
+    /// the buffer, or any `<|start|>` followed by a non-role identifier
+    /// (`commentary`, `final`, `functions.NAME`), means the model DID attempt
+    /// an envelope and the failure is malformed-JSON-shaped — keep the
+    /// existing classification.
+    private static func containsOnlyRoleMarkerStarts(in text: String) -> Bool {
+        if text.contains(CallMarkerStrategy.callMarker) { return false }
+        if text.contains(ChannelMarkerStrategy.channelMarker) { return false }
+
+        let startMarker = StartMarkerStrategy.startMarker
+        guard text.range(of: startMarker) != nil else { return false }
+
+        var searchStart = text.startIndex
+        while let range = text.range(of: startMarker, range: searchStart..<text.endIndex) {
+            let after = range.upperBound
+            let remainder = text[after...]
+            let trimmed = remainder.drop(while: { $0.isWhitespace })
+            if !StartMarkerStrategy.remainderBeginsWithRoleMarker(trimmed) {
+                return false
+            }
+            searchStart = after
+        }
+        return true
     }
 }

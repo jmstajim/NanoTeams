@@ -79,7 +79,7 @@ final class LLMStatusMonitorTests: XCTestCase {
         let deadline = Date().addingTimeInterval(timeoutSeconds)
         while Date() < deadline {
             if predicate() != nil { return }
-            try? await Task.sleep(nanoseconds: 50_000_000)
+            try? await Task.sleep(for: .milliseconds(50))
         }
     }
 }

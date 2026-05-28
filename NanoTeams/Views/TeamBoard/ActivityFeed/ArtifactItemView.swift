@@ -1,22 +1,39 @@
 import SwiftUI
 
-/// Renders a single artifact card with expandable content and context menu.
+/// Renders a single artifact card. Tap (or context-menu "Open in Window")
+/// opens the full untruncated content in a standalone window — there is no
+/// inline expansion or chevron.
 struct ArtifactItemView: View {
     let artifact: Artifact
     let role: Role
     let roleDefinition: TeamRoleDefinition?
     let showHeader: Bool
-    let content: String?
+    let originTaskID: Int
     let workFolderURL: URL?
     var onAvatarTap: (() -> Void)? = nil
-    @Binding var artifactsExpanded: Set<String>
-    var onExpand: (Artifact) -> Void
+    /// Override role display name. `nil` falls back to roleDefinition.name.
+    var roleLabelOverride: String? = nil
+    /// Optional ` from <Team>` suffix in secondary gray for delegated
+    /// child-team items.
+    var roleTeamSuffix: String? = nil
+
+    @Environment(\.openWindow) private var openWindow
+    @Environment(NTMSOrchestrator.self) private var store
 
     // MARK: - Derived
 
-    private var roleName: String { roleDefinition?.name ?? role.displayName }
+    private var roleName: String { roleLabelOverride ?? roleDefinition?.name ?? role.displayName }
     private var tintColor: Color { roleDefinition?.resolvedTintColor ?? role.tintColor }
-    private var isExpanded: Bool { artifactsExpanded.contains(artifact.id) }
+
+    private func openDetailWindow() {
+        openWindow(value: ActivityDetailWindow.artifact(
+            taskID: originTaskID,
+            artifactName: artifact.name,
+            mimeType: artifact.mimeType,
+            relativePath: artifact.relativePath,
+            createdAt: artifact.createdAt
+        ))
+    }
 
     // MARK: - Body
 
@@ -28,7 +45,7 @@ struct ArtifactItemView: View {
             VStack(alignment: .leading, spacing: ActivityCardTokens.contentSpacing) {
                 if showHeader {
                     HStack(spacing: 6) {
-                        Text(roleName).font(.caption.weight(.semibold)).foregroundStyle(tintColor)
+                        roleNameText(roleName: roleName, teamSuffix: roleTeamSuffix, tintColor: tintColor)
                         Text("produced artifact").font(.caption).foregroundStyle(.secondary)
                         Spacer()
                         Text(artifact.createdAt.formatted(date: .omitted, time: .shortened))
@@ -41,12 +58,9 @@ struct ArtifactItemView: View {
         }
         .contextMenu {
             Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    artifactsExpanded.insert(artifact.id)
-                    onExpand(artifact)
-                }
+                openDetailWindow()
             } label: {
-                Label("View Content", systemImage: "doc.text.magnifyingglass")
+                Label("Open in Window", systemImage: "rectangle.on.rectangle")
             }
 
             Divider()
@@ -71,23 +85,15 @@ struct ArtifactItemView: View {
     // MARK: - Artifact Card
 
     private var artifactCard: some View {
-        VStack(alignment: .leading, spacing: ActivityCardTokens.contentSpacing) {
-            HStack(spacing: ActivityCardTokens.contentSpacing) {
-                Image(systemName: "doc.fill")
-                    .foregroundStyle(Colors.artifact)
-                    .font(.body)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(artifact.name).font(.subheadline.weight(.medium))
-                    Text(artifact.mimeType).font(.caption2).foregroundStyle(.tertiary)
-                }
-                Spacer()
-                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                    .font(.caption).foregroundStyle(.tertiary)
+        HStack(spacing: ActivityCardTokens.contentSpacing) {
+            Image(systemName: "doc.fill")
+                .foregroundStyle(Colors.artifact)
+                .font(.body)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(artifact.name).font(.subheadline.weight(.medium))
+                Text(artifact.mimeType).font(.caption2).foregroundStyle(.tertiary)
             }
-
-            if isExpanded {
-                contentView
-            }
+            Spacer()
         }
         .padding(.vertical, Spacing.xs)
         .padding(.leading, Spacing.s)
@@ -98,121 +104,73 @@ struct ArtifactItemView: View {
                 .padding(.vertical, 4)
         }
         .contentShape(Rectangle())
-        .onTapGesture {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                if isExpanded {
-                    artifactsExpanded.remove(artifact.id)
-                } else {
-                    artifactsExpanded.insert(artifact.id)
-                    onExpand(artifact)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var contentView: some View {
-        if let content {
-            ScrollView {
-                if isMarkdown {
-                    Text(.init(content))
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                } else {
-                    Text(content)
-                        .font(.system(.callout, design: .monospaced))
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-            .frame(maxHeight: ActivityCardTokens.artifactContentMaxHeight)
-            .padding(ActivityCardTokens.innerPadding)
-            .background(
-                RoundedRectangle(cornerRadius: ActivityCardTokens.innerCornerRadius, style: .continuous)
-                    .fill(Colors.surfaceOverlay)
-            )
-        } else {
-            HStack {
-                NTMSLoader(.small)
-                Text("Loading content...").font(.caption).foregroundStyle(.secondary)
-            }
-            .padding(ActivityCardTokens.innerPadding)
-        }
+        .onTapGesture { openDetailWindow() }
     }
 
     // MARK: - Helpers
 
-    private var isMarkdown: Bool {
-        artifact.mimeType == "text/markdown" || artifact.name.lowercased().hasSuffix(".md")
-    }
-
     private func copyContent() {
-        if let content {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(content, forType: .string)
-        } else if let relativePath = artifact.relativePath,
-                  let projectURL = workFolderURL {
-            let fileURL = projectURL.appendingPathComponent(".nanoteams")
-                .appendingPathComponent(relativePath)
-            if let fileContent = try? String(contentsOf: fileURL, encoding: .utf8) {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(fileContent, forType: .string)
-            }
+        guard let relativePath = artifact.relativePath else {
+            store.lastErrorMessage = "Artifact has no on-disk path yet — nothing to copy."
+            return
         }
+        guard let projectURL = workFolderURL else {
+            store.lastErrorMessage = "Open a work folder to copy artifact content."
+            return
+        }
+        let fileURL = projectURL.appendingPathComponent(".nanoteams")
+            .appendingPathComponent(relativePath)
+        do {
+            let fileContent = try String(contentsOf: fileURL, encoding: .utf8)
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(fileContent, forType: .string)
+        } catch {
+            store.lastErrorMessage = "Couldn't copy artifact content: \(error.localizedDescription)"
+        }
+    }
+}
+
+// MARK: - Equatable
+
+/// See `MessageBubbleView`'s Equatable extension for full rationale.
+/// `Artifact` is `Hashable` so `==` is structural. `onAvatarTap` excluded
+/// (closure; captures only props in `==`).
+extension ArtifactItemView: Equatable {
+    static func == (lhs: ArtifactItemView, rhs: ArtifactItemView) -> Bool {
+        lhs.artifact == rhs.artifact
+            && lhs.role == rhs.role
+            && lhs.roleDefinition?.id == rhs.roleDefinition?.id
+            && lhs.showHeader == rhs.showHeader
+            && lhs.originTaskID == rhs.originTaskID
+            && lhs.workFolderURL == rhs.workFolderURL
+            && lhs.roleLabelOverride == rhs.roleLabelOverride
+            && lhs.roleTeamSuffix == rhs.roleTeamSuffix
     }
 }
 
 // MARK: - Preview
 
-#Preview("Collapsed") {
-    @Previewable @State var expanded: Set<String> = []
-    ArtifactItemView(
-        artifact: Artifact(name: "Product Requirements", icon: "doc.text.fill", description: "PRD for the feature"),
-        role: .productManager,
-        roleDefinition: nil,
-        showHeader: true,
-        content: "# Product Requirements\n\n## Overview\nBuild a notification system for real-time alerts.",
-        workFolderURL: nil,
-        artifactsExpanded: $expanded,
-        onExpand: { _ in }
-    )
+#Preview("Variants") {
+    VStack(spacing: 16) {
+        ArtifactItemView(
+            artifact: Artifact(name: "Product Requirements", icon: "doc.text.fill", description: "PRD for the feature"),
+            role: .productManager,
+            roleDefinition: nil,
+            showHeader: true,
+            originTaskID: 1,
+            workFolderURL: nil
+        )
+        ArtifactItemView(
+            artifact: Artifact(name: "Implementation Plan", icon: "list.bullet.rectangle", description: "Technical plan"),
+            role: .techLead,
+            roleDefinition: nil,
+            showHeader: true,
+            originTaskID: 1,
+            workFolderURL: nil
+        )
+    }
     .padding()
     .frame(width: 500)
     .background(Colors.surfacePrimary)
-}
-
-#Preview("Expanded") {
-    @Previewable @State var expanded: Set<String> = [Artifact.slugify("Implementation Plan")]
-    ArtifactItemView(
-        artifact: Artifact(name: "Implementation Plan", icon: "list.bullet.rectangle", description: "Technical plan"),
-        role: .techLead,
-        roleDefinition: nil,
-        showHeader: true,
-        content: "# Implementation Plan\n\n## Architecture\n- Use WebSocket for real-time delivery\n- Redis pub/sub for message routing\n- PostgreSQL for persistence\n\n## Milestones\n1. Core notification service\n2. WebSocket gateway\n3. Client SDK\n4. Admin dashboard",
-        workFolderURL: nil,
-        artifactsExpanded: $expanded,
-        onExpand: { _ in }
-    )
-    .padding()
-    .frame(width: 500)
-    .background(Colors.surfacePrimary)
-}
-
-#Preview("Loading") {
-    @Previewable @State var expanded: Set<String> = [Artifact.slugify("Design Spec")]
-    ArtifactItemView(
-        artifact: Artifact(name: "Design Spec", icon: "paintbrush", description: "UX design specification"),
-        role: .uxDesigner,
-        roleDefinition: nil,
-        showHeader: true,
-        content: nil,
-        workFolderURL: nil,
-        artifactsExpanded: $expanded,
-        onExpand: { _ in }
-    )
-    .padding()
-    .frame(width: 500)
-    .background(Colors.surfacePrimary)
+    .environment(NTMSOrchestrator(repository: NTMSRepository()))
 }

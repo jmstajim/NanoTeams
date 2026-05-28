@@ -115,7 +115,7 @@ final class ReadFileLineLimitTests: XCTestCase {
         XCTAssertTrue(json.contains("\(limit)-line read_file limit"))
         XCTAssertTrue(json.contains("read_lines"))
         XCTAssertTrue(json.contains("\"start_line\" : \"1\"") || json.contains("\"start_line\":\"1\""))
-        XCTAssertTrue(json.contains("\"end_line\" : \"-1\"") || json.contains("\"end_line\":\"-1\""))
+        XCTAssertTrue(json.contains("\"end_line\" : \"\(limit)\"") || json.contains("\"end_line\":\"\(limit)\""))
         // Body content must NOT leak into the error result.
         XCTAssertFalse(json.contains("Line 1\\nLine 2"))
     }
@@ -217,10 +217,9 @@ final class ReadFileLineLimitTests: XCTestCase {
     }
 
     func testReadFile_oversizeFile_nextHintTargetsCorrectPath() throws {
-        // The reviewer asked us to pin the exact shape of the `next: read_lines`
-        // suggestion: the path field must echo the rejected file (so the LLM can
-        // copy-paste), and the `start_line: 1, end_line: -1` sentinel must be
-        // present so the model picks up the read-to-EOF semantics.
+        // Pins the exact shape of the `next: read_lines` suggestion: path
+        // echoes the rejected file, and `end_line` is the configured cap so
+        // the LLM's retry stays within the limit read_lines itself enforces.
         let limit = AppDefaults.readFileMaxLines
         let body = (1...(limit + 5)).map { "Line \($0)" }.joined(separator: "\n")
         _ = try writeFile(name: "hint.txt", contents: body)
@@ -234,5 +233,8 @@ final class ReadFileLineLimitTests: XCTestCase {
         XCTAssertTrue(json.contains("\"path\" : \"hint.txt\"")
                       || json.contains("\"path\":\"hint.txt\""),
                       "next-hint args must echo the rejected path")
+        XCTAssertTrue(json.contains("\"end_line\" : \"\(limit)\"")
+                      || json.contains("\"end_line\":\"\(limit)\""),
+                      "next-hint must bound end_line to the cap")
     }
 }

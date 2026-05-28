@@ -79,9 +79,15 @@ final class WatchtowerNotificationTypeTests: XCTestCase {
 
     // MARK: - dismissID
 
-    func testDismissID_matchesStepID() {
+    func testDismissID_supervisorInput_includesStepIDAndQuestion() {
         let sut = WatchtowerNotificationType.supervisorInput(stepID: stepID, question: "Q", role: .softwareEngineer)
-        XCTAssertEqual(sut.dismissID, stepID)
+        XCTAssertEqual(sut.dismissID, "\(stepID)::Q")
+    }
+
+    func testDismissID_supervisorInput_differsAcrossQuestionsOnSameStep() {
+        let q1 = WatchtowerNotificationType.supervisorInput(stepID: stepID, question: "First?", role: .softwareEngineer)
+        let q2 = WatchtowerNotificationType.supervisorInput(stepID: stepID, question: "Second?", role: .softwareEngineer)
+        XCTAssertNotEqual(q1.dismissID, q2.dismissID)
     }
 
     func testTaskDone_dismissID_matchesTaskID() {

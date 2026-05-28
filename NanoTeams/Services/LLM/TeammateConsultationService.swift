@@ -2,7 +2,7 @@ import Foundation
 
 /// Service for generating teammate responses to consultation requests.
 /// Uses the LLM to role-play as a teammate and provide expertise-based answers.
-struct TeammateConsultationService {
+nonisolated struct TeammateConsultationService {
 
     /// Context required to generate a teammate response
     struct ConsultationContext {
@@ -15,6 +15,33 @@ struct TeammateConsultationService {
         let artifactReader: (Artifact) -> String?
         let consultationHistory: [TeammateConsultation]
         let team: Team?
+        /// App-wide instruction appended to the resolved system prompt.
+        /// Default `""` keeps existing test call sites compiling.
+        let globalContext: String
+
+        init(
+            consultedRole: Role,
+            requestingRole: Role,
+            question: String,
+            additionalContext: String?,
+            task: NTMSTask,
+            availableArtifacts: [Artifact],
+            artifactReader: @escaping (Artifact) -> String?,
+            consultationHistory: [TeammateConsultation],
+            team: Team?,
+            globalContext: String = ""
+        ) {
+            self.consultedRole = consultedRole
+            self.requestingRole = requestingRole
+            self.question = question
+            self.additionalContext = additionalContext
+            self.task = task
+            self.availableArtifacts = availableArtifacts
+            self.artifactReader = artifactReader
+            self.consultationHistory = consultationHistory
+            self.team = team
+            self.globalContext = globalContext
+        }
     }
 
     /// Generate a response from a teammate
@@ -94,9 +121,14 @@ struct TeammateConsultationService {
             "requestingRoleName": roleName(context.requestingRole, team: context.team),
             "roleGuidance": roleGuidance,
             "teamDescription": teamDescription,
+            "globalContext": PromptBuilder.formatGlobalContext(context.globalContext),
         ]
 
-        return TemplateResolver.resolve(template, placeholders: placeholders)
+        return TemplateResolver.resolveSystemPrompt(
+            template,
+            placeholders: placeholders,
+            globalContext: context.globalContext
+        )
     }
 
     /// Build the task context message
@@ -181,7 +213,7 @@ struct TeammateConsultationService {
         }
 
         lines.append("")
-        lines.append("Please provide your response as \(roleName(context.consultedRole, team: context.team)).")
+        lines.append("Respond as \(roleName(context.consultedRole, team: context.team)).")
 
         return lines.joined(separator: "\n")
     }

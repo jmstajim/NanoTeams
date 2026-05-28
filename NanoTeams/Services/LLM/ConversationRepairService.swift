@@ -2,7 +2,7 @@ import Foundation
 
 /// Stateless service for repairing poisoned LLM conversations and cleaning model-specific tokens.
 /// All methods are static — no instances needed.
-enum ConversationRepairService {
+nonisolated enum ConversationRepairService {
 
     // MARK: - Conversation Repair
 

@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Team Management Service
 
 /// Service for managing teams within a project
-enum TeamManagementService {
+nonisolated enum TeamManagementService {
 
     // MARK: - Team CRUD
 
@@ -158,7 +158,7 @@ enum TeamManagementService {
     /// - Skips Supervisor roles (their requiredArtifacts are set per-team, not from generic template).
     /// - Returns true if any changes were made.
     @discardableResult
-    static func syncSystemRoleDependencies(
+    nonisolated static func syncSystemRoleDependencies(
         team: inout Team,
         templates: [String: SystemRoleTemplate],
         teamProducers: Set<String>
@@ -200,7 +200,7 @@ enum TeamManagementService {
 
 // MARK: - Validation Errors
 
-enum TeamValidationError: Error, Equatable {
+nonisolated enum TeamValidationError: Error, Equatable {
     case noRoles
     case emptyName
     case duplicateName

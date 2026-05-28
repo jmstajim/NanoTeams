@@ -10,6 +10,14 @@ struct ToolSelectionView: View {
     let isNonProducingNonObserver: Bool
     let isMeetingCoordinator: Bool
     let isVisionConfigured: Bool
+    /// True iff the role has any delegation target configured — drives the
+    /// auto-injection of the 4-tool delegation pack into the LLM schema.
+    /// Mirrors `TeamRoleDefinition.hasDelegationConfigured`.
+    let canDelegate: Bool
+    /// Human-readable summary of the role's delegation configuration (e.g.
+    /// "2 teams + generated" / "1 team" / "generated"). Rendered as the hint
+    /// next to the auto-injected `delegate_to_team` row.
+    let delegationHint: String
     @State private var searchText: String = ""
     @State private var showDescriptions: Bool = false
 
@@ -45,6 +53,10 @@ struct ToolSelectionView: View {
         return ToolNames.createArtifact.contains(query)
             || ToolNames.askSupervisor.contains(query)
             || ToolNames.concludeMeeting.contains(query)
+            || ToolNames.delegateToTeam.contains(query)
+            || ToolNames.cancelDelegation.contains(query)
+            || ToolNames.resumeDelegation.contains(query)
+            || ToolNames.forwardToTeam.contains(query)
     }
 
     private var toolHints: [String: String] {
@@ -119,7 +131,9 @@ struct ToolSelectionView: View {
                             AutoInjectedToolsSection(
                                 producedArtifacts: producedArtifacts,
                                 isNonProducingNonObserver: isNonProducingNonObserver,
-                                isMeetingCoordinator: isMeetingCoordinator
+                                isMeetingCoordinator: isMeetingCoordinator,
+                                canDelegate: canDelegate,
+                                delegationHint: delegationHint
                             )
                         }
 
@@ -149,6 +163,8 @@ private struct AutoInjectedToolsSection: View {
     let producedArtifacts: [String]
     let isNonProducingNonObserver: Bool
     let isMeetingCoordinator: Bool
+    let canDelegate: Bool
+    let delegationHint: String
 
     private var isCreateArtifactActive: Bool { !producedArtifacts.isEmpty }
 
@@ -156,7 +172,7 @@ private struct AutoInjectedToolsSection: View {
     /// because it looked identical to a tool the user could toggle on. Auto-injection
     /// semantics are: either the system adds it, or it does not apply to this role.
     private var hasAnyActiveInjection: Bool {
-        isCreateArtifactActive || isNonProducingNonObserver || isMeetingCoordinator
+        isCreateArtifactActive || isNonProducingNonObserver || isMeetingCoordinator || canDelegate
     }
 
     var body: some View {
@@ -191,7 +207,25 @@ private struct AutoInjectedToolsSection: View {
                 if isMeetingCoordinator {
                     autoInjectedRow(
                         toolName: ToolNames.concludeMeeting,
-                        hint: "Role is the team's Meeting Coordinator"
+                        hint: "Role can start team meetings"
+                    )
+                }
+                if canDelegate {
+                    autoInjectedRow(
+                        toolName: ToolNames.delegateToTeam,
+                        hint: delegationHint
+                    )
+                    autoInjectedRow(
+                        toolName: ToolNames.cancelDelegation,
+                        hint: "Pause-and-Decide control plane"
+                    )
+                    autoInjectedRow(
+                        toolName: ToolNames.resumeDelegation,
+                        hint: "Pause-and-Decide control plane"
+                    )
+                    autoInjectedRow(
+                        toolName: ToolNames.forwardToTeam,
+                        hint: "Pause-and-Decide control plane"
                     )
                 }
             }
@@ -379,7 +413,9 @@ private struct ToolRow: View {
         producedArtifacts: ["Engineering Notes"],
         isNonProducingNonObserver: false,
         isMeetingCoordinator: false,
-        isVisionConfigured: true
+        isVisionConfigured: true,
+        canDelegate: false,
+        delegationHint: ""
     )
     .frame(width: 460, height: 600)
     .background(Colors.surfacePrimary)
@@ -391,7 +427,9 @@ private struct ToolRow: View {
         producedArtifacts: [],
         isNonProducingNonObserver: true,
         isMeetingCoordinator: false,
-        isVisionConfigured: false
+        isVisionConfigured: false,
+        canDelegate: false,
+        delegationHint: ""
     )
     .frame(width: 460, height: 600)
     .background(Colors.surfacePrimary)
@@ -406,7 +444,9 @@ private struct ToolRow: View {
         producedArtifacts: ["Product Requirements", "Design Spec"],
         isNonProducingNonObserver: false,
         isMeetingCoordinator: false,
-        isVisionConfigured: true
+        isVisionConfigured: true,
+        canDelegate: false,
+        delegationHint: ""
     )
     .frame(width: 460, height: 600)
     .background(Colors.surfacePrimary)
@@ -422,7 +462,9 @@ private struct ToolRow: View {
         producedArtifacts: [],
         isNonProducingNonObserver: true,
         isMeetingCoordinator: false,
-        isVisionConfigured: false
+        isVisionConfigured: false,
+        canDelegate: false,
+        delegationHint: ""
     )
     .frame(width: 460, height: 600)
     .background(Colors.surfacePrimary)

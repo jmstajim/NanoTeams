@@ -1,8 +1,8 @@
 import Foundation
 
-/// Compile-time string constants for all 28 tool names.
+/// Compile-time string constants for all 33 tool names.
 /// Use these instead of string literals to get compile-time checking on tool identifiers.
-enum ToolNames {
+nonisolated enum ToolNames {
     // File System (7)
     static let listFiles = "list_files"
     static let readFile = "read_file"
@@ -41,4 +41,9 @@ enum ToolNames {
     static let analyzeImage = "analyze_image"
     // Team (1)
     static let createTeam = "create_team"
+    // Delegation (4)
+    static let delegateToTeam = "delegate_to_team"
+    static let cancelDelegation = "cancel_delegation"
+    static let resumeDelegation = "resume_delegation"
+    static let forwardToTeam = "forward_to_team"
 }

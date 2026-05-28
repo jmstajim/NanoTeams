@@ -42,7 +42,7 @@ final class TeamRoleDependenciesTests: XCTestCase {
         }
 
         XCTAssertEqual(sweRole.dependencies.requiredArtifacts, ["Implementation Plan", "Design Spec"])
-        XCTAssertEqual(sweRole.dependencies.producesArtifacts, ["Engineering Notes", "Build Diagnostics"])
+        XCTAssertEqual(sweRole.dependencies.producesArtifacts, ["Engineering Notes"])
     }
 
     func testFAANGTeam_SRE_Dependencies() {

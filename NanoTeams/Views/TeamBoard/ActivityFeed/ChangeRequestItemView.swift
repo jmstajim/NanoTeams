@@ -76,6 +76,16 @@ struct ChangeRequestItemView: View {
     }
 }
 
+// MARK: - Equatable
+
+/// See `MessageBubbleView`'s Equatable extension for full rationale.
+/// `ChangeRequest` is `Hashable`; both props are value types.
+extension ChangeRequestItemView: Equatable {
+    static func == (lhs: ChangeRequestItemView, rhs: ChangeRequestItemView) -> Bool {
+        lhs.request == rhs.request && lhs.targetRoleName == rhs.targetRoleName
+    }
+}
+
 #Preview {
     VStack(spacing: 16) {
         ChangeRequestItemView(

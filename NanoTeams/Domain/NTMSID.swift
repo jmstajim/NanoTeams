@@ -8,7 +8,7 @@ typealias NTMSID = String
 extension NTMSID {
     /// Derives a stable team ID from a display name: lowercased, spaces/colons → underscores, non-alphanumeric stripped.
     /// Example: `"Personal Assistant"` → `"personal_assistant"`, `"faang:PM"` → `"faang_pm"`
-    static func from(name: String) -> NTMSID {
+    nonisolated static func from(name: String) -> NTMSID {
         name.lowercased()
             .replacingOccurrences(of: ":", with: "_")
             .replacingOccurrences(of: " ", with: "_")

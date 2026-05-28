@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Meeting Tool Summary
 
 /// Lightweight record of a tool call made during a meeting turn.
-struct MeetingToolSummary: Codable, Identifiable, Hashable {
+nonisolated struct MeetingToolSummary: Codable, Identifiable, Hashable {
     var id: UUID
     var createdAt: Date
     var toolName: String

@@ -1,9 +1,10 @@
 import Foundation
+import Synchronization
 
 /// Stateless service for generating a team from a task description via direct LLM call.
 /// Does NOT create a task or run — invokes the Team Creator prompt directly and parses
 /// the `create_team` tool call to construct a `Team`.
-enum TeamGenerationService {
+nonisolated enum TeamGenerationService {
 
     enum GenerationError: Error, LocalizedError {
         case noResponse
@@ -58,11 +59,14 @@ enum TeamGenerationService {
         taskDescription: String,
         config: LLMConfig,
         client: any LLMClient = LLMClientRouter(),
-        systemPrompt: String? = nil
+        systemPrompt: String? = nil,
+        logger: NetworkLogger? = nil,
+        stepID: String? = nil
     ) async throws -> GeneratedTeamBuilder.BuildResult {
         let outcome = await generateWithDiagnostics(
             taskDescription: taskDescription, config: config, client: client,
-            systemPrompt: systemPrompt
+            systemPrompt: systemPrompt,
+            logger: logger, stepID: stepID
         )
         return try outcome.result.get()
     }
@@ -80,7 +84,9 @@ enum TeamGenerationService {
         config: LLMConfig,
         client: any LLMClient = LLMClientRouter(),
         firstContentDeadlineSeconds: Double? = nil,
-        systemPrompt: String? = nil
+        systemPrompt: String? = nil,
+        logger: NetworkLogger? = nil,
+        stepID: String? = nil
     ) async -> GenerationOutcome {
         let startedAt = Date()
         var diagnostics = GenerationDiagnostics(
@@ -105,13 +111,24 @@ enum TeamGenerationService {
         var toolAccumulator = ToolCallAccumulator()
         var fullContent = ""
 
+        // Wire `logger` + `stepID` through to the streaming call so the
+        // request/response land in the per-task `network_log.json`. Pre-fix
+        // the team-generation LLM call was invisible to operators — when the
+        // model emits an unparseable `create_team` envelope, the only
+        // surfaced signal was a generic `COMMAND_FAILED: Could not parse
+        // tool arguments as JSON` with no payload to diagnose. Per
+        // CORE_PRINCIPLES the program LEARNS from model behavior; that
+        // requires recording the behavior in the first place. `roleName`
+        // is fixed to "Team Generator" so the log row is attributable
+        // separately from the delegating role's own calls.
         let stream = client.streamChat(
             config: config,
             messages: messages,
             tools: [CreateTeamTool.schema],
             session: nil,
-            logger: nil,
-            stepID: nil
+            logger: logger,
+            stepID: stepID,
+            roleName: "Team Generator"
         )
 
         var sawContent = false
@@ -324,10 +341,45 @@ enum TeamGenerationService {
         do {
             config = try decoder.decode(GeneratedTeamConfig.self, from: data)
         } catch {
-            throw GenerationError.invalidResponse(error.localizedDescription)
+            throw GenerationError.invalidResponse(describeDecodingError(error))
         }
 
         return GeneratedTeamBuilder.build(from: config)
+    }
+
+    /// Surface `DecodingError.codingPath` and `debugDescription` for trainer / UI
+    /// diagnostics. `error.localizedDescription` on a `DecodingError` collapses
+    /// to the generic `"The data couldn't be read because it isn't in the
+    /// correct format."` — useless when triaging which specific field a model
+    /// emitted incorrectly. This helper preserves the path and the throw-site
+    /// `debugDescription` (which carries the DTO's own enum-allowed-values text
+    /// for `.dataCorrupted` cases). Non-`DecodingError` errors fall through to
+    /// `localizedDescription`.
+    static func describeDecodingError(_ error: Error) -> String {
+        guard let decodingError = error as? DecodingError else {
+            return error.localizedDescription
+        }
+        let context: DecodingError.Context
+        let prefix: String
+        switch decodingError {
+        case .typeMismatch(let type, let ctx):
+            context = ctx
+            prefix = "Type mismatch (expected \(type))"
+        case .valueNotFound(let type, let ctx):
+            context = ctx
+            prefix = "Value not found (expected \(type))"
+        case .keyNotFound(let key, let ctx):
+            context = ctx
+            prefix = "Key not found: \(key.stringValue)"
+        case .dataCorrupted(let ctx):
+            context = ctx
+            prefix = "Data corrupted"
+        @unknown default:
+            return error.localizedDescription
+        }
+        let path = context.codingPath.map(\.stringValue).joined(separator: ".")
+        let pathSegment = path.isEmpty ? "" : " at `\(path)`"
+        return "\(prefix)\(pathSegment): \(context.debugDescription)"
     }
 
     /// When the OUTER JSON parse fails because the LLM inconsistently escaped
@@ -412,15 +464,81 @@ enum TeamGenerationService {
                 return unwrapTeamConfig(parsed)
             }
         }
-        // Nested team_config
+        // Nested team_config — possibly with misplaced sibling fields at the
+        // wrapper level. `qwen3.5-9b-mlx` defect: emits supervisor_requires
+        // (and occasionally other canonical team_config-level fields) as a
+        // sibling of `team_config` instead of inside it. Merge sibling values
+        // into the inner dict before returning so the user's intent isn't
+        // silently dropped — without this, `decodeTeamConfig` sees an empty
+        // `supervisor_requires` and only the auto-promote-orphans path can
+        // recover, which misses any artifact that already has consumers.
         if let nested = dict["team_config"] as? [String: Any] {
-            return nested
+            return mergeMisplacedSiblings(into: nested, from: dict)
         }
         // Single-key tool-name wrapper: {create_team: {...}}
         if let wrapped = dict[ToolNames.createTeam] as? [String: Any] {
             return unwrapTeamConfig(wrapped)
         }
         return dict
+    }
+
+    /// Canonical top-level keys of `team_config` per `GeneratedTeamConfig.CodingKeys`.
+    /// MUST stay in sync with that enum — if `GeneratedTeamConfig` gains a new
+    /// top-level field, add it here too so misplacements of the new field are
+    /// recovered. Narrow whitelist (not "any sibling key") — anything outside this
+    /// list is unrelated junk and must NOT be promoted into team_config or it
+    /// would surface as `DecodingError` (unknown key) or, worse, silently bypass
+    /// validation if `GeneratedTeamConfig` ever adopts permissive decoding.
+    static let teamConfigSiblingKeys: Set<String> = [
+        "name", "description",
+        "supervisor_mode", "acceptance_mode",
+        "roles", "artifacts", "supervisor_requires",
+    ]
+
+    /// Merges canonical sibling fields that the model misplaced at the wrapper
+    /// level (next to `team_config`) into the inner team_config dict.
+    /// Inside-team_config wins on conflict — if the model put the same key both
+    /// inside and outside, the inside value is authoritative (the model probably
+    /// only typo'd one of them; the structurally correct location takes priority).
+    /// Idempotent: a second pass on already-merged input is a no-op.
+    static func mergeMisplacedSiblings(
+        into inner: [String: Any], from wrapper: [String: Any]
+    ) -> [String: Any] {
+        var merged = inner
+        var didMerge = false
+        for key in teamConfigSiblingKeys where wrapper[key] != nil && merged[key] == nil {
+            merged[key] = wrapper[key]
+            didMerge = true
+        }
+        if didMerge { _bumpSiblingMergeFireCount() }
+        return merged
+    }
+
+    // MARK: - Sibling-merge diagnostics counter
+
+    /// Counts how many times `mergeMisplacedSiblings` actually moved at least one
+    /// canonical key from a wrapper into the inner team_config. Bumped on real
+    /// merges only — calls where the inner dict already has every sibling key
+    /// (or where the wrapper has none) do NOT bump. Process-global, the same
+    /// shape as `HarmonyToolCallParsingHelpers.repairFireCount` — granularity is
+    /// "total fires across the run of the app", which is what the train-app
+    /// audit pass needs.
+    private static let _siblingMergeFireCount = Atomic<Int>(0)
+
+    /// Number of times the sibling-merge fix successfully recovered a misplaced
+    /// canonical field. Read-only; reset via `_resetSiblingMergeFireCount()` in tests.
+    static var siblingMergeFireCount: Int {
+        _siblingMergeFireCount.load(ordering: .relaxed)
+    }
+
+    #if DEBUG
+    static func _resetSiblingMergeFireCount() {
+        _siblingMergeFireCount.store(0, ordering: .relaxed)
+    }
+    #endif
+
+    private static func _bumpSiblingMergeFireCount() {
+        _siblingMergeFireCount.wrappingAdd(1, ordering: .relaxed)
     }
 
     /// Tries to parse `s` as a JSON dictionary. Attempts, in order:
@@ -563,86 +681,44 @@ enum TeamGenerationService {
     /// Built-in default system prompt. Settings can read this to seed the
     /// custom-prompt editor.
     static let defaultSystemPrompt: String = """
-        You are an expert team architect. Analyze the user's task and design the optimal team to execute it.
+        You design teams of LLM-driven roles to execute the user's task. Call `create_team` ONCE with a `team_config` matching the schema.
 
-        YOU MUST CALL THE create_team TOOL with the complete team configuration. Do NOT reply with plain text, prose, or explanations. Your ONLY output is a single create_team tool call.
+        ## Role types
+        - **Producing** — has `produces_artifacts`; auto-finishes when all artifacts are submitted via create_artifact.
+        - **Chat** — has `requires_artifacts` only, empty `produces_artifacts`; talks via ask_supervisor until paused. A team with empty `supervisor_requires` runs in Chat mode.
+        - **Observer** — no artifacts; speaks only in meetings. Use for personality-driven debate teams.
 
-        HOW ROLES WORK:
+        ## Design rules
+        - `Supervisor Task` is always the first dependency. The Supervisor produces it automatically.
+        - The final artifact(s) go into `supervisor_requires` for review. Chat teams use `supervisor_requires: []`.
+        - Give every role a detailed `prompt` for THIS task and tools matching its responsibility.
+        - Include `ask_supervisor` for roles that may need clarification.
+        - Add `ask_teammate` / `request_team_meeting` for roles that benefit from collaboration.
+        - `supervisor_mode`: `autonomous` or `manual`. `autonomous` for clear specs, `manual` for creative/ambiguous tasks.
+        - `acceptance_mode`: `finalOnly` (default — Supervisor reviews only the final deliverable), `afterEachRole`, or `afterEachArtifact`. Use exact enum values — `manual`/`autonomous` are NOT valid here.
 
-        Every role falls into one of three types — this determines what the role does and how it finishes.
+        ## Tool selection
+        | Task type                              | Mandatory tools per producing role                                          |
+        |----------------------------------------|------------------------------------------------------------------------------|
+        | Modifies on-disk files (any language)  | write_file + edit_file + read_file + list_files + search                    |
+        | Apple-ecosystem (Swift / Xcode / iOS / macOS / watchOS / tvOS / visionOS / UIKit / AppKit / SwiftUI / XCTest / .xcodeproj) | also add run_xcodebuild + run_xcodetests on at least one role |
+        | Review / plan / research / writing     | read_file + read_lines + list_files + search + ask_supervisor + update_scratchpad — NO writers, NO git |
+        | Chat / assistant                       | read_file + write_file + edit_file + list_files + search + update_scratchpad + ask_supervisor + analyze_image |
 
-        **Producing roles** create specific deliverables called artifacts. A PM produces "Product Requirements," an Engineer produces "Engineering Notes." The role works autonomously — reading files, using tools, consulting teammates — and finishes automatically once all its artifacts are submitted via create_artifact. This is the most common role type.
+        Triggers for the writer rule include verbs in ANY language: `write/modify/fix/refactor/implement/patch/rewrite/update/add to/переписать/реализовать/исправить/изменить/обновить`. Artifact names like `calculator.js`, `js/app.js`, `Updated foo.py` always require writers — a producing role required to "produce calculator.js" without write_file CANNOT do its job and will loop forever.
 
-        **Chat roles** don't produce artifacts — instead, they talk to the Supervisor via ask_supervisor. After reading upstream artifacts (or just the task description), the role enters an open-ended conversation loop. The role never finishes on its own — it keeps the conversation going until the Supervisor pauses or closes the task. To create a chat role: give it requires_artifacts but empty produces_artifacts, and set supervisor_requires to [] (empty). When a team has no required deliverables for the Supervisor, it runs in Chat mode.
+        Triggers for the Xcode rule include verbs like `implement/build/add/fix/refactor/plan/design/architect/document/research/audit/review/investigate` applied to Apple-ecosystem code. DO NOT include Xcode tools for Python / JS / TS / Node / Go / Rust / Java / .NET / Ruby / PHP.
 
-        **Observer roles** have no artifacts at all — no produces_artifacts and no requires_artifacts. They sit in the team graph but don't run on their own. They come alive only when invited to team meetings, contributing their perspective to group discussions. Use observers for personality-driven debate teams.
+        Git write tools come as a set: `git_status + git_add + git_commit` together or omit all three.
+        Add `analyze_image` only when the task plausibly involves image content.
 
-        TEAM DESIGN PRINCIPLES:
-        - Each producing role should have a clear responsibility and produce specific artifacts.
-        - Artifact dependencies create the execution order — a role starts only when its required artifacts exist.
-        - "Supervisor Task" is always produced by the Supervisor. Use it as the first dependency.
-        - The last artifact(s) in the chain should be listed in supervisor_requires — the Supervisor reviews these.
-        - If the task is interactive/conversational (no clear deliverables), make the final role a chat role with empty produces_artifacts and set supervisor_requires to [].
-        - Give each role a detailed prompt explaining their specific responsibility for THIS task.
-        - Assign appropriate tools to each role (read_file, write_file, edit_file, git_*, etc.).
-        - Use ask_supervisor in toolIDs for roles that may need clarification from the user.
-        - For coding roles (any language), include: read_file, read_lines, write_file, edit_file, delete_file, list_files, search, git_status, git_add, git_commit, update_scratchpad, ask_supervisor.
-        - **Xcode tools rule** — `run_xcodebuild` and `run_xcodetests` are Apple-ecosystem ONLY. (a) MUST include both on at least one role whenever the task involves any of: Xcode, iOS, iPadOS, macOS, watchOS, tvOS, visionOS, Swift, SwiftUI, UIKit, AppKit, XCTest, App Store, TestFlight, `.xcodeproj`, `.xcworkspace`, Objective-C — regardless of (i) the natural language the task description is written in, and (ii) the framing verb. This applies whether the task says "implement", "build", "add", "fix", "refactor", "write a plan for", "design", "architect", "document", "write API docs for", "research", "audit", "review", or "investigate". Any team whose deliverables touch an Apple-ecosystem codebase needs at least one role that can run the build and tests to verify proposals against the real code (a plan that doesn't compile is worthless). The role that runs builds/tests should also have `read_file` + `write_file` so it can inspect and fix failures. (b) DO NOT include them for Python, JavaScript/TypeScript, Node.js, Go, Rust, Java, .NET, Ruby, PHP, or other non-Apple stacks.
-        - For review/planning/research/writing roles (no code production), include only read tools: read_file, read_lines, list_files, search, ask_supervisor, update_scratchpad. NO write_file, edit_file, delete_file, or git_*.
-        - For chat/assistant roles, include: read_file, read_lines, write_file, edit_file, delete_file, list_files, search, update_scratchpad, ask_supervisor, analyze_image.
-        - `analyze_image` ONLY for tasks that plausibly involve image content; otherwise omit it.
-        - Git write tools come together: include `git_status` + `git_add` + `git_commit` as a set or omit all three. Don't ship `git_commit` without `git_add`.
-        - Set supervisor_mode to "autonomous" for tasks that don't need interactive input, "manual" for creative/ambiguous tasks.
-        - Roles can consult each other via ask_teammate — include it for roles that benefit from cross-role Q&A.
-        - Roles can start team meetings via request_team_meeting — include it for collaborative decision-making.
+        ## Language
+        Write role names, team name, team description, role prompts, and artifact names in the SAME language as the user's task. No force-translation to English.
 
-        EXAMPLE — Producing team:
-        ```json
-        {
-          "team_config": {
-            "name": "API Development Team",
-            "description": "Team for building a REST API with tests",
-            "supervisor_mode": "autonomous",
-            "acceptance_mode": "finalOnly",
-            "roles": [
-              {"name": "API Architect", "prompt": "Design the REST API structure.", "produces_artifacts": ["API Specification"], "requires_artifacts": ["Supervisor Task"], "tools": ["read_file", "list_files", "search", "update_scratchpad", "ask_supervisor"]},
-              {"name": "Backend Developer", "prompt": "Implement the API.", "produces_artifacts": ["Implementation Notes", "Build Diagnostics"], "requires_artifacts": ["API Specification"], "tools": ["read_file", "write_file", "edit_file", "list_files", "search", "git_status", "git_add", "git_commit", "update_scratchpad", "ask_supervisor"]},
-              {"name": "Code Reviewer", "prompt": "Review the implementation.", "produces_artifacts": ["Code Review"], "requires_artifacts": ["Implementation Notes"], "tools": ["read_file", "list_files", "search", "update_scratchpad", "ask_supervisor"]}
-            ],
-            "artifacts": [
-              {"name": "API Specification", "description": "REST API endpoints"},
-              {"name": "Implementation Notes", "description": "Implementation summary"},
-              {"name": "Build Diagnostics", "description": "Build and test results"},
-              {"name": "Code Review", "description": "Code review findings"}
-            ],
-            "supervisor_requires": ["Code Review"]
-          }
-        }
-        ```
+        ## Output
+        Exactly one `create_team` tool call. No prose, no other tool calls. Emit strict valid JSON — every key and string value in double quotes, every brace balanced, every `"` pair closed.
 
-        EXAMPLE — Chat team (interactive assistant):
-        ```json
-        {
-          "team_config": {
-            "name": "Research Assistant",
-            "description": "Interactive research assistant",
-            "supervisor_mode": "manual",
-            "roles": [
-              {"name": "Researcher", "prompt": "Help the Supervisor. Use ask_supervisor for ALL communication.", "produces_artifacts": [], "requires_artifacts": ["Supervisor Task"], "tools": ["read_file", "list_files", "search", "write_file", "update_scratchpad", "ask_supervisor", "analyze_image"]}
-            ],
-            "artifacts": [],
-            "supervisor_requires": []
-          }
-        }
-        ```
-
-        LANGUAGE:
-        - Write role names, team name, team description, role prompts, and artifact names/descriptions in the SAME language as the user's task. If the task is in Russian, generate Russian content. Same for any other non-English language. Do not force-translate to English.
-
-        CRITICAL:
-        - Call create_team EXACTLY ONCE with the team_config JSON object.
-        - Do NOT reply with any text, prose, or explanation — ONLY the tool call.
-        - Do NOT call any other tools.
-        - Emit strict, valid JSON: every key AND every string value must be wrapped in double quotes (e.g. `"supervisor_requires": []`, NOT `"supervisor_requires: []`). Verify all `"` pairs close before the tool call ends.
+        ## Final reminder
+        Use exact enum values: `supervisor_mode` ∈ {`autonomous`, `manual`}, `acceptance_mode` ∈ {`finalOnly`, `afterEachRole`, `afterEachArtifact`}. One `create_team` tool call, strict valid JSON, no prose.
         """
 }

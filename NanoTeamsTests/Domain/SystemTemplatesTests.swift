@@ -466,7 +466,8 @@ final class SystemTemplatesTests: XCTestCase {
             "stepInfo", "positionContext", "workFolderContext", "roleGuidance",
             "toolList",
             "expectedArtifacts", "artifactInstructions",
-            "contextAwareness",
+            "conversationMechanics",
+            "globalContext", "toolCalling",
         ]
         XCTAssertEqual(keys, expectedKeys)
     }
@@ -475,6 +476,7 @@ final class SystemTemplatesTests: XCTestCase {
         let keys = Set(SystemTemplates.consultationPlaceholders.map { $0.key })
         let expectedKeys: Set<String> = [
             "consultedRoleName", "requestingRoleName", "roleGuidance", "teamDescription",
+            "globalContext",
         ]
         XCTAssertEqual(keys, expectedKeys)
     }
@@ -484,6 +486,7 @@ final class SystemTemplatesTests: XCTestCase {
         let expectedKeys: Set<String> = [
             "speakerName", "roleGuidance", "meetingTopic",
             "turnNumber", "coordinatorHint", "teamDescription",
+            "globalContext", "toolCalling",
         ]
         XCTAssertEqual(keys, expectedKeys)
     }
@@ -495,7 +498,7 @@ final class SystemTemplatesTests: XCTestCase {
         XCTAssertTrue(template.contains("{roleName}"))
         XCTAssertTrue(template.contains("{teamRoles}"))
         XCTAssertTrue(template.contains("{roleGuidance}"))
-        XCTAssertTrue(template.contains("{toolList}"))
+        XCTAssertTrue(template.contains("{toolCalling}"))
         XCTAssertTrue(template.contains("{expectedArtifacts}"))
     }
 
@@ -527,8 +530,8 @@ final class SystemTemplatesTests: XCTestCase {
 
     func testRoleTemplatesCount() {
         XCTAssertEqual(
-            SystemTemplates.roles.count, 21,
-            "Should have 21 built-in role templates"
+            SystemTemplates.roles.count, 22,
+            "Should have 22 built-in role templates (incl. Coding Agent)"
         )
     }
 
@@ -536,8 +539,8 @@ final class SystemTemplatesTests: XCTestCase {
 
     func testArtifactTemplatesCount() {
         XCTAssertEqual(
-            SystemTemplates.artifacts.count, 17,
-            "Should have 17 built-in artifact templates"
+            SystemTemplates.artifacts.count, 16,
+            "Should have 16 built-in artifact templates"
         )
     }
 

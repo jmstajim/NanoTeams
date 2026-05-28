@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Role Error
 
 /// Represents an error that occurred during role execution
-struct RoleError: Codable, Identifiable, Hashable {
+nonisolated struct RoleError: Codable, Identifiable, Hashable {
     var id: UUID
     var createdAt: Date
     var role: Role
@@ -41,7 +41,7 @@ struct RoleError: Codable, Identifiable, Hashable {
 
 // MARK: - Role Error Type
 
-enum RoleErrorType: String, Codable, Hashable {
+nonisolated enum RoleErrorType: String, Codable, Hashable {
     /// Transient error (network, timeout)
     case transient
 
@@ -80,7 +80,7 @@ enum RoleErrorType: String, Codable, Hashable {
 
 // MARK: - Role Error Strategy
 
-enum RoleErrorStrategy: String, Codable, Hashable, CaseIterable {
+nonisolated enum RoleErrorStrategy: String, Codable, Hashable, CaseIterable {
     /// Automatic retry with exponential backoff
     case retry
 
@@ -108,7 +108,7 @@ enum RoleErrorStrategy: String, Codable, Hashable, CaseIterable {
 // MARK: - Error History
 
 /// Tracks error history for a task/run for analytics
-struct ErrorHistory: Codable {
+nonisolated struct ErrorHistory: Codable {
     var errors: [RoleError] = []
     var totalRetries: Int = 0
     var totalSkipped: Int = 0

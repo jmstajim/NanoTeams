@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - File Read Processing
 
-extension MemoryTagStore {
+nonisolated extension MemoryTagStore {
 
     /// Both `read_file` and `read_lines` return a `{start_line, end_line, total_lines, content}`
     /// envelope. They share the same range-keyed baseline machinery so dedup, invalidation,
@@ -37,14 +37,22 @@ extension MemoryTagStore {
 
         let tag = registerEntry(type: .read, resource: rangeKey, iteration: iteration,
                                 content: content, replacingIn: &currentReadTags)
-        // Clear staleness ONLY when the entire file was re-read. A partial
-        // re-read (e.g. `read_lines 60-100` after `edit_file`) refreshes the
-        // baseline for that range only — other ranges (e.g. 1-50) remain
-        // stale, and clearing the per-path flag here would let a subsequent
-        // 1-50 read incorrectly short-circuit to its pre-edit tag.
-        let isFullRead = startLine == 1 && totalLines > 0 && endLine == totalLines
-        if isFullRead {
-            editedSinceLastRead[path] = false
+        // Clear staleness ONLY when post-edit reads collectively cover the file.
+        // A partial re-read (e.g. `read_lines 60-100` after `edit_file`) refreshes
+        // the baseline for that range only — other ranges (e.g. 1-50) remain
+        // stale, and clearing the per-path flag prematurely would let a subsequent
+        // 1-50 read incorrectly short-circuit to its pre-edit tag. The per-call
+        // cap means a single read_lines may no longer cover the file in one shot,
+        // so paginated coverage is tracked in `readRangesSinceEdit`.
+        if totalLines > 0 && startLine <= endLine {
+            var covered = readRangesSinceEdit[path] ?? IndexSet()
+            covered.insert(integersIn: startLine..<(endLine + 1))
+            if covered.contains(integersIn: 1..<(totalLines + 1)) {
+                editedSinceLastRead[path] = false
+                readRangesSinceEdit.removeValue(forKey: path)
+            } else {
+                readRangesSinceEdit[path] = covered
+            }
         }
 
         let taggedContent = "{\"tag\":\"\(tag)\",\"path\":\(jsonEscape(path)),\"lines\":\"\(startLine)-\(endLine)\",\"content\":\(jsonEscape(content))}"
@@ -54,7 +62,7 @@ extension MemoryTagStore {
 
 // MARK: - Edit / Write / Delete Processing
 
-extension MemoryTagStore {
+nonisolated extension MemoryTagStore {
 
     func processEdit(_ result: ToolExecutionResult, iteration: Int) -> TagProcessingResult {
         guard let path = extractPath(from: result.argumentsJSON),
@@ -67,6 +75,7 @@ extension MemoryTagStore {
                                 iteration: iteration, status: .current, content: "")
 
         editedSinceLastRead[path] = true
+        readRangesSinceEdit.removeValue(forKey: path)
 
         // Mark base read tag as outdated
         if let baseTag = currentReadTags[path] {
@@ -95,6 +104,7 @@ extension MemoryTagStore {
         let tag = registerEntry(type: .write, resource: path, iteration: iteration,
                                 content: newContent, replacingIn: &currentReadTags)
         editedSinceLastRead[path] = false  // write = new baseline
+        readRangesSinceEdit.removeValue(forKey: path)
 
         // Also invalidate any read_lines ranges for this path
         invalidateReadRanges(forPath: path, reason: tag)
@@ -119,6 +129,7 @@ extension MemoryTagStore {
         }
         currentReadTags.removeValue(forKey: path)
         editedSinceLastRead.removeValue(forKey: path)
+        readRangesSinceEdit.removeValue(forKey: path)
 
         // Also invalidate any read_lines ranges for this path
         let rangeKeys = currentReadTags.keys.filter { $0.hasPrefix(path + ":") }

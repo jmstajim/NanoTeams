@@ -25,8 +25,8 @@ final class DomainModelTests: XCTestCase {
         }
     }
 
-    func testBuiltInCases_has21Cases() {
-        XCTAssertEqual(Role.builtInCases.count, 21)
+    func testBuiltInCases_has22Cases() {
+        XCTAssertEqual(Role.builtInCases.count, 22)
     }
 
     func testFromID_builtIn_returnsCorrectRole() {

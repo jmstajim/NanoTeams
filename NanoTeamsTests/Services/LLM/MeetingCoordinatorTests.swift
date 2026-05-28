@@ -18,7 +18,11 @@ final class MeetingCoordinatorTests: XCTestCase {
         XCTAssertTrue(excluded.contains(TN.createArtifact))
         XCTAssertTrue(excluded.contains(TN.analyzeImage))
         XCTAssertTrue(excluded.contains(TN.createTeam))
-        XCTAssertEqual(excluded.count, 8)
+        XCTAssertTrue(excluded.contains(TN.delegateToTeam))
+        XCTAssertTrue(excluded.contains(TN.cancelDelegation))
+        XCTAssertTrue(excluded.contains(TN.resumeDelegation))
+        XCTAssertTrue(excluded.contains(TN.forwardToTeam))
+        XCTAssertEqual(excluded.count, 12)
     }
 
     // MARK: - filterMeetingTools
@@ -62,8 +66,7 @@ final class MeetingCoordinatorTests: XCTestCase {
             context: context
         )
         XCTAssertTrue(msg.contains("Design review"))
-        XCTAssertTrue(msg.contains("TEAM MEETING"))
-        XCTAssertTrue(msg.contains("END MEETING CONTEXT"))
+        XCTAssertTrue(msg.contains("## Team meeting"))
     }
 
     func testBuildTurnMessage_includesAdditionalContext() {
@@ -157,6 +160,83 @@ final class MeetingCoordinatorTests: XCTestCase {
         XCTAssertTrue(lateMsg.contains("Final remarks only"))
     }
 
+    // MARK: - buildTurnMessage: Auto mode (initiator IS the coordinator)
+
+    // Auto mode is normalized at the call site — the meeting context's
+    // `coordinatorRole` is set to the initiating role when no coordinator is
+    // designated. The initiator therefore receives mid-meeting steering and
+    // wrap-up prompts on the same turn-threshold rules as a designated
+    // coordinator would.
+    func testBuildTurnMessage_autoMode_initiatorAsCoordinator_getsSteering() {
+        // maxTurns=6 → steering at turn ≥ maxTurns/2 = 3, wrap-up at turn ≥ maxTurns-2 = 4.
+        let limits = TeamLimits(maxMeetingTurns: 6)
+        let initiator: Role = .productManager
+        var (meeting, context) = makeMeetingAndContext(
+            topic: "Auto-mode topic", limits: limits, coordinator: initiator
+        )
+
+        // Turn 1 (empty meeting) — generic input branch (coordinator gets
+        // steering only past half-way, not at turn 1).
+        let turn1 = MeetingCoordinator.buildTurnMessage(
+            speaker: initiator, meeting: meeting, context: context
+        )
+        XCTAssertFalse(turn1.contains("WRAP UP"))
+        XCTAssertFalse(turn1.contains("As coordinator"))
+
+        // Mid-meeting (turnNumber = 2+1 = 3, ≥ maxTurns/2 and < maxTurns-2)
+        // — initiator-as-coordinator gets the steering hint, no wrap-up yet.
+        for _ in 0..<2 {
+            meeting.addMessage(TeamMessage(
+                id: UUID(), createdAt: MonotonicClock.shared.now(),
+                role: initiator, content: "msg",
+                messageType: .discussion
+            ))
+        }
+        let turnMid = MeetingCoordinator.buildTurnMessage(
+            speaker: initiator, meeting: meeting, context: context
+        )
+        XCTAssertTrue(turnMid.contains("As coordinator"),
+                      "Auto-mode initiator must receive coordinator steering past half-way")
+        XCTAssertFalse(turnMid.contains("WRAP UP"),
+                       "Wrap-up must NOT fire until last-2 turns")
+
+        // Last-2 turns (turnNumber = 3+1 = 4, ≥ maxTurns-2) — wrap-up kicks in.
+        meeting.addMessage(TeamMessage(
+            id: UUID(), createdAt: MonotonicClock.shared.now(),
+            role: initiator, content: "msg",
+            messageType: .discussion
+        ))
+        let turnLate = MeetingCoordinator.buildTurnMessage(
+            speaker: initiator, meeting: meeting, context: context
+        )
+        XCTAssertTrue(turnLate.contains("WRAP UP"),
+                      "Auto-mode initiator must receive WRAP UP at last-2 turns")
+    }
+
+    // A non-initiator participant must NOT receive coordinator-specific
+    // prompts in Auto mode (only the initiator-as-coordinator does).
+    func testBuildTurnMessage_autoMode_nonInitiator_getsGenericPrompt() {
+        let limits = TeamLimits(maxMeetingTurns: 6)
+        let initiator: Role = .productManager
+        var (meeting, context) = makeMeetingAndContext(
+            topic: "Auto-mode topic", limits: limits, coordinator: initiator
+        )
+        // Push past half-way to ensure the test would catch a leaking steering hint
+        for _ in 0..<3 {
+            meeting.addMessage(TeamMessage(
+                id: UUID(), createdAt: MonotonicClock.shared.now(),
+                role: initiator, content: "msg",
+                messageType: .discussion
+            ))
+        }
+        let msg = MeetingCoordinator.buildTurnMessage(
+            speaker: .softwareEngineer, meeting: meeting, context: context
+        )
+        XCTAssertTrue(msg.contains("Provide your input"))
+        XCTAssertFalse(msg.contains("WRAP UP"))
+        XCTAssertFalse(msg.contains("As coordinator"))
+    }
+
     // MARK: - Helpers
 
     private func makeSchema(_ name: String) -> ToolSchema {
@@ -166,7 +246,8 @@ final class MeetingCoordinatorTests: XCTestCase {
     private func makeMeetingAndContext(
         topic: String,
         limits: TeamLimits = .default,
-        templateID: String? = nil
+        templateID: String? = nil,
+        coordinator: Role = .productManager
     ) -> (TeamMeeting, TeamMeetingService.MeetingContext) {
         let meeting = TeamMeeting(
             topic: topic,
@@ -186,7 +267,7 @@ final class MeetingCoordinatorTests: XCTestCase {
             availableArtifacts: [],
             artifactReader: { _ in nil },
             team: team,
-            coordinatorRole: .productManager,
+            coordinatorRole: coordinator,
             limits: limits
         )
         return (meeting, context)

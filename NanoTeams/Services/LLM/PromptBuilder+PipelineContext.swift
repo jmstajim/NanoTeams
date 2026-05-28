@@ -1,7 +1,7 @@
 import Foundation
 
 /// Pipeline context building: prior steps summary and project description.
-extension PromptBuilder {
+nonisolated extension PromptBuilder {
 
     /// Builds context from previous pipeline steps.
     /// - Parameters:
@@ -112,13 +112,13 @@ extension PromptBuilder {
         return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Builds the work folder context message.
+    /// Returns the bare work-folder context body — `**{name}**\n\n{context}` —
+    /// for injection via the `{workFolderContext}` template placeholder. The
+    /// `## Work folder` header lives in the template so the author can rename
+    /// or reposition it. Empty context returns `nil` so the surrounding
+    /// template header collapses via `TemplateResolver.stripOrphanHeaders`.
     static func buildWorkFolderContextMessage(workFolder: WorkFolderProjection?) -> String? {
         guard let wf = workFolder else { return nil }
-
-        var lines: [String] = []
-        lines.append("Work folder context:")
-        lines.append("Name: \(wf.name)")
 
         var context = wf.settings.context.trimmingCharacters(in: .whitespacesAndNewlines)
         if context.count > ArtifactConstants.maxDescriptionChars {
@@ -128,8 +128,9 @@ extension PromptBuilder {
         if context.isEmpty {
             return nil  // No useful work folder context to send
         }
-        lines.append("Description: \(context)")
 
-        return lines.joined(separator: "\n")
+        // Bold name + blank line + body. Avoids flat-colon `Name:` /
+        // `Description:` labels that would re-introduce mixed label style.
+        return "**\(wf.name)**\n\n\(context)"
     }
 }

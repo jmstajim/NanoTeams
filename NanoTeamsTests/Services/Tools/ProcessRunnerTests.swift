@@ -348,4 +348,132 @@ final class ProcessRunnerTests: XCTestCase {
         XCTAssertTrue(result.success)
         XCTAssertTrue(result.stdout.contains("test.txt"))
     }
+
+    // MARK: - Cancellation
+
+    /// On `Task` cancellation mid-subprocess, `ProcessRunner.run` MUST:
+    ///   1. SIGTERM (then SIGKILL after 2 s grace) the child so the run stops
+    ///      within seconds rather than the configured timeout.
+    ///   2. Throw `ProcessRunnerError.cancelled`.
+    func testRunCancellation_terminatesSubprocessAndThrowsCancelled() async throws {
+        let started = Date()
+        let task = Task.detached { () throws -> ProcessRunner.Result in
+            // `/bin/sleep 30` exists on every macOS, is cheap, and gives a
+            // wide cancellation window without depending on tool flags.
+            return try ProcessRunner.run(
+                executable: "/bin/sleep",
+                arguments: ["30"],
+                currentDirectory: nil,
+                timeout: 60  // longer than 30 — must NOT be the path that fires
+            )
+        }
+
+        // Let the subprocess actually start before signaling cancel; a cancel
+        // delivered before `process.run()` returns would just abort cleanly
+        // without exercising the SIGTERM path.
+        try await Task.sleep(for: .milliseconds(250))
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("Expected cancellation to throw, got normal completion")
+        } catch let err as ProcessRunnerError {
+            guard case .cancelled = err else {
+                XCTFail("Expected ProcessRunnerError.cancelled, got \(err)")
+                return
+            }
+        } catch {
+            XCTFail("Expected ProcessRunnerError.cancelled, got \(error)")
+            return
+        }
+
+        let elapsed = Date().timeIntervalSince(started)
+        // The cooperative wait polls every 100 ms and grants a 2 s grace
+        // period for SIGTERM before SIGKILL. Even with very slow CI hosts,
+        // a 5 s upper bound proves we did NOT just wait the full 30 s
+        // (which would mean the cancellation path silently no-op'd).
+        XCTAssertLessThan(
+            elapsed, 5.0,
+            "Cancellation must abort within seconds, not wait the full sleep duration. Took \(elapsed)s."
+        )
+    }
+
+    /// SIGTERM-ignoring child must still be killed within the 2 s grace
+    /// window. Pins the SIGKILL escalation path that the simpler `/bin/sleep`
+    /// test doesn't exercise (sleep honors SIGTERM and exits immediately).
+    /// A regression that drops the SIGKILL fallback would silently let a
+    /// trap-handling subprocess outlive cancellation forever.
+    func testRunCancellation_subprocessIgnoresSIGTERM_isSIGKILLedWithinGrace() async throws {
+        // Skip if Python isn't available — this happens on the bare CI macOS
+        // runners. The check is cheap: stat the path.
+        let pythonPath = "/usr/bin/python3"
+        guard FileManager.default.fileExists(atPath: pythonPath) else {
+            throw XCTSkip("python3 not present at \(pythonPath); cannot test SIGTERM-ignoring child.")
+        }
+        // Python program: trap SIGTERM (so SIGTERM alone won't kill us),
+        // then sleep 60 s. Only SIGKILL gets through. Print to stdout after
+        // setup so a hung start is distinguishable from a hung wait.
+        let trapScript = """
+        import signal, time, sys
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        print("trapped", flush=True)
+        time.sleep(60)
+        """
+
+        let started = Date()
+        let task = Task.detached { () throws -> ProcessRunner.Result in
+            return try ProcessRunner.run(
+                executable: pythonPath,
+                arguments: ["-c", trapScript],
+                currentDirectory: nil,
+                timeout: 120
+            )
+        }
+
+        // Let the SIGTERM trap install and `time.sleep` start. Without this
+        // delay, cancel could land before the trap is in place; the test
+        // would pass for the wrong reason.
+        try await Task.sleep(for: .milliseconds(400))
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("Expected cancellation, got normal completion")
+        } catch let err as ProcessRunnerError {
+            guard case .cancelled = err else {
+                XCTFail("Expected ProcessRunnerError.cancelled, got \(err)")
+                return
+            }
+        } catch {
+            XCTFail("Expected ProcessRunnerError.cancelled, got \(error)")
+            return
+        }
+
+        let elapsed = Date().timeIntervalSince(started)
+        // Sub-4 s upper bound: 400 ms setup + 100 ms poll + 2 s SIGTERM grace
+        // + SIGKILL wait. Loose enough for slow CI but tight enough that a
+        // missing SIGKILL escalation (which would wait the full 60 s sleep)
+        // is unambiguous.
+        XCTAssertLessThan(
+            elapsed, 4.0,
+            "SIGTERM-ignoring child must be SIGKILLed within 2 s grace; took \(elapsed)s. "
+            + "A SIGKILL regression would wait the full 60 s sleep."
+        )
+    }
+
+    /// A non-cancelled subprocess must still return normally — pins that the
+    /// new cooperative wait loop doesn't accidentally throw `.cancelled` on
+    /// the happy path.
+    func testRunCancellation_uncancelled_completesNormally() async throws {
+        let task = Task.detached { () throws -> ProcessRunner.Result in
+            return try ProcessRunner.run(
+                executable: "/bin/echo",
+                arguments: ["normal-completion-marker"],
+                currentDirectory: nil
+            )
+        }
+        let result = try await task.value
+        XCTAssertTrue(result.success)
+        XCTAssertTrue(result.stdout.contains("normal-completion-marker"))
+    }
 }

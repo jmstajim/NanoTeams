@@ -5,14 +5,14 @@ private typealias JS = JSONSchema
 
 // MARK: - Teammate Consultation Data Types
 
-struct AskTeammateData: Codable {
+nonisolated struct AskTeammateData: Codable {
     var teammate: String
     var question: String
     var context: String?
     var status: String  // "pending"
 }
 
-struct RequestMeetingData: Codable {
+nonisolated struct RequestMeetingData: Codable {
     var topic: String
     var participants: [String]
     var context: String?
@@ -20,7 +20,7 @@ struct RequestMeetingData: Codable {
     var note: String?
 }
 
-struct RequestChangesData: Codable {
+nonisolated struct RequestChangesData: Codable {
     var targetRole: String
     var changes: String
     var reasoning: String
@@ -29,7 +29,7 @@ struct RequestChangesData: Codable {
 
 // MARK: - Result Builders (signaling)
 
-func makeTeammateQuestionResult(
+nonisolated func makeTeammateQuestionResult(
     toolName: String,
     args: [String: Any],
     teammate: String,
@@ -52,7 +52,7 @@ func makeTeammateQuestionResult(
     )
 }
 
-func makeMeetingRequestResult(
+nonisolated func makeMeetingRequestResult(
     toolName: String,
     args: [String: Any],
     topic: String,
@@ -76,7 +76,7 @@ func makeMeetingRequestResult(
     )
 }
 
-func makeChangeRequestResult(
+nonisolated func makeChangeRequestResult(
     toolName: String,
     args: [String: Any],
     targetRole: String,
@@ -101,16 +101,16 @@ func makeChangeRequestResult(
 
 // MARK: - ask_teammate
 
-struct AskTeammateTool: ToolHandler {
+nonisolated struct AskTeammateTool: ToolHandler {
     static let name = TN.askTeammate
     static let schema = ToolSchema(
         name: TN.askTeammate,
-        description: "Ask a teammate for their expertise on a specific question. The teammate will respond based on their role's knowledge and the current task context. You have a limited number of consultations per step — avoid asking the same teammate the same thing twice.",
+        description: "Ask a teammate a question. Limited per step.",
         parameters: JS.object(
             properties: [
-                "teammate": JS.string("Role ID of the teammate to ask (e.g., 'softwareEngineer', 'techLead', 'productManager')"),
-                "question": JS.string("The question to ask the teammate"),
-                "context": JS.string("Optional additional context for the question"),
+                "teammate": JS.string("Role ID from the current team."),
+                "question": JS.string("Question to ask."),
+                "context": JS.string("Optional extra context."),
             ],
             required: ["teammate", "question"]
         )
@@ -118,7 +118,7 @@ struct AskTeammateTool: ToolHandler {
     static let category: ToolCategory = .collaboration
     static let excludedInMeetings = true
 
-    
+
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self {
         Self()
     }
@@ -141,11 +141,11 @@ struct AskTeammateTool: ToolHandler {
 
 // MARK: - request_team_meeting
 
-struct RequestTeamMeetingTool: ToolHandler {
+nonisolated struct RequestTeamMeetingTool: ToolHandler {
     static let name = TN.requestTeamMeeting
     static let schema = ToolSchema(
         name: TN.requestTeamMeeting,
-        description: "Request a team meeting to discuss a topic with multiple teammates. Call ONCE to start — the system runs the discussion automatically and you will receive the full result. Do NOT call again while a meeting is running. Meetings are limited per run.",
+        description: "Start a multi-participant meeting on `topic`. Blocks until the meeting concludes; the full discussion is returned. Limited per run.",
         parameters: JS.object(
             properties: [
                 "topic": JS.string("Topic to discuss in the meeting"),
@@ -196,11 +196,11 @@ struct RequestTeamMeetingTool: ToolHandler {
 
 // MARK: - conclude_meeting
 
-struct ConcludeMeetingTool: ToolHandler {
+nonisolated struct ConcludeMeetingTool: ToolHandler {
     static let name = TN.concludeMeeting
     static let schema = ToolSchema(
         name: TN.concludeMeeting,
-        description: "Conclude a team meeting with decisions and next steps. Auto-granted only to the team's Meeting Coordinator (configured per team) — call this to finalize the current meeting.",
+        description: "Conclude the active meeting with decisions and next steps. Returns the consolidated decision.",
         parameters: JS.object(
             properties: [
                 "decision": JS.string("Summary of the decision reached"),
@@ -247,14 +247,14 @@ struct ConcludeMeetingTool: ToolHandler {
 
 // MARK: - request_changes
 
-struct RequestChangesTool: ToolHandler {
+nonisolated struct RequestChangesTool: ToolHandler {
     static let name = TN.requestChanges
     static let schema = ToolSchema(
         name: TN.requestChanges,
-        description: "Request changes to a completed teammate's work. PREREQUISITES: The target role's step must be complete (status=done). You must have specific, actionable issues to cite. Triggers a team vote before applying changes. If approved, the target role re-executes with amendments. Only use when issues are critical enough to warrant rework.",
+        description: "Request changes to a teammate's completed work. Triggers a team vote; on approval the target role re-executes with your amendments.",
         parameters: JS.object(
             properties: [
-                "target_role": JS.string("Role ID of the teammate whose work needs changes (e.g., 'softwareEngineer', 'techLead')"),
+                "target_role": JS.string("Role ID of the teammate from the current team."),
                 "changes": JS.string("Detailed description of the changes needed"),
                 "reasoning": JS.string("Explanation of why these changes are necessary"),
             ],

@@ -252,10 +252,6 @@ final class CreateTeamToolTests: XCTestCase {
         XCTAssertTrue(CreateTeamTool.excludedInMeetings)
     }
 
-    func testCreateTeam_notCacheable() {
-        XCTAssertFalse(CreateTeamTool.isCacheable)
-    }
-
     func testCreateTeam_unavailableToRoles() {
         XCTAssertFalse(CreateTeamTool.availableToRoles,
                        "create_team must be unavailable to team roles — it has a dedicated invocation path")

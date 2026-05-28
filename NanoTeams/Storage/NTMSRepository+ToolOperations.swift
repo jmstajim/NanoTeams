@@ -1,6 +1,6 @@
 import Foundation
 
-extension NTMSRepository {
+nonisolated extension NTMSRepository {
 
     func updateTools(at workFolderRoot: URL, tools: [ToolDefinitionRecord]) throws -> WorkFolderContext {
         let paths = NTMSPaths(workFolderRoot: workFolderRoot)

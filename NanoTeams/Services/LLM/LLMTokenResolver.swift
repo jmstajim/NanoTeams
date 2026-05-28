@@ -5,11 +5,11 @@ import Foundation
 /// `LLMOverride`, or `EmbeddingConfig` (all of which are Codable and persist —
 /// see CLAUDE.md "LM Studio Authentication" for the leak-vector reasoning).
 protocol LLMTokenResolver: Sendable {
-    func token(forBaseURL urlString: String) -> String?
+    nonisolated func token(forBaseURL urlString: String) -> String?
 }
 
 /// Production resolver — consults the secure token store keyed by normalized URL.
-struct DefaultLLMTokenResolver: LLMTokenResolver {
+nonisolated struct DefaultLLMTokenResolver: LLMTokenResolver {
     let storage: any SecureTokenStorage
 
     init(storage: any SecureTokenStorage = KeychainSecureTokenStorage()) {
@@ -25,7 +25,7 @@ struct DefaultLLMTokenResolver: LLMTokenResolver {
 #if DEBUG
 /// Test resolver. Construct with a `[urlString: token]` dictionary; lookup
 /// normalizes the URL the same way production does so tests can hit either form.
-struct StubLLMTokenResolver: LLMTokenResolver {
+nonisolated struct StubLLMTokenResolver: LLMTokenResolver {
     let tokens: [String: String]
 
     init(_ tokens: [String: String] = [:]) {
@@ -47,7 +47,7 @@ struct StubLLMTokenResolver: LLMTokenResolver {
 /// Empty overrides are dropped at construction so the UI can blindly forward
 /// the SecureField value — an empty SecureField means "no override", not
 /// "force the request to be unauthenticated".
-struct OverridingLLMTokenResolver: LLMTokenResolver {
+nonisolated struct OverridingLLMTokenResolver: LLMTokenResolver {
     let overrides: [String: String]
     let fallback: any LLMTokenResolver
 

@@ -36,40 +36,6 @@ struct MainLayoutView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .background(Colors.surfacePrimary)
-        .sheet(
-            isPresented: $taskState.isPresentingNewTask,
-            onDismiss: {
-                store.discardStagedDraft(draftID: taskState.sheetFormState.draftID)
-                taskState.sheetFormState.clearTaskDraft()
-            }
-        ) {
-            QuickCaptureFormView(
-                mode: .sheet,
-                formState: taskState.sheetFormState,
-                onSubmit: {
-                    Task {
-                        let sheet = taskState.sheetFormState
-                        if let newTaskID = await store.submitQuickCaptureForm(
-                            title: sheet.title,
-                            supervisorTask: sheet.supervisorTask,
-                            teamID: sheet.selectedTeamID,
-                            clippedTexts: sheet.clippedTexts,
-                            attachments: sheet.attachments,
-                            draftID: sheet.draftID
-                        ) {
-                            sheet.clearTaskDraft()
-                            taskState.isPresentingNewTask = false
-                            selectedItem = .task(newTaskID)
-                        }
-                    }
-                },
-                onCancel: {
-                    store.discardStagedDraft(draftID: taskState.sheetFormState.draftID)
-                    taskState.sheetFormState.clearTaskDraft()
-                    taskState.isPresentingNewTask = false
-                }
-            )
-        }
         .sheet(isPresented: $isPresentingCommandPalette) {
             CommandPaletteView(
                 selectedItem: $selectedItem,
@@ -82,11 +48,36 @@ struct MainLayoutView: View {
                 .hidden()
         }
         .errorBanner()
-        .onAppear { taskState.taskFilter = config.sidebarTaskFilter }
+        .onAppear {
+            taskState.taskFilter = config.sidebarTaskFilter
+            taskState.bind(config: config)
+            taskState.loadSeenSet(for: store.snapshot?.projection.id)
+        }
         .onChange(of: taskState.taskFilter) { _, newFilter in
             config.sidebarTaskFilter = newFilter
         }
-        .task { await store.bootstrapDefaultStorageIfNeeded() }
+        .onChange(of: store.snapshot?.projection.id) { _, newID in
+            // Rehydrate the seen-set mirror on work-folder open/close/switch.
+            // Also covers the cold-launch race where `.onAppear` reads
+            // `projection.id` as nil and it only becomes non-nil once async
+            // bootstrap completes.
+            taskState.loadSeenSet(for: newID)
+        }
+        .onChange(of: allTaskStatuses) { _, newStatuses in
+            // Sweep seen flags for ALL tasks (not just the active one) so a
+            // backgrounded task transitioning out of `.needsSupervisorInput`
+            // re-triggers the dot on its next question.
+            taskState.reconcileSeenSet(
+                activeStatuses: newStatuses,
+                workFolderID: store.snapshot?.projection.id
+            )
+        }
+        .task {
+            await store.bootstrapDefaultStorageIfNeeded()
+            // Amortize NSOpenPanel allocation so the first `+` click in
+            // MessageComposer doesn't pay the AppKit/XPC cold-start cost.
+            FilePickerWarmup.warmup()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .navigateToWatchtower)) { _ in
             selectedItem = .watchtower
         }
@@ -107,7 +98,7 @@ struct MainLayoutView: View {
                 Task {
                     await store.switchTask(to: taskID)
                     autoDismissNotifications(for: taskID)
-                    QuickCaptureController.shared.refreshPanelIfVisible()
+                    QuickCaptureController.shared.refreshPanelIfVisible(explicitTaskNavigation: true)
                 }
                 QuickCaptureController.shared.isTaskSelected = true
                 taskState.markSupervisorInputSeen(taskID: taskID)
@@ -124,13 +115,13 @@ struct MainLayoutView: View {
             // enters needsSupervisorInput while the user is already viewing it.
             if let taskID = store.activeTaskID {
                 if oldStatus == .needsSupervisorInput, newStatus != .needsSupervisorInput {
-                    taskState.seenSupervisorInputTaskIDs.remove(taskID)
+                    taskState.unmarkSupervisorInputSeen(taskID: taskID)
                 } else if newStatus == .needsSupervisorInput {
                     if case .task(taskID) = selectedItem {
                         taskState.markSupervisorInputSeen(taskID: taskID)
                     } else {
                         // User is on Watchtower or another task — clear "seen" so sidebar shows unread
-                        taskState.seenSupervisorInputTaskIDs.remove(taskID)
+                        taskState.unmarkSupervisorInputSeen(taskID: taskID)
                     }
                 }
             }
@@ -151,6 +142,15 @@ struct MainLayoutView: View {
     private var activeTaskDerivedStatus: TaskStatus? {
         guard let taskID = store.activeTaskID else { return nil }
         return store.snapshot?.tasksIndex.tasks.first { $0.id == taskID }?.status
+    }
+
+    /// All-tasks (id, status) dictionary used to drive the reconcile sweep. The
+    /// dictionary shape is intentionally Equatable-narrow: it changes only when
+    /// a task's status changes (or a task appears/disappears), not on every
+    /// `updatedAt` tick — so the `onChange` watcher doesn't churn.
+    private var allTaskStatuses: [Int: TaskStatus] {
+        guard let summaries = store.snapshot?.tasksIndex.tasks else { return [:] }
+        return Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0.status) })
     }
 
     // MARK: - Auto-Dismiss Notifications

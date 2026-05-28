@@ -3,18 +3,19 @@ import Foundation
 // MARK: - Role Section
 
 /// Tab sections available in the role editor.
-enum RoleSection: String, CaseIterable, Identifiable {
+nonisolated enum RoleSection: String, CaseIterable, Identifiable {
     case general
     case prompt
     case tools
     case dependencies
     case llm
+    case delegation
 
     var id: String { rawValue }
 
     private static let labelMap: [Self: String] = [
         .general: "General", .prompt: "Prompt", .tools: "Tools",
-        .dependencies: "Dependencies", .llm: "LLM",
+        .dependencies: "Dependencies", .llm: "LLM", .delegation: "Delegation",
     ]
     var label: String { Self.labelMap[self] ?? rawValue.capitalized }
 }
@@ -24,7 +25,7 @@ enum RoleSection: String, CaseIterable, Identifiable {
 /// Consolidated state for `RoleEditorSheet`. Using a single `@State` struct lets SwiftUI
 /// track changes through one projected `Binding<RoleEditorState>` with key-path subscripts
 /// (`$editorState.roleName`, etc.) instead of 17 separate `@State` properties.
-struct RoleEditorState {
+nonisolated struct RoleEditorState {
     var roleName: String = ""
     var roleIcon: String = "person.fill"
     var rolePrompt: String = ""
@@ -45,6 +46,23 @@ struct RoleEditorState {
     var roleIconBackground: String = "#007AFF"
     var activeSection: RoleSection = .general
     var showingPromptPreview: Bool = false
+    /// Whitelist of project teams this role may delegate to.
+    var selectedDelegationTeamIDs: Set<NTMSID> = []
+    /// When `true`, the role can pass `team_id == "generated"` to spin up new teams.
+    var allowDelegationToGeneratedTeams: Bool = false
+
+    /// Pure value constructor for the `.edit` mode of `RoleEditorSheet`.
+    /// Used by the sheet's `init` to seed `@State` synchronously, so the
+    /// very first body evaluation already reflects the role's persisted
+    /// fields. Replaces the previous `.onAppear { load(from: role) }`
+    /// pattern, which left a window between first render and onAppear
+    /// during which the view rendered with the default-empty state and
+    /// any user input landing in that window raced against the load.
+    static func loaded(from role: TeamRoleDefinition) -> RoleEditorState {
+        var state = RoleEditorState()
+        state.load(from: role)
+        return state
+    }
 
     mutating func load(from role: TeamRoleDefinition) {
         roleName = role.name
@@ -66,5 +84,11 @@ struct RoleEditorState {
             overrideMaxTokens = override.maxTokens ?? 0
             overrideTemperature = override.temperature
         }
+
+        // Delegation: whitelist + generated flag round-trip directly from the
+        // role definition. Auto-injection of the 4-tool delegation pack derives
+        // from these two fields alone (see `LLMExecutionService+ToolResolution`).
+        selectedDelegationTeamIDs = Set(role.allowedDelegationTeamIDs)
+        allowDelegationToGeneratedTeams = role.allowDelegationToGeneratedTeams
     }
 }

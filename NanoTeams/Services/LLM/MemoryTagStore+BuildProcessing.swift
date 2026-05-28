@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Build / Test Processing
 
-extension MemoryTagStore {
+nonisolated extension MemoryTagStore {
 
     func processBuild(_ result: ToolExecutionResult, iteration: Int) -> TagProcessingResult {
         guard !result.isError else { return .passthrough }

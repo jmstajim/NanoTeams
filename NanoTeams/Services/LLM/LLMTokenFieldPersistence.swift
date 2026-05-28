@@ -11,7 +11,7 @@ import Foundation
 /// Implemented as a struct that owns its `SecureTokenStorage` so call sites
 /// don't have to thread the storage parameter into every helper invocation.
 /// Tests substitute `InMemorySecureTokenStorage` for hermetic runs.
-struct LLMTokenFieldPersistence {
+nonisolated struct LLMTokenFieldPersistence {
 
     let storage: any SecureTokenStorage
 

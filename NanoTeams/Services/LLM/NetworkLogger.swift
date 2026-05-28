@@ -5,7 +5,7 @@ enum NetworkDirection: String, Codable {
     case response
 }
 
-struct NetworkLogRecord: Codable, Hashable {
+nonisolated struct NetworkLogRecord: Codable, Hashable {
     var id: UUID
     var createdAt: Date
     var direction: NetworkDirection
@@ -22,7 +22,7 @@ struct NetworkLogRecord: Codable, Hashable {
     var roleName: String?
 }
 
-final class NetworkLogger {
+nonisolated final class NetworkLogger: @unchecked Sendable {
     let logURL: URL
     let conversationLogURL: URL
     private let encoder: JSONEncoder

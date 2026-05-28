@@ -328,7 +328,7 @@ final class TeamGenerationOrchestratorTests: NTMSOrchestratorTestBase {
         let syntheticTask = Task { @MainActor [weak sut] in
             defer { sut?.endTeamGeneration(taskID: taskID) }
             do {
-                try await Task.sleep(nanoseconds: 5_000_000_000) // 5s — test fails before this if not cancelled.
+                try await Task.sleep(for: .seconds(5)) // 5s — test fails before this if not cancelled.
             } catch {
                 cancellationObserved.fulfill()
             }
@@ -359,7 +359,7 @@ final class TeamGenerationOrchestratorTests: NTMSOrchestratorTestBase {
         let cancelled = XCTestExpectation(description: "task cancelled")
         let syntheticTask = Task { @MainActor in
             do {
-                try await Task.sleep(nanoseconds: 5_000_000_000)
+                try await Task.sleep(for: .seconds(5))
             } catch {
                 cancelled.fulfill()
             }

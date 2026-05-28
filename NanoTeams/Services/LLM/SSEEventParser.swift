@@ -4,7 +4,7 @@ import Foundation
 
 /// Stateful parser for Server-Sent Events from the LM Studio `/api/v1/chat` endpoint.
 /// Tracks `event:` lines across SSE frames and decodes `data:` payloads into typed events.
-struct SSEEventParser {
+nonisolated struct SSEEventParser {
 
     enum ParsedEvent {
         case contentDelta(String)

@@ -11,6 +11,7 @@ struct TeamGraphEditorView: View {
 
     @State private var editingRole: TeamRoleDefinition? = nil
     @State private var nodeSizes: [String: CGSize] = [:]
+    @State private var layoutCache = TeamGraphLayoutCache()
     private static let editorNodeHeight: CGFloat = GraphTokens.nodeHeight
 
     /// Get all team member IDs (all roles in team)
@@ -55,6 +56,17 @@ struct TeamGraphEditorView: View {
 
                 // Scaled graph content — use ZStack (not Group) so scaleEffect
                 // applies to the container as a whole, keeping Canvas and nodes aligned.
+                // Compute the structural layout once per body re-eval, share
+                // across the foreground/background canvas pair. Drag mutates
+                // `nodePositions`, which invalidates the cache by design.
+                let sharedLayout = layoutCache.layout(
+                    nodePositions: team.graphLayout.nodePositions,
+                    roleDefinitions: team.roles,
+                    teamMembers: teamMemberIDs,
+                    nodeSizes: nodeSizes,
+                    fallbackNodeWidth: GraphTokens.nodeMaxWidth
+                )
+
                 ZStack {
                     // Connection lines (background layer — dims when a node is selected)
                     TeamGraphCanvas(
@@ -68,14 +80,13 @@ struct TeamGraphEditorView: View {
                         drawingOffset: offset,
                         nodeHeight: Self.editorNodeHeight,
                         nodeSizes: nodeSizes,
+                        precomputedLayout: sharedLayout,
                         connectionFilter: selectedRoleID != nil ? .excludeHighlighted : .all
                     )
 
                     // Role nodes
                     ForEach(team.roles) { role in
                         if let nodePos = team.graphLayout.nodePositions.first(where: { $0.roleID == role.id }) {
-                            let builtInRole = Role.builtInRole(for: role.id) ?? .custom(id: role.id)
-
                             TeamNodeView(
                                 roleName: role.name,
                                 icon: role.icon,
@@ -122,6 +133,7 @@ struct TeamGraphEditorView: View {
                             drawingOffset: offset,
                             nodeHeight: Self.editorNodeHeight,
                             nodeSizes: nodeSizes,
+                            precomputedLayout: sharedLayout,
                             connectionFilter: .onlyHighlighted
                         )
                         .allowsHitTesting(false)

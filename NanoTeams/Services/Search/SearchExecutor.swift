@@ -3,7 +3,7 @@ import Foundation
 /// Input bundle for a grep pass — used by both the plain `SearchTool` handler
 /// and the exploratory-search processor (which constrains the walk to a posting-hit
 /// set before invoking the executor).
-struct SearchExecutorInput {
+nonisolated struct SearchExecutorInput {
     let workFolderRoot: URL
     let resolver: SandboxPathResolver
     let fileManager: FileManager
@@ -54,7 +54,7 @@ struct SearchExecutorInput {
     }
 }
 
-enum SearchMode: String {
+nonisolated enum SearchMode: String {
     case substring
     case regex
 
@@ -70,7 +70,7 @@ enum SearchMode: String {
 /// `SandboxPathError` (path resolution) so callers can surface the specific
 /// reason — without this, a malformed regex pattern silently produced zero
 /// matches with no signal to the LLM that the query itself was the problem.
-enum SearchExecutorError: Error, Equatable, LocalizedError {
+nonisolated enum SearchExecutorError: Error, Equatable, LocalizedError {
     /// `mode == .regex` and the supplied pattern failed to compile via
     /// `NSRegularExpression(pattern:options:)`. `query` is the offending
     /// pattern; `message` carries the platform-specific failure detail.
@@ -96,7 +96,7 @@ enum SearchExecutorError: Error, Equatable, LocalizedError {
 
 /// Output of a grep pass. Mirrors `SearchData` fields used by `SearchTool` so
 /// the plain path's envelope shape is preserved.
-struct SearchExecutorOutput {
+nonisolated struct SearchExecutorOutput {
     var matches: [SearchMatch]
     var skipped: [SkippedFile]
     var skippedBinaryCount: Int
@@ -134,7 +134,7 @@ struct SearchExecutorOutput {
 /// `ceil(maxResults / N)` slots in pass 1; a second greedy pass fills any
 /// leftover budget. Dedup key is `(path, line)`. Matches from the first query
 /// (the original LLM query) come first, expanded terms follow in order.
-enum SearchExecutor {
+nonisolated enum SearchExecutor {
 
     static func run(_ input: SearchExecutorInput) throws -> SearchExecutorOutput {
         // Pre-validate `file_glob` once. Without this, `GlobMatcher.matches`
@@ -203,6 +203,11 @@ enum SearchExecutor {
 
         func searchFile(at url: URL, relativePath: String) {
             guard !budgetExhausted() else { return }
+            // Cancel checkpoint at file boundary. The detached tool batch in
+            // `LLMExecutionService.executeToolCalls` cancels this task on pause;
+            // a 100-MB project with hundreds of files would otherwise keep
+            // grepping for seconds after pause-and-decide.
+            if Task.isCancelled { return }
 
             let content: String
             let ext = url.pathExtension.lowercased()
@@ -220,13 +225,26 @@ enum SearchExecutor {
                 }
                 content = extracted
             } else {
-                guard let utf8 = try? String(contentsOf: url, encoding: .utf8) else {
-                    // Binary (non-UTF-8) files go into the aggregate count,
-                    // not `skipped_files` — see WHY comment at the declaration.
+                // Chunked 1-MiB streaming read with `Task.isCancelled` checks
+                // between chunks — a paused step stops mid-file. The typed
+                // outcome separates the three failure modes (binary / I/O
+                // error / cancellation) so each routes to the right reporting
+                // channel — collapsing them into one `nil` would silently
+                // inflate `skippedBinaryCount` after a pause.
+                switch readUTF8Streaming(url: url) {
+                case .text(let utf8):
+                    content = utf8
+                case .binary:
                     skippedBinaryCount += 1
                     return
+                case .ioError(let reason):
+                    skipped.append(SkippedFile(path: relativePath, reason: reason))
+                    return
+                case .cancelled:
+                    // Don't touch the per-file counters — the count would
+                    // otherwise grow with every file the cancel walked past.
+                    return
                 }
-                content = utf8
             }
 
             let lines = content.components(separatedBy: .newlines)
@@ -279,10 +297,12 @@ enum SearchExecutor {
 
         func searchDirectory(at url: URL, relativePath: String) {
             guard !budgetExhausted() else { return }
+            if Task.isCancelled { return }
             guard let contents = try? fm.contentsOfDirectory(atPath: url.path) else { return }
 
             for name in contents.sorted() {
                 if budgetExhausted() { return }
+                if Task.isCancelled { return }
                 guard !WalkSkipRules.skipped.contains(name) else { continue }
 
                 let itemURL = url.appendingPathComponent(name)
@@ -390,5 +410,61 @@ enum SearchExecutor {
             truncated: truncated,
             filenameMatches: filenameMatches
         )
+    }
+
+    /// Outcome of `readUTF8Streaming`. Distinguishing these four lets the
+    /// caller route each to its proper reporting channel — collapsing them
+    /// into one `String?` would (and did) silently inflate the binary-skip
+    /// count on cancellation and hide I/O errors.
+    nonisolated enum StreamReadOutcome {
+        case text(String)
+        /// File is not valid UTF-8 — caller increments `skippedBinaryCount`.
+        case binary
+        /// Mid-read I/O failure (permission, disk error, broken pipe on a
+        /// FIFO/socket). Carries a human-readable reason for `skipped_files`.
+        case ioError(reason: String)
+        /// `Task.isCancelled` observed between chunks. Caller short-circuits
+        /// without touching counters.
+        case cancelled
+    }
+
+    /// Streamed UTF-8 read in 1-MiB chunks with `Task.isCancelled` checkpoints.
+    /// Accumulates raw bytes then decodes once at the end so multi-byte UTF-8
+    /// characters straddling chunk boundaries can't be corrupted.
+    ///
+    /// Why chunked + accumulate (rather than truly streaming per-line): the
+    /// rest of `SearchExecutor` indexes lines by integer (`idx`) and needs
+    /// random access for context-before/context-after windowing. A streaming
+    /// line iterator would force a structural rewrite. Chunked accumulate
+    /// keeps the algorithm identical and adds the cancellation checkpoint.
+    private static func readUTF8Streaming(url: URL) -> StreamReadOutcome {
+        let handle: FileHandle
+        do {
+            handle = try FileHandle(forReadingFrom: url)
+        } catch {
+            return .ioError(reason: "could not open: \(error.localizedDescription)")
+        }
+        defer { try? handle.close() }
+        var buffer = Data()
+        let chunkSize = 1 << 20
+        while true {
+            if Task.isCancelled { return .cancelled }
+            let chunk: Data
+            do {
+                // Per Apple's docs, `nil` from `read(upToCount:)` signals EOF
+                // (NOT a non-regular-handle hiccup — those surface via `throws`).
+                // I/O errors come through the `catch` arm and route to `.ioError`.
+                guard let read = try handle.read(upToCount: chunkSize) else { break }
+                chunk = read
+            } catch {
+                return .ioError(reason: "read failed: \(error.localizedDescription)")
+            }
+            if chunk.isEmpty { break }
+            buffer.append(chunk)
+        }
+        guard let text = String(data: buffer, encoding: .utf8) else {
+            return .binary
+        }
+        return .text(text)
     }
 }

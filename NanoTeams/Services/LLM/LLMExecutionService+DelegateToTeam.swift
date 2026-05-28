@@ -1,0 +1,922 @@
+import Foundation
+
+/// `delegate_to_team` tool handler — synchronously runs a child task on another team
+/// and returns its produced artifacts to the parent role's tool loop.
+///
+/// Mirrors the shape of `+TeamMeeting.swift`: an async function that runs a long
+/// internal flow (await child engine state transitions, optionally answer the
+/// child team's `ask_supervisor` calls via `DelegatedSupervisorAnswerService`)
+/// and returns a JSON envelope `String` injected as the tool result.
+extension LLMExecutionService {
+
+    func handleDelegateToTeam(
+        stepID: String,
+        teamIDRaw: String,
+        taskBrief: String,
+        initiatingRole: Role,
+        task: NTMSTask,
+        runIndex _: Int,
+        stepIndex _: Int,
+        client: any LLMClient,
+        config: LLMConfig,
+        networkLogger: NetworkLogger? = nil
+    ) async -> String {
+        guard let delegate else {
+            return makeErrorEnvelope(code: .commandFailed, message: "delegate unavailable")
+        }
+        guard let parentTID = taskIDForStep(stepID) else {
+            return makeErrorEnvelope(code: .commandFailed, message: "no task context for step \(stepID)")
+        }
+
+        // 1. Pre-flight: depth cap + eligibility (top-level role)
+        if task.delegationDepth >= DelegationConstants.maxDelegationDepth {
+            return makeErrorEnvelope(
+                code: .delegationDenied,
+                message: "Maximum delegation depth (\(DelegationConstants.maxDelegationDepth)) reached for this task chain."
+            )
+        }
+        guard let parentTeam = resolveTeam(task: task) else {
+            return makeErrorEnvelope(code: .commandFailed, message: "Could not resolve parent team.")
+        }
+        // Resolve the role definition once via `findRole(byIdentifier:)` —
+        // `Role.baseID` for a built-in role is its `systemRoleID`, so the
+        // lookup hits the systemRoleID branch. After this, every downstream
+        // check operates on the single canonical `parentRoleDef.id`.
+        guard let parentRoleDef = parentTeam.findRole(byIdentifier: initiatingRole.baseID) else {
+            return makeErrorEnvelope(
+                code: .commandFailed,
+                message: "Could not resolve role \(initiatingRole.baseID) inside parent team."
+            )
+        }
+        guard parentTeam.roleIsTopLevelDelegator(parentRoleDef) else {
+            return makeErrorEnvelope(
+                code: .delegationDenied,
+                message: "Role \(parentRoleDef.name) is not peer-level with Supervisor (it has an upstream entry in the team hierarchy). Only peer roles may delegate."
+            )
+        }
+
+        // 2. Resolve target team — two branches: "generated" sentinel OR existing UUID.
+        let targetTeam: Team
+        let preferredTeamIDForChild: NTMSID
+        let isGeneratedFlow: Bool
+        var generationWarnings: [String] = []
+
+        if teamIDRaw == DelegationConstants.generatedTeamSentinel {
+            // (a) Generated branch — synthesize a team from task_brief.
+            guard parentRoleDef.allowDelegationToGeneratedTeams else {
+                return makeErrorEnvelope(
+                    code: .delegationDenied,
+                    message: "This role is not allowed to generate new teams on the fly. Pick an existing team_id from the list embedded in delegate_to_team's description."
+                )
+            }
+            let generationConfig = Self.buildEffectiveConfig(
+                globalConfig: config,
+                roleOverride: parentRoleDef.llmOverride
+            )
+            // Mirror `runTeamGeneration`'s pattern: persist a synthetic
+            // `create_team` tool call on the delegating role's step BEFORE
+            // streaming starts, carrying the `"status":"generating"` marker
+            // that `StepToolCall.isGeneratingTeam` matches. The activity
+            // feed renders this row with `NTMSLoader(.inline)` so the user
+            // sees "team is being generated" instead of an opaque
+            // delegate_to_team in-flight row. UI-only — never reaches the
+            // LLM (conversation comes from `step.llmConversation`, not
+            // `step.toolCalls`).
+            let placeholderToolCallID = UUID()
+            let placeholder = StepToolCall(
+                id: placeholderToolCallID,
+                name: ToolNames.createTeam,
+                argumentsJSON: TeamGenerationEnvelopes.makeGenerationArgsJSON(taskDescription: taskBrief),
+                resultJSON: TeamGenerationEnvelopes.makeGeneratingEnvelope(),
+                isError: false
+            )
+            await appendToolCalls(stepID: stepID, toolCalls: [placeholder])
+            do {
+                let buildResult = try await TeamGenerationService.generate(
+                    taskDescription: taskBrief,
+                    config: generationConfig,
+                    client: client,
+                    logger: networkLogger,
+                    stepID: stepID
+                )
+                // Strip delegation-related tools and capabilities from teams
+                // synthesized inside a `delegate_to_team` call. Without this,
+                // the LLM that generated the team can include `delegate_to_team`
+                // in role toolIDs, which
+                // makes the child team itself attempt to spawn grandchildren —
+                // depth-2+ delegation chains were observed in practice. By
+                // stripping at the source, the generated team is structurally
+                // terminal: it does the work it was given and returns artifacts.
+                // Existing-team delegations (the `else` branch below) are
+                // unaffected — those teams' toolsets are user-curated.
+                targetTeam = stripDelegationTools(from: buildResult.team)
+                preferredTeamIDForChild = targetTeam.id
+                isGeneratedFlow = true
+                generationWarnings = buildResult.warnings
+
+                // Flip the placeholder's spinner → ✓ with the success envelope.
+                // The card stays in the activity feed as part of the audit
+                // trail; subsequent failures of the broader delegation flow
+                // (createDelegatedTask / adoptGeneratedTeam / marker persist)
+                // are surfaced via this handler's return value — consumed by
+                // the upstream tool loop as the `delegate_to_team` tool result
+                // — not by mutating this placeholder.
+                let successEnvelope = TeamGenerationEnvelopes.makeSuccessEnvelope(
+                    team: targetTeam,
+                    warnings: buildResult.warnings
+                )
+                await delegate.mutateTask(taskID: parentTID) { task in
+                    guard let runIdx = task.runs.indices.last,
+                          let stepIdx = task.runs[runIdx].steps.firstIndex(where: { $0.id == stepID }),
+                          let tcIdx = task.runs[runIdx].steps[stepIdx].toolCalls
+                              .firstIndex(where: { $0.id == placeholderToolCallID })
+                    else { return }
+                    task.runs[runIdx].steps[stepIdx].toolCalls[tcIdx].resultJSON = successEnvelope
+                    task.runs[runIdx].steps[stepIdx].toolCalls[tcIdx].isError = false
+                }
+            } catch {
+                // Flip the placeholder's spinner → ✗ with the error envelope
+                // BEFORE returning so the UI doesn't strand a forever-spinning
+                // create_team row. The setLastErrorMessageForUI call below
+                // independently surfaces the human banner.
+                let errorEnvelope = TeamGenerationEnvelopes.makeErrorEnvelope(
+                    message: error.localizedDescription
+                )
+                await delegate.mutateTask(taskID: parentTID) { task in
+                    guard let runIdx = task.runs.indices.last,
+                          let stepIdx = task.runs[runIdx].steps.firstIndex(where: { $0.id == stepID }),
+                          let tcIdx = task.runs[runIdx].steps[stepIdx].toolCalls
+                              .firstIndex(where: { $0.id == placeholderToolCallID })
+                    else { return }
+                    task.runs[runIdx].steps[stepIdx].toolCalls[tcIdx].resultJSON = errorEnvelope
+                    task.runs[runIdx].steps[stepIdx].toolCalls[tcIdx].isError = true
+                }
+                // Surface to the user banner, not just the LLM envelope —
+                // generation failures are real (LLM unreachable, model
+                // unloaded, schema mismatch, parse error) and the human
+                // Supervisor watching the run otherwise wouldn't see why
+                // their delegation aborted (the envelope only reaches the
+                // LLM's tool-call card). Mirrors the activeDelegationChildID
+                // guard's banner at the top of the next step.
+                delegate.setLastErrorMessageForUI("Team generation for delegated task failed: \(error.localizedDescription)")
+                return makeErrorEnvelope(
+                    code: .commandFailed,
+                    message: "Failed to generate a delegated team: \(error.localizedDescription)"
+                )
+            }
+        } else {
+            // (b) Existing team branch — must be in this role's whitelist.
+            let trimmedID = teamIDRaw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard parentRoleDef.allowedDelegationTeamIDs.contains(trimmedID) else {
+                return makeErrorEnvelope(
+                    code: .delegationDenied,
+                    message: "Team \(trimmedID) is not in this role's delegation whitelist. See the list embedded in delegate_to_team's description for allowed options."
+                )
+            }
+            guard let resolved = delegate.snapshot?.workFolder.team(withID: trimmedID) else {
+                return makeErrorEnvelope(
+                    code: .invalidArgs,
+                    message: "Team \(trimmedID) does not exist in this project."
+                )
+            }
+            targetTeam = resolved
+            preferredTeamIDForChild = trimmedID
+            isGeneratedFlow = false
+        }
+
+        // 3. Chat-mode rejection (applies to both branches).
+        if targetTeam.isChatMode {
+            return makeErrorEnvelope(
+                code: .delegationDenied,
+                message: "Chat-mode teams cannot be delegated to — they have no completion criterion."
+            )
+        }
+
+        // 4. Create child task with parentage stamped on.
+        let title = isGeneratedFlow
+            ? "Delegated · \(targetTeam.name) (generated)"
+            : "Delegated · \(targetTeam.name)"
+        // `parentRoleID` is stored on the child task and used by the escalation
+        // path (`DelegatedSupervisorAnswerService.askSupervisorRole`) to find the
+        // owning step via `step.id == parentRoleID`. `StepExecution.id` is the
+        // seeded `TeamRoleDefinition.id`, so this MUST be `parentRoleDef.id` —
+        // not `initiatingRole.baseID` (which is the systemRoleID for built-ins
+        // and the display name for customs; both miss the step.id key).
+        guard let childTID = await delegate.createDelegatedTask(
+            parentTaskID: parentTID,
+            parentRoleID: parentRoleDef.id,
+            title: title,
+            supervisorTask: taskBrief,
+            preferredTeamID: preferredTeamIDForChild,
+            depth: task.delegationDepth + 1
+        ) else {
+            return makeErrorEnvelope(code: .commandFailed, message: "Could not create delegated child task.")
+        }
+
+        // 4a. Generated branch: install team in child's `generatedTeam` slot via
+        // `adoptGeneratedTeam` so `TaskEngineStoreAdapter.resolvedTeam` finds it.
+        // Verify the mutation actually landed: if `loadedTask(childTID)` is
+        // missing or its `generatedTeam` is still nil after the mutateTask
+        // call, the child engine would resolve its team via the parent-team
+        // fallback chain in `TaskEngineStoreAdapter.resolvedTeam`, leading
+        // to the recursion bug documented in `docs/delegation-feature.md` spec
+        // #91. With the adapter's child-task fail-fast guard the engine will
+        // refuse and transition to `.failed`, but we abort the delegation
+        // here so the parent gets a clear error envelope rather than a generic
+        // "child failed" message.
+        if isGeneratedFlow {
+            await delegate.mutateTask(taskID: childTID) { task in
+                task.adoptGeneratedTeam(targetTeam)
+            }
+            let postMutationTeam = delegate.loadedTask(childTID)?.generatedTeam
+            if postMutationTeam == nil {
+                // Symmetric with the `activeDelegationChildID` guard below
+                // (line ~206) — surface to the human banner so the user
+                // sees why their delegation aborted, not just a collapsed
+                // tool-call card with the LLM-facing envelope.
+                delegate.setLastErrorMessageForUI("adoptGeneratedTeam did not persist on child task #\(childTID); aborting delegation to avoid parent-team fallback recursion.")
+                return makeErrorEnvelope(
+                    code: .commandFailed,
+                    message: "adoptGeneratedTeam did not persist on child task \(childTID); aborting to avoid parent-team fallback recursion."
+                )
+            }
+        }
+
+        // 4b. Persist `activeDelegationChildID` on the parent step (in-flight
+        // marker, cleared on terminal outcome) AND append `childTID` to
+        // `delegationChildIDs` (append-only history). The history list is
+        // what `GraphPanelView.resolveDelegationLayers` walks to render
+        // completed delegation layers as muted "history" rows below the
+        // active one — it persists across the lifecycle of the parent step
+        // so users can see "what the team did" after delegation completes.
+        // `pauseRun` keeps using `activeDelegationChildID` to identify
+        // mid-delegation steps and avoid cancelling their runStep Task.
+        //
+        // Verify the mutation actually landed (CLAUDE.md §7: `mutateTask`
+        // returning true means "persisted", NOT "the closure did something" —
+        // a guard-let-else short-circuit still persists the unchanged task).
+        // If `activeDelegationChildID` is missing post-mutation, the entire
+        // pause/cancel control plane is broken: `pauseRun` won't recognize
+        // the step as mid-delegation (cancels its runStep → orphans the
+        // awaiter for 30min); `notifyDelegationInterrupt` returns false
+        // (no marker → human's queued chat is silently dropped);
+        // `cancel/resume/forward_to_team` all reject with INVALID_ARGS.
+        // Loud failure here is much better than that silent cascade.
+        await delegate.mutateTask(taskID: parentTID) { task in
+            guard let runIdx = task.runs.indices.last,
+                  let stepIdx = task.runs[runIdx].steps.firstIndex(where: { $0.id == stepID })
+            else { return }
+            // Single mutator that enforces `activeChildID ∈ history` — replaces
+            // the legacy two-write pattern (set marker + manually append to
+            // history if not already there). Idempotent on duplicates.
+            task.runs[runIdx].steps[stepIdx].setActiveDelegation(childID: childTID)
+        }
+        let postMarker = delegate.loadedTask(parentTID)?.runs.last?
+            .steps.first(where: { $0.id == stepID })?.activeDelegationChildID
+        if postMarker != childTID {
+            delegate.setLastErrorMessageForUI("Could not persist delegation marker on parent step \(stepID); aborting delegation to avoid an orphaned child task and a hung awaiter.")
+            delegate.stopEngineForTask(childTID)
+            return makeErrorEnvelope(
+                code: .commandFailed,
+                message: "Could not persist delegation marker on parent step. The child task was created but the parent step does not record the child id — aborting to avoid a 30-minute hang."
+            )
+        }
+
+        // 5. Start child engine — non-blocking; we observe via the awaiter.
+        await delegate.startRunForTask(taskID: childTID)
+
+        // 6. Block on the awaiter loop until child reaches a terminal state
+        // (or the Supervisor interrupts via queued chat message — see
+        // `awaitDelegationCompletion`). Same loop is reused by
+        // `resume_delegation` and `forward_to_team` after the role un-pauses.
+        return await awaitDelegationCompletion(
+            childTID: childTID,
+            parentTID: parentTID,
+            stepID: stepID,
+            parentRoleDef: parentRoleDef,
+            parentTeam: parentTeam,
+            targetTeam: targetTeam,
+            isGeneratedFlow: isGeneratedFlow,
+            generationWarnings: generationWarnings,
+            client: client,
+            config: config,
+            delegate: delegate
+        )
+    }
+
+    /// Awaiter loop shared by `delegate_to_team` (initial entry),
+    /// `resume_delegation`, and `forward_to_team` (re-entry after a Supervisor
+    /// interrupt). Blocks until the child reaches a terminal state, the
+    /// Supervisor interrupts again, or the timeout fires. Returns the tool
+    /// result envelope for the parent role's tool loop.
+    ///
+    /// On `.parentMessageQueued`, the loop **pauses** (does NOT stop) the
+    /// child engine and returns a success envelope marked
+    /// `status: "paused_by_supervisor"` — the parent role then chooses
+    /// `cancel_delegation`, `resume_delegation`, or `forward_to_team` to
+    /// drive the next step. The child task's `activeDelegationChildID` stays
+    /// set on the parent step so those follow-up tools can find the paused
+    /// child.
+    func awaitDelegationCompletion(
+        childTID: Int,
+        parentTID: Int,
+        stepID: String,
+        parentRoleDef: TeamRoleDefinition,
+        parentTeam: Team,
+        targetTeam: Team,
+        isGeneratedFlow: Bool,
+        generationWarnings: [String],
+        client: any LLMClient,
+        config: LLMConfig,
+        delegate: any LLMStateDelegate
+    ) async -> String {
+        let deadlineDate = Date().addingTimeInterval(DelegationConstants.delegationTimeoutSeconds)
+        // Snapshot the global `lastErrorMessage` BEFORE the awaiter starts.
+        // V1 limitation (per docs): error messages are not partitioned
+        // per-task; `lastErrorMessageForTask(childTID)` returns the global
+        // string regardless of which task owned the error. Without a
+        // pre-await snapshot, an unrelated transient error from the parent
+        // (or another background task) can be misattributed to the child's
+        // failure. Treat only the *delta* (a string set after the awaiter
+        // started) as evidence the child caused it.
+        let baselineErrorAtEntry = delegate.lastErrorMessageForTask(childTID)
+        while true {
+            // Defensive timeout — if the child wedges, surface it instead of hanging the parent.
+            if Date() >= deadlineDate {
+                delegate.stopEngineForTask(childTID)
+                await clearDelegationFields(parentTID: parentTID, stepID: stepID, delegate: delegate)
+                // Surface to the human banner — without this, a wedged
+                // child would only manifest as a collapsed tool-call card
+                // 30 minutes after the user stopped paying attention.
+                delegate.setLastErrorMessageForUI("Delegated task #\(childTID) timed out after \(Int(DelegationConstants.delegationTimeoutSeconds / 60)) minutes — the child team did not reach a terminal state.")
+                return makeErrorEnvelope(
+                    code: .delegationTimedOut,
+                    message: "Delegated task #\(childTID) exceeded the \(Int(DelegationConstants.delegationTimeoutSeconds))-second timeout."
+                )
+            }
+
+            let outcome = await delegate.awaitTaskTerminalState(taskID: childTID)
+            switch outcome {
+            case .needsSupervisorInput:
+                let answered = await DelegatedSupervisorAnswerService.handleChildQuestion(
+                    childTID: childTID,
+                    parentTaskID: parentTID,
+                    parentRoleID: parentRoleDef.id,
+                    parentTeam: parentTeam,
+                    targetTeamName: targetTeam.name,
+                    client: client,
+                    globalConfig: config,
+                    delegate: delegate
+                )
+                if !answered {
+                    await clearDelegationFields(parentTID: parentTID, stepID: stepID, delegate: delegate)
+                    return makeErrorEnvelope(
+                        code: .commandFailed,
+                        message: "Failed to answer the delegated team's question — aborting delegation."
+                    )
+                }
+                // Continue waiting; answerSupervisorQuestion auto-resumes the child engine.
+
+            case .terminal(.needsAcceptance):
+                // closeTask returns `false` when its internal `mutateTask` could not
+                // persist (disk error, missing snapshot). Without handling that, the
+                // next iteration's `awaitTaskTerminalState` fast-paths back to
+                // `.needsAcceptance` and we loop tight until the 30-min timeout.
+                // Force the engine down and abort with a clear envelope instead.
+                let closed = await delegate.closeTask(taskID: childTID)
+                if !closed {
+                    delegate.stopEngineForTask(childTID)
+                    await clearDelegationFields(parentTID: parentTID, stepID: stepID, delegate: delegate)
+                    return makeErrorEnvelope(
+                        code: .commandFailed,
+                        message: "Could not close delegated task #\(childTID) after acceptance — the parent persistence layer rejected the close. Aborting delegation."
+                    )
+                }
+                // Loop again — closeTask transitions engine to .done
+
+            case .terminal(.failed):
+                // Only attribute the global error message to the child if it
+                // CHANGED since the awaiter started. If the global error
+                // hasn't moved, it predates this delegation and naming it as
+                // "child failed: …" would be misleading.
+                let current = delegate.lastErrorMessageForTask(childTID)
+                let attributable: String? = (current != baselineErrorAtEntry) ? current : nil
+                let reason = attributable ?? "unknown failure (the engine reported a failure but no diagnostic was captured for this task)"
+                await clearDelegationFields(parentTID: parentTID, stepID: stepID, delegate: delegate)
+                return makeErrorEnvelope(
+                    code: .commandFailed,
+                    message: "Delegated task #\(childTID) failed: \(reason)"
+                )
+
+            case .terminal(.done):
+                await clearDelegationFields(parentTID: parentTID, stepID: stepID, delegate: delegate)
+                return await buildSuccessEnvelope(
+                    childTID: childTID,
+                    targetTeam: targetTeam,
+                    isGeneratedFlow: isGeneratedFlow,
+                    generationWarnings: generationWarnings,
+                    delegate: delegate
+                )
+
+            case .parentMessageQueued(let text):
+                // Pause-and-decide mode: pause the child engine (do NOT stop)
+                // and hand control back to the parent role with a success
+                // envelope marked `paused_by_supervisor`. The role then picks
+                // one of: `cancel_delegation` (stop), `resume_delegation`
+                // (continue waiting), `forward_to_team` (inject guidance and
+                // continue). `activeDelegationChildID` stays set so those
+                // follow-ups can find the paused child; only `delegationSession`
+                // would normally clear here, but we leave it intact too —
+                // resuming via the seeded chain is correct since no terminal
+                // outcome happened.
+                //
+                // Race-safety re-check: if the child engine reached a
+                // terminal state concurrently with the queued-message
+                // delivery, pausing an already-`.done` task and returning
+                // a paused envelope would mislead the parent role into
+                // calling `resume_delegation` on a closed task — which then
+                // recreates the engine via `engineForTask` and starts a
+                // brand-new run. Re-read the child's task state after pause
+                // and short-circuit to the corresponding terminal outcome
+                // when that happened.
+                await delegate.pauseRun(taskID: childTID)
+                if let childTask = delegate.loadedTask(childTID), childTask.closedAt != nil {
+                    await clearDelegationFields(parentTID: parentTID, stepID: stepID, delegate: delegate)
+                    return await buildSuccessEnvelope(
+                        childTID: childTID,
+                        targetTeam: targetTeam,
+                        isGeneratedFlow: isGeneratedFlow,
+                        generationWarnings: generationWarnings,
+                        delegate: delegate
+                    )
+                }
+                if let childTask = delegate.loadedTask(childTID),
+                   childTask.derivedStatusFromActiveRun() == .failed {
+                    let current = delegate.lastErrorMessageForTask(childTID)
+                    let attributable: String? = (current != baselineErrorAtEntry) ? current : nil
+                    let reason = attributable ?? "unknown failure"
+                    await clearDelegationFields(parentTID: parentTID, stepID: stepID, delegate: delegate)
+                    return makeErrorEnvelope(
+                        code: .commandFailed,
+                        message: "Delegated task #\(childTID) failed concurrently with a Supervisor interrupt: \(reason)"
+                    )
+                }
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                return buildPausedEnvelope(
+                    childTID: childTID,
+                    targetTeamName: targetTeam.name,
+                    supervisorMessage: trimmed
+                )
+            }
+        }
+    }
+
+    // MARK: - Pause-and-Decide Follow-ups
+
+    /// `cancel_delegation` handler. Validates the child id matches the
+    /// parent step's active delegation (LLM hallucinations / typos can't
+    /// stop unrelated tasks), stops the child engine, clears delegation
+    /// fields, returns a confirmation envelope for the parent's tool loop.
+    func handleCancelDelegation(
+        stepID: String,
+        childTaskID: Int,
+        reason: String?
+    ) async -> String {
+        guard let delegate else {
+            return makeErrorEnvelope(code: .commandFailed, message: "delegate unavailable")
+        }
+        guard let parentTID = taskIDForStep(stepID) else {
+            return makeErrorEnvelope(code: .commandFailed, message: "no task context for step \(stepID)")
+        }
+        guard let activeChildID = delegate.activeDelegationChildID(taskID: parentTID, roleID: stepID),
+              activeChildID == childTaskID
+        else {
+            return makeErrorEnvelope(
+                code: .invalidArgs,
+                message: "child_task_id \(childTaskID) is not the in-flight delegation for this role. Re-check the paused envelope's child_task_id."
+            )
+        }
+        delegate.stopEngineForTask(childTaskID)
+        await clearDelegationFields(parentTID: parentTID, stepID: stepID, delegate: delegate)
+        struct CancelData: Codable {
+            var status: String
+            var child_task_id: Int
+            var reason: String?
+        }
+        return makeSuccessEnvelope(data: CancelData(
+            status: "cancelled",
+            child_task_id: childTaskID,
+            reason: reason
+        ))
+    }
+
+    /// `resume_delegation` handler. Un-pauses the child engine and re-enters
+    /// the awaiter loop — blocks the parent role's tool loop until the
+    /// child reaches a terminal state or the Supervisor interrupts again.
+    /// Returns the same envelope shape as the original `delegate_to_team`
+    /// terminal outcomes.
+    func handleResumeDelegation(
+        stepID: String,
+        childTaskID: Int,
+        initiatingRole: Role,
+        task: NTMSTask,
+        client: any LLMClient,
+        config: LLMConfig
+    ) async -> String {
+        guard let delegate else {
+            return makeErrorEnvelope(code: .commandFailed, message: "delegate unavailable")
+        }
+        guard let parentTID = taskIDForStep(stepID) else {
+            return makeErrorEnvelope(code: .commandFailed, message: "no task context for step \(stepID)")
+        }
+        guard let activeChildID = delegate.activeDelegationChildID(taskID: parentTID, roleID: stepID),
+              activeChildID == childTaskID
+        else {
+            return makeErrorEnvelope(
+                code: .invalidArgs,
+                message: "child_task_id \(childTaskID) is not the in-flight delegation for this role. Re-check the paused envelope's child_task_id."
+            )
+        }
+        guard let context = makeReentryContext(
+            childTID: childTaskID,
+            parentTID: parentTID,
+            initiatingRole: initiatingRole,
+            task: task,
+            delegate: delegate
+        ) else {
+            return makeErrorEnvelope(
+                code: .commandFailed,
+                message: "Could not resolve teams for resume — child task #\(childTaskID) may have been unloaded."
+            )
+        }
+        await delegate.resumeRun(taskID: childTaskID)
+        return await awaitDelegationCompletion(
+            childTID: childTaskID,
+            parentTID: parentTID,
+            stepID: stepID,
+            parentRoleDef: context.parentRoleDef,
+            parentTeam: context.parentTeam,
+            targetTeam: context.childTeam,
+            isGeneratedFlow: false,  // re-entry doesn't repeat generation
+            generationWarnings: [],
+            client: client,
+            config: config,
+            delegate: delegate
+        )
+    }
+
+    /// `forward_to_team` handler. Injects the Supervisor message into the
+    /// child team's running flow as a queued chat message (existing
+    /// `notifyDelegationInterrupt`-style mechanism, but the message is
+    /// directed at one of the child's working roles), un-pauses, and
+    /// re-enters the awaiter loop. The child team sees the message on its
+    /// next iteration.
+    func handleForwardToTeam(
+        stepID: String,
+        childTaskID: Int,
+        message: String,
+        initiatingRole: Role,
+        task: NTMSTask,
+        client: any LLMClient,
+        config: LLMConfig
+    ) async -> String {
+        guard let delegate else {
+            return makeErrorEnvelope(code: .commandFailed, message: "delegate unavailable")
+        }
+        guard let parentTID = taskIDForStep(stepID) else {
+            return makeErrorEnvelope(code: .commandFailed, message: "no task context for step \(stepID)")
+        }
+        guard let activeChildID = delegate.activeDelegationChildID(taskID: parentTID, roleID: stepID),
+              activeChildID == childTaskID
+        else {
+            return makeErrorEnvelope(
+                code: .invalidArgs,
+                message: "child_task_id \(childTaskID) is not the in-flight delegation for this role. Re-check the paused envelope's child_task_id."
+            )
+        }
+        guard let context = makeReentryContext(
+            childTID: childTaskID,
+            parentTID: parentTID,
+            initiatingRole: initiatingRole,
+            task: task,
+            delegate: delegate
+        ) else {
+            return makeErrorEnvelope(
+                code: .commandFailed,
+                message: "Could not resolve teams for forward — child task #\(childTaskID) may have been unloaded."
+            )
+        }
+        // Inject the message into the child task's run as a Supervisor turn
+        // on the child's most-recently-streamed step. The child team's tool
+        // loop picks it up on its next iteration via the same
+        // queued-supervisor-message path used for normal queued chat
+        // delivery. Failure surfaces with mode-specific diagnostics so the
+        // LLM knows whether the child has wedged before producing a run
+        // (retry possible) vs has no eligible step (re-plan likely).
+        let injectionOutcome = await injectForwardedMessageIntoChild(
+            childTaskID: childTaskID,
+            message: message,
+            delegate: delegate
+        )
+        switch injectionOutcome {
+        case .injected:
+            break
+        case .noRun:
+            return makeErrorEnvelope(
+                code: .commandFailed,
+                message: "Could not inject forwarded message — child task #\(childTaskID) has no run yet (the engine may be wedged before its first iteration). Try cancel_delegation and re-delegate."
+            )
+        case .noEligibleStep:
+            return makeErrorEnvelope(
+                code: .commandFailed,
+                message: "Could not inject forwarded message — child task #\(childTaskID) has no working/paused/pending step (it may have already finished, been cancelled, or you have the wrong child_task_id). Verify the id against the most recent delegate_to_team result envelope; if the child has terminated, abandon the follow-up and proceed."
+            )
+        }
+        await delegate.resumeRun(taskID: childTaskID)
+        return await awaitDelegationCompletion(
+            childTID: childTaskID,
+            parentTID: parentTID,
+            stepID: stepID,
+            parentRoleDef: context.parentRoleDef,
+            parentTeam: context.parentTeam,
+            targetTeam: context.childTeam,
+            isGeneratedFlow: false,
+            generationWarnings: [],
+            client: client,
+            config: config,
+            delegate: delegate
+        )
+    }
+
+    /// Resolves the contextual structs (parent role def, parent team, child
+    /// team) needed to re-enter `awaitDelegationCompletion` for resume /
+    /// forward. Returns `nil` if any required piece can't be loaded — this
+    /// includes a parentage mismatch where the child's recorded
+    /// `parentTaskID` doesn't match the supplied `parentTID` (defense
+    /// against stale `loadedTask` snapshots after recursive task removal).
+    private func makeReentryContext(
+        childTID: Int,
+        parentTID: Int,
+        initiatingRole: Role,
+        task: NTMSTask,
+        delegate: any LLMStateDelegate
+    ) -> (parentRoleDef: TeamRoleDefinition, parentTeam: Team, childTeam: Team)? {
+        guard let parentTeam = resolveTeam(task: task) else { return nil }
+        guard let parentRoleDef = parentTeam.findRole(byIdentifier: initiatingRole.baseID) else { return nil }
+        guard let childTask = delegate.loadedTask(childTID),
+              let childTeam = childTask.generatedTeam
+                ?? delegate.snapshot?.workFolder.teams.first(where: { $0.id == childTask.preferredTeamID })
+        else { return nil }
+        // Validate parentage — if a child's recorded `parentTaskID` doesn't
+        // match the suspended handler's `parentTID`, something has gone
+        // structurally wrong (e.g. a re-load after corruption, or a parent
+        // task removed mid-delegation). Refuse to re-enter — caller surfaces
+        // a `commandFailed` envelope instead of operating on the wrong tree.
+        guard childTask.parentTaskID == parentTID else { return nil }
+        return (parentRoleDef, parentTeam, childTeam)
+    }
+
+    /// Outcome of a forward-message injection — distinguishes the two failure
+    /// modes that previously collapsed into a single `false` return so the
+    /// caller can give the LLM (and the user) actionable diagnostics.
+    enum ForwardInjectionResult {
+        case injected(stepID: String)
+        case noRun                  // child has no runs yet — start race or partial create
+        case noEligibleStep         // run exists but no .running / .paused / .pending step
+    }
+
+    /// Appends a `Supervisor:`-prefixed message to the child task's most
+    /// recently active step's conversation, so the child role's next
+    /// iteration sees it as new guidance. Mirrors the
+    /// `consumeQueuedSupervisorMessage` mechanism but bypasses the queue
+    /// (the message originates from the parent role, not the human).
+    ///
+    /// Step targeting (deterministic): per CLAUDE.md #45 parallel-ready
+    /// siblings can be `.running`/`.paused` simultaneously. Plain
+    /// `firstIndex(where: .running)` is array-order-dependent — the
+    /// Supervisor's "use library X" guidance can land on Code Reviewer
+    /// instead of Software Engineer. We pick the step whose `updatedAt` is
+    /// most recent among the eligible-status candidates: that's the step
+    /// last touched by streaming, which is the one the human's guidance
+    /// most likely refers to.
+    func injectForwardedMessageIntoChild(
+        childTaskID: Int,
+        message: String,
+        delegate: any LLMStateDelegate
+    ) async -> ForwardInjectionResult {
+        var injectedStepID: String?
+        var sawRun = false
+        await delegate.mutateTask(taskID: childTaskID) { task in
+            guard let runIdx = task.runs.indices.last else { return }
+            sawRun = true
+            let steps = task.runs[runIdx].steps
+            // Priority 1: most-recently-updated `.running` or `.paused` step.
+            // Priority 2: most-recently-updated `.pending` step (for forwards
+            // that arrive between iterations).
+            let livePriority: [StepStatus] = [.running, .paused]
+            let live = steps.indices
+                .filter { livePriority.contains(steps[$0].status) }
+                .max(by: { steps[$0].updatedAt < steps[$1].updatedAt })
+            let pending = steps.indices
+                .filter { steps[$0].status == .pending }
+                .max(by: { steps[$0].updatedAt < steps[$1].updatedAt })
+            guard let stepIdx = live ?? pending else { return }
+            let prefix = MessageSourceContext.supervisorMessagePrefix
+            let body = "\(prefix)\(message)"
+            task.runs[runIdx].steps[stepIdx].llmConversation.append(LLMMessage(
+                role: .user,
+                content: body,
+                sourceRole: .supervisor,
+                sourceContext: .supervisorMessage
+            ))
+            injectedStepID = task.runs[runIdx].steps[stepIdx].id
+        }
+        if let id = injectedStepID {
+            return .injected(stepID: id)
+        }
+        return sawRun ? .noEligibleStep : .noRun
+    }
+
+    #if DEBUG
+    /// Test seam: directly construct the paused envelope without driving
+    /// `awaitDelegationCompletion`. Used by `DelegationPausedEnvelopeTests`
+    /// to pin the JSON contract.
+    func _testBuildPausedEnvelope(
+        childTID: Int,
+        targetTeamName: String,
+        supervisorMessage: String
+    ) -> String {
+        buildPausedEnvelope(
+            childTID: childTID,
+            targetTeamName: targetTeamName,
+            supervisorMessage: supervisorMessage
+        )
+    }
+
+    /// Test seam: drives `injectForwardedMessageIntoChild` directly so a
+    /// test can verify the exact `LLMMessage` shape (role, content, prefix,
+    /// sourceContext) lands on the child step's `llmConversation`.
+    @discardableResult
+    func _testInjectForwardedMessageIntoChild(
+        childTaskID: Int,
+        message: String,
+        delegate: any LLMStateDelegate
+    ) async -> Bool {
+        let outcome = await injectForwardedMessageIntoChild(
+            childTaskID: childTaskID,
+            message: message,
+            delegate: delegate
+        )
+        if case .injected = outcome { return true }
+        return false
+    }
+
+    /// Test seam exposing the full injection outcome (run-missing vs
+    /// no-eligible-step vs success-with-stepID) so tests can pin both the
+    /// happy path and each failure mode independently.
+    func _testInjectForwardedMessageIntoChildOutcome(
+        childTaskID: Int,
+        message: String,
+        delegate: any LLMStateDelegate
+    ) async -> ForwardInjectionResult {
+        await injectForwardedMessageIntoChild(
+            childTaskID: childTaskID,
+            message: message,
+            delegate: delegate
+        )
+    }
+    #endif
+
+    /// Envelope shape for the `paused_by_supervisor` outcome. Mirrors the
+    /// success-envelope contract used elsewhere (`ok: true`) but with a
+    /// distinct `status` value so the LLM disambiguates from terminal
+    /// success and reaches for `cancel_delegation` / `resume_delegation` /
+    /// `forward_to_team` instead of treating the call as complete.
+    private func buildPausedEnvelope(
+        childTID: Int,
+        targetTeamName: String,
+        supervisorMessage: String
+    ) -> String {
+        struct PausedData: Codable {
+            var status: String
+            var child_task_id: Int
+            var team: String
+            var supervisor_message: String?
+            var next_actions: String
+        }
+        let data = PausedData(
+            status: "paused_by_supervisor",
+            child_task_id: childTID,
+            team: targetTeamName,
+            supervisor_message: supervisorMessage.isEmpty ? nil : supervisorMessage,
+            next_actions: "Choose one: `cancel_delegation` (abort), `resume_delegation` (continue waiting), or `forward_to_team` (inject guidance and continue)."
+        )
+        return makeSuccessEnvelope(data: data)
+    }
+
+    /// Removes `delegate_to_team` from every role's toolset and zeroes the
+    /// per-role delegation whitelist + generated-team allowance. Applied to
+    /// teams synthesized inside `delegate_to_team` so they cannot themselves
+    /// delegate further — depth-2+ chains are structurally prevented at
+    /// generation time, regardless of what the team-generator LLM emitted
+    /// in `tools`. The literal `"list_teams"` is also stripped — that tool
+    /// was removed (the catalog now lives inline in `delegate_to_team`'s
+    /// description), but smaller models still occasionally emit the legacy
+    /// name.
+    /// Internal (not private) so unit tests can verify the contract directly
+    /// without driving a full `delegate_to_team` invocation.
+    func stripDelegationTools(from team: Team) -> Team {
+        var stripped = team
+        let blocked: Set<String> = [ToolNames.delegateToTeam, "list_teams"]
+        for index in stripped.roles.indices {
+            stripped.roles[index].toolIDs.removeAll { blocked.contains($0) }
+            stripped.roles[index].allowedDelegationTeamIDs = []
+            stripped.roles[index].allowDelegationToGeneratedTeams = false
+        }
+        return stripped
+    }
+
+    /// Clears `delegationSession` and `activeDelegationChildID` on the parent step
+    /// when the delegation reaches any terminal outcome. Called from every exit
+    /// path of the awaiter loop so the next `delegate_to_team` call starts clean
+    /// (fresh seeded chain) and `pauseRun` no longer treats the step as mid-delegation.
+    private func clearDelegationFields(
+        parentTID: Int,
+        stepID: String,
+        delegate: any LLMStateDelegate
+    ) async {
+        await delegate.mutateTask(taskID: parentTID) { task in
+            guard let runIdx = task.runs.indices.last,
+                  let stepIdx = task.runs[runIdx].steps.firstIndex(where: { $0.id == stepID })
+            else { return }
+            // Single mutator clears both `activeChildID` and `session` while
+            // preserving the chronological `history` for audit / graph
+            // history layers.
+            task.runs[runIdx].steps[stepIdx].clearActiveDelegation()
+        }
+    }
+
+    // MARK: - Envelope Builders
+
+    /// Reads the child task's most recent run, collects produced artifact contents
+    /// for the team's required outputs, and returns a success envelope JSON string.
+    private func buildSuccessEnvelope(
+        childTID: Int,
+        targetTeam: Team,
+        isGeneratedFlow: Bool,
+        generationWarnings: [String],
+        delegate: any LLMStateDelegate
+    ) async -> String {
+        struct ArtifactPayload: Codable {
+            let content: String
+            let role_id: String
+        }
+        struct DelegationSuccessData: Codable {
+            let child_task_id: Int
+            let team: String
+            let generated: Bool
+            let artifacts: [String: ArtifactPayload]
+            let missing_artifacts: [String]
+            let generation_warnings: [String]?
+        }
+
+        var artifacts: [String: ArtifactPayload] = [:]
+        var missing: [String] = []
+        let requiredNames = targetTeam.supervisorRequiredArtifacts
+        if let childTask = delegate.loadedTask(childTID),
+           let lastRun = childTask.runs.last
+        {
+            let produced = lastRun.producedArtifactsByName()
+            let workFolderRoot = delegate.workFolderURL
+            let setRequired = Set(requiredNames)
+            // For chat-mode teams (no required artifacts) we still surface every produced one.
+            let namesToReturn: [String] = requiredNames.isEmpty
+                ? Array(produced.keys).sorted()
+                : requiredNames
+            for name in namesToReturn {
+                guard let record = produced[name] else {
+                    if setRequired.contains(name) { missing.append(name) }
+                    continue
+                }
+                let content: String
+                if let root = workFolderRoot,
+                   let body = ArtifactService.readContent(artifact: record.artifact, workFolderRoot: root)
+                {
+                    content = body
+                } else {
+                    content = ""
+                }
+                artifacts[name] = ArtifactPayload(content: content, role_id: record.roleID)
+            }
+        }
+        let data = DelegationSuccessData(
+            child_task_id: childTID,
+            team: targetTeam.name,
+            generated: isGeneratedFlow,
+            artifacts: artifacts,
+            missing_artifacts: missing,
+            generation_warnings: generationWarnings.isEmpty ? nil : generationWarnings
+        )
+        return makeSuccessEnvelope(data: data)
+    }
+}

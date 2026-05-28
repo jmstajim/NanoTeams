@@ -382,68 +382,6 @@ final class TaskManagementStateTests: XCTestCase {
         super.tearDown()
     }
 
-    // MARK: - sheetFormState.hasTaskDraftContent
-
-    func testSheetFormState_hasTaskDraftContent_falseWhenEmpty() {
-        XCTAssertFalse(sut.sheetFormState.hasTaskDraftContent)
-    }
-
-    func testSheetFormState_hasTaskDraftContent_falseWhenWhitespaceOnly() {
-        sut.sheetFormState.title = "   "
-        sut.sheetFormState.supervisorTask = "\n\t"
-        XCTAssertFalse(sut.sheetFormState.hasTaskDraftContent)
-    }
-
-    func testSheetFormState_hasTaskDraftContent_trueWithTitle() {
-        sut.sheetFormState.title = "Feature X"
-        XCTAssertTrue(sut.sheetFormState.hasTaskDraftContent)
-    }
-
-    func testSheetFormState_hasTaskDraftContent_trueWithGoal() {
-        sut.sheetFormState.supervisorTask = "Build it"
-        XCTAssertTrue(sut.sheetFormState.hasTaskDraftContent)
-    }
-
-    func testSheetFormState_hasTaskDraftContent_trueWithClippedText() {
-        sut.sheetFormState.clippedTexts = ["copied text"]
-        XCTAssertTrue(sut.sheetFormState.hasTaskDraftContent)
-    }
-
-    func testSheetFormState_hasTaskDraftContent_trueWithAttachments() throws {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("fake.txt")
-        FileManager.default.createFile(atPath: url.path, contents: Data())
-        let attachment = try StagedAttachment(url: url, stagedRelativePath: "draft/fake.txt")
-        sut.sheetFormState.attachments = [attachment]
-        XCTAssertTrue(sut.sheetFormState.hasTaskDraftContent)
-    }
-
-    func testSheetFormState_hasTaskDraftContent_falseWithWhitespaceClip() {
-        sut.sheetFormState.clippedTexts = ["   "]
-        XCTAssertFalse(sut.sheetFormState.hasTaskDraftContent)
-    }
-
-    // MARK: - sheetFormState.clearTaskDraft
-
-    func testSheetFormState_clearTaskDraft_resetsAllFields() throws {
-        sut.sheetFormState.title = "Title"
-        sut.sheetFormState.supervisorTask = "Goal"
-        sut.sheetFormState.selectedTeamID = "test_team"
-        sut.sheetFormState.clippedTexts = ["clip"]
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("f.txt")
-        FileManager.default.createFile(atPath: url.path, contents: Data())
-        sut.sheetFormState.attachments = [try StagedAttachment(url: url, stagedRelativePath: "d/f.txt")]
-        let oldDraftID = sut.sheetFormState.draftID
-
-        sut.sheetFormState.clearTaskDraft()
-
-        XCTAssertTrue(sut.sheetFormState.title.isEmpty)
-        XCTAssertTrue(sut.sheetFormState.supervisorTask.isEmpty)
-        XCTAssertNil(sut.sheetFormState.selectedTeamID)
-        XCTAssertTrue(sut.sheetFormState.clippedTexts.isEmpty)
-        XCTAssertTrue(sut.sheetFormState.attachments.isEmpty)
-        XCTAssertNotEqual(sut.sheetFormState.draftID, oldDraftID, "clearTaskDraft should generate a new draftID")
-    }
-
     // MARK: - filteredTasks
 
     private func makeTasks() -> [SidebarTaskItem] {

@@ -6,8 +6,9 @@ import SwiftUI
 /// Composition:
 /// - `ActivityFeedRoleAvatar` — leading avatar (or clear spacer when header is hidden).
 /// - `MessageBubbleHeader` — role name, source label, timestamp.
-/// - `MessageBubbleStreamingIndicator` — "Waiting"/"Processing %" status row.
-/// - `MessageThinkingSection` — expandable thinking disclosure.
+/// - `MessageBubbleStreamingIndicator` — status row: Processing X% / Generating /
+///   Waiting (or hidden once content / thinking arrives).
+/// - `MessageThinkingSection` — compact "Thinking" row that opens a window.
 /// - Content bubble — the message text.
 struct MessageBubbleView: View {
     let message: LLMMessage
@@ -16,15 +17,40 @@ struct MessageBubbleView: View {
     let content: String
     let thinking: String?
     let processingProgress: Double?
+    /// True when the streaming pipeline has observed at least one delta of
+    /// any kind for this step (thinking, content, tool-call, harmony).
+    /// Drives the "Waiting" → "Generating" status flip in
+    /// `MessageBubbleStreamingIndicator` for the case where tokens are
+    /// flowing into invisible buffers (e.g. tool-call argument JSON).
+    var hasStreamActivity: Bool = false
     let isStreaming: Bool
+    var isImplicitStreamTarget: Bool = false
     let showHeader: Bool
-    let thinkingExpandedByDefault: Bool
     var onAvatarTap: (() -> Void)? = nil
-    @Binding var thinkingExpanded: Set<UUID>
+    /// Override role display name (e.g. role.name from a child team's roster
+    /// when the active team's roles don't match). `nil` falls back to the
+    /// resolved role definition name.
+    var roleLabelOverride: String? = nil
+    /// Optional team suffix rendered as ` from <Team>` after the role name in
+    /// secondary gray. Set for delegated child-team items so the user sees
+    /// which team the item came from. `nil` for active-team items.
+    var roleTeamSuffix: String? = nil
+    /// Non-embedded attachment file paths (relative to `workFolderURL`) to
+    /// render as thumbnail cards via `ReadOnlyAttachmentGrid` below the bubble.
+    /// Populated by the caller for `.supervisorMessage` turns after running
+    /// `ActivityFeedBuilder.stripAttachedFiles` on `displayContent`. Empty for
+    /// every other surface — same component as `SupervisorTaskItemView` and
+    /// `SupervisorInputCard` so all three supervisor-input bubbles share one
+    /// rendering path.
+    var attachmentPaths: [String] = []
+    /// Clipped-text snippets extracted alongside `attachmentPaths`.
+    var clippedTexts: [String] = []
+    /// Resolution base for `attachmentPaths` (typically `store.workFolderURL`).
+    var workFolderURL: URL? = nil
 
     // MARK: - Derived
 
-    private var roleName: String { roleDefinition?.name ?? role.displayName }
+    private var roleName: String { roleLabelOverride ?? roleDefinition?.name ?? role.displayName }
     private var tintColor: Color { roleDefinition?.resolvedTintColor ?? role.tintColor }
 
     // MARK: - Body
@@ -52,6 +78,7 @@ struct MessageBubbleView: View {
                 if showHeader {
                     MessageBubbleHeader(
                         roleName: roleName,
+                        teamSuffix: roleTeamSuffix,
                         tintColor: tintColor,
                         sourceLabel: message.sourceContextDisplayLabel,
                         timestamp: message.createdAt,
@@ -61,30 +88,34 @@ struct MessageBubbleView: View {
 
                 MessageBubbleStreamingIndicator(
                     isStreaming: isStreaming,
+                    isImplicitStreamTarget: isImplicitStreamTarget,
                     hasMessageContent: hasMessageContent,
                     hasThinkingContent: hasThinkingContent,
-                    processingProgress: processingProgress
+                    processingProgress: processingProgress,
+                    hasStreamActivity: hasStreamActivity
                 )
+                // Load-bearing: skips this subtree on streaming ticks when
+                // the 5 inputs are unchanged (Waiting/Generating/Processing
+                // steady state). Drift-guarded by
+                // `MessageBubbleStreamingIndicatorEquatableTests`.
+                .equatable()
 
                 if hasThinkingContent, let thinking {
                     let isThinkingStreaming = isStreaming && !hasMessageContent
                     MessageThinkingSection(
                         thinking: thinking,
                         messageID: message.id,
-                        isStreaming: isThinkingStreaming,
-                        expandedByDefault: thinkingExpandedByDefault,
-                        thinkingExpanded: $thinkingExpanded
+                        roleName: roleName,
+                        isStreaming: isThinkingStreaming
                     )
                 }
 
                 if hasMessageContent {
-                    // Supervisor-injected messages (queued chat delivery) render
-                    // with the same bubble style as the initial-task brief
-                    // (`SupervisorTaskItemView`) — visually consistent with the
-                    // Supervisor's other utterances in the feed.
-                    let contentText = Text(content)
-                        .font(.body)
-                        .textSelection(.enabled)
+                    // `.supervisorMessage` matches the Supervisor's other
+                    // feed utterances (initial-task-brief styling). See
+                    // `SelectableMessageText` for streaming/append-only
+                    // and `LazyVStack` height-stability rationale.
+                    let contentText = SelectableMessageText(content: content)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if message.sourceContext == .supervisorMessage {
@@ -101,17 +132,67 @@ struct MessageBubbleView: View {
                         contentText
                     }
                 }
+
+                if !attachmentPaths.isEmpty || !clippedTexts.isEmpty {
+                    ReadOnlyAttachmentGrid(
+                        attachmentPaths: attachmentPaths,
+                        clippedTexts: clippedTexts,
+                        workFolderURL: workFolderURL
+                    )
+                }
             }
         }
+    }
+}
+
+// MARK: - Equatable
+
+/// `Equatable` lets `TeamActivityFeedView`'s dispatcher wrap this view in
+/// `.equatable()` for committed bubbles — SwiftUI's diff fast-path skips
+/// the entire subtree when nothing in the inputs has changed. This is the
+/// load-bearing optimization for steady-state `DisplayList.append`
+/// pressure described in the plan file's Phase 2 follow-up.
+///
+/// **Hand-rolled (not synthesized) for two reasons:**
+/// 1. Excludes `onAvatarTap` (closure — closures are never `Equatable`).
+///    The closure is treated as identity-stable per parent body — as long
+///    as every value it captures is also in `==`, the captured copy stays
+///    correct across cache hits. The captured values here are `role` and
+///    `originTaskID`; both feed `roleDefinition?.id` / `roleTeamSuffix`,
+///    which ARE in `==`.
+/// 2. Compares `roleDefinition` by `id` rather than the full struct.
+///    `TeamRoleDefinition` is `Identifiable` but not `Hashable`; structural
+///    equality would require field-by-field comparison and we only care
+///    about identity here. If the role's content (name, icon, color) ever
+///    changes mid-conversation, parent state updates regenerate the view.
+///
+/// **DRIFT GUARD.** Any new prop added to `MessageBubbleView` must be
+/// added to `==` here, otherwise updates to that prop are silently
+/// dropped under `.equatable()`. The companion test
+/// `MessageBubbleEquatableTests` pins each prop's contribution.
+extension MessageBubbleView: Equatable {
+    static func == (lhs: MessageBubbleView, rhs: MessageBubbleView) -> Bool {
+        lhs.message == rhs.message
+            && lhs.role == rhs.role
+            && lhs.roleDefinition?.id == rhs.roleDefinition?.id
+            && lhs.content == rhs.content
+            && lhs.thinking == rhs.thinking
+            && lhs.processingProgress == rhs.processingProgress
+            && lhs.hasStreamActivity == rhs.hasStreamActivity
+            && lhs.isStreaming == rhs.isStreaming
+            && lhs.isImplicitStreamTarget == rhs.isImplicitStreamTarget
+            && lhs.showHeader == rhs.showHeader
+            && lhs.roleLabelOverride == rhs.roleLabelOverride
+            && lhs.roleTeamSuffix == rhs.roleTeamSuffix
+            && lhs.attachmentPaths == rhs.attachmentPaths
+            && lhs.clippedTexts == rhs.clippedTexts
+            && lhs.workFolderURL == rhs.workFolderURL
     }
 }
 
 // MARK: - Preview
 
 #Preview("All States") {
-    @Previewable @State var expanded: Set<UUID> = []
-    let thinkingMsgID = UUID()
-
     ScrollView {
         VStack(alignment: .leading, spacing: 16) {
             messageBubblePreviewSectionLabel("1. Completed message")
@@ -123,25 +204,21 @@ struct MessageBubbleView: View {
                 thinking: nil,
                 processingProgress: nil,
                 isStreaming: false,
-                showHeader: true,
-                thinkingExpandedByDefault: false,
-                thinkingExpanded: $expanded
+                showHeader: true
             )
 
             Divider()
 
-            messageBubblePreviewSectionLabel("2. Completed with thinking (expanded)")
+            messageBubblePreviewSectionLabel("2. Completed with thinking")
             MessageBubbleView(
-                message: LLMMessage(id: thinkingMsgID, role: .assistant, content: "Let me read the existing file first.", thinking: "I should check what's already there before writing."),
+                message: LLMMessage(role: .assistant, content: "Let me read the existing file first.", thinking: "I should check what's already there before writing."),
                 role: .techLead,
                 roleDefinition: nil,
                 content: "Let me read the existing file first.",
                 thinking: "I should check what's already there before writing.",
                 processingProgress: nil,
                 isStreaming: false,
-                showHeader: true,
-                thinkingExpandedByDefault: true,
-                thinkingExpanded: $expanded
+                showHeader: true
             )
 
             Divider()
@@ -155,9 +232,7 @@ struct MessageBubbleView: View {
                 thinking: nil,
                 processingProgress: nil,
                 isStreaming: true,
-                showHeader: true,
-                thinkingExpandedByDefault: false,
-                thinkingExpanded: $expanded
+                showHeader: true
             )
 
             Divider()
@@ -171,9 +246,7 @@ struct MessageBubbleView: View {
                 thinking: nil,
                 processingProgress: 0.42,
                 isStreaming: true,
-                showHeader: true,
-                thinkingExpandedByDefault: false,
-                thinkingExpanded: $expanded
+                showHeader: true
             )
 
             Divider()
@@ -187,9 +260,7 @@ struct MessageBubbleView: View {
                 thinking: "The user wants bubble sort and merge sort. I should check if there's an existing file first.",
                 processingProgress: nil,
                 isStreaming: true,
-                showHeader: true,
-                thinkingExpandedByDefault: true,
-                thinkingExpanded: $expanded
+                showHeader: true
             )
 
             Divider()
@@ -203,9 +274,7 @@ struct MessageBubbleView: View {
                 thinking: "Need to implement both algorithms.",
                 processingProgress: nil,
                 isStreaming: true,
-                showHeader: true,
-                thinkingExpandedByDefault: false,
-                thinkingExpanded: $expanded
+                showHeader: true
             )
 
             Divider()
@@ -219,9 +288,7 @@ struct MessageBubbleView: View {
                 thinking: nil,
                 processingProgress: nil,
                 isStreaming: false,
-                showHeader: true,
-                thinkingExpandedByDefault: false,
-                thinkingExpanded: $expanded
+                showHeader: true
             )
 
             Divider()
@@ -235,16 +302,13 @@ struct MessageBubbleView: View {
                 thinking: nil,
                 processingProgress: nil,
                 isStreaming: false,
-                showHeader: false,
-                thinkingExpandedByDefault: false,
-                thinkingExpanded: $expanded
+                showHeader: false
             )
         }
         .padding()
     }
     .frame(width: 520, height: 1100)
     .background(Colors.surfacePrimary)
-    .onAppear { expanded.insert(thinkingMsgID) }
 }
 
 // periphery:ignore - used in #Preview macros

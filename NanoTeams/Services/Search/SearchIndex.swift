@@ -14,7 +14,7 @@ import Foundation
 /// `files(containing:)` needed a defensive `0 <= id < files.count` guard just
 /// to avoid out-of-bounds crashes on a tampered index — now the guard is
 /// redundant by construction.
-struct SearchIndex: Codable, Equatable {
+nonisolated struct SearchIndex: Codable, Equatable {
     /// Bump on incompatible shape changes — readers discard older payloads
     /// and rebuild from scratch. No migrations: the index is regenerable.
     static let currentVersion: Int = 1
@@ -104,7 +104,7 @@ struct SearchIndex: Codable, Equatable {
 
 /// Single file entry in the index. Stable id is its array index in
 /// `SearchIndex.files`.
-struct IndexedFile: Codable, Equatable, Hashable {
+nonisolated struct IndexedFile: Codable, Equatable, Hashable {
     /// Path relative to the work folder root (forward slashes).
     var path: String
     /// Last-modified time at index build.
@@ -116,7 +116,7 @@ struct IndexedFile: Codable, Equatable, Hashable {
 /// Lightweight fingerprint of the indexed tree. `SearchIndexCoordinator`
 /// compares this against a fresh walk signature to decide if a rebuild is
 /// needed — much cheaper than actually re-tokenizing every file.
-struct IndexSignature: Codable, Equatable, Hashable {
+nonisolated struct IndexSignature: Codable, Equatable, Hashable {
     var fileCount: Int
     /// Latest mTime seen across all indexed files. Drift in this value means
     /// at least one file changed since the last build.
@@ -133,7 +133,7 @@ struct IndexSignature: Codable, Equatable, Hashable {
 // `LLMExecutionService+ExploratorySearch` (processor) call these directly; without
 // this split the ranking would need to be duplicated in both places.
 
-extension SearchIndex {
+nonisolated extension SearchIndex {
 
     /// Ranked vocabulary candidates for `query`, tiered by match specificity:
     /// 0. Exact case-insensitive equality.

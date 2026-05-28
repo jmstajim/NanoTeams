@@ -64,7 +64,7 @@ final class MockTeamEngineStore: TeamEngineStore {
         resetStepForRevisionCalls.append(stepID)
     }
 
-    func setLastErrorMessageForUI(_ message: String) async {
+    func setLastErrorMessageForUI(_ message: String) {
         setLastErrorMessageCalls.append(message)
     }
 }

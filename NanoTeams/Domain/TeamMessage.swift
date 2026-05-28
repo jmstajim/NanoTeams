@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Team Message
 
 /// A single message in a team meeting
-struct TeamMessage: Codable, Identifiable {
+nonisolated struct TeamMessage: Codable, Identifiable {
     var id: UUID
     var createdAt: Date
 
@@ -71,7 +71,7 @@ struct TeamMessage: Codable, Identifiable {
 
 // MARK: - Hashable
 
-extension TeamMessage: Hashable {
+nonisolated extension TeamMessage: Hashable {
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
     }
@@ -83,7 +83,7 @@ extension TeamMessage: Hashable {
 
 // MARK: - Team Message Type
 
-enum TeamMessageType: String, Codable, Hashable {
+nonisolated enum TeamMessageType: String, Codable, Hashable {
     case discussion     // Regular discussion message
     case question       // Asking for clarification
     case proposal       // Proposing a solution/approach
@@ -95,7 +95,7 @@ enum TeamMessageType: String, Codable, Hashable {
 
 // MARK: - Message Type Classification
 
-extension TeamMessageType {
+nonisolated extension TeamMessageType {
 
     // MARK: Marker Data (OCP — add/remove markers without changing logic)
 

@@ -3,18 +3,18 @@ import Foundation
 /// Names skipped by `list_files` and `search` directory traversal.
 /// Allows useful dotfiles (.gitignore, .env, .eslintrc) while filtering noise.
 /// Shared with `SearchIndexService` via `WalkSkipRules.skipped`.
-private let listFilesSkippedNames: Set<String> = WalkSkipRules.skipped
+nonisolated private let listFilesSkippedNames: Set<String> = WalkSkipRules.skipped
 
 private typealias TN = ToolNames
 private typealias JS = JSONSchema
 
 // MARK: - read_file
 
-struct ReadFileTool: ToolHandler {
+nonisolated struct ReadFileTool: ToolHandler {
     static let name = TN.readFile
     static let schema = ToolSchema(
         name: TN.readFile,
-        description: "Read entire file content. The file's line count must not exceed the limit configured in Settings → Tool Behavior (default \(AppDefaults.readFileMaxLines)) — for larger files use `read_lines` with explicit ranges. Auto-extracts PDF/DOCX/RTF/RTFD/ODT/XLSX/PPTX to plain text.",
+        description: "Read entire file content. Auto-extracts PDF/DOCX/RTF/RTFD/ODT/XLSX/PPTX to plain text.",
         parameters: JS.object(
             properties: [
                 "path": JS.string("Relative path to file"),
@@ -115,8 +115,8 @@ struct ReadFileTool: ToolHandler {
                     message: "File has \(totalLines) lines, exceeding the \(lineLimit)-line read_file limit. Use read_lines with explicit ranges.",
                     next: NextHint(
                         suggested_cmd: TN.readLines,
-                        suggested_args: ["path": path, "start_line": "1", "end_line": "-1"],
-                        reason: "Use read_lines for files larger than \(lineLimit) lines"
+                        suggested_args: ["path": path, "start_line": "1", "end_line": String(lineLimit)],
+                        reason: "Read first \(lineLimit) lines; paginate from end_line for the rest"
                     )
                 )
             }
@@ -138,52 +138,59 @@ struct ReadFileTool: ToolHandler {
 
 // MARK: - read_lines
 
-struct ReadLinesTool: ToolHandler {
+nonisolated struct ReadLinesTool: ToolHandler {
     static let name = TN.readLines
     static let schema = ToolSchema(
         name: TN.readLines,
-        description: "Read specific lines from a file. Use for large files instead of read_file. Pass end_line=0 or any negative value (e.g. -1) to read through end of file.",
+        description: "Read a line range from a file. Result reports `start_line`, `end_line`, `total_lines`.",
         parameters: JS.object(
             properties: [
                 "path": JS.string("Relative path to file"),
                 "start_line": JS.integer("Start line number (1-based)"),
-                "end_line": JS.integer("End line number (1-based, inclusive). Use 0 or -1 to read through end of file."),
+                "end_line": JS.integer("End line number (1-based, inclusive). Optional."),
             ],
-            required: ["path", "start_line", "end_line"]
+            required: ["path", "start_line"]
         )
     )
     static let category: ToolCategory = .fileRead
 
     let resolver: SandboxPathResolver
     let fileManager: FileManager
+    /// `0` means unlimited.
+    let lineLimit: Int
 
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self {
-        Self(resolver: dependencies.resolver, fileManager: dependencies.fileManager)
+        Self(resolver: dependencies.resolver, fileManager: dependencies.fileManager, lineLimit: dependencies.readFileMaxLines)
     }
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let path = try requiredString(args, "path")
-            let startLine = try requiredInt(args, "start_line")
-            let endLine = try requiredInt(args, "end_line")
+            let startLineRaw = try requiredInt(args, "start_line")
+            let endLineRaw = optionalInt(args, "end_line") ?? 0
             let includeLineNumbers = optionalBool(args, "include_line_numbers", default: true)
+
+            // `endLineRaw <= 0` is the "read to EOF" intent (omitted / 0 / -1
+            // all collapse here). Per CORE_PRINCIPLES the runtime absorbs
+            // LLM sloppiness silently — no error envelope.
+            let readToEOF = endLineRaw <= 0
+
+            // Transposed range (e.g. start: 100, end: 50) clearly meant 50..100.
+            // Silently swap and proceed.
+            let startLine: Int
+            let endLine: Int
+            if !readToEOF && endLineRaw < startLineRaw {
+                startLine = endLineRaw
+                endLine = startLineRaw
+            } else {
+                startLine = startLineRaw
+                endLine = endLineRaw
+            }
 
             guard startLine >= 1 else {
                 return makeErrorResult(
                     toolName: Self.name, args: args,
                     code: .invalidArgs, message: "start_line must be >= 1"
-                )
-            }
-
-            // end_line <= 0 is a Unix-style "read to EOF" sentinel (some models
-            // routinely emit -1). Positive but < start_line is still an error,
-            // with a message that teaches the sentinel so the model can self-correct.
-            let readToEOF = endLine <= 0
-            if !readToEOF && endLine < startLine {
-                return makeErrorResult(
-                    toolName: Self.name, args: args,
-                    code: .invalidArgs,
-                    message: "end_line (\(endLine)) must be >= start_line (\(startLine)). To read through end of file, pass end_line=0 or -1."
                 )
             }
 
@@ -233,7 +240,17 @@ struct ReadLinesTool: ToolHandler {
                 )
             }
 
-            let actualEndLine = readToEOF ? totalLines : min(endLine, totalLines)
+            let requestedEndLine = readToEOF ? totalLines : min(endLine, totalLines)
+
+            // `lineLimit == 0` is the "unlimited" sentinel.
+            // Returned `end_line < total_lines` signals the cap to the LLM,
+            // which paginates by passing `start_line: end_line + 1`.
+            let actualEndLine: Int
+            if lineLimit > 0 {
+                actualEndLine = min(requestedEndLine, startLine + lineLimit - 1)
+            } else {
+                actualEndLine = requestedEndLine
+            }
             let selectedLines = Array(allLines[(startLine - 1)..<actualEndLine])
 
             let resultContent: String
@@ -273,7 +290,7 @@ struct ReadLinesTool: ToolHandler {
 
 // MARK: - list_files
 
-struct ListFilesTool: ToolHandler {
+nonisolated struct ListFilesTool: ToolHandler {
     static let name = TN.listFiles
     static let schema = ToolSchema(
         name: TN.listFiles,
@@ -378,18 +395,20 @@ struct ListFilesTool: ToolHandler {
 
 // MARK: - search
 
-struct SearchTool: ToolHandler {
+nonisolated struct SearchTool: ToolHandler {
     static let name = TN.search
     static let schema = ToolSchema(
         name: TN.search,
-        description: "Search for text across the work folder. Reads plain text (including .html/.xml/.md source) plus PDF/DOCX/RTF/RTFD/ODT/XLSX/PPTX (auto-extracted to plain text). Returns matching content lines in `matches` AND files whose name or relative path contains the query in `filename_matches` (basename hits sort first, then by path). Use `context_before` / `context_after` to widen each match with surrounding source lines. Narrow with file_glob for large doc-heavy folders. exploratory=true also applies vocab expansion to filename matching.",
+        description: "Search the work folder for text. Auto-extracts PDF/DOCX/RTF/RTFD/ODT/XLSX/PPTX. Returns content `matches` and `filename_matches` (basename hits first).",
         parameters: JS.object(
             properties: [
-                "query": JS.string("Search query (substring match)"),
-                "max_results": JS.integer("Max number of results returned. Defaults to the user-configured value in Settings → Tool Behavior (default \(AppDefaults.searchMaxResults))."),
-                "context_before": JS.integer("Number of source lines to include before each match. Defaults to the user-configured value in Settings → Tool Behavior (default \(AppDefaults.searchContextBefore)). Use 2-5 when you need surrounding context (function signatures, imports, comment headers)."),
-                "context_after": JS.integer("Number of source lines to include after each match. Defaults to the user-configured value in Settings → Tool Behavior (default \(AppDefaults.searchContextAfter)). Use 2-5 to see what follows a hit."),
-                "exploratory": JS.boolean("Run an exploratory pass via a local vocab vector index — surfaces synonyms, cross-language translations (e.g. Russian↔English), and camelCase/snake_case variants of each token. SET TO TRUE whenever any of these holds: (1) the query is in a different language than the codebase, (2) you don't know the project's exact naming for the concept, (3) a previous plain search returned 0 or very few hits. Always retry with exploratory=true before falling back to list_files/read_file or escalating to ask_supervisor."),
+                "query": JS.string("Case-insensitive literal substring. One keyword per call for distinct concepts."),
+                "paths": JS.array(items: JS.string("Relative path under the work folder"), description: "Restrict scope. Folders walked recursively; files scanned in place."),
+                "file_glob": JS.string("Basename glob (e.g. *.swift, test_*.md)."),
+                "max_results": JS.integer("Cap on returned matches."),
+                "context_before": JS.integer("Lines before each match (2-5 typical)."),
+                "context_after": JS.integer("Lines after each match (2-5 typical)."),
+                "exploratory": JS.boolean("Vector-index pass for synonyms, cross-language, and camel/snake variants."),
             ],
             required: ["query"]
         )

@@ -5,7 +5,7 @@ import AppKit
 // MARK: - Staged Attachment
 
 /// A staged file attachment (used by Quick Capture and Supervisor answer input).
-struct StagedAttachment: Identifiable, Hashable {
+nonisolated struct StagedAttachment: Identifiable, Hashable {
     let stagedRelativePath: String
     let url: URL
     let fileName: String
@@ -64,7 +64,17 @@ struct StagedAttachment: Identifiable, Hashable {
 
     /// Returns a thumbnail image for this attachment.
     /// Images get a scaled-down preview; other files get their system icon.
+    ///
+    /// Image-derived thumbnails are cached process-wide by `(stagedRelativePath, size)`
+    /// to avoid re-decoding from disk on every SwiftUI body re-evaluation.
+    /// Workspace-icon fallbacks are NOT cached: a transient `NSImage(contentsOf:)`
+    /// failure (file briefly missing, sandbox handoff in flight) would otherwise
+    /// pin the generic icon under that key for the rest of the process lifetime.
     func thumbnail(size: CGFloat = 60) -> NSImage {
+        let key = "\(stagedRelativePath)|\(Int(size))" as NSString
+        if let cached = StagedAttachment.thumbnailCache.object(forKey: key) {
+            return cached
+        }
         if isImage, let image = NSImage(contentsOf: url) {
             let aspect = image.size.width / image.size.height
             let targetSize: NSSize
@@ -79,8 +89,16 @@ struct StagedAttachment: Identifiable, Hashable {
                        from: NSRect(origin: .zero, size: image.size),
                        operation: .copy, fraction: 1.0)
             thumb.unlockFocus()
+            StagedAttachment.thumbnailCache.setObject(thumb, forKey: key)
             return thumb
         }
         return NSWorkspace.shared.icon(forFile: url.path)
     }
+
+    /// Process-wide LRU cache for `thumbnail(size:)`. `NSCache` is thread-safe.
+    nonisolated(unsafe) private static let thumbnailCache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.countLimit = 64
+        return cache
+    }()
 }

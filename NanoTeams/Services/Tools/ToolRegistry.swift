@@ -1,15 +1,21 @@
 import Foundation
 
-struct ToolExecutionContext: Hashable {
+nonisolated struct ToolExecutionContext: Hashable {
     var workFolderRoot: URL
     var taskID: Int
     var runID: Int
     var roleID: String
+    /// Names the role is expected to produce via `create_artifact`. Sourced from
+    /// `step.expectedArtifacts`. Used by `CreateArtifactTool` to give the model a
+    /// concrete fix-up list when it submits a wrong-shaped name (e.g. "index.html"
+    /// instead of "Спецификация калькулятора"). Empty for roles without
+    /// declared deliverables (advisory/chat roles).
+    var expectedArtifacts: [String] = []
 }
 
 /// Out-of-band signal from a tool handler indicating special processing is needed.
 /// Each case carries only the data relevant to that specific tool type.
-enum ToolSignal: Hashable {
+nonisolated enum ToolSignal: Hashable {
     case supervisorQuestion(String)
     case teammateConsultation(id: String, question: String, context: String?)
     case teamMeeting(topic: String, participants: [String], context: String?)
@@ -18,6 +24,24 @@ enum ToolSignal: Hashable {
     case visionAnalysis(imagePath: String, prompt: String)
     case teamCreation(config: GeneratedTeamConfig)
     case exploratorySearch(ExploratorySearchPayload)
+    /// `delegate_to_team` invocation: handler awaits child task completion synchronously.
+    /// `teamID` is the raw string from tool args (a UUID for an existing team or the
+    /// `DelegationConstants.generatedTeamSentinel` marker for on-the-fly generation).
+    case delegateToTeam(teamID: String, taskBrief: String)
+    /// Companion to `delegate_to_team` — auto-injected when the role has
+    /// `delegate_to_team` in its toolset. Used by the role to abort a
+    /// delegation paused via `parentMessageQueued` (Supervisor interrupt).
+    /// Stops the child engine, clears delegation fields on the parent step.
+    case cancelDelegation(childTaskID: Int, reason: String?)
+    /// Companion to `delegate_to_team`. Un-pauses a paused child engine and
+    /// re-enters the awaiter loop, blocking until the child reaches a
+    /// terminal state (or another Supervisor interrupt fires). Returns the
+    /// same envelope shape as the original `delegate_to_team` call.
+    case resumeDelegation(childTaskID: Int)
+    /// Companion to `delegate_to_team`. Forwards a Supervisor message into
+    /// the child team's Supervisor-input flow (e.g. as guidance / corrections),
+    /// un-pauses, and re-enters the awaiter loop.
+    case forwardToTeam(childTaskID: Int, message: String)
 }
 
 /// Payload for a `exploratory: true` call on `SearchTool`. Threaded through
@@ -34,7 +58,7 @@ enum ToolSignal: Hashable {
 ///   negative values can't crash the executor budget math.
 /// - `paths` is normalized: empty arrays collapse to `nil` so consumers
 ///   don't have to branch on both "unset" and "set but empty".
-struct ExploratorySearchPayload: Hashable {
+nonisolated struct ExploratorySearchPayload: Hashable {
     let query: String
     let mode: SearchMode
     let paths: [String]?
@@ -88,7 +112,7 @@ struct ExploratorySearchPayload: Hashable {
     }
 }
 
-struct ToolExecutionResult: Hashable {
+nonisolated struct ToolExecutionResult: Hashable {
     var providerID: String?     // OpenAI tool_call_id for conversation continuity
     var toolName: String
     var argumentsJSON: String
@@ -128,7 +152,7 @@ struct ToolExecutionResult: Hashable {
     }
 }
 
-final class ToolRegistry {
+nonisolated final class ToolRegistry: @unchecked Sendable {
     typealias ToolHandler = (_ context: ToolExecutionContext, _ args: [String: Any]) throws ->
         ToolExecutionResult
 

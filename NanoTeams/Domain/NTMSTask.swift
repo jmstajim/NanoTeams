@@ -1,6 +1,6 @@
 import Foundation
 
-struct NTMSTask: Codable, Identifiable, Hashable {
+nonisolated struct NTMSTask: Codable, Identifiable, Hashable {
     var id: Int
     var title: String
     /// Supervisor's task/brief for this task.
@@ -27,6 +27,42 @@ struct NTMSTask: Codable, Identifiable, Hashable {
 
     /// Work-folder-root-relative file paths attached to this task (images, documents, etc.).
     var attachmentPaths: [String]
+
+    /// Parentage / delegation depth bundled as a discriminated union so the
+    /// invariant `(parentTaskID == nil) ↔ (parentRoleID == nil) ↔ (depth == 0)`
+    /// is enforced structurally — illegal combinations (e.g. `depth == 5`
+    /// without a parent task) are unrepresentable. The legacy flat fields
+    /// (`parentTaskID`, `parentRoleID`, `delegationDepth`) survive as
+    /// read-only computed properties so existing read sites compile
+    /// unchanged.
+    private(set) var lineage: TaskLineage
+
+    // MARK: - Back-compat read accessors
+
+    /// Parent task that delegated this task via `delegate_to_team`. `nil`
+    /// means this is a top-level Supervisor task. Child tasks are hidden
+    /// from the sidebar/watchtower — they exist only as internal state of
+    /// the parent's tool call.
+    var parentTaskID: Int? {
+        if case let .delegated(parentTaskID, _, _) = lineage { return parentTaskID }
+        return nil
+    }
+
+    /// Role within the parent task that called `delegate_to_team`. The
+    /// canonical `TeamRoleDefinition.id` (same shape as `StepExecution.id`)
+    /// — the escalation path looks up the parent step via
+    /// `step.id == parentRoleID`, so identifier shape must match.
+    /// `nil` iff `parentTaskID` is `nil`.
+    var parentRoleID: String? {
+        if case let .delegated(_, parentRoleID, _) = lineage { return parentRoleID }
+        return nil
+    }
+
+    /// Depth in the delegation chain. `0` for top-level Supervisor tasks;
+    /// child = parent + 1. Hard-capped at
+    /// `DelegationConstants.maxDelegationDepth` (the `TaskLineage` factory
+    /// clamps any input to that bound — depth > max is unrepresentable).
+    var delegationDepth: Int { lineage.depth }
 
     /// Backing storage for `isChatMode`. Set at creation from team config.
     /// Use `isChatMode` publicly — it prefers `generatedTeam.isChatMode` when present
@@ -89,7 +125,10 @@ struct NTMSTask: Codable, Identifiable, Hashable {
         preferredTeamID: NTMSID? = nil,
         attachmentPaths: [String] = [],
         isChatMode: Bool = false,
-        generatedTeam: Team? = nil
+        generatedTeam: Team? = nil,
+        parentTaskID: Int? = nil,
+        parentRoleID: String? = nil,
+        delegationDepth: Int = 0
     ) {
         self.id = id
         self.title = title
@@ -106,6 +145,18 @@ struct NTMSTask: Codable, Identifiable, Hashable {
         self.attachmentPaths = attachmentPaths
         self.storedIsChatMode = isChatMode
         self.generatedTeam = generatedTeam
+        // Aggregate the three legacy parentage parameters into the typed
+        // enum. The factory enforces the invariant
+        // `(parent==nil)↔(role==nil)↔(depth==0)` AND clamps depth to
+        // `[0, maxDelegationDepth]` so malformed inputs (e.g. depth=5 with
+        // parent==nil) silently normalize to `.root` rather than producing
+        // an unrepresentable state. Strict enforcement at construction
+        // means every read site is guaranteed a coherent `TaskLineage`.
+        self.lineage = TaskLineage.from(
+            parentTaskID: parentTaskID,
+            parentRoleID: parentRoleID,
+            depth: delegationDepth
+        )
     }
 
     enum CodingKeys: String, CodingKey {
@@ -125,6 +176,13 @@ struct NTMSTask: Codable, Identifiable, Hashable {
         case attachmentPaths
         case isChatMode
         case generatedTeam
+        // New aggregated shape (preferred on encode + decode).
+        case lineage
+        // Legacy flat keys (decode-only fallback for files written by
+        // builds prior to the I8 refactor; never re-emitted on encode).
+        case parentTaskID
+        case parentRoleID
+        case delegationDepth
     }
 
     init(from decoder: Decoder) throws {
@@ -151,6 +209,22 @@ struct NTMSTask: Codable, Identifiable, Hashable {
         self.attachmentPaths = try container.decodeIfPresent([String].self, forKey: .attachmentPaths) ?? []
         self.storedIsChatMode = try container.decodeIfPresent(Bool.self, forKey: .isChatMode) ?? false
         self.generatedTeam = try container.decodeIfPresent(Team.self, forKey: .generatedTeam)
+        // Lineage: prefer the new bundled shape, fall back to the three
+        // legacy keys for files written by earlier builds. The factory
+        // clamps malformed combinations (e.g. depth=5 with parent==nil)
+        // to `.root` — strict enforcement on every load.
+        if let bundled = try container.decodeIfPresent(TaskLineage.self, forKey: .lineage) {
+            self.lineage = bundled.normalized()
+        } else {
+            let legacyParentTask = try container.decodeIfPresent(Int.self, forKey: .parentTaskID)
+            let legacyParentRole = try container.decodeIfPresent(String.self, forKey: .parentRoleID)
+            let legacyDepth = try container.decodeIfPresent(Int.self, forKey: .delegationDepth) ?? 0
+            self.lineage = TaskLineage.from(
+                parentTaskID: legacyParentTask,
+                parentRoleID: legacyParentRole,
+                depth: legacyDepth
+            )
+        }
     }
 
     func encode(to encoder: Encoder) throws {
@@ -170,10 +244,90 @@ struct NTMSTask: Codable, Identifiable, Hashable {
         try container.encode(attachmentPaths, forKey: .attachmentPaths)
         try container.encode(storedIsChatMode, forKey: .isChatMode)
         try container.encodeIfPresent(generatedTeam, forKey: .generatedTeam)
+        // Encode the new bundled shape only when non-root — keeps top-level
+        // tasks' JSON concise (no nested lineage block to mean "root").
+        // Legacy flat keys are no longer written (decode-only fallback).
+        if !lineage.isRoot {
+            try container.encode(lineage, forKey: .lineage)
+        }
     }
 }
 
-enum TaskStatus: String, Codable, CaseIterable, Hashable {
+// MARK: - TaskLineage
+
+/// Discriminated union describing a task's place in the delegation tree.
+/// Replaces three previously-flat fields on `NTMSTask`
+/// (`parentTaskID`, `parentRoleID`, `delegationDepth`) so the cross-field
+/// invariant — "a task is either root, or it has BOTH a parent task and
+/// parent role AND a non-zero depth" — is enforced structurally instead
+/// of by convention.
+///
+/// **Construction policy**: ALWAYS construct via
+/// `TaskLineage.from(parentTaskID:parentRoleID:depth:)`. That factory is
+/// the only path that clamps `depth` into `[1, maxDelegationDepth]` and
+/// rejects half-set parentage. Direct case construction (`.delegated(...)`)
+/// is technically legal in Swift (case visibility follows enum visibility),
+/// but it BYPASSES the depth clamp — a `.delegated(..., depth: 99)`
+/// constructed directly is a domain-invariant violation. The Codable
+/// decode paths (both new bundled shape and legacy-flat shape) sanitize
+/// via `from(...)` / `normalized()` so deserialized state is always
+/// well-formed; only freshly-typed code can produce a bad value, and the
+/// test-suite invariant `DelegationStateAndLineageTests.testTaskLineage_directDelegatedCase_clampsViaNormalized`
+/// pins that `.normalized()` always repairs whatever direct construction
+/// produced.
+nonisolated enum TaskLineage: Codable, Hashable {
+    /// Direct case construction skips the depth clamp — call sites MUST
+    /// either go through `TaskLineage.from(...)` or always pipe the value
+    /// through `.normalized()` before persistence/use.
+    case root
+    /// Direct case construction skips the depth clamp — call sites MUST
+    /// either go through `TaskLineage.from(...)` or always pipe the value
+    /// through `.normalized()` before persistence/use.
+    case delegated(parentTaskID: Int, parentRoleID: String, depth: Int)
+
+    /// Depth field — `0` for root, `1...maxDelegationDepth` for delegated.
+    var depth: Int {
+        if case let .delegated(_, _, depth) = self { return depth }
+        return 0
+    }
+
+    var isRoot: Bool {
+        if case .root = self { return true }
+        return false
+    }
+
+    /// Smart factory used by `NTMSTask.init(...)` and the legacy-Codable
+    /// fallback path. Folds the three legacy parameters into the typed
+    /// enum and applies invariants:
+    ///   - both `parentTaskID` and `parentRoleID` must be non-nil for the
+    ///     `.delegated` branch (either-but-not-both → `.root`, since the
+    ///     escalation path needs both)
+    ///   - depth is clamped into `[1, maxDelegationDepth]` for `.delegated`
+    ///     and forced to `0` for `.root`
+    static func from(parentTaskID: Int?, parentRoleID: String?, depth: Int) -> TaskLineage {
+        guard let parent = parentTaskID, let role = parentRoleID else {
+            return .root
+        }
+        let clamped = max(1, min(DelegationConstants.maxDelegationDepth, depth))
+        return .delegated(parentTaskID: parent, parentRoleID: role, depth: clamped)
+    }
+
+    /// Used after Codable decode of the new bundled shape to re-apply the
+    /// depth-clamp invariant — guards against a hand-edited `task.json`
+    /// shipping `depth: 99` inside a `.delegated` payload. `.root` is
+    /// unchanged.
+    func normalized() -> TaskLineage {
+        switch self {
+        case .root:
+            return .root
+        case let .delegated(parent, role, depth):
+            let clamped = max(1, min(DelegationConstants.maxDelegationDepth, depth))
+            return .delegated(parentTaskID: parent, parentRoleID: role, depth: clamped)
+        }
+    }
+}
+
+nonisolated enum TaskStatus: String, Codable, CaseIterable, Hashable {
     case running
     case done
     case paused
@@ -183,7 +337,7 @@ enum TaskStatus: String, Codable, CaseIterable, Hashable {
     case failed
 }
 
-extension TaskStatus {
+nonisolated extension TaskStatus {
     private static let displayLabelMap: [TaskStatus: String] = [
         .running: "Working",
         .done: "Done",
@@ -200,7 +354,7 @@ extension TaskStatus {
 }
 
 /// Stored in .nanoteams/internal/tasks_index.json
-struct TasksIndex: Codable, Hashable {
+nonisolated struct TasksIndex: Codable, Hashable {
     var schemaVersion: Int
     var tasks: [TaskSummary]
     /// Monotonically increasing counter for assigning task IDs.
@@ -221,19 +375,84 @@ struct TasksIndex: Codable, Hashable {
     }
 }
 
-struct TaskSummary: Codable, Identifiable, Hashable {
+nonisolated extension TasksIndex {
+    /// Walks `parentTaskID` links from `taskID` up to the root, returning ancestor
+    /// IDs in root-first order. Empty array if the task is top-level (or unknown).
+    /// Used by `NTMSPaths` to build nested storage paths
+    /// (`.nanoteams/tasks/{root}/subtasks/{level1}/.../subtasks/{taskID}/`).
+    ///
+    /// Cycle safety: caps at `DelegationConstants.treeTraversalSafetyCap`
+    /// (`maxDelegationDepth * cycleSafetyMultiplier`) and additionally tracks
+    /// a `visited` set to detect a true cycle (parent points back to a task
+    /// already in the chain). Real chains never exceed `maxDelegationDepth`;
+    /// anything beyond is corruption — we bail rather than truncate silently.
+    func ancestorIDs(of taskID: Int) -> [Int] {
+        var ancestors: [Int] = []
+        var visited: Set<Int> = [taskID]
+        var current: Int? = tasks.first(where: { $0.id == taskID })?.parentTaskID
+        var safety = 0
+        let cap = DelegationConstants.treeTraversalSafetyCap
+        while let pid = current, safety < cap {
+            // Cycle: parent already seen on this chain. Bail without
+            // appending — the caller would otherwise get a finite but wrong
+            // ancestor list including the cycle.
+            if visited.contains(pid) { break }
+            visited.insert(pid)
+            ancestors.insert(pid, at: 0)
+            current = tasks.first(where: { $0.id == pid })?.parentTaskID
+            safety += 1
+        }
+        return ancestors
+    }
+
+    /// BFS-walks the `parentTaskID`-reverse tree from `taskID`, returning every
+    /// transitive descendant in level order. Used by the activity feed to
+    /// surface delegated child runs alongside the parent (delegation V1 UI).
+    ///
+    /// Cycle safety: caps at `DelegationConstants.treeTraversalSafetyCap`
+    /// AND tracks visited IDs to short-circuit cycles. Without the visited
+    /// set, a corrupted child→parent self-link would produce duplicates in
+    /// `result` until the cap was hit.
+    func descendantIDs(of taskID: Int) -> [Int] {
+        var result: [Int] = []
+        var visited: Set<Int> = [taskID]
+        var frontier: [Int] = [taskID]
+        var safety = 0
+        let cap = DelegationConstants.treeTraversalSafetyCap
+        while !frontier.isEmpty && safety < cap {
+            var next: [Int] = []
+            for parentID in frontier {
+                for summary in tasks where summary.parentTaskID == parentID {
+                    if visited.contains(summary.id) { continue }
+                    visited.insert(summary.id)
+                    result.append(summary.id)
+                    next.append(summary.id)
+                }
+            }
+            frontier = next
+            safety += 1
+        }
+        return result
+    }
+}
+
+nonisolated struct TaskSummary: Codable, Identifiable, Hashable {
     var id: Int
     var title: String
     var status: TaskStatus
     var updatedAt: Date
     var isChatMode: Bool
+    /// Parent task ID for child tasks created via `delegate_to_team`. `nil` for top-level
+    /// Supervisor tasks. Used to filter child tasks out of sidebar/watchtower lists.
+    var parentTaskID: Int?
 
-    init(id: Int, title: String, status: TaskStatus, updatedAt: Date = MonotonicClock.shared.now(), isChatMode: Bool = false) {
+    init(id: Int, title: String, status: TaskStatus, updatedAt: Date = MonotonicClock.shared.now(), isChatMode: Bool = false, parentTaskID: Int? = nil) {
         self.id = id
         self.title = title
         self.status = status
         self.updatedAt = updatedAt
         self.isChatMode = isChatMode
+        self.parentTaskID = parentTaskID
     }
 
     init(from decoder: Decoder) throws {
@@ -243,10 +462,11 @@ struct TaskSummary: Codable, Identifiable, Hashable {
         self.status = try container.decodeIfPresent(TaskStatus.self, forKey: .status) ?? .running
         self.updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? MonotonicClock.shared.now()
         self.isChatMode = try container.decodeIfPresent(Bool.self, forKey: .isChatMode) ?? false
+        self.parentTaskID = try container.decodeIfPresent(Int.self, forKey: .parentTaskID)
     }
 }
 
-extension NTMSTask {
+nonisolated extension NTMSTask {
     var hasInitialInput: Bool {
         let trimmedTask = supervisorTask.trimmingCharacters(in: .whitespacesAndNewlines)
         let hasClips = clippedTexts.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -269,12 +489,12 @@ extension NTMSTask {
             let header: String
             if let parsed {
                 header = nonEmptyClips.count == 1
-                    ? "--- Clipped Text (\(parsed.source)) ---"
-                    : "--- Clipped Text (\(i + 1) of \(nonEmptyClips.count), \(parsed.source)) ---"
+                    ? "## Clipped Text — \(parsed.source)"
+                    : "## Clipped Text — \(i + 1) of \(nonEmptyClips.count), \(parsed.source)"
             } else {
                 header = nonEmptyClips.count == 1
-                    ? "--- Clipped Text ---"
-                    : "--- Clipped Text (\(i + 1) of \(nonEmptyClips.count)) ---"
+                    ? "## Clipped Text"
+                    : "## Clipped Text — \(i + 1) of \(nonEmptyClips.count)"
             }
             sections.append("\(header)\n\(parsed?.body ?? clip)")
         }
@@ -283,7 +503,7 @@ extension NTMSTask {
             let pathList = attachmentPaths
                 .map { "- \($0)" }
                 .joined(separator: "\n")
-            sections.append("--- Attached Files ---\n\(pathList)")
+            sections.append("## Attached Files\n\(pathList)")
         }
 
         return sections.joined(separator: "\n\n")
@@ -335,6 +555,13 @@ extension NTMSTask {
     }
 
     func toSummary() -> TaskSummary {
-        TaskSummary(id: id, title: title, status: derivedStatusFromActiveRun(), updatedAt: updatedAt, isChatMode: isChatMode)
+        TaskSummary(
+            id: id,
+            title: title,
+            status: derivedStatusFromActiveRun(),
+            updatedAt: updatedAt,
+            isChatMode: isChatMode,
+            parentTaskID: parentTaskID
+        )
     }
 }

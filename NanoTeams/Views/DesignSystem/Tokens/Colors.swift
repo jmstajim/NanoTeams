@@ -6,13 +6,21 @@ import SwiftUI
 /// Each color is defined with a dark-mode variant (vibrant on black)
 /// and a light-mode variant (darker for contrast on white).
 /// Uses `NSColor(name:dynamicProvider:)` for automatic switching.
-enum Colors {
+nonisolated enum Colors {
     // MARK: - Adaptive Color Helper
 
     /// Creates an adaptive Color that switches between dark and light variants.
     /// Uses `NSColor(name:dynamicProvider:)` — macOS handles switching automatically.
     static func adaptive(dark: UInt64, light: UInt64, alpha: CGFloat = 1.0) -> Color {
-        Color(nsColor: NSColor(name: nil) { appearance in
+        Color(nsColor: nsAdaptive(dark: dark, light: light, alpha: alpha))
+    }
+
+    /// Like `adaptive`, but returns the underlying dynamic NSColor directly so
+    /// AppKit consumers don't have to bounce through the SwiftUI `Color → NSColor`
+    /// converter (which is `@MainActor` and therefore unusable from any
+    /// nonisolated `static let` initializer evaluated at module load).
+    nonisolated static func nsAdaptive(dark: UInt64, light: UInt64, alpha: CGFloat = 1.0) -> NSColor {
+        NSColor(name: nil) { appearance in
             let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             let hex = isDark ? dark : light
             return NSColor(
@@ -21,7 +29,7 @@ enum Colors {
                 blue: CGFloat(hex & 0xFF) / 255.0,
                 alpha: alpha
             )
-        })
+        }
     }
 
     // MARK: - Status Colors (unique per semantic meaning)
@@ -159,10 +167,17 @@ enum Colors {
 
     // MARK: - NSColor Accessors (for AppKit contexts: NSTextView, NSAttributedString)
 
-    /// Primary text as NSColor — for NSTextView, NSAttributedString
-    static let nsTextPrimary = NSColor(textPrimary)
-    /// Surface card as NSColor — for NSTextView backgrounds
-    static let nsSurfaceCard = NSColor(surfaceCard)
+    /// Primary text as NSColor — for NSTextView, NSAttributedString.
+    /// Built via `nsAdaptive` (nonisolated) instead of `NSColor(_ color: Color)`
+    /// (which is `@MainActor` under default isolation and therefore unusable
+    /// in this `static let` evaluated at module load on a non-main thread).
+    nonisolated static let nsTextPrimary = nsAdaptive(dark: 0xFBF7F3, light: 0x221F1D)
+    /// Surface card as NSColor — for NSTextView backgrounds. Same `nsAdaptive`
+    /// rationale as `nsTextPrimary`.
+    nonisolated static let nsSurfaceCard = nsAdaptive(dark: 0x161616, light: 0xF8F8F8)
+    /// Secondary text as NSColor — for NSTextAttachment fallbacks etc.
+    /// Hex values mirror `Colors.textSecondary`.
+    nonisolated static let nsTextSecondary = nsAdaptive(dark: 0xC2B8B0, light: 0x746B65)
 
     // MARK: - Picker Palette
 

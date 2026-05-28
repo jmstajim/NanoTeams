@@ -5,7 +5,7 @@ private typealias JS = JSONSchema
 
 // MARK: - ask_supervisor
 
-struct AskSupervisorTool: ToolHandler {
+nonisolated struct AskSupervisorTool: ToolHandler {
     static let name = TN.askSupervisor
     static let schema = ToolSchema(
         name: TN.askSupervisor,

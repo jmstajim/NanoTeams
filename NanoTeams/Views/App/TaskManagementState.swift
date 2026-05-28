@@ -6,22 +6,78 @@ import Foundation
     var taskFilter: TaskFilter = .all
     var taskSearchText: String = ""
     var isSearchExpanded: Bool = false
-    var isPresentingNewTask: Bool = false
     var taskToDelete: Int? = nil
     var isShowingDeleteConfirmation: Bool = false
     var taskToRename: Int? = nil
     var renameText: String = ""
 
-    /// Task IDs the user has already "seen" while in needsSupervisorInput status.
-    /// Ephemeral — resets on app relaunch so any pending input re-triggers the indicator.
-    var seenSupervisorInputTaskIDs: Set<Int> = []
+    /// Task IDs marked seen while in `.needsSupervisorInput`. Persisted via
+    /// `StoreConfiguration` namespaced by `(workFolderID, taskID)`. Auto-cleared
+    /// when the task leaves `.needsSupervisorInput` so the next question
+    /// re-triggers the dot.
+    private(set) var seenSupervisorInputTaskIDs: Set<Int> = []
 
-    /// Form state for the in-app new-task sheet. Consolidated from the previous
-    /// sheet-* bag of fields so `QuickCaptureFormView` can take a single `@Bindable`.
-    let sheetFormState: QuickCaptureFormState = QuickCaptureFormState()
+    @ObservationIgnored
+    private weak var config: StoreConfiguration?
+    @ObservationIgnored
+    private(set) var currentWorkFolderID: UUID?
+
+    /// Wires the persistence backend. Call once after MainLayoutView has access
+    /// to its injected `StoreConfiguration` environment value.
+    func bind(config: StoreConfiguration) {
+        self.config = config
+    }
+
+    /// Hydrates the in-memory mirror from persisted state for `workFolderID`,
+    /// and sets that folder as the destination for subsequent mark/unmark calls.
+    /// Pass `nil` when no work folder is open (clears the mirror; persistence is
+    /// skipped until a folder is loaded again).
+    func loadSeenSet(for workFolderID: UUID?) {
+        currentWorkFolderID = workFolderID
+        if let workFolderID, let config {
+            seenSupervisorInputTaskIDs = config.seenTaskIDs(forWorkFolder: workFolderID)
+        } else {
+            seenSupervisorInputTaskIDs = []
+        }
+    }
 
     func markSupervisorInputSeen(taskID: Int) {
         seenSupervisorInputTaskIDs.insert(taskID)
+        if let folderID = currentWorkFolderID, let config {
+            config.markTaskSeen(workFolderID: folderID, taskID: taskID)
+        }
+    }
+
+    func unmarkSupervisorInputSeen(taskID: Int) {
+        seenSupervisorInputTaskIDs.remove(taskID)
+        if let folderID = currentWorkFolderID, let config {
+            config.unmarkTaskSeen(workFolderID: folderID, taskID: taskID)
+        }
+    }
+
+    /// Clears stale seen flags for tasks no longer `.needsSupervisorInput` or
+    /// absent from the index. Sweeps ALL tasks so backgrounded transitions out
+    /// of `.needsSupervisorInput` re-trigger the dot on the next question.
+    ///
+    /// Three guards keep this from destroying persisted state:
+    /// 1. Empty mirror → nothing to sweep.
+    /// 2. Empty `activeStatuses` → snapshot teardown; every entry would otherwise
+    ///    match `nil != .needsSupervisorInput` and get wiped on every folder-close.
+    /// 3. Folder-identity mismatch → the caller's snapshot describes a different
+    ///    folder than the bound one (folder-switch race); routing unmarks
+    ///    through `currentWorkFolderID` would scribble on the wrong namespace.
+    func reconcileSeenSet(activeStatuses: [Int: TaskStatus], workFolderID: UUID? = nil) {
+        guard !seenSupervisorInputTaskIDs.isEmpty else { return }
+        guard !activeStatuses.isEmpty else { return }
+        if let workFolderID, let bound = currentWorkFolderID, workFolderID != bound {
+            return
+        }
+        let stale = seenSupervisorInputTaskIDs.filter { taskID in
+            activeStatuses[taskID] != .needsSupervisorInput
+        }
+        for taskID in stale {
+            unmarkSupervisorInputSeen(taskID: taskID)
+        }
     }
 
     // MARK: - Actions
@@ -54,7 +110,7 @@ import Foundation
         // queue is task-scoped either way).
         QuickCaptureController.shared.discardQueuedChatMessage(taskID: id)
         await store.removeTask(id)
-        seenSupervisorInputTaskIDs.remove(id)
+        unmarkSupervisorInputSeen(taskID: id)
         taskToDelete = nil
         return wasActive
     }

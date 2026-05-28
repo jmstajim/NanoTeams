@@ -15,8 +15,7 @@ import Foundation
 ///     TaskMutationService.updateStepStatus(.running, stepID: stepID, in: &task)
 /// }
 /// ```
-@MainActor
-enum TaskMutationService {
+nonisolated enum TaskMutationService {
 
     // MARK: - In-Memory Mutations
 

@@ -9,6 +9,7 @@ struct TeamPromptsDetailView: View {
     @Binding var team: Team
     let onSave: () -> Void
 
+    @Environment(NTMSOrchestrator.self) private var store
     @State private var selectedTemplate: PromptTemplate = .system
     @State private var showPreview = false
     @State private var pendingInsertion: String?
@@ -83,7 +84,11 @@ struct TeamPromptsDetailView: View {
             .padding(.vertical, Spacing.s)
         }
         .sheet(isPresented: $showPreview) {
-            TemplatePreviewSheet(team: team, templateType: selectedTemplate.previewType)
+            TemplatePreviewSheet(
+                team: team,
+                templateType: selectedTemplate.previewType,
+                workFolder: store.snapshot?.projection
+            )
         }
         .onChange(of: selectedTemplate) { _, _ in
             pendingInsertion = nil
@@ -95,12 +100,17 @@ struct TeamPromptsDetailView: View {
     private var templateBinding: Binding<String> {
         Binding(
             get: { team[keyPath: selectedTemplate.keyPath] },
-            set: { team[keyPath: selectedTemplate.keyPath] = $0 }
+            set: { newValue in
+                team.assignPromptTemplate(selectedTemplate.promptField, value: newValue)
+            }
         )
     }
 
     private func resetCurrentTemplate() {
-        team[keyPath: selectedTemplate.keyPath] = selectedTemplate.defaultTemplate(for: team.templateID)
+        team.assignPromptTemplate(
+            selectedTemplate.promptField,
+            value: selectedTemplate.defaultTemplate(for: team.templateID)
+        )
         onSave()
     }
 
@@ -153,6 +163,18 @@ struct TeamPromptsDetailView: View {
         var placeholders: [(key: String, label: String, category: String)] { Self.metadata[self]!.placeholders }
         var previewType: TemplatePreviewSheet.TemplateType { Self.metadata[self]!.previewType }
         func defaultTemplate(for templateID: String?) -> String { Self.metadata[self]!.defaultTemplate(templateID) }
+
+        /// Maps the local UI enum to the domain-level `Team.PromptField` so
+        /// `team.assignPromptTemplate(...)` gets the typed surface instead of
+        /// a raw `WritableKeyPath<Team, String>` that could accept any String
+        /// field on `Team`.
+        var promptField: Team.PromptField {
+            switch self {
+            case .system: return .system
+            case .consultation: return .consultation
+            case .meeting: return .meeting
+            }
+        }
     }
 }
 
@@ -162,4 +184,5 @@ struct TeamPromptsDetailView: View {
     @Previewable @State var team = Team.default
     TeamPromptsDetailView(team: $team, onSave: {})
         .frame(width: 600, height: 500)
+        .environment(NTMSOrchestrator(repository: NTMSRepository()))
 }

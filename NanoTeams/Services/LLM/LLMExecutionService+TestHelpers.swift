@@ -8,6 +8,25 @@ extension LLMExecutionService {
         }
     }
 
+    /// Injects a `runningTask` into the step's execution state so tests can verify
+    /// `cancelStepExecution` actually awaits its completion before tearing down state.
+    /// Cancels any pre-existing `runningTask` so it can't outlive the test and leak
+    /// mutations into a subsequent test's `taskToMutate`.
+    func _testInjectRunningTask(stepID: String, taskID: Int, runningTask: Task<Void, Never>) {
+        if let existing = executionStates[stepID]?.runningTask {
+            existing.cancel()
+        }
+        if executionStates[stepID] == nil {
+            executionStates[stepID] = StepExecutionState(taskID: taskID)
+        }
+        executionStates[stepID]?.runningTask = runningTask
+    }
+
+    /// Returns whether an execution state entry exists for the step.
+    func _testHasExecutionState(stepID: String) -> Bool {
+        executionStates[stepID] != nil
+    }
+
     func _testFinishStepWithWarning(stepID: String, warning: String) async {
         await completeStepWithWarning(stepID: stepID, warning: warning)
     }
@@ -137,7 +156,7 @@ extension LLMExecutionService {
             task: task,
             runIndex: 0,
             stepIndex: 0,
-            memory: ToolCallCache(),
+            tracker: ToolCallTracker(),
             roleDefinition: roleDefinition,
             conversationMessages: &conversationMessages
         )
@@ -159,6 +178,28 @@ extension LLMExecutionService {
     /// Reads the current advisory-no-tool counter for a step (for advisory auto-finish tests).
     func _testAdvisoryNoToolCounter(stepID: String) -> Int {
         executionStates[stepID]?.consecutiveAdvisoryNoToolTurns ?? -1
+    }
+
+    /// Reads the current Harmony parse-failure counter for a step (for parse-failure cap tests).
+    func _testHarmonyParseFailureCounter(stepID: String) -> Int {
+        executionStates[stepID]?.consecutiveHarmonyParseFailureCount ?? -1
+    }
+
+    /// Mirrors the production parse-failure counter reset that happens just before
+    /// `executeToolCalls` runs (the model emitted a parseable tool call). Used by tests
+    /// to simulate "successful tool call between two malformed-JSON turns" without
+    /// spinning up the full streaming + tool-execution pipeline.
+    /// Delegates to the production `resetCountersOnParseableToolCall` so a refactor
+    /// that drops the parse-failure reset from the helper would also have to drop it
+    /// from production — and the cap tests would fail.
+    func _testResetHarmonyParseFailureCounter(stepID: String) {
+        resetCountersOnParseableToolCall(stepID: stepID)
+    }
+
+    /// Direct accessor to the production reset method, for tests pinning the
+    /// "production reset point" contract (T1).
+    func _testResetCountersOnParseableToolCall(stepID: String) {
+        resetCountersOnParseableToolCall(stepID: stepID)
     }
 
     /// Mirrors the production advisory-counter reset that happens just before

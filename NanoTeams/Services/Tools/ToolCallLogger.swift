@@ -1,6 +1,6 @@
 import Foundation
 
-struct ToolCallLogRecord: Codable, Hashable {
+nonisolated struct ToolCallLogRecord: Codable, Hashable {
     var createdAt: Date
     var taskID: Int
     var runID: Int
@@ -11,7 +11,7 @@ struct ToolCallLogRecord: Codable, Hashable {
     var errorMessage: String?
 }
 
-final class ToolCallLogger {
+nonisolated final class ToolCallLogger: @unchecked Sendable {
     let logURL: URL
     private let encoder: JSONEncoder
     private let fileManager: FileManager

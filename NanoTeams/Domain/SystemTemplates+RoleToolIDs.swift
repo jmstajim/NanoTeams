@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Fallback Tool IDs (single source of truth)
 
-extension SystemTemplates {
+nonisolated extension SystemTemplates {
 
     private typealias TN = ToolNames
 
@@ -36,6 +36,17 @@ extension SystemTemplates {
     private static let supervisorToolIDs: Set<String> = [
         TN.askSupervisor,
     ]
+    // NOTE: delegation tools (delegate_to_team, cancel/resume/forward) are NEVER
+    // part of any role's stored toolIDs — they auto-inject when the role's
+    // delegation settings (`allowedDelegationTeamIDs` / `allowDelegationToGeneratedTeams`)
+    // are populated. See `LLMExecutionService+ToolResolution`.
+    /// Read-only inspector tools — git status/diff/log/branch listing. Used by roles
+    /// that need git visibility without mutating git state (no add/commit/branch).
+    /// Coding Agent uses this set alongside `fileWriteTools` — it can edit working-tree
+    /// files but cannot commit/branch (those stay with the Supervisor or a delegated team).
+    private static let gitReadOnlyTools: Set<String> = [
+        TN.gitStatus, TN.gitDiff, TN.gitLog, TN.gitBranchList,
+    ]
 
     /// Fallback tool IDs for roles without a team configuration.
     /// Custom roles default to readOnlyTools + memoryToolIDs + teammateToolIDs.
@@ -61,6 +72,7 @@ extension SystemTemplates {
         "theNeurotic": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs),
         "assistant": readOnlyTools.union(fileWriteTools).union(memoryToolIDs).union(supervisorToolIDs).union(visionToolIDs),
         "codingAssistant": readOnlyTools.union(fileWriteTools).union(memoryToolIDs).union(engineerOnlyTools).union(supervisorToolIDs).union(visionToolIDs),
+        "codingAgent": readOnlyTools.union(fileWriteTools).union(memoryToolIDs).union(gitReadOnlyTools).union(supervisorToolIDs).union(visionToolIDs),
     ]
 
     /// Default fallback tool IDs for roles not in the map (custom roles).

@@ -10,7 +10,7 @@
 [![License](https://img.shields.io/github/license/jmstajim/NanoTeams?color=5F87D9&style=flat-square)](LICENSE)
 [![Download](https://img.shields.io/badge/Download-NanoTeams.app.zip-35BE81?style=flat-square)](https://github.com/jmstajim/NanoTeams/releases/latest/download/NanoTeams.app.zip)
 
-**AI coding assistant and multi-agent AI teams for macOS, powered by local LLMs through [LM Studio](https://lmstudio.ai).** Open-source, free, fully private. Start an agentic chat with the **Coding Assistant** ([Get started](#getting-started)) or hand a task to a team of specialized AI roles that read your files, produce artifacts, consult each other, and report back when done. Generate custom teams from a one-line description, paste images and documents straight into the composer, search your project semantically with on-device embeddings, clip text from any app, dictate hands-free with fully on-device speech recognition, and queue messages to working roles without pausing them.
+**AI coding assistant and multi-agent AI teams for macOS, powered by local LLMs through [LM Studio](https://lmstudio.ai).** Open-source, free, fully private. Start an agentic chat with the **Coding Assistant**, let the **Coding Agent** edit small changes directly and delegate the heavy lifting to another team ([Get started](#getting-started)), or hand a task to a team of specialized AI roles that read your files, produce artifacts, consult each other, and report back when done. Generate custom teams from a one-line description, paste images and documents straight into the composer, search your project semantically with on-device embeddings, clip text from any app, dictate hands-free with fully on-device speech recognition, and queue messages to working roles without pausing them.
 
 <img width="600" height="510" alt="NanoTeams — AI coding assistant and multi-agent AI teams for macOS" src="https://github.com/user-attachments/assets/c7549d11-abd9-4faf-94c3-6cefb6214394" />
 
@@ -37,7 +37,7 @@ Stateful chat keeps things fast. The architecture forgives mistakes. Every piece
 1. Open **LM Studio** and load a model (see [Recommended Models](#recommended-models))
 2. Launch **NanoTeams**
 3. Select a work folder — this is where AI roles will read and write files
-4. Pick a team — **Coding Assistant** is the default and a good starting point (chat-mode with files, git, and Xcode tools)
+4. Pick a team — **Coding Assistant** is the default and a good starting point (chat-mode with files, git, and Xcode tools); the new **Coding Agent** edits small changes itself and delegates bigger work to another team
 5. Create a task, describe what you need — the team takes it from there
 
 <img width="1280" height="1107" alt="NanoTeams — create a new task and select a team" src="https://github.com/user-attachments/assets/512ce4a7-34d6-40aa-a8d0-cd9bac47c569" />
@@ -48,7 +48,7 @@ You are the **Supervisor**. You create a task, and a team of AI roles executes i
 
 For example, with the **FAANG Team**: you describe what you want → PM writes requirements → Tech Lead creates a plan → Engineer implements → Code Reviewer checks the code → SRE verifies production readiness → TPM writes release notes → you review and accept.
 
-Each role can read/write files, use git, build with Xcode, consult other roles, and request team meetings — all within a sandboxed environment limited to your work folder.
+Each role can read/write files, use git, build with Xcode, consult other roles, request team meetings, and delegate a self-contained sub-task to another team — all within a sandboxed environment limited to your work folder.
 
 <img width="1280" height="1009" alt="NanoTeams — team graph showing roles and artifact dependencies" src="https://github.com/user-attachments/assets/9e75d4c2-4cda-43a9-812b-3abd20ed986d" />
 
@@ -56,7 +56,7 @@ Each role can read/write files, use git, build with Xcode, consult other roles, 
 Every role in a team falls into one of three types — this determines what the role does and how it finishes.
 
 ### Producing Roles
-Most roles are producing — they create specific deliverables called artifacts. A PM produces "Product Requirements," an Engineer produces "Engineering Notes," a Code Reviewer produces "Code Review."
+Most roles are producing — they create specific deliverables called artifacts. A PM produces "Product Requirements," an Engineer produces "Engineering Notes," a Code Reviewer produces "Code Review Summary."
 
 You don't need to do anything. The role works autonomously — reading files, using tools, consulting teammates — and finishes automatically once all its artifacts are submitted. You just watch the activity feed and review the results.
 
@@ -84,8 +84,14 @@ Create tasks and let a team of specialized AI roles collaborate. Each role has i
 ### AI Team Generation
 Describe a task in one line and an LLM designs a custom team for it — roles, artifacts, prompts, dependencies, and hierarchy. The *Generate Team* settings tab lets you customize the meta-model, system prompt, and defaults used whenever a team is generated.
 
-### 29 Built-in Tools
-Sandboxed tool system: file operations, git, Xcode build & test, team collaboration (`ask_teammate`, `request_team_meeting`, `request_changes`), artifact creation, supervisor Q&A, persistent memory, and image analysis.
+### Team Delegation
+A peer-level role can hand a self-contained sub-task to another team and wait for its final artifacts to come back as the tool result. The ready-made example is the new **Coding Agent** team: it edits files directly for small, local changes and uses `delegate_to_team` to pass larger, multi-file work to another team — by default the **Engineering Team** or **Startup**, or a fresh team generated on the fly when nothing fits. While a delegation runs you can message the delegating role, which pauses the child team and lets the role choose `cancel_delegation`, `resume_delegation`, or `forward_to_team` to inject guidance and continue. Configure it per role in the *Delegation* tab of the role editor: check the allowed teams and/or toggle *Allow generating new teams on the fly* — selecting any target auto-injects the four-tool delegation pack and makes the role a peer of the Supervisor. Delegation chains are capped at depth 3, and each delegation times out after 30 minutes.
+
+### Global Context
+A single free-text box in **Settings → LLM** whose contents are appended to every LLM system prompt that runs a tool loop — step execution, teammate consultation, meetings, and planning. Use it for cross-cutting instructions you want every role in every team to follow. A character counter and a *Reset to Default* button are shown; edits apply to new sessions only, so a step already running keeps the value it started with.
+
+### 33 Built-in Tools
+Sandboxed tool system: file operations, git, Xcode build & test, team collaboration (`ask_teammate`, `request_team_meeting`, `request_changes`), team delegation (`delegate_to_team` with cancel/resume/forward follow-ups), team generation (`create_team`), artifact creation, supervisor Q&A, persistent memory, and image analysis.
 
 ### Documents In & Out
 Roles read PDF, DOCX, RTF, XLSX, PPTX, ODT, and HTML files directly — no manual conversion to plain text. Generated artifacts can be exported to PDF, Word, or RTF.
@@ -124,7 +130,7 @@ Send guidance to working roles without pausing them. The unified Team Composer h
 Roles produce and consume named artifacts (requirements, design specs, plans). Execution order is automatically determined from dependencies — no manual sequencing. A visual team graph shows the flow in real-time.
 
 ### Custom Teams
-Create your own teams with custom roles, artifacts, prompts, dependencies, and hierarchy. Import/export as JSON.
+Create your own teams with custom roles, artifacts, prompts, dependencies, and hierarchy. Import/export as JSON. Role and system prompt templates are fully editable, with `{globalContext}` and `{toolCalling}` placeholder chips you can position anywhere in a template — leave them out and the global context and tool-calling block are appended automatically, so older templates keep working.
 
 ### Privacy & Security
 NanoTeams doesn't send your data anywhere. All processing happens locally via LM Studio. Debug logs are off by default. All file operations are sandboxed to the selected work folder — no arbitrary shell access.
@@ -134,6 +140,7 @@ NanoTeams doesn't send your data anywhere. All processing happens locally via LM
 | Team | Description |
 |------|-------------|
 | **Coding Assistant** *(default)* | Dialog-first coding companion with files, git, and Xcode tools |
+| **Coding Agent** | Hybrid coding agent: edits files directly for small changes, delegates complex implementation to a chosen team |
 | **Personal Assistant** | Conversational AI helper for any task |
 | **FAANG Team** | Full product pipeline: PM → UX → Engineering → Code Review → SRE → Release |
 | **Engineering Team** | Lean pipeline: Tech Lead → Engineer → Code Review → Release |
@@ -180,6 +187,9 @@ Hosted assistants run massive frontier models in the cloud and are excellent at 
 
 **Can I customize teams and roles?**
 Yes. Create your own teams with custom roles, artifacts, prompts, tool access, dependencies, and per-role LLM overrides. Import/export as JSON. Or describe a task in one line and let the LLM design a team for it.
+
+**Can one team hand work to another?**
+Yes. A peer-level role can delegate a self-contained sub-task to another team with the `delegate_to_team` tool and get that team's final artifacts back as the result. The built-in **Coding Agent** does this out of the box — editing small changes itself and delegating bigger work to the Engineering Team, Startup, or a freshly generated team. While a delegation runs you can message the delegating role to pause the child team, then cancel, resume, or forward guidance. Enable it per role in the *Delegation* tab of the role editor.
 
 **What are the system requirements?**
 macOS 15.0 or later. LM Studio 0.4.0 or later. Apple Silicon recommended for best local-LLM performance. Voice dictation requires macOS 26+.

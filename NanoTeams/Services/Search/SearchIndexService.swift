@@ -43,7 +43,7 @@ actor SearchIndexService {
 
     // MARK: - Init
 
-    init(workFolderRoot: URL, internalDir: URL, fileManager: FileManager = .default) {
+    init(workFolderRoot: URL, internalDir: URL, fileManager: sending FileManager = .default) {
         self.workFolderRoot = workFolderRoot.standardizedFileURL
         self.internalDir = internalDir.standardizedFileURL
         self.fileManager = fileManager

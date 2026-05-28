@@ -14,17 +14,17 @@ extension LLMExecutionService {
         config _: LLMConfig,
         networkLogger: NetworkLogger?,
         conversationMessages: inout [ChatMessage],
-        memory: ToolCallCache? = nil
+        tracker: ToolCallTracker? = nil
     ) async {
         guard case .visionAnalysis(let imagePath, let prompt) = result.signal else { return }
 
         var analysisText: String
         var isError = false
         do {
-            guard let visionConfig = await delegate?.visionLLMConfig else {
+            guard let visionConfig = delegate?.visionLLMConfig else {
                 throw VisionError.notConfigured
             }
-            guard let workFolderRoot = await delegate?.workFolderURL else {
+            guard let workFolderRoot = delegate?.workFolderURL else {
                 throw VisionError.noProject
             }
             let internalDir = NTMSPaths(workFolderRoot: workFolderRoot).internalDir
@@ -88,11 +88,13 @@ extension LLMExecutionService {
         )
         await updateToolCallResult(stepID: stepID, toolCallID: toolCallID, result: finalResult)
 
-        // Record the FINAL vision result in the tool-call cache. The upstream
-        // `processToolResults` skips `.visionAnalysis` from its pre-record
-        // loop because the interim `{"status":"analyzing"}` placeholder would
-        // dedup wrong on the next identical call.
-        memory?.record(
+        // Record the FINAL vision result in the tool-call tracker. The upstream
+        // `processToolResults` skips `.visionAnalysis` from its pre-record loop
+        // because it only has the interim `{"status":"analyzing"}` placeholder
+        // at that point — without this record, the next iteration's
+        // `recentCalls` snapshot for the loop detector would see the placeholder
+        // instead of the real envelope.
+        tracker?.record(
             toolName: result.toolName,
             argumentsJSON: result.argumentsJSON,
             resultJSON: envelope,

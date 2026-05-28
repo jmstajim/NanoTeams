@@ -11,7 +11,7 @@ import Foundation
 /// text WITHIN the session range (e.g. deletes characters), the anchor/length
 /// pair can become invalid — the function clamps both to `text.count` to avoid
 /// crashing and reports whether clamping happened so callers can reset.
-enum DictationTextInserter {
+nonisolated enum DictationTextInserter {
 
     /// Result of applying a partial. `newText` is the updated buffer;
     /// `newLength` is the Character count of the just-applied partial (caller

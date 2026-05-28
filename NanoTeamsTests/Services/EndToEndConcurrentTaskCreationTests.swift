@@ -159,4 +159,45 @@ final class EndToEndConcurrentTaskCreationTests: NTMSOrchestratorTestBase {
             )
         }
     }
+
+    // MARK: - Scenario 8: Cached fast-path switch persists last-clicked task
+
+    /// Two `switchTask` calls fired back-to-back on the cached fast path must
+    /// commit to disk in caller order, even though their off-MainActor
+    /// `setActiveTaskID` writes run on the cooperative pool. Pre-fix
+    /// (independent `Task.detached(...).value` per call), the two writes raced
+    /// and the LATER caller's write could finish FIRST — leaving disk pointing
+    /// at the EARLIER task while the UI showed the later one. After app
+    /// restart the user would see the wrong active task. The fix: each
+    /// switchTask awaits its predecessor's pending detached write through
+    /// `pendingActiveTaskWrite`, so the on-disk pointer matches the last
+    /// caller-observed switch.
+    func testCachedFastPathSwitch_persistedActiveTaskID_matchesLastSwitch() async throws {
+        await sut.openWorkFolder(tempDir)
+
+        let idA = await sut.createTask(title: "A", supervisorTask: "1")!
+        let idB = await sut.createTask(title: "B", supervisorTask: "2")!
+
+        // Warm both into `loadedTasks` so the next switches hit the fast path.
+        await sut.switchTask(to: idA)
+        await sut.switchTask(to: idB)
+        await sut.switchTask(to: idA)
+
+        // Now the rapid-fire pair: A then B. With the fix, B must end up
+        // both in memory AND on disk regardless of cooperative-pool ordering.
+        async let s1: Void = sut.switchTask(to: idA)
+        async let s2: Void = sut.switchTask(to: idB)
+        _ = await (s1, s2)
+
+        // Whichever physically entered MainActor last is the one the user
+        // perceives as "the latest click" — and `activeTaskID` reflects that.
+        // The on-disk pointer must equal that same id.
+        let inMemoryActive = sut.activeTaskID
+        let store = AtomicJSONStore()
+        let state = try store.read(WorkFolderState.self,
+                                    from: NTMSPaths(workFolderRoot: tempDir).workFolderJSON)
+        XCTAssertEqual(state.activeTaskID, inMemoryActive,
+                       "Persisted activeTaskID must match the last-applied in-memory snapshot — "
+                        + "no cooperative-pool ordering may invert it.")
+    }
 }

@@ -1,7 +1,7 @@
 import Foundation
 
 /// Service for run creation and management.
-enum RunService {
+nonisolated enum RunService {
     /// Computes initial role execution statuses for a set of roles.
     /// Supervisor → `.done`, no dependencies → `.ready`, otherwise → `.idle`.
     static func initialRoleStatuses(for roles: [TeamRoleDefinition]) -> [String: RoleExecutionStatus] {

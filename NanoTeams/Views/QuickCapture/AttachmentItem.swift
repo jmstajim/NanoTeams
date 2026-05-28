@@ -3,7 +3,7 @@ import SwiftUI
 // MARK: - Attachment Item (unified file + clip for display)
 
 /// Unifies file attachments and clipped text snippets for display in a single grid.
-enum AttachmentItem: Identifiable {
+nonisolated enum AttachmentItem: Identifiable {
     case file(StagedAttachment)
     case clip(index: Int, text: String)
 

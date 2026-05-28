@@ -23,7 +23,7 @@ enum NTMSRepositoryError: LocalizedError {
     }
 }
 
-struct NTMSRepository {
+nonisolated struct NTMSRepository: WorkFolderRepository, TaskRepository, ToolRepository, ArtifactRepository, AttachmentRepository, @unchecked Sendable {
     let store: AtomicJSONStore
     let fileManager: FileManager
 
@@ -50,8 +50,9 @@ struct NTMSRepository {
 
         var activeTask: NTMSTask?
         if let activeID = state.activeTaskID {
-            if fileManager.fileExists(atPath: paths.taskJSON(taskID: activeID).path) {
-                activeTask = try store.read(NTMSTask.self, from: paths.taskJSON(taskID: activeID))
+            let ancestors = tasksIndex.ancestorIDs(of: activeID)
+            if fileManager.fileExists(atPath: paths.taskJSON(taskID: activeID, ancestors: ancestors).path) {
+                activeTask = try store.read(NTMSTask.self, from: paths.taskJSON(taskID: activeID, ancestors: ancestors))
 
                 // Update index entry for the active task only (derived status, title, updatedAt).
                 if let activeTask {
@@ -176,10 +177,11 @@ struct NTMSRepository {
         var resolvedActiveTask: NTMSTask?
         if activeTaskProvided {
             resolvedActiveTask = activeTask
-        } else if let activeID = state.activeTaskID,
-                  fileManager.fileExists(atPath: paths.taskJSON(taskID: activeID).path)
-        {
-            resolvedActiveTask = try store.read(NTMSTask.self, from: paths.taskJSON(taskID: activeID))
+        } else if let activeID = state.activeTaskID {
+            let ancestors = index.ancestorIDs(of: activeID)
+            if fileManager.fileExists(atPath: paths.taskJSON(taskID: activeID, ancestors: ancestors).path) {
+                resolvedActiveTask = try store.read(NTMSTask.self, from: paths.taskJSON(taskID: activeID, ancestors: ancestors))
+            }
         }
 
         let projection = WorkFolderProjection(
@@ -236,7 +238,7 @@ struct NTMSRepository {
     }
 
     /// Attributes applied to directories under `.nanoteams/internal/` to restrict access to the current user.
-    static let internalDirAttributes: [FileAttributeKey: Any] = [.posixPermissions: 0o700]
+    nonisolated(unsafe) static let internalDirAttributes: [FileAttributeKey: Any] = [.posixPermissions: 0o700]
 
     func ensureLayout(paths: NTMSPaths) throws {
         if !fileManager.fileExists(atPath: paths.nanoteamsDir.path) {

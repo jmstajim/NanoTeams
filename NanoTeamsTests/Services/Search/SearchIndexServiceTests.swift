@@ -5,20 +5,19 @@ final class SearchIndexServiceTests: XCTestCase {
 
     var tempDir: URL!
     var internalDir: URL!
-    let fm = FileManager.default
 
     override func setUpWithError() throws {
         try super.setUpWithError()
-        tempDir = fm.temporaryDirectory
+        tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
             .standardizedFileURL
         internalDir = tempDir.appendingPathComponent(".nanoteams/internal", isDirectory: true)
-        try fm.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        try fm.createDirectory(at: internalDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: internalDir, withIntermediateDirectories: true)
     }
 
     override func tearDownWithError() throws {
-        if let tempDir { try? fm.removeItem(at: tempDir) }
+        if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
         internalDir = nil
         try super.tearDownWithError()
@@ -26,7 +25,7 @@ final class SearchIndexServiceTests: XCTestCase {
 
     private func write(_ relPath: String, content: String) throws {
         let url = tempDir.appendingPathComponent(relPath)
-        try fm.createDirectory(
+        try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true
         )
         try content.write(to: url, atomically: true, encoding: .utf8)
@@ -34,14 +33,14 @@ final class SearchIndexServiceTests: XCTestCase {
 
     private func writeBytes(_ relPath: String, bytes: [UInt8]) throws {
         let url = tempDir.appendingPathComponent(relPath)
-        try fm.createDirectory(
+        try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true
         )
         try Data(bytes).write(to: url)
     }
 
     private func makeService() -> SearchIndexService {
-        SearchIndexService(workFolderRoot: tempDir, internalDir: internalDir, fileManager: fm)
+        SearchIndexService(workFolderRoot: tempDir, internalDir: internalDir, fileManager: .default)
     }
 
     // MARK: - Build / Load
@@ -79,7 +78,7 @@ final class SearchIndexServiceTests: XCTestCase {
         let indexFile = internalDir.appendingPathComponent(
             "search_index.json", isDirectory: false
         )
-        try fm.createDirectory(at: internalDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: internalDir, withIntermediateDirectories: true)
         try "not json at all".write(to: indexFile, atomically: true, encoding: .utf8)
 
         let service = makeService()
@@ -99,7 +98,7 @@ final class SearchIndexServiceTests: XCTestCase {
     func testBuild_unreadableSubdir_recordsWalkWarning() async throws {
         try write("A.swift", content: "class Foo {}")
         let blocked = tempDir.appendingPathComponent("blocked", isDirectory: true)
-        try fm.createDirectory(at: blocked, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: blocked, withIntermediateDirectories: true)
         try "secret".write(to: blocked.appendingPathComponent("x.txt"),
                            atomically: true, encoding: .utf8)
         // Strip all permissions on the subdir — contentsOfDirectory throws EACCES.
@@ -124,7 +123,7 @@ final class SearchIndexServiceTests: XCTestCase {
         // hits an error. Without the warning, the resulting empty index would
         // be indistinguishable from "root is truly empty".
         let blocked = tempDir.appendingPathComponent("blocked", isDirectory: true)
-        try fm.createDirectory(at: blocked, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: blocked, withIntermediateDirectories: true)
         try "secret".write(to: blocked.appendingPathComponent("x.txt"),
                            atomically: true, encoding: .utf8)
         chmod(blocked.path, 0o000)
@@ -301,9 +300,9 @@ final class SearchIndexServiceTests: XCTestCase {
         let service = makeService()
         _ = await service.loadOrBuild()
         let indexFile = internalDir.appendingPathComponent("search_index.json")
-        XCTAssertTrue(fm.fileExists(atPath: indexFile.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: indexFile.path))
         await service.clear()
-        XCTAssertFalse(fm.fileExists(atPath: indexFile.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: indexFile.path))
         let clearError = await service.lastClearError
         XCTAssertNil(clearError, "Successful clear must leave lastClearError nil.")
     }
@@ -317,7 +316,7 @@ final class SearchIndexServiceTests: XCTestCase {
         let service = makeService()
         _ = await service.loadOrBuild()
         let indexFile = internalDir.appendingPathComponent("search_index.json")
-        XCTAssertTrue(fm.fileExists(atPath: indexFile.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: indexFile.path))
 
         // Lock the parent directory: chmod 0o500 strips the write bit so
         // `removeItem` fails with EACCES on macOS. Restore in defer so the
@@ -352,14 +351,14 @@ final class SearchIndexServiceTests: XCTestCase {
     func testWalk_symlinkCycle_terminatesAndRecordsWarning() async throws {
         try write("A.swift", content: "class Foo {}")
         let nested = tempDir.appendingPathComponent("nested", isDirectory: true)
-        try fm.createDirectory(at: nested, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
         try "class Bar {}".write(
             to: nested.appendingPathComponent("Bar.swift"),
             atomically: true, encoding: .utf8
         )
         // nested/loop -> nested/  (cycle)
         let loopURL = nested.appendingPathComponent("loop")
-        try fm.createSymbolicLink(at: loopURL, withDestinationURL: nested)
+        try FileManager.default.createSymbolicLink(at: loopURL, withDestinationURL: nested)
 
         // Race-bound the test: if cycle detection is broken, the walker
         // infinite-recurses synchronously inside the actor and never returns.
@@ -387,7 +386,7 @@ final class SearchIndexServiceTests: XCTestCase {
         // mirror -> real/
         let mirrorURL = tempDir.appendingPathComponent("mirror")
         let realURL = tempDir.appendingPathComponent("real", isDirectory: true)
-        try fm.createSymbolicLink(at: mirrorURL, withDestinationURL: realURL)
+        try FileManager.default.createSymbolicLink(at: mirrorURL, withDestinationURL: realURL)
 
         let service = makeService()
         let index = await service.loadOrBuild()

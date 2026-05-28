@@ -1,6 +1,6 @@
 import Foundation
 
-struct ToolDefinitionRecord: Codable, Identifiable, Hashable {
+nonisolated struct ToolDefinitionRecord: Codable, Identifiable, Hashable {
     var id: String
     var name: String
     var prompt: String
@@ -42,7 +42,7 @@ struct ToolDefinitionRecord: Codable, Identifiable, Hashable {
     }
 }
 
-extension ToolDefinitionRecord {
+nonisolated extension ToolDefinitionRecord {
     static func fromToolDefinition(_ tool: ToolSchema, isBuiltIn: Bool) -> ToolDefinitionRecord {
         ToolDefinitionRecord(
             id: tool.name,

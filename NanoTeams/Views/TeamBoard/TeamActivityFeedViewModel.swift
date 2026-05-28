@@ -4,92 +4,14 @@ import Observation
 // MARK: - Team Activity Feed View Model
 
 /// Manages application-state owned by TeamActivityFeedView:
-/// artifact content loading (disk I/O), supervisor answer submission, timeline caching, and item initialization tracking.
-/// UI-only state (expansion, scroll, dialogs) remains in the View.
+/// step artifact content loading for message dedup filtering, supervisor
+/// answer submission, timeline caching, and item initialization tracking.
+/// UI-only state (scroll, dialogs) remains in the View. Expandable details
+/// (thinking, tool calls, artifacts, meeting tools) open in standalone
+/// windows via `ActivityDetailWindow` — no inline expansion state lives here.
 @Observable
 @MainActor
 final class TeamActivityFeedViewModel {
-
-    // MARK: - Expansion State
-
-    /// Consolidated expansion state for all collapsible timeline items.
-    struct ExpansionState {
-        var thinking: Set<UUID> = []
-        var meetingThinking: Set<UUID> = []
-        var meetingTools: Set<UUID> = []
-        var toolCalls: Set<UUID> = []
-        var artifacts: Set<String> = []
-    }
-
-    var expansion = ExpansionState()
-
-    /// Apply default expansion settings to newly added timeline items.
-    func applyDefaultsToNewItems(
-        thinkingExpandedByDefault: Bool,
-        toolCallsExpandedByDefault: Bool,
-        artifactsExpandedByDefault: Bool,
-        workFolderURL: URL?
-    ) {
-        for tagged in cachedTimelineItems {
-            let itemID = tagged.id
-            guard !initializedItemIDs.contains(itemID) else { continue }
-            initializedItemIDs.insert(itemID)
-
-            switch tagged.item {
-            case .llmMessage(let msg, _, _):
-                if thinkingExpandedByDefault,
-                   let thinking = msg.thinking, !thinking.isEmpty {
-                    expansion.thinking.insert(msg.id)
-                }
-            case .toolCall(let call, _, _):
-                if toolCallsExpandedByDefault { expansion.toolCalls.insert(call.id) }
-            case .artifact(let artifact, _, _):
-                if artifactsExpandedByDefault {
-                    expansion.artifacts.insert(artifact.id)
-                    loadArtifactContentIfNeeded(artifact, workFolderURL: workFolderURL)
-                }
-            case .meetingMessage, .changeRequest, .notification, .supervisorTask:
-                break
-            }
-        }
-    }
-
-    /// Expand or collapse all items of a given type. Caller wraps in `withAnimation`.
-    func applyExpansionToAll(
-        thinking: Bool? = nil,
-        toolCalls: Bool? = nil,
-        artifacts: Bool? = nil,
-        workFolderURL: URL?
-    ) {
-        // Handle collapse-all cases upfront (no iteration needed)
-        if thinking == false { expansion.thinking.removeAll() }
-        if toolCalls == false { expansion.toolCalls.removeAll() }
-        if artifacts == false { expansion.artifacts.removeAll() }
-
-        // Single pass for expand-all cases
-        let expandThinking = thinking == true
-        let expandToolCalls = toolCalls == true
-        let expandArtifacts = artifacts == true
-        guard expandThinking || expandToolCalls || expandArtifacts else { return }
-
-        for tagged in cachedTimelineItems {
-            switch tagged.item {
-            case .llmMessage(let msg, _, _):
-                if expandThinking, let content = msg.thinking, !content.isEmpty {
-                    expansion.thinking.insert(msg.id)
-                }
-            case .toolCall(let call, _, _):
-                if expandToolCalls { expansion.toolCalls.insert(call.id) }
-            case .artifact(let artifact, _, _):
-                if expandArtifacts {
-                    expansion.artifacts.insert(artifact.id)
-                    loadArtifactContentIfNeeded(artifact, workFolderURL: workFolderURL)
-                }
-            case .meetingMessage, .changeRequest, .notification, .supervisorTask:
-                break
-            }
-        }
-    }
 
     // MARK: - Build Context
 
@@ -108,10 +30,24 @@ final class TeamActivityFeedViewModel {
         var supervisorProjectFolderURL: URL?
         var workFolderURL: URL?
         var debugModeEnabled: Bool
-        var thinkingExpandedByDefault: Bool
-        var toolCallsExpandedByDefault: Bool
-        var artifactsExpandedByDefault: Bool
         var isStreaming: (UUID) -> Bool
+        /// Loaded delegated descendants of the active task to interleave into
+        /// the timeline. Empty for non-delegating tasks (V1 default).
+        var descendantTasks: [ActivityFeedBuilder.DescendantTask] = []
+        /// Per-task role definitions, indexed by task ID. Used by the dispatcher
+        /// to resolve the right `TeamRoleDefinition` for items emitted from
+        /// child teams (their roster ≠ active team's roster).
+        var roleDefinitionsByTaskID: [Int: [TeamRoleDefinition]] = [:]
+        /// Per-task team name, indexed by task ID. Used to render
+        /// `RoleName.TeamName` labels on child-team items.
+        var teamNameByTaskID: [Int: String] = [:]
+        /// Whether the composer is currently rendered. Gates paired-message
+        /// bubble suppression: when the composer is hidden (engine `.failed`,
+        /// `isReadOnly`, closed task), suppression MUST NOT fire — otherwise
+        /// the LLM's reply disappears from the feed with no preview card to
+        /// surface it. Default `true` so callers that don't care (preview,
+        /// tests) get the historical behavior.
+        var composerVisible: Bool = true
     }
 
     // MARK: - Step + Question Cache
@@ -139,6 +75,11 @@ final class TeamActivityFeedViewModel {
     private var structuralRebuildTask: Task<Void, Never>?
 
     /// Lightweight fingerprint to detect when timeline needs rebuilding.
+    ///
+    /// Includes a `descendantSummary` so the parent feed reactively rebuilds
+    /// when a delegated child task's run gains/loses items — without this,
+    /// `runDataVersion` (which only walks the active task's run) would miss
+    /// child progress and the interleaved timeline would freeze.
     struct TimelineFingerprint: Equatable {
         let activeTaskID: Int?
         let stepCount: Int
@@ -149,10 +90,77 @@ final class TeamActivityFeedViewModel {
         let changeRequestCount: Int
         let supervisorInputCount: Int
         let failedStepCount: Int
+        /// Aggregated counts across all loaded descendants + a stable hash of
+        /// the descendant ID set. ID-set hash detects descendants
+        /// appearing/disappearing even when total counts collide.
+        let descendantSummary: DescendantSummary
+        /// Whether the composer is rendered. Gates paired-message suppression
+        /// in the builder — when this flips (engine `.failed`, task closed,
+        /// view enters read-only), the cached timeline must invalidate so
+        /// previously-suppressed bubbles reappear. Without this in the
+        /// fingerprint, `recomputeAndRebuild`'s short-circuit would skip the
+        /// rebuild and the LLM's reply would stay hidden.
+        let composerVisible: Bool
+    }
+
+    struct DescendantSummary: Equatable {
+        let descendantIDsHash: Int
+        let stepCount: Int
+        let artifactCount: Int
+        let meetingMessageCount: Int
+        let llmMessageCount: Int
+        let toolCallCount: Int
+        let changeRequestCount: Int
+
+        static let empty = DescendantSummary(
+            descendantIDsHash: 0,
+            stepCount: 0, artifactCount: 0,
+            meetingMessageCount: 0, llmMessageCount: 0,
+            toolCallCount: 0, changeRequestCount: 0
+        )
+
+        static func compute(_ descendants: [ActivityFeedBuilder.DescendantTask]) -> DescendantSummary {
+            guard !descendants.isEmpty else { return .empty }
+            var hasher = Hasher()
+            for d in descendants.sorted(by: { $0.task.id < $1.task.id }) {
+                hasher.combine(d.task.id)
+            }
+            var stepCount = 0
+            var artifactCount = 0
+            var meetingMsgCount = 0
+            var llmMsgCount = 0
+            var toolCallCount = 0
+            var changeRequestCount = 0
+            for d in descendants {
+                stepCount += d.run.steps.count
+                for step in d.run.steps {
+                    artifactCount += step.artifacts.count
+                    llmMsgCount += step.llmConversation.count
+                    toolCallCount += step.toolCalls.count
+                }
+                meetingMsgCount += d.run.meetings.reduce(0) { $0 + $1.messages.count }
+                changeRequestCount += d.run.changeRequests.count
+            }
+            return DescendantSummary(
+                descendantIDsHash: hasher.finalize(),
+                stepCount: stepCount,
+                artifactCount: artifactCount,
+                meetingMessageCount: meetingMsgCount,
+                llmMessageCount: llmMsgCount,
+                toolCallCount: toolCallCount,
+                changeRequestCount: changeRequestCount
+            )
+        }
     }
 
     /// Compute a fingerprint from current step/run data.
-    func computeFingerprint(steps: [StepExecution], run: Run?, activeTaskID: Int?) -> TimelineFingerprint {
+    func computeFingerprint(
+        steps: [StepExecution],
+        run: Run?,
+        activeTaskID: Int?,
+        descendants: [ActivityFeedBuilder.DescendantTask] = [],
+        composerVisible: Bool = true
+    ) -> TimelineFingerprint {
         let meetingMsgCount = (run?.meetings ?? []).reduce(0) { $0 + $1.messages.count }
         let llmMsgCount = steps.reduce(0) { $0 + $1.llmConversation.count }
         let toolCallCount = steps.reduce(0) { $0 + $1.toolCalls.count }
@@ -164,8 +172,15 @@ final class TeamActivityFeedViewModel {
             llmMessageCount: llmMsgCount,
             toolCallCount: toolCallCount,
             changeRequestCount: run?.changeRequests.count ?? 0,
-            supervisorInputCount: steps.filter { $0.needsSupervisorInput && $0.supervisorAnswer == nil }.count,
-            failedStepCount: steps.filter { $0.status == .failed }.count
+            // Shared with `emitItems` and `activeSupervisorQuestions` so the
+            // rebuild trigger, the feed skip, and the composer chip all agree
+            // on which steps are actively waiting. The naive
+            // `needsSupervisorInput && supervisorAnswer == nil` predicate
+            // misses the multi-round race window (see `stepHasActiveSupervisorInput`).
+            supervisorInputCount: steps.filter(ActivityFeedBuilder.stepHasActiveSupervisorInput).count,
+            failedStepCount: steps.filter { $0.status == .failed }.count,
+            descendantSummary: DescendantSummary.compute(descendants),
+            composerVisible: composerVisible
         )
     }
 
@@ -174,6 +189,8 @@ final class TeamActivityFeedViewModel {
         steps: [StepExecution],
         run: Run?,
         teamRoles: [TeamRoleDefinition] = [],
+        activeTaskID: Int = 0,
+        descendantTasks: [ActivityFeedBuilder.DescendantTask] = [],
         supervisorBrief: String? = nil,
         supervisorBriefDate: Date? = nil,
         supervisorTask: String? = nil,
@@ -181,13 +198,21 @@ final class TeamActivityFeedViewModel {
         supervisorAttachmentPaths: [String] = [],
         supervisorProjectFolderURL: URL? = nil,
         debugModeEnabled: Bool,
+        composerVisible: Bool = true,
         isStreaming: @escaping (UUID) -> Bool
     ) {
         timelineVersion += 1
+        // Suppress the paired-message bubble ONLY when the composer is rendered
+        // to surface it. When the composer is hidden (engine `.failed`, read-only
+        // history, closed task) we must keep the feed bubble visible — otherwise
+        // the LLM's substantive reply disappears with no UI to fall back to.
+        let activeQuestions = composerVisible ? cachedSupervisorQuestions : []
         cachedTimelineItems = ActivityFeedBuilder.buildTimelineItems(
             steps: steps,
             run: run,
             teamRoles: teamRoles,
+            activeTaskID: activeTaskID,
+            descendantTasks: descendantTasks,
             supervisorBrief: supervisorBrief,
             supervisorBriefDate: supervisorBriefDate,
             supervisorTask: supervisorTask,
@@ -196,6 +221,7 @@ final class TeamActivityFeedViewModel {
             supervisorProjectFolderURL: supervisorProjectFolderURL,
             stepArtifactContentCache: stepArtifactContentCache,
             debugModeEnabled: debugModeEnabled,
+            activeQuestions: activeQuestions,
             isStreaming: isStreaming
         )
         if !cachedTimelineItems.isEmpty { hasEverHadContent = true }
@@ -203,17 +229,29 @@ final class TeamActivityFeedViewModel {
 
     // MARK: - Artifact Content Cache
 
-    /// Maps artifact.id (String slug) → file content for inline display.
-    private(set) var artifactContentCache: [String: String] = [:]
-
     /// Maps step.id → set of artifact file contents for message filtering (debug-off mode).
+    /// Inline artifact content rendering was removed — artifact viewers now open
+    /// in standalone windows and load their own content from disk. This cache
+    /// stays only because `ActivityFeedBuilder.buildTimelineItems` uses it to
+    /// hide LLM messages whose content fully duplicates an artifact body.
     private(set) var stepArtifactContentCache: [String: Set<String>] = [:]
 
-    // MARK: - Supervisor Answer
+    /// Per-task team role definitions, indexed by task ID. The dispatcher uses
+    /// this map to resolve the right `TeamRoleDefinition` for items emitted
+    /// from delegated child teams (their roster ≠ active team's roster).
+    private(set) var roleDefinitionsByTaskID: [Int: [TeamRoleDefinition]] = [:]
 
-    var supervisorAnswerText: [String: String] = [:]
-    var supervisorAnswerAttachments: [String: [StagedAttachment]] = [:]
-    private(set) var isSubmittingAnswer: Set<String> = []
+    /// Per-task team display name, indexed by task ID. Used to render
+    /// `RoleName.TeamName` labels on child-team items.
+    private(set) var teamNameByTaskID: [Int: String] = [:]
+
+    /// Stash the per-task lookup tables out of the BuildContext so the dispatcher
+    /// can read them at render time without rebuilding the context. Called from
+    /// `recomputeAndRebuild` and `refreshAndRebuild`.
+    func updatePerTaskLookups(from context: BuildContext) {
+        roleDefinitionsByTaskID = context.roleDefinitionsByTaskID
+        teamNameByTaskID = context.teamNameByTaskID
+    }
 
     // MARK: - Scroll Position Tracking
 
@@ -226,11 +264,6 @@ final class TeamActivityFeedViewModel {
     /// Incremented on every `rebuildTimeline` call. Used to trigger scroll after rebuild.
     private(set) var timelineVersion: Int = 0
 
-    // MARK: - Initialization Tracking
-
-    /// IDs of timeline items that have already had their default expansion applied.
-    var initializedItemIDs: Set<String> = []
-
     // MARK: - Task Switch
 
     /// Resets all cached state when switching to a different task.
@@ -239,17 +272,12 @@ final class TeamActivityFeedViewModel {
         structuralRebuildTask?.cancel()
         structuralRebuildTask = nil
         hasEverHadContent = false
-        initializedItemIDs.removeAll()
         cachedTimelineItems.removeAll()
         cachedAllSteps = []
         cachedSupervisorQuestions = []
         lastFingerprint = nil
         cacheGeneration += 1  // invalidate in-flight async cache loads
         stepArtifactContentCache.removeAll()
-        artifactContentCache.removeAll()
-        expansion = ExpansionState()
-        supervisorAnswerText.removeAll()
-        supervisorAnswerAttachments.removeAll()
         needsScrollToBottom = true
     }
 
@@ -276,17 +304,26 @@ final class TeamActivityFeedViewModel {
     }
 
     /// Recompute steps, check fingerprint, refresh artifact cache if artifact count changed,
-    /// then rebuild the timeline and apply default expansion. Short-circuits when nothing changed.
+    /// then rebuild the timeline. Short-circuits when nothing changed.
     func recomputeAndRebuild(context: BuildContext) {
+        updatePerTaskLookups(from: context)
         recomputeSteps(context: context)
         let newFingerprint = computeFingerprint(
-            steps: cachedAllSteps, run: context.run, activeTaskID: context.activeTaskID
+            steps: cachedAllSteps, run: context.run, activeTaskID: context.activeTaskID,
+            descendants: context.descendantTasks,
+            composerVisible: context.composerVisible
         )
         guard newFingerprint != lastFingerprint else { return }
         let oldFingerprint = lastFingerprint
         lastFingerprint = newFingerprint
 
-        if let old = oldFingerprint, old.artifactCount != newFingerprint.artifactCount {
+        // Refresh the artifact cache when active OR descendant artifact counts changed.
+        let artifactCountChanged = oldFingerprint.map { old in
+            old.artifactCount != newFingerprint.artifactCount
+                || old.descendantSummary.artifactCount != newFingerprint.descendantSummary.artifactCount
+        } ?? false
+
+        if artifactCountChanged {
             Task {
                 await refreshStepArtifactContentCacheAsync(
                     steps: cachedAllSteps,
@@ -294,11 +331,9 @@ final class TeamActivityFeedViewModel {
                     workFolderURL: context.workFolderURL
                 )
                 rebuildTimeline(context: context)
-                applyDefaults(context: context)
             }
         } else {
             rebuildTimeline(context: context)
-            applyDefaults(context: context)
         }
     }
 
@@ -322,6 +357,7 @@ final class TeamActivityFeedViewModel {
     /// Force-refresh the artifact cache and rebuild from current context. Used on first-appear
     /// and when `debugModeEnabled` / `filterRoleID` change (mode switches need a full refresh).
     func refreshAndRebuild(context: BuildContext) async {
+        updatePerTaskLookups(from: context)
         recomputeSteps(context: context)
         await refreshStepArtifactContentCacheAsync(
             steps: cachedAllSteps,
@@ -329,7 +365,6 @@ final class TeamActivityFeedViewModel {
             workFolderURL: context.workFolderURL
         )
         rebuildTimeline(context: context)
-        applyDefaults(context: context)
     }
 
     /// Rebuild the timeline using the current cached steps and supplied context.
@@ -338,6 +373,8 @@ final class TeamActivityFeedViewModel {
             steps: cachedAllSteps,
             run: context.run,
             teamRoles: context.roleDefinitions,
+            activeTaskID: context.activeTaskID ?? 0,
+            descendantTasks: context.descendantTasks,
             supervisorBrief: context.supervisorBrief,
             supervisorBriefDate: context.supervisorBriefDate,
             supervisorTask: context.supervisorTask,
@@ -345,17 +382,8 @@ final class TeamActivityFeedViewModel {
             supervisorAttachmentPaths: context.supervisorAttachmentPaths,
             supervisorProjectFolderURL: context.supervisorProjectFolderURL,
             debugModeEnabled: context.debugModeEnabled,
+            composerVisible: context.composerVisible,
             isStreaming: context.isStreaming
-        )
-    }
-
-    /// Seed default expansion state for newly added timeline items.
-    private func applyDefaults(context: BuildContext) {
-        applyDefaultsToNewItems(
-            thinkingExpandedByDefault: context.thinkingExpandedByDefault,
-            toolCallsExpandedByDefault: context.toolCallsExpandedByDefault,
-            artifactsExpandedByDefault: context.artifactsExpandedByDefault,
-            workFolderURL: context.workFolderURL
         )
     }
 
@@ -400,27 +428,6 @@ final class TeamActivityFeedViewModel {
 
     // MARK: - Artifact Loading
 
-    /// Loads artifact file content into the cache if not already cached.
-    func loadArtifactContentIfNeeded(_ artifact: Artifact, workFolderURL: URL?) {
-        guard artifactContentCache[artifact.id] == nil else { return }
-
-        guard let relativePath = artifact.relativePath,
-              let projectURL = workFolderURL
-        else {
-            artifactContentCache[artifact.id] = "(Content not available)"
-            return
-        }
-
-        let fileURL = projectURL
-            .appendingPathComponent(".nanoteams")
-            .appendingPathComponent(relativePath)
-        do {
-            artifactContentCache[artifact.id] = try String(contentsOf: fileURL, encoding: .utf8)
-        } catch {
-            artifactContentCache[artifact.id] = "Error loading content: \(error.localizedDescription)"
-        }
-    }
-
     /// Generation counter for async artifact cache loads.
     /// Incremented on each load and on `resetForTaskSwitch()` to invalidate in-flight results.
     private var cacheGeneration: Int = 0
@@ -451,40 +458,6 @@ final class TeamActivityFeedViewModel {
         }.value
         guard cacheGeneration == expectedGeneration else { return }
         stepArtifactContentCache = newCache
-    }
-
-    // MARK: - Supervisor Answer Submission
-
-    func submitSupervisorAnswer(stepID: String, store: NTMSOrchestrator, embedFiles: Bool = false) {
-        let answer = supervisorAnswerText[stepID] ?? ""
-        let attachments = supervisorAnswerAttachments[stepID] ?? []
-        guard !answer.isEmpty || !attachments.isEmpty else { return }
-        guard !isSubmittingAnswer.contains(stepID) else { return }
-        isSubmittingAnswer.insert(stepID)
-        Task {
-            if let taskID = store.activeTaskID {
-                let result = AnswerTextBuilder.build(
-                    text: answer,
-                    attachments: attachments,
-                    embedFiles: embedFiles
-                )
-                if !result.failedFiles.isEmpty {
-                    store.lastErrorMessage = "Could not embed \(result.failedFiles.count) file(s) as text: \(result.failedFiles.joined(separator: ", ")). They may be binary files."
-                }
-                let success = await store.answerSupervisorQuestion(
-                    stepID: stepID, taskID: taskID,
-                    answer: result.answer, attachments: attachments
-                )
-                isSubmittingAnswer.remove(stepID)
-                if success {
-                    supervisorAnswerText.removeValue(forKey: stepID)
-                    supervisorAnswerAttachments.removeValue(forKey: stepID)
-                }
-            } else {
-                isSubmittingAnswer.remove(stepID)
-                store.lastErrorMessage = "No active task — answer not submitted."
-            }
-        }
     }
 
     // MARK: - Private Helpers

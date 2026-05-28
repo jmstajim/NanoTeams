@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Artifact Templates
 
-extension SystemTemplates {
+nonisolated extension SystemTemplates {
 
     /// All available system artifact templates
     static let artifacts: [String: SystemArtifactTemplate] = [
@@ -49,17 +49,11 @@ extension SystemTemplates {
             mimeType: "application/json",
             description: "Build diagnostics report summarizing: (1) overall build/test outcome (pass/fail), (2) compiler errors or warnings with file locations, (3) test failures with test names and error messages, (4) performance or dependency issues if relevant. Structured as JSON for machine readability."
         ),
-        "Code Review": SystemArtifactTemplate(
-            name: "Code Review",
-            icon: "checklist",
-            mimeType: "text/markdown",
-            description: "Code review report covering: (1) overall assessment (approve/request changes), (2) critical issues — bugs, security vulnerabilities, or correctness problems, (3) scope compliance — flag if implementation includes features marked 'out of scope' in the PRD (call these out as enhancements, not silent additions), (4) style and maintainability feedback, (5) specific actionable suggestions with file and line references where possible, (6) positive observations. Focus on what matters most — skip trivial nitpicks."
-        ),
         "Code Review Summary": SystemArtifactTemplate(
             name: "Code Review Summary",
             icon: "checkmark",
             mimeType: "text/markdown",
-            description: "Concise code review summary (3-5 bullet points) for downstream roles: (1) overall status (approve/request changes), (2) critical issues if any, (3) scope compliance flagged (if out-of-scope features were added, note as enhancement), (4) key recommendations (no more than 2-3 items). Used by TPM for quick handoff instead of full review. CR produces both full and summary versions."
+            description: "Concise code review summary (3-5 bullet points) for downstream roles: (1) overall status (approve/request changes), (2) critical issues if any with file:line citations from the diff, (3) scope compliance flagged (if out-of-scope features were added, note as enhancement), (4) key recommendations (no more than 2-3 items). Used by TPM for quick handoff."
         ),
         "Production Readiness": SystemArtifactTemplate(
             name: "Production Readiness",
@@ -129,5 +123,6 @@ extension SystemTemplates {
         "engineering": ["techLead", "softwareEngineer", "codeReviewer", "tpm"],
         "assistant": ["assistant"],
         "codingAssistant": ["codingAssistant"],
+        "codingAgent": ["codingAgent"],
     ]
 }

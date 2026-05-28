@@ -402,7 +402,7 @@ final class SearchIndexCoordinatorTests: XCTestCase {
 
         let startTask = Task { await c.start() }
         // Wait until vector-build is underway, then stop.
-        try await Task.sleep(nanoseconds: 50_000_000)
+        try await Task.sleep(for: .milliseconds(50))
         await c.stop()
         await startTask.value
 
@@ -459,7 +459,7 @@ final class SearchIndexCoordinatorTests: XCTestCase {
                 observedBuilding = true
                 break
             }
-            try await Task.sleep(nanoseconds: 10_000_000)
+            try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertTrue(observedBuilding,
             "Background build must be observable via isBuilding/isBuildingVectorIndex after start() returns.")
@@ -479,7 +479,7 @@ final class SearchIndexCoordinatorTests: XCTestCase {
 
         await c.start()
         // Let the build actually enter its embed loop.
-        try await Task.sleep(nanoseconds: 80_000_000)
+        try await Task.sleep(for: .milliseconds(80))
 
         let stopStart = Date()
         await c.stop()
@@ -511,7 +511,7 @@ final class SearchIndexCoordinatorTests: XCTestCase {
 
         await c.start()
         // Let the build actually enter its embed loop.
-        try await Task.sleep(nanoseconds: 80_000_000)
+        try await Task.sleep(for: .milliseconds(80))
 
         // Force the respawn arm without depending on FSEvents timing.
         c._testForcePendingVectorRefresh()
@@ -530,7 +530,7 @@ final class SearchIndexCoordinatorTests: XCTestCase {
         // count is stable across a window long enough for a full successor
         // build (2 batches × 200ms = 400ms) to surface had it been spawned.
         let callsAfterStop = client.callCount
-        try await Task.sleep(nanoseconds: 500_000_000)
+        try await Task.sleep(for: .milliseconds(500))
         XCTAssertEqual(client.callCount, callsAfterStop,
             "stop() must disarm pendingVectorRefresh — no successor build allowed.")
     }
@@ -565,7 +565,7 @@ final class SearchIndexCoordinatorTests: XCTestCase {
             "Late refresh request post-stop must not install a vector task.")
 
         // …and no embed batches should run when given time to surface.
-        try await Task.sleep(nanoseconds: 200_000_000)
+        try await Task.sleep(for: .milliseconds(200))
         XCTAssertEqual(client.callCount, callsAfterStop,
             "Gate must block the embed pipeline from running post-stop.")
         XCTAssertFalse(c.isBuildingVectorIndex,
@@ -614,7 +614,7 @@ final class SearchIndexCoordinatorTests: XCTestCase {
         let deadline = Date().addingTimeInterval(timeoutSeconds)
         while Date() < deadline {
             if case .ready = c.vectorIndexState { return }
-            try? await Task.sleep(nanoseconds: 50_000_000)
+            try? await Task.sleep(for: .milliseconds(50))
         }
     }
 }
@@ -628,10 +628,11 @@ private final class RecordingEmbedClient: EmbeddingClient, @unchecked Sendable {
     var callCount = 0
 
     func embed(texts: [String], config: EmbeddingConfig) async throws -> [[Float]] {
-        lock.lock()
-        let idx = callCount
-        callCount += 1
-        lock.unlock()
+        let idx: Int = lock.withLock {
+            let idx = callCount
+            callCount += 1
+            return idx
+        }
         return texts.enumerated().map { (i, _) in
             [Float(idx) + Float(i) * 0.01, 0, 0]
         }
@@ -646,11 +647,11 @@ private final class SlowRecordingEmbedClient: EmbeddingClient, @unchecked Sendab
     var delayNanos: UInt64 = 0
 
     func embed(texts: [String], config: EmbeddingConfig) async throws -> [[Float]] {
-        lock.lock()
-        callCount += 1
-        let delay = delayNanos
-        lock.unlock()
-        if delay > 0 { try await Task.sleep(nanoseconds: delay) }
+        let delay: UInt64 = lock.withLock {
+            callCount += 1
+            return delayNanos
+        }
+        if delay > 0 { try await Task.sleep(for: .nanoseconds(delay)) }
         try Task.checkCancellation()
         return texts.map { _ in [1, 0, 0] }
     }

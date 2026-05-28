@@ -1,7 +1,7 @@
 import Foundation
 
 /// Build diagnostics caps (issue message/excerpt/total/log lengths).
-enum BuildConstants {
+nonisolated enum BuildConstants {
     /// Maximum characters per issue message (longer messages truncated).
     static let maxIssueMessageLength = 500
 

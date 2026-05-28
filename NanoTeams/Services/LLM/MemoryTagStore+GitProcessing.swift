@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Git Processing
 
-extension MemoryTagStore {
+nonisolated extension MemoryTagStore {
 
     private typealias TN = ToolNames
 

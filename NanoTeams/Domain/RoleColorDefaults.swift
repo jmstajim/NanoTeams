@@ -3,7 +3,7 @@ import Foundation
 /// Default background hex colors for system roles.
 /// Lives in Domain so that `SystemTemplates` and `TeamRoleDefinition` (both Domain types)
 /// can resolve role colors without depending on the Views layer.
-enum RoleColorDefaults {
+nonisolated enum RoleColorDefaults {
 
     /// Default blue used for custom (non-system) roles.
     static let defaultHex = "#5F87D9"
@@ -31,6 +31,7 @@ enum RoleColorDefaults {
         "theNeurotic":      "#A86DE8",
         "assistant":        "#56C999",
         "codingAssistant":  "#8F82E6",
+        "codingAgent":      "#8F82E6",
     ]
 
     /// Returns the default background hex for a system role ID, or blue for custom roles.

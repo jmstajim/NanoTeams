@@ -136,7 +136,7 @@ final class NTMSRepositoryTests: XCTestCase {
         let root = try makeProjectRoot()
         _ = try sut.openOrCreateWorkFolder(at: root)
 
-        let context = try sut.createTask(at: root, title: "My Task", supervisorTask: "Build it")
+        let (context, _) = try sut.createTask(at: root, title: "My Task", supervisorTask: "Build it")
         let taskID = context.activeTask!.id
 
         let p = paths(for: root)
@@ -150,7 +150,7 @@ final class NTMSRepositoryTests: XCTestCase {
         let root = try makeProjectRoot()
         _ = try sut.openOrCreateWorkFolder(at: root)
 
-        let context = try sut.createTask(at: root, title: "Indexed Task", supervisorTask: "Goal")
+        let (context, _) = try sut.createTask(at: root, title: "Indexed Task", supervisorTask: "Goal")
 
         XCTAssertEqual(context.tasksIndex.tasks.count, 1,
                         "Tasks index should contain the new task")
@@ -163,7 +163,7 @@ final class NTMSRepositoryTests: XCTestCase {
         let root = try makeProjectRoot()
         _ = try sut.openOrCreateWorkFolder(at: root)
 
-        let context = try sut.createTask(at: root, title: "Active Task", supervisorTask: "Goal")
+        let (context, _) = try sut.createTask(at: root, title: "Active Task", supervisorTask: "Goal")
 
         XCTAssertNotNil(context.activeTaskID, "activeTaskID should be set after createTask")
         XCTAssertNotNil(context.activeTask, "activeTask should be set after createTask")
@@ -177,7 +177,7 @@ final class NTMSRepositoryTests: XCTestCase {
         let root = try makeProjectRoot()
         _ = try sut.openOrCreateWorkFolder(at: root)
 
-        let context = try sut.createTask(at: root, title: "Context Task", supervisorTask: "The goal")
+        let (context, _) = try sut.createTask(at: root, title: "Context Task", supervisorTask: "The goal")
 
         XCTAssertNotNil(context.activeTask)
         XCTAssertEqual(context.activeTask?.title, "Context Task")
@@ -192,8 +192,8 @@ final class NTMSRepositoryTests: XCTestCase {
         let root = try makeProjectRoot()
         _ = try sut.openOrCreateWorkFolder(at: root)
 
-        let ctx1 = try sut.createTask(at: root, title: "Task A", supervisorTask: "A")
-        let ctx2 = try sut.createTask(at: root, title: "Task B", supervisorTask: "B")
+        let (ctx1, _) = try sut.createTask(at: root, title: "Task A", supervisorTask: "A")
+        let (ctx2, _) = try sut.createTask(at: root, title: "Task B", supervisorTask: "B")
         let taskA = ctx1.activeTask!
         let taskB = ctx2.activeTask!
 
@@ -239,13 +239,63 @@ final class NTMSRepositoryTests: XCTestCase {
         }
     }
 
+    // MARK: - 14b. setActiveTaskID_void_persistsWithoutAssembleContext
+
+    /// `setActiveTaskID` must persist the same `activeTaskID` to disk that
+    /// `setActiveTask` does, but return `Void` so callers on the cached
+    /// fast-path don't pay for the `assembleContext` rebuild (~3-4 file reads
+    /// including ~97KB teams.json). Pinned by reading the file directly after
+    /// the call rather than relying on the returned snapshot.
+    func testSetActiveTaskID_persistsActiveID_withoutReturningContext() throws {
+        let root = try makeProjectRoot()
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        let (ctx1, _) = try sut.createTask(at: root, title: "A", supervisorTask: "1")
+        let (_,    _) = try sut.createTask(at: root, title: "B", supervisorTask: "2")
+        let aID = ctx1.activeTask!.id
+
+        try sut.setActiveTaskID(at: root, taskID: aID)
+
+        // Read workfolder.json directly — verify the pointer is on disk.
+        let store = AtomicJSONStore()
+        let state = try store.read(WorkFolderState.self, from: paths(for: root).workFolderJSON)
+        XCTAssertEqual(state.activeTaskID, aID,
+                       "setActiveTaskID must persist the same activeTaskID as setActiveTask")
+    }
+
+    func testSetActiveTaskID_nilID_clearsActiveOnDisk() throws {
+        let root = try makeProjectRoot()
+        _ = try sut.openOrCreateWorkFolder(at: root)
+        _ = try sut.createTask(at: root, title: "Some Task", supervisorTask: "Goal")
+
+        try sut.setActiveTaskID(at: root, taskID: nil)
+
+        let store = AtomicJSONStore()
+        let state = try store.read(WorkFolderState.self, from: paths(for: root).workFolderJSON)
+        XCTAssertNil(state.activeTaskID, "setActiveTaskID(nil) must clear the on-disk pointer")
+    }
+
+    func testSetActiveTaskID_nonExistentTask_throws() throws {
+        let root = try makeProjectRoot()
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        let fakeID = 999
+        XCTAssertThrowsError(try sut.setActiveTaskID(at: root, taskID: fakeID)) { error in
+            guard case NTMSRepositoryError.taskNotFound(let id) = error else {
+                XCTFail("Expected NTMSRepositoryError.taskNotFound, got \(error)")
+                return
+            }
+            XCTAssertEqual(id, fakeID)
+        }
+    }
+
     // MARK: - 15. deleteTask_removesTaskFile
 
     func testDeleteTask_removesTaskFile() throws {
         let root = try makeProjectRoot()
         _ = try sut.openOrCreateWorkFolder(at: root)
 
-        let created = try sut.createTask(at: root, title: "Doomed Task", supervisorTask: "Goal")
+        let (created, _) = try sut.createTask(at: root, title: "Doomed Task", supervisorTask: "Goal")
         let taskID = created.activeTask!.id
 
         let p = paths(for: root)
@@ -264,7 +314,7 @@ final class NTMSRepositoryTests: XCTestCase {
         let root = try makeProjectRoot()
         _ = try sut.openOrCreateWorkFolder(at: root)
 
-        let created = try sut.createTask(at: root, title: "Indexed Doom", supervisorTask: "Goal")
+        let (created, _) = try sut.createTask(at: root, title: "Indexed Doom", supervisorTask: "Goal")
         let taskID = created.activeTask!.id
         XCTAssertTrue(created.tasksIndex.tasks.contains(where: { $0.id == taskID }))
 
@@ -280,10 +330,10 @@ final class NTMSRepositoryTests: XCTestCase {
         let root = try makeProjectRoot()
         _ = try sut.openOrCreateWorkFolder(at: root)
 
-        let ctx1 = try sut.createTask(at: root, title: "Task A", supervisorTask: "A")
+        let (ctx1, _) = try sut.createTask(at: root, title: "Task A", supervisorTask: "A")
         let taskA = ctx1.activeTask!
 
-        let ctx2 = try sut.createTask(at: root, title: "Task B", supervisorTask: "B")
+        let (ctx2, _) = try sut.createTask(at: root, title: "Task B", supervisorTask: "B")
         let taskB = ctx2.activeTask!
 
         // Delete the active task (Task B)
@@ -322,7 +372,7 @@ final class NTMSRepositoryTests: XCTestCase {
         let root = try makeProjectRoot()
         _ = try sut.openOrCreateWorkFolder(at: root)
 
-        let created = try sut.createTask(at: root, title: "Original Title", supervisorTask: "Goal")
+        let (created, _) = try sut.createTask(at: root, title: "Original Title", supervisorTask: "Goal")
         var task = created.activeTask!
 
         task.title = "Updated Title"
@@ -341,7 +391,7 @@ final class NTMSRepositoryTests: XCTestCase {
         let root = try makeProjectRoot()
         _ = try sut.openOrCreateWorkFolder(at: root)
 
-        let created = try sut.createTask(at: root, title: "Before Update", supervisorTask: "Goal")
+        let (created, _) = try sut.createTask(at: root, title: "Before Update", supervisorTask: "Goal")
         var task = created.activeTask!
 
         task.title = "After Update"
@@ -382,7 +432,7 @@ final class NTMSRepositoryTests: XCTestCase {
         let root = try makeProjectRoot()
         _ = try sut.openOrCreateWorkFolder(at: root)
 
-        let created = try sut.createTask(at: root, title: "Loadable Task", supervisorTask: "Load me")
+        let (created, _) = try sut.createTask(at: root, title: "Loadable Task", supervisorTask: "Load me")
         let taskID = created.activeTask!.id
 
         let loaded = try sut.loadTask(at: root, taskID: taskID)
@@ -615,7 +665,7 @@ final class NTMSRepositoryTests: XCTestCase {
 
         _ = try sut.createTask(at: root, title: "Task 1", supervisorTask: "G1")
         _ = try sut.createTask(at: root, title: "Task 2", supervisorTask: "G2")
-        let ctx3 = try sut.createTask(at: root, title: "Task 3", supervisorTask: "G3")
+        let (ctx3, _) = try sut.createTask(at: root, title: "Task 3", supervisorTask: "G3")
 
         XCTAssertEqual(ctx3.tasksIndex.tasks.count, 3,
                         "All three tasks should be in the index")
@@ -625,7 +675,7 @@ final class NTMSRepositoryTests: XCTestCase {
         let root = try makeProjectRoot()
         _ = try sut.openOrCreateWorkFolder(at: root)
 
-        let created = try sut.createTask(at: root, title: "Only Task", supervisorTask: "Goal")
+        let (created, _) = try sut.createTask(at: root, title: "Only Task", supervisorTask: "Goal")
         let taskID = created.activeTask!.id
 
         let afterDelete = try sut.deleteTask(at: root, taskID: taskID)
@@ -640,7 +690,7 @@ final class NTMSRepositoryTests: XCTestCase {
         let root = try makeProjectRoot()
         _ = try sut.openOrCreateWorkFolder(at: root)
 
-        let created = try sut.createTask(at: root, title: "Mutable Task", supervisorTask: "Goal")
+        let (created, _) = try sut.createTask(at: root, title: "Mutable Task", supervisorTask: "Goal")
         var task = created.activeTask!
 
         task.title = "Mutated Task"
@@ -699,10 +749,10 @@ final class NTMSRepositoryTests: XCTestCase {
         let root = try makeProjectRoot()
         _ = try sut.openOrCreateWorkFolder(at: root)
 
-        let ctx1 = try sut.createTask(at: root, title: "Task A", supervisorTask: "A")
+        let (ctx1, _) = try sut.createTask(at: root, title: "Task A", supervisorTask: "A")
         let taskA = ctx1.activeTask!
 
-        let ctx2 = try sut.createTask(at: root, title: "Task B", supervisorTask: "B")
+        let (ctx2, _) = try sut.createTask(at: root, title: "Task B", supervisorTask: "B")
         let taskB = ctx2.activeTask!
 
         // Active is Task B, delete Task A (non-active)
@@ -740,10 +790,10 @@ final class NTMSRepositoryTests: XCTestCase {
         let root = try makeProjectRoot()
         _ = try sut.openOrCreateWorkFolder(at: root)
 
-        let ctx1 = try sut.createTask(at: root, title: "Task A", supervisorTask: "A")
+        let (ctx1, _) = try sut.createTask(at: root, title: "Task A", supervisorTask: "A")
         let taskA = ctx1.activeTask!
 
-        let ctx2 = try sut.createTask(at: root, title: "Task B", supervisorTask: "B")
+        let (ctx2, _) = try sut.createTask(at: root, title: "Task B", supervisorTask: "B")
         // Active is now Task B
 
         // Update Task A via hot path — should not affect active task
@@ -858,6 +908,19 @@ final class NTMSRepositoryTests: XCTestCase {
         let supervisor = faang.roles.first { $0.systemRoleID == "supervisor" }!
         XCTAssertEqual(supervisor.dependencies.requiredArtifacts, ["Release Notes"],
                         "Supervisor requiredArtifacts should NOT be overwritten by generic template")
+    }
+
+    func testOpenOrCreateProject_startupSupervisorRequires_isEngineeringNotesOnly() throws {
+        let root = try makeProjectRoot()
+        let initial = try sut.openOrCreateWorkFolder(at: root)
+
+        // Startup Supervisor requires ["Engineering Notes"] only — narrowest contract,
+        // pinned to catch accidental re-broadening from generic template sync.
+        let reopened = try sut.openOrCreateWorkFolder(at: root)
+        let startup = reopened.workFolder.teams.first { $0.templateID == "startup" }!
+        let supervisor = startup.roles.first { $0.systemRoleID == "supervisor" }!
+        XCTAssertEqual(supervisor.dependencies.requiredArtifacts, ["Engineering Notes"],
+                        "Startup Supervisor requiredArtifacts should NOT be overwritten by generic template")
     }
 
     func testOpenOrCreateProject_dependencySyncIsIdempotent() throws {

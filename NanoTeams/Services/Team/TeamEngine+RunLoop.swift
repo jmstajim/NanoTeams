@@ -20,7 +20,7 @@ extension TeamEngine {
             iterationCount += 1
             if iterationCount >= autoIterationLimit {
                 transition(to: .paused)
-                await store.setLastErrorMessageForUI(
+                store.setLastErrorMessageForUI(
                     "Run paused: iteration limit (\(autoIterationLimit)) reached. " +
                     "Press Resume to continue, or increase 'Auto iterations limit' in Team Settings."
                 )
@@ -111,7 +111,7 @@ extension TeamEngine {
                 // No ready roles - wait for working roles to complete or external event
                 if roleStatuses.values.contains(.working) {
                     // Wait a bit and check again
-                    try? await Task.sleep(nanoseconds: 250_000_000)
+                    try? await Task.sleep(for: .milliseconds(250))
                     continue
                 } else if !isChatMode && roleStatuses.values.contains(.needsAcceptance) {
                     // Waiting for Supervisor
@@ -137,7 +137,7 @@ extension TeamEngine {
                     let stuckRoles = roleStatuses.filter { !$0.value.isComplete && $0.value != .working }
                     let names = stuckRoles.keys.sorted().joined(separator: ", ")
                     transition(to: .failed)
-                    await store.setLastErrorMessageForUI(
+                    store.setLastErrorMessageForUI(
                         "Execution stalled: roles [\(names)] blocked. Check artifact dependencies in Team Editor."
                     )
                     return
@@ -148,7 +148,7 @@ extension TeamEngine {
             await startRoles(roleIDs: readyRoleIDs)
 
             // Small delay before next iteration
-            try? await Task.sleep(nanoseconds: 100_000_000)
+            try? await Task.sleep(for: .milliseconds(100))
         }
     }
 

@@ -5,11 +5,11 @@ private typealias JS = JSONSchema
 
 // MARK: - update_scratchpad
 
-struct UpdateScratchpadTool: ToolHandler {
+nonisolated struct UpdateScratchpadTool: ToolHandler {
     static let name = TN.updateScratchpad
     static let schema = ToolSchema(
         name: TN.updateScratchpad,
-        description: "Working scratchpad for plan + progress. Markdown numbered list; mark done items with ~~strikethrough~~. Call once at step start to plan, then again only to update progress. Max ~2 calls per step (each call costs tokens).",
+        description: "Working scratchpad for plan + progress. Markdown numbered list; mark done items with ~~strikethrough~~. Max ~2 calls per step.",
         parameters: JS.object(
             properties: [
                 "content": JS.string("Full scratchpad markdown."),
@@ -42,7 +42,7 @@ struct UpdateScratchpadTool: ToolHandler {
     }
 }
 
-private struct ScratchpadUpdateData: Codable {
+nonisolated private struct ScratchpadUpdateData: Codable {
     var updated: Bool
     var contentLength: Int
 

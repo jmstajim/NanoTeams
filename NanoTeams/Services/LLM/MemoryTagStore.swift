@@ -10,7 +10,7 @@ import Foundation
 /// - `MemoryTagStore+FileProcessing.swift` — read/edit/write/delete file processing
 /// - `MemoryTagStore+BuildGitProcessing.swift` — build/test/git processing + summary extraction
 /// - `MemoryTagStore+JSONHelpers.swift` — JSON parsing utilities
-final class MemoryTagStore {
+nonisolated final class MemoryTagStore {
 
     // MARK: - Tag Types
 
@@ -42,7 +42,7 @@ final class MemoryTagStore {
 
     let processors: [ToolResultProcessor]
 
-    static let defaultProcessors: [ToolResultProcessor] = [
+    nonisolated(unsafe) static let defaultProcessors: [any ToolResultProcessor] = [
         FileToolProcessor(),
         BuildGitToolProcessor(),
     ]
@@ -63,6 +63,11 @@ final class MemoryTagStore {
     var currentReadTags: [String: String] = [:]
     /// Whether file was edited since last read (path -> true)
     var editedSinceLastRead: [String: Bool] = [:]
+    /// Line ranges read since the last edit (path -> indexed line numbers).
+    /// Used to clear `editedSinceLastRead` once paginated re-reads collectively
+    /// cover [1, totalLines] — the per-call cap means a single `read_lines`
+    /// can no longer satisfy the legacy `isFullRead` shortcut on large files.
+    var readRangesSinceEdit: [String: IndexSet] = [:]
     /// Current plan tag (for update_scratchpad)
     private var currentPlanTag: String?
 
@@ -101,7 +106,7 @@ final class MemoryTagStore {
 
 // MARK: - Processing Results
 
-enum TagProcessingResult {
+nonisolated enum TagProcessingResult {
     case passthrough                          // use original result as-is
     case tagged(content: String, tag: String) // full content + tag
     case reference(content: String)           // compact reference (unchanged)
@@ -110,13 +115,13 @@ enum TagProcessingResult {
 // MARK: - Tool Result Processor Protocol (OCP)
 
 /// Implement to add a new tool category to the Memories system.
-protocol ToolResultProcessor {
+nonisolated protocol ToolResultProcessor {
     var supportedTools: Set<String> { get }
     func process(_ result: ToolExecutionResult, iteration: Int, store: MemoryTagStore) -> TagProcessingResult
 }
 
 /// Processes file tools: read_file, read_lines, edit_file, write_file, delete_file.
-struct FileToolProcessor: ToolResultProcessor {
+nonisolated struct FileToolProcessor: ToolResultProcessor {
     let supportedTools: Set<String> = ToolHandlerRegistry.allFileTools
 
     private typealias TN = ToolNames
@@ -134,7 +139,7 @@ struct FileToolProcessor: ToolResultProcessor {
 }
 
 /// Processes build and git tools: run_xcodebuild, run_xcodetests, git_status, git_diff.
-struct BuildGitToolProcessor: ToolResultProcessor {
+nonisolated struct BuildGitToolProcessor: ToolResultProcessor {
     private typealias TN = ToolNames
 
     let supportedTools: Set<String> = ToolHandlerRegistry.xcodeTools.union([TN.gitStatus, TN.gitDiff])
@@ -150,7 +155,7 @@ struct BuildGitToolProcessor: ToolResultProcessor {
     }
 }
 
-extension MemoryTagStore {
+nonisolated extension MemoryTagStore {
 
     /// Process tool result. Returns tagged/reference/passthrough.
     func processToolResult(_ result: ToolExecutionResult, iteration: Int) -> TagProcessingResult {
@@ -167,7 +172,7 @@ extension MemoryTagStore {
 
 // MARK: - Plan Registration
 
-extension MemoryTagStore {
+nonisolated extension MemoryTagStore {
 
     /// Register a plan update from `update_scratchpad`. Creates a tagged entry so the plan
     /// appears in MEMORIES like other resources (compact tag reference when unchanged).
@@ -182,7 +187,7 @@ extension MemoryTagStore {
 
 // MARK: - Memories Generation
 
-extension MemoryTagStore {
+nonisolated extension MemoryTagStore {
 
     /// Generate Memories index showing all tags and their current statuses.
     /// Returns nil when there are no tracked entries — injecting a bare
@@ -191,7 +196,7 @@ extension MemoryTagStore {
     func generateMemories(version: Int) -> String? {
         guard !entries.isEmpty else { return nil }
 
-        var lines: [String] = ["=== MEMORIES v\(version) ==="]
+        var lines: [String] = ["## Memories v\(version)"]
 
         let grouped = Dictionary(grouping: entries.values) { $0.resource }
 
@@ -210,14 +215,13 @@ extension MemoryTagStore {
             }
         }
 
-        lines.append("=== END MEMORIES ===")
         return lines.joined(separator: "\n")
     }
 }
 
 // MARK: - Invalidation Helpers
 
-extension MemoryTagStore {
+nonisolated extension MemoryTagStore {
 
     func invalidateBuilds(reason: String) {
         for (key, entry) in entries where entry.type == .build && isCurrentStatus(entry.status) {

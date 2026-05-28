@@ -1,6 +1,6 @@
 import Foundation
 
-struct ToolCallAccumulator {
+nonisolated struct ToolCallAccumulator {
     struct Partial: Hashable {
         var providerID: String?
         var name: String

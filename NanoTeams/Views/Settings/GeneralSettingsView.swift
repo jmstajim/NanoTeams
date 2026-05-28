@@ -12,8 +12,8 @@ struct GeneralSettingsView: View {
         ScrollView {
             VStack(spacing: Spacing.xl) {
                 themeCard
-                activityFeedCard
                 inputCard
+                globalContextCard
                 dangerZoneCard
             }
             .padding(Spacing.xl)
@@ -62,29 +62,6 @@ struct GeneralSettingsView: View {
         }
     }
 
-    // MARK: - Activity Feed Card
-
-    private var activityFeedCard: some View {
-        @Bindable var config = config
-        return SettingsCard(
-            header: "Activity Feed",
-            systemImage: "list.bullet",
-            footer: "Configure how conversations are displayed in the activity feed."
-        ) {
-            VStack(spacing: 0) {
-                Text("Expand by default")
-                    .font(Typography.captionSemibold)
-                    .foregroundStyle(Colors.textTertiary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.bottom, Spacing.xs)
-
-                settingsToggleRow("Thinking sections", icon: "brain", isOn: $config.thinkingExpandedByDefault)
-                settingsToggleRow("Tool calls", icon: "wrench.and.screwdriver", isOn: $config.toolCallsExpandedByDefault)
-                settingsToggleRow("Artifacts", icon: "doc.text", isOn: $config.artifactsExpandedByDefault)
-            }
-        }
-    }
-
     // MARK: - Input Card
 
     private var inputCard: some View {
@@ -104,6 +81,13 @@ struct GeneralSettingsView: View {
                     .padding(.bottom, Spacing.s)
             }
         }
+    }
+
+    // MARK: - Global Context Card
+
+    private var globalContextCard: some View {
+        @Bindable var config = config
+        return GlobalContextCard(config: config)
     }
 
     // MARK: - Danger Zone Card

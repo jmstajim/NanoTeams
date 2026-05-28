@@ -4,14 +4,14 @@ import Foundation
 
 /// Strategy for parsing tool calls from a specific marker format.
 /// Implement this protocol to add new marker-based parsing formats (OCP).
-protocol ToolCallParsingStrategy: Sendable {
+nonisolated protocol ToolCallParsingStrategy: Sendable {
     func parse(from text: String) -> [StepToolCall]
 }
 
 // MARK: - Call Marker Strategy
 
 /// Parses `<|call|>` format: `<|call|>{JSON}<|end|>` or `<|call|>tool_name {JSON}<|end|>`
-struct CallMarkerStrategy: ToolCallParsingStrategy {
+nonisolated struct CallMarkerStrategy: ToolCallParsingStrategy {
     static let callMarker = "<|call|>"
     static let endMarker = "<|end|>"
 
@@ -73,11 +73,40 @@ struct CallMarkerStrategy: ToolCallParsingStrategy {
 
 // MARK: - Start Marker Strategy
 
-/// Parses `<|start|>functions.TOOL_NAME<|message|>{JSON}` format.
-struct StartMarkerStrategy: ToolCallParsingStrategy {
+/// Parses two `<|start|>`-opened formats:
+///   1. `<|start|>functions.TOOL_NAME<|message|>{JSON}` — canonical Harmony form.
+///   2. `<|start|>commentary|final … to=NAME … <|constrain|>… <|message|>{JSON}` —
+///      malformed variant emitted by `gpt-oss-20b` and similar models that mix
+///      the `<|start|>` opening marker with channel-style framing. Without
+///      this branch the envelope parses as zero tool calls, the engine sends
+///      a "did not call any tools" retry, and `ModelTokenCleaner` strips the
+///      `<|…|>` markers leaving residue like `commentary to=read_file json{…}`
+///      visible in the activity feed.
+///
+/// Role markers (`<|start|>user…`, `<|start|>assistant…`, etc.) are also
+/// emitted by buggy models — they're inlined next-turn content, NOT tool
+/// calls. We skip them so they don't get mis-parsed.
+nonisolated struct StartMarkerStrategy: ToolCallParsingStrategy {
     static let startMarker = "<|start|>"
     static let messageMarker = "<|message|>"
     static let endMarker = "<|end|>"
+
+    /// Identifiers that mark an inlined role turn rather than a tool call.
+    /// When `<|start|>` is followed by one of these, advance past and continue —
+    /// never parse as a tool envelope.
+    static let roleMarkers: Set<String> = [
+        "user", "assistant", "system", "developer", "tool",
+    ]
+
+    /// Returns true if the content immediately after a `<|start|>` marker
+    /// begins with one of the role identifiers. Looks at a bounded prefix
+    /// because models inline next-turn content with no separator (e.g.
+    /// `<|start|>userI've examined…`), so full-identifier equality on
+    /// `extractIdentifier`'s output would miss the role token.
+    static func remainderBeginsWithRoleMarker(_ remainder: Substring) -> Bool {
+        let lowered = remainder.prefix(16).lowercased()
+        return roleMarkers.contains(where: { lowered.hasPrefix($0) })
+    }
 
     func parse(from text: String) -> [StepToolCall] {
         guard let firstMarkerRange = text.range(of: Self.startMarker) else { return [] }
@@ -86,58 +115,169 @@ struct StartMarkerStrategy: ToolCallParsingStrategy {
         var cursor = tail.startIndex
         var results: [StepToolCall] = []
 
+        // Forward progress is guaranteed by the `range(of: startMarker)` lookup
+        // returning strictly later occurrences, NOT by `advanceCursor` moving
+        // the cursor (which can no-op when `<|end|>` is absent). Do not change
+        // to a `while cursor < tail.endIndex` loop without also adding a
+        // defensive `cursor = markerRange.upperBound` bump when `advanceCursor`
+        // doesn't make progress.
         while let markerRange = tail.range(of: Self.startMarker, range: cursor..<tail.endIndex) {
             var idx = markerRange.upperBound
             idx = ToolCallParsingHelpers.skipWhitespace(in: tail, from: idx)
 
+            // Path 1: <|start|>functions.NAME<|message|>{JSON}
             let prefix = "functions."
-            guard tail[idx...].hasPrefix(prefix) else {
+            if tail[idx...].hasPrefix(prefix) {
+                let afterPrefix = tail.index(idx, offsetBy: prefix.count)
+                if let next = parseFunctionsEnvelope(in: tail, from: afterPrefix) {
+                    results.append(next.call)
+                    cursor = next.nextCursor
+                    continue
+                }
+                cursor = ToolCallParsingHelpers.advanceCursor(
+                    in: tail, from: afterPrefix, endMarker: Self.endMarker)
+                continue
+            }
+
+            // Path 2a: role markers (user/assistant/system/developer/tool) — skip.
+            // Path 2b: channel-style envelope (commentary/final/...) — delegate
+            // to ChannelEnvelopeParser, bounded by the next <|start|> marker.
+            if Self.remainderBeginsWithRoleMarker(tail[idx...]) {
                 cursor = ToolCallParsingHelpers.advanceCursor(
                     in: tail, from: idx, endMarker: Self.endMarker)
                 continue
             }
 
-            idx = tail.index(idx, offsetBy: prefix.count)
-            guard let (name, nameEnd) = ToolCallParsingHelpers.extractIdentifier(in: tail, from: idx)
-            else {
-                cursor = ToolCallParsingHelpers.advanceCursor(
-                    in: tail, from: idx, endMarker: Self.endMarker)
-                continue
-            }
-
-            guard
-                let messageRange = tail.range(
-                    of: Self.messageMarker, range: nameEnd..<tail.endIndex)
-            else {
-                cursor = ToolCallParsingHelpers.advanceCursor(
-                    in: tail, from: nameEnd, endMarker: Self.endMarker)
-                continue
-            }
-
-            var argsIdx = messageRange.upperBound
-            argsIdx = ToolCallParsingHelpers.skipWhitespace(in: tail, from: argsIdx)
-            guard argsIdx < tail.endIndex, tail[argsIdx] == "{" else {
-                cursor = ToolCallParsingHelpers.advanceCursor(
-                    in: tail, from: messageRange.upperBound, endMarker: Self.endMarker)
-                continue
-            }
-
-            if let (jsonText, endIdx) = ToolCallParsingHelpers.extractJSONBracedValue(
-                in: tail, from: argsIdx)
+            let blockEnd =
+                tail.range(of: Self.startMarker, range: idx..<tail.endIndex)?.lowerBound
+                ?? tail.endIndex
+            if let envelope = ChannelEnvelopeParser.parseEnvelope(
+                in: tail, cursorAfterOpening: idx, blockEnd: blockEnd)
             {
-                let args = ToolCallParsingHelpers.normalizeArgumentsJSONString(
-                    JSONUtilities.sanitizeJSONControlCharacters(jsonText))
-                results.append(StepToolCall(providerID: nil, name: name, argumentsJSON: args))
-                cursor = ToolCallParsingHelpers.advanceCursor(
-                    in: tail, from: endIdx, endMarker: Self.endMarker)
+                results.append(envelope.call)
+                cursor = envelope.nextStart
                 continue
             }
 
             cursor = ToolCallParsingHelpers.advanceCursor(
-                in: tail, from: argsIdx, endMarker: Self.endMarker)
+                in: tail, from: idx, endMarker: Self.endMarker)
         }
 
         return results
+    }
+
+    /// Parses the post-`functions.` portion of a canonical envelope. Caller
+    /// has already advanced past `<|start|>functions.`.
+    private func parseFunctionsEnvelope(in tail: Substring, from idx: String.Index)
+        -> (call: StepToolCall, nextCursor: String.Index)?
+    {
+        guard let (name, nameEnd) = ToolCallParsingHelpers.extractIdentifier(in: tail, from: idx),
+              let messageRange = tail.range(of: Self.messageMarker, range: nameEnd..<tail.endIndex)
+        else { return nil }
+
+        var argsIdx = messageRange.upperBound
+        argsIdx = ToolCallParsingHelpers.skipWhitespace(in: tail, from: argsIdx)
+        guard argsIdx < tail.endIndex, tail[argsIdx] == "{" else { return nil }
+
+        guard let (jsonText, endIdx) = ToolCallParsingHelpers.extractJSONBracedValue(
+            in: tail, from: argsIdx)
+        else { return nil }
+
+        let args = ToolCallParsingHelpers.normalizeArgumentsJSONString(
+            JSONUtilities.sanitizeJSONControlCharacters(jsonText))
+        let call = StepToolCall(providerID: nil, name: name, argumentsJSON: args)
+        let nextCursor = ToolCallParsingHelpers.advanceCursor(
+            in: tail, from: endIdx, endMarker: Self.endMarker)
+        return (call, nextCursor)
+    }
+}
+
+// MARK: - Channel Envelope Parser (shared helper)
+
+/// Parses a single channel-style envelope from `cursorAfterOpening` up to
+/// `blockEnd` (exclusive). Shared between `ChannelMarkerStrategy` (called
+/// after `<|channel|>`) and `StartMarkerStrategy`'s Path 2b (called after
+/// `<|start|>` when content isn't `functions.NAME` or a role marker).
+///
+/// Recognised shapes (any opening marker — bounded by caller):
+///   - `commentary|final to=NAME … <|message|>{JSON}`
+///   - `commentary|final to="NAME" … <|message|>{JSON}` (quoted name)
+///   - `commentary|final <|constrain|>NAME<|message|>{JSON}` (constrain-as-name fallback)
+///   - `commentary|final to=NAME … {JSON}` (no `<|message|>`, plain `{` fallback)
+///
+/// Returns nil when no tool name resolves OR no JSON is found.
+nonisolated enum ChannelEnvelopeParser {
+    static func parseEnvelope(
+        in text: Substring, cursorAfterOpening: String.Index, blockEnd: String.Index
+    ) -> (call: StepToolCall, nextStart: String.Index)? {
+        // 1. Resolve the tool name — try `to=NAME` first, then `<|constrain|>NAME`.
+        var toolName: String?
+        var nameEnd: String.Index = cursorAfterOpening
+
+        if let toRange = text.range(of: "to=", range: cursorAfterOpening..<blockEnd) {
+            let nameSearchStart = ToolCallParsingHelpers.skipWhitespace(
+                in: text, from: toRange.upperBound)
+            if let (name, end) = ToolCallParsingHelpers.extractIdentifierOrQuoted(
+                in: text, from: nameSearchStart)
+            {
+                toolName = name
+                nameEnd = end
+            }
+        }
+
+        if toolName == nil,
+           let constrainRange = text.range(
+            of: ChannelMarkerStrategy.constrainMarker, range: cursorAfterOpening..<blockEnd)
+        {
+            let afterConstrain = constrainRange.upperBound
+            if let (candidate, end) = ToolCallParsingHelpers.extractIdentifier(
+                in: text, from: afterConstrain)
+            {
+                let lowered = candidate.lowercased()
+                if !ChannelMarkerStrategy.isConstrainFormatKeyword(lowered),
+                   !ToolCallParsingHelpers.reservedChannelNames.contains(lowered)
+                {
+                    toolName = candidate
+                    nameEnd = end
+                }
+            }
+        }
+
+        guard let resolvedName = toolName else { return nil }
+
+        // 2. Strategy 1: standard `<|message|>{JSON}` framing.
+        if let messageRange = text.range(
+            of: ChannelMarkerStrategy.messageMarker, range: cursorAfterOpening..<blockEnd)
+        {
+            var jsonStart = messageRange.upperBound
+            jsonStart = ToolCallParsingHelpers.skipWhitespace(in: text, from: jsonStart)
+            if jsonStart < text.endIndex, text[jsonStart] == "{",
+               let (jsonText, endIdx) = ToolCallParsingHelpers.extractJSONBracedValue(
+                in: text, from: jsonStart)
+            {
+                let (dispatchName, dispatchArgs) = ChannelMarkerStrategy.resolveDispatch(
+                    channelName: resolvedName, innerJSON: jsonText)
+                let call = StepToolCall(
+                    providerID: nil, name: dispatchName, argumentsJSON: dispatchArgs)
+                return (call, endIdx)
+            }
+        }
+
+        // 3. Strategy 2: plain `{` fallback — first `{` after the name, bounded by blockEnd.
+        let fallbackSearchStart = ToolCallParsingHelpers.skipWhitespace(
+            in: text[nameEnd..<blockEnd], from: nameEnd)
+        if let firstBrace = text[fallbackSearchStart..<blockEnd].firstIndex(of: "{"),
+           let (jsonText, endIdx) = ToolCallParsingHelpers.extractJSONBracedValue(
+            in: text, from: firstBrace)
+        {
+            let (dispatchName, dispatchArgs) = ChannelMarkerStrategy.resolveDispatch(
+                channelName: resolvedName, innerJSON: jsonText)
+            let call = StepToolCall(
+                providerID: nil, name: dispatchName, argumentsJSON: dispatchArgs)
+            return (call, endIdx)
+        }
+
+        return nil
     }
 }
 
@@ -146,7 +286,7 @@ struct StartMarkerStrategy: ToolCallParsingStrategy {
 /// Parses `<|channel|>` tool call formats:
 /// - `<|channel|>commentary to=TOOL_NAME ...<|message|>{JSON}` (with optional quotes around TOOL_NAME)
 /// - `<|channel|>final <|constrain|>TOOL_NAME<|message|>{JSON}` (tool name in constrain marker)
-struct ChannelMarkerStrategy: ToolCallParsingStrategy {
+nonisolated struct ChannelMarkerStrategy: ToolCallParsingStrategy {
     static let channelMarker = "<|channel|>"
     static let messageMarker = "<|message|>"
     static let constrainMarker = "<|constrain|>"
@@ -155,6 +295,10 @@ struct ChannelMarkerStrategy: ToolCallParsingStrategy {
     private static let constrainFormatKeywords: Set<String> = [
         "json", "text", "markdown", "xml", "html", "yaml",
     ]
+
+    static func isConstrainFormatKeyword(_ lowered: String) -> Bool {
+        constrainFormatKeywords.contains(lowered)
+    }
 
     fileprivate static var reservedChannelNames: Set<String> {
         ToolCallParsingHelpers.reservedChannelNames
@@ -165,108 +309,105 @@ struct ChannelMarkerStrategy: ToolCallParsingStrategy {
 
         var results: [StepToolCall] = []
         var searchStart = text.startIndex
+        let tail = Substring(text)
 
-        while let channelRange = text.range(
-            of: Self.channelMarker, range: searchStart..<text.endIndex)
+        while let channelRange = tail.range(
+            of: Self.channelMarker, range: searchStart..<tail.endIndex)
         {
             let afterChannel = channelRange.upperBound
 
             // Determine the boundary for this channel block (next channel marker or end)
             let blockEnd =
-                text.range(of: Self.channelMarker, range: afterChannel..<text.endIndex)?
-                    .lowerBound ?? text.endIndex
+                tail.range(of: Self.channelMarker, range: afterChannel..<tail.endIndex)?
+                    .lowerBound ?? tail.endIndex
 
-            // Try to extract tool name from to= (supports quoted: to= "tool_name")
-            var toolName: String?
-            var nameEnd: String.Index = afterChannel
-
-            if let toRange = text.range(of: "to=", range: afterChannel..<blockEnd) {
-                let nameSearchStart = ToolCallParsingHelpers.skipWhitespace(
-                    in: text[toRange.upperBound...], from: toRange.upperBound)
-                if let (name, end) = ToolCallParsingHelpers.extractIdentifierOrQuoted(
-                    in: text[nameSearchStart...], from: nameSearchStart)
-                {
-                    toolName = name
-                    nameEnd = end
-                }
-            }
-
-            // Fallback: extract tool name from <|constrain|>TOOL_NAME (if not a format keyword)
-            if toolName == nil,
-                let constrainRange = text.range(
-                    of: Self.constrainMarker, range: afterChannel..<blockEnd)
+            if let envelope = ChannelEnvelopeParser.parseEnvelope(
+                in: tail, cursorAfterOpening: afterChannel, blockEnd: blockEnd)
             {
-                let afterConstrain = constrainRange.upperBound
-                if let (candidate, end) = ToolCallParsingHelpers.extractIdentifier(
-                    in: text[afterConstrain...], from: afterConstrain)
-                {
-                    let lowered = candidate.lowercased()
-                    if !Self.constrainFormatKeywords.contains(lowered),
-                       !Self.reservedChannelNames.contains(lowered) {
-                        toolName = candidate
-                        nameEnd = end
-                    }
-                }
-            }
-
-            guard let resolvedName = toolName else {
-                searchStart = afterChannel
+                results.append(envelope.call)
+                searchStart = envelope.nextStart
                 continue
             }
 
-            // Strategy 1: Look for standard <|message|> marker
-            if let messageRange = text.range(
-                of: Self.messageMarker, range: afterChannel..<blockEnd)
-            {
-                var jsonStart = messageRange.upperBound
-                jsonStart = ToolCallParsingHelpers.skipWhitespace(
-                    in: text[jsonStart...], from: jsonStart)
-
-                if jsonStart < text.endIndex, text[jsonStart] == "{" {
-                    if let (jsonText, endIdx) = ToolCallParsingHelpers.extractJSONBracedValue(
-                        in: text[jsonStart...], from: jsonStart)
-                    {
-                        let args = ToolCallParsingHelpers.normalizeArgumentsJSONString(
-                            JSONUtilities.sanitizeJSONControlCharacters(jsonText))
-                        results.append(
-                            StepToolCall(
-                                providerID: nil, name: resolvedName, argumentsJSON: args))
-                        searchStart = endIdx
-                        continue
-                    }
-                }
-            }
-
-            // Strategy 2: Fallback - look for JSON start '{' directly (bounded to this block)
-            let fallbackSearchStart = ToolCallParsingHelpers.skipWhitespace(
-                in: text[nameEnd..<blockEnd], from: nameEnd)
-            if let firstBrace = text[fallbackSearchStart..<blockEnd].firstIndex(of: "{") {
-                if let (jsonText, endIdx) = ToolCallParsingHelpers.extractJSONBracedValue(
-                    in: text[firstBrace...], from: firstBrace)
-                {
-                    let args = ToolCallParsingHelpers.normalizeArgumentsJSONString(
-                        JSONUtilities.sanitizeJSONControlCharacters(jsonText))
-                    results.append(
-                        StepToolCall(
-                            providerID: nil, name: resolvedName, argumentsJSON: args))
-                    searchStart = endIdx
-                    continue
-                }
-            }
-
-            searchStart = nameEnd
+            searchStart = afterChannel
         }
 
         return results
+    }
+
+    /// When the inner `<|message|>` JSON is a canonical tool-call envelope
+    /// (`{"name":X,"arguments":{…}}`), the inner `name` reflects intent more
+    /// reliably than the channel `to=` header — `arguments` being explicitly
+    /// present signals "I'm calling tool X with these args", whereas `to=` is a
+    /// routing header that some models populate from the *previously discussed*
+    /// tool. Discriminator is the SHAPE of inner JSON, not just presence of
+    /// `name`:
+    /// - canonical envelope (`name` AND `arguments` both top-level) → inner name
+    ///   wins, args are the unwrapped `arguments` sub-object
+    /// - flat payload (`{"name":"X","content":"..."}`, e.g. real `create_artifact`
+    ///   emission) → inner `name` is a parameter value, channel `to=` still wins,
+    ///   the full JSON becomes the args
+    ///
+    /// The shape gate protects flat-payload tests (see
+    /// `testChannelMarker_flatPayloadWithoutArguments_usesChannelName` and the
+    /// `create_artifact` family) from regressing — without the gate, every
+    /// `to=create_artifact <|message|>{"name":"X",…}` would dispatch as `X`.
+    static func resolveDispatch(channelName: String, innerJSON: String) -> (
+        name: String, argsJSON: String
+    ) {
+        if let envelope = canonicalEnvelope(in: innerJSON) {
+            return (envelope.name, envelope.argsJSON)
+        }
+        let args = ToolCallParsingHelpers.normalizeArgumentsJSONString(
+            JSONUtilities.sanitizeJSONControlCharacters(innerJSON))
+        return (channelName, args)
+    }
+
+    /// Returns (innerName, serialised-arguments-object) iff `innerJSON` decodes to
+    /// a dictionary with BOTH a non-empty string `name` AND a dictionary
+    /// `arguments` at the top level. Reserved channel names (commentary, analysis,
+    /// …) are rejected — same guard `parseToolCallFromJSON` uses, so a stray
+    /// `{"name":"commentary","arguments":{}}` never resolves to a fake tool.
+    /// Returns nil for any other shape (e.g. `arguments` as string or array,
+    /// reserved name, missing `name`), signalling the caller to fall back to
+    /// channel `to=` dispatch — pinned by the `argumentsAsString` /
+    /// `argumentsAsArray` / `rejectsReservedInnerName` tests.
+    private static func canonicalEnvelope(in innerJSON: String) -> (name: String, argsJSON: String)?
+    {
+        let sanitized = JSONUtilities.sanitizeJSONControlCharacters(innerJSON)
+        // `data(using: .utf8)` on a Swift String is structurally non-failing
+        // (Swift strings are valid Unicode by construction). The guard arm is
+        // defensive — JSON parse failure is the only realistic miss.
+        guard let data = sanitized.data(using: .utf8),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        guard let name = dict["name"] as? String, !name.isEmpty,
+              !ToolCallParsingHelpers.reservedChannelNames.contains(name.lowercased()),
+              let argumentsObject = dict["arguments"] as? [String: Any]
+        else { return nil }
+        // `argumentsObject` came from `JSONSerialization.jsonObject` so
+        // `stableJSONString` should always succeed. Defensive fallback returns
+        // the raw inner JSON (envelope wrapper included) so downstream
+        // `INVALID_ARGS` quotes the offending payload — beats silent `{}`
+        // which would dispatch the right tool with no args and confuse the log.
+        let argsJSON = ToolCallParsingHelpers.stableJSONString(from: argumentsObject) ?? innerJSON
+        return (name, argsJSON)
     }
 }
 
 // MARK: - Composite Parser
 
-struct HarmonyToolCallParser: Sendable {
+nonisolated struct HarmonyToolCallParser: Sendable {
     static let callMarker = CallMarkerStrategy.callMarker
-    static let startFunctionPrefix = "<|start|>functions."
+    static let startMarker = StartMarkerStrategy.startMarker
     static let channelMarker = ChannelMarkerStrategy.channelMarker
+
+    /// Single source of truth for "this content contains a Harmony tool-call
+    /// envelope opening." Used by the streamer to flip into `harmonyBuffer`
+    /// mode and by `UniversalToolCallParser` to recognise unknown-format
+    /// candidates. Keep bare `<|start|>` here — the function-prefix variant
+    /// is a subset and adding both would be redundant.
+    static let harmonyMarkers: [String] = [callMarker, startMarker, channelMarker]
 
     private let strategies: [ToolCallParsingStrategy]
 

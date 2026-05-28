@@ -1,6 +1,6 @@
 import Foundation
 
-enum ToolRuntimeError: LocalizedError {
+nonisolated enum ToolRuntimeError: LocalizedError {
     case toolNotFound(String)
     case invalidArgumentsJSON(String)
     case argumentsNotObject
@@ -20,7 +20,7 @@ enum ToolRuntimeError: LocalizedError {
     }
 }
 
-final class ToolRuntime {
+nonisolated final class ToolRuntime: @unchecked Sendable {
     private let registry: ToolRegistry
     private let logger: ToolCallLogger?
 
@@ -35,7 +35,26 @@ final class ToolRuntime {
     func executeAll(context: ToolExecutionContext, toolCalls: [StepToolCall])
         -> [ToolExecutionResult]
     {
-        toolCalls.map { executeOne(context: context, call: $0) }
+        var results: [ToolExecutionResult] = []
+        results.reserveCapacity(toolCalls.count)
+        for (i, call) in toolCalls.enumerated() {
+            // Emit one cancellation envelope per remaining call so the caller's
+            // index-paired interleave in `LLMExecutionService.executeToolCalls`
+            // still gets a 1:1 result-per-call mapping. Without 1:1, `freshIdx`
+            // walks off the end of the results array.
+            if Task.isCancelled {
+                for remaining in toolCalls[i...] {
+                    results.append(makeCancelledResult(
+                        toolName: remaining.name,
+                        argumentsJSON: remaining.argumentsJSON,
+                        providerID: remaining.providerID ?? UUID().uuidString
+                    ))
+                }
+                return results
+            }
+            results.append(executeOne(context: context, call: call))
+        }
+        return results
     }
 
     private func executeOne(context: ToolExecutionContext, call: StepToolCall)
@@ -163,7 +182,7 @@ final class ToolRuntime {
     nonisolated deinit {}
 }
 
-extension ToolCallLogRecord {
+nonisolated extension ToolCallLogRecord {
     fileprivate func withResult(result: ToolExecutionResult, errorMessage: String? = nil)
         -> ToolCallLogRecord
     {

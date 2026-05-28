@@ -29,7 +29,7 @@ final class TaskMutationServiceTests: XCTestCase {
 
     private func createTaskWithStep() throws -> (task: NTMSTask, stepID: String) {
         _ = try repository.openOrCreateWorkFolder(at: tempDir)
-        var context = try repository.createTask(at: tempDir, title: "Test Task", supervisorTask: "Test Goal")
+        var (context, _) = try repository.createTask(at: tempDir, title: "Test Task", supervisorTask: "Test Goal")
         var task = context.activeTask!
 
         let stepID = "test_step"
@@ -501,7 +501,7 @@ final class TaskMutationServiceTests: XCTestCase {
 
     func testMutationsOnTaskWithMultipleRuns() throws {
         _ = try repository.openOrCreateWorkFolder(at: tempDir)
-        var context = try repository.createTask(at: tempDir, title: "Multi-Run Task", supervisorTask: "Goal")
+        var (context, _) = try repository.createTask(at: tempDir, title: "Multi-Run Task", supervisorTask: "Goal")
         var task = context.activeTask!
 
         // Add first run with a step

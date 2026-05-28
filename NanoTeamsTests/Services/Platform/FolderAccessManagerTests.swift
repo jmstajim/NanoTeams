@@ -3,7 +3,7 @@ import XCTest
 @testable import NanoTeams
 
 @MainActor
-final class FolderAccessManagerTests: XCTestCase {
+final class FolderAccessManagerTests: XCTestCase, @unchecked Sendable {
 
     var manager: FolderAccessManager!
     var testSuiteName: String!
@@ -133,10 +133,11 @@ final class FolderAccessManagerTests: XCTestCase {
         UserDefaults.standard.removeObject(forKey: "NanoTeams.projectFolderBookmark.v1")
 
         // Call restore from multiple tasks
+        let captured = manager!
         await withTaskGroup(of: Void.self) { group in
             for _ in 0..<5 {
-                group.addTask { @MainActor in
-                    await self.manager.restoreLastFolderIfPossible()
+                group.addTask {
+                    await captured.restoreLastFolderIfPossible()
                 }
             }
         }

@@ -28,7 +28,7 @@ extension LLMExecutionService {
         // Re-read fresh task to get current run state (the `task` parameter
         // is a snapshot captured at step start and doesn't reflect mutations from prior iterations).
         let run: Run
-        if let freshTask = await { delegate.loadedTask(tid) }(),
+        if let freshTask = delegate.loadedTask(tid),
            runIndex < freshTask.runs.count {
             run = freshTask.runs[runIndex]
         } else {
@@ -83,7 +83,7 @@ extension LLMExecutionService {
             reasoning: reasoning
         )
 
-        let meetingResultString = await handleTeamMeeting(
+        _ = await handleTeamMeeting(
             stepID: stepID,
             topic: voting.topic,
             participantIDs: participantIDs,
@@ -98,9 +98,7 @@ extension LLMExecutionService {
         )
 
         // Read back meeting messages from persisted state
-        let updatedTask = await { () -> NTMSTask? in
-            return delegate.loadedTask(tid)
-        }()
+        let updatedTask = delegate.loadedTask(tid)
         let latestRun = updatedTask?.runs.last
         let meeting = latestRun?.meetings.last
         changeRequest.meetingID = meeting?.id
@@ -195,14 +193,12 @@ extension LLMExecutionService {
             task.runs[runIndex].steps[stepIndex].amendments.append(amendment)
 
             let amendmentContext = """
-                === AMENDMENT REQUEST ===
+                ## AMENDMENT REQUEST
                 Requested by: \(requestingRoleID)
                 Changes needed: \(changes)
                 Reasoning: \(reasoning)
 
-                Please update your work to address these changes. Your original conversation and artifacts are preserved above.
-                Produce updated artifacts that incorporate the requested changes.
-                === END AMENDMENT ===
+                Update your work to address these changes. Your original conversation and artifacts are preserved above. Produce updated artifacts that incorporate the requested changes.
                 """
 
             task.runs[runIndex].steps[stepIndex].messages.append(
@@ -256,12 +252,11 @@ extension LLMExecutionService {
                 if stepStatus == .done && (roleStatus == .done || roleStatus == .accepted || roleStatus == .needsAcceptance) {
                     // Done role: trigger amendment via revisionRequested
                     let contextMsg = """
-                        === UPSTREAM AMENDMENT NOTICE ===
+                        ## UPSTREAM AMENDMENT NOTICE
                         Role '\(sourceRoleID)' is amending their work.
                         Changes: \(changes)
 
-                        Please review and update your work if affected by these upstream changes.
-                        === END NOTICE ===
+                        Review and update your work if affected by these upstream changes.
                         """
                     task.runs[runIndex].steps[stepIndex].messages.append(
                         StepMessage(role: .supervisor, content: contextMsg)

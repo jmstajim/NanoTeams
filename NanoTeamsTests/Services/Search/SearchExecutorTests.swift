@@ -627,4 +627,134 @@ final class SearchExecutorTests: XCTestCase {
         XCTAssertEqual(out.filenameMatches.count, 0)
         XCTAssertEqual(out.matches.count, 0)
     }
+
+    // MARK: - Chunked UTF-8 reader invariants
+
+    /// Single line longer than the 1-MiB chunk threshold. A buggy chunked
+    /// accumulator could lose the suffix or produce a "split" line.
+    func testStreaming_singleLineLongerThanChunkSize_stillFindsMatchAtEnd() throws {
+        // 1.5 MiB > the 1 MiB chunk size. Pad the start with ASCII so a
+        // greedy implementation would emit a "match" inside the pad, not on
+        // the terminal query — we want to prove the suffix actually reaches
+        // the scanner.
+        let padCount = (3 * 1024 * 1024) / 2  // 1.5 MiB of 'a'
+        let padding = String(repeating: "a", count: padCount)
+        let query = "NEEDLE_MARKER_AT_END"
+        try write("huge.txt", content: padding + query + "\n")
+
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: [query],
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(out.matches.count, 1, "Streaming reader must surface a query at the end of a >1MB single line")
+        XCTAssertEqual(out.matches.first?.path, "huge.txt")
+        XCTAssertTrue(out.matches.first?.text.contains(query) == true)
+    }
+
+    /// Forces a multi-byte UTF-8 character (4 bytes: 𝄞 U+1D11E) to straddle
+    /// the 1-MB chunk boundary. A per-chunk decode would corrupt this; the
+    /// accumulate-then-decode design avoids the issue. This test pins the
+    /// guarantee so a future "optimize" to per-chunk decode would fail loudly.
+    func testStreaming_multibyteUTF8AtChunkBoundary_decodesCorrectly() throws {
+        // Aim to land the 4-byte char so its FIRST byte is at offset
+        // (1_048_576 - 2) and the last byte is at offset (1_048_576 + 1) —
+        // straddling the 1-MiB boundary. Three pad-bytes (each ASCII, 1-byte)
+        // bring us up to offset (1_048_576 - 2); then the 4-byte char.
+        let oneMiB = 1 << 20
+        let padCount = oneMiB - 2
+        let padding = String(repeating: "x", count: padCount)
+        let musicalSymbolGClef = "\u{1D11E}"  // 4 bytes in UTF-8
+        let trailer = "AFTER_MULTIBYTE_BOUNDARY"
+        try write("utf8.txt", content: padding + musicalSymbolGClef + trailer + "\n")
+
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: [trailer],
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(out.matches.count, 1)
+        XCTAssertTrue(out.matches.first?.text.contains(musicalSymbolGClef) == true,
+                      "Multi-byte UTF-8 char straddling the chunk boundary must survive intact")
+        XCTAssertTrue(out.matches.first?.text.contains(trailer) == true)
+    }
+
+    /// Non-UTF-8 input still surfaces as a "binary file" via `skippedBinaryCount`
+    /// — the streaming-reader rewrite preserves the prior classification, so a
+    /// `.bin` blob mixed in with text files doesn't pollute `skipped_files`.
+    func testStreaming_nonUTF8Input_classifiedAsBinaryNotSkipped() throws {
+        // Build a file whose first byte is 0xFF — invalid UTF-8 start byte —
+        // and whose extension is NOT in the document-extractor set, so the
+        // text-streaming path handles it.
+        let binURL = tempDir.appendingPathComponent("blob.bin")
+        var bytes = Data([0xFF, 0xFE, 0xFD, 0xFC])
+        bytes.append(contentsOf: Array(repeating: UInt8(0x00), count: 64))
+        try bytes.write(to: binURL)
+
+        // Also write a normal text file so the walk finds a candidate.
+        try write("a.txt", content: "NEEDLE in text file\n")
+
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: ["NEEDLE"],
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(out.matches.count, 1, "The text file's match must still be found")
+        XCTAssertEqual(out.matches.first?.path, "a.txt")
+        XCTAssertGreaterThanOrEqual(out.skippedBinaryCount, 1,
+            "The non-UTF-8 file must be counted as binary, not surfaced in skipped_files")
+        XCTAssertFalse(
+            out.skipped.contains(where: { $0.path == "blob.bin" }),
+            "Binary files go into the aggregate count, NOT skipped_files — preserving the prior contract."
+        )
+    }
+
+    /// Mid-walk cancellation: a pre-cancelled `Task` running
+    /// `SearchExecutor.run` over a corpus must bail without burning the rest
+    /// of the tree. Pins the `Task.isCancelled` checks at the top of
+    /// `searchFile` and inside `searchDirectory`'s loop — a regression that
+    /// drops either would silently let a paused search grep the whole project.
+    func testStreaming_cancelledTask_shortCircuitsWalk() async throws {
+        for i in 0..<32 {
+            try write("file_\(i).txt", content: "NEEDLE in file \(i)\n")
+        }
+        // Per CLAUDE.md Swift 6 notes: tests must NOT pass `self.fm` (or any
+        // non-Sendable XCTestCase property) into a `sending` parameter — use
+        // `FileManager.default` directly. The tempDir / resolver / internalDir
+        // get pulled into locals before the detached closure to satisfy the
+        // region-based isolation checker.
+        let tempDirRef = tempDir!
+        let resolverRef = resolver!
+        let internalDirRef = internalDir!
+        let task = Task.detached { () throws -> SearchExecutorOutput in
+            try SearchExecutor.run(SearchExecutorInput(
+                workFolderRoot: tempDirRef, resolver: resolverRef, fileManager: .default,
+                queries: ["NEEDLE"],
+                maxResults: 1000,
+                internalDir: internalDirRef
+            ))
+        }
+        task.cancel()
+        let out = try await task.value
+        // The first file may match before the cancel check fires; everything
+        // after the first cancel-check tick must short-circuit. 32 files of
+        // NEEDLE on an uncancelled run would produce 32 matches.
+        XCTAssertLessThan(out.matches.count, 32,
+            "Cancelled walk must short-circuit; got all \(out.matches.count) matches as if not cancelled.")
+    }
+
+    /// Unterminated last line must remain matchable. Defends against a
+    /// future "yield per line during read" optimization that might drop the
+    /// tail.
+    func testStreaming_fileWithoutTrailingNewline_matchesLastLine() throws {
+        try write("notail.txt", content: "first line\nNEEDLE in last line without newline")
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: ["NEEDLE"],
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(out.matches.count, 1)
+        XCTAssertEqual(out.matches.first?.line, 2,
+                       "The unterminated last line must be reachable as line 2.")
+    }
 }

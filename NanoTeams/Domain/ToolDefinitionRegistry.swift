@@ -1,6 +1,6 @@
 import Foundation
 
-final class ToolDefinitionRegistry {
+nonisolated final class ToolDefinitionRegistry: @unchecked Sendable {
     static let shared = ToolDefinitionRegistry()
 
     private var definitionsByID: [String: ToolDefinitionRecord] = [:]

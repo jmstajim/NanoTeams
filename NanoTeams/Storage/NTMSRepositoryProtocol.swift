@@ -8,7 +8,7 @@ import Foundation
 // `NTMSOrchestrator` as the composition root).
 
 /// Work-folder (project) lifecycle and metadata operations.
-protocol WorkFolderRepository {
+nonisolated protocol WorkFolderRepository: Sendable {
     func openOrCreateWorkFolder(at workFolderRoot: URL) throws -> WorkFolderContext
     func updateWorkFolderContext(at workFolderRoot: URL, context: String) throws -> WorkFolderContext
     func updateSelectedScheme(at workFolderRoot: URL, scheme: String?) throws -> WorkFolderContext
@@ -19,9 +19,32 @@ protocol WorkFolderRepository {
 }
 
 /// Task CRUD and active-task selection.
-protocol TaskRepository {
-    func createTask(at workFolderRoot: URL, title: String, supervisorTask: String, preferredTeamID: NTMSID?) throws -> WorkFolderContext
+nonisolated protocol TaskRepository: Sendable {
+    /// Creates a new task and returns the post-mutation snapshot together with
+    /// the freshly allocated `taskID`. The id is returned explicitly because
+    /// child tasks (delegation) do not become the active task — callers cannot
+    /// recover the id from `snapshot.activeTaskID` and must NOT infer it from
+    /// `tasksIndex.nextTaskID - 1` (race-prone, breaks if the counter ever
+    /// changes shape).
+    func createTask(
+        at workFolderRoot: URL,
+        title: String,
+        supervisorTask: String,
+        preferredTeamID: NTMSID?,
+        parentTaskID: Int?,
+        parentRoleID: String?,
+        delegationDepth: Int
+    ) throws -> (snapshot: WorkFolderContext, taskID: Int)
     func setActiveTask(at workFolderRoot: URL, taskID: Int?) throws -> WorkFolderContext
+    /// Persists `activeTaskID` to `workfolder.json` without rebuilding the full
+    /// `WorkFolderContext`. Callers on the cached fast-path already have the
+    /// authoritative in-memory snapshot, so the `assembleContext` work that
+    /// `setActiveTask` does (read settings.json + teams.json — the largest of
+    /// the three workfolder files — + tasks_index.json + active task.json) is
+    /// wasted overhead. Now that the active-task pointer is awaited rather
+    /// than fire-and-forget, that overhead directly inflates user-perceived
+    /// switch latency on the fast path.
+    func setActiveTaskID(at workFolderRoot: URL, taskID: Int?) throws
     func deleteTask(at workFolderRoot: URL, taskID: Int) throws -> WorkFolderContext
     // periphery:ignore - test-only API; production must use updateTaskOnly (CLAUDE.md invariant #6)
     func updateTask(at workFolderRoot: URL, task: NTMSTask) throws -> WorkFolderContext
@@ -30,7 +53,7 @@ protocol TaskRepository {
 }
 
 /// Tool definition storage.
-protocol ToolRepository {
+nonisolated protocol ToolRepository: Sendable {
     func updateTools(at workFolderRoot: URL, tools: [ToolDefinitionRecord]) throws -> WorkFolderContext
 }
 
@@ -39,13 +62,13 @@ protocol ToolRepository {
 /// Note: `persistBuildDiagnosticsPersisted` is intentionally NOT part of this
 /// protocol — it has no production consumers through the protocol surface and
 /// remains only as a concrete `NTMSRepository` method for direct use (e.g. tests).
-protocol ArtifactRepository {
+nonisolated protocol ArtifactRepository: Sendable {
     func persistStepArtifactFile(at workFolderRoot: URL, taskID: Int, runID: Int, roleID: String, artifactName: String, content: String) throws -> String
     func persistStepArtifactBinary(at workFolderRoot: URL, taskID: Int, runID: Int, roleID: String, artifactName: String, data: Data, fileExtension: String) throws -> String
 }
 
 /// Staged-attachment lifecycle (Quick Capture → finalized task attachments).
-protocol AttachmentRepository {
+nonisolated protocol AttachmentRepository: Sendable {
     func stageAttachment(at workFolderRoot: URL, draftID: UUID, sourceURL: URL) throws -> String
     func finalizeAttachments(at workFolderRoot: URL, taskID: Int, stagedEntries: [(path: String, isProjectReference: Bool)]) throws -> [String]
     func removeStagedItem(at workFolderRoot: URL, relativePath: String) throws
@@ -61,8 +84,6 @@ typealias NTMSRepositoryProtocol = WorkFolderRepository
     & ArtifactRepository
     & AttachmentRepository
 
-extension NTMSRepository: WorkFolderRepository,
-                          TaskRepository,
-                          ToolRepository,
-                          ArtifactRepository,
-                          AttachmentRepository {}
+// `NTMSRepository`'s sub-protocol conformances live alongside the type
+// declaration in `NTMSRepository.swift` — Swift 6 forbids declaring `Sendable`
+// conformance retroactively, and the sub-protocols here inherit from `Sendable`.

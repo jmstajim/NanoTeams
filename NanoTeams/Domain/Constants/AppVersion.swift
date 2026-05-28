@@ -13,7 +13,7 @@ import Foundation
 /// Any `v`/`V` prefix is stripped; dot-separated numeric components are compared
 /// lexicographically as integers; a trailing non-numeric component is ignored
 /// (so `1.0.0-beta` and `1.0.0` compare equal).
-enum AppVersion {
+nonisolated enum AppVersion {
     /// Current app version from `Info.plist` (`CFBundleShortVersionString`).
     /// Falls back to `"0.0.0"` when the key is missing, which makes
     /// `shouldReconcile(from: <anything>, to: current)` return `false` in test

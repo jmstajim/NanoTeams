@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Attachment Staging
 
-extension NTMSRepository {
+nonisolated extension NTMSRepository {
 
     func stageAttachment(
         at workFolderRoot: URL,
@@ -33,7 +33,8 @@ extension NTMSRepository {
         let needsCopy = stagedEntries.contains { !$0.isProjectReference }
 
         // Only create attachments dir when at least one file needs copying.
-        let attachmentsDir = paths.taskAttachmentsDir(taskID: taskID)
+        let ancestors = ancestorChain(for: taskID, paths: paths)
+        let attachmentsDir = paths.taskAttachmentsDir(taskID: taskID, ancestors: ancestors)
         if needsCopy {
             try fileManager.createDirectory(at: attachmentsDir, withIntermediateDirectories: true)
         }

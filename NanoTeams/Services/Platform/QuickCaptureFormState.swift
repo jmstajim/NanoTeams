@@ -13,11 +13,32 @@ final class QuickCaptureFormState {
     // MARK: - Task Creation Fields
 
     var title: String = ""
-    var supervisorTask: String = ""
+    /// User-editable composer text. `didSet` maintains
+    /// `hasSubmittableText` so submit-button-style views can subscribe to
+    /// the **threshold crossing** (empty ↔ non-empty) instead of every
+    /// keystroke. Reading `supervisorTask` directly inside a SwiftUI view
+    /// body subscribes that view to per-keystroke invalidation — which
+    /// rebuilds the entire `QuickCaptureFormView.body` every time the
+    /// user types a character. Routes through `hasSubmittableText` for
+    /// the validity check.
+    var supervisorTask: String = "" {
+        didSet { refreshHasSubmittableText() }
+    }
+    /// Cached threshold flag — true iff `supervisorTask` (trimmed) is
+    /// non-empty. Maintained by `supervisorTask.didSet`. Read by
+    /// `canSubmit(mode:)` and `hasTaskDraftContent` so they don't
+    /// subscribe their callers to per-keystroke invalidation.
+    private(set) var hasSubmittableText: Bool = false
     var selectedTeamID: NTMSID?
     var draftID: UUID = UUID()
     var attachments: [StagedAttachment] = []
     var clippedTexts: [String] = []
+
+    private func refreshHasSubmittableText() {
+        let computed = !supervisorTask.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard computed != hasSubmittableText else { return }
+        hasSubmittableText = computed
+    }
 
     // MARK: - Answer Mode Sub-State
 
@@ -316,26 +337,32 @@ final class QuickCaptureFormState {
 
     // MARK: - Submission Guards
 
-    /// Can the form be submitted given its current mode?
+    /// Can the form be submitted given its current mode? Reads
+    /// `hasSubmittableText` (a cached threshold flag) instead of
+    /// `supervisorTask` directly — callers in SwiftUI view bodies would
+    /// otherwise subscribe to per-keystroke invalidation through this
+    /// path, rebuilding the whole `QuickCaptureFormView.body` per
+    /// character.
     func canSubmit(mode: QuickCaptureMode) -> Bool {
-        let hasText = !supervisorTask.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         if case .supervisorAnswer = mode {
-            return hasText || !answerAttachments.isEmpty || !answerClippedTexts.isEmpty
+            return hasSubmittableText || !answerAttachments.isEmpty || !answerClippedTexts.isEmpty
         }
         // Chat-mode working lets the user queue the next message — same rules as answer mode.
         // Non-chat working has no composer, so submit is always disabled there.
         if case .taskWorking(_, let isChatMode) = mode {
             guard isChatMode else { return false }
-            return hasText || !answerAttachments.isEmpty || !answerClippedTexts.isEmpty
+            return hasSubmittableText || !answerAttachments.isEmpty || !answerClippedTexts.isEmpty
         }
-        return hasText
+        return hasSubmittableText
     }
 
     /// True when any task-draft content is present. Used to decide whether to show a
-    /// "discard draft?" confirmation on cancel.
+    /// "discard draft?" confirmation on cancel. Reads `hasSubmittableText`
+    /// rather than `supervisorTask` for the same per-keystroke-invalidation
+    /// reason as `canSubmit(mode:)`.
     var hasTaskDraftContent: Bool {
         !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || !supervisorTask.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || hasSubmittableText
             || clippedTexts.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             || !attachments.isEmpty
     }

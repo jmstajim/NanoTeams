@@ -1,6 +1,6 @@
 import Foundation
 
-extension URLRequest {
+nonisolated extension URLRequest {
     /// Sets `Authorization: Bearer <token>` if the resolver has a token for this
     /// base URL. Whitespace-only / nil tokens are treated as "no token" so an
     /// accidental empty Keychain read can't break unauthenticated servers.
