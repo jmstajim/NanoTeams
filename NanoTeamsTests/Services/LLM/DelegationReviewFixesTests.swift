@@ -358,7 +358,7 @@ final class DelegationReviewFixesTests: XCTestCase {
         XCTAssertFalse(awaiter.hasWaiters(for: 1))
     }
 
-    func test_I10_lateDeliver_afterCancelAll_isNoOp() {
+    func test_I10_lateDeliver_afterCancelAll_isNoOp() async {
         // Pre-fix would crash if cancelAll then deliver attempted to
         // double-resume; post-fix is documented as no-op.
         let awaiter = TaskCompletionAwaiter()

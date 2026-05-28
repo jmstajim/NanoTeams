@@ -20,7 +20,7 @@ final class EditableMessageTextViewTests: XCTestCase {
     /// Coordinator must propagate AppKit-side edits into the SwiftUI
     /// binding. Without this, typing in the field never updates `text`
     /// and the form sees a stale value.
-    func testCoordinator_textDidChange_propagatesToBinding() {
+    func testCoordinator_textDidChange_propagatesToBinding() async {
         let coordinator = EditableMessageTextView.Coordinator()
         let textBox = MutableBoxBinding(initial: "")
         let focusBox = MutableBoxBinding(initial: false)
@@ -43,7 +43,7 @@ final class EditableMessageTextViewTests: XCTestCase {
     /// touch `textView.string`. Load-bearing guard: re-setting `.string`
     /// would reset `selectedRange` to the end of the new string, jumping
     /// the user's caret on every SwiftUI round-trip re-render.
-    func testApplyText_equalContent_doesNotMutateTextView() {
+    func testApplyText_equalContent_doesNotMutateTextView() async {
         let coordinator = EditableMessageTextView.Coordinator()
         let textView = makeStandaloneTextView(initialText: "hello")
         coordinator.absorbInitialText("hello")
@@ -59,7 +59,7 @@ final class EditableMessageTextViewTests: XCTestCase {
     /// External text replacement MUST take the write branch — the
     /// binding-write guard exists only for round-trip no-ops, not for
     /// genuine external resets.
-    func testApplyText_differentContent_writesToTextView() {
+    func testApplyText_differentContent_writesToTextView() async {
         let coordinator = EditableMessageTextView.Coordinator()
         let textView = makeStandaloneTextView(initialText: "old")
         coordinator.absorbInitialText("old")
@@ -76,7 +76,7 @@ final class EditableMessageTextViewTests: XCTestCase {
     /// reads modifier flags from `NSApp.currentEvent` and forwards here.
     /// Tests target the seam directly so they don't have to mock
     /// `NSEvent`.
-    func testHandleReturnKey_callbackConsumed_returnsTrue() {
+    func testHandleReturnKey_callbackConsumed_returnsTrue() async {
         let coordinator = EditableMessageTextView.Coordinator()
         let textBox = MutableBoxBinding(initial: "")
         let focusBox = MutableBoxBinding(initial: false)
@@ -103,7 +103,7 @@ final class EditableMessageTextViewTests: XCTestCase {
     /// so `NSTextView`'s default `insertNewline:` runs and a literal `\n`
     /// is inserted at the caret. Eating the key here would silently
     /// suppress newlines.
-    func testHandleReturnKey_callbackNotConsumed_returnsFalse() {
+    func testHandleReturnKey_callbackNotConsumed_returnsFalse() async {
         let coordinator = EditableMessageTextView.Coordinator()
         let textBox = MutableBoxBinding(initial: "")
         let focusBox = MutableBoxBinding(initial: false)
@@ -121,7 +121,7 @@ final class EditableMessageTextViewTests: XCTestCase {
     /// ordering), but the nil-branch is exercised through this seam.
     /// Consumes (`true`) to match `MessageKeyPolicy.ignore` — both paths read
     /// as "no-op" rather than producing a stray newline.
-    func testHandleReturnKey_noCallback_consumes() {
+    func testHandleReturnKey_noCallback_consumes() async {
         let coordinator = EditableMessageTextView.Coordinator()
 
         XCTAssertTrue(
@@ -133,7 +133,7 @@ final class EditableMessageTextViewTests: XCTestCase {
     /// Only `insertNewline:` triggers the return-key path. Other
     /// commands (`deleteBackward:`, navigation, etc.) must fall through
     /// to NSTextView's defaults — never invoke the submit callback.
-    func testDoCommandBy_nonInsertNewlineSelector_doesNotInvokeCallback() {
+    func testDoCommandBy_nonInsertNewlineSelector_doesNotInvokeCallback() async {
         let coordinator = EditableMessageTextView.Coordinator()
         let textBox = MutableBoxBinding(initial: "")
         let focusBox = MutableBoxBinding(initial: false)
@@ -157,7 +157,7 @@ final class EditableMessageTextViewTests: XCTestCase {
     /// drive this method via a closure. The binding it owns gates the
     /// paste-monitor lifecycle in `MessageComposer` — getting this wrong
     /// silently breaks Cmd+V image-paste.
-    func testUpdateFocusBinding_writesValue() {
+    func testUpdateFocusBinding_writesValue() async {
         let coordinator = EditableMessageTextView.Coordinator()
         let textBox = MutableBoxBinding(initial: "")
         let focusBox = MutableBoxBinding(initial: false)
@@ -178,7 +178,7 @@ final class EditableMessageTextViewTests: XCTestCase {
     /// reactive observer downstream (e.g. `.onChange(of: isFocused)` that
     /// installs the paste monitor) would otherwise re-fire on every focus
     /// query AppKit does internally.
-    func testUpdateFocusBinding_sameValue_doesNotWrite() {
+    func testUpdateFocusBinding_sameValue_doesNotWrite() async {
         let coordinator = EditableMessageTextView.Coordinator()
         let textBox = MutableBoxBinding(initial: "")
         let focusBox = MutableBoxBinding(initial: true)
@@ -197,7 +197,7 @@ final class EditableMessageTextViewTests: XCTestCase {
 
     /// Un-configured Coordinator must not crash when a focus event
     /// arrives before the first `configure` call (early lifecycle window).
-    func testUpdateFocusBinding_unconfigured_noop() {
+    func testUpdateFocusBinding_unconfigured_noop() async {
         let coordinator = EditableMessageTextView.Coordinator()
 
         coordinator.updateFocusBinding(true)
@@ -392,7 +392,7 @@ final class EditableMessageTextViewTests: XCTestCase {
     /// re-shape, not hit the cache. The cache key is `(length, width)`,
     /// so append-only callers don't need explicit invalidation but
     /// editable callers do.
-    func testMeasureCache_invalidatedOnTextEdit_evenForSameLength() {
+    func testMeasureCache_invalidatedOnTextEdit_evenForSameLength() async {
         let coordinator = EditableMessageTextView.Coordinator()
         let textView = makeStandaloneTextView(initialText: "abcde")
         let textBox = MutableBoxBinding(initial: "abcde")
@@ -421,7 +421,7 @@ final class EditableMessageTextViewTests: XCTestCase {
     /// edit path (`textDidChange`, fired on every keystroke and IME
     /// commit) must also invalidate the cache. Without this, typing a
     /// same-length substring keeps the field at the prior wrap height.
-    func testMeasureCache_invalidatedOnTextDidChange_evenForSameLength() {
+    func testMeasureCache_invalidatedOnTextDidChange_evenForSameLength() async {
         let coordinator = EditableMessageTextView.Coordinator()
         let textView = makeStandaloneTextView(initialText: "abcde")
         let textBox = MutableBoxBinding(initial: "abcde")
@@ -455,7 +455,7 @@ final class EditableMessageTextViewTests: XCTestCase {
     /// freshest `onReturnKey` is dispatched. A regression to "set once"
     /// semantics would let an old closure submit with the wrong
     /// `canSubmit` / `isSubmitting` snapshot.
-    func testCoordinator_configure_calledTwice_swapsCallback() {
+    func testCoordinator_configure_calledTwice_swapsCallback() async {
         let coordinator = EditableMessageTextView.Coordinator()
         let textBox = MutableBoxBinding(initial: "")
         let focusBox = MutableBoxBinding(initial: false)

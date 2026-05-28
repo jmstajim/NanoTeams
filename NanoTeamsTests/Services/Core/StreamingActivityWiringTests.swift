@@ -21,7 +21,7 @@ final class StreamingActivityWiringTests: XCTestCase {
 
     // MARK: - Direct markStreamActivity
 
-    func testMarkStreamActivity_setsManagerFlag() {
+    func testMarkStreamActivity_setsManagerFlag() async {
         let store = makeOrchestrator()
         XCTAssertFalse(store.streamingPreviewManager.hasReceivedStreamActivity(for: "stepX"))
 
@@ -39,7 +39,7 @@ final class StreamingActivityWiringTests: XCTestCase {
     /// — covers the case where content streams normally but the UI hasn't
     /// flushed `pendingUI` yet (uiFlushInterval=0.2s); the indicator
     /// should already say "Generating" even with empty preview.
-    func testAppendStreamingPreview_marksActivity() {
+    func testAppendStreamingPreview_marksActivity() async {
         let store = makeOrchestrator()
         let messageID = UUID()
 
@@ -56,7 +56,7 @@ final class StreamingActivityWiringTests: XCTestCase {
         )
     }
 
-    func testAppendStreamingThinking_marksActivity() {
+    func testAppendStreamingThinking_marksActivity() async {
         let store = makeOrchestrator()
 
         store.appendStreamingThinking(stepID: "stepB", content: "thinking...")
@@ -71,7 +71,7 @@ final class StreamingActivityWiringTests: XCTestCase {
     /// tool-call marker is detected mid-flush. It also signals stream
     /// activity (the model is producing tokens, just under a marker
     /// envelope).
-    func testReplaceStreamingPreview_marksActivity() {
+    func testReplaceStreamingPreview_marksActivity() async {
         let store = makeOrchestrator()
         let messageID = UUID()
         // Seed a preview directly on the manager — orchestrator's
@@ -127,7 +127,7 @@ final class StreamingActivityWiringTests: XCTestCase {
         )
     }
 
-    func testClearStreamingPreview_clearsActivity() {
+    func testClearStreamingPreview_clearsActivity() async {
         let store = makeOrchestrator()
         store.markStreamActivity(stepID: "stepE")
         XCTAssertTrue(store.streamingPreviewManager.hasReceivedStreamActivity(for: "stepE"))
