@@ -21,7 +21,10 @@ extension NTMSOrchestrator {
             if taskID == activeTaskID {
                 applyTaskUpdate(task)
             } else {
-                self.snapshot?.loadedTasks[taskID] = task
+                // Background branch: refresh BOTH loadedTasks and the tasks-index
+                // summary so the sidebar status label for a just-restarted background
+                // task isn't stale (same lockstep rule as `mutateTask`'s else branch).
+                refreshBackgroundTaskInMemory(task)
             }
         } catch {
             self.lastErrorMessage = error.localizedDescription

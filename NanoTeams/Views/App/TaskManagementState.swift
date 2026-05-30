@@ -134,9 +134,10 @@ import Foundation
             result = result.filter { $0.title.localizedCaseInsensitiveContains(taskSearchText) }
         } else {
             switch taskFilter {
-            case .running: result = result.filter { $0.status != .done }
-            case .done:    result = result.filter { $0.status == .done }
-            case .all:     break
+            case .running:   result = result.filter { $0.status != .done }
+            case .done:      result = result.filter { $0.status == .done }
+            case .recurring: result = result.filter { $0.isRecurring }
+            case .all:       break
             }
         }
 

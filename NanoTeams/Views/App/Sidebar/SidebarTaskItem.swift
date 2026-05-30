@@ -8,4 +8,7 @@ struct SidebarTaskItem: Identifiable {
     var isChatMode: Bool = false
     var hasUnreadInput: Bool = false
     var isEngineRunning: Bool = false
+    /// True when the task has an enabled recurrence schedule — drives the
+    /// "recurring" badge in the sidebar row.
+    var isRecurring: Bool = false
 }

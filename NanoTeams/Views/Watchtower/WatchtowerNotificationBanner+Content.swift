@@ -18,6 +18,9 @@ extension WatchtowerNotificationBanner {
 
         case .taskDone:
             taskDoneContent
+
+        case .timedOut:
+            timedOutContent
         }
     }
 
@@ -131,6 +134,24 @@ extension WatchtowerNotificationBanner {
                     .controlSize(.small)
                 }
             }
+        }
+    }
+
+    var timedOutContent: some View {
+        VStack(alignment: .leading, spacing: Spacing.s) {
+            Text("This run exceeded its time limit and was paused. Review it and resume from the task.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button {
+                onViewDetails()
+            } label: {
+                Label("View Task", systemImage: "arrow.right.circle")
+                    .font(.subheadline.weight(.medium))
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
         }
     }
 

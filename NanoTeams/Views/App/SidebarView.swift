@@ -141,7 +141,8 @@ struct SidebarView: View {
                 id: task.id, title: task.title, status: task.status,
                 updatedAt: task.updatedAt, isChatMode: task.isChatMode,
                 hasUnreadInput: hasUnread,
-                isEngineRunning: isEngineRunning
+                isEngineRunning: isEngineRunning,
+                isRecurring: task.nextRecurrenceFireAt != nil
             )
         }
     }
@@ -237,7 +238,8 @@ struct SidebarView: View {
                     title: filter.displayName,
                     icon: filter.icon,
                     count: filterCount(for: filter),
-                    isSelected: taskState.taskFilter == filter
+                    isSelected: taskState.taskFilter == filter,
+                    iconOnly: filter.isIconOnly
                 ) {
                     withAnimation(Animations.quick) { taskState.taskFilter = filter }
                 }
@@ -314,9 +316,10 @@ struct SidebarView: View {
 
     private func filterCount(for filter: TaskFilter) -> Int {
         switch filter {
-        case .all:     return allTasks.count
-        case .running: return allTasks.filter { $0.status != .done }.count
-        case .done:    return allTasks.filter { $0.status == .done }.count
+        case .all:       return allTasks.count
+        case .running:   return allTasks.filter { $0.status != .done }.count
+        case .done:      return allTasks.filter { $0.status == .done }.count
+        case .recurring: return allTasks.filter { $0.isRecurring }.count
         }
     }
 

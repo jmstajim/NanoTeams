@@ -6,13 +6,15 @@ struct SidebarFilterButton: View {
     let icon: String
     let count: Int
     let isSelected: Bool
+    /// When true, the chip shows `icon` instead of `title` (e.g. the Recurring filter).
+    var iconOnly: Bool = false
     let action: () -> Void
 
     @State private var isHovered = false
 
     var body: some View {
         Button(action: action) {
-            Text(title)
+            chipLabel
                 .font(Typography.captionSemibold)
                 .lineLimit(1)
                 .padding(.horizontal, 6)
@@ -31,6 +33,15 @@ struct SidebarFilterButton: View {
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
         .accessibilityLabel("\(title), \(count) tasks")
+    }
+
+    @ViewBuilder
+    private var chipLabel: some View {
+        if iconOnly {
+            Image(systemName: icon)
+        } else {
+            Text(title)
+        }
     }
 }
 

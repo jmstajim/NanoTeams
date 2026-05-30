@@ -95,4 +95,36 @@ final class WatchtowerNotificationTypeTests: XCTestCase {
         let sut = WatchtowerNotificationType.taskDone(taskID: taskID, taskTitle: "Done")
         XCTAssertEqual(sut.dismissID, String(taskID))
     }
+
+    // MARK: - timedOut
+
+    func testTimedOut_returnsWarningColor() {
+        let sut = WatchtowerNotificationType.timedOut(taskID: 5, taskTitle: "Nightly")
+        XCTAssertEqual(sut.color(isChatMode: false), Colors.warning)
+        XCTAssertEqual(sut.color(isChatMode: true), Colors.warning)
+    }
+
+    func testTimedOut_titleIncludesTaskTitle() {
+        let sut = WatchtowerNotificationType.timedOut(taskID: 5, taskTitle: "Nightly")
+        XCTAssertTrue(sut.title(isChatMode: false).contains("Nightly"))
+        XCTAssertTrue(sut.title(isChatMode: false).lowercased().contains("timed out"))
+    }
+
+    func testTimedOut_doesNotRequireAction() {
+        let sut = WatchtowerNotificationType.timedOut(taskID: 5, taskTitle: "Nightly")
+        XCTAssertFalse(sut.requiresAction, "timed-out is informational — no required action")
+    }
+
+    func testTimedOut_dismissID_isTaskScopedAndDistinctFromTaskDone() {
+        let timedOut = WatchtowerNotificationType.timedOut(taskID: 5, taskTitle: "Nightly")
+        let done = WatchtowerNotificationType.taskDone(taskID: 5, taskTitle: "Nightly")
+        XCTAssertEqual(timedOut.dismissID, "timeout::5")
+        XCTAssertNotEqual(timedOut.dismissID, done.dismissID,
+                          "timed-out and task-done on the same task must have distinct dismiss keys")
+    }
+
+    func testTimedOut_hasIcon() {
+        let sut = WatchtowerNotificationType.timedOut(taskID: 5, taskTitle: "Nightly")
+        XCTAssertFalse(sut.icon(isChatMode: false).isEmpty)
+    }
 }

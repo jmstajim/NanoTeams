@@ -91,6 +91,36 @@ final class WatchtowerDismissLifecycleTests: XCTestCase {
         XCTAssertEqual(notifications.count, 1)
     }
 
+    // MARK: - timedOut visibility
+
+    private func containsTimedOut(_ notifications: [WatchtowerNotificationType]) -> Bool {
+        notifications.contains { if case .timedOut = $0 { return true } else { return false } }
+    }
+
+    func testTimedOut_appearsWhenRunPausedAndStamped() {
+        var run = makeRun(steps: [StepExecution(id: "a", role: .softwareEngineer, title: "S", status: .paused)])
+        run.timedOutAt = Date()
+        let task = makeTask(runs: [run])
+        XCTAssertEqual(task.derivedStatusFromActiveRun(), .paused, "sanity: paused step → paused task")
+        XCTAssertTrue(containsTimedOut(run.allWatchtowerNotifications(task: task, teamRoles: [])),
+                      "timed-out banner shows while the run is paused-by-timeout")
+    }
+
+    func testTimedOut_hiddenWhenRunResumed() {
+        var run = makeRun(steps: [StepExecution(id: "a", role: .softwareEngineer, title: "S", status: .running)])
+        run.timedOutAt = Date()
+        let task = makeTask(runs: [run])
+        XCTAssertFalse(containsTimedOut(run.allWatchtowerNotifications(task: task, teamRoles: [])),
+                       "once resumed (running again), the timed-out banner clears")
+    }
+
+    func testTimedOut_hiddenWhenNoStamp() {
+        let run = makeRun(steps: [StepExecution(id: "a", role: .softwareEngineer, title: "S", status: .paused)])
+        let task = makeTask(runs: [run])
+        XCTAssertFalse(containsTimedOut(run.allWatchtowerNotifications(task: task, teamRoles: [])),
+                       "a plain paused run (no timeout) shows no timed-out banner")
+    }
+
     // MARK: - Dismiss Lifecycle (simulates refreshNotifications logic)
 
     func testDismissedStep_filteredFromDisplay() {

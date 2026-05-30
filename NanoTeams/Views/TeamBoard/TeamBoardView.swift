@@ -30,6 +30,8 @@ struct TeamBoardView: View {
     @State private var correctRoleID: String?
     @State private var isShowingCorrectSheet: Bool = false
     @State private var correctComment: String = ""
+    // Accessed from TeamBoardToolbar's `automationButton` (extension, separate file) — keep internal.
+    @State var isShowingAutomationSheet: Bool = false
 
     /// The currently active (latest) run
     var activeRun: Run? {
@@ -61,6 +63,18 @@ struct TeamBoardView: View {
     var isFinalReviewStage: Bool {
         guard let task, !isHistoricalRun else { return false }
         return task.isReadyForFinalAcceptance
+    }
+
+    /// Window subtitle: the next scheduled recurrence run, if the task repeats.
+    /// Empty otherwise (no subtitle shown).
+    private func automationSubtitle(for task: NTMSTask) -> String {
+        guard let recurrence = task.recurrence, recurrence.isEnabled, let next = recurrence.nextFireAt else {
+            return ""
+        }
+        let when = Calendar.current.isDateInToday(next)
+            ? next.formatted(date: .omitted, time: .shortened)
+            : next.formatted(date: .abbreviated, time: .shortened)
+        return "Next run: \(when)"
     }
 
     var body: some View {
@@ -106,13 +120,14 @@ struct TeamBoardView: View {
             // Right side actions
             ToolbarItemGroup(placement: .primaryAction) {
                 acceptTaskButton
+                automationButton
                 moreActionsMenu
                 graphToggleButton
             }
         }
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         .navigationTitle(task.title)
-        .navigationSubtitle("")
+        .navigationSubtitle(automationSubtitle(for: task))
         .onAppear {
             if let roleID = store.pendingRoleSelection {
                 selectedRoleID = roleID
@@ -165,6 +180,18 @@ struct TeamBoardView: View {
                     isShowingFinalReviewSheet = false
                 }
             )
+        }
+        .sheet(isPresented: $isShowingAutomationSheet) {
+            TaskAutomationSheet(
+                currentRecurrence: task.recurrence,
+                currentTimeoutSeconds: task.runTimeoutSeconds,
+                isPresented: $isShowingAutomationSheet
+            ) { recurrence, timeout in
+                Task {
+                    await store.setTaskRecurrence(taskID: task.id, recurrence: recurrence)
+                    await store.setTaskRunTimeout(taskID: task.id, seconds: timeout)
+                }
+            }
         }
     }
 

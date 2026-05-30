@@ -28,6 +28,14 @@ nonisolated struct NTMSTask: Codable, Identifiable, Hashable {
     /// Work-folder-root-relative file paths attached to this task (images, documents, etc.).
     var attachmentPaths: [String]
 
+    /// Optional recurrence schedule. When set + enabled, the background automation
+    /// scheduler re-runs this task (appending a new `Run`) at `recurrence.nextFireAt`.
+    var recurrence: TaskRecurrence?
+
+    /// Optional max wall-clock duration for a single run, in seconds. When a run
+    /// exceeds it the run is paused and the Supervisor notified (once per run).
+    var runTimeoutSeconds: TimeInterval?
+
     /// Parentage / delegation depth bundled as a discriminated union so the
     /// invariant `(parentTaskID == nil) ↔ (parentRoleID == nil) ↔ (depth == 0)`
     /// is enforced structurally — illegal combinations (e.g. `depth == 5`
@@ -124,6 +132,8 @@ nonisolated struct NTMSTask: Codable, Identifiable, Hashable {
         acceptanceCheckpoints: Set<String>? = nil,
         preferredTeamID: NTMSID? = nil,
         attachmentPaths: [String] = [],
+        recurrence: TaskRecurrence? = nil,
+        runTimeoutSeconds: TimeInterval? = nil,
         isChatMode: Bool = false,
         generatedTeam: Team? = nil,
         parentTaskID: Int? = nil,
@@ -143,6 +153,8 @@ nonisolated struct NTMSTask: Codable, Identifiable, Hashable {
         self.acceptanceCheckpoints = acceptanceCheckpoints
         self.preferredTeamID = preferredTeamID
         self.attachmentPaths = attachmentPaths
+        self.recurrence = recurrence
+        self.runTimeoutSeconds = runTimeoutSeconds
         self.storedIsChatMode = isChatMode
         self.generatedTeam = generatedTeam
         // Aggregate the three legacy parentage parameters into the typed
@@ -174,6 +186,8 @@ nonisolated struct NTMSTask: Codable, Identifiable, Hashable {
         case acceptanceCheckpoints
         case preferredTeamID
         case attachmentPaths
+        case recurrence
+        case runTimeoutSeconds
         case isChatMode
         case generatedTeam
         // New aggregated shape (preferred on encode + decode).
@@ -207,6 +221,8 @@ nonisolated struct NTMSTask: Codable, Identifiable, Hashable {
         self.acceptanceCheckpoints = try container.decodeIfPresent(Set<String>.self, forKey: .acceptanceCheckpoints)
         self.preferredTeamID = try container.decodeIfPresent(String.self, forKey: .preferredTeamID)
         self.attachmentPaths = try container.decodeIfPresent([String].self, forKey: .attachmentPaths) ?? []
+        self.recurrence = try container.decodeIfPresent(TaskRecurrence.self, forKey: .recurrence)
+        self.runTimeoutSeconds = try container.decodeIfPresent(TimeInterval.self, forKey: .runTimeoutSeconds)
         self.storedIsChatMode = try container.decodeIfPresent(Bool.self, forKey: .isChatMode) ?? false
         self.generatedTeam = try container.decodeIfPresent(Team.self, forKey: .generatedTeam)
         // Lineage: prefer the new bundled shape, fall back to the three
@@ -242,6 +258,8 @@ nonisolated struct NTMSTask: Codable, Identifiable, Hashable {
         try container.encodeIfPresent(acceptanceCheckpoints, forKey: .acceptanceCheckpoints)
         try container.encodeIfPresent(preferredTeamID, forKey: .preferredTeamID)
         try container.encode(attachmentPaths, forKey: .attachmentPaths)
+        try container.encodeIfPresent(recurrence, forKey: .recurrence)
+        try container.encodeIfPresent(runTimeoutSeconds, forKey: .runTimeoutSeconds)
         try container.encode(storedIsChatMode, forKey: .isChatMode)
         try container.encodeIfPresent(generatedTeam, forKey: .generatedTeam)
         // Encode the new bundled shape only when non-root — keeps top-level
@@ -445,14 +463,19 @@ nonisolated struct TaskSummary: Codable, Identifiable, Hashable {
     /// Parent task ID for child tasks created via `delegate_to_team`. `nil` for top-level
     /// Supervisor tasks. Used to filter child tasks out of sidebar/watchtower lists.
     var parentTaskID: Int?
+    /// Next scheduled recurrence fire, if the task has an enabled recurrence.
+    /// `nil` otherwise. The scheduler scans this in-memory to find due tasks
+    /// cheaply, and the sidebar shows a "recurring" badge when non-nil.
+    var nextRecurrenceFireAt: Date?
 
-    init(id: Int, title: String, status: TaskStatus, updatedAt: Date = MonotonicClock.shared.now(), isChatMode: Bool = false, parentTaskID: Int? = nil) {
+    init(id: Int, title: String, status: TaskStatus, updatedAt: Date = MonotonicClock.shared.now(), isChatMode: Bool = false, parentTaskID: Int? = nil, nextRecurrenceFireAt: Date? = nil) {
         self.id = id
         self.title = title
         self.status = status
         self.updatedAt = updatedAt
         self.isChatMode = isChatMode
         self.parentTaskID = parentTaskID
+        self.nextRecurrenceFireAt = nextRecurrenceFireAt
     }
 
     init(from decoder: Decoder) throws {
@@ -463,6 +486,7 @@ nonisolated struct TaskSummary: Codable, Identifiable, Hashable {
         self.updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? MonotonicClock.shared.now()
         self.isChatMode = try container.decodeIfPresent(Bool.self, forKey: .isChatMode) ?? false
         self.parentTaskID = try container.decodeIfPresent(Int.self, forKey: .parentTaskID)
+        self.nextRecurrenceFireAt = try container.decodeIfPresent(Date.self, forKey: .nextRecurrenceFireAt)
     }
 }
 
@@ -561,7 +585,8 @@ nonisolated extension NTMSTask {
             status: derivedStatusFromActiveRun(),
             updatedAt: updatedAt,
             isChatMode: isChatMode,
-            parentTaskID: parentTaskID
+            parentTaskID: parentTaskID,
+            nextRecurrenceFireAt: recurrence.flatMap { $0.isEnabled ? $0.nextFireAt : nil }
         )
     }
 }

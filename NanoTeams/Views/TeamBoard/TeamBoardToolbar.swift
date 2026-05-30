@@ -72,6 +72,33 @@ extension TeamBoardView {
         }
     }
 
+    @ViewBuilder
+    var automationButton: some View {
+        if !isHistoricalRun, let task {
+            let isActive = (task.recurrence?.isEnabled == true) || (task.runTimeoutSeconds != nil)
+            Button {
+                isShowingAutomationSheet = true
+            } label: {
+                Label("Automation", systemImage: "clock.arrow.2.circlepath")
+                    .foregroundStyle(isActive ? Colors.accent : Color.primary)
+            }
+            .help(automationHelpText(for: task))
+        }
+    }
+
+    private func automationHelpText(for task: NTMSTask) -> String {
+        var parts: [String] = []
+        if let recurrence = task.recurrence, recurrence.isEnabled {
+            parts.append("Repeat: \(recurrence.rule.summary)")
+        }
+        if let timeout = task.runTimeoutSeconds {
+            parts.append("Timeout: \(Int((timeout / 60).rounded())) min")
+        }
+        return parts.isEmpty
+            ? "Automation — repeat this task on a schedule or limit how long a run may take"
+            : parts.joined(separator: " · ")
+    }
+
     var moreActionsMenu: some View {
         Menu {
             // New Run — always available, pauses current run first
@@ -100,11 +127,12 @@ extension TeamBoardView {
                         let isActive = run.id == activeRun?.id
                         let timeStr = run.createdAt.formatted(date: .omitted, time: .shortened)
 
+                        let timedOutSuffix = run.timedOutAt != nil ? " (timed out)" : ""
                         Button {
                             store.selectedRunID = run.id
                         } label: {
                             Label {
-                                Text("Run — \(status.displayLabel) — \(timeStr)")
+                                Text("Run — \(status.displayLabel)\(timedOutSuffix) — \(timeStr)")
                             } icon: {
                                 Image(systemName: isActive ? "checkmark.circle.fill" : status.systemImageName)
                             }

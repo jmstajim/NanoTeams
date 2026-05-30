@@ -181,6 +181,10 @@ final class NTMSOrchestrator {
     @ObservationIgnored let repository: any NTMSRepositoryProtocol
     /// Engine instances keyed by task ID.
     @ObservationIgnored var taskEngines: [Int: TeamEngine] = [:]
+    /// Background poll loop that fires due task recurrences and enforces per-run
+    /// timeouts. Owned here (extensions can't add stored properties); started on
+    /// `openWorkFolder`, cancelled on the next open. See `NTMSOrchestrator+Scheduling`.
+    @ObservationIgnored var automationPollTask: Task<Void, Never>?
     /// Notification side-channel for synchronous delegation: `handleDelegateToTeam`
     /// awaits this when it spawns a child task. Wired in `engineForTask` — the
     /// engine's `onStateChanged` callback delivers terminal / `.needsSupervisorInput`
@@ -550,7 +554,10 @@ final class NTMSOrchestrator {
             }
             mutate(&task)
             task.updatedAt = MonotonicClock.shared.now()
-            snapshot?.loadedTasks[taskID] = task
+            // Update the in-memory snapshot synchronously on @MainActor (before the
+            // detached disk write) — both `loadedTasks` AND the tasks index. See
+            // `refreshBackgroundTaskInMemory` for why the index must move in lockstep.
+            refreshBackgroundTaskInMemory(task)
             let repoCopy = repository
             let taskCopy = task
             do {
@@ -565,6 +572,28 @@ final class NTMSOrchestrator {
                 return false
             }
         }
+    }
+
+    /// Refreshes the in-memory snapshot for a **background** (non-active) task —
+    /// both `loadedTasks` AND the tasks-index summary — synchronously on @MainActor.
+    /// This is the background-branch mirror of what `applyTaskUpdate` does for the
+    /// active task. Every background write path (`mutateTask`'s else branch,
+    /// `createNewRun`) must route through here: the sidebar reads `taskSummaries`
+    /// from `snapshot.tasksIndex`, so a path that updates `loadedTasks` alone leaves
+    /// a stale status label for any non-active task mutating in the background —
+    /// recurrence/timeout firing, delegation children, and parallel multi-task runs
+    /// all hit this. Keeping it in one helper stops the two call sites from drifting.
+    func refreshBackgroundTaskInMemory(_ task: NTMSTask) {
+        guard var snap = snapshot else { return }
+        snap.loadedTasks[task.id] = task
+        let summary = task.toSummary()
+        if let idx = snap.tasksIndex.tasks.firstIndex(where: { $0.id == summary.id }) {
+            snap.tasksIndex.tasks[idx] = summary
+        } else {
+            snap.tasksIndex.tasks.append(summary)
+        }
+        snap.tasksIndex.tasks.sort(by: { $0.updatedAt > $1.updatedAt })
+        snapshot = snap
     }
 
     // MARK: - Work Folder Mutation

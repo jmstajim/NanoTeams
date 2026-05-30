@@ -23,6 +23,12 @@ nonisolated struct Run: Codable, Identifiable, Hashable {
     /// The team ID this run was created for.
     var teamID: NTMSID?
 
+    /// Set when the run-timeout watchdog paused this run for exceeding its
+    /// task's `runTimeoutSeconds`. Durable marker — guards the watchdog from
+    /// re-firing on the same run, drives the Watchtower "timed out" notification
+    /// and the Run-History "(timed out)" label.
+    var timedOutAt: Date?
+
     init(
         id: Int,
         createdAt: Date = MonotonicClock.shared.now(),
@@ -32,7 +38,8 @@ nonisolated struct Run: Codable, Identifiable, Hashable {
         changeRequests: [ChangeRequest] = [],
         consultationChats: [String: RoleConsultationChat] = [:],
         roleStatuses: [String: RoleExecutionStatus] = [:],
-        teamID: NTMSID? = nil
+        teamID: NTMSID? = nil,
+        timedOutAt: Date? = nil
     ) {
         self.id = id
         self.createdAt = createdAt
@@ -43,6 +50,7 @@ nonisolated struct Run: Codable, Identifiable, Hashable {
         self.consultationChats = consultationChats
         self.roleStatuses = roleStatuses
         self.teamID = teamID
+        self.timedOutAt = timedOutAt
     }
 
     enum CodingKeys: String, CodingKey {
@@ -55,6 +63,7 @@ nonisolated struct Run: Codable, Identifiable, Hashable {
         case consultationChats
         case roleStatuses
         case teamID
+        case timedOutAt
     }
 
     init(from decoder: Decoder) throws {
@@ -68,6 +77,7 @@ nonisolated struct Run: Codable, Identifiable, Hashable {
         self.consultationChats = try c.decodeIfPresent([String: RoleConsultationChat].self, forKey: .consultationChats) ?? [:]
         self.roleStatuses = try c.decodeIfPresent([String: RoleExecutionStatus].self, forKey: .roleStatuses) ?? [:]
         self.teamID = try c.decodeIfPresent(String.self, forKey: .teamID)
+        self.timedOutAt = try c.decodeIfPresent(Date.self, forKey: .timedOutAt)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -81,6 +91,7 @@ nonisolated struct Run: Codable, Identifiable, Hashable {
         try c.encode(consultationChats, forKey: .consultationChats)
         try c.encode(roleStatuses, forKey: .roleStatuses)
         try c.encodeIfPresent(teamID, forKey: .teamID)
+        try c.encodeIfPresent(timedOutAt, forKey: .timedOutAt)
     }
 }
 

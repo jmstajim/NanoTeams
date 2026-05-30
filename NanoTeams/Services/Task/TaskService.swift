@@ -53,6 +53,8 @@ final class TaskService {
             filtered = topLevelOnly.filter { $0.status != .done }
         case .done:
             filtered = topLevelOnly.filter { $0.status == .done }
+        case .recurring:
+            filtered = topLevelOnly.filter { $0.nextRecurrenceFireAt != nil }
         case .all:
             filtered = topLevelOnly
         }

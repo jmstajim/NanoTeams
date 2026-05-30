@@ -29,6 +29,7 @@ extension NTMSOrchestrator {
 
     func openWorkFolder(_ url: URL) async {
         stopAllEngines()
+        stopAutomationScheduler()
         llmExecutionService.cancelAllExecutions()
         await tearDownSearchIndexCoordinator()
         workFolderURL = url
@@ -66,6 +67,11 @@ extension NTMSOrchestrator {
             // immediately after restart. Without this, child tasks only
             // appear in memory when a fresh `delegate_to_team` runs.
             await ensureDelegationDescendantsLoaded(of: self.activeTaskID)
+
+            // Start recurring-task scheduling + run-timeout watchdog for this
+            // folder. Runs after descendants are loaded so the scheduler's
+            // eviction never drops a task the active feed/graph still needs.
+            await startAutomationScheduler()
 
             if !snapshot.deferredReconcileTeamIDs.isEmpty {
                 let count = snapshot.deferredReconcileTeamIDs.count

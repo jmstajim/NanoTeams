@@ -68,11 +68,19 @@ struct SidebarTaskRow: View {
     var body: some View {
         HStack(spacing: Spacing.s) {
             VStack(alignment: .leading, spacing: Spacing.xxs) {
-                Text(task.title)
-                    .font(isActive ? Typography.subheadlineSemibold : Typography.subheadlineMedium)
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .layoutPriority(1)
+                HStack(spacing: Spacing.xxs) {
+                    Text(task.title)
+                        .font(isActive ? Typography.subheadlineSemibold : Typography.subheadlineMedium)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .layoutPriority(1)
+                    if task.isRecurring {
+                        Image(systemName: "repeat")
+                            .font(Typography.caption2)
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel("Recurring")
+                    }
+                }
                 statusMetadataRow
             }
             Spacer(minLength: 0)

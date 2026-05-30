@@ -8,6 +8,7 @@ nonisolated enum WatchtowerNotificationType {
     case acceptance(stepID: String, roleID: String, roleName: String)
     case failed(stepID: String, role: Role, errorMessage: String?)
     case taskDone(taskID: Int, taskTitle: String)
+    case timedOut(taskID: Int, taskTitle: String)
 
     func icon(isChatMode: Bool) -> String {
         switch self {
@@ -15,6 +16,7 @@ nonisolated enum WatchtowerNotificationType {
         case .acceptance: return "hand.raised.circle.fill"
         case .failed: return "exclamationmark.triangle.fill"
         case .taskDone: return "checkmark.circle.fill"
+        case .timedOut: return "clock.badge.exclamationmark.fill"
         }
     }
 
@@ -24,6 +26,7 @@ nonisolated enum WatchtowerNotificationType {
         case .acceptance: return Colors.purple
         case .failed: return Colors.error
         case .taskDone: return Colors.success
+        case .timedOut: return Colors.warning
         }
     }
 
@@ -37,13 +40,15 @@ nonisolated enum WatchtowerNotificationType {
             return "\(role.displayName) encountered an error"
         case .taskDone(_, let taskTitle):
             return "\(taskTitle) completed"
+        case .timedOut(_, let taskTitle):
+            return "\(taskTitle) timed out"
         }
     }
 
     var requiresAction: Bool {
         switch self {
         case .supervisorInput, .acceptance, .taskDone: return true
-        case .failed: return false
+        case .failed, .timedOut: return false
         }
     }
 
@@ -60,6 +65,7 @@ nonisolated enum WatchtowerNotificationType {
         case .acceptance(let stepID, _, _): return stepID
         case .failed(let stepID, _, _): return stepID
         case .taskDone(let taskID, _): return String(taskID)
+        case .timedOut(let taskID, _): return "timeout::\(taskID)"
         }
     }
 }
@@ -128,6 +134,13 @@ extension Run {
         // Task completed — all roles accepted, awaiting final Supervisor acceptance (skip in chat mode)
         if !isChatMode && task.isReadyForFinalAcceptance {
             notifications.append(.taskDone(taskID: task.id, taskTitle: task.title))
+        }
+
+        // Run paused by the run-timeout watchdog. Shows only while the run is
+        // actually paused-by-timeout; clears once the Supervisor resumes (the
+        // task leaves `.paused`) so it doesn't linger as historical noise.
+        if timedOutAt != nil && task.derivedStatusFromActiveRun() == .paused {
+            notifications.append(.timedOut(taskID: task.id, taskTitle: task.title))
         }
 
         return notifications

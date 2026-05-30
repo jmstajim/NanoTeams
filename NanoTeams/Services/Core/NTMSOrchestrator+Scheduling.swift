@@ -1,0 +1,231 @@
+import Foundation
+
+/// Background automation owned by the orchestrator: recurring-task scheduling
+/// (re-run the same task on a schedule) + per-run timeout enforcement.
+///
+/// One poll loop drives both. It scans the **in-memory** `snapshot.tasksIndex`
+/// (authoritative — every `mutateTask` path refreshes it synchronously on
+/// `@MainActor`) for due recurrences, and `engineState.taskEngineStates` for
+/// over-budget runs. Cadence is a fixed once-a-minute tick, matching the
+/// 1-minute minimum schedule granularity.
+///
+/// Scheduling comparisons use real wall-clock `Date()` (NOT `MonotonicClock`,
+/// which only guarantees strict ordering of model timestamps). The evaluation
+/// entry points take an injectable `now:` so tests stay deterministic.
+extension NTMSOrchestrator {
+
+    /// Seconds from `reference` until the next wall-clock minute boundary (`:00`).
+    /// The poll loop sleeps this long so its wakes are ALIGNED to minute
+    /// boundaries — the trigger fires on the boundary independent of when the
+    /// app/scheduler started. This is phase-alignment, NOT a finer tick: the
+    /// cadence stays once a minute, it's just pinned to the wall clock.
+    static func secondsUntilNextMinuteBoundary(from reference: Date = Date()) -> TimeInterval {
+        let rem = reference.timeIntervalSince1970.truncatingRemainder(dividingBy: 60)
+        return rem == 0 ? 60 : 60 - rem
+    }
+
+    // MARK: - Public API (UI)
+
+    /// Sets (or clears, when `nil`) the task's recurrence and recomputes its
+    /// next fire time. Called from the task-detail automation sheet.
+    func setTaskRecurrence(taskID: Int, recurrence: TaskRecurrence?) async {
+        await ensureTaskLoaded(taskID)
+        guard loadedTask(taskID) != nil else { return }
+        await mutateTask(taskID: taskID) { task in
+            var updated = recurrence
+            updated?.reschedule(after: Date())
+            task.recurrence = updated
+        }
+    }
+
+    /// Sets (or clears, when `nil`) the task's per-run timeout in seconds.
+    func setTaskRunTimeout(taskID: Int, seconds: TimeInterval?) async {
+        await ensureTaskLoaded(taskID)
+        guard loadedTask(taskID) != nil else { return }
+        await mutateTask(taskID: taskID) { $0.runTimeoutSeconds = seconds }
+    }
+
+    // MARK: - Lifecycle
+
+    /// Runs the skip-missed reconcile once, then starts the once-a-minute poll
+    /// loop. Idempotent — cancels any prior loop first. Called from `openWorkFolder`.
+    func startAutomationScheduler() async {
+        stopAutomationScheduler()
+        await reconcileMissedRecurrences()
+        automationPollTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                // Sleep until the next minute boundary so wakes are aligned to
+                // the wall clock (the trigger fires on the boundary regardless of
+                // when scheduling started), not drifting from the start time.
+                try? await Task.sleep(for: .seconds(NTMSOrchestrator.secondsUntilNextMinuteBoundary()))
+                // Honor cancellation that fired while we slept (work-folder
+                // switch / close) before touching any state.
+                guard !Task.isCancelled, let self else { return }
+                await self.evaluateDueRecurrences()
+                await self.evaluateRunTimeouts()
+            }
+        }
+    }
+
+    func stopAutomationScheduler() {
+        automationPollTask?.cancel()
+        automationPollTask = nil
+    }
+
+    // MARK: - Recurrence evaluation
+
+    /// Skip-missed pass on folder open: a recurrence whose slot already passed
+    /// while the app was closed is advanced to the next future slot WITHOUT
+    /// firing. Runs before the loop ticks, so anything due at open is treated as
+    /// "missed" (skip), and only slots that arrive while the app is live fire.
+    func reconcileMissedRecurrences(now: Date = Date()) async {
+        for taskID in recurringTaskIDsDue(now: now) {
+            await ensureTaskLoaded(taskID)
+            guard loadedTask(taskID) != nil else { continue }
+            await mutateTask(taskID: taskID) { $0.recurrence?.reschedule(after: now) }
+            evictIfReclaimable(taskID)
+        }
+    }
+
+    /// Steady-state pass: fire every recurrence whose slot has arrived.
+    func evaluateDueRecurrences(now: Date = Date()) async {
+        for taskID in recurringTaskIDsDue(now: now) {
+            await fireRecurrence(taskID: taskID, now: now)
+        }
+    }
+
+    /// Top-level task IDs whose enabled recurrence is due at `now`, read from the
+    /// authoritative in-memory index. Child/delegated tasks never recur.
+    private func recurringTaskIDsDue(now: Date) -> [Int] {
+        guard let summaries = snapshot?.tasksIndex.tasks else { return [] }
+        return summaries
+            .filter { $0.parentTaskID == nil }
+            .filter { summary in summary.nextRecurrenceFireAt.map { $0 <= now } ?? false }
+            .map(\.id)
+    }
+
+    private func fireRecurrence(taskID: Int, now: Date) async {
+        await ensureTaskLoaded(taskID)
+        // Re-read + re-check against the loaded task: the recurrence may have
+        // been disabled between the index scan and now (fire-vs-disable race).
+        guard let recurrence = loadedTask(taskID)?.recurrence, recurrence.isDue(now: now) else {
+            evictIfReclaimable(taskID)
+            return
+        }
+
+        let state = taskEngineStates[taskID]
+        // The ONLY thing that blocks the next occurrence is the previous one still
+        // ACTIVELY executing (`.running`, or a team still being generated).
+        // Everything else — parked awaiting acceptance / a supervisor answer,
+        // paused, done, failed — is superseded by the schedule: restart a fresh
+        // run. (Per product decision: "restart on the timer without restrictions,
+        // unless it's still running.")
+        if state == .running || isGeneratingTeam(taskID: taskID) {
+            await mutateTask(taskID: taskID) { $0.recurrence?.reschedule(after: now) }
+            evictIfReclaimable(taskID)
+            return
+        }
+
+        // Tear down the previous occurrence so the fresh run starts clean and
+        // `startRun`'s own re-entry guard (which bails on .needsAcceptance /
+        // .needsSupervisorInput) doesn't skip. The prior run stays in history.
+        //
+        // Use the RECURSIVE `stopEngineForTask` (stops descendants first, then
+        // `stopEngine` + `cancelExecutions` per node) so an in-flight delegation's
+        // child engines aren't orphaned. Also drop the prior occurrence's queued
+        // Supervisor messages — otherwise they re-inject into the new run as
+        // phantom answers (matches `removeTask`'s cleanup).
+        if state != nil {
+            quickCaptureFormState?.clearQueuedMessages(for: taskID)
+            stopEngineForTask(taskID)
+        }
+
+        // Fire: re-run the SAME task. `startRun` appends a fresh Run (clearing
+        // closedAt) and starts the engine in the background.
+        let runsBefore = loadedTask(taskID)?.runs.count ?? 0
+        await startRun(taskID: taskID)
+
+        // Stamp `lastFiredAt` ONLY if a run actually started. `startRun` is
+        // fire-and-forget with several silent early-returns (no work folder,
+        // generation reserve failed, a residual engine guard); recording a fire
+        // that produced no run would advance the schedule AND surface "last run:
+        // now" while nothing happened — the classic "looks healthy, did nothing"
+        // trap. The slot is rescheduled either way so we don't re-fire next tick.
+        let didStart = (loadedTask(taskID)?.runs.count ?? 0) > runsBefore
+            || taskEngineStates[taskID] == .running
+            || isGeneratingTeam(taskID: taskID)
+        await mutateTask(taskID: taskID) { task in
+            if didStart { task.recurrence?.lastFiredAt = now }
+            task.recurrence?.reschedule(after: now)
+        }
+        guard didStart else {
+            lastErrorMessage = "Recurring task '\(loadedTask(taskID)?.title ?? "#\(taskID)")' could not start its scheduled run."
+            evictIfReclaimable(taskID)
+            return
+        }
+        // Now running — keep it loaded (no evict).
+    }
+
+    // MARK: - Run timeout watchdog
+
+    /// Pauses any active run that has exceeded its task's `runTimeoutSeconds`,
+    /// measured as wall-clock from `run.createdAt` (all waits/pauses counted).
+    /// Fires once per run via `Run.timedOutAt`, then notifies the Supervisor.
+    func evaluateRunTimeouts(now: Date = Date()) async {
+        let activeIDs = taskEngineStates
+            .filter { $0.value == .running || $0.value == .needsSupervisorInput }
+            .map(\.key)
+        var timedOutTitles: [String] = []
+        for taskID in activeIDs {
+            guard let task = loadedTask(taskID),
+                  let timeout = task.runTimeoutSeconds,
+                  let run = task.runs.last,
+                  run.timedOutAt == nil,
+                  now.timeIntervalSince(run.createdAt) > timeout
+            else { continue }
+
+            await mutateTask(taskID: taskID) { task in
+                guard let i = task.runs.indices.last else { return }
+                task.runs[i].timedOutAt = now
+                task.runs[i].updatedAt = MonotonicClock.shared.now()
+            }
+            await pauseRun(taskID: taskID)
+            timedOutTitles.append(task.title)
+        }
+        // One combined banner. Multiple parallel runs can exceed budget in the
+        // same tick (CLAUDE.md #45) and `lastInfoMessage` is a single slot — a
+        // per-task assignment would clobber all but the last, so only one timeout
+        // would be announced. The durable per-run Watchtower `.timedOut`
+        // notification still surfaces each one individually.
+        switch timedOutTitles.count {
+        case 0: break
+        case 1: lastInfoMessage = "Task '\(timedOutTitles[0])' paused — it exceeded its run timeout."
+        default: lastInfoMessage = "\(timedOutTitles.count) tasks paused — they exceeded their run timeouts."
+        }
+    }
+
+    // MARK: - Helpers
+
+    private func isTaskEngineActive(_ taskID: Int) -> Bool {
+        switch taskEngineStates[taskID] {
+        case .running, .needsAcceptance, .needsSupervisorInput: return true
+        default: return false
+        }
+    }
+
+    /// Drops a background, non-running task from `loadedTasks` after the
+    /// scheduler touched it, so reconcile/skip passes don't accumulate unviewed
+    /// task blobs in memory. Never evicts the active task, a running/awaiting
+    /// task, a generating task, or a delegation descendant of the active task
+    /// (the active task's activity feed + graph need those loaded).
+    private func evictIfReclaimable(_ taskID: Int) {
+        guard taskID != activeTaskID else { return }
+        if isTaskEngineActive(taskID) { return }
+        if isGeneratingTeam(taskID: taskID) { return }
+        if let activeID = activeTaskID,
+           snapshot?.tasksIndex.descendantIDs(of: activeID).contains(taskID) == true {
+            return
+        }
+        evictLoadedTask(taskID)
+    }
+}
