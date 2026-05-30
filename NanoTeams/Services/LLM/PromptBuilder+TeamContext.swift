@@ -28,7 +28,12 @@ nonisolated extension PromptBuilder {
                 guard let team = team else { return [] }
                 return team.rolesRequiring(artifactName: artifactName).map(\.name)
             }
-            let uniqueConsumers = Array(Set(consumers))
+            // Dedup while PRESERVING team-declaration order. `Array(Set(...))`
+            // iterates in per-process hash-seed order, so the same team rendered
+            // twice (preview vs wire) could emit a different "Feeds into" order —
+            // a non-deterministic byte mismatch that fails CI intermittently.
+            var seen = Set<String>()
+            let uniqueConsumers = consumers.filter { seen.insert($0).inserted }
             if !uniqueConsumers.isEmpty {
                 parts.append("Feeds into: \(uniqueConsumers.joined(separator: ", "))")
             }
