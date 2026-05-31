@@ -79,12 +79,24 @@ nonisolated enum ToolCallParsingHelpers {
         while end < s.endIndex {
             let ch = s[end]
 
-            if inString {
-                if escape {
-                    escape = false
-                } else if ch == "\\" {
-                    escape = true
-                } else if ch == "\"" {
+            // Handle escapes uniformly — inside AND outside strings. Valid JSON only
+            // contains `\` inside string literals, but the gemma-4-26b-a4b over-escape
+            // defect emits `\"` at structural positions (`,\"key\":\"value\"`). Treating a
+            // backslash-escaped quote as a literal pair everywhere stops that stray `\"`
+            // from spuriously OPENING a string — without this the walker swallows the
+            // closing braces as string content, never balances, and drops the whole tool
+            // call before `parseToolCallFromJSON`'s repair pass can recover it. For valid
+            // JSON the outside-string branch is unreachable (no `\` there), so for valid
+            // input this is a pure superset of the prior behaviour and inside a string it is
+            // byte-identical. (Behaviour differs only for already-malformed input — e.g. a
+            // stray `\` before a structural close now returns nil instead of a broken span —
+            // which fails closed, the correct outcome.)
+            if escape {
+                escape = false
+            } else if ch == "\\" {
+                escape = true
+            } else if inString {
+                if ch == "\"" {
                     inString = false
                 }
             } else {
@@ -163,6 +175,13 @@ nonisolated enum ToolCallParsingHelpers {
            let strictDict = object as? [String: Any]
         {
             dict = strictDict
+            // Observability: when sanitize had to change the bytes to make this parse, the
+            // input was strict-broken (only control-char defects alter sanitize's output, and
+            // valid JSON never contains raw control chars) — so this is a sanitize-LAYER
+            // recovery that the regex repair chain never saw. Count it so the train-app audit's
+            // repair-rate metric isn't blind to RC3-class fixes. Mutually exclusive with the
+            // `parseAfterRepair` bump below (that branch only runs when strict parse fails).
+            if sanitized != jsonText { _bumpRepairFireCount() }
         } else if let repairedDict = parseAfterRepair(sanitized) {
             // Strict parse failed. Apply known model-defect repairs and retry —
             // the program covers the model's weakness rather than asking it to
@@ -170,6 +189,17 @@ nonisolated enum ToolCallParsingHelpers {
             // the tool call dispatches normally and the model never knows its
             // first-emit JSON was broken.
             dict = repairedDict
+        } else if let reescapedDict = parseAfterContentReescape(jsonText) {
+            // True last resort: the model emitted a large `content`/`new_text` field with raw
+            // (unescaped) quotes and/or control chars — which the narrow regex chain above
+            // cannot fix. Re-escape that ONE field by structure. Gated by strict re-validation
+            // + a known-arg-key check (see the function), so a malformed reconstruction fails
+            // closed rather than dispatching a corrupted call. NOTE: the gate blocks fabricated
+            // UNKNOWN keys, not all truncation — when the field value itself contains a
+            // `","<knownkey>":"…"`-shaped fragment the split is inherently ambiguous; see the
+            // function doc for why that residual risk is accepted by design.
+            dict = reescapedDict
+            _bumpRepairFireCount()
         } else {
             return nil
         }
@@ -321,10 +351,15 @@ nonisolated enum ToolCallParsingHelpers {
 
     // MARK: - Defect Repair (covers known model weaknesses)
 
-    /// Counts how many times `parseAfterRepair` recovered a parseable envelope
-    /// from a strict-broken payload. Bumped on every successful repair, never
-    /// on no-op transforms. Read via `repairFireCount` for diagnostics; reset
-    /// via `_resetRepairFireCount()` in tests.
+    /// Counts how many times a JSON recovery turned a strict-broken payload into a
+    /// parseable one — covering all THREE recovery layers `parseToolCallFromJSON` runs:
+    /// (1) a sanitize-only recovery (bumps when `sanitizeJSONControlCharacters` alone makes
+    /// the bytes parse, i.e. an RC3-class `\`+control fix), (2) the `parseAfterRepair` regex
+    /// chain, and (3) the `parseAfterContentReescape` last-resort field re-escape. The three
+    /// live in mutually exclusive arms of that function's if/else-if chain, so a recovered
+    /// envelope counts exactly once. Never bumped on a no-op transform (valid JSON leaves
+    /// sanitize output unchanged). Read via `repairFireCount` for diagnostics; reset via
+    /// `_resetRepairFireCount()` in tests.
     ///
     /// The counter is **process-global** (the parser is stateless), so it
     /// reflects total repair activity across all roles and tasks in the current
@@ -372,14 +407,91 @@ nonisolated enum ToolCallParsingHelpers {
         return dict
     }
 
+    /// Tool arguments the file/artifact tools accept (`write_file` / `edit_file` /
+    /// `delete_file` / `create_artifact`). A recovered envelope whose `arguments` contains any
+    /// key OUTSIDE this set means the re-escape split landed inside the content and fabricated
+    /// a spurious key — so it's rejected. This blocks fabricated UNKNOWN keys; it does NOT
+    /// catch every truncation (a split that absorbs the content's own `","<knownkey>":"…"`
+    /// fragment still passes — see `parseAfterContentReescape`'s residual-ambiguity note).
+    ///
+    /// Hand-maintained: must stay a superset of those tools' schema property keys. A new schema
+    /// arg added without updating this set would silently start rejecting otherwise-recoverable
+    /// envelopes. Pinned by `testKnownToolArgumentKeys_coversFileAndArtifactToolSchemas`.
+    private static let knownToolArgumentKeys: Set<String> = [
+        "content", "new_text", "old_text", "path", "format", "name", "replace_all", "must_exist",
+    ]
+
+    #if DEBUG
+    /// Read-only access to `knownToolArgumentKeys` for the schema-sync guard test
+    /// (Swift `private` is file-scoped — the test lives in another file).
+    static var _knownToolArgumentKeysForTesting: Set<String> { knownToolArgumentKeys }
+    #endif
+
+    /// Last-resort recovery for `gemma-4-26b-a4b`'s most severe defect: a large `content` /
+    /// `new_text` / `old_text` field emitted with RAW (unescaped) double quotes and/or raw
+    /// control characters — the model wrote the value as if it were not inside a JSON string
+    /// at all (verbatim 15BED3EA). The narrow regex repairs can't fix arbitrary unescaped
+    /// quotes, but the SURROUNDING tool-call structure is known and clean, so we re-escape
+    /// just that one field's value.
+    ///
+    /// Strategy: locate `"<field>":"`, then try every later `"` as the value's closing quote;
+    /// for each, escape the candidate blob with `escapeForJSON` and re-validate the whole
+    /// envelope. Among the reconstructions that parse into a real tool call whose `arguments`
+    /// keys are ALL known (no fabricated key), keep the one with the MOST arguments — that is
+    /// the split that preserves every trailing arg (`format`/`name`/`path`) rather than
+    /// absorbing them into the blob. Returns `nil` (fail closed) if none qualify.
+    ///
+    /// Safety: runs only after strict parse AND the regex chain both fail (valid JSON never
+    /// reaches here); every result is strict-re-validated, so it can only produce valid JSON
+    /// or `nil` — never malformed bytes. Operates on the RAW `jsonText` (not the sanitized
+    /// form) so `escapeForJSON` handles raw newlines and quotes in one pass without
+    /// double-escaping.
+    ///
+    /// Residual ambiguity (accepted by design): when the field value itself contains a
+    /// `","<knownkey>":"…"`-shaped fragment, the bytes are identical whether that fragment is
+    /// real trailing args or literal content — so the max-arg split can truncate the content
+    /// and treat the fragment as args. The known-key gate only blocks fabricated UNKNOWN keys,
+    /// not this case. Biasing the other way (longest content) would break the observed gemma
+    /// defect (a real `","path":"…"` tail this recovery exists to preserve), so max-arg is the
+    /// better default and the truncation case is left as documented residual risk. Current
+    /// behaviour pinned by `testReescape_embeddedKnownKeyFragment_residualAmbiguity`.
+    static func parseAfterContentReescape(_ raw: String) -> [String: Any]? {
+        for field in ["content", "new_text", "old_text"] {
+            guard let opener = raw.range(of: "\"\(field)\":\"") else { continue }
+            let valueStart = opener.upperBound
+            let prefix = String(raw[..<valueStart])
+            var best: (argCount: Int, dict: [String: Any])?
+            var cursor = valueStart
+            var tried = 0
+            while tried < 500, let quote = raw[cursor...].firstIndex(of: "\"") {
+                tried += 1
+                let blob = String(raw[valueStart..<quote])
+                let reconstructed = prefix + JSONUtilities.escapeForJSON(blob) + String(raw[quote...])
+                if let dict = JSONUtilities.parseJSONDictionary(reconstructed),
+                   dict["name"] is String,
+                   let args = dict["arguments"] as? [String: Any],
+                   args[field] != nil,
+                   Set(args.keys).isSubset(of: knownToolArgumentKeys),
+                   best == nil || args.count > best!.argCount
+                {
+                    best = (args.count, dict)
+                }
+                cursor = raw.index(after: quote)
+            }
+            if let best { return best.dict }
+        }
+        return nil
+    }
+
     /// Applies all known repair patterns. Pure string transform — does NOT
     /// validate the result. The caller re-parses with `JSONSerialization` and
-    /// falls back to `nil` if repair didn't help. Both repairs are idempotent
+    /// falls back to `nil` if repair didn't help. All three repairs are idempotent
     /// on already-fixed input, so the order is not load-bearing today.
     static func repairCommonJSONDefects(_ raw: String) -> String {
         var s = raw
         s = repairUnescapedHTMLAttributeClose(s)
         s = repairMissingQuoteBeforeJSONKey(s)
+        s = repairOverescapedKeyValuePair(s)
         return s
     }
 
@@ -424,19 +536,51 @@ nonisolated enum ToolCallParsingHelpers {
     /// proceed. Verbatim broken payload pinned in
     /// `HarmonyJSONDefectRepairTests.verbatimMissingKeyQuotePayload`.
     ///
-    /// Detection: a JSON property separator (`{` or `,`) followed *directly*
-    /// (no intervening `"`) by an unquoted identifier-shape token, then a
-    /// closing `":`. Identifier shape (`[A-Za-z_][A-Za-z0-9_]*`) is narrow
-    /// enough to avoid matching free-text inside string values; the trailing
-    /// `":` confirms the model intended this as a key.
+    /// Detection: a JSON property separator (`{` or `,`), then optional insignificant
+    /// whitespace (`\s*` — JSON allows it between tokens, and models emit `, key":`), then —
+    /// with no intervening `"` — an unquoted identifier-shape token, then a closing `":`.
+    /// Identifier shape (`[A-Za-z_][A-Za-z0-9_]*`) is narrow enough to avoid matching
+    /// free-text inside string values; the trailing `":` confirms the model intended this as
+    /// a key. The replacement drops the matched whitespace (insignificant in JSON).
     ///
     /// Replacement re-inserts the missing opening quote.
     static func repairMissingQuoteBeforeJSONKey(_ raw: String) -> String {
         // Same try!-on-compile-time-literal rationale as above.
-        let regex = try! NSRegularExpression(pattern: #"([{,])([A-Za-z_][A-Za-z0-9_]*)":"#)
+        let regex = try! NSRegularExpression(pattern: #"([{,])\s*([A-Za-z_][A-Za-z0-9_]*)":"#)
         let range = NSRange(raw.startIndex..., in: raw)
         return regex.stringByReplacingMatches(
             in: raw, range: range, withTemplate: #"$1"$2":"#)
+    }
+
+    /// `gemma-4-26b-a4b` defect: the model backslash-escapes the quotes of an ENTIRE
+    /// key:value pair at a property boundary, e.g.
+    ///   {"content":"…",\"path\":\"src/core/__init__.py\"}
+    /// The `content` pair is correctly formed; only `path` is over-escaped. Each `\"`
+    /// sits at JSON-structural position (key open/close, value open/close) where a
+    /// backslash is illegal, so strict parse rejects the whole envelope and the
+    /// `write_file` call is silently dropped — sending the model into a malformed-JSON
+    /// retry loop. Verbatim broken payload (responses BE3E536B / 27DF1B2F) pinned in
+    /// `HarmonyJSONDefectRepairTests.verbatimOverescapedPairPayload`.
+    ///
+    /// Detection is deliberately narrow: a property boundary (`{` or `,`), then optional
+    /// insignificant whitespace (`\s*` — gemma emits `…", \"path\":…` with a space after the
+    /// comma; verbatim 80A90B36), then an escaped-quote identifier-shape key, an escaped `":`,
+    /// then an escaped-quote string value whose body contains no further quote or backslash,
+    /// then an escaped closing quote. The regex is flat (no string-state tracking), so it CAN mis-fire on a `,`
+    /// inside a legitimate string value that itself contains `\"key\":\"…\"`-shaped text.
+    /// That is safe only because of the call path, not the regex: `repairCommonJSONDefects`
+    /// runs exclusively AFTER a strict `JSONSerialization` parse has already failed (valid
+    /// JSON never reaches here), and `parseAfterRepair` RE-VALIDATES with `JSONSerialization`
+    /// — so a mis-fire degrades to unparseable JSON → `nil` → retry nudge, never a corrupted
+    /// dispatch. If a value contains internal escapes the value-body pattern `[^"\\]*`
+    /// simply doesn't match and we fall through unchanged. Same try!-on-compile-time-literal
+    /// rationale as the two repairs above.
+    static func repairOverescapedKeyValuePair(_ raw: String) -> String {
+        let regex = try! NSRegularExpression(
+            pattern: #"([{,])\s*\\"([A-Za-z_][A-Za-z0-9_]*)\\":\\"([^"\\]*)\\""#)
+        let range = NSRange(raw.startIndex..., in: raw)
+        return regex.stringByReplacingMatches(
+            in: raw, range: range, withTemplate: #"$1"$2":"$3""#)
     }
 
     // MARK: - Nudge Classification

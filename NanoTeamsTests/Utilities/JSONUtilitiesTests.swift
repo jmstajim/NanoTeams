@@ -350,4 +350,100 @@ final class JSONUtilitiesTests: XCTestCase {
 
         XCTAssertEqual(parsed?["message"] as? String, original)
     }
+
+    // MARK: - sanitizeJSONControlCharacters: invalid-escape recovery
+    //
+    // Verbatim defect from a Coding-Agent headless run (network_log.json response
+    // 79D38613, model google/gemma-4-26b-a4b): a large edit_file call whose `new_text`
+    // contained a hallucinated Python line-continuation backslash before a real newline —
+    // `...range(self.num_experts):` + `\` + <newline>. A backslash followed by an
+    // unescaped control char is an invalid JSON escape (and the raw newline is itself
+    // illegal inside a JSON string), so JSONSerialization rejected the whole tool call and
+    // the model looped on the malformed-JSON nudge. The sanitizer previously trusted the
+    // char after a `\` blindly, leaving the broken sequence intact.
+
+    func testSanitize_recoversStrayBackslashBeforeNewline() {
+        // new_text value: `for i in range(n):` + `\` + <real newline> + `    # comment`
+        let broken = #"{"new_text":"for i in range(n):"# + "\\" + "\n" + #"    # comment"}"#
+        // Sanity: the raw payload IS strict-broken (invalid escape + raw control char).
+        XCTAssertNil(JSONUtilities.parseJSONDictionary(broken),
+                     "Pre-condition: the stray-backslash payload must fail strict parse")
+
+        let sanitized = JSONUtilities.sanitizeJSONControlCharacters(broken)
+        let parsed = JSONUtilities.parseJSONDictionary(sanitized)
+        XCTAssertNotNil(parsed, "Sanitize must make the stray-backslash payload parseable")
+        let value = parsed?["new_text"] as? String ?? ""
+        XCTAssertTrue(value.contains("for i in range(n):"), "Prefix must survive: \(value)")
+        XCTAssertTrue(value.contains("# comment"), "Suffix must survive: \(value)")
+    }
+
+    func testSanitize_strayBackslashBeforeNonControlChar_failsClosed() {
+        // A stray backslash before an ordinary char (`\U`, `\p` — invalid JSON escapes that
+        // are NOT control chars) is intentionally NOT repaired: it is ambiguous (literal `\`
+        // vs the model's intent) and repairing it risks silently corrupting an adjacent
+        // VALID escape (see testSanitize_windowsPathWithValidEscapeChar_doesNotCorrupt). The
+        // sanitizer leaves it for strict parse to reject → the model gets a retry nudge.
+        // This matches pre-change behaviour; only the `\`+control-char defect is repaired.
+        let broken = #"{"win":"C:\Users\path"}"#
+        XCTAssertNil(JSONUtilities.parseJSONDictionary(broken),
+                     "Pre-condition: \\U is an invalid escape → strict-broken")
+        XCTAssertNil(JSONUtilities.parseJSONDictionary(
+            JSONUtilities.sanitizeJSONControlCharacters(broken)),
+                     "Non-control stray backslashes must fail closed, not be silently repaired")
+    }
+
+    func testSanitize_windowsPathWithValidEscapeChar_doesNotCorrupt() {
+        // Regression pin (silent-failure-hunter CRITICAL): `C:\Users\foo` mixes an invalid
+        // escape (`\U`) with `\f` — where `f` IS a valid JSON escape char (form-feed). A
+        // broad "repair every invalid backslash" pass would fix `\U` (making the whole
+        // string parse) while leaving `\f` to decode as a form-feed (U+000C) — silently
+        // dispatching a corrupted path `C:\Users<FF>oo`. The sanitizer must instead fail
+        // closed (leave the value for the model to retry), never emit a control char into a
+        // value that parses.
+        let broken = #"{"path":"C:\Users\foo"}"#
+        let sanitized = JSONUtilities.sanitizeJSONControlCharacters(broken)
+        let parsed = JSONUtilities.parseJSONDictionary(sanitized)
+        if let path = parsed?["path"] as? String {
+            XCTAssertFalse(path.unicodeScalars.contains { $0.value < 0x20 },
+                           "Sanitize must never silently emit a control char into a parseable value; got \(path.unicodeScalars.map(\.value))")
+            // If it parsed at all, it must be the faithful literal path (no form-feed).
+            XCTAssertEqual(path, #"C:\Users\foo"#)
+        }
+        // The expected, safe outcome is fail-closed:
+        XCTAssertNil(parsed,
+                     "Ambiguous mixed invalid+valid-escape path must fail closed, not mis-dispatch")
+    }
+
+    func testSanitize_escapesRawNonNewlineControlChar() {
+        // appendEscapingControlCharacter's default branch (\u%04x) — a raw ESC (0x1B) inside
+        // a string, no backslash, must be escaped so the JSON parses and round-trips.
+        let broken = #"{"x":"a"# + "\u{1b}" + #"b"}"#
+        XCTAssertNil(JSONUtilities.parseJSONDictionary(broken), "Raw ESC byte → strict-broken")
+        let parsed = JSONUtilities.parseJSONDictionary(
+            JSONUtilities.sanitizeJSONControlCharacters(broken))
+        XCTAssertEqual(parsed?["x"] as? String, "a\u{1b}b",
+                       "Raw control char must round-trip via \\u001b")
+    }
+
+    func testSanitize_preservesValidEscapeSequences() {
+        // All valid JSON escapes inside a value (\n \t \" \\ \/) must round-trip intact —
+        // the invalid-escape fix must be a pure superset of prior behaviour.
+        let valid = #"{"code":"a\nb\tc\"d\\e\/f"}"#
+        XCTAssertNotNil(JSONUtilities.parseJSONDictionary(valid),
+                        "Control: payload is valid on its own")
+        let sanitized = JSONUtilities.sanitizeJSONControlCharacters(valid)
+        let parsed = JSONUtilities.parseJSONDictionary(sanitized)
+        XCTAssertEqual(parsed?["code"] as? String, "a\nb\tc\"d\\e/f",
+                       "Valid escapes must decode unchanged after sanitize")
+    }
+
+    func testSanitize_stillEscapesRawControlCharacters() {
+        // Existing behaviour: a raw newline inside a string (no preceding backslash) is
+        // escaped so the JSON parses. Must remain intact after the invalid-escape fix.
+        let broken = #"{"text":"line1"# + "\n" + #"line2"}"#
+        XCTAssertNil(JSONUtilities.parseJSONDictionary(broken), "Raw newline → strict-broken")
+        let parsed = JSONUtilities.parseJSONDictionary(
+            JSONUtilities.sanitizeJSONControlCharacters(broken))
+        XCTAssertEqual(parsed?["text"] as? String, "line1\nline2")
+    }
 }

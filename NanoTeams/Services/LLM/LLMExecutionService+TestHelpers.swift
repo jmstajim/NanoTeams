@@ -129,6 +129,32 @@ extension LLMExecutionService {
         )
     }
 
+    // MARK: - Test Helpers for Post-Stream Processing (slice anchor)
+
+    /// Invokes `processStreamingResult` directly with a synthesized `StreamingResult`.
+    /// Used to verify the stateful-continuation slice anchor advances even when a model
+    /// turn yields neither assistant content nor resolved tool calls (the consumed-but-
+    /// unparsed Harmony envelope case). Returns the completion stop (nil unless the LLM
+    /// signalled completion); `conversationMessages` is mutated in place.
+    func _testProcessStreamingResult(
+        stepID: String,
+        assistantContent: String,
+        thinkingContent: String = "",
+        resolvedToolCalls: [StepToolCall] = [],
+        sawHarmonyMarker: Bool = false,
+        conversationMessages: inout [ChatMessage]
+    ) async -> LLMStepStop? {
+        let streamResult = StreamingResult(
+            assistantContent: assistantContent,
+            thinkingContent: thinkingContent,
+            resolvedToolCalls: resolvedToolCalls,
+            sawHarmonyMarker: sawHarmonyMarker,
+            harmonyBuffer: ""
+        )
+        return await processStreamingResult(
+            streamResult, stepID: stepID, conversationMessages: &conversationMessages)
+    }
+
     // MARK: - Test Helpers for No-Tool-Call Flow Control
 
     /// Invokes `handleNoToolCalls` directly with a synthesized `StreamingResult`.

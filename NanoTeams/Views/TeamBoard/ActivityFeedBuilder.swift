@@ -73,10 +73,10 @@ nonisolated enum ActivityFeedBuilder {
     // MARK: - Descendant input
 
     /// One delegated descendant of the active task contributing items to the
-    /// merged timeline. The viewmodel resolves these from
-    /// `tasksIndex.descendantIDs(of: activeTaskID)` and threads the resolved
-    /// `(task, run, teamRoles)` triple here so the builder doesn't need to know
-    /// about `NTMSOrchestrator`.
+    /// merged timeline. The view resolves these by walking the *displayed run's*
+    /// per-step delegation history (`runScopedDescendantIDs`) and threads the
+    /// resolved `(task, run, teamRoles)` triple here so the builder doesn't need
+    /// to know about `NTMSOrchestrator`.
     nonisolated struct DescendantTask {
         let task: NTMSTask
         let run: Run
@@ -87,6 +87,111 @@ nonisolated enum ActivityFeedBuilder {
         /// `delegate_to_team` call producing this descendant. Used for the
         /// "delegated by …" subtitle on the boundary band.
         let delegatedFromRoleName: String?
+    }
+
+    /// Child task ids delegated within ONE specific parent run, transitively
+    /// (direct children + their nested delegations). Walks each step's
+    /// `delegationChildIDs` — the append-only history that includes both
+    /// completed and in-flight delegations — so a fresh run with empty
+    /// histories yields `[]` (the fix: old-run children never leak into a new
+    /// run's feed).
+    ///
+    /// Run-scoped on purpose: `TasksIndex.descendantIDs(of:)` is run-agnostic
+    /// (every descendant the parent ever spawned), which is what caused a new
+    /// run to keep showing the previous run's delegated-team activity.
+    ///
+    /// The walk is transitive, not a flat one-level pass, because a
+    /// grandchild's id lives in the *child's* run step history, not the parent
+    /// run's — a flat filter would drop depth-2/3 descendants that the feed
+    /// shows today.
+    ///
+    /// Two independent guards, doing different jobs:
+    /// - **Termination** is provided entirely by `result`-membership dedup:
+    ///   `tasksByID` is finite and each id is inserted at most once, so even a
+    ///   corrupted-tasks-index self-cycle (a child whose history points back at
+    ///   an ancestor) cannot loop. `maxDepth` is NOT needed for this.
+    /// - **`maxDepth`** is a depth-scoping bound mirroring the delegation depth
+    ///   cap (`DelegationConstants.maxDelegationDepth`) — it stops the walk
+    ///   surfacing descendants beyond the cap, not cycles. (Loose analogy to the
+    ///   cycle guards in `TasksIndex.descendantIDs` / `ancestorIDs`, though those
+    ///   use a separate `visited` set and the wider `treeTraversalSafetyCap`.)
+    ///
+    /// Each child contributes its latest run (`runs.last`). Benign today: a
+    /// delegation child has exactly one run (created fresh on delegate; resume /
+    /// forward / cancel reuse it; the recurrence scheduler skips child tasks), so
+    /// `runs.last` is the run contemporaneous with `parentRun`.
+    static func runScopedDescendantIDs(
+        parentRun: Run,
+        tasksByID: [Int: NTMSTask],
+        maxDepth: Int = DelegationConstants.maxDelegationDepth
+    ) -> Set<Int> {
+        var result: Set<Int> = []
+        var frontier: [(run: Run, depth: Int)] = [(parentRun, 0)]
+        while let (run, depth) = frontier.popLast() {
+            guard depth < maxDepth else { continue }
+            for step in run.steps {
+                for childID in step.delegationChildIDs where !result.contains(childID) {
+                    result.insert(childID)
+                    if let childRun = tasksByID[childID]?.runs.last {
+                        frontier.append((childRun, depth + 1))
+                    }
+                }
+            }
+        }
+        return result
+    }
+
+    /// Build the `DescendantTask` list for the feed, scoped to `displayedRun`.
+    /// Wraps `runScopedDescendantIDs` (which decides *which* children belong to
+    /// the displayed run) and hydrates each into a `DescendantTask` carrying the
+    /// child's latest run, team roster, team name, and the delegating role's
+    /// display name for the boundary band.
+    ///
+    /// `resolveTeam` is injected (rather than reaching into `NTMSOrchestrator`)
+    /// so this stays a pure, testable function — same closure-injection pattern
+    /// as `buildTimelineItems(isStreaming:)`. The view passes
+    /// `{ store.resolvedTeam(for: $0) }`.
+    ///
+    /// A scoped id whose task isn't in `tasksByID`, or whose task has no runs,
+    /// is skipped — it has no run to render (graceful degradation for an evicted
+    /// child; matches the prior behavior).
+    static func resolveRunScopedDescendants(
+        displayedRun: Run,
+        tasksByID: [Int: NTMSTask],
+        resolveTeam: (NTMSTask) -> Team,
+        maxDepth: Int = DelegationConstants.maxDelegationDepth
+    ) -> [DescendantTask] {
+        let scopedIDs = runScopedDescendantIDs(parentRun: displayedRun, tasksByID: tasksByID, maxDepth: maxDepth)
+        guard !scopedIDs.isEmpty else { return [] }
+
+        var descendants: [DescendantTask] = []
+        descendants.reserveCapacity(scopedIDs.count)
+        for childID in scopedIDs {
+            guard let childTask = tasksByID[childID],
+                  let childRun = childTask.runs.last
+            else { continue }
+            let childTeam = resolveTeam(childTask)
+            // Resolve the delegating role's name in the parent team for the
+            // boundary-band subtitle. `parentRoleID` on the child is the
+            // canonical seeded TeamRoleDefinition.id of the role that called
+            // delegate_to_team.
+            let parentRoleName: String?
+            if let parentRoleID = childTask.parentRoleID,
+               let parentTask = tasksByID[childTask.parentTaskID ?? -1] {
+                parentRoleName = resolveTeam(parentTask).roles.roleName(for: parentRoleID)
+            } else {
+                parentRoleName = nil
+            }
+            descendants.append(DescendantTask(
+                task: childTask,
+                run: childRun,
+                teamRoles: childTeam.roles,
+                teamName: childTeam.name,
+                delegationDepth: childTask.delegationDepth,
+                delegatedFromRoleName: parentRoleName
+            ))
+        }
+        return descendants
     }
 
     // MARK: - Build

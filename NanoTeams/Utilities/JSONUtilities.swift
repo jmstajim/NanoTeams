@@ -49,10 +49,55 @@ nonisolated enum JSONUtilities {
         return result
     }
 
-    /// Escapes literal control characters (0x00-0x1F) inside JSON string values.
-    /// LLMs often stream content with literal newlines/tabs instead of \n/\t,
-    /// which causes JSONSerialization to reject the JSON.
-    /// Uses inString/escape tracking to only escape chars inside quoted strings.
+    /// Characters that may legally follow a backslash inside a JSON string escape.
+    private static let validJSONEscapeCharacters: Set<Character> = [
+        "\"", "\\", "/", "b", "f", "n", "r", "t", "u",
+    ]
+
+    /// Whether `ch` is a raw control character (0x00–0x1F) that JSON strings may not
+    /// contain literally.
+    private static func isControlCharacter(_ ch: Character) -> Bool {
+        guard let code = ch.asciiValue else { return false }
+        return code < 0x20
+    }
+
+    /// Appends `ch`, escaping it when it is a raw control character that JSON strings may
+    /// not contain literally.
+    private static func appendEscapingControlCharacter(_ ch: Character, into result: inout String) {
+        guard let code = ch.asciiValue, code < 0x20 else {
+            result.append(ch)
+            return
+        }
+        switch ch {
+        case "\n": result.append("\\n")
+        case "\r": result.append("\\r")
+        case "\t": result.append("\\t")
+        default: result.append(String(format: "\\u%04x", code))
+        }
+    }
+
+    /// Cleans up JSON string values that LLMs commonly mangle, so `JSONSerialization`
+    /// accepts the payload. Two defects are repaired, both only inside quoted strings:
+    ///
+    /// 1. **Raw control characters** (0x00–0x1F) emitted literally instead of as `\n`/`\t`
+    ///    — escaped to their valid form.
+    /// 2. **A backslash directly before a raw control character** — e.g. gemma-4-26b-a4b
+    ///    emitting a hallucinated Python line-continuation `\` before a real newline
+    ///    (`...range(n):` + `\` + <newline>). This is *unambiguously* broken (valid JSON
+    ///    never contains a raw control char), so the stray `\` is turned into a literal
+    ///    `\\` and the control char escaped — always recovering to parseable JSON.
+    ///
+    /// Deliberately NOT repaired: a backslash before an ordinary non-escape char (`\U`,
+    /// `\d`, …). That is ambiguous (literal `\` vs the model's intent) and "fixing" it can
+    /// silently corrupt an *adjacent* valid escape — e.g. `C:\Users\foo`, where doubling
+    /// `\U` makes the whole value parse and leaves `\f` decoding to a form-feed. Those are
+    /// left for strict parse to reject so the model retries (fail closed) rather than
+    /// dispatching a corrupted argument.
+    ///
+    /// Both repaired defects are unreachable for well-formed JSON (valid JSON has no raw
+    /// control chars inside strings), so this is a pure superset of passing valid input
+    /// through unchanged. Uses inString/escape tracking so only string contents are
+    /// touched, never structural punctuation.
     static func sanitizeJSONControlCharacters(_ jsonText: String) -> String {
         var result = ""
         result.reserveCapacity(jsonText.count + 64)
@@ -63,24 +108,30 @@ nonisolated enum JSONUtilities {
             if inString {
                 if escape {
                     escape = false
-                    result.append(ch)
+                    if validJSONEscapeCharacters.contains(ch) {
+                        // Valid escape sequence (\" \\ \/ \b \f \n \r \t \u…) — keep as-is.
+                        result.append(ch)
+                    } else if Self.isControlCharacter(ch) {
+                        // `\` directly before a RAW control char (the observed line-
+                        // continuation-before-newline defect). The stray `\` was emitted on
+                        // the previous iteration (the `ch == "\\"` branch); emit a second to
+                        // make a literal escaped backslash `\\`, then escape the control char.
+                        result.append("\\")
+                        Self.appendEscapingControlCharacter(ch, into: &result)
+                    } else {
+                        // `\` before an ordinary non-escape char (e.g. `\U`, `\d`). Ambiguous
+                        // and corruption-prone (see doc) — leave it for strict parse to
+                        // reject so the model retries. Fail closed.
+                        result.append(ch)
+                    }
                 } else if ch == "\\" {
                     escape = true
                     result.append(ch)
                 } else if ch == "\"" {
                     inString = false
                     result.append(ch)
-                } else if ch.asciiValue.map({ $0 < 0x20 }) == true {
-                    switch ch {
-                    case "\n": result.append("\\n")
-                    case "\r": result.append("\\r")
-                    case "\t": result.append("\\t")
-                    default:
-                        let code = ch.asciiValue ?? 0
-                        result.append(String(format: "\\u%04x", code))
-                    }
                 } else {
-                    result.append(ch)
+                    Self.appendEscapingControlCharacter(ch, into: &result)
                 }
             } else {
                 if ch == "\"" { inString = true }

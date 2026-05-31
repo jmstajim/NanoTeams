@@ -262,21 +262,20 @@ nonisolated struct PromptBuilder {
             "The Supervisor Task and upstream artifacts are already in the conversation — act on them directly, don't re-search or re-summarize.",
         ]
         if hasFileReadTools {
-            // TODO(memories-disabled, 2026-05-19): paired with the injection guard
-            // in `LLMExecutionService+ToolLoopState.swift` (search for
-            // `isMemoriesInjectionEnabled`). The rolling `## Memories vN` index is
-            // not currently appended to the conversation, so the prior wording
-            // ("The Memories index at the end of the conversation marks stale
-            // entries — trust CURRENT tags, don't re-read unchanged content.")
-            // pointed the model at a section that no longer exists. Tag emission
-            // in tool results (`{"tag":"<§R1§>", ...}`) and the compact unchanged
-            // envelope (`{"status":"unchanged","ref":"<§R1§>","_hint":"Do NOT
-            // re-read. See <§R1§> above."}`) are intentionally still active — the
-            // per-result hint covers the de-dup case without the rolling index.
-            // To restore the index sentence, flip `isMemoriesInjectionEnabled`
-            // back to `true` and re-append the original wording here.
+            // The rolling `## Memories vN` index injection stays gated off
+            // (`LLMExecutionService.isMemoriesInjectionEnabled` in
+            // `LLMExecutionService+ToolLoopState.swift`). Per-result tag emission +
+            // the `{"status":"unchanged","ref":…,"_hint":…}` envelope are still
+            // active; this sentence only teaches the tag legend and steers reuse.
+            // The unchanged envelope is NOT pre-explained here — its own `_hint`
+            // ("Do NOT re-read. See <§R1§> above.") carries that instruction at
+            // point of use, so re-stating it in the cached system prompt would be
+            // pure duplication.
+            // Scope note: only the listed result kinds carry tags — `list_files`
+            // / `search` / `git_log` results are untagged, so don't claim "every"
+            // tool result is tagged (the legend's enumeration is the boundary).
             parts.append(
-                "Tool results carry tags: <§R1§> reads, <§E1§> edits, <§W1§> writes, <§B1§> builds, <§G1§> git, <§P1§> plans. Repeat reads of an unchanged resource return `{\"status\":\"unchanged\",\"ref\":\"<§Tag§>\"}` — locate the referenced tag in the earlier tool result instead of re-reading."
+                "Tool results may carry a tag: <§R1§> read, <§E1§> edit, <§W1§> write, <§B1§> build, <§G1§> git, <§P1§> plan. Reference a tag in your reasoning instead of re-quoting that result."
             )
         }
         return parts.joined(separator: "\n")

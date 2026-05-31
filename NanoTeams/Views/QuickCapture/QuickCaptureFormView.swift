@@ -101,11 +101,11 @@ struct QuickCaptureFormView: View {
     }
 
     private var selectedTeam: Team? {
-        let targetID = formState.selectedTeamID ?? store.snapshot?.workFolder.activeTeamID
-        if let targetID {
-            return availableTeams.first { $0.id == targetID }
-        }
-        return availableTeams.first
+        QuickCaptureFormLogic.resolveSelectedTeam(
+            selectedTeamID: formState.selectedTeamID,
+            activeTeamID: store.snapshot?.workFolder.activeTeamID,
+            availableTeams: availableTeams
+        )
     }
 
     private var teamModeLabel: String {
@@ -181,7 +181,11 @@ struct QuickCaptureFormView: View {
         }
         .onAppear {
             if formState.selectedTeamID == nil {
-                formState.selectedTeamID = store.snapshot?.workFolder.activeTeamID ?? availableTeams.first?.id
+                formState.selectedTeamID = QuickCaptureFormLogic.resolveSelectedTeam(
+                    selectedTeamID: nil,
+                    activeTeamID: store.snapshot?.workFolder.activeTeamID,
+                    availableTeams: availableTeams
+                )?.id
             }
         }
     }
@@ -308,8 +312,18 @@ struct QuickCaptureFormView: View {
 
             ForEach(selectableTeams) { team in
                 Button {
-                    withAnimation(Animations.quick) {
-                        formState.selectedTeamID = team.id
+                    // Persist the pick as the work-folder active team (canonical
+                    // mechanism, written to workfolder.json) so the choice survives
+                    // panel reopens and app launches. Lightweight `setActiveTeam`,
+                    // NOT `store.switchTeam` — the latter pauses the active run and
+                    // rewrites the active task's team, which must not happen from a
+                    // new-task form. The generated-team branch deliberately skips
+                    // this (see `selectGeneratedTeamTemplate`).
+                    Task {
+                        await store.mutateWorkFolder { $0.setActiveTeam(team.id) }
+                        withAnimation(Animations.quick) {
+                            formState.selectedTeamID = team.id
+                        }
                     }
                 } label: {
                     HStack {

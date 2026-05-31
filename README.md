@@ -126,6 +126,9 @@ Roles consult each other for quick Q&A, hold multi-participant meetings with tur
 ### Supervisor Message Queue
 Send guidance to working roles without pausing them. The unified Team Composer has a *To:* selector for targeting a specific role or the whole team, with consistent input across the Activity Feed, Watchtower, and Quick Capture. The *Correct Role* action lets you adjust a paused role's direction while preserving its progress so far.
 
+### Scheduled & Recurring Tasks
+Put any task on a timer from the **Automation** sheet: repeat on an **interval**, daily at a **time of day** (optionally limited to specific weekdays), **monthly** on a chosen day, or as a **one-shot** — with a live *Next run* preview. A companion **Run timeout** auto-pauses a run that overruns and notifies you, so a stuck model never blocks the schedule. A **Recurring** filter in the sidebar shows just your scheduled tasks.
+
 ### Artifact Dependency Pipeline
 Roles produce and consume named artifacts (requirements, design specs, plans). Execution order is automatically determined from dependencies — no manual sequencing. A visual team graph shows the flow in real-time.
 

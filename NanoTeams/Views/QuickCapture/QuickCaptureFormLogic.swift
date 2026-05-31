@@ -34,6 +34,36 @@ enum QuickCaptureFormLogic {
         teams.selectableInPicker
     }
 
+    /// Resolves the team the picker header should display and the form should
+    /// default to. Single source of truth for both the `selectedTeam` getter
+    /// and the `onAppear` default in `QuickCaptureFormView`, so the two can
+    /// never diverge.
+    ///
+    /// - An explicit `selectedTeamID` is honored against the **full** list, so
+    ///   an in-progress "Generate Team…" pick (the hidden generated
+    ///   placeholder) still shows in the header for the live session.
+    /// - The `activeTeamID` and first-team **fallbacks** resolve against the
+    ///   **selectable** set only. A default therefore can never silently land
+    ///   on the generated placeholder (which the picker menu doesn't offer),
+    ///   and a stale / removed `activeTeamID` falls through to the first
+    ///   selectable team instead of being honored verbatim.
+    ///
+    /// Returns `nil` only when no explicit id matches and no team is selectable.
+    static func resolveSelectedTeam(
+        selectedTeamID: NTMSID?,
+        activeTeamID: NTMSID?,
+        availableTeams: [Team]
+    ) -> Team? {
+        if let id = selectedTeamID, let team = availableTeams.first(where: { $0.id == id }) {
+            return team
+        }
+        let selectable = selectableTeams(from: availableTeams)
+        if let id = activeTeamID, let team = selectable.first(where: { $0.id == id }) {
+            return team
+        }
+        return selectable.first
+    }
+
     /// Accept/reject decision for an `onGeometryChange` `measuredFormHeight`
     /// update. Returns the new value to store, or `nil` to ignore the callback.
     ///

@@ -37,6 +37,21 @@ final class QuickCaptureFormLogicTests: XCTestCase {
         return team
     }
 
+    /// Team with an explicit `id` for `resolveSelectedTeam` tests — the default
+    /// `makeTeam(name:)` derives its id from the name via `NTMSID.from`, so a
+    /// stable, readable id is set directly here via the memberwise init.
+    private func makeIdentifiedTeam(id: NTMSID, templateID: String? = nil) -> Team {
+        Team(
+            id: id,
+            name: id,
+            templateID: templateID,
+            roles: [],
+            artifacts: [],
+            settings: .default,
+            graphLayout: .default
+        )
+    }
+
     // MARK: - taskFieldPlaceholder
 
     func testTaskFieldPlaceholder_chatModeTeam_returnsSendMessage() {
@@ -226,5 +241,114 @@ final class QuickCaptureFormLogicTests: XCTestCase {
     func testSelectableTeams_onlyGeneratedPresent_returnsEmpty() {
         let teams = [makeTeam(name: "Generated", templateID: "generated")]
         XCTAssertTrue(QuickCaptureFormLogic.selectableTeams(from: teams).isEmpty)
+    }
+
+    // MARK: - resolveSelectedTeam
+
+    /// Pins the unified resolver that backs both the `selectedTeam` getter and
+    /// the `onAppear` default in `QuickCaptureFormView`. Contract: explicit
+    /// `selectedTeamID` honored against the full list; `activeTeamID` and the
+    /// first-team fallback resolved against the selectable set only (never the
+    /// hidden generated placeholder).
+
+    func testResolveSelectedTeam_validSelectedID_returnsThatTeam() {
+        let teams = [makeIdentifiedTeam(id: "team_a"), makeIdentifiedTeam(id: "team_b")]
+        let result = QuickCaptureFormLogic.resolveSelectedTeam(
+            selectedTeamID: "team_b", activeTeamID: "team_a", availableTeams: teams)
+        XCTAssertEqual(result?.id, "team_b")
+    }
+
+    func testResolveSelectedTeam_staleSelectedID_fallsBackToActive() {
+        let teams = [makeIdentifiedTeam(id: "team_a"), makeIdentifiedTeam(id: "team_b")]
+        let result = QuickCaptureFormLogic.resolveSelectedTeam(
+            selectedTeamID: "ghost", activeTeamID: "team_b", availableTeams: teams)
+        XCTAssertEqual(result?.id, "team_b", "Stale selected id is skipped; valid active id honored")
+    }
+
+    func testResolveSelectedTeam_nilSelected_validActive_returnsActive() {
+        let teams = [makeIdentifiedTeam(id: "team_a"), makeIdentifiedTeam(id: "team_b")]
+        let result = QuickCaptureFormLogic.resolveSelectedTeam(
+            selectedTeamID: nil, activeTeamID: "team_b", availableTeams: teams)
+        XCTAssertEqual(result?.id, "team_b")
+    }
+
+    /// BUG (divergence): a stale `activeTeamID` must NOT be written verbatim —
+    /// it falls through to the first selectable team so the header and the
+    /// form's `selectedTeamID` agree.
+    func testResolveSelectedTeam_staleActiveTeamID_fallsBackToFirstSelectable() {
+        let teams = [makeIdentifiedTeam(id: "team_a"), makeIdentifiedTeam(id: "team_b")]
+        let result = QuickCaptureFormLogic.resolveSelectedTeam(
+            selectedTeamID: nil, activeTeamID: "nonexistent", availableTeams: teams)
+        XCTAssertEqual(result?.id, "team_a")
+    }
+
+    func testResolveSelectedTeam_allNil_returnsFirstSelectable() {
+        let teams = [makeIdentifiedTeam(id: "team_a"), makeIdentifiedTeam(id: "team_b")]
+        let result = QuickCaptureFormLogic.resolveSelectedTeam(
+            selectedTeamID: nil, activeTeamID: nil, availableTeams: teams)
+        XCTAssertEqual(result?.id, "team_a")
+    }
+
+    /// BUG (default lands on hidden placeholder): with no explicit pick, the
+    /// default must skip the generated placeholder even when it is first.
+    func testResolveSelectedTeam_generatedFirst_allNil_skipsToFirstSelectable() {
+        let teams = [
+            makeIdentifiedTeam(id: "gen", templateID: "generated"),
+            makeIdentifiedTeam(id: "team_real"),
+        ]
+        let result = QuickCaptureFormLogic.resolveSelectedTeam(
+            selectedTeamID: nil, activeTeamID: nil, availableTeams: teams)
+        XCTAssertEqual(result?.id, "team_real")
+    }
+
+    /// A generated id must never be honored through the `activeTeamID` fallback.
+    func testResolveSelectedTeam_activeTeamIDPointsAtGenerated_skipsIt() {
+        let teams = [
+            makeIdentifiedTeam(id: "gen", templateID: "generated"),
+            makeIdentifiedTeam(id: "team_real"),
+        ]
+        let result = QuickCaptureFormLogic.resolveSelectedTeam(
+            selectedTeamID: nil, activeTeamID: "gen", availableTeams: teams)
+        XCTAssertEqual(result?.id, "team_real")
+    }
+
+    /// The "Generate Team…" entry sets `selectedTeamID` to the generated
+    /// placeholder for the live session — that EXPLICIT pick must still show
+    /// in the header (resolved against the full list), unlike the fallbacks.
+    func testResolveSelectedTeam_explicitGeneratedID_isHonored() {
+        let teams = [
+            makeIdentifiedTeam(id: "gen", templateID: "generated"),
+            makeIdentifiedTeam(id: "team_real"),
+        ]
+        let result = QuickCaptureFormLogic.resolveSelectedTeam(
+            selectedTeamID: "gen", activeTeamID: nil, availableTeams: teams)
+        XCTAssertEqual(result?.id, "gen", "An explicit generated-team pick is honored for the header")
+    }
+
+    func testResolveSelectedTeam_emptyList_returnsNil() {
+        let result = QuickCaptureFormLogic.resolveSelectedTeam(
+            selectedTeamID: nil, activeTeamID: nil, availableTeams: [])
+        XCTAssertNil(result)
+    }
+
+    func testResolveSelectedTeam_onlyGenerated_allNil_returnsNil() {
+        let teams = [makeIdentifiedTeam(id: "gen", templateID: "generated")]
+        let result = QuickCaptureFormLogic.resolveSelectedTeam(
+            selectedTeamID: nil, activeTeamID: nil, availableTeams: teams)
+        XCTAssertNil(result, "No selectable team → nil (the placeholder is never a default)")
+    }
+
+    /// Divergence guard: feeding `onAppear`'s resolved id back through the
+    /// `selectedTeam` resolution must return the same team. The stale-active
+    /// case (which previously diverged) is the sharpest fixpoint check.
+    func testResolveSelectedTeam_onAppearOutputIsFixpointForSelectedTeam() {
+        let teams = [makeIdentifiedTeam(id: "team_a"), makeIdentifiedTeam(id: "team_b")]
+        let onAppearID = QuickCaptureFormLogic.resolveSelectedTeam(
+            selectedTeamID: nil, activeTeamID: "nonexistent", availableTeams: teams)?.id
+        let selectedTeam = QuickCaptureFormLogic.resolveSelectedTeam(
+            selectedTeamID: onAppearID, activeTeamID: "nonexistent", availableTeams: teams)
+        XCTAssertEqual(onAppearID, "team_a")
+        XCTAssertEqual(onAppearID, selectedTeam?.id,
+                       "onAppear's output must be a fixpoint for selectedTeam — the two sites can't diverge")
     }
 }

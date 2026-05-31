@@ -90,49 +90,25 @@ struct TeamActivityFeedView: View {
         return hasher.finalize()
     }
 
-    /// Resolve loaded descendants of the active task. Filters out descendants
-    /// whose task or run has been unloaded since the last build (graceful for
-    /// stale state during transitions). Each descendant carries everything the
-    /// builder needs (run, team roles, team name, delegating role).
+    /// Resolve the delegated descendants to interleave into the feed, **scoped
+    /// to the displayed `run`**. Only children delegated within this run (via
+    /// each step's `delegationChildIDs` history, walked transitively) are
+    /// included — so a fresh run, or a role restarted via `reset()`, no longer
+    /// leaks the previous run's delegated-team activity (the run-agnostic
+    /// `tasksIndex.descendantIDs` did). Filters out descendants whose task or
+    /// run has been unloaded since the last build (graceful for stale state
+    /// during transitions). Each descendant carries everything the builder
+    /// needs (run, team roles, team name, delegating role).
     private func resolvedDescendantTasks() -> [ActivityFeedBuilder.DescendantTask] {
-        guard let activeID = store.activeTaskID,
-              let snapshot = store.snapshot
-        else { return [] }
-        let descendantIDs = snapshot.tasksIndex.descendantIDs(of: activeID)
-        guard !descendantIDs.isEmpty else { return [] }
-
-        let allTasks = store.allLoadedTasksIncludingChildren
-        let tasksByID: [Int: NTMSTask] = Dictionary(uniqueKeysWithValues: allTasks.map { ($0.id, $0) })
-
-        var descendants: [ActivityFeedBuilder.DescendantTask] = []
-        descendants.reserveCapacity(descendantIDs.count)
-        for childID in descendantIDs {
-            guard let childTask = tasksByID[childID],
-                  let childRun = childTask.runs.last
-            else { continue }
-            let childTeam = store.resolvedTeam(for: childTask)
-            // Resolve the delegating role's name in the parent team for the
-            // boundary-band subtitle. `parentRoleID` on the child is the
-            // canonical seeded TeamRoleDefinition.id of the role that called
-            // delegate_to_team.
-            let parentRoleName: String?
-            if let parentRoleID = childTask.parentRoleID,
-               let parentTask = tasksByID[childTask.parentTaskID ?? -1] {
-                let parentTeam = store.resolvedTeam(for: parentTask)
-                parentRoleName = parentTeam.roles.roleName(for: parentRoleID)
-            } else {
-                parentRoleName = nil
-            }
-            descendants.append(ActivityFeedBuilder.DescendantTask(
-                task: childTask,
-                run: childRun,
-                teamRoles: childTeam.roles,
-                teamName: childTeam.name,
-                delegationDepth: childTask.delegationDepth,
-                delegatedFromRoleName: parentRoleName
-            ))
-        }
-        return descendants
+        guard store.activeTaskID != nil, let run else { return [] }
+        let tasksByID: [Int: NTMSTask] = Dictionary(
+            uniqueKeysWithValues: store.allLoadedTasksIncludingChildren.map { ($0.id, $0) }
+        )
+        return ActivityFeedBuilder.resolveRunScopedDescendants(
+            displayedRun: run,
+            tasksByID: tasksByID,
+            resolveTeam: { store.resolvedTeam(for: $0) }
+        )
     }
 
     /// Builds a `BuildContext` snapshot from current environment values.

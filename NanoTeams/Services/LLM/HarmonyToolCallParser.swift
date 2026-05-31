@@ -39,6 +39,23 @@ nonisolated struct CallMarkerStrategy: ToolCallParsingStrategy {
                         in: tail, from: endIdx, endMarker: Self.endMarker)
                     continue
                 }
+
+                // Brace walker couldn't balance the span. The repairs in
+                // `parseToolCallFromJSON` cover defects the walker cannot (a missing key
+                // OPENING quote — `,path":` instead of `,"path":` — flips string parity so
+                // the closing `}}` get swallowed as string content, leaving the walker
+                // unbalanced with no `}` ever closed → nil). When the block is delimited by
+                // `<|end|>`, fall back to the raw body and route it through the repair chain.
+                // Reached ONLY when the clean walker fails, so well-formed (incl. multi-call)
+                // envelopes are untouched.
+                if let endRange = tail.range(of: Self.endMarker, range: idx..<tail.endIndex) {
+                    let rawBody = String(tail[idx..<endRange.lowerBound])
+                    if let call = ToolCallParsingHelpers.parseToolCallFromJSON(rawBody) {
+                        results.append(call)
+                    }
+                    cursor = endRange.upperBound
+                    continue
+                }
             }
 
             if let (name, nameEnd) = ToolCallParsingHelpers.extractIdentifier(in: tail, from: idx),

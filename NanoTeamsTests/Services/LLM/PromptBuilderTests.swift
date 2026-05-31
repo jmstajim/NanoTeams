@@ -631,14 +631,15 @@ final class PromptBuilderTests: XCTestCase {
                        "guidance must be bare body — the `## Conversation mechanics` header is in the template")
         XCTAssertTrue(guidance.contains("<§R1§>"),
                       "file-read roles must get the tag legend")
-        // TODO(memories-disabled, 2026-05-19): While `injectMemories` is gated
-        // off, the second sentence points at the per-tool-result `unchanged`
-        // envelope (the only consumer-visible signal that remains). When
-        // `LLMExecutionService.isMemoriesInjectionEnabled` flips back to `true`,
-        // restore the original "must be pointed at the Memories index" assertion
-        // on `guidance.contains("Memories")`.
-        XCTAssertTrue(guidance.contains("\"status\":\"unchanged\""),
-                      "file-read roles must be steered to the compact unchanged-reference envelope")
+        XCTAssertTrue(guidance.contains("instead of re-quoting"),
+                      "the sentence must steer the model to reference a prior result via its tag instead of re-pasting its content (re-reading a changed resource stays allowed)")
+        // The unchanged-read envelope is intentionally NOT pre-explained in the
+        // prompt — its own `_hint` carries the dedup instruction at point of use,
+        // so the sentence must not restate the `{"status":"unchanged"}` shape, and
+        // must not name a "Memories" index (injection is gated off via
+        // `LLMExecutionService.isMemoriesInjectionEnabled`).
+        XCTAssertFalse(guidance.contains("\"status\":\"unchanged\""),
+                       "the cached system prompt must not duplicate the unchanged envelope — the per-result _hint covers it")
         XCTAssertFalse(guidance.contains("Memories"),
                        "while Memories injection is disabled, the prompt must not point at an index that won't appear")
     }

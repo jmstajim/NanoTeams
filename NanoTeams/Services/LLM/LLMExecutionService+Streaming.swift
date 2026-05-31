@@ -428,6 +428,23 @@ extension LLMExecutionService {
                 conversationMessages.append(
                     ChatMessage(role: .assistant, content: cleanedContent))
             }
+        } else {
+            // The model produced a turn that yields no assistant content and no resolved
+            // tool calls — typically a Harmony tool-call envelope the parser consumed but
+            // couldn't resolve (malformed JSON). The turn DID happen and is in the server's
+            // stateful response chain (store:true + previous_response_id). Record an anchor
+            // assistant turn so the next stateful slice — lastIndex(where: .assistant) in
+            // runOneLLMToolIteration — advances past the already-delivered tool result(s)
+            // and prior retry nudges. Without this, the slice re-sends the previous tool
+            // result and every accumulated nudge on each malformed iteration (chain
+            // corruption + exponential input growth; CLAUDE.md "Stateful Session
+            // Invariants" #2). conversationMessages is in-memory slicing state only — any
+            // user-visible LLMMessage/StepMessage commit is owned by commitStreaming() (the
+            // streaming LLMMessage is pre-created at stream start), so appending this anchor
+            // has no UI or persistence effect, and in stateful mode the anchor is never
+            // transmitted (NativeLMStudioClient+RequestBuilder skips .assistant on
+            // continuations).
+            conversationMessages.append(ChatMessage(role: .assistant, content: nil))
         }
 
         if hasToolCalls {

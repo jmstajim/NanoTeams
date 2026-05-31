@@ -340,6 +340,12 @@ final class HarmonyJSONDefectRepairTests: XCTestCase {
     /// recovery, and never on payloads that strict-parse cleanly. This gives the
     /// train-app audit pass a way to compare repair rates across model versions
     /// (zero observability pre-P7).
+    ///
+    /// NOTE: `repairFireCount` is a **process-global** `Atomic<Int>`. The reset-then-assert
+    /// exact-count tests below are safe only because XCTest runs methods within a class
+    /// serially. If `NanoTeams.xctestplan` ever enables parallel-across-classes execution, a
+    /// concurrent `parseToolCallFromJSON` from another suite (~55 LLM test files call it) would
+    /// race the count — switch these to delta/`>=` assertions before enabling that.
     func testRepairFireCount_bumpsOnceWhenRepairRecoversBrokenPayload() {
         ToolCallParsingHelpers._resetRepairFireCount()
         let before = ToolCallParsingHelpers.repairFireCount
@@ -358,6 +364,19 @@ final class HarmonyJSONDefectRepairTests: XCTestCase {
             ToolCallParsingHelpers.repairFireCount, 0,
             "Counter must not bump for payloads that strict-parse cleanly"
         )
+    }
+
+    func testRepairFireCount_bumpsWhenSanitizeAloneRecoversControlEscape() {
+        // RC3 defect (`\` + a real newline) is recovered by sanitizeJSONControlCharacters
+        // BEFORE the regex repair chain — strict parse then succeeds, so the prior code never
+        // bumped the counter. That sanitize-layer recovery must ALSO bump repairFireCount so
+        // the train-app audit's repair-rate metric isn't blind to it.
+        ToolCallParsingHelpers._resetRepairFireCount()
+        let payload = #"{"name":"write_file","arguments":{"new_text":"a"# + "\\" + "\n" + #"b","path":"x.py"}}"#
+        let call = ToolCallParsingHelpers.parseToolCallFromJSON(payload)
+        XCTAssertEqual(call?.name, "write_file", "Sanity: the call recovers")
+        XCTAssertEqual(ToolCallParsingHelpers.repairFireCount, 1,
+                       "Sanitize-layer recovery must bump the repair counter exactly once")
     }
 
     func testRepairFireCount_doesNotBumpWhenRepairFails() {
@@ -383,5 +402,534 @@ final class HarmonyJSONDefectRepairTests: XCTestCase {
         // Both defects fixed — `]"meta":` (key quote restored) AND `\">` (escape restored).
         XCTAssertTrue(repaired.contains(#"],"meta":"#) || repaired.contains(#"]"meta":"#),
                       "Missing key quote must be restored; got: \(repaired)")
+    }
+
+    // MARK: - gemma-4-26b-a4b: over-escaped key:value pair at a property boundary
+    //
+    // Verbatim defect from an Engineering-Team / Software-Engineer headless run
+    // (network_log.json responses BE3E536B / 27DF1B2F). The model backslash-escapes
+    // the quotes of an ENTIRE key:value pair: `,\"path\":\"src/core/__init__.py\"`.
+    // The `content` pair right before it is correctly formed — only `path` is broken.
+    // Each `\"` sits at JSON-structural position (key open/close, value open/close)
+    // where a backslash is illegal, so strict parse rejects the whole envelope and the
+    // `write_file` call is silently dropped — sending the model into a malformed-JSON
+    // retry loop until the run is cancelled.
+
+    /// Exact arguments envelope the model emitted (response BE3E536B). The `\"` are
+    /// real backslash+quote bytes; `\n` is a real escaped newline (the file's trailing
+    /// newline). Raw string → backslashes are literal.
+    private static let verbatimOverescapedPairPayload: String = #"""
+    {"name":"write_file","arguments":{"content":"# Claude Opus 5.0 Core Components\n",\"path\":\"src/core/__init__.py\"}}
+    """#
+
+    func testStrictJSONSerialization_rejectsVerbatimOverescapedPayload() {
+        // Sanity: the verbatim payload IS broken by strict parsing — without this a
+        // future fix to the fixture could mask the repair.
+        let data = Self.verbatimOverescapedPairPayload.data(using: .utf8)!
+        XCTAssertThrowsError(
+            try JSONSerialization.jsonObject(with: data, options: []),
+            "Verbatim over-escaped payload must fail strict parse — that is the whole point"
+        )
+    }
+
+    func testRepair_recoversVerbatimOverescapedPayloadIntoValidJSON() {
+        let repaired = ToolCallParsingHelpers.repairCommonJSONDefects(
+            Self.verbatimOverescapedPairPayload)
+        XCTAssertNotEqual(repaired, Self.verbatimOverescapedPairPayload, "Repair must change something")
+        XCTAssertTrue(repaired.contains(#""path":"src/core/__init__.py""#),
+                      "Repaired payload must de-escape the `path` key:value pair; got: \(repaired)")
+        let data = repaired.data(using: .utf8)!
+        XCTAssertNoThrow(
+            try JSONSerialization.jsonObject(with: data, options: []),
+            "Repaired payload must parse cleanly"
+        )
+    }
+
+    func testParseToolCallFromJSON_recoversOverescapedWriteFileCall() {
+        // End-to-end RED→GREEN assertion: on unrepaired code this returns nil and the
+        // model loops. After the repair the write_file call dispatches normally.
+        let call = ToolCallParsingHelpers.parseToolCallFromJSON(Self.verbatimOverescapedPairPayload)
+        XCTAssertNotNil(call, "Repair-aware parse must recover the over-escaped write_file call")
+        XCTAssertEqual(call?.name, "write_file")
+        let argsData = (call?.argumentsJSON ?? "").data(using: .utf8)!
+        let args = try? JSONSerialization.jsonObject(with: argsData) as? [String: Any]
+        XCTAssertEqual(args?["path"] as? String, "src/core/__init__.py",
+                       "The over-escaped `path` value must round-trip correctly")
+        let content = args?["content"] as? String ?? ""
+        XCTAssertTrue(content.contains("# Claude Opus 5.0 Core Components"),
+                      "The correctly-formed `content` value must survive the repair")
+    }
+
+    func testHarmonyExtraction_recoversOverescapedCallWithRealMarkers() {
+        // The full Harmony path with the real `<|call|>…<|end|>` markers (response
+        // 27DF1B2F — the `src/data` attempt). Drives the same strategy chain the
+        // streaming resolver uses, proving the tool call resolves in the live pipeline.
+        let envelope = #"""
+        <|call|>{"name":"write_file","arguments":{"content":"# Claude Opus 5.0 Data Pipeline\n",\"path\":\"src/data/__init__.py\"}}<|end|>
+        """#
+        let calls = HarmonyToolCallParser().extractAllToolCalls(from: envelope)
+        XCTAssertEqual(calls.count, 1, "Exactly one write_file call must resolve from the envelope")
+        XCTAssertEqual(calls.first?.name, "write_file")
+        let argsData = (calls.first?.argumentsJSON ?? "").data(using: .utf8)!
+        let args = try? JSONSerialization.jsonObject(with: argsData) as? [String: Any]
+        XCTAssertEqual(args?["path"] as? String, "src/data/__init__.py")
+    }
+
+    // MARK: - Over-escape repair narrowness — must NOT corrupt valid JSON
+
+    func testRepair_doesNotTouchLegitimateInStringEscapedQuotes() {
+        // A legitimate escaped quote inside a string VALUE: `say \"hi\" now`. The `\"`
+        // here is surrounded by string content, never an identifier-then-`\":` at a
+        // property boundary, so the over-escape repair must leave it byte-for-byte
+        // unchanged (and it strict-parses on its own — repair never even fires).
+        let valid = #"{"name":"write_file","arguments":{"content":"say \"hi\" now","path":"a.txt"}}"#
+        XCTAssertNoThrow(try JSONSerialization.jsonObject(with: valid.data(using: .utf8)!),
+                         "Control payload must be valid on its own")
+        let repaired = ToolCallParsingHelpers.repairCommonJSONDefects(valid)
+        XCTAssertEqual(repaired, valid, "Legitimate in-string escaped quotes must not be touched")
+        // And the parse still recovers the same call without invoking repair.
+        let call = ToolCallParsingHelpers.parseToolCallFromJSON(valid)
+        XCTAssertEqual(call?.name, "write_file")
+    }
+
+    func testRepairFireCount_bumpsOnOverescapedPayload_butNotOnControl() {
+        ToolCallParsingHelpers._resetRepairFireCount()
+        _ = ToolCallParsingHelpers.parseToolCallFromJSON(Self.verbatimOverescapedPairPayload)
+        XCTAssertEqual(ToolCallParsingHelpers.repairFireCount, 1,
+                       "Repair must fire exactly once on the over-escaped payload")
+
+        ToolCallParsingHelpers._resetRepairFireCount()
+        let control = #"{"name":"write_file","arguments":{"content":"say \"hi\" now","path":"a.txt"}}"#
+        _ = ToolCallParsingHelpers.parseToolCallFromJSON(control)
+        XCTAssertEqual(ToolCallParsingHelpers.repairFireCount, 0,
+                       "Repair must not fire on a payload that strict-parses cleanly")
+    }
+
+    // MARK: - gemma-4-26b-a4b: stray backslash before newline (invalid JSON escape)
+    //
+    // Verbatim defect (network_log.json response 79D38613): the model emitted a large
+    // edit_file call whose `new_text` contained a hallucinated Python line-continuation
+    // backslash before a real newline — `...range(self.num_experts):` + `\` + <newline>.
+    // `\` + control char is an invalid JSON escape, so the whole call was rejected and the
+    // model looped on the malformed-JSON nudge. The fix lives in
+    // JSONUtilities.sanitizeJSONControlCharacters (escape validation, run before strict
+    // parse); this pins the end-to-end tool-dispatch recovery.
+
+    func testParseToolCallFromJSON_recoversStrayBackslashEditFileCall() {
+        let payload = #"{"name":"edit_file","arguments":{"new_text":"for i in range(self.num_experts):"# + "\\" + "\n" + #"            # Find which expert","old_text":"old","path":"src/core/layers.py","replace_all":false}}"#
+        // Sanity: the raw payload is strict-broken (the stray `\` + newline).
+        XCTAssertNil(JSONUtilities.parseJSONDictionary(payload),
+                     "Pre-condition: stray-backslash payload must fail strict parse")
+        let call = ToolCallParsingHelpers.parseToolCallFromJSON(payload)
+        XCTAssertNotNil(call, "Sanitize-aware parse must recover the edit_file call")
+        XCTAssertEqual(call?.name, "edit_file")
+        let argsData = (call?.argumentsJSON ?? "").data(using: .utf8)!
+        let args = try? JSONSerialization.jsonObject(with: argsData) as? [String: Any]
+        XCTAssertEqual(args?["path"] as? String, "src/core/layers.py")
+        XCTAssertEqual(args?["replace_all"] as? Bool, false)
+    }
+
+    func testHarmonyExtraction_recoversStrayBackslashCallWithRealMarkers() {
+        // Full Harmony path with the real `<|call|>…<|end|>` markers.
+        let envelope = #"<|call|>{"name":"edit_file","arguments":{"new_text":"x = 1 +"# + "\\" + "\n" + #"    2","old_text":"y","path":"m.py","replace_all":false}}<|end|>"#
+        let calls = HarmonyToolCallParser().extractAllToolCalls(from: envelope)
+        XCTAssertEqual(calls.count, 1, "Exactly one edit_file call must resolve")
+        XCTAssertEqual(calls.first?.name, "edit_file")
+        let argsData = (calls.first?.argumentsJSON ?? "").data(using: .utf8)!
+        let args = try? JSONSerialization.jsonObject(with: argsData) as? [String: Any]
+        XCTAssertEqual(args?["path"] as? String, "m.py")
+    }
+
+    // MARK: - Over-escape repair: additional coverage (multiple pairs, fail-safe boundary, salvage)
+
+    func testRepair_overescaped_multiplePairsInOneObject() {
+        // The defect is per-property: `edit_file` can over-escape BOTH old_text and new_text.
+        // `repairOverescapedKeyValuePair` uses stringByReplacingMatches (all matches) — pin
+        // that two ADJACENT over-escaped pairs both recover, catching any anchoring bug where
+        // pair N's trailing `\"` is consumed as pair N+1's leading `\"`.
+        let payload = #"{"name":"edit_file","arguments":{\"old_text\":\"a\",\"new_text\":\"b\"}}"#
+        XCTAssertNil(JSONUtilities.parseJSONDictionary(payload), "Pre-condition: strict-broken")
+        let call = ToolCallParsingHelpers.parseToolCallFromJSON(payload)
+        XCTAssertEqual(call?.name, "edit_file")
+        let args = try? JSONSerialization.jsonObject(
+            with: (call?.argumentsJSON ?? "").data(using: .utf8)!) as? [String: Any]
+        XCTAssertEqual(args?["old_text"] as? String, "a")
+        XCTAssertEqual(args?["new_text"] as? String, "b")
+    }
+
+    func testRepair_overescaped_valueWithInternalEscape_doesNotMisrepair() {
+        // Pins the documented fail-safe boundary: the value-body pattern `[^"\\]*` stops at a
+        // backslash, so an over-escaped pair whose value contains an internal escape (`\n`)
+        // does NOT match and is left UNCHANGED (→ strict parse still rejects → retry nudge).
+        // Guards against a future widening of the value class that would start corrupting
+        // partially-escaped values. The `\n` here is a literal backslash-n inside the value.
+        let payload = #"{"content":"ok",\"path\":\"a\nb\"}"#
+        XCTAssertEqual(
+            ToolCallParsingHelpers.repairOverescapedKeyValuePair(payload), payload,
+            "Over-escaped pair whose value has an internal escape must NOT be repaired (fail-safe)")
+    }
+
+    func testHarmonyExtraction_overescapedPair_missingOuterBrace_salvages() {
+        // The walker change + salvage path together: an over-escaped pair (uniform-escape
+        // walking) inside an envelope that is ALSO missing its outer `}` (lastCloseEnd
+        // salvage). Both must compose so the call still resolves.
+        let envelope = #"<|call|>{"name":"write_file","arguments":{"content":"x",\"path\":\"a.py\"}<|end|>"#
+        let calls = HarmonyToolCallParser().extractAllToolCalls(from: envelope)
+        XCTAssertEqual(calls.count, 1, "Salvage + over-escape repair must compose to one call")
+        XCTAssertEqual(calls.first?.name, "write_file")
+        let args = try? JSONSerialization.jsonObject(
+            with: (calls.first?.argumentsJSON ?? "").data(using: .utf8)!) as? [String: Any]
+        XCTAssertEqual(args?["path"] as? String, "a.py")
+    }
+
+    // MARK: - gemma-4-26b-a4b: missing key-quote in a <|call|> envelope (walker parity)
+    //
+    // Verbatim defect (network_log.json response B726EF7B): a large write_file whose `path`
+    // key lost its OPENING quote — `..."content":"…",path":"docs/…md"}}`. The missing quote
+    // flips the brace walker's string parity (the key's stray `"` opens a string, so the
+    // closing `}}` are swallowed as string content), `extractJSONBracedValue` returns nil,
+    // and the call is dropped BEFORE `repairMissingQuoteBeforeJSONKey` — which fixes exactly
+    // this defect — can run. CallMarkerStrategy now falls back to the raw body up to <|end|>
+    // and routes it through `parseToolCallFromJSON`'s repair chain.
+
+    func testHarmonyExtraction_missingKeyQuote_brokenWalkerParity_recovers() {
+        // `,path":` is missing its opening quote (should be `,"path":`). Minimal repro of the
+        // B726EF7B shape: content closes, then the malformed key, then the swallowed `}}`.
+        let envelope = #"<|call|>{"name":"write_file","arguments":{"content":"x",path":"a.md"}}<|end|>"#
+        let calls = HarmonyToolCallParser().extractAllToolCalls(from: envelope)
+        XCTAssertEqual(calls.count, 1, "Missing-key-quote call must recover via the raw-body fallback")
+        XCTAssertEqual(calls.first?.name, "write_file")
+        let args = try? JSONSerialization.jsonObject(
+            with: (calls.first?.argumentsJSON ?? "").data(using: .utf8)!) as? [String: Any]
+        XCTAssertEqual(args?["path"] as? String, "a.md")
+        XCTAssertEqual(args?["content"] as? String, "x")
+    }
+
+    func testHarmonyExtraction_cleanMultiCall_unaffectedByFallback() {
+        // Regression guard: the raw-body fallback runs ONLY when the clean walker fails, so a
+        // well-formed two-call envelope must still resolve to exactly two distinct calls.
+        let envelope = #"<|call|>{"name":"read_file","arguments":{"path":"a.txt"}}<|end|><|call|>{"name":"read_file","arguments":{"path":"b.txt"}}<|end|>"#
+        let calls = HarmonyToolCallParser().extractAllToolCalls(from: envelope)
+        XCTAssertEqual(calls.count, 2, "Clean multi-call extraction must be unaffected by the fallback")
+        let paths = calls.compactMap { call -> String? in
+            let args = try? JSONSerialization.jsonObject(
+                with: (call.argumentsJSON).data(using: .utf8)!) as? [String: Any]
+            return args?["path"] as? String
+        }
+        XCTAssertEqual(paths, ["a.txt", "b.txt"])
+    }
+
+    // MARK: - RC4 fallback: continuity & fail-closed coverage
+
+    func testHarmonyExtraction_fallbackBlockFollowedByCleanCall_bothResolve() {
+        // A malformed (missing-key-quote → walker fails → raw-body fallback) call IMMEDIATELY
+        // followed by a clean call. Pins that the fallback's `cursor = endRange.upperBound`
+        // advance leaves the loop positioned to resolve the next <|call|> — the distinct
+        // fallback cursor path that the clean-multi-call guard above never exercises.
+        let envelope = #"<|call|>{"name":"write_file","arguments":{"content":"x",path":"a.md"}}<|end|><|call|>{"name":"read_file","arguments":{"path":"b.txt"}}<|end|>"#
+        let calls = HarmonyToolCallParser().extractAllToolCalls(from: envelope)
+        XCTAssertEqual(calls.count, 2, "Fallback block then clean call must both resolve")
+        XCTAssertEqual(calls.map(\.name), ["write_file", "read_file"])
+        let paths = calls.compactMap { call -> String? in
+            let args = try? JSONSerialization.jsonObject(
+                with: (call.argumentsJSON).data(using: .utf8)!) as? [String: Any]
+            return args?["path"] as? String
+        }
+        XCTAssertEqual(paths, ["a.md", "b.txt"])
+    }
+
+    func testHarmonyExtraction_fallbackUnrepairableBody_failsClosed_andLetsNextCallThrough() {
+        // Walker fails, <|end|> present, but the body is unrepairable garbage → fallback's
+        // parse returns nil → no call appended, cursor still advances past <|end|>, and a
+        // following clean call still resolves (drop-and-continue, no crash, no poisoning).
+        let envelope = #"<|call|>{ this is not json at all }<|end|><|call|>{"name":"read_file","arguments":{"path":"b.txt"}}<|end|>"#
+        let calls = HarmonyToolCallParser().extractAllToolCalls(from: envelope)
+        XCTAssertEqual(calls.count, 1, "Unrepairable block dropped; trailing clean call survives")
+        XCTAssertEqual(calls.first?.name, "read_file")
+    }
+
+    func testHarmonyExtraction_missingKeyQuote_noEndMarker_dropsCallNoCrash() {
+        // Walker fails AND no <|end|> delimiter → the `if let endRange` fallback guard is
+        // false, control falls through, the call is dropped (no spurious result, no spin).
+        let envelope = #"<|call|>{"name":"write_file","arguments":{"content":"x",path":"a.md"}}"#
+        let calls = HarmonyToolCallParser().extractAllToolCalls(from: envelope)
+        XCTAssertEqual(calls.count, 0, "Missing-quote block with no <|end|> must fail closed")
+    }
+
+    // MARK: - gemma-4-26b-a4b: over-escaped / missing key-quote WITH whitespace before the key
+    //
+    // Verbatim shape (network_log.json response 80A90B36): a write_file whose key is preceded
+    // by a SPACE — `…capability.", \"path\":\"…blueprint.md\"}}`. Both key-quote repairs
+    // anchored the key DIRECTLY on `{`/`,`, so insignificant JSON whitespace between the comma
+    // and the (over-escaped) key defeated the regex → the repair never fired → the call was
+    // dropped and the model looped on the malformed-JSON nudge.
+
+    func testRepair_overescapedPair_withWhitespaceBeforeKey() {
+        // `, \"path\":\"a.md\"` — over-escaped pair with a space after the comma.
+        let payload = #"{"content":"x", \"path\":\"a.md\"}"#
+        XCTAssertNil(JSONUtilities.parseJSONDictionary(payload), "Pre-condition: strict-broken")
+        let repaired = ToolCallParsingHelpers.repairOverescapedKeyValuePair(payload)
+        XCTAssertNotEqual(repaired, payload, "Repair must fire across the leading whitespace")
+        let parsed = JSONUtilities.parseJSONDictionary(repaired)
+        XCTAssertEqual(parsed?["path"] as? String, "a.md")
+        XCTAssertEqual(parsed?["content"] as? String, "x")
+    }
+
+    func testHarmonyExtraction_overescapedPair_whitespaceBeforeKey_recovers() {
+        // Minimal repro of the 80A90B36 ending: content closes, comma, SPACE, over-escaped
+        // `\"path\":\"…\"`, then `}}`.
+        let envelope = #"<|call|>{"name":"write_file","arguments":{"content":"...spec...", \"path\":\"claude_opus_5_blueprint.md\"}}<|end|>"#
+        let calls = HarmonyToolCallParser().extractAllToolCalls(from: envelope)
+        XCTAssertEqual(calls.count, 1, "Over-escaped pair with leading whitespace must recover")
+        XCTAssertEqual(calls.first?.name, "write_file")
+        let args = try? JSONSerialization.jsonObject(
+            with: (calls.first?.argumentsJSON ?? "").data(using: .utf8)!) as? [String: Any]
+        XCTAssertEqual(args?["path"] as? String, "claude_opus_5_blueprint.md")
+    }
+
+    func testRepair_missingKeyQuote_withWhitespaceBeforeKey() {
+        // Same whitespace gap for the missing-opening-quote repair: `, key":` (space) must
+        // recover, not just the no-space `,key":`. Assert the DECODED values to prove the
+        // whitespace was dropped and the key correctly reconstructed (not merely "something
+        // parses"). Also exercises a tab (\s* matches space/tab/newline uniformly).
+        let broken = "{\"a\":1,\tkey\":2}"
+        let repaired = ToolCallParsingHelpers.repairMissingQuoteBeforeJSONKey(broken)
+        XCTAssertNotEqual(repaired, broken, "Repair must fire across the leading whitespace")
+        let parsed = JSONUtilities.parseJSONDictionary(repaired)
+        XCTAssertEqual(parsed?["a"] as? Int, 1)
+        XCTAssertEqual(parsed?["key"] as? Int, 2, "Whitespace dropped, key reconstructed: \(repaired)")
+    }
+
+    // MARK: - RC5 narrowness: `\s*` must NOT corrupt valid spaced JSON, and must fail closed
+    // on an in-string whitespace mis-fire (the exact surface `\s*` widened).
+
+    func testRepair_missingKeyQuote_validSpacedJSON_unchanged() {
+        // Legitimate JSON whitespace before an already-quoted key. The leading `"` on the key
+        // blocks the match (`"` ∉ [A-Za-z_]), so a VALID spaced object passes through
+        // byte-identical. Pins the exact invariant `\s*` put at risk.
+        let valid = #"{"a":1, "b":2}"#
+        XCTAssertEqual(ToolCallParsingHelpers.repairMissingQuoteBeforeJSONKey(valid), valid,
+                       "Valid spaced JSON must pass through unchanged")
+    }
+
+    func testRepair_overescaped_validSpacedJSON_unchanged() {
+        // The over-escape regex requires a literal `\"` after `[{,]\s*`, which valid JSON never
+        // has — so a valid spaced object is untouched.
+        let valid = #"{"a":"x", "b":"y"}"#
+        XCTAssertEqual(ToolCallParsingHelpers.repairOverescapedKeyValuePair(valid), valid,
+                       "Valid spaced JSON must pass through unchanged")
+    }
+
+    func testRepair_missingKeyQuote_whitespacePairInsideStringValue_failsClosed() {
+        // Adversarial: the only `, y":` is INSIDE the value `"x, y"`. `\s*` lets it match, the
+        // mis-fire inserts a `"` that closes the value early → bareword → the repaired string
+        // still fails strict parse. Whitespace-widening cannot fake-succeed a corrupted dispatch.
+        let broken = #"{"a":"x, y":1}"#
+        XCTAssertNil(JSONUtilities.parseJSONDictionary(broken), "Pre-condition: strict-broken")
+        let repaired = ToolCallParsingHelpers.repairMissingQuoteBeforeJSONKey(broken)
+        XCTAssertNil(JSONUtilities.parseJSONDictionary(repaired),
+                     "In-string whitespace mis-fire must remain unparseable (fail-closed); got \(repaired)")
+    }
+
+    func testRepair_overescaped_whitespacePairInsideStringValue_failsClosed() {
+        // Adversarial: the content value contains a `, \"k\":\"v\"` shape (with space) AND the
+        // outer `\"path\"` is the real over-escape defect. The repair de-escapes BOTH; the
+        // in-string mis-fire closes the content value early → the result still fails strict
+        // parse. Fail-closed under `\s*`.
+        let broken = #"{"content":"a, \"k\":\"v\" b", \"path\":\"f.txt\"}"#
+        XCTAssertNil(JSONUtilities.parseJSONDictionary(broken), "Pre-condition: strict-broken")
+        let repaired = ToolCallParsingHelpers.repairOverescapedKeyValuePair(broken)
+        XCTAssertNil(JSONUtilities.parseJSONDictionary(repaired),
+                     "In-string over-escape mis-fire must remain unparseable (fail-closed); got \(repaired)")
+    }
+
+    // MARK: - gemma-4-26b-a4b: RAW newlines + RAW (unescaped) quotes in a content field
+    //
+    // Verbatim defect (network_log.json response 15BED3EA): gemma emitted a large write_file
+    // `content` with literal newlines AND literal unescaped double quotes —
+    // `…"content":"# …Specification⏎## 1…the core philosophy is "Inference-Time Compute Scaling"—…","format":…,"path":…}}`.
+    // The unescaped quotes break the string (sanitize only fixes control chars), so the call is
+    // dropped. The tool-call STRUCTURE is known + clean, so the value of the one big content
+    // field is re-escaped (structure-anchored, re-validated) to recover the call.
+
+    func testHarmonyExtraction_rawNewlinesAndUnescapedQuotesInContent_recovers() {
+        // `\n` produces real newlines, `\"quoted\"` produces real unescaped quotes inside the
+        // content value — exactly the 15BED3EA shape, with a clean `"path"` tail.
+        let envelope = "<|call|>{\"name\":\"write_file\",\"arguments\":{\"content\":\"# Title\n\nSome \"quoted\" phrase.\",\"path\":\"a.md\"}}<|end|>"
+        let calls = HarmonyToolCallParser().extractAllToolCalls(from: envelope)
+        XCTAssertEqual(calls.count, 1, "Raw-quotes-and-newlines content must recover via re-escape")
+        XCTAssertEqual(calls.first?.name, "write_file")
+        let args = try? JSONSerialization.jsonObject(
+            with: (calls.first?.argumentsJSON ?? "").data(using: .utf8)!) as? [String: Any]
+        XCTAssertEqual(args?["path"] as? String, "a.md", "Clean trailing arg preserved")
+        let content = args?["content"] as? String ?? ""
+        XCTAssertTrue(content.contains("# Title"), "Content preserved: \(content)")
+        XCTAssertTrue(content.contains("\"quoted\""), "Unescaped quotes recovered into content: \(content)")
+        XCTAssertTrue(content.contains("\n"), "Raw newlines recovered as escapes")
+    }
+
+    func testParseToolCallFromJSON_reescapesUnescapedContentField() {
+        // Repair-function level (raw quotes + raw newline in content, clean `path` tail).
+        let broken = "{\"name\":\"write_file\",\"arguments\":{\"content\":\"a \"b\" c\nd\",\"path\":\"x.md\"}}"
+        XCTAssertNil(JSONUtilities.parseJSONDictionary(broken), "Pre-condition: strict-broken")
+        let call = ToolCallParsingHelpers.parseToolCallFromJSON(broken)
+        XCTAssertEqual(call?.name, "write_file")
+        let args = try? JSONSerialization.jsonObject(
+            with: (call?.argumentsJSON ?? "").data(using: .utf8)!) as? [String: Any]
+        XCTAssertEqual(args?["path"] as? String, "x.md")
+        XCTAssertEqual(args?["content"] as? String, "a \"b\" c\nd",
+                       "Content value recovered verbatim (quotes + newline)")
+    }
+
+    func testReescape_preservesTrailingArgs_overTailAbsorbingSplit() {
+        // create_artifact shape: content + format + name + path. The re-escape must pick the
+        // split that PRESERVES all trailing args (max known-arg-keys), not the one that absorbs
+        // format/name/path into the content blob.
+        let broken = "{\"name\":\"create_artifact\",\"arguments\":{\"content\":\"say \"hi\"\",\"format\":\"markdown\",\"name\":\"Engineering Notes\",\"path\":\"x.md\"}}"
+        let call = ToolCallParsingHelpers.parseToolCallFromJSON(broken)
+        XCTAssertEqual(call?.name, "create_artifact")
+        let args = try? JSONSerialization.jsonObject(
+            with: (call?.argumentsJSON ?? "").data(using: .utf8)!) as? [String: Any]
+        XCTAssertEqual(args?["format"] as? String, "markdown")
+        XCTAssertEqual(args?["name"] as? String, "Engineering Notes")
+        XCTAssertEqual(args?["path"] as? String, "x.md")
+        XCTAssertEqual(args?["content"] as? String, "say \"hi\"")
+    }
+
+    // MARK: - content re-escape narrowness
+
+    func testReescape_doesNotAlterValidToolCall() {
+        // A valid tool call parses via the normal path; the re-escape fallback never runs.
+        let valid = #"{"name":"write_file","arguments":{"content":"clean text","path":"x.md"}}"#
+        let call = ToolCallParsingHelpers.parseToolCallFromJSON(valid)
+        XCTAssertEqual(call?.name, "write_file")
+        let args = try? JSONSerialization.jsonObject(
+            with: (call?.argumentsJSON ?? "").data(using: .utf8)!) as? [String: Any]
+        XCTAssertEqual(args?["content"] as? String, "clean text")
+    }
+
+    func testReescape_failsClosedOnNonContentEnvelope() {
+        // No content-bearing field → re-escape can't fire → fail closed (nil), not a crash or
+        // a corrupted dispatch.
+        let broken = #"{"name":"git_status","arguments":{garbage not json}}"#
+        XCTAssertNil(ToolCallParsingHelpers.parseToolCallFromJSON(broken))
+    }
+
+    // MARK: - knownToolArgumentKeys ↔ tool-schema sync guard
+    //
+    // `knownToolArgumentKeys` is a hand-maintained literal that the re-escape recovery uses to
+    // reject splits that fabricate an unknown key. It must stay a SUPERSET of the schema
+    // property keys of the file/artifact tools it gates — otherwise a future schema arg would
+    // silently start rejecting otherwise-recoverable envelopes (comment-rot with no compile
+    // error). This pins that invariant structurally.
+
+    func testKnownToolArgumentKeys_coversFileAndArtifactToolSchemas() {
+        var schemaKeys = Set<String>()
+        for schema in [
+            WriteFileTool.schema, EditFileTool.schema, DeleteFileTool.schema, CreateArtifactTool.schema,
+        ] {
+            if let properties = schema.parameters.properties {
+                schemaKeys.formUnion(properties.keys)
+            }
+        }
+        XCTAssertFalse(schemaKeys.isEmpty, "Sanity: the tool schemas expose argument properties")
+        let known = ToolCallParsingHelpers._knownToolArgumentKeysForTesting
+        XCTAssertTrue(
+            schemaKeys.isSubset(of: known),
+            "knownToolArgumentKeys must cover every file/artifact tool schema arg so re-escape "
+                + "recovery can't silently reject a recoverable envelope. Missing: "
+                + "\(schemaKeys.subtracting(known))")
+    }
+
+    // MARK: - parseAfterContentReescape: residual-ambiguity truncation (documented, pinned)
+    //
+    // The selection keeps the split with the MOST known-arg keys. When the content value itself
+    // contains a `","<knownkey>":"…"`-shaped fragment, the bytes are identical whether that
+    // fragment is real trailing args or literal content — so the max-arg split truncates the
+    // content and treats the fragment as args. This is INHERENT input ambiguity: biasing toward
+    // longest content would break the real gemma defect (a genuine `","path":"…"` tail this
+    // recovery exists to preserve). The test pins CURRENT behaviour so a future heuristic change
+    // is deliberate — it is NOT an endorsement of truncation. See the function doc.
+
+    func testReescape_embeddedKnownKeyFragment_residualAmbiguity() {
+        // content's intended value (in the truncating reading) is `say "hi" then ","path":"/etc/x`,
+        // with raw quotes around `hi` making it strict-broken so it reaches re-escape. The max-arg
+        // split closes content at `say "hi" then ` and treats `,"path":"/etc/x"` as a real arg.
+        let broken = #"{"name":"write_file","arguments":{"content":"say "hi" then ","path":"/etc/x"}}"#
+        XCTAssertNil(JSONUtilities.parseJSONDictionary(broken), "Pre-condition: raw quotes → strict-broken")
+        let call = ToolCallParsingHelpers.parseToolCallFromJSON(broken)
+        XCTAssertEqual(call?.name, "write_file", "A call still resolves (max-arg split)")
+        let args = try? JSONSerialization.jsonObject(
+            with: (call?.argumentsJSON ?? "").data(using: .utf8)!) as? [String: Any]
+        // CURRENT behaviour: content truncated, the embedded fragment fabricated into `path`.
+        XCTAssertEqual(args?["content"] as? String, "say \"hi\" then ",
+                       "Pins the documented truncation under residual ambiguity (not an endorsement)")
+        XCTAssertEqual(args?["path"] as? String, "/etc/x")
+    }
+
+    // MARK: - parseAfterContentReescape: two-raw-field absorption (residual ambiguity)
+
+    func testReescape_twoRawContentFields_absorbsSecondIntoFirst_residualAmbiguity() {
+        // Both old_text AND new_text carry raw quotes. Re-escaping new_text leaves the raw
+        // old_text in the prefix (still broken), so the max-arg split lands on OLD_TEXT and
+        // absorbs the entire `","new_text":"c"d` run into old_text's value — keeping
+        // {old_text, path} (both known keys) and dropping new_text as a separate arg. This is
+        // the SAME residual-ambiguity root cause as
+        // `testReescape_embeddedKnownKeyFragment_residualAmbiguity`: the bytes are identical
+        // whether the embedded `","key":"…"` is structure or literal content. Pins CURRENT
+        // behaviour — two-raw-field envelopes recover by ABSORPTION, not by failing closed.
+        // NOT an endorsement; a deliberate heuristic change should update this test.
+        let broken = #"{"name":"edit_file","arguments":{"old_text":"a"b","new_text":"c"d","path":"x.py"}}"#
+        XCTAssertNil(JSONUtilities.parseJSONDictionary(broken), "Pre-condition: strict-broken")
+        let call = ToolCallParsingHelpers.parseToolCallFromJSON(broken)
+        XCTAssertEqual(call?.name, "edit_file", "Recovers (does not fail closed) via the max-arg split")
+        let args = try? JSONSerialization.jsonObject(
+            with: (call?.argumentsJSON ?? "").data(using: .utf8)!) as? [String: Any]
+        XCTAssertEqual(args?["path"] as? String, "x.py", "Trailing clean arg preserved")
+        XCTAssertNil(args?["new_text"], "new_text is absorbed into old_text, not a separate arg")
+        XCTAssertEqual(args?["old_text"] as? String, #"a"b","new_text":"c"d"#,
+                       "old_text absorbs the new_text run (documented residual ambiguity)")
+        XCTAssertEqual(args?.count, 2, "Exactly {old_text, path} survive")
+    }
+
+    // MARK: - parseAfterContentReescape: fail-closed boundaries
+
+    func testReescape_exceedsQuoteScanCap_failsClosed() {
+        // The `tried < 500` cap bounds the quote scan. A content value with >500 interior quotes
+        // pushes the real closing quote past the cap → no qualifying split is found before the
+        // budget runs out → graceful nil (no hang, no wrong split).
+        let manyQuotes = String(repeating: "\"", count: 600)
+        let broken = "{\"name\":\"write_file\",\"arguments\":{\"content\":\"" + manyQuotes
+            + "\",\"path\":\"x\"}}"
+        XCTAssertNil(JSONUtilities.parseJSONDictionary(broken), "Pre-condition: strict-broken")
+        XCTAssertNil(ToolCallParsingHelpers.parseToolCallFromJSON(broken),
+                     "Quote scan beyond the cap must fail closed, not hang or mis-split")
+    }
+
+    // MARK: - CallMarkerStrategy raw-body fallback: nested <|end|> inside the body
+
+    func testHarmonyExtraction_nestedEndMarkerInsideBody_failsClosed() {
+        // The walker fails (missing key-quote `,path":` flips parity), so the raw-body fallback
+        // runs. It uses the FIRST `<|end|>` as the body boundary — but here a literal `<|end|>`
+        // sits INSIDE the content value, before the real terminator. The body is truncated at the
+        // nested marker → unrepairable → dropped. Pins that the first-<|end|>-wins truncation
+        // fails closed rather than dispatching a corrupted call.
+        let envelope = #"<|call|>{"name":"write_file","arguments":{"content":"see <|end|> here",path":"a.md"}}<|end|>"#
+        let calls = HarmonyToolCallParser().extractAllToolCalls(from: envelope)
+        XCTAssertEqual(calls.count, 0, "Nested <|end|> truncates the fallback body → call dropped")
+    }
+
+    // MARK: - extractJSONBracedValue: stray backslash before a structural close (direct unit)
+
+    func testBraceWalker_strayBackslashBeforeClose_returnsNil() {
+        // The uniform-escape change (escapes handled inside AND outside strings) makes a stray `\`
+        // before a structural `}` consume the brace, so depth never balances and there is no prior
+        // close to salvage → nil. Direct pin of the "returns nil instead of a broken span" half of
+        // the superset claim (otherwise tested only end-to-end).
+        let s = #"{"a":1\}"#  // raw string: the backslash is literal → {"a":1\}
+        let sub = s[...]
+        XCTAssertNil(
+            ToolCallParsingHelpers.extractJSONBracedValue(in: sub, from: sub.startIndex),
+            "Stray backslash before a structural close must fail closed (nil), not return a broken span")
     }
 }

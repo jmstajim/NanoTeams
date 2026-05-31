@@ -293,6 +293,42 @@ final class LLMExecutionService {
         executionStates[stepID]?.runningTask != nil
     }
 
+    // MARK: - Stateful continuation slice
+
+    /// Computes the message slice to send on a stateful (`previous_response_id`) continuation.
+    ///
+    /// In stateful mode the server already holds every prior turn, so we send only the
+    /// messages AFTER the last assistant turn (plus system messages, which
+    /// `NativeLMStudioClient` omits on continuations — they persist in the chain). If that
+    /// slice has no non-empty user/tool content (which would make the API reject the request
+    /// with HTTP 400 "input must not be an empty string"), `fallBackToStateless` is `true` so
+    /// the caller clears the session and resends the full conversation.
+    ///
+    /// Pure and `nonisolated` so `LLMSliceAnchorTests` exercises the REAL slice rather than a
+    /// replicated copy (the prior drift risk). Anchoring on `lastIndex(where: .assistant)` is
+    /// why every model turn must advance an assistant anchor — see `processStreamingResult`.
+    nonisolated static func statefulContinuationSlice(
+        conversationMessages: [ChatMessage], isStateful: Bool
+    ) -> (messages: [ChatMessage], fallBackToStateless: Bool) {
+        guard isStateful,
+              let lastAssistantIdx = conversationMessages.lastIndex(where: { $0.role == .assistant })
+        else {
+            return (conversationMessages, false)
+        }
+        let systemMessages = conversationMessages.filter { $0.role == .system }
+        let newMessages = Array(conversationMessages[(lastAssistantIdx + 1)...]
+            .filter { $0.role != .system })
+        let hasNonEmptyContent = newMessages.contains { msg in
+            let content = msg.content ?? ""
+            return !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || msg.imageContent?.isEmpty == false
+        }
+        if !hasNonEmptyContent {
+            return (conversationMessages, true)
+        }
+        return (systemMessages + newMessages, false)
+    }
+
     // MARK: - LLM Tool Iteration
 
     /// Run exactly one assistant generation + optional tool execution pass.
@@ -366,33 +402,12 @@ final class LLMExecutionService {
             )
         }
 
-        // 2. Determine messages to send: if session is active, only new messages since last call
-        let messagesToSend: [ChatMessage]
-        if session != nil,
-           let lastAssistantIdx = conversationMessages.lastIndex(where: { $0.role == .assistant }) {
-            // Stateful: system messages + new messages after last assistant turn.
-            // System messages are always included here; NativeLMStudioClient omits on continuations
-            // (system_prompt persists in the response chain).
-            let systemMessages = conversationMessages.filter { $0.role == .system }
-            let newMessages = Array(conversationMessages[(lastAssistantIdx + 1)...]
-                .filter { $0.role != .system })
-            // Defense-in-depth: if no new user/tool message would be sent, the API rejects the
-            // request with HTTP 400 ("input must not be an empty string"). Fall back to a fresh
-            // stateless turn rather than firing a guaranteed-bad request.
-            let hasNonEmptyContent = newMessages.contains { msg in
-                let content = msg.content ?? ""
-                return !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    || msg.imageContent?.isEmpty == false
-            }
-            if !hasNonEmptyContent {
-                session = nil
-                messagesToSend = conversationMessages
-            } else {
-                messagesToSend = systemMessages + newMessages
-            }
-        } else {
-            messagesToSend = conversationMessages
-        }
+        // 2. Determine messages to send: on a stateful continuation, only the new messages
+        // since the last call (the empty-slice case falls back to a fresh stateless turn).
+        let slice = Self.statefulContinuationSlice(
+            conversationMessages: conversationMessages, isStateful: session != nil)
+        if slice.fallBackToStateless { session = nil }
+        let messagesToSend = slice.messages
 
         // 2b. Stream LLM response
         let streamResult = try await performStreamingCall(
