@@ -10,7 +10,7 @@
 [![License](https://img.shields.io/github/license/jmstajim/NanoTeams?color=5F87D9&style=flat-square)](LICENSE)
 [![Download](https://img.shields.io/badge/Download-NanoTeams.app.zip-35BE81?style=flat-square)](https://github.com/jmstajim/NanoTeams/releases/latest/download/NanoTeams.app.zip)
 
-**AI coding assistant and multi-agent AI teams for macOS, powered by local LLMs through [LM Studio](https://lmstudio.ai).** Open-source, free, fully private. Start an agentic chat with the **Coding Assistant**, let the **Coding Agent** edit small changes directly and delegate the heavy lifting to another team ([Get started](#getting-started)), or hand a task to a team of specialized AI roles that read your files, produce artifacts, consult each other, and report back when done. Generate custom teams from a one-line description, paste images and documents straight into the composer, search your project semantically with on-device embeddings, clip text from any app, dictate hands-free with fully on-device speech recognition, and queue messages to working roles without pausing them.
+**AI coding assistant and multi-agent AI teams for macOS, powered by local LLMs through [LM Studio](https://lmstudio.ai).** Open-source, free, fully private. Start an agentic chat with the **Coding Assistant**, let the **Coding Agent** edit small changes directly and delegate the heavy lifting to another team ([Get started](#getting-started)), or hand a task to a team of specialized AI roles that read your files, produce artifacts, consult each other, and report back when done. Switch on the **Autovisor** and an automated Supervisor runs the whole folder for you — creating, answering, and reviewing tasks on its own. Generate custom teams from a one-line description, paste images and documents straight into the composer, search your project semantically with on-device embeddings, clip text from any app, dictate hands-free with fully on-device speech recognition, and queue messages to working roles without pausing them.
 
 <img width="600" height="510" alt="NanoTeams — AI coding assistant and multi-agent AI teams for macOS" src="https://github.com/user-attachments/assets/c7549d11-abd9-4faf-94c3-6cefb6214394" />
 
@@ -81,6 +81,9 @@ Create tasks and let a team of specialized AI roles collaborate. Each role has i
 
 <img width="1280" height="1049" alt="NanoTeams — activity feed with AI role messages and tool calls" src="https://github.com/user-attachments/assets/93b34c9e-9296-4c5c-9b3b-2e9d7adf576a" />
 
+### Autovisor — Automated Supervisor
+Flip one switch and an autonomous agent takes over your work folder. Give the **Autovisor** a goal and it watches every task, creates and schedules new ones, answers the questions roles would normally ask you, reviews finished work, and closes it — keeping a standing memory between passes. It wakes when a task needs input, fails, completes, is created, or looks stuck; when there's nothing to do it parks and waits. You can message it any time — your message continues its conversation. A sleep timer turns it off a set time after enabling, so an experiment can't run all night. Configure the goal, memory, triggers, schedule, and an optional dedicated model in **Settings → Autovisor**.
+
 ### AI Team Generation
 Describe a task in one line and an LLM designs a custom team for it — roles, artifacts, prompts, dependencies, and hierarchy. The *Generate Team* settings tab lets you customize the meta-model, system prompt, and defaults used whenever a team is generated.
 
@@ -90,8 +93,8 @@ A peer-level role can hand a self-contained sub-task to another team and wait fo
 ### Global Context
 A single free-text box in **Settings → LLM** whose contents are appended to every LLM system prompt that runs a tool loop — step execution, teammate consultation, meetings, and planning. Use it for cross-cutting instructions you want every role in every team to follow. A character counter and a *Reset to Default* button are shown; edits apply to new sessions only, so a step already running keeps the value it started with.
 
-### 33 Built-in Tools
-Sandboxed tool system: file operations, git, Xcode build & test, team collaboration (`ask_teammate`, `request_team_meeting`, `request_changes`), team delegation (`delegate_to_team` with cancel/resume/forward follow-ups), team generation (`create_team`), artifact creation, supervisor Q&A, persistent memory, and image analysis.
+### 43 Built-in Tools
+Sandboxed tool system: file operations, git, Xcode build & test, team collaboration (`ask_teammate`, `request_team_meeting`, `request_changes`), team delegation (`delegate_to_team` with cancel/resume/forward follow-ups), team generation (`create_team`), task management for the Autovisor, artifact creation, supervisor Q&A, persistent memory, and image analysis.
 
 ### Documents In & Out
 Roles read PDF, DOCX, RTF, XLSX, PPTX, ODT, and HTML files directly — no manual conversion to plain text. Generated artifacts can be exported to PDF, Word, or RTF.
@@ -124,7 +127,7 @@ Hands-free input via Apple's `SpeechAnalyzer` and `DictationTranscriber` — ful
 Roles consult each other for quick Q&A, hold multi-participant meetings with turn-based dialogue and voting, and request peer-to-peer revisions. Code Reviewer can request changes from the Engineer — the system creates a voting meeting, tallies votes, and re-executes with full context if approved.
 
 ### Supervisor Message Queue
-Send guidance to working roles without pausing them. The unified Team Composer has a *To:* selector for targeting a specific role or the whole team, with consistent input across the Activity Feed, Watchtower, and Quick Capture. The *Correct Role* action lets you adjust a paused role's direction while preserving its progress so far.
+Send guidance to working roles without pausing them. The unified Team Composer has a *To:* selector for targeting a specific role or the whole team, with consistent input across the Activity Feed, Watchtower, and Quick Capture. The *Correct Role* action lets you adjust a paused role's direction while preserving its progress so far. Messaging a paused or failed task resumes it — failed steps retry with their conversation intact.
 
 ### Scheduled & Recurring Tasks
 Put any task on a timer from the **Automation** sheet: repeat on an **interval**, daily at a **time of day** (optionally limited to specific weekdays), **monthly** on a chosen day, or as a **one-shot** — with a live *Next run* preview. A companion **Run timeout** auto-pauses a run that overruns and notifies you, so a stuck model never blocks the schedule. A **Recurring** filter in the sidebar shows just your scheduled tasks.
@@ -193,6 +196,9 @@ Yes. Create your own teams with custom roles, artifacts, prompts, tool access, d
 
 **Can one team hand work to another?**
 Yes. A peer-level role can delegate a self-contained sub-task to another team with the `delegate_to_team` tool and get that team's final artifacts back as the result. The built-in **Coding Agent** does this out of the box — editing small changes itself and delegating bigger work to the Engineering Team, Startup, or a freshly generated team. While a delegation runs you can message the delegating role to pause the child team, then cancel, resume, or forward guidance. Enable it per role in the *Delegation* tab of the role editor.
+
+**Can NanoTeams work unattended?**
+Yes — enable the **Autovisor** for a work folder. It acts as an automated Supervisor: it watches your tasks, creates and schedules new ones, answers their questions, reviews the results, and closes finished work, guided by a goal and a standing memory you can edit. A built-in sleep timer turns it off automatically after a set time.
 
 **What are the system requirements?**
 macOS 15.0 or later. LM Studio 0.4.0 or later. Apple Silicon recommended for best local-LLM performance. Voice dictation requires macOS 26+.
