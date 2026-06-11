@@ -731,7 +731,6 @@ private enum QuickCaptureFormPreviewData {
         store._setActiveTaskID(activeTask?.id)
     }
 }
-#endif
 
 #Preview("Quick Capture - New Task") {
     @Previewable @State var formState = QuickCaptureFormState()
@@ -838,4 +837,5 @@ private enum QuickCaptureFormPreviewData {
     .environment(dictation)
     .frame(width: 300, height: 360)
 }
+#endif
 

@@ -128,7 +128,7 @@ final class SearchIndexCoordinator {
                 excludedPrefixes: [internalDir],
                 debounce: watcherDebounce,
                 onChange: { [weak self] in
-                    Task { @MainActor in
+                    Task { @MainActor [weak self] in
                         self?.scheduleEnsureFresh()
                     }
                 }
@@ -416,7 +416,7 @@ final class SearchIndexCoordinator {
         // on the actor's isolation context — hop to MainActor to mutate the
         // published field.
         await vectorIndex.setProgressHandler { [weak self] progress in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 self?.vectorIndexProgress = progress
                 self?.vectorIndexState = .building(progress: progress)
             }
