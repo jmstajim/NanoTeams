@@ -69,7 +69,9 @@ final class DefaultToolSchemasTests: XCTestCase {
     }
 
     func testCollaborationToolsCount() {
-        XCTAssertEqual(count(in: .collaboration), 5)
+        // 4 teammate + create_team + 10 Autovisor management tools
+        // (incl. wait_for_events).
+        XCTAssertEqual(count(in: .collaboration), 15)
     }
 
     func testArtifactToolsCount() {
@@ -78,15 +80,14 @@ final class DefaultToolSchemasTests: XCTestCase {
 
     // MARK: - Total Count
 
-    func testDefaultToolsCountIs33() {
-        // 29 baseline + delegate_to_team + cancel_delegation +
-        // resume_delegation + forward_to_team (the 3 follow-ups for the
-        // pause-and-decide Supervisor-interrupt flow on `delegate_to_team`).
-        // `delegate_to_team`'s description embeds the per-role team catalog
-        // inline at schema-build time — replaces the old `list_teams` tool.
-        // Update this count whenever a tool is added/removed from
+    func testDefaultToolsCountIs43() {
+        // 33 prior (29 baseline + 4 delegation) + 10 Autovisor management
+        // tools (list_tasks, task_status, create_managed_task, control_task,
+        // manage_role, answer_task_question, message_task, schedule_task,
+        // set_work_folder_context, wait_for_events) — only offered to the hidden
+        // Manager role. Update this count whenever a tool is added/removed from
         // `ToolHandlerRegistry.allTypes`.
-        XCTAssertEqual(tools.count, 33)
+        XCTAssertEqual(tools.count, 43)
     }
 
     /// `create_team` is in the registry (so handler tests can drive it via ToolRuntime),
@@ -113,6 +114,22 @@ final class DefaultToolSchemasTests: XCTestCase {
             "request_changes",
             "create_artifact",
             "analyze_image",
+            // Delegation control plane (previously omitted — all excludedInMeetings).
+            ToolNames.delegateToTeam,
+            ToolNames.cancelDelegation,
+            ToolNames.resumeDelegation,
+            ToolNames.forwardToTeam,
+            // Autovisor management tools (all excludedInMeetings).
+            ToolNames.listTasks,
+            ToolNames.taskStatus,
+            ToolNames.createManagedTask,
+            ToolNames.controlTask,
+            ToolNames.manageRole,
+            ToolNames.answerTaskQuestion,
+            ToolNames.messageTask,
+            ToolNames.scheduleTask,
+            ToolNames.setWorkFolderContext,
+            ToolNames.waitForEvents,
         ]
         XCTAssertTrue(
             ToolHandlerRegistry.meetingExcluded.isSuperset(of: requiredSignalingTools),

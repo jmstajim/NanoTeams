@@ -60,6 +60,38 @@ final class ToolsFileSystemTests: XCTestCase {
         XCTAssertTrue(results[0].outputJSON.contains("Hello, World!"))
     }
 
+    /// End-to-end guard for the slash-escaping fix: the model reads the RAW read
+    /// envelope text (not JSON-decoded), so its slashes must be literal there — and
+    /// an edit_file anchor copied verbatim from that text must match the file. Before
+    /// the fix the envelope showed `..\/systems\/Q.js`, which the model re-typed with
+    /// backslashes into an anchor that never matched → an unbreakable edit→re-read loop.
+    func testReadThenEditFile_forwardSlashAnchorFromRawEnvelope_matches() throws {
+        let original = "import { Q } from '../systems/Q.js';\n"
+        let filePath = tempDir.appendingPathComponent("game.js")
+        try original.write(to: filePath, atomically: true, encoding: .utf8)
+
+        let read = runtime.executeAll(context: context, toolCalls: [
+            StepToolCall(name: "read_file", argumentsJSON: "{\"path\": \"game.js\"}")
+        ])
+        XCTAssertFalse(read[0].isError)
+        XCTAssertTrue(read[0].outputJSON.contains("../systems/Q.js"),
+                      "raw read envelope must show literal slashes: \(read[0].outputJSON)")
+        XCTAssertFalse(read[0].outputJSON.contains("..\\/systems"),
+                       "raw read envelope must not escape slashes to \\/: \(read[0].outputJSON)")
+
+        // Anchor copied verbatim from what the model saw must match on disk.
+        let anchor = "import { Q } from '../systems/Q.js';"
+        let edit = runtime.executeAll(context: context, toolCalls: [
+            StepToolCall(
+                name: "edit_file",
+                argumentsJSON: "{\"path\":\"game.js\",\"old_text\":\"\(anchor)\",\"new_text\":\"import { Q } from '../systems/Quad.js';\"}"
+            )
+        ])
+        XCTAssertFalse(edit[0].isError, "edit with forward-slash anchor must match: \(edit[0].outputJSON)")
+        let updated = try String(contentsOf: filePath, encoding: .utf8)
+        XCTAssertTrue(updated.contains("../systems/Quad.js"), "edit must have applied: \(updated)")
+    }
+
     func testReadFile_returnsErrorForMissingFile() {
         let call = StepToolCall(name: "read_file", argumentsJSON: "{\"path\": \"nonexistent.txt\"}")
         let results = runtime.executeAll(context: context, toolCalls: [call])

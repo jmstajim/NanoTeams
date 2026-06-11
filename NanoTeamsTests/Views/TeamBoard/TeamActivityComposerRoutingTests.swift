@@ -85,16 +85,32 @@ final class TeamActivityComposerRoutingTests: XCTestCase {
                        "One working role → auto-pick it as the only viable recipient")
     }
 
-    func testResolveEffectiveRecipient_singleCandidateNotWorking_returnsThatRole() {
-        // One-role team whose sole role is currently idle (between chat turns).
+    func testResolveEffectiveRecipient_singleCandidateNotWorking_chatFallback_returnsThatRole() {
+        // One-role team whose sole role is currently idle (between chat turns). Chat mode →
+        // allowsRoleFallback true, so the role is surfaced even when idle.
         let assistant = normalRole(id: "assistant")
         let result = TeamActivityComposer.resolveEffectiveRecipient(
             selected: nil, activeQuestions: [],
             selectableRoles: [],                // not working right now
-            candidateRoles: [assistant]
+            candidateRoles: [assistant],
+            allowsRoleFallback: true
         )
         XCTAssertEqual(result, .role(id: "assistant"),
-                       "Single-role team fallback: surface the role even when idle")
+                       "Single-role chat team fallback: surface the role even when idle")
+    }
+
+    func testResolveEffectiveRecipient_singleCandidateNotWorking_fallbackDisallowed_returnsNil() {
+        // Single-role NON-chat team awaiting acceptance (e.g. Startup): the sole candidate
+        // must NOT be resolved — sending there is a no-op, so the composer goes inert.
+        let swe = normalRole(id: "swe")
+        let result = TeamActivityComposer.resolveEffectiveRecipient(
+            selected: nil, activeQuestions: [],
+            selectableRoles: [],
+            candidateRoles: [swe],
+            allowsRoleFallback: false
+        )
+        XCTAssertNil(result,
+                     "Single-role non-chat team in .needsAcceptance → no recipient (no enabled no-op send)")
     }
 
     func testResolveEffectiveRecipient_multipleWorkingRoles_picksFirst() {
@@ -110,18 +126,49 @@ final class TeamActivityComposerRoutingTests: XCTestCase {
         XCTAssertEqual(result, .role(id: "a"))
     }
 
-    func testResolveEffectiveRecipient_multipleCandidatesNotWorking_picksFirstCandidate() {
+    func testResolveEffectiveRecipient_multipleCandidatesNotWorking_fallbackDisallowed_returnsNil() {
         let a = normalRole(id: "a")
         let b = normalRole(id: "b")
         let result = TeamActivityComposer.resolveEffectiveRecipient(
             selected: nil, activeQuestions: [],
-            selectableRoles: [],          // none working
-            candidateRoles: [a, b]        // but candidates exist
+            selectableRoles: [],            // none working
+            candidateRoles: [a, b],         // multiple candidates, but…
+            allowsRoleFallback: false       // …not a resumable/chat state (e.g. .needsAcceptance)
         )
-        // No chip is rendered for this state today (the single-candidate fallback
-        // only fires for exactly 1 candidate), so this branch is defensive — but
-        // if a chip ever becomes visible here, it must match the resolver's pick.
+        // The done/awaiting-review case from the screenshot: no chip is rendered and the
+        // resolver must NOT name an arbitrary first candidate. Composer goes inert.
+        XCTAssertNil(result,
+                     "Multi-candidate with fallback disallowed (.needsAcceptance) → no recipient, composer disabled")
+    }
+
+    func testResolveEffectiveRecipient_multipleCandidatesNotWorking_fallbackAllowed_picksFirst() {
+        let a = normalRole(id: "a")
+        let b = normalRole(id: "b")
+        let result = TeamActivityComposer.resolveEffectiveRecipient(
+            selected: nil, activeQuestions: [],
+            selectableRoles: [],            // none working
+            candidateRoles: [a, b],         // multiple candidates
+            allowsRoleFallback: true        // resumable-by-send (.paused/.pending) or chat
+        )
+        // Paused/pending multi-role resume (or chat): keep send enabled by resolving to the
+        // first candidate (queued untargeted, rides resumeRun). Placeholder stays role-agnostic.
         XCTAssertEqual(result, .role(id: "a"))
+    }
+
+    func testResolveEffectiveRecipient_failedRoleBeatsCandidateFallback() {
+        // A failed run names the failed role as the retry target — even though it's also a
+        // plain candidate, the dedicated failed branch picks it before the generic fallback.
+        let pm = normalRole(id: "pm")
+        let tpm = normalRole(id: "tpm")
+        let result = TeamActivityComposer.resolveEffectiveRecipient(
+            selected: nil, activeQuestions: [],
+            selectableRoles: [],
+            failedRoles: [tpm],
+            candidateRoles: [pm, tpm],
+            allowsRoleFallback: true
+        )
+        XCTAssertEqual(result, .role(id: "tpm"),
+                       "Failed role is the named retry target, ahead of candidateRoles.first")
     }
 
     func testResolveEffectiveRecipient_noRoles_noQuestion_returnsNil() {
@@ -259,14 +306,25 @@ final class TeamActivityComposerRoutingTests: XCTestCase {
                        [.role(id: "pm"), .role(id: "tl")])
     }
 
-    func testComputeChipOptions_singleRoleTeamIdle_surfacesRoleChip_notTeam() {
-        // Personal-Assistant-style: one-role team, role currently idle.
+    func testComputeChipOptions_singleRoleTeamIdle_chatFallback_surfacesRoleChip() {
+        // Personal-Assistant-style: one-role chat team, role idle → allowsRoleFallback true.
         let assistant = normalRole(id: "assistant", name: "Assistant")
         let options = TeamActivityComposer.computeChipOptions(
-            roles: [assistant], workingRoleIDs: [], activeQuestions: []
+            roles: [assistant], workingRoleIDs: [], activeQuestions: [], allowsRoleFallback: true
         )
         XCTAssertEqual(options.map(\.recipient), [.role(id: "assistant")],
-                       "Single-role team fallback: surface the role's own chip by name, not ambiguous Team")
+                       "Single-role chat team fallback: surface the role's own chip by name")
+    }
+
+    func testComputeChipOptions_singleRoleTeamIdle_fallbackDisallowed_noChip() {
+        // Single-role NON-chat team awaiting acceptance (e.g. Startup): no chip — otherwise
+        // the chip would be a tap-trap resolving to a no-op send.
+        let swe = normalRole(id: "swe", name: "SWE")
+        let options = TeamActivityComposer.computeChipOptions(
+            roles: [swe], workingRoleIDs: [], activeQuestions: [], allowsRoleFallback: false
+        )
+        XCTAssertTrue(options.isEmpty,
+                      "Single-role non-chat team in .needsAcceptance → no chip, composer inert")
     }
 
     func testComputeChipOptions_askingRoleExcludedEvenWhenWorking() {
@@ -631,5 +689,565 @@ final class TeamActivityComposerRoutingTests: XCTestCase {
             banner,
             "Could not embed 3 file(s) inline — attached as paths: a.bin, b.bin, c.bin."
         )
+    }
+
+    // MARK: - queueTarget — targeted vs untargeted on submit
+
+    /// A working role gets a role-targeted queue entry (steering for a live role) —
+    /// delivered to that role via the role-targeted tier of `injectQueuedSupervisorMessage`.
+    func testQueueTarget_workingRole_targetsThatRole() {
+        XCTAssertEqual(
+            TeamActivityComposer.queueTarget(roleID: "pm", workingRoleIDs: ["pm", "tl"]),
+            "pm",
+            "A working role must receive a role-targeted queue entry"
+        )
+    }
+
+    /// When the resolved role is NOT working — the paused/failed resume case, where the
+    /// recipient is just `candidateRoles.first` — queue untargeted (`nil`) so whichever
+    /// role resumes consumes it, instead of mis-targeting an arbitrary role.
+    func testQueueTarget_nonWorkingRole_returnsNilForTeamWideDelivery() {
+        XCTAssertNil(
+            TeamActivityComposer.queueTarget(roleID: "pm", workingRoleIDs: []),
+            "No working role → untargeted queue so any resuming role picks it up"
+        )
+        XCTAssertNil(
+            TeamActivityComposer.queueTarget(roleID: "pm", workingRoleIDs: ["tl"]),
+            "Resolved role isn't among the working set → untargeted"
+        )
+    }
+
+    // MARK: - placeholderText
+
+    func testPlaceholderText_workingRole_saysQueue() {
+        let pm = normalRole(id: "pm", name: "PM")
+        XCTAssertEqual(
+            TeamActivityComposer.placeholderText(recipient: .role(id: "pm"), workingRoleIDs: ["pm"], roleDefinitions: [pm]),
+            "Queue a message for PM…")
+    }
+
+    func testPlaceholderText_nonWorkingRole_saysSend() {
+        // Paused/failed resume: resolved role isn't working → message queues untargeted.
+        let pm = normalRole(id: "pm", name: "PM")
+        XCTAssertEqual(
+            TeamActivityComposer.placeholderText(recipient: .role(id: "pm"), workingRoleIDs: [], roleDefinitions: [pm]),
+            "Send a message to PM…")
+    }
+
+    func testPlaceholderText_answer_saysAnswer() {
+        XCTAssertEqual(
+            TeamActivityComposer.placeholderText(recipient: .answer(stepID: "pm"), workingRoleIDs: [], roleDefinitions: []),
+            "Answer…")
+    }
+
+    func testPlaceholderText_nilRecipient_explainsNoRecipient() {
+        XCTAssertEqual(
+            TeamActivityComposer.placeholderText(recipient: nil, workingRoleIDs: [], roleDefinitions: []),
+            "No active recipient — accept, restart a role, or request changes.")
+    }
+
+    func testPlaceholderText_failedRole_saysRetry() {
+        let tpm = normalRole(id: "tpm", name: "TPM")
+        let pm = normalRole(id: "pm", name: "PM")
+        XCTAssertEqual(
+            TeamActivityComposer.placeholderText(
+                recipient: .role(id: "tpm"), workingRoleIDs: [],
+                failedRoleIDs: ["tpm"], roleDefinitions: [pm, tpm]
+            ),
+            "Send a message to TPM to retry…")
+    }
+
+    func testPlaceholderText_multiRoleFallback_isRoleAgnostic() {
+        // Paused multi-role resume: recipient is an arbitrary candidateRoles.first, so the
+        // placeholder must NOT name it (that was the original "Send a message to Product
+        // Manager…" bug). A single-role team still names its sole role (covered above).
+        let pm = normalRole(id: "pm", name: "PM")
+        let tl = normalRole(id: "tl", name: "TL")
+        XCTAssertEqual(
+            TeamActivityComposer.placeholderText(
+                recipient: .role(id: "pm"), workingRoleIDs: [],
+                failedRoleIDs: [], roleDefinitions: [pm, tl]
+            ),
+            "Send a message…")
+    }
+
+    // MARK: - queuedRoleInfoMessage
+
+    func testQueuedRoleInfoMessage_workingRole_targetedWording() {
+        XCTAssertEqual(
+            TeamActivityComposer.queuedRoleInfoMessage(roleName: "PM", isWorking: true),
+            "Queued for PM — will deliver on the next request.")
+    }
+
+    func testQueuedRoleInfoMessage_nonWorkingRole_resumingWording() {
+        XCTAssertEqual(
+            TeamActivityComposer.queuedRoleInfoMessage(roleName: "PM", isWorking: false),
+            "Message queued — resuming the task; it'll be picked up on the next request.")
+    }
+
+    // MARK: - Multi-candidate, none working: done/review vs resumable
+
+    /// Done/awaiting-review (`.needsAcceptance`, screenshot case): a multi-role team with NO
+    /// working role, no question, no failed role, and fallback disallowed → the resolver
+    /// returns `nil` (composer inert) AND no chip is rendered. The two sides agree.
+    func testMultiCandidateNoneWorking_done_resolverNil_andNoChip() {
+        let a = normalRole(id: "a", name: "Engineer")
+        let b = normalRole(id: "b", name: "Designer")
+
+        let resolved = TeamActivityComposer.resolveEffectiveRecipient(
+            selected: nil, activeQuestions: [],
+            selectableRoles: [],            // none working
+            candidateRoles: [a, b],
+            allowsRoleFallback: false       // .needsAcceptance
+        )
+        XCTAssertNil(resolved,
+                     "Done/awaiting-review → no recipient (no arbitrary role named), composer disabled")
+
+        let chips = TeamActivityComposer.computeChipOptions(
+            roles: [a, b], workingRoleIDs: [], activeQuestions: []
+        )
+        XCTAssertTrue(chips.isEmpty,
+                      "No chip rendered for >1 candidate with none working / none failed")
+    }
+
+    /// Failed multi-role team: a chip is emitted for the failed role (retry target), and the
+    /// resolver names it — so the screenshot's "Send a message to <arbitrary role>" never
+    /// happens on a failed task either.
+    func testFailedRole_emitsRetryChip_andResolves() {
+        let pm = normalRole(id: "pm", name: "PM")
+        let tpm = normalRole(id: "tpm", name: "TPM")
+
+        let chips = TeamActivityComposer.computeChipOptions(
+            roles: [pm, tpm], workingRoleIDs: [], failedRoleIDs: ["tpm"], activeQuestions: []
+        )
+        XCTAssertEqual(chips.map(\.recipient), [.role(id: "tpm")],
+                       "Failed role gets its own retry chip")
+        XCTAssertEqual(chips.first?.icon, "arrow.clockwise",
+                       "Retry chip uses the retry glyph")
+    }
+
+    // MARK: - computeSelectableRoles — all filters in one team
+
+    func testComputeSelectableRoles_complexTeam_allFiltersApplied() {
+        let supervisor = supervisorRole()
+        let observer = observerRole(id: "obs")
+        let pm = normalRole(id: "pm", name: "PM")
+        let tl = normalRole(id: "tl", name: "TL")
+        let eng = normalRole(id: "eng", name: "Eng")
+
+        let result = TeamActivityComposer.computeSelectableRoles(
+            roles: [supervisor, observer, pm, tl, eng],
+            workingRoleIDs: ["pm", "tl"],   // eng is idle
+            askingRoleIDs: ["pm"]           // pm is asking
+        )
+        XCTAssertEqual(result.map(\.id), ["tl"],
+                       "Only TL passes all four filters: not supervisor, not observer, working, not asking")
+    }
+
+    // MARK: - Corner cases: resolver priority interactions
+
+    func testResolver_questionBeatsFailed() {
+        // A failed role AND a pending question coexist (a sibling asked before another failed).
+        // Answer must win — it's higher priority than retry.
+        let tpm = normalRole(id: "tpm")
+        let result = TeamActivityComposer.resolveEffectiveRecipient(
+            selected: nil,
+            activeQuestions: [question(stepID: "pm")],
+            selectableRoles: [],
+            failedRoles: [tpm],
+            candidateRoles: [tpm],
+            allowsRoleFallback: true
+        )
+        XCTAssertEqual(result, .answer(stepID: "pm"),
+                       "Pending question outranks a failed-role retry target")
+    }
+
+    func testResolver_workingBeatsFailed() {
+        // One role still working while another failed → live steering of the working role
+        // outranks retrying the failed one.
+        let working = normalRole(id: "eng")
+        let failed = normalRole(id: "cr")
+        let result = TeamActivityComposer.resolveEffectiveRecipient(
+            selected: nil, activeQuestions: [],
+            selectableRoles: [working],
+            failedRoles: [failed],
+            candidateRoles: [working, failed],
+            allowsRoleFallback: true
+        )
+        XCTAssertEqual(result, .role(id: "eng"),
+                       "Working role outranks failed role")
+    }
+
+    func testResolver_failedResolvesEvenWhenFallbackDisallowed() {
+        // Defensive: a failed role is reachable regardless of `allowsRoleFallback` (the failed
+        // branch precedes the gate) — the composer is always shown on `.failed`, so the retry
+        // target must always resolve. (In practice a failed role ⟹ engine `.failed` ⟹
+        // allowsRoleFallback true; pin the independence so a flag change can't strand retry.)
+        let tpm = normalRole(id: "tpm")
+        let result = TeamActivityComposer.resolveEffectiveRecipient(
+            selected: nil, activeQuestions: [],
+            selectableRoles: [],
+            failedRoles: [tpm],
+            candidateRoles: [tpm],
+            allowsRoleFallback: false
+        )
+        XCTAssertEqual(result, .role(id: "tpm"))
+    }
+
+    func testResolver_explicitSelectionBeatsFailed() {
+        let pm = normalRole(id: "pm")
+        let tpm = normalRole(id: "tpm")
+        let result = TeamActivityComposer.resolveEffectiveRecipient(
+            selected: .role(id: "pm"),
+            activeQuestions: [],
+            selectableRoles: [],
+            failedRoles: [tpm],
+            candidateRoles: [pm, tpm],
+            allowsRoleFallback: true
+        )
+        XCTAssertEqual(result, .role(id: "pm"),
+                       "Explicit pick overrides the failed-role auto-resolution")
+    }
+
+    // MARK: - Corner cases: computeChipOptions with failed roles
+
+    func testChipOptions_orderAnswerThenWorkingThenFailed() {
+        let asker = normalRole(id: "pm", name: "PM")
+        let working = normalRole(id: "eng", name: "Eng")
+        let failed = normalRole(id: "cr", name: "CR")
+        let options = TeamActivityComposer.computeChipOptions(
+            roles: [asker, working, failed],
+            workingRoleIDs: ["eng"],
+            failedRoleIDs: ["cr"],
+            activeQuestions: [TeamActivityActiveQuestion(stepID: "pm", role: .productManager, question: "?")]
+        )
+        XCTAssertEqual(options.map(\.recipient),
+                       [.answer(stepID: "pm"), .role(id: "eng"), .role(id: "cr")],
+                       "Chip order: Answer chips, then working roles, then failed roles")
+    }
+
+    func testChipOptions_roleBothWorkingAndFailed_noDuplicateChip() {
+        // Defensive: a role can't really be both, but if the two sets overlap, emit only the
+        // working chip — the `where !workingRoleIDs.contains` guard prevents a duplicate.
+        let role = normalRole(id: "x", name: "X")
+        let options = TeamActivityComposer.computeChipOptions(
+            roles: [role], workingRoleIDs: ["x"], failedRoleIDs: ["x"], activeQuestions: []
+        )
+        XCTAssertEqual(options.map(\.recipient), [.role(id: "x")],
+                       "No duplicate chip when a role appears in both working and failed sets")
+        XCTAssertEqual(options.first?.icon, "person.fill",
+                       "The working chip (role icon) wins, not the retry glyph")
+    }
+
+    func testChipOptions_failedSupervisorAndObserverExcluded() {
+        let sup = supervisorRole()
+        let obs = observerRole(id: "obs")
+        let real = normalRole(id: "swe", name: "SWE")
+        let options = TeamActivityComposer.computeChipOptions(
+            roles: [sup, obs, real],
+            workingRoleIDs: [],
+            failedRoleIDs: ["supervisor", "obs", "swe"],
+            activeQuestions: []
+        )
+        XCTAssertEqual(options.map(\.recipient), [.role(id: "swe")],
+                       "Failed chips skip supervisor + observer roles")
+    }
+
+    func testChipOptions_failedRoleAlsoAsking_answerChipWins_noRetryChip() {
+        // The failed role is also the one asking → it gets an Answer chip, NOT a retry chip
+        // (an answer resolves the wait; a blind retry would fight it).
+        let role = normalRole(id: "cr", name: "CR")
+        let options = TeamActivityComposer.computeChipOptions(
+            roles: [role],
+            workingRoleIDs: [],
+            failedRoleIDs: ["cr"],
+            activeQuestions: [TeamActivityActiveQuestion(stepID: "cr", role: .productManager, question: "?")]
+        )
+        XCTAssertEqual(options.map(\.recipient), [.answer(stepID: "cr")],
+                       "An asking-and-failed role surfaces only its Answer chip")
+    }
+
+    func testChipOptions_multipleFailed_emitsRetryChipPerRole_inOrder() {
+        let a = normalRole(id: "a", name: "A")
+        let b = normalRole(id: "b", name: "B")
+        let options = TeamActivityComposer.computeChipOptions(
+            roles: [a, b], workingRoleIDs: [], failedRoleIDs: ["a", "b"], activeQuestions: []
+        )
+        XCTAssertEqual(options.map(\.recipient), [.role(id: "a"), .role(id: "b")],
+                       "One retry chip per failed role, in role order")
+    }
+
+    func testChipOptions_failedChipSuppressesSingleCandidateFallback() {
+        // A two-role team with one failed + one idle candidate, chat/resumable: the failed
+        // chip is present so the single-candidate fallback must NOT also fire (it would
+        // double-offer / the guard checks alreadyHasRoleChip). Only the failed chip shows.
+        let failed = normalRole(id: "cr", name: "CR")
+        let idle = normalRole(id: "pm", name: "PM")
+        let options = TeamActivityComposer.computeChipOptions(
+            roles: [failed, idle],
+            workingRoleIDs: [],
+            failedRoleIDs: ["cr"],
+            activeQuestions: [],
+            allowsRoleFallback: true
+        )
+        XCTAssertEqual(options.map(\.recipient), [.role(id: "cr")],
+                       "Failed chip present ⇒ single-candidate fallback suppressed (>1 candidate anyway)")
+    }
+
+    // MARK: - Corner cases: placeholderText precedence
+
+    func testPlaceholder_workingBeatsFailed() {
+        let role = normalRole(id: "x", name: "X")
+        XCTAssertEqual(
+            TeamActivityComposer.placeholderText(
+                recipient: .role(id: "x"), workingRoleIDs: ["x"],
+                failedRoleIDs: ["x"], roleDefinitions: [role]
+            ),
+            "Queue a message for X…",
+            "Working wording outranks failed wording when a role is somehow in both")
+    }
+
+    func testPlaceholder_singleFailedRoleSaysRetry_notNamedSend() {
+        // Even in a one-role team, a failed role says "to retry…", not the plain single-role wording.
+        let role = normalRole(id: "swe", name: "SWE")
+        XCTAssertEqual(
+            TeamActivityComposer.placeholderText(
+                recipient: .role(id: "swe"), workingRoleIDs: [],
+                failedRoleIDs: ["swe"], roleDefinitions: [role]
+            ),
+            "Send a message to SWE to retry…")
+    }
+
+    func testPlaceholder_supervisorRoleDefDoesNotInflateCount_namesSoleWorker() {
+        // roleDefinitions may include the Supervisor role def. A single *worker* team must
+        // still take the named single-role branch (count of non-supervisor roles == 1).
+        let sup = supervisorRole()
+        let swe = normalRole(id: "swe", name: "SWE")
+        XCTAssertEqual(
+            TeamActivityComposer.placeholderText(
+                recipient: .role(id: "swe"), workingRoleIDs: [],
+                failedRoleIDs: [], roleDefinitions: [sup, swe]
+            ),
+            "Send a message to SWE…",
+            "Supervisor role def must not push a single-worker team into the role-agnostic branch")
+    }
+
+    func testPlaceholder_multiWorkerWithUnrelatedFailedRole_isRoleAgnostic() {
+        // Recipient is an idle non-failed candidate while a DIFFERENT role is failed; multi
+        // worker → role-agnostic wording (never names the arbitrary recipient).
+        let pm = normalRole(id: "pm", name: "PM")
+        let tl = normalRole(id: "tl", name: "TL")
+        XCTAssertEqual(
+            TeamActivityComposer.placeholderText(
+                recipient: .role(id: "pm"), workingRoleIDs: [],
+                failedRoleIDs: ["tl"], roleDefinitions: [pm, tl]
+            ),
+            "Send a message…")
+    }
+
+    // MARK: - computeFailedRoles — shared filter (resolver ↔ chips single source of truth)
+
+    func testComputeFailedRoles_filtersSupervisorObserverAndAskers() {
+        let sup = supervisorRole()
+        let obs = observerRole(id: "obs")
+        let asking = normalRole(id: "cr", name: "CR")
+        let real = normalRole(id: "swe", name: "SWE")
+        let result = TeamActivityComposer.computeFailedRoles(
+            roles: [sup, obs, asking, real],
+            failedRoleIDs: ["supervisor", "obs", "cr", "swe"],
+            askingRoleIDs: ["cr"]
+        )
+        XCTAssertEqual(result.map(\.id), ["swe"],
+                       "Failed-role filter drops supervisor, observer, and asking roles")
+    }
+
+    func testComputeFailedRoles_onlyFailedIDs() {
+        let a = normalRole(id: "a")
+        let b = normalRole(id: "b")
+        let result = TeamActivityComposer.computeFailedRoles(
+            roles: [a, b], failedRoleIDs: ["b"], askingRoleIDs: []
+        )
+        XCTAssertEqual(result.map(\.id), ["b"])
+    }
+
+    // MARK: - allowsRoleFallback — engine-state → Bool mapping (the inert/retry fix)
+
+    func testAllowsRoleFallback_chatModeAlwaysTrue() {
+        // Chat is always messageable, regardless of engine state (incl. .needsAcceptance,
+        // which chat teams don't actually reach, and .done after a restart).
+        for state: TeamEngineState? in [.pending, .running, .paused, .needsAcceptance,
+                                        .needsSupervisorInput, .done, .failed, nil] {
+            XCTAssertTrue(
+                TeamActivityFeedView.allowsRoleFallback(isChatMode: true, engineState: state),
+                "Chat mode must allow the role fallback in every engine state (state: \(String(describing: state)))")
+        }
+    }
+
+    func testAllowsRoleFallback_nonChat_resumableStatesTrue() {
+        for state: TeamEngineState in [.paused, .pending, .failed] {
+            XCTAssertTrue(
+                TeamActivityFeedView.allowsRoleFallback(isChatMode: false, engineState: state),
+                "Resumable-by-send state \(state) must allow the candidate fallback")
+        }
+    }
+
+    func testAllowsRoleFallback_nonChat_inertStatesFalse() {
+        // .needsAcceptance is the screenshot bug; .running(transient no-working gap) and
+        // .done must also stay inert; nil (no engine) → false.
+        for state: TeamEngineState? in [.needsAcceptance, .running, .needsSupervisorInput, .done, nil] {
+            XCTAssertFalse(
+                TeamActivityFeedView.allowsRoleFallback(isChatMode: false, engineState: state),
+                "Non-chat \(String(describing: state)) must NOT name an arbitrary role (composer inert)")
+        }
+    }
+
+    // MARK: - Corner cases: remaining resolver branch interactions
+
+    func testResolver_questionBeatsWorkingRole() {
+        // A role is working AND a (different) role has a pending question. Answer outranks
+        // live steering — pin the priority since both branches are "active role" candidates.
+        let working = normalRole(id: "eng")
+        let result = TeamActivityComposer.resolveEffectiveRecipient(
+            selected: nil,
+            activeQuestions: [question(stepID: "pm")],
+            selectableRoles: [working],
+            candidateRoles: [working],
+            allowsRoleFallback: true
+        )
+        XCTAssertEqual(result, .answer(stepID: "pm"),
+                       "Pending question outranks a working role")
+    }
+
+    func testResolver_multipleFailed_picksFirst() {
+        let a = normalRole(id: "a")
+        let b = normalRole(id: "b")
+        let result = TeamActivityComposer.resolveEffectiveRecipient(
+            selected: nil, activeQuestions: [],
+            selectableRoles: [],
+            failedRoles: [a, b],
+            candidateRoles: [a, b],
+            allowsRoleFallback: true
+        )
+        XCTAssertEqual(result, .role(id: "a"),
+                       "First failed role is the retry target (matches the leftmost retry chip)")
+    }
+
+    func testResolver_fallbackAllowedButNoCandidates_returnsNil() {
+        // Resumable state but every candidate was filtered out (all asking/supervisor/observer).
+        // The gate is permissive but there's literally nothing to resolve to → nil.
+        let result = TeamActivityComposer.resolveEffectiveRecipient(
+            selected: nil, activeQuestions: [],
+            selectableRoles: [],
+            failedRoles: [],
+            candidateRoles: [],
+            allowsRoleFallback: true
+        )
+        XCTAssertNil(result,
+                     "allowsRoleFallback can't conjure a recipient from an empty candidate set")
+    }
+
+    // MARK: - Corner cases: resolver ↔ chips documented asymmetry
+
+    /// Multi-candidate, resumable (`.paused`/`.pending`), nothing working/failed/asking:
+    /// the resolver returns the first candidate (so the run can be resumed by sending) while
+    /// the chip row stays EMPTY (the single-candidate fallback fires only for exactly one
+    /// candidate). This asymmetry is intentional — there's no chip to mis-tap, the placeholder
+    /// is role-agnostic, and the send queues untargeted + resumes. Pin it so a future change
+    /// to either side is a conscious decision.
+    func testAsymmetry_multiCandidatePausedResume_resolverResolves_chipRowEmpty() {
+        let a = normalRole(id: "a", name: "Engineer")
+        let b = normalRole(id: "b", name: "Designer")
+
+        let resolved = TeamActivityComposer.resolveEffectiveRecipient(
+            selected: nil, activeQuestions: [],
+            selectableRoles: [],
+            failedRoles: [],
+            candidateRoles: [a, b],
+            allowsRoleFallback: true
+        )
+        XCTAssertEqual(resolved, .role(id: "a"),
+                       "Resumable multi-role → resolve to first candidate so send-to-resume works")
+
+        let chips = TeamActivityComposer.computeChipOptions(
+            roles: [a, b], workingRoleIDs: [], failedRoleIDs: [],
+            activeQuestions: [], allowsRoleFallback: true
+        )
+        XCTAssertTrue(chips.isEmpty,
+                      "No chip rendered for >1 candidate — the role-agnostic placeholder carries the intent")
+
+        // And the placeholder for that resolved recipient is role-agnostic (no arbitrary name).
+        XCTAssertEqual(
+            TeamActivityComposer.placeholderText(
+                recipient: resolved, workingRoleIDs: [], failedRoleIDs: [], roleDefinitions: [a, b]
+            ),
+            "Send a message…")
+    }
+
+    // MARK: - Corner cases: chips with a pending question + fallback
+
+    func testChipOptions_questionPlusSingleIdleCandidate_fallback_emitsAnswerThenFallbackChip() {
+        // One role asking, one OTHER role idle, resumable/chat: the answer chip leads and the
+        // lone idle candidate still earns a fallback chip (the asker is excluded from candidates).
+        let asker = normalRole(id: "pm", name: "PM")
+        let idle = normalRole(id: "tl", name: "TL")
+        let options = TeamActivityComposer.computeChipOptions(
+            roles: [asker, idle],
+            workingRoleIDs: [],
+            failedRoleIDs: [],
+            activeQuestions: [TeamActivityActiveQuestion(stepID: "pm", role: .productManager, question: "?")],
+            allowsRoleFallback: true
+        )
+        XCTAssertEqual(options.map(\.recipient), [.answer(stepID: "pm"), .role(id: "tl")],
+                       "Answer chip + single-candidate fallback for the remaining idle role")
+    }
+
+    func testChipOptions_questionPlusMultipleCandidates_fallback_onlyAnswerChips() {
+        // Question + >1 remaining candidate, resumable/chat: only the answer chip(s) — the
+        // single-candidate fallback needs exactly one candidate, so no role chip is added.
+        let asker = normalRole(id: "pm", name: "PM")
+        let c1 = normalRole(id: "tl", name: "TL")
+        let c2 = normalRole(id: "eng", name: "Eng")
+        let options = TeamActivityComposer.computeChipOptions(
+            roles: [asker, c1, c2],
+            workingRoleIDs: [],
+            failedRoleIDs: [],
+            activeQuestions: [TeamActivityActiveQuestion(stepID: "pm", role: .productManager, question: "?")],
+            allowsRoleFallback: true
+        )
+        XCTAssertEqual(options.map(\.recipient), [.answer(stepID: "pm")],
+                       "Multiple candidates ⇒ no single-candidate fallback chip; only the answer chip")
+    }
+
+    // MARK: - Corner cases: misc helper edges
+
+    func testComputeFailedRoles_emptyFailedIDs_returnsEmpty() {
+        let a = normalRole(id: "a")
+        XCTAssertTrue(
+            TeamActivityComposer.computeFailedRoles(roles: [a], failedRoleIDs: [], askingRoleIDs: []).isEmpty)
+    }
+
+    func testPlaceholder_unknownRecipientID_fallsBackToID() {
+        // recipient references a role not in roleDefinitions (e.g. a stale id mid-transition):
+        // name falls back to the id, and the empty roster's non-supervisor count is 0 (≤1) so
+        // it takes the named single-role branch rather than crashing or going agnostic.
+        XCTAssertEqual(
+            TeamActivityComposer.placeholderText(
+                recipient: .role(id: "ghost"), workingRoleIDs: [],
+                failedRoleIDs: [], roleDefinitions: []
+            ),
+            "Send a message to ghost…")
+    }
+
+    func testPlaceholder_multiWorkingRole_saysQueue() {
+        // The working branch doesn't depend on team size — a working role in a multi-role team
+        // still says "Queue a message for X…".
+        let pm = normalRole(id: "pm", name: "PM")
+        let tl = normalRole(id: "tl", name: "TL")
+        XCTAssertEqual(
+            TeamActivityComposer.placeholderText(
+                recipient: .role(id: "pm"), workingRoleIDs: ["pm", "tl"],
+                failedRoleIDs: [], roleDefinitions: [pm, tl]
+            ),
+            "Queue a message for PM…")
     }
 }

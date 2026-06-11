@@ -61,8 +61,17 @@ extension NTMSOrchestrator {
                 // Honor cancellation that fired while we slept (work-folder
                 // switch / close) before touching any state.
                 guard !Task.isCancelled, let self else { return }
+                // Auto-off FIRST: an expired manager must neither fire one final
+                // recurrence pass (below) nor get woken once more by the backstop.
+                await self.evaluateAutovisorAutoDisable()
                 await self.evaluateDueRecurrences()
                 await self.evaluateRunTimeouts()
+                // Level-triggered backstop: wake the Autovisor for any matching
+                // task (catches event-wakes the observer debounced; a mid-review
+                // manager gets the event injected into its LIVE conversation
+                // instead of a fresh pass). `includeStuck: true` runs the
+                // loop/hang detector here (poll path only — never on the hot observer).
+                await self.wakeAutovisorForEvents(includeStuck: true)
             }
         }
     }
@@ -79,9 +88,16 @@ extension NTMSOrchestrator {
     /// firing. Runs before the loop ticks, so anything due at open is treated as
     /// "missed" (skip), and only slots that arrive while the app is live fire.
     func reconcileMissedRecurrences(now: Date = Date()) async {
+        guard let folderURL = workFolderURL else { return }
         for taskID in recurringTaskIDsDue(now: now) {
+            // Folder-switch guard: scheduler cancellation is cooperative, so an
+            // in-flight pass can resume after `openWorkFolder` swapped folders.
+            // Task IDs are per-folder sequential ints — bail before a stale ID
+            // resolves against (and persists into) the new folder.
+            guard workFolderURL == folderURL else { return }
             await ensureTaskLoaded(taskID)
             guard loadedTask(taskID) != nil else { continue }
+            guard workFolderURL == folderURL else { return }
             await mutateTask(taskID: taskID) { $0.recurrence?.reschedule(after: now) }
             evictIfReclaimable(taskID)
         }
@@ -105,7 +121,30 @@ extension NTMSOrchestrator {
     }
 
     private func fireRecurrence(taskID: Int, now: Date) async {
+        // Folder identity captured at entry; re-checked after every suspension
+        // before the next persist-capable call. Scheduler cancellation is
+        // cooperative — a fire suspended in `ensureTaskLoaded`/`startRun`/
+        // `mutateTask` resumes after a folder switch, where the same numeric
+        // taskID resolves against the NEW folder's tasks (IDs are per-folder
+        // sequential ints). Without these guards a resumed fire could start a
+        // spurious run on an unrelated task in the new folder.
+        guard let folderURL = workFolderURL else { return }
         await ensureTaskLoaded(taskID)
+        guard workFolderURL == folderURL else { return }
+        // Zombie guard: the manager's recurrence must never fire while the feature
+        // is off. Normally `setAutovisorEnabled(false)` disables the recurrence
+        // alongside the flag, but those are TWO writes (settings.json, then the
+        // manager's task.json) — a failed second write leaves "recurrence enabled +
+        // feature off" on disk, and after a relaunch nothing else reconciles it
+        // (`ensureAutovisorTask` early-returns when disabled). Without this gate
+        // an OFF Autovisor would keep running scheduled review passes forever.
+        // Self-heal durably instead of firing.
+        if taskID == autovisorTaskID,
+           snapshot?.workFolder.settings.autovisorEnabled != true {
+            await mutateTask(taskID: taskID) { $0.recurrence?.isEnabled = false }
+            evictIfReclaimable(taskID)
+            return
+        }
         // Re-read + re-check against the loaded task: the recurrence may have
         // been disabled between the index scan and now (fire-vs-disable race).
         guard let recurrence = loadedTask(taskID)?.recurrence, recurrence.isDue(now: now) else {
@@ -126,6 +165,8 @@ extension NTMSOrchestrator {
             return
         }
 
+        guard workFolderURL == folderURL else { return }
+
         // Tear down the previous occurrence so the fresh run starts clean and
         // `startRun`'s own re-entry guard (which bails on .needsAcceptance /
         // .needsSupervisorInput) doesn't skip. The prior run stays in history.
@@ -136,7 +177,15 @@ extension NTMSOrchestrator {
         // Supervisor messages — otherwise they re-inject into the new run as
         // phantom answers (matches `removeTask`'s cleanup).
         if state != nil {
-            quickCaptureFormState?.clearQueuedMessages(for: taskID)
+            // Dive-deeper finding A: do NOT clear the Autovisor's queue on a
+            // recurrence fire — its queued messages are legitimate standing human
+            // steering (sent from the manager chat), not stale supervisor answers.
+            // A fresh run drains them on iteration 1 (session == nil), so they never
+            // accumulate. Clearing here would silently drop the human's message if a
+            // minute-boundary tick beat its delivery.
+            if taskID != autovisorTaskID {
+                quickCaptureFormState?.clearQueuedMessages(for: taskID)
+            }
             stopEngineForTask(taskID)
         }
 
@@ -144,6 +193,7 @@ extension NTMSOrchestrator {
         // closedAt) and starts the engine in the background.
         let runsBefore = loadedTask(taskID)?.runs.count ?? 0
         await startRun(taskID: taskID)
+        guard workFolderURL == folderURL else { return }
 
         // Stamp `lastFiredAt` ONLY if a run actually started. `startRun` is
         // fire-and-forget with several silent early-returns (no work folder,
@@ -218,7 +268,10 @@ extension NTMSOrchestrator {
     /// task blobs in memory. Never evicts the active task, a running/awaiting
     /// task, a generating task, or a delegation descendant of the active task
     /// (the active task's activity feed + graph need those loaded).
-    private func evictIfReclaimable(_ taskID: Int) {
+    ///
+    /// Internal (not `private`) — also called by the startup status sweep
+    /// (`recoverStaleStatusesAcrossIndex`).
+    func evictIfReclaimable(_ taskID: Int) {
         guard taskID != activeTaskID else { return }
         if isTaskEngineActive(taskID) { return }
         if isGeneratingTeam(taskID: taskID) { return }

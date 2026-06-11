@@ -129,7 +129,7 @@ final class AdvisoryAutoFinishTests: XCTestCase {
                 XCTFail("Turn \(i): expected .continueLoop, got \(stop)")
                 return
             }
-            XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID), i,
+            XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), i,
                            "Turn \(i): counter should equal turn number")
         }
 
@@ -147,7 +147,7 @@ final class AdvisoryAutoFinishTests: XCTestCase {
             XCTFail("3rd turn: expected .completed (auto-finish), got \(stop)")
             return
         }
-        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID), 0,
+        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), 0,
                        "Counter must reset after auto-finish so a re-entry starts clean")
     }
 
@@ -174,7 +174,7 @@ final class AdvisoryAutoFinishTests: XCTestCase {
                 return
             }
         }
-        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID), 0,
+        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), 0,
                        "Counter should never increment in manual mode")
     }
 
@@ -205,7 +205,7 @@ final class AdvisoryAutoFinishTests: XCTestCase {
                 "Producing role should get artifact nudge, not advisory finish"
             )
         }
-        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID), 0,
+        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), 0,
                        "Producing role should never bump the advisory counter")
     }
 
@@ -228,11 +228,11 @@ final class AdvisoryAutoFinishTests: XCTestCase {
                 conversationMessages: &messages
             )
         }
-        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID), 2)
+        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), 2)
 
         // Simulate tool call execution between turns.
-        service._testResetAdvisoryNoToolCounter(stepID: stepID)
-        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID), 0)
+        service._testResetAdvisoryNoToolCounter(stepID: stepID, taskID: task.id)
+        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), 0)
 
         // Post-reset turn → counter = 1 again, NOT 3-and-finish.
         var messages: [ChatMessage] = []
@@ -245,7 +245,7 @@ final class AdvisoryAutoFinishTests: XCTestCase {
             XCTFail("Post-reset turn must continue loop, got \(stop)")
             return
         }
-        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID), 1,
+        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), 1,
                        "Counter should restart at 1 after the reset")
     }
 
@@ -313,7 +313,7 @@ final class AdvisoryAutoFinishTests: XCTestCase {
             }
         }
         XCTAssertEqual(
-            service._testAdvisoryNoToolCounter(stepID: stepID), 0,
+            service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), 0,
             "Counter must not increment during revision — guard fails before increment"
         )
         // Step status is unchanged from initial `.running`.
@@ -344,7 +344,7 @@ final class AdvisoryAutoFinishTests: XCTestCase {
                 conversationMessages: &messages
             )
         }
-        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID), 2)
+        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), 2)
 
         // Simulate a race: step is removed from the task between the previous
         // turn's mutation and this turn's lookup. mutateTask will still return
@@ -365,7 +365,7 @@ final class AdvisoryAutoFinishTests: XCTestCase {
         }
         // Counter must NOT be reset (would mask the threshold breach on retry).
         XCTAssertEqual(
-            service._testAdvisoryNoToolCounter(stepID: stepID), 3,
+            service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), 3,
             "Counter must stay at 3 (not reset) so the next iteration can re-attempt"
         )
         // No "auto-finished" assistant message must have been appended to the
@@ -444,14 +444,14 @@ final class AdvisoryAutoFinishTests: XCTestCase {
         // via the same `attemptAdvisoryAutoFinish` path that no-tool-call turns
         // use. Drive via the public auto-finish helper directly.
         for i in 1...2 {
-            let stop = await service.attemptAdvisoryAutoFinish(stepID: stepID, roleDefinition: role)
+            let stop = await service.attemptAdvisoryAutoFinish(stepID: stepID, taskID: task.id, roleDefinition: role)
             XCTAssertNil(stop, "Below threshold — must continue, got \(String(describing: stop))")
-            XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID), i,
+            XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), i,
                            "Each ask_supervisor-only turn must increment the counter")
         }
 
         // 3rd time hits threshold — fires auto-finish.
-        let final = await service.attemptAdvisoryAutoFinish(stepID: stepID, roleDefinition: role)
+        let final = await service.attemptAdvisoryAutoFinish(stepID: stepID, taskID: task.id, roleDefinition: role)
         if case .completed? = final { /* ok */ } else {
             XCTFail("Threshold should trip on 3rd consecutive ask_supervisor-only turn, got \(String(describing: final))")
         }
@@ -466,16 +466,16 @@ final class AdvisoryAutoFinishTests: XCTestCase {
 
         // Pre-arm counter to 2.
         for _ in 1...2 {
-            _ = await service.attemptAdvisoryAutoFinish(stepID: stepID, roleDefinition: role)
+            _ = await service.attemptAdvisoryAutoFinish(stepID: stepID, taskID: task.id, roleDefinition: role)
         }
-        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID), 2)
+        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), 2)
 
         // Simulate a productive (mixed) turn — this is what runOneLLMToolIteration
         // does in the !isAskSupervisorOnly branch:
         //     executionStates[stepID]?.consecutiveAdvisoryNoToolTurns = 0
         // Validate via the test helper that exposes that reset.
-        service._testResetAdvisoryNoToolCounter(stepID: stepID)
-        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID), 0,
+        service._testResetAdvisoryNoToolCounter(stepID: stepID, taskID: task.id)
+        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), 0,
                        "Mixed turn (ask_supervisor + any real tool) must reset the counter")
     }
 
@@ -491,8 +491,8 @@ final class AdvisoryAutoFinishTests: XCTestCase {
         let role = makeAdvisoryRole()
         attachTeam(supervisorMode: .autonomous, role: role)
         // Tear down the state entry that setUp created.
-        service.clearRunningTask(stepID: stepID)
-        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID), -1,
+        service.clearRunningTask(stepID: stepID, taskID: task.id)
+        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), -1,
                        "Sentinel: state entry is gone")
 
         for i in 1...10 {
@@ -507,7 +507,7 @@ final class AdvisoryAutoFinishTests: XCTestCase {
                 return
             }
         }
-        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID), -1,
+        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), -1,
                        "Counter helper still returns sentinel — no entry was magicked into existence")
     }
 
@@ -523,11 +523,213 @@ final class AdvisoryAutoFinishTests: XCTestCase {
             task: mockDelegate.taskToMutate!, roleDefinition: role,
             conversationMessages: &messages
         )
-        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID), 1)
+        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), 1)
 
         // clearRunningTask removes the state entry entirely; the next read returns -1.
-        service.clearRunningTask(stepID: stepID)
-        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID), -1,
+        service.clearRunningTask(stepID: stepID, taskID: task.id)
+        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), -1,
                        "After cleanup, state entry is removed (counter helper returns -1)")
+    }
+
+    // MARK: - finishStepGraceful (requestFinish / loop-recovery terminal)
+
+    /// `finishStepGraceful` (the legacy `requestFinish` / `finishRequested` path).
+    /// For a chat-mode advisory step it must finish directly as `.done` (step + role),
+    /// the same terminal state `attemptAdvisoryAutoFinish` produces — NOT
+    /// `.needsAcceptance`, which deadlocks the engine in chat mode.
+    func testFinishStepGraceful_chatModeAdvisory_finishesStepAndRoleAsDone() async {
+        let role = makeAdvisoryRole()
+        attachTeam(supervisorMode: .autonomous, role: role)
+
+        await service.finishStepGraceful(stepID: stepID, taskID: task.id)
+
+        let run = mockDelegate.taskToMutate?.runs.last
+        XCTAssertEqual(run?.steps.first?.status, .done,
+                       "chat-mode graceful finish must complete the step as .done")
+        XCTAssertEqual(run?.roleStatuses["coding_assistant"], .done,
+                       "role must be .done so the engine's chat-mode arm reaches .done")
+    }
+
+    // MARK: - wait_for_events (idle park)
+    //
+    // Coverage note: the park chain is pinned piecewise — routing predicate
+    // (`testWaitForEvents_isCollaborationDeferred`), dispatch→flag
+    // (`CollaborationToolCallErrorRenderingTests.testAppendCollaborationResult_waitForEvents_armsParkRequested`),
+    // handler→flag (below), and the park action itself
+    // (`testParkStepForEvents_parksStepWithIdleQuestionAndSession`). The remaining
+    // link — the loop-top `parkForEventsRequested` consumption inside `runStep`'s
+    // while loop — would need a full tool-loop integration harness (scripted
+    // client + registry + runtime); the existing `ScriptedLLMClient` infra stops
+    // at `performStreamingCall`, so that link stays unpinned by deliberate
+    // decision (mirrors the legacy `finishRequested` loop-top arm, also unpinned).
+
+    /// `handleWaitForEvents` sets the step's `parkForEventsRequested` flag (consumed
+    /// at the next tool-loop boundary, which parks the step at `.needsSupervisorInput`
+    /// so a human message continues the conversation) and returns a non-error idle
+    /// envelope. It must NOT arm `finishRequested` — that path completes the step,
+    /// closing the conversation for good.
+    func testHandleWaitForEvents_setsParkRequested_returnsIdle() async {
+        let response = await service.handleWaitForEvents(stepID: stepID, taskID: task.id)
+        XCTAssertEqual(service.executionStates[TaskStepKey(taskID: task.id, stepID: stepID)]?.parkForEventsRequested, true,
+                       "wait_for_events must arm the idle-park flag")
+        XCTAssertEqual(service.executionStates[TaskStepKey(taskID: task.id, stepID: stepID)]?.finishRequested, false,
+                       "wait_for_events must not complete the step — it parks it")
+        XCTAssertTrue(response.contains("idle"), "envelope should report the idle status")
+    }
+
+    /// `parkStepForEvents` (the loop-top consumer of `parkForEventsRequested`) parks
+    /// the step at `.needsSupervisorInput` with the idle-park question and preserves
+    /// the live session id — the properties that let a human answer continue the
+    /// SAME conversation via stateful continuation instead of a fresh pass.
+    func testParkStepForEvents_parksStepWithIdleQuestionAndSession() async {
+        await service.parkStepForEvents(stepID: stepID, taskID: task.id, sessionID: "resp_42")
+
+        let step = mockDelegate.taskToMutate?.runs.last?.steps.first
+        XCTAssertEqual(step?.status, .needsSupervisorInput,
+                       "park must transition the step, not complete it")
+        XCTAssertEqual(step?.needsSupervisorInput, true)
+        XCTAssertEqual(step?.supervisorQuestion, AutovisorConstants.idleParkQuestion,
+                       "the idle-park question is what the composer renders")
+        XCTAssertEqual(step?.llmSessionID, "resp_42",
+                       "park must preserve the session so the chat continues statefully")
+    }
+
+    /// Write↔read round-trip: a park landed by the REAL write path (including its
+    /// question trimming) must satisfy the sidebar's idle-park predicate. Pins the
+    /// cross-file coupling directly — if `parkStepForEvents`/`setNeedsSupervisorInput`
+    /// ever alter the persisted text (or the predicate's matching changes), this
+    /// fails even though both sides' own unit tests still pass against themselves.
+    func testParkStepForEvents_resultSatisfiesIdleParkPredicate() async {
+        await service.parkStepForEvents(stepID: stepID, taskID: task.id, sessionID: "resp_42")
+
+        XCTAssertTrue(NTMSOrchestrator.taskHasIdleParkStep(mockDelegate.taskToMutate),
+                      "a genuine park must be recognized as idle by the sidebar predicate")
+    }
+
+    /// Corner: a pass that never established a session (every call fell back to
+    /// stateless) parks with `sessionID: nil` — the park must still land; the
+    /// continuation then rebuilds statelessly instead of via `previous_response_id`.
+    func testParkStepForEvents_nilSession_stillParks() async {
+        await service.parkStepForEvents(stepID: stepID, taskID: task.id, sessionID: nil)
+
+        let step = mockDelegate.taskToMutate?.runs.last?.steps.first
+        XCTAssertEqual(step?.status, .needsSupervisorInput)
+        XCTAssertNil(step?.llmSessionID,
+                     "stateless park stores no session — continuation rebuilds the conversation")
+        XCTAssertEqual(step?.supervisorQuestion, AutovisorConstants.idleParkQuestion)
+    }
+
+    /// Corner: the step vanished from the LATEST run between the flag check and the
+    /// park (`restartRole`/recurrence appended a fresh run mid-flight). The
+    /// `setNeedsSupervisorInput` closure short-circuits (`persisted == false`), and
+    /// `completeStepFailure` hits the same guards — the banner is the ONLY signal,
+    /// so it must fire independently (review fix A3).
+    func testParkStepForEvents_stepMissingFromLatestRun_surfacesBanner() async {
+        // Replace the task's runs with a run that does NOT contain `stepID`.
+        let stranger = StepExecution(id: "someone_else", role: .softwareEngineer, title: "Other")
+        mockDelegate.taskToMutate?.runs = [Run(id: 1, steps: [stranger])]
+
+        await service.parkStepForEvents(stepID: stepID, taskID: task.id, sessionID: "resp_42")
+
+        XCTAssertTrue(
+            mockDelegate.lastErrorMessages.contains { $0.contains("failed to park") },
+            "A short-circuited park must surface a banner — completeStepFailure no-ops on the same guards"
+        )
+        let strangerStep = mockDelegate.taskToMutate?.runs.last?.steps.first
+        XCTAssertEqual(strangerStep?.status, .pending,
+                       "The unrelated step in the latest run must not be touched")
+    }
+
+    /// Corner: a manager step that was auto-answered earlier and parks AGAIN in the
+    /// same step must not leak the stale `supervisorAnswerWasAuto` onto the new
+    /// question — `setNeedsSupervisorInput` resets the flag alongside the answer,
+    /// so a subsequent HUMAN reply renders the checkmark, not the badge.
+    func testRePark_afterAutoAnswer_resetsWasAutoFlag() async {
+        await service.recordAutoSupervisorAnswer(
+            stepID: stepID, taskID: task.id, question: "Q1?", answer: "auto A1")
+        XCTAssertEqual(mockDelegate.taskToMutate?.runs.last?.steps.first?.supervisorAnswerWasAuto,
+                       true, "precondition: the auto answer stamped the flag")
+
+        await service.parkStepForEvents(stepID: stepID, taskID: task.id, sessionID: "resp_43")
+
+        let step = mockDelegate.taskToMutate?.runs.last?.steps.first
+        XCTAssertEqual(step?.supervisorAnswerWasAuto, false,
+                       "A fresh question must clear the stale auto attribution")
+        XCTAssertNil(step?.supervisorAnswer, "Stale answer cleared with it")
+    }
+
+    /// Corner: `wait_for_events` lands after the execution state was torn down
+    /// (pause/stop cancelled the loop). The handler must return an ERROR envelope —
+    /// a success envelope would claim a park that was never recorded (review fix A4).
+    func testHandleWaitForEvents_missingExecutionState_returnsErrorEnvelope() async {
+        service.clearRunningTask(stepID: stepID, taskID: task.id)  // removes the executionStates entry
+
+        let response = await service.handleWaitForEvents(stepID: stepID, taskID: task.id)
+
+        XCTAssertTrue(response.contains("Step is no longer running"),
+                      "The envelope must name the real condition")
+        XCTAssertTrue(response.contains("\"ok\":false"),
+                      "Must be an error envelope, not a fake-success idle ack")
+        XCTAssertFalse(service._testParkForEventsRequested(stepID: stepID, taskID: task.id),
+                       "No flag may be armed on a dead state entry")
+    }
+
+    /// `recordAutoSupervisorAnswer` (the in-loop autonomous auto-answer — the
+    /// highest-volume automated answer path) must stamp `supervisorAnswerWasAuto`
+    /// so the feed renders the "Auto-answered" badge. A regression here inverts
+    /// the badge for every autonomous auto-answer — the mirror image of the
+    /// human-mislabeling bug the flag was introduced to fix.
+    func testRecordAutoSupervisorAnswer_setsWasAutoFlag() async {
+        await service.recordAutoSupervisorAnswer(
+            stepID: stepID, taskID: task.id, question: "Which DB?", answer: "SQLite.")
+
+        let step = mockDelegate.taskToMutate?.runs.last?.steps.first
+        XCTAssertEqual(step?.supervisorAnswer, "SQLite.")
+        XCTAssertEqual(step?.supervisorAnswerWasAuto, true,
+                       "Auto-answer service must mark the answer as automated")
+        XCTAssertEqual(step?.needsSupervisorInput, false)
+    }
+
+    /// Routing regression: `wait_for_events` MUST be dispatched to the deferred
+    /// `appendCollaborationResult` path (which calls `handleWaitForEvents` →
+    /// `parkForEventsRequested`). When it was missing from the routing predicate it
+    /// fell through to the regular path, the flag was never set, and the manager
+    /// looped on `wait_for_events` until the loop detector tripped.
+    func testWaitForEvents_isCollaborationDeferred() {
+        XCTAssertTrue(LLMExecutionService.isCollaborationDeferredSignal(.waitForEvents),
+                      "wait_for_events must route through appendCollaborationResult")
+        // Sanity: signals with their own finalizers / the regular path are NOT here.
+        XCTAssertFalse(LLMExecutionService.isCollaborationDeferredSignal(.visionAnalysis(imagePath: "i", prompt: "p")))
+        XCTAssertFalse(LLMExecutionService.isCollaborationDeferredSignal(nil))
+    }
+
+    // MARK: - autovisorPromptBlock (GAP4)
+
+    /// The goal is the brief (rendered as "## Supervisor Goal"), so `autovisorPromptBlock`
+    /// must emit ONLY the standing memory — never the goal (which would duplicate it).
+    func testAutovisorPromptBlock_withMemory_emitsMemoryOnly_noGoal() {
+        mockDelegate.snapshot = makeManagerSnapshot(goal: "Ship the parser", memory: "Reviewed 3 tasks.")
+        let block = service.autovisorPromptBlock()
+        XCTAssertTrue(block.contains("## Current Memory"))
+        XCTAssertTrue(block.contains("Reviewed 3 tasks."))
+        XCTAssertFalse(block.contains("Goal"), "the goal lives in the brief (## Supervisor Goal), never duplicated here")
+        XCTAssertFalse(block.contains("Ship the parser"))
+    }
+
+    func testAutovisorPromptBlock_emptyMemory_returnsEmpty() {
+        mockDelegate.snapshot = makeManagerSnapshot(goal: "Ship the parser", memory: "")
+        XCTAssertEqual(service.autovisorPromptBlock(), "")
+    }
+
+    private func makeManagerSnapshot(goal: String, memory: String) -> WorkFolderContext {
+        var settings = ProjectSettings.defaults
+        settings.autovisorGoal = goal
+        settings.autovisorMemory = memory
+        return WorkFolderContext(
+            projection: WorkFolderProjection(state: WorkFolderState(name: "T"), settings: settings, teams: []),
+            tasksIndex: TasksIndex(),
+            toolDefinitions: [],
+            activeTaskID: nil
+        )
     }
 }

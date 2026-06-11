@@ -6,15 +6,17 @@ extension NTMSOrchestrator {
     // MARK: - Task CRUD
 
     @discardableResult
-    func createTask(title: String, supervisorTask: String, preferredTeamID: NTMSID? = nil) async -> Int? {
+    func createTask(title: String, supervisorTask: String, preferredTeamID: NTMSID? = nil, makeActive: Bool = true) async -> Int? {
         guard let url = workFolderURL else { return nil }
         // Top-level `createTask` synchronously writes `activeTaskID` (repo
         // line 84-87). Without flushing the fast-path chain first, a still-
         // in-flight detached pointer write from a prior `switchTask` would
         // land AFTER our sync write and revert disk to the previous task.
+        // (`makeActive: false` skips the active-pointer write, but flushing is
+        // harmless and keeps the chain ordering invariant.)
         await flushPendingActiveTaskWrite()
         do {
-            let (snapshot, taskID) = try taskService.createTask(at: url, title: title, supervisorTask: supervisorTask, preferredTeamID: preferredTeamID)
+            let (snapshot, taskID) = try taskService.createTask(at: url, title: title, supervisorTask: supervisorTask, preferredTeamID: preferredTeamID, makeActive: makeActive)
             apply(snapshot)
             return taskID
         } catch {

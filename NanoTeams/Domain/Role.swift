@@ -23,10 +23,11 @@ nonisolated enum Role: Hashable, Codable, Identifiable {
     case assistant
     case codingAssistant
     case codingAgent
+    case autovisor
     case custom(id: String)
 
     static var builtInCases: [Role] {
-        [.supervisor, .productManager, .uxResearcher, .uxDesigner, .techLead, .softwareEngineer, .codeReviewer, .sre, .tpm, .loreMaster, .npcCreator, .encounterArchitect, .rulesArbiter, .questMaster, .theAgreeable, .theOpen, .theConscientious, .theExtrovert, .theNeurotic, .assistant, .codingAssistant, .codingAgent]
+        [.supervisor, .productManager, .uxResearcher, .uxDesigner, .techLead, .softwareEngineer, .codeReviewer, .sre, .tpm, .loreMaster, .npcCreator, .encounterArchitect, .rulesArbiter, .questMaster, .theAgreeable, .theOpen, .theConscientious, .theExtrovert, .theNeurotic, .assistant, .codingAssistant, .codingAgent, .autovisor]
     }
 
     /// Single source of truth for all built-in role metadata. Adding a new role case
@@ -59,6 +60,7 @@ nonisolated enum Role: Hashable, Codable, Identifiable {
         .assistant:        .init(displayName: "Assistant",          builtInID: "assistant"),
         .codingAssistant:  .init(displayName: "Coding Assistant",   builtInID: "codingAssistant"),
         .codingAgent:      .init(displayName: "Coding Agent",       builtInID: "codingAgent"),
+        .autovisor:    .init(displayName: "Autovisor",          builtInID: "autovisor"),
     ]
 
     /// Reverse lookup: builtInID string → Role. O(1) instead of O(n) scan.

@@ -19,7 +19,10 @@ extension LLMExecutionService {
         networkLogger: NetworkLogger? = nil
     ) async -> String {
         guard let delegate else { return "Unable to conduct meeting — delegate not available." }
-        guard let tid = taskIDForStep(stepID) else { return "Unable to conduct meeting — no task context." }
+        let tid = task.id
+        guard isExecutionLive(stepID: stepID, taskID: tid) else {
+            return "Unable to conduct meeting — no task context."
+        }
         guard let workFolderRoot = delegate.workFolderURL else { return "Unable to conduct meeting — no work folder." }
 
         // Resolve team
@@ -157,7 +160,7 @@ extension LLMExecutionService {
                 // Check turn limit
                 if TeamMeetingService.hasReachedTurnLimit(meeting: meeting, limits: teamSettings.limits) {
                     meeting.complete()
-                    await recordMeeting(stepID: stepID, meeting: meeting)
+                    await recordMeeting(stepID: stepID, taskID: tid, meeting: meeting)
                     break
                 }
 
@@ -206,7 +209,7 @@ extension LLMExecutionService {
                 // on the in-flight detached batch so `cancelAllExecutions` can
                 // stop a meeting tool turn mid-run — without it, pause-during-
                 // meeting would silently run the batch to completion.
-                let meetingStepID = stepID
+                let meetingStepKey = TaskStepKey(taskID: tid, stepID: stepID)
                 let (finalContent, allThinking, toolSummaries) = try await MeetingToolExecutor.executeTurnToolLoop(
                     initialResult: streamResult,
                     speaker: speaker,
@@ -222,9 +225,9 @@ extension LLMExecutionService {
                     cancellationRegistrar: { [weak self] batchTask in
                         guard let self else { return }
                         if let batchTask {
-                            self.executionStates[meetingStepID]?.currentToolBatchTask = batchTask
-                        } else if self.executionStates[meetingStepID]?.currentToolBatchTask != nil {
-                            self.executionStates[meetingStepID]?.currentToolBatchTask = nil
+                            self.executionStates[meetingStepKey]?.currentToolBatchTask = batchTask
+                        } else if self.executionStates[meetingStepKey]?.currentToolBatchTask != nil {
+                            self.executionStates[meetingStepKey]?.currentToolBatchTask = nil
                         }
                     }
                 )
@@ -236,7 +239,7 @@ extension LLMExecutionService {
                 }
                 chat.updatedAt = MonotonicClock.shared.now()
                 await saveConsultationChat(
-                    taskID: tid, runIndex: runIndex, roleID: speaker.baseID, chat: chat
+                    stepID: stepID, taskID: tid, runIndex: runIndex, roleID: speaker.baseID, chat: chat
                 )
 
                 // Complete the turn
@@ -252,7 +255,7 @@ extension LLMExecutionService {
                 ) && meeting.turnCount < maxTurns
 
                 // Persist after each turn for real-time UI
-                await recordMeeting(stepID: stepID, meeting: meeting)
+                await recordMeeting(stepID: stepID, taskID: tid, meeting: meeting)
             }
 
             // Auto-conclude if needed. The local `coordinator` is the
@@ -271,26 +274,26 @@ extension LLMExecutionService {
                 )
             }
 
-            await recordMeeting(stepID: stepID, meeting: meeting)
+            await recordMeeting(stepID: stepID, taskID: tid, meeting: meeting)
             return TeamMeetingService.generateMeetingResultForConversation(meeting: meeting)
 
         } catch is CancellationError {
             meeting.cancel()
-            await recordMeeting(stepID: stepID, meeting: meeting)
+            await recordMeeting(stepID: stepID, taskID: tid, meeting: meeting)
             return "Meeting cancelled."
         } catch {
             meeting.cancel()
-            await recordMeeting(stepID: stepID, meeting: meeting)
+            await recordMeeting(stepID: stepID, taskID: tid, meeting: meeting)
             return "Meeting failed: \(error.localizedDescription)"
         }
     }
 
     // MARK: - Meeting Record
 
-    func recordMeeting(stepID: String, meeting: TeamMeeting) async {
-        guard let delegate, let tid = taskIDForStep(stepID) else { return }
+    func recordMeeting(stepID: String, taskID: Int, meeting: TeamMeeting) async {
+        guard let delegate, isExecutionLive(stepID: stepID, taskID: taskID) else { return }
 
-        await delegate.mutateTask(taskID: tid) { task in
+        await delegate.mutateTask(taskID: taskID) { task in
             guard let runIndex = task.runs.indices.last else { return }
             guard let stepIndex = task.runs[runIndex].steps.firstIndex(where: { $0.id == stepID })
             else { return }

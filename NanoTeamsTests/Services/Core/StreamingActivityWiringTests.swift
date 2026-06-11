@@ -4,10 +4,10 @@ import XCTest
 /// Pin: orchestrator's streaming-delegate methods (`appendStreamingPreview`,
 /// `appendStreamingThinking`, `replaceStreamingPreview`,
 /// `markStreamActivity`) all flip
-/// `streamingPreviewManager.hasReceivedStreamActivity(for:)` to true. This
+/// `streamingPreviewManager.hasReceivedStreamActivity(stepID:taskID:)` to true. This
 /// is the wiring that drives the UI's "Waiting" → "Generating" status
 /// transition. Without these hooks the streaming-service-side
-/// `delegate.markStreamActivity(stepID:)` calls would be no-ops in
+/// `delegate.markStreamActivity(stepID:taskID:)` calls would be no-ops in
 /// production.
 @MainActor
 final class StreamingActivityWiringTests: XCTestCase {
@@ -23,13 +23,40 @@ final class StreamingActivityWiringTests: XCTestCase {
 
     func testMarkStreamActivity_setsManagerFlag() async {
         let store = makeOrchestrator()
-        XCTAssertFalse(store.streamingPreviewManager.hasReceivedStreamActivity(for: "stepX"))
+        XCTAssertFalse(store.streamingPreviewManager.hasReceivedStreamActivity(stepID: "stepX", taskID: 0))
 
-        store.markStreamActivity(stepID: "stepX")
+        store.markStreamActivity(stepID: "stepX", taskID: 0)
 
         XCTAssertTrue(
-            store.streamingPreviewManager.hasReceivedStreamActivity(for: "stepX"),
+            store.streamingPreviewManager.hasReceivedStreamActivity(stepID: "stepX", taskID: 0),
             "Direct markStreamActivity on the orchestrator must propagate to the manager — the streaming service uses this path for tool-call/harmony deltas"
+        )
+    }
+
+    // MARK: - Direct markStreamingToolCall
+
+    func testMarkStreamingToolCall_setsManagerFlag() async {
+        let store = makeOrchestrator()
+        XCTAssertFalse(store.streamingPreviewManager.isStreamingToolCall(stepID: "stepX", taskID: 0))
+
+        store.markStreamingToolCall(stepID: "stepX", taskID: 0)
+
+        XCTAssertTrue(
+            store.streamingPreviewManager.isStreamingToolCall(stepID: "stepX", taskID: 0),
+            "Direct markStreamingToolCall on the orchestrator must propagate to the manager — the streaming service uses this path on harmony-marker detection and OpenAI tool-call deltas"
+        )
+    }
+
+    func testClearStreamingPreview_clearsStreamingToolCall() async {
+        let store = makeOrchestrator()
+        store.markStreamingToolCall(stepID: "stepY", taskID: 0)
+        XCTAssertTrue(store.streamingPreviewManager.isStreamingToolCall(stepID: "stepY", taskID: 0))
+
+        store.clearStreamingPreview(stepID: "stepY", taskID: 0)
+
+        XCTAssertFalse(
+            store.streamingPreviewManager.isStreamingToolCall(stepID: "stepY", taskID: 0),
+            "clearStreamingPreview must remove the tool-call flag — an abandoned stream must not show a false 'Generating' on the next session"
         )
     }
 
@@ -45,13 +72,14 @@ final class StreamingActivityWiringTests: XCTestCase {
 
         store.appendStreamingPreview(
             stepID: "stepA",
+            taskID: 0,
             messageID: messageID,
             role: .softwareEngineer,
             content: "hello"
         )
 
         XCTAssertTrue(
-            store.streamingPreviewManager.hasReceivedStreamActivity(for: "stepA"),
+            store.streamingPreviewManager.hasReceivedStreamActivity(stepID: "stepA", taskID: 0),
             "appendStreamingPreview must mark activity — content path"
         )
     }
@@ -59,10 +87,10 @@ final class StreamingActivityWiringTests: XCTestCase {
     func testAppendStreamingThinking_marksActivity() async {
         let store = makeOrchestrator()
 
-        store.appendStreamingThinking(stepID: "stepB", content: "thinking...")
+        store.appendStreamingThinking(stepID: "stepB", taskID: 0, content: "thinking...")
 
         XCTAssertTrue(
-            store.streamingPreviewManager.hasReceivedStreamActivity(for: "stepB"),
+            store.streamingPreviewManager.hasReceivedStreamActivity(stepID: "stepB", taskID: 0),
             "appendStreamingThinking must mark activity — thinking path"
         )
     }
@@ -78,18 +106,19 @@ final class StreamingActivityWiringTests: XCTestCase {
         // beginStreaming is async + requires a real taskID; the manager-
         // level setup is enough to exercise replaceStreamingPreview.
         store.streamingPreviewManager.beginStreaming(
-            stepID: "stepC", messageID: messageID, role: .softwareEngineer
+            stepID: "stepC", taskID: 0, messageID: messageID, role: .softwareEngineer
         )
 
         store.replaceStreamingPreview(
             stepID: "stepC",
+            taskID: 0,
             messageID: messageID,
             role: .softwareEngineer,
             content: ""
         )
 
         XCTAssertTrue(
-            store.streamingPreviewManager.hasReceivedStreamActivity(for: "stepC"),
+            store.streamingPreviewManager.hasReceivedStreamActivity(stepID: "stepC", taskID: 0),
             "replaceStreamingPreview must mark activity — the rewind path runs on every harmony-marker detection"
         )
     }
@@ -114,28 +143,28 @@ final class StreamingActivityWiringTests: XCTestCase {
         }
         let messageID = UUID()
         store.appendStreamingPreview(
-            stepID: "stepD", messageID: messageID,
+            stepID: "stepD", taskID: taskID, messageID: messageID,
             role: .softwareEngineer, content: "hello"
         )
-        XCTAssertTrue(store.streamingPreviewManager.hasReceivedStreamActivity(for: "stepD"))
+        XCTAssertTrue(store.streamingPreviewManager.hasReceivedStreamActivity(stepID: "stepD", taskID: 0))
 
         await store.commitStreaming(stepID: "stepD", taskID: taskID, content: "hello", thinking: nil)
 
         XCTAssertFalse(
-            store.streamingPreviewManager.hasReceivedStreamActivity(for: "stepD"),
+            store.streamingPreviewManager.hasReceivedStreamActivity(stepID: "stepD", taskID: 0),
             "commitStreaming must clear hasStreamActivity along with the preview/thinking/progress state — next stream starts clean"
         )
     }
 
     func testClearStreamingPreview_clearsActivity() async {
         let store = makeOrchestrator()
-        store.markStreamActivity(stepID: "stepE")
-        XCTAssertTrue(store.streamingPreviewManager.hasReceivedStreamActivity(for: "stepE"))
+        store.markStreamActivity(stepID: "stepE", taskID: 0)
+        XCTAssertTrue(store.streamingPreviewManager.hasReceivedStreamActivity(stepID: "stepE", taskID: 0))
 
-        store.clearStreamingPreview(stepID: "stepE")
+        store.clearStreamingPreview(stepID: "stepE", taskID: 0)
 
         XCTAssertFalse(
-            store.streamingPreviewManager.hasReceivedStreamActivity(for: "stepE"),
+            store.streamingPreviewManager.hasReceivedStreamActivity(stepID: "stepE", taskID: 0),
             "clearStreamingPreview must remove the activity flag — abandoned/cancelled streams must not poison the next session"
         )
     }

@@ -2,11 +2,15 @@ import SwiftUI
 
 /// Pure data + presentation for Watchtower's "Setup" shelf.
 ///
-/// Owns the four predicates that decide which tip cards are visible, plus the
-/// visual SwiftUI shelf. Lives in its own subview so its `LLMStatusMonitor`
-/// observation doesn't force the rest of `WatchtowerView` to re-evaluate on
-/// every reachability poll.
+/// Owns the per-tip predicates that decide which tip cards are visible, plus the
+/// visual SwiftUI shelf. Lives in its own subview so its inputs don't churn the rest
+/// of `WatchtowerView`: the `LLMStatusMonitor` reachability poll, and the
+/// Autovisor tip's `autovisorEnabled`. The latter is snapshot-derived, so it
+/// re-reads on every manager snapshot reassignment while "Reviewing…" — even though
+/// the flag's value is unchanged (observation is per stored property, not per value).
+/// See CLAUDE.md #11.
 struct WatchtowerSetupSection: View {
+    @Environment(NTMSOrchestrator.self) private var store
     @Environment(StoreConfiguration.self) private var config
     @Environment(LLMStatusMonitor.self) private var monitor
     @Environment(\.openWindow) private var openWindow
@@ -19,6 +23,8 @@ struct WatchtowerSetupSection: View {
             exploratorySearchEnabled: config.exploratorySearchEnabled,
             visionConfigured: config.isVisionConfigured,
             dictationLocalesEmpty: config.dictationLocaleIdentifiers.isEmpty,
+            autovisorEnabled: store.workFolder?.settings.autovisorEnabled ?? false,
+            hasWorkFolder: store.hasRealWorkFolder,
             dismissed: config.dismissedFeatureTipIDs
         )
 
@@ -66,6 +72,8 @@ struct WatchtowerSetupSection: View {
         exploratorySearchEnabled: Bool,
         visionConfigured: Bool,
         dictationLocalesEmpty: Bool,
+        autovisorEnabled: Bool,
+        hasWorkFolder: Bool,
         dismissed: Set<String>
     ) -> [FeatureTipID] {
         FeatureTipID.allCases.filter { tip in
@@ -75,6 +83,7 @@ struct WatchtowerSetupSection: View {
             case .exploratorySearch: return !exploratorySearchEnabled
             case .vision: return !visionConfigured
             case .dictation: return dictationLocalesEmpty
+            case .autovisor: return hasWorkFolder && !autovisorEnabled
             }
         }
     }
@@ -121,6 +130,14 @@ struct WatchtowerSetupSection: View {
                 tint: Colors.success,
                 tab: .dictation
             )
+        case .autovisor:
+            return Copy(
+                icon: "folder.badge.person.crop",
+                title: "Autovisor",
+                description: "Let an automated supervisor watch this folder's tasks, answer their questions, and advance a goal on its own.",
+                tint: Colors.cyan,
+                tab: .autovisor
+            )
         }
     }
 }
@@ -128,9 +145,11 @@ struct WatchtowerSetupSection: View {
 // MARK: - Preview
 
 #Preview {
+    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var monitor = LLMStatusMonitor()
     WatchtowerSetupSection()
+        .environment(store)
         .environment(config)
         .environment(monitor)
         .padding(Spacing.l)

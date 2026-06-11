@@ -76,6 +76,12 @@ final class EndToEndResetWorkFolderSettingsTests: NTMSOrchestratorTestBase {
 
         XCTAssertEqual(sut.workFolder?.teams.count, countBefore,
                        "Reset must restore the full default team set")
+        // Reset re-bootstraps default templates (which exclude Autovisor), then
+        // re-seeds the always-present protected singleton — it must survive a reset.
+        XCTAssertEqual(
+            sut.workFolder?.teams.filter { $0.templateID == AutovisorConstants.teamTemplateID }.count, 1,
+            "Reset must keep exactly one (re-seeded) Autovisor team"
+        )
     }
 
     // MARK: - Scenario 4: Work folder context cleared

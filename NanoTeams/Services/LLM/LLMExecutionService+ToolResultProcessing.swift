@@ -24,6 +24,51 @@ extension LLMExecutionService {
         }
     }
 
+    /// Single source of truth for "this signal is handled by the deferred
+    /// `appendCollaborationResult` path" (its real envelope/side-effects run there,
+    /// not in `processRegularToolResult`). Adding a collaboration/delegation/manager
+    /// signal to `ToolSignal` WITHOUT adding it here silently routes it to the
+    /// regular path — for `wait_for_events` that meant `parkForEventsRequested` was
+    /// never set and the manager looped forever. Keep in sync with the `switch` in
+    /// `appendCollaborationResult`.
+    nonisolated static func isCollaborationDeferredSignal(_ signal: ToolSignal?) -> Bool {
+        switch signal {
+        case .teammateConsultation, .teamMeeting, .changeRequest, .delegateToTeam,
+             .cancelDelegation, .resumeDelegation, .forwardToTeam,
+             .listTasks, .taskStatus, .createManagedTask, .controlTask, .manageRole,
+             .answerTaskQuestion, .messageTask, .scheduleTask, .setWorkFolderContext,
+             .waitForEvents:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// True for the Autovisor management signals. Unlike the rich-UI
+    /// collaboration tools (delegation / consultation / meeting), these have NO
+    /// separate UI surface — the tool-call card is the only place their result
+    /// appears. So `appendCollaborationResult` reflects their real deferred
+    /// response (success OR failure) onto the persisted `StepToolCall`, instead of
+    /// leaving the synchronous `{"status":"pending"}` placeholder the handler
+    /// emitted. Adding a manager signal WITHOUT listing it here leaves its card
+    /// stuck on "pending" for the human supervising the manager.
+    ///
+    /// Invariant every listed handler MUST uphold: return a well-formed
+    /// `makeSuccessEnvelope` / `makeErrorEnvelope` (always carries an `ok` field).
+    /// A raw / non-envelope string parses as `EnvelopeStatus.indeterminate`, and the
+    /// reflect's `isError: status == .failure` would then render a broken result
+    /// falsely green — so a non-envelope manager handler must never be added.
+    nonisolated static func isAutovisorSignal(_ signal: ToolSignal?) -> Bool {
+        switch signal {
+        case .listTasks, .taskStatus, .createManagedTask, .controlTask, .manageRole,
+             .answerTaskQuestion, .messageTask, .scheduleTask, .setWorkFolderContext,
+             .waitForEvents:
+            return true
+        default:
+            return false
+        }
+    }
+
     // MARK: - Tool Result Processing
 
     /// Result of processing all tool execution results for a single iteration.
@@ -58,7 +103,7 @@ extension LLMExecutionService {
         // Vision signals write an interim "analyzing" placeholder here;
         // appendVisionResult() will overwrite with the final result.
         for (call, result) in zip(resolvedToolCalls, results) {
-            await updateToolCallResult(stepID: stepID, toolCallID: call.id, result: result)
+            await updateToolCallResult(stepID: stepID, taskID: task.id, toolCallID: call.id, result: result)
         }
 
         // Record tool calls in the tracker (loop-detector input).
@@ -82,9 +127,11 @@ extension LLMExecutionService {
         }
 
         for (idx, result) in results.enumerated() {
-            switch result.signal {
-            case .teammateConsultation, .teamMeeting, .changeRequest, .delegateToTeam,
-                 .cancelDelegation, .resumeDelegation, .forwardToTeam:
+            // Collaboration / delegation / manager signals run their real
+            // side-effects in the deferred handler. Gated by the single-source
+            // predicate so a new signal can't silently fall through to the
+            // regular path (see `isCollaborationDeferredSignal`).
+            if Self.isCollaborationDeferredSignal(result.signal) {
                 await appendCollaborationResult(
                     result: result,
                     toolCallID: resolvedToolCalls[idx].id,
@@ -98,12 +145,16 @@ extension LLMExecutionService {
                     networkLogger: networkLogger,
                     conversationMessages: &conversationMessages
                 )
+                continue
+            }
+            switch result.signal {
             case .visionAnalysis:
                 let toolCallID = resolvedToolCalls[idx].id
                 await appendVisionResult(
                     result: result,
                     toolCallID: toolCallID,
                     stepID: stepID,
+                    taskID: task.id,
                     client: client,
                     config: config,
                     networkLogger: networkLogger,
@@ -116,6 +167,7 @@ extension LLMExecutionService {
                     result: result,
                     toolCallID: toolCallID,
                     stepID: stepID,
+                    taskID: task.id,
                     conversationMessages: &conversationMessages,
                     tracker: tracker
                 )
@@ -129,6 +181,7 @@ extension LLMExecutionService {
                 await processRegularToolResult(
                     result: result,
                     stepID: stepID,
+                    taskID: task.id,
                     memoryStore: memoryStore,
                     iterationNumber: iterationNumber,
                     conversationMessages: &conversationMessages,
@@ -138,6 +191,7 @@ extension LLMExecutionService {
                 await processRegularToolResult(
                     result: result,
                     stepID: stepID,
+                    taskID: task.id,
                     memoryStore: memoryStore,
                     iterationNumber: iterationNumber,
                     conversationMessages: &conversationMessages,

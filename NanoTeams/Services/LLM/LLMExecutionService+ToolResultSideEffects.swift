@@ -9,6 +9,7 @@ extension LLMExecutionService {
     func processScratchpadResult(
         result: ToolExecutionResult,
         stepID: String,
+        taskID: Int,
         memoryStore: MemoryTagStore,
         conversationMessages: inout [ChatMessage]
     ) async {
@@ -16,7 +17,24 @@ extension LLMExecutionService {
         guard let dict = JSONUtilities.parseJSONDictionary(result.argumentsJSON),
               let content = resolveContentString(dict) else { return }
 
-        await updateScratchpad(stepID: stepID, content: content)
+        await updateScratchpad(stepID: stepID, taskID: taskID, content: content)
+
+        // Autovisor memory write-through: the manager's scratchpad IS its
+        // standing memory. Persist it to folder settings so it survives across
+        // fresh runs (recurrence creates a new run each fire) and is editable in
+        // Settings. Other roles' scratchpads stay step-scoped as before. A failed
+        // write is surfaced to the manager (memory is its only cross-run state — a
+        // silent failure means it silently forgets and re-derives next pass).
+        if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           isAutovisorStep(stepID: stepID, taskID: taskID) {
+            let persisted = await delegate?.persistAutovisorMemory(content) ?? false
+            if !persisted {
+                let warning = "⚠️ Failed to persist your memory to disk — it may NOT survive the next run. Retry update_scratchpad, or report this if it keeps failing."
+                conversationMessages.append(ChatMessage(role: .user, content: warning))
+                await appendLLMMessage(stepID: stepID, taskID: taskID, role: .system, content: warning)
+            }
+        }
+
         memoryStore.registerPlanUpdate(content: content, iteration: memoryStore.currentIteration)
 
         // Log the plan FIRST (before TRANSITION message)
@@ -27,16 +45,17 @@ extension LLMExecutionService {
             Update the plan after each completed action using update_scratchpad.
             Mark completed items with ~~strikethrough~~.
             """
-        executionStates[stepID]?.planMessageIndex = conversationMessages.count
+        let stepKey = TaskStepKey(taskID: taskID, stepID: stepID)
+        executionStates[stepKey]?.planMessageIndex = conversationMessages.count
         conversationMessages.append(
             ChatMessage(role: .user, content: planMessage)
         )
-        await appendLLMMessage(stepID: stepID, role: .user, content: planMessage)
+        await appendLLMMessage(stepID: stepID, taskID: taskID, role: .user, content: planMessage)
 
         // Inject transition message only on the FIRST scratchpad update (planning → implementation).
         // Subsequent scratchpad updates (marking items done) skip this to avoid redundant messages.
-        if executionStates[stepID]?.planningTransitionDone != true {
-            executionStates[stepID]?.planningTransitionDone = true
+        if executionStates[stepKey]?.planningTransitionDone != true {
+            executionStates[stepKey]?.planningTransitionDone = true
             let transitionMessage = """
             ✅ Plan recorded. Now proceeding to IMPLEMENTATION PHASE.
 
@@ -48,18 +67,18 @@ extension LLMExecutionService {
             conversationMessages.append(
                 ChatMessage(role: .user, content: transitionMessage)
             )
-            await appendLLMMessage(stepID: stepID, role: .user, content: transitionMessage)
+            await appendLLMMessage(stepID: stepID, taskID: taskID, role: .user, content: transitionMessage)
         }
     }
 
     // MARK: - Create Artifact Result Processing
 
-    func processCreateArtifactResult(result: ToolExecutionResult, stepID: String) async {
+    func processCreateArtifactResult(result: ToolExecutionResult, stepID: String, taskID: Int) async {
         guard result.toolName == ToolNames.createArtifact, !result.isError,
               case .artifact(let name, let content, let format) = result.signal,
-              let delegate, let tid = taskIDForStep(stepID),
+              let delegate, isExecutionLive(stepID: stepID, taskID: taskID),
               let workFolderRoot = delegate.workFolderURL,
-              let task = delegate.loadedTask(tid),
+              let task = delegate.loadedTask(taskID),
               let runIndex = task.runs.indices.last
         else { return }
 
@@ -112,7 +131,7 @@ extension LLMExecutionService {
         )
 
         // Add to step.artifacts (replace if already exists with same name)
-        await delegate.mutateTask(taskID: tid) { task in
+        await delegate.mutateTask(taskID: taskID) { task in
             guard let ri = task.runs.indices.last,
                   let si = task.runs[ri].steps.firstIndex(where: { $0.id == stepID })
             else { return }
@@ -238,18 +257,40 @@ extension LLMExecutionService {
             let target = path.map { "'\($0)'" } ?? "the file"
             return "Identical write to \(target) was already attempted in this step. Read the file's current state to verify whether the change is needed; do not re-issue the same write."
 
+        case "anchor_ambiguous":
+            // The anchor IS findable — it matched several regions once trailing
+            // whitespace is ignored. The anchor_not_found steering below
+            // ("character for character") would point the model at the wrong
+            // repair; what it needs is MORE surrounding lines. Prefer the
+            // envelope's message (it carries the region count).
+            let nestedMessage = ((dict?["error"] as? [String: Any])?["message"] as? String)
+                .flatMap { $0.isEmpty ? nil : $0 }
+            return nestedMessage
+                ?? "old_text matches multiple regions of the file — include more surrounding lines in old_text to pinpoint one."
+
         case "anchor_not_found":
-            // `old_text` didn't match — the file changed since the last read.
-            // Args ARE the cause (stale anchor), but the fix is "re-read", not
-            // "retry with corrected args" out of thin air. The generic suffix
-            // would push the model to fuzz `old_text` blindly instead of
-            // grounding in the file's current content. Path comes from args
+            // `old_text` didn't match the file's current content. This is almost
+            // always a transcription error in the anchor (a wrong character, lost
+            // whitespace, or `/` ↔ `\` slash confusion), NOT a file mutation — so
+            // do not claim "the content changed" and do not hard-demand a re-read
+            // (the read-dedup would answer "unchanged, do NOT re-read", deadlocking
+            // the model). Steer it to compare against the content it already read
+            // and fix the anchor character-for-character. Path comes from args
             // (handler envelope doesn't include it in details).
             let argsDict = JSONUtilities.parseJSONDictionary(result.argumentsJSON)
             let path = (argsDict?["path"] as? String)
                 .flatMap { $0.isEmpty ? nil : $0 }
             let target = path.map { "'\($0)'" } ?? "the file"
-            return "old_text not found in \(target) — the content changed since your last read. Re-read the relevant range, then issue a fresh edit using the current text."
+            var guidance = "old_text not found in \(target). It must match the file's current content exactly, character for character — including whitespace, indentation, and slash direction (`/` vs `\\`). Compare your old_text against the content you already read and correct it; only re-read if you have not yet read this region."
+            // The handler attaches a specific diagnosis (indentation mismatch,
+            // whitespace-only anchor, anchor longer than file) when it found one —
+            // re-state it last so the generic character-level steering doesn't bury it.
+            let hint = (((dict?["error"] as? [String: Any])?["details"] as? [String: Any])?["hint"] as? String)
+                .flatMap { $0.isEmpty ? nil : $0 }
+            if let hint {
+                guidance += " " + hint
+            }
+            return guidance
 
         default:
             let errorObj = dict?["error"] as? [String: Any]

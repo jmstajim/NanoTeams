@@ -124,37 +124,55 @@ nonisolated struct EditFileTool: ToolHandler {
 
             let content = try String(contentsOf: fileURL, encoding: .utf8)
 
-            let effectiveOldText: String
-            if content.contains(oldText) {
-                effectiveOldText = oldText
-            } else {
-                let stripped = Self.stripLineNumberPrefixes(oldText)
-                let unescaped = Self.unescapeJSONSequences(oldText)
-
-                if !stripped.isEmpty && stripped != oldText && content.contains(stripped) {
-                    effectiveOldText = stripped
-                } else if unescaped != oldText && content.contains(unescaped) {
-                    effectiveOldText = unescaped
-                } else {
-                    return makeErrorResult(
-                        toolName: Self.name, args: args,
-                        code: .anchorNotFound,
-                        message: "old_text not found in file. Make sure it matches exactly including whitespace and indentation. Do not include line numbers from read_lines output."
-                    )
-                }
-            }
+            let stripped = Self.stripLineNumberPrefixes(oldText)
+            let unescaped = Self.unescapeJSONSequences(oldText)
+            var candidates = [oldText]
+            if !stripped.isEmpty && stripped != oldText { candidates.append(stripped) }
+            if unescaped != oldText { candidates.append(unescaped) }
 
             let newContent: String
             let count: Int
-            if replaceAll {
-                count = content.components(separatedBy: effectiveOldText).count - 1
-                newContent = content.replacingOccurrences(of: effectiveOldText, with: newText)
-            } else {
-                count = 1
-                if let range = content.range(of: effectiveOldText) {
-                    newContent = content.replacingCharacters(in: range, with: newText)
+            var matchedIgnoringTrailingWhitespace = false
+            if let effectiveOldText = candidates.first(where: { content.contains($0) }) {
+                if replaceAll {
+                    count = content.components(separatedBy: effectiveOldText).count - 1
+                    newContent = content.replacingOccurrences(of: effectiveOldText, with: newText)
                 } else {
-                    newContent = content
+                    count = 1
+                    guard let range = content.range(of: effectiveOldText) else {
+                        // contains() and range(of:) disagreeing would mean a Foundation
+                        // behavior change; fail loudly instead of writing the file
+                        // unchanged while reporting a successful replacement.
+                        return makeErrorResult(
+                            toolName: Self.name, args: args,
+                            code: .commandFailed,
+                            message: "Internal error: old_text was located but could not be replaced. Retry the edit."
+                        )
+                    }
+                    newContent = content.replacingCharacters(in: range, with: newText)
+                }
+            } else {
+                switch Self.whitespaceTolerantEdit(
+                    content: content, candidates: candidates,
+                    newText: newText, replaceAll: replaceAll
+                ) {
+                case .replaced(let replacedContent, let replacedCount):
+                    newContent = replacedContent
+                    count = replacedCount
+                    matchedIgnoringTrailingWhitespace = true
+                case .ambiguous(let matchCount):
+                    return makeErrorResult(
+                        toolName: Self.name, args: args,
+                        code: .anchorAmbiguous,
+                        message: "old_text matches \(matchCount) regions when ignoring trailing whitespace — include more surrounding lines to disambiguate."
+                    )
+                case .notFound(let hint):
+                    return makeErrorResult(
+                        toolName: Self.name, args: args,
+                        code: .anchorNotFound,
+                        message: hint.map { Self.anchorNotFoundMessage + " " + $0 } ?? Self.anchorNotFoundMessage,
+                        details: hint.map { ["hint": $0] }
+                    )
                 }
             }
 
@@ -163,11 +181,17 @@ nonisolated struct EditFileTool: ToolHandler {
             struct EditFileData: Codable {
                 var path: String
                 var replacements_made: Int
+                // Disclosed only when the fuzzy fallback fired, so the model knows
+                // the file's bytes differed from its anchor (nil → omitted from JSON).
+                var matched_ignoring_trailing_whitespace: Bool?
             }
 
             return makeSuccessResult(
                 toolName: Self.name, args: args,
-                data: EditFileData(path: path, replacements_made: count)
+                data: EditFileData(
+                    path: path, replacements_made: count,
+                    matched_ignoring_trailing_whitespace: matchedIgnoringTrailingWhitespace ? true : nil
+                )
             )
         }
     }
@@ -209,6 +233,161 @@ nonisolated struct EditFileTool: ToolHandler {
     /// Unescapes common JSON escape sequences that LLMs copy from read_file output.
     private static func unescapeJSONSequences(_ text: String) -> String {
         text.replacingOccurrences(of: "\\/", with: "/")
+    }
+
+    // MARK: Whitespace-tolerant fallback
+
+    enum TolerantEditOutcome {
+        /// `count` is always >= 1 — a zero-match scan returns `.notFound` instead.
+        case replaced(newContent: String, count: Int)
+        /// The anchor trailing-trim-matched `count` (> 1) regions with replace_all off:
+        /// it needs MORE surrounding lines, not a character-level correction.
+        case ambiguous(count: Int)
+        /// No window matched; `hint` carries a specific diagnosis when one exists
+        /// (leading-whitespace (indentation) mismatch, whitespace-only anchor,
+        /// anchor longer than file).
+        case notFound(hint: String?)
+    }
+
+    static let anchorNotFoundMessage = "old_text not found in file. Make sure it matches exactly including whitespace and indentation. Do not include line numbers from read_lines output."
+
+    /// Last-resort anchor matching for old_text that differs from the file only in
+    /// trailing whitespace (including the CR of CRLF line endings) — in either
+    /// direction: whitespace dirt in the file is invisible in read output, and
+    /// whitespace the model hallucinated into its own anchor is equally invisible
+    /// to it. Whole-line windows only; leading whitespace stays significant (a
+    /// leading-whitespace (indentation) mismatch is diagnosed in the hint, never
+    /// auto-edited). A trailing newline on the anchor is a line terminator (see
+    /// `splitAnchorLines`) and the same semantics are mirrored onto `newText` —
+    /// notably, an empty `newText` then deletes the matched lines rather than
+    /// leaving a blank line. Replacement lines adopt `\r` endings when the
+    /// matched window is CRLF, so the file's line-ending convention survives.
+    static func whitespaceTolerantEdit(
+        content: String, candidates: [String], newText: String, replaceAll: Bool
+    ) -> TolerantEditOutcome {
+        let contentLines = content.components(separatedBy: "\n")
+        // A whitespace-only anchor would match any blank run anywhere — refuse it.
+        let lineCandidates: [(lines: [String], hadTerminator: Bool)] = candidates
+            .map { splitAnchorLines($0) }
+            .filter { candidate in
+                candidate.lines.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            }
+
+        if lineCandidates.isEmpty {
+            return .notFound(hint: "old_text is whitespace-only — anchor on adjacent non-blank lines instead.")
+        }
+
+        var ambiguousCount: Int?
+        for (index, candidate) in lineCandidates.enumerated() {
+            let (oldLines, hadTerminator) = candidate
+            let matches = windowMatches(contentLines: contentLines, oldLines: oldLines, trim: trimTrailing)
+            guard !matches.isEmpty else { continue }
+            if !replaceAll && matches.count > 1 {
+                // Index 0 is the model's literal anchor: it demonstrably exists in
+                // several places, so editing a TRANSFORMED variant's unique match
+                // instead would be a wrong-location guess — terminal ambiguity.
+                // A transformed candidate (gutter-stripped / unescaped) exists to
+                // repair an ABSENT anchor; its ambiguity is recorded and the next
+                // candidate may still match uniquely.
+                if index == 0 { return .ambiguous(count: matches.count) }
+                if ambiguousCount == nil { ambiguousCount = matches.count }
+                continue
+            }
+            var lines = contentLines
+            let newLines: [String]
+            if hadTerminator {
+                // Mirror the anchor's terminator semantics on the replacement side:
+                // empty new_text deletes the matched lines outright, and a trailing
+                // newline on new_text doesn't insert a blank line.
+                newLines = newText.isEmpty ? [] : splitAnchorLines(newText).lines
+            } else {
+                newLines = newText.components(separatedBy: "\n")
+            }
+            let windows = replaceAll ? matches : [matches[0]]
+            for start in windows.reversed() {
+                let windowRange = start..<(start + oldLines.count)
+                // Preserve the file's line-ending convention: a CRLF window keeps
+                // CRLF after the edit (the model can't see line endings, so it
+                // can't be asked to carry the \r itself).
+                let windowIsCRLF = contentLines[windowRange].allSatisfy { $0.hasSuffix("\r") }
+                let splice = windowIsCRLF ? newLines.map { $0 + "\r" } : newLines
+                lines.replaceSubrange(windowRange, with: splice)
+            }
+            return .replaced(newContent: lines.joined(separator: "\n"), count: windows.count)
+        }
+
+        if let ambiguousCount {
+            return .ambiguous(count: ambiguousCount)
+        }
+
+        for (oldLines, _) in lineCandidates {
+            let matches = windowMatches(contentLines: contentLines, oldLines: oldLines, trim: trimBoth)
+            guard !matches.isEmpty else { continue }
+            let lineList = matches.prefix(3).map { String($0 + 1) }.joined(separator: ", ")
+            let plural = matches.count > 1 ? "s" : ""
+            return .notFound(hint: "Lines match ignoring indentation near line\(plural) \(lineList) — check leading whitespace (tabs vs spaces).")
+        }
+
+        // Don't count the split sentinel after the file's final newline as a line.
+        let fileLineCount = contentLines.last == "" ? contentLines.count - 1 : contentLines.count
+        if lineCandidates.allSatisfy({ $0.lines.count > fileLineCount }) {
+            return .notFound(hint: "old_text has more lines (\(lineCandidates[0].lines.count)) than the file (\(fileLineCount)).")
+        }
+
+        return .notFound(hint: nil)
+    }
+
+    /// Splits anchor/replacement text on "\n". A trailing newline is a line
+    /// TERMINATOR (the model copied whole lines), not a request to match or
+    /// insert a blank line — drop it and report so the replacement can mirror it.
+    private static func splitAnchorLines(_ text: String) -> (lines: [String], hadTerminator: Bool) {
+        var lines = text.components(separatedBy: "\n")
+        guard lines.count > 1, lines.last == "" else { return (lines, false) }
+        lines.removeLast()
+        return (lines, true)
+    }
+
+    /// Start indices of greedy, leftmost non-overlapping line windows in `contentLines`
+    /// whose lines all equal `oldLines` after per-line `trim` (after a match at `i`,
+    /// scanning resumes at `i + n` — replace_all results depend on this selection).
+    private static func windowMatches(
+        contentLines: [String], oldLines: [String], trim: (String) -> String
+    ) -> [Int] {
+        let n = oldLines.count
+        guard n > 0, contentLines.count >= n else { return [] }
+        let trimmedOld = oldLines.map(trim)
+        let trimmedContent = contentLines.map(trim)
+        var matches: [Int] = []
+        var i = 0
+        while i + n <= trimmedContent.count {
+            var isMatch = true
+            for j in 0..<n where trimmedOld[j] != trimmedContent[i + j] {
+                isMatch = false
+                break
+            }
+            if isMatch {
+                matches.append(i)
+                i += n
+            } else {
+                i += 1
+            }
+        }
+        return matches
+    }
+
+    /// Includes CR so CRLF files compare cleanly after splitting on "\n".
+    private static let trailingWhitespace = CharacterSet.whitespaces.union(CharacterSet(charactersIn: "\r"))
+
+    private static func trimTrailing(_ line: String) -> String {
+        var sub = line[...]
+        while let last = sub.last, last.unicodeScalars.allSatisfy(trailingWhitespace.contains) {
+            sub.removeLast()
+        }
+        return String(sub)
+    }
+
+    private static func trimBoth(_ line: String) -> String {
+        line.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

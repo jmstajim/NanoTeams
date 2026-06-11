@@ -26,6 +26,114 @@ final class MemoryTagStoreTests: XCTestCase {
         XCTAssertEqual(sut.nextTag(.read), "<§R3§>")
     }
 
+    // MARK: - Path Key Canonicalization
+
+    /// With a work folder root set, varied spellings of the same file collapse to one key
+    /// so dedup / edit-invalidation / MEMORIES rows don't fragment.
+    func testExtractPath_canonicalizesSpellings_whenWorkFolderRootSet() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // `src/x.js` / `./src/x.js` / absolute all relativize without touching disk (the
+        // first component is never the root name), so no `src` dir is needed here.
+        let store = MemoryTagStore(workFolderRoot: root)
+        let abs = root.appendingPathComponent("src/x.js").path
+
+        XCTAssertEqual(store.extractPath(from: "{\"path\": \"src/x.js\"}"), "src/x.js")
+        XCTAssertEqual(store.extractPath(from: "{\"path\": \"./src/x.js\"}"), "src/x.js")
+        XCTAssertEqual(store.extractPath(from: "{\"path\": \"\(abs)\"}"), "src/x.js")
+    }
+
+    func testExtractPath_rawPassthrough_whenNoWorkFolderRoot() {
+        // Default no-arg store has nil workFolderRoot → byte-for-byte back-compat.
+        XCTAssertEqual(sut.extractPath(from: "{\"path\": \"./src/x.js\"}"), "./src/x.js")
+    }
+
+    /// Reading the same file via a redundant-prefix spelling then the plain spelling must
+    /// dedup to a reference — the actual cross-spelling payoff, not just `extractPath`.
+    func testCanonicalKey_collapsesRedundantPrefix_acrossReads() throws {
+        let root = makeNamedRoot("Foo")
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let store = MemoryTagStore(workFolderRoot: root)
+
+        guard case .tagged = store.processToolResult(
+            makeReadResult(path: "Foo/src/x.js", content: "let x = 1"), iteration: 1) else {
+            return XCTFail("first read should be tagged")
+        }
+        guard case .reference(let content) = store.processToolResult(
+            makeReadResult(path: "src/x.js", content: "let x = 1"), iteration: 2) else {
+            return XCTFail("same file via different spelling should dedup to a reference")
+        }
+        XCTAssertTrue(content.contains("<§R1§>"))
+    }
+
+    /// Editing via one spelling must invalidate a read cached under another spelling.
+    func testCanonicalKey_editInvalidatesAcrossSpellings() throws {
+        let root = makeNamedRoot("Foo")
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let store = MemoryTagStore(workFolderRoot: root)
+
+        _ = store.processToolResult(makeReadResult(path: "src/x.js", content: "let x = 1"), iteration: 1)
+        _ = store.processToolResult(makeEditResult(path: "Foo/src/x.js"), iteration: 2)  // edit via redundant prefix
+        guard case .tagged(let content, let tag) = store.processToolResult(
+            makeReadResult(path: "src/x.js", content: "let x = 2"), iteration: 3) else {
+            return XCTFail("post-edit read should be a fresh baseline, not a stale reference")
+        }
+        XCTAssertEqual(tag, "<§R2§>")
+        XCTAssertTrue(content.contains("let x = 2"))
+    }
+
+    /// Deleting via one spelling must outdate a read tag cached under another spelling.
+    func testCanonicalKey_deleteInvalidatesAcrossSpellings() throws {
+        let root = makeNamedRoot("Foo")
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let store = MemoryTagStore(workFolderRoot: root)
+
+        _ = store.processToolResult(makeReadResult(path: "src/x.js", content: "let x = 1"), iteration: 1)  // R1
+        let del = ToolExecutionResult(
+            providerID: "call_del", toolName: "delete_file",
+            argumentsJSON: "{\"path\":\"Foo/src/x.js\"}",
+            outputJSON: "{\"ok\":true,\"data\":{\"path\":\"Foo/src/x.js\",\"deleted\":true}}",
+            isError: false)
+        _ = store.processToolResult(del, iteration: 2)
+
+        guard case .outdated(let reason)? = store.entries["<§R1§>"]?.status else {
+            return XCTFail("delete via a redundant-prefix spelling should outdate the read tag")
+        }
+        XCTAssertEqual(reason, "deleted")
+    }
+
+    func testExtractPath_escapingPath_returnsRaw_whenWorkFolderRootSet() throws {
+        let root = makeNamedRoot("Foo")
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let store = MemoryTagStore(workFolderRoot: root)
+        XCTAssertEqual(store.extractPath(from: "{\"path\": \"../escape.js\"}"), "../escape.js")
+        XCTAssertEqual(store.extractPath(from: "{\"path\": \"/etc/passwd\"}"), "/etc/passwd")
+    }
+
+    /// A genuine same-named subdir is NOT over-collapsed — `app/x.js` and `x.js` stay
+    /// distinct keys (two different physical files keep two cache entries).
+    func testExtractPath_genuineSameNamedSubdir_keepsDistinctKey() throws {
+        let root = makeNamedRoot("app")
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("app"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let store = MemoryTagStore(workFolderRoot: root)
+        XCTAssertEqual(store.extractPath(from: "{\"path\": \"app/x.js\"}"), "app/x.js")
+        XCTAssertEqual(store.extractPath(from: "{\"path\": \"x.js\"}"), "x.js")
+    }
+
+    /// Creates `<temp>/<name>` and returns it (caller removes the parent temp dir).
+    private func makeNamedRoot(_ name: String) -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent(name, isDirectory: true)
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
     // MARK: - read_file Processing
 
     func testReadFileFirstRead_ReturnsTaggedContent() {
@@ -633,6 +741,121 @@ final class MemoryTagStoreTests: XCTestCase {
         } else {
             XCTFail("Expected R2 (range read) to be outdated")
         }
+    }
+
+    // MARK: - Slash escaping in tagged read content
+
+    /// The tagged read envelope the model reads back must keep forward slashes
+    /// literal (`/`, never `\/`). The `\/` form is what drove qwen3.5 to
+    /// mis-transcribe paths into backslashes in edit_file anchors → an unbreakable
+    /// edit→re-read loop. A literal backslash in the file must still round-trip
+    /// (escaped as `\\`), proving we didn't naively strip `\/` → `/`.
+    func testTaggedReadContent_keepsForwardSlashesLiteral_andEscapesBackslash() {
+        let content = "import { Q } from '../systems/Q.js';\nimport { U } from '../systems\\U.js';"
+        guard case .tagged(let tagged, _) = sut.processToolResult(
+            makeReadResult(path: "src/engine/Game.js", content: content), iteration: 1) else {
+            return XCTFail("read should be tagged")
+        }
+        XCTAssertFalse(tagged.contains("\\/"),
+                       "tagged read content must not escape forward slashes: \(tagged)")
+        XCTAssertTrue(tagged.contains("\"path\":\"src/engine/Game.js\""),
+                      "path slashes must be literal: \(tagged)")
+        XCTAssertTrue(tagged.contains("../systems/Q.js"),
+                      "content slashes must be literal: \(tagged)")
+        XCTAssertTrue(tagged.contains("../systems\\\\U.js"),
+                      "literal backslash must round-trip as \\\\: \(tagged)")
+    }
+
+    /// `jsonEscape` must produce a valid JSON string token that parses back to the
+    /// exact input — empty strings, quotes, control chars, unicode, and any mix of
+    /// `/` and literal `\`. This is the invariant that lets us drop slash escaping
+    /// without ever emitting malformed JSON to the model.
+    func testJsonEscape_roundTripsTrickyContent() throws {
+        let cases = [
+            "",
+            "////",                                 // content that is only slashes
+            "src/dir/",                             // trailing slash
+            "line1\r\nline2",                       // CRLF — anchor must preserve \r
+            "../systems/Foo.js",
+            "../systems\\Foo.js",                 // literal backslash
+            "a\"b\"c",                              // double quotes
+            "line1\nline2\ttabbed",                 // newline + tab
+            "..\\/leadingBackslashThenSlash",       // backslash immediately before slash
+            "Юникод / путь \\ back",                // unicode + both slash kinds
+            "{\"nested\":\"json/like\\value\"}",    // json-like content
+        ]
+        for original in cases {
+            let escaped = sut.jsonEscape(original)
+            let decoded = try JSONSerialization.jsonObject(
+                with: escaped.data(using: .utf8)!, options: [.fragmentsAllowed]) as? String
+            XCTAssertEqual(decoded, original, "round-trip failed; escaped=\(escaped)")
+        }
+    }
+
+    func testJsonEscape_pureForwardSlashPath_staysLiteral() {
+        XCTAssertEqual(sut.jsonEscape("../systems/Foo.js"), "\"../systems/Foo.js\"")
+    }
+
+    func testJsonEscape_literalBackslash_doublesButKeepsSlashLiteral() {
+        // `../a\b/c` → forward slashes literal, the single backslash doubled.
+        XCTAssertEqual(sut.jsonEscape("../a\\b/c"), "\"../a\\\\b/c\"")
+    }
+
+    /// The tagged read envelope must always be parseable JSON and the content must
+    /// survive verbatim — even when the file mixes quotes, newlines, slashes, and a
+    /// literal backslash on the same line.
+    func testTaggedReadContent_isValidJSON_andRoundTripsVerbatim() throws {
+        let content = "const s = \"a/b\";\nimport x from '../sys\\Helper.js'; // path/with/slashes"
+        guard case .tagged(let tagged, _) = sut.processToolResult(
+            makeReadResult(path: "src/a/b.js", content: content), iteration: 1) else {
+            return XCTFail("read should be tagged")
+        }
+        let obj = try JSONSerialization.jsonObject(with: tagged.data(using: .utf8)!) as? [String: Any]
+        XCTAssertEqual(obj?["content"] as? String, content, "content must round-trip exactly")
+        XCTAssertEqual(obj?["path"] as? String, "src/a/b.js")
+    }
+
+    /// The dedup "unchanged" reference (re-read of the same range) must also keep
+    /// path slashes literal and remain valid JSON — it's the response the model
+    /// receives when the edit error told it to re-read.
+    func testUnchangedReference_keepsPathSlashesLiteral_andIsValidJSON() throws {
+        _ = sut.processToolResult(makeReadResult(path: "src/engine/Game.js", content: "x"), iteration: 1)
+        guard case .reference(let ref) = sut.processToolResult(
+            makeReadResult(path: "src/engine/Game.js", content: "x"), iteration: 2) else {
+            return XCTFail("repeat read of the same range should dedup to a reference")
+        }
+        XCTAssertFalse(ref.contains("\\/"), "reference path must keep slashes literal: \(ref)")
+        let obj = try JSONSerialization.jsonObject(with: ref.data(using: .utf8)!) as? [String: Any]
+        XCTAssertEqual(obj?["path"] as? String, "src/engine/Game.js")
+        XCTAssertEqual(obj?["status"] as? String, "unchanged")
+    }
+
+    /// `read_lines` shares `processRangedRead` with `read_file` today, but it's the
+    /// path the model actually used in the bug report — pin its slashes explicitly
+    /// so a future divergence can't silently re-escape them.
+    func testTaggedReadLinesContent_keepsForwardSlashesLiteral() {
+        guard case .tagged(let tagged, _) = sut.processToolResult(
+            makeReadLinesResult(path: "src/a/b.js", content: "import x from '../sys/H.js';",
+                                startLine: 1, endLine: 1), iteration: 1) else {
+            return XCTFail("read_lines should be tagged")
+        }
+        XCTAssertFalse(tagged.contains("\\/"), "read_lines content slashes must stay literal: \(tagged)")
+        XCTAssertTrue(tagged.contains("\"path\":\"src/a/b.js\""), "path slashes must be literal: \(tagged)")
+        XCTAssertTrue(tagged.contains("../sys/H.js"), "content slashes must be literal: \(tagged)")
+    }
+
+    /// A git diff is the densest forward-slash payload the model reads back, and it
+    /// directly feeds edit_file anchor decisions — the exact blast radius of the bug.
+    /// The other git tests discard the tagged content, so pin slashes here.
+    func testGitDiffTaggedContent_keepsSlashesLiteral_andRoundTrips() throws {
+        let diff = "diff --git a/src/foo.swift b/src/foo.swift\n--- a/src/foo.swift\n+++ b/src/foo.swift\n@@ -1 +1 @@\n-import a/b\n+import a/c"
+        guard case .tagged(let tagged, _) = sut.processToolResult(
+            makeGitDiffResult(diff: diff), iteration: 1) else {
+            return XCTFail("git diff should be tagged")
+        }
+        XCTAssertFalse(tagged.contains("\\/"), "git diff slashes must stay literal: \(tagged)")
+        let obj = try JSONSerialization.jsonObject(with: tagged.data(using: .utf8)!) as? [String: Any]
+        XCTAssertEqual(obj?["content"] as? String, diff, "diff must round-trip verbatim")
     }
 
     // MARK: - Helpers

@@ -19,6 +19,12 @@ struct TeamGraphEditorView: View {
         Set(team.roles.map(\.id))
     }
 
+    /// The managed singleton (Autovisor) is inspect-only in the graph: no node
+    /// editing, no remove-from-graph. Repositioning (cosmetic) stays allowed.
+    private var isReadOnly: Bool {
+        team.isManagedSingleton
+    }
+
     /// Bounding box of node positions (single-pass)
     private var nodeBounds: (minX: CGFloat, maxX: CGFloat, minY: CGFloat, maxY: CGFloat)? {
         let positions = team.graphLayout.nodePositions
@@ -106,10 +112,13 @@ struct TeamGraphEditorView: View {
                                 onDragEnd: {
                                     onSave()
                                 },
+                                // Editing is allowed (the managed singleton opens a
+                                // restricted editor — Prompt + Tools). Only structural
+                                // graph removal is locked for the singleton.
                                 onDoubleTap: {
                                     editingRole = role
                                 },
-                                onRemoveFromGraph: isSupervisor(role) ? nil : {
+                                onRemoveFromGraph: (isReadOnly || isSupervisor(role)) ? nil : {
                                     handleHideRole(role)
                                 },
                                 onMeasure: { size in

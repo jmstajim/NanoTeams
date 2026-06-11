@@ -44,7 +44,7 @@ extension NTMSOrchestrator {
     }
 
     func pauseStep(stepID: String, taskID: Int) async {
-        await llmExecutionService.cancelStepExecution(stepID: stepID)
+        await llmExecutionService.cancelStepExecution(stepID: stepID, taskID: taskID)
 
         await mutateTask(taskID: taskID) { task in
             StepExecutionService.pauseStep(stepID: stepID, in: &task)
@@ -52,13 +52,18 @@ extension NTMSOrchestrator {
     }
 
     /// Submits a Supervisor answer. Returns `true` on success, `false` if attachment finalization failed.
+    /// `isAutoAnswer` flags answers produced by an automated supervisor path (a
+    /// delegating parent role, the Autovisor's `answer_task_question`) so the
+    /// activity feed shows the "Auto-answered" badge only for those — human
+    /// call sites use the default `false`.
     @discardableResult
     func answerSupervisorQuestion(
         stepID: String,
         taskID: Int,
         answer: String,
         attachments: [StagedAttachment] = [],
-        draftID: UUID? = nil
+        draftID: UUID? = nil,
+        isAutoAnswer: Bool = false
     ) async -> Bool {
         // Finalize staged attachments and clean up draft directory
         var finalPaths: [String] = []
@@ -92,6 +97,7 @@ extension NTMSOrchestrator {
                 stepID: stepID,
                 answer: answer,
                 attachmentPaths: finalPaths,
+                isAutoAnswer: isAutoAnswer,
                 in: &task
             )
         }

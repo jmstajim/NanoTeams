@@ -297,17 +297,799 @@ final class QuickCaptureQueueTests: XCTestCase {
                        "Terminal-state discard must surface a user-visible info message")
     }
 
-    func testTryFlush_dropsAllQueuedOnFailed_andSurfacesInfoMessage() async {
+    /// A `.failed` task must NOT discard the queue — sending a message resumes/retries
+    /// the run (`resumeRun` revives the failed step). Mirrors the `.paused` wake path:
+    /// dispatch `resumeRun`, preserve the queue (primary path drains it on the retried
+    /// step's next iteration), no discard banner.
+    func testTryFlush_failedEngineWithQueue_callsResumeRunAndPreservesQueue() async {
         let store = NTMSOrchestrator(repository: NTMSRepository())
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
+        var resumed: [Int] = []
+        controller.resumeRunForTesting = { resumed.append($0) }
         sut.appendQueuedMessage(msg("a"), for: 7)
         store.engineState[7] = .failed
 
         controller.tryFlushQueuedMessages()
 
-        XCTAssertFalse(sut.hasQueuedMessage(for: 7))
-        XCTAssertEqual(store.lastInfoMessage, "1 queued message(s) discarded — task failed.")
+        XCTAssertEqual(resumed, [7],
+                       ".failed with queued messages must wake the run via resumeRun, not discard")
+        XCTAssertTrue(sut.hasQueuedMessage(for: 7),
+                      "Queue must survive — the revived step drains it on its next iteration")
+        XCTAssertNil(store.lastInfoMessage,
+                     "No discard message — a failed task is retried, not stranded")
+    }
+
+    /// A closed task must NOT be resumed even when its engine is `.failed` — the
+    /// `closedAt` guard in `wakeRunForQueuedMessages` discards the queue first. Sibling of
+    /// `testTryFlush_pausedEngine_butTaskClosed_*`, for the `.failed` route.
+    func testTryFlush_failedEngine_butTaskClosed_dropsQueueAndDoesNotResume() async throws {
+        let tmp = try makeTempWorkFolder()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let store = NTMSOrchestrator(repository: NTMSRepository())
+        await store.openWorkFolder(tmp)
+        guard let taskID = await store.createTask(title: "t", supervisorTask: "g") else {
+            return XCTFail("Could not create task")
+        }
+        await store.mutateTask(taskID: taskID) { task in task.closedAt = Date() }
+
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+        var resumed: [Int] = []
+        controller.resumeRunForTesting = { resumed.append($0) }
+        sut.appendQueuedMessage(msg("late"), for: taskID)
+        store.engineState[taskID] = .failed
+
+        controller.tryFlushQueuedMessages()
+
+        XCTAssertTrue(resumed.isEmpty,
+                      "A closed task must NOT be resumed even when its engine is .failed")
+        XCTAssertFalse(sut.hasQueuedMessage(for: taskID),
+                       "Queue is discarded for a closed task")
+        XCTAssertNotNil(store.lastInfoMessage,
+                        "User is told the queued messages were discarded")
+    }
+
+    /// Per-task isolation across terminal states in one pass: a `.failed` task resumes
+    /// (queue preserved) while a `.done` task discards — independently.
+    func testTryFlush_twoTasks_failedResumesAndDoneDiscards() async {
+        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+        var resumed: [Int] = []
+        controller.resumeRunForTesting = { resumed.append($0) }
+        sut.appendQueuedMessage(msg("a"), for: 1)
+        store.engineState[1] = .failed
+        sut.appendQueuedMessage(msg("b"), for: 2)
+        store.engineState[2] = .done
+
+        controller.tryFlushQueuedMessages()
+
+        XCTAssertEqual(resumed, [1], "Only the .failed task is resumed")
+        XCTAssertTrue(sut.hasQueuedMessage(for: 1), "Failed task's queue preserved for the revived step")
+        XCTAssertFalse(sut.hasQueuedMessage(for: 2), "Done task's queue is discarded")
+        XCTAssertEqual(store.lastInfoMessage, "1 queued message(s) discarded — task completed.")
+    }
+
+    /// `.failed` uses the same in-flight dedup guard as `.paused`: two synchronous ticks
+    /// collapse to one resumeRun while the first is in flight.
+    func testTryFlush_failedEngine_inFlightGuard_dedupesResume() async {
+        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+        var resumed: [Int] = []
+        controller.resumeRunForTesting = { resumed.append($0) }
+        sut.appendQueuedMessage(msg("a"), for: 1)
+        sut.appendQueuedMessage(msg("b"), for: 1)
+        store.engineState[1] = .failed
+
+        controller.tryFlushQueuedMessages()
+        controller.tryFlushQueuedMessages()
+
+        XCTAssertEqual(resumed, [1],
+                       "Two synchronous .failed tryFlush ticks must collapse to one resumeRun")
+    }
+
+    /// The user's actual recovery path: sending a message to a `.failed` task immediately
+    /// wakes the run (queueChatMessage → tryFlush → resume), message stays queued.
+    func testQueueChatMessage_failedEngine_immediatelyTriggersResume() async {
+        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+        var resumed: [Int] = []
+        controller.resumeRunForTesting = { resumed.append($0) }
+        store.engineState[1] = .failed
+
+        _ = controller.queueChatMessage(
+            text: "retry please", attachments: [], clippedTexts: [], taskID: 1
+        )
+
+        XCTAssertEqual(resumed, [1],
+                       "Sending a message to a .failed task immediately wakes the run")
+        XCTAssertTrue(sut.hasQueuedMessage(for: 1),
+                      "Message stays queued for the revived step to consume")
+    }
+
+    // MARK: - .done CHAT task — wake with a fresh startRun, never discard
+
+    /// A chat-mode task at `.done` is an ended turn, not a finished pipeline
+    /// (`attemptAdvisoryAutoFinish` lands chat advisory steps there) — a queued
+    /// message must START a fresh run (drained on iteration 1), not be discarded
+    /// (the pre-fix bug: the Autovisor chat silently destroyed messages) and not
+    /// `resumeRun` (which re-enters the all-terminal run and bounces back to `.done`).
+    func testTryFlush_doneChatTask_startsRunAndPreservesQueue() async throws {
+        let tmp = try makeTempWorkFolder()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let store = NTMSOrchestrator(repository: NTMSRepository())
+        await store.openWorkFolder(tmp)
+        guard let taskID = await store.createTask(title: "chat", supervisorTask: "g") else {
+            return XCTFail("Could not create task")
+        }
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+        var started: [Int] = []
+        var resumed: [Int] = []
+        controller.startRunForTesting = { started.append($0) }
+        controller.resumeRunForTesting = { resumed.append($0) }
+        sut.appendQueuedMessage(msg("hi"), for: taskID)
+        store.engineState[taskID] = .done
+
+        controller.tryFlushQueuedMessages()
+
+        XCTAssertEqual(started, [taskID],
+                       ".done chat task must wake via a fresh startRun")
+        XCTAssertTrue(resumed.isEmpty,
+                      "resumeRun would re-enter the all-terminal run — never used here")
+        XCTAssertTrue(sut.hasQueuedMessage(for: taskID),
+                      "Queue must survive — the fresh run drains it on iteration 1")
+        XCTAssertNil(store.lastInfoMessage, "No discard banner — the message is delivered")
+    }
+
+    /// Chat-mode detection must survive the task being unloaded (background task
+    /// evicted from `loadedTasks`): the `TaskSummary.isChatMode` fallback in
+    /// `isChatModeTask` still routes `.done` to the wake, not the discard.
+    func testTryFlush_doneChatTask_unloadedTask_usesSummaryFallback() async throws {
+        let tmp = try makeTempWorkFolder()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let store = NTMSOrchestrator(repository: NTMSRepository())
+        await store.openWorkFolder(tmp)
+        // makeActive: false → the task is indexed (summary carries isChatMode) but
+        // NOT loaded, so the loaded-task branch of isChatModeTask returns nil.
+        guard let taskID = await store.createTask(
+            title: "chat", supervisorTask: "g", makeActive: false
+        ) else {
+            return XCTFail("Could not create task")
+        }
+        XCTAssertNil(store.loadedTask(taskID), "precondition: task must be unloaded")
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+        var started: [Int] = []
+        controller.startRunForTesting = { started.append($0) }
+        sut.appendQueuedMessage(msg("hi"), for: taskID)
+        store.engineState[taskID] = .done
+
+        controller.tryFlushQueuedMessages()
+
+        XCTAssertEqual(started, [taskID],
+                       "TaskSummary.isChatMode fallback must classify the unloaded task as chat")
+        XCTAssertTrue(sut.hasQueuedMessage(for: taskID))
+    }
+
+    /// A CLOSED chat task is finalized — the wake path's closed guard discards the
+    /// queue instead of starting a run (startRun would silently REOPEN it:
+    /// `createNewRun` clears `closedAt`).
+    func testTryFlush_doneChatTask_closed_dropsQueueAndDoesNotStart() async throws {
+        let tmp = try makeTempWorkFolder()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let store = NTMSOrchestrator(repository: NTMSRepository())
+        await store.openWorkFolder(tmp)
+        guard let taskID = await store.createTask(title: "chat", supervisorTask: "g") else {
+            return XCTFail("Could not create task")
+        }
+        await store.mutateTask(taskID: taskID) { $0.closedAt = Date() }
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+        var started: [Int] = []
+        controller.startRunForTesting = { started.append($0) }
+        sut.appendQueuedMessage(msg("late"), for: taskID)
+        store.engineState[taskID] = .done
+
+        controller.tryFlushQueuedMessages()
+
+        XCTAssertTrue(started.isEmpty, "A closed task must never be restarted by a message")
+        XCTAssertFalse(sut.hasQueuedMessage(for: taskID), "Queue is discarded for a closed task")
+        XCTAssertEqual(store.lastInfoMessage, "1 queued message(s) discarded — task closed.")
+    }
+
+    /// `.done`-chat shares the in-flight dedup guard: two synchronous ticks collapse
+    /// to one startRun while the first is in flight.
+    func testTryFlush_doneChatTask_inFlightGuard_dedupesStart() async throws {
+        let tmp = try makeTempWorkFolder()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let store = NTMSOrchestrator(repository: NTMSRepository())
+        await store.openWorkFolder(tmp)
+        guard let taskID = await store.createTask(title: "chat", supervisorTask: "g") else {
+            return XCTFail("Could not create task")
+        }
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+        var started: [Int] = []
+        controller.startRunForTesting = { started.append($0) }
+        sut.appendQueuedMessage(msg("hi"), for: taskID)
+        store.engineState[taskID] = .done
+
+        controller.tryFlushQueuedMessages()
+        controller.tryFlushQueuedMessages()
+
+        XCTAssertEqual(started, [taskID],
+                       "Two synchronous .done-chat ticks must collapse to one startRun")
+    }
+
+    /// No wake-loop on an unconsumable queue: a started run that ends `.done` again
+    /// WITHOUT consuming the message (consume-side persistence failure re-prepends
+    /// the batch) gets exactly one attempt per message — the second fruitless tick
+    /// discards honestly instead of starting LLM passes forever. Mirrors the
+    /// `.failed` give-up.
+    func testTryFlush_doneChatTask_fruitlessStart_secondTickDiscards() async throws {
+        let tmp = try makeTempWorkFolder()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let store = NTMSOrchestrator(repository: NTMSRepository())
+        await store.openWorkFolder(tmp)
+        guard let taskID = await store.createTask(title: "chat", supervisorTask: "g") else {
+            return XCTFail("Could not create task")
+        }
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+        var started: [Int] = []
+        controller.startRunForTesting = { started.append($0) }
+        sut.appendQueuedMessage(msg("hi"), for: taskID)
+        store.engineState[taskID] = .done
+
+        controller.tryFlushQueuedMessages()
+        XCTAssertEqual(started, [taskID], "First tick earns the wake attempt")
+        // Simulate the dispatched startRun finishing with the queue STILL unconsumed
+        // and the engine back at .done.
+        controller.clearPendingResumeForQueueFlushForTesting(taskID: taskID)
+
+        controller.tryFlushQueuedMessages()
+
+        XCTAssertEqual(started, [taskID], "No second start — the attempt was already spent")
+        XCTAssertFalse(sut.hasQueuedMessage(for: taskID), "Queue is discarded honestly")
+        XCTAssertEqual(store.lastInfoMessage,
+                       "1 queued message(s) discarded — the chat couldn't be restarted.")
+    }
+
+    /// Loaded NON-chat task at `.done` still discards — pins the loaded-task branch
+    /// of `isChatModeTask` (the no-work-folder discard tests only pin the fallback).
+    func testTryFlush_doneNonChatLoadedTask_discards() async throws {
+        let tmp = try makeTempWorkFolder()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let store = NTMSOrchestrator(repository: NTMSRepository())
+        await store.openWorkFolder(tmp)
+        guard let faangID = store.snapshot?.workFolder.teams.first(where: { !$0.isChatMode })?.id,
+              let taskID = await store.createTask(
+                  title: "pipeline", supervisorTask: "g", preferredTeamID: faangID
+              ) else {
+            return XCTFail("Could not create non-chat task")
+        }
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+        var started: [Int] = []
+        controller.startRunForTesting = { started.append($0) }
+        sut.appendQueuedMessage(msg("hi"), for: taskID)
+        store.engineState[taskID] = .done
+
+        controller.tryFlushQueuedMessages()
+
+        XCTAssertTrue(started.isEmpty, "A completed non-chat pipeline is never restarted by a message")
+        XCTAssertFalse(sut.hasQueuedMessage(for: taskID))
+        XCTAssertEqual(store.lastInfoMessage, "1 queued message(s) discarded — task completed.")
+    }
+
+    /// Mirror of `testTryFlush_failedEngine_brandNewMessageAfterPriorAttempt_*` for
+    /// the `.done`-chat arm: a brand-new message sent after a fruitless start earns
+    /// its own fresh wake (set algebra: queued ⊄ attempted) — without it, the second
+    /// message a user sends to an idle chat after one fruitless start would be
+    /// silently discarded.
+    func testTryFlush_doneChatTask_brandNewMessageAfterPriorAttempt_getsFreshStart() async throws {
+        let tmp = try makeTempWorkFolder()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let store = NTMSOrchestrator(repository: NTMSRepository())
+        await store.openWorkFolder(tmp)
+        guard let taskID = await store.createTask(title: "chat", supervisorTask: "g") else {
+            return XCTFail("Could not create task")
+        }
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+        var started: [Int] = []
+        controller.startRunForTesting = { started.append($0) }
+        sut.appendQueuedMessage(msg("first"), for: taskID)
+        store.engineState[taskID] = .done
+
+        controller.tryFlushQueuedMessages()
+        XCTAssertEqual(started, [taskID])
+        controller.clearPendingResumeForQueueFlushForTesting(taskID: taskID)
+        sut.appendQueuedMessage(msg("second"), for: taskID)
+
+        controller.tryFlushQueuedMessages()
+
+        XCTAssertEqual(started, [taskID, taskID],
+                       "A brand-new message must earn a fresh start attempt")
+        XCTAssertTrue(sut.hasQueuedMessage(for: taskID), "Both messages stay queued for the fresh run")
+    }
+
+    /// Review-critical pin: the `.failed`-resume and `.done`-chat-start give-up maps
+    /// are SEPARATE. A spent resume attempt is no evidence a fresh-run start would
+    /// fail (different mechanisms) — sharing one map would discard the message on a
+    /// `.failed`→`.done` transition without the start path ever being tried.
+    func testTryFlush_failedThenDoneChat_startGetsItsOwnAttempt() async throws {
+        let tmp = try makeTempWorkFolder()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let store = NTMSOrchestrator(repository: NTMSRepository())
+        await store.openWorkFolder(tmp)
+        guard let taskID = await store.createTask(title: "chat", supervisorTask: "g") else {
+            return XCTFail("Could not create task")
+        }
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+        var started: [Int] = []
+        var resumed: [Int] = []
+        controller.startRunForTesting = { started.append($0) }
+        controller.resumeRunForTesting = { resumed.append($0) }
+        sut.appendQueuedMessage(msg("hi"), for: taskID)
+
+        // 1. Failed engine → resume attempt spends the message in the .failed map.
+        store.engineState[taskID] = .failed
+        controller.tryFlushQueuedMessages()
+        XCTAssertEqual(resumed, [taskID])
+        controller.clearPendingResumeForQueueFlushForTesting(taskID: taskID)
+
+        // 2. Engine lands at .done (chat) with the message still queued — the start
+        //    path must fire, NOT discard via the resume path's spent attempt.
+        store.engineState[taskID] = .done
+        controller.tryFlushQueuedMessages()
+
+        XCTAssertEqual(started, [taskID],
+                       "The .done-chat start must get its own attempt despite the spent resume")
+        XCTAssertTrue(sut.hasQueuedMessage(for: taskID))
+        XCTAssertNil(store.lastInfoMessage, "No discard — the message is being delivered")
+    }
+
+    // MARK: - performStartWake (the async .start body the test seam bypasses)
+
+    /// The seam-based `.done`-chat tests never execute the dispatched Task body —
+    /// this drives it directly. A CLOSED task must never be reopened by a queued
+    /// message: `startRun` has no closed guard and `createNewRun` CLEARS `closedAt`,
+    /// so the post-load re-check is the only thing standing between a stray message
+    /// and silent task resurrection.
+    func testPerformStartWake_closedTask_discardsQueue_neverReopens() async throws {
+        let tmp = try makeTempWorkFolder()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let store = NTMSOrchestrator(repository: NTMSRepository())
+        await store.openWorkFolder(tmp)
+        guard let taskID = await store.createTask(title: "chat", supervisorTask: "g") else {
+            return XCTFail("Could not create task")
+        }
+        await store.mutateTask(taskID: taskID) { $0.closedAt = Date() }
+        let runsBefore = store.loadedTask(taskID)?.runs.count ?? 0
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+        sut.appendQueuedMessage(msg("late"), for: taskID)
+
+        await controller.performStartWake(taskID: taskID)
+
+        XCTAssertEqual(store.loadedTask(taskID)?.runs.count ?? -1, runsBefore,
+                       "No run may be created against a closed task")
+        XCTAssertNotNil(store.loadedTask(taskID)?.closedAt,
+                        "closedAt surviving proves createNewRun never ran (it clears the field)")
+        XCTAssertFalse(sut.hasQueuedMessage(for: taskID), "Queue is discarded for a closed task")
+        XCTAssertEqual(store.lastInfoMessage, "1 queued message(s) discarded — task closed.")
+    }
+
+    /// Load failure (task deleted concurrently / unreadable task.json) must NOT be
+    /// conflated with "task is open": `loadedTask(id)?.closedAt == nil` would be
+    /// vacuously true for a nil task and start a run against a phantom. The wake
+    /// keeps the queue and surfaces the error instead.
+    func testPerformStartWake_loadFailure_keepsQueue_surfacesError() async throws {
+        let tmp = try makeTempWorkFolder()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let store = NTMSOrchestrator(repository: NTMSRepository())
+        await store.openWorkFolder(tmp)
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+        let phantomID = 999
+        sut.appendQueuedMessage(msg("hi"), for: phantomID)
+
+        await controller.performStartWake(taskID: phantomID)
+
+        XCTAssertTrue(sut.hasQueuedMessage(for: phantomID),
+                      "Queue must survive a load failure (retried on a later tick)")
+        XCTAssertEqual(store.lastErrorMessage,
+                       "Couldn't load task #999 to deliver queued message(s) — kept in queue.")
+    }
+
+    /// Integrated contract for the load-failure path: the `.done`-chat arm stamps
+    /// the give-up map BEFORE dispatching the wake, so a wake that aborts on load
+    /// failure must UN-stamp — otherwise the "kept in queue" promise is followed by
+    /// a misattributed "chat couldn't be restarted" discard on the next tick, with
+    /// zero real start attempts ever made.
+    func testTryFlush_doneChatTask_loadFailure_unstampsAttempt_nextTickRetries() async throws {
+        let tmp = try makeTempWorkFolder()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let store = NTMSOrchestrator(repository: NTMSRepository())
+        await store.openWorkFolder(tmp)
+        guard let taskID = await store.createTask(
+            title: "chat", supervisorTask: "g", makeActive: false
+        ) else {
+            return XCTFail("Could not create task")
+        }
+        // Unloadable while still indexed as chat-mode: delete the task's JSON.
+        let taskJSON = tmp.appendingPathComponent(".nanoteams/internal/tasks/\(taskID)/task.json")
+        try FileManager.default.removeItem(at: taskJSON)
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+        var started: [Int] = []
+        controller.startRunForTesting = { started.append($0) }
+        sut.appendQueuedMessage(msg("hi"), for: taskID)
+        store.engineState[taskID] = .done
+
+        // Tick 1: stamps the give-up map + dispatches the wake (seam records it).
+        controller.tryFlushQueuedMessages()
+        XCTAssertEqual(started, [taskID])
+        // The dispatched body load-fails — run the production body directly.
+        await controller.performStartWake(taskID: taskID)
+        XCTAssertTrue(sut.hasQueuedMessage(for: taskID), "Queue kept on load failure")
+        XCTAssertFalse(controller._testHasChatStartAttempted(taskID: taskID),
+                       "An aborted-before-startRun wake must not count as an attempt")
+        controller.clearPendingResumeForQueueFlushForTesting(taskID: taskID)
+
+        // Tick 2: the spent-attempt discard must NOT fire — the wake retries.
+        controller.tryFlushQueuedMessages()
+        XCTAssertEqual(started, [taskID, taskID],
+                       "Load failure must not spend the message's one start attempt")
+        XCTAssertTrue(sut.hasQueuedMessage(for: taskID))
+    }
+
+    /// Corner: the documented reopen scenario verbatim — an UNLOADED closed chat
+    /// task. The sync pre-check in `wakeRunForQueuedMessages` is nil-soft for
+    /// unloaded tasks, so `performStartWake`'s post-load re-check is the only
+    /// guard; it must load the task from disk, see `closedAt`, and discard.
+    func testPerformStartWake_unloadedClosedChatTask_discardsAfterLoad() async throws {
+        let tmp = try makeTempWorkFolder()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let store = NTMSOrchestrator(repository: NTMSRepository())
+        await store.openWorkFolder(tmp)
+        guard let taskID = await store.createTask(
+            title: "chat", supervisorTask: "g", makeActive: false
+        ) else {
+            return XCTFail("Could not create task")
+        }
+        // Close it (persists closedAt to disk), then UNLOAD so the sync pre-check
+        // would have been blind to the closure.
+        await store.ensureTaskLoaded(taskID)
+        await store.mutateTask(taskID: taskID) { $0.closedAt = Date() }
+        store.snapshot?.loadedTasks[taskID] = nil
+        XCTAssertNil(store.loadedTask(taskID), "precondition: task must be unloaded")
+
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+        sut.appendQueuedMessage(msg("late"), for: taskID)
+
+        await controller.performStartWake(taskID: taskID)
+
+        XCTAssertNotNil(store.loadedTask(taskID)?.closedAt,
+                        "closedAt surviving the wake proves the task was never reopened")
+        XCTAssertEqual(store.loadedTask(taskID)?.runs.count ?? -1, 0,
+                       "No run may be created against the closed task")
+        XCTAssertFalse(sut.hasQueuedMessage(for: taskID))
+        XCTAssertEqual(store.lastInfoMessage, "1 queued message(s) discarded — task closed.")
+    }
+
+    /// Corner: the give-up must be DEFERRED while a wake is in flight. Tick 2 sees
+    /// every message attempted but the in-flight flag still set — it must neither
+    /// discard nor double-start; only tick 3 (after the wake settles with the queue
+    /// unconsumed) discards.
+    func testTryFlush_doneChatTask_giveUpDeferredWhileWakeInFlight() async throws {
+        let tmp = try makeTempWorkFolder()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let store = NTMSOrchestrator(repository: NTMSRepository())
+        await store.openWorkFolder(tmp)
+        guard let taskID = await store.createTask(title: "chat", supervisorTask: "g") else {
+            return XCTFail("Could not create task")
+        }
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+        var started: [Int] = []
+        controller.startRunForTesting = { started.append($0) }
+        sut.appendQueuedMessage(msg("hi"), for: taskID)
+        store.engineState[taskID] = .done
+
+        controller.tryFlushQueuedMessages()           // tick 1: wake, in-flight set
+        controller.tryFlushQueuedMessages()           // tick 2: in-flight still set
+
+        XCTAssertEqual(started, [taskID], "No double start while the wake is in flight")
+        XCTAssertTrue(sut.hasQueuedMessage(for: taskID),
+                      "No discard while the wake could still consume the queue")
+        XCTAssertNil(store.lastInfoMessage)
+
+        controller.clearPendingResumeForQueueFlushForTesting(taskID: taskID)
+        controller.tryFlushQueuedMessages()           // tick 3: wake settled, queue unconsumed
+
+        XCTAssertFalse(sut.hasQueuedMessage(for: taskID), "Now the give-up fires")
+        XCTAssertEqual(store.lastInfoMessage,
+                       "1 queued message(s) discarded — the chat couldn't be restarted.")
+    }
+
+    /// Truth table for `isChatModeTask` — the discriminator between "wake the chat"
+    /// and "discard the pipeline queue": loaded chat / loaded non-chat / indexed-only
+    /// chat (summary fallback) / unknown id (safe default false).
+    func testIsChatModeTask_truthTable() async throws {
+        let tmp = try makeTempWorkFolder()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let store = NTMSOrchestrator(repository: NTMSRepository())
+        await store.openWorkFolder(tmp)
+        guard let faangID = store.snapshot?.workFolder.teams.first(where: { !$0.isChatMode })?.id,
+              let chatLoaded = await store.createTask(title: "c1", supervisorTask: "g"),
+              let pipeline = await store.createTask(title: "p", supervisorTask: "g", preferredTeamID: faangID),
+              let chatIndexed = await store.createTask(title: "c2", supervisorTask: "g", makeActive: false)
+        else {
+            return XCTFail("Could not create tasks")
+        }
+        await store.ensureTaskLoaded(chatLoaded)
+        XCTAssertNil(store.loadedTask(chatIndexed), "precondition: c2 must be index-only")
+
+        XCTAssertTrue(QuickCaptureController.isChatModeTask(chatLoaded, store: store),
+                      "loaded chat task → true")
+        XCTAssertFalse(QuickCaptureController.isChatModeTask(pipeline, store: store),
+                       "loaded non-chat task → false")
+        XCTAssertTrue(QuickCaptureController.isChatModeTask(chatIndexed, store: store),
+                      "unloaded task → TaskSummary.isChatMode fallback → true")
+        XCTAssertFalse(QuickCaptureController.isChatModeTask(987_654, store: store),
+                       "unknown id → false (safe default preserves the discard behavior)")
+    }
+
+    /// Corner of the honest-return contract: the `.needsSupervisorInput` consumption
+    /// is a detached Task — at `queueChatMessage`'s return the message must still be
+    /// queued (`true`), because "still queued" is exactly "not synchronously discarded".
+    func testQueueChatMessage_needsSupervisorInput_returnsTrue_queueIntactAtReturn() async {
+        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+        store.engineState[3] = .needsSupervisorInput
+
+        let queued = controller.queueChatMessage(
+            text: "answer-ish", attachments: [], clippedTexts: [], taskID: 3
+        )
+
+        XCTAssertTrue(queued, "Async consumption must not affect the synchronous return")
+        XCTAssertTrue(sut.hasQueuedMessage(for: 3),
+                      "The flush Task has not run at return time — message still queued")
+    }
+
+    // MARK: - queueChatMessage honest return (synchronous discard → false)
+
+    /// When the immediate flush synchronously discards the message (non-chat `.done`),
+    /// `queueChatMessage` must return `false` so the composer keeps the draft and does
+    /// NOT overwrite the discard banner with a "Message queued" lie — the pre-fix
+    /// composer showed "resuming the task" while the message was already destroyed.
+    func testQueueChatMessage_doneNonChat_returnsFalse_keepsDiscardBanner() async {
+        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+        store.engineState[1] = .done  // no work folder → chat lookup falls back to false
+
+        let queued = controller.queueChatMessage(
+            text: "hello?", attachments: [], clippedTexts: [], taskID: 1
+        )
+
+        XCTAssertFalse(queued, "Synchronously discarded message must report failure")
+        XCTAssertFalse(sut.hasQueuedMessage(for: 1))
+        XCTAssertEqual(store.lastInfoMessage, "1 queued message(s) discarded — task completed.",
+                       "The discard banner is the honest one — callers must not overwrite it")
+    }
+
+    /// The chat counterpart: the message survives the flush (wake dispatched), so the
+    /// composer's "Message queued — resuming the task" banner is earned.
+    func testQueueChatMessage_doneChatTask_returnsTrue_andStarts() async throws {
+        let tmp = try makeTempWorkFolder()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let store = NTMSOrchestrator(repository: NTMSRepository())
+        await store.openWorkFolder(tmp)
+        guard let taskID = await store.createTask(title: "chat", supervisorTask: "g") else {
+            return XCTFail("Could not create task")
+        }
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+        var started: [Int] = []
+        controller.startRunForTesting = { started.append($0) }
+        store.engineState[taskID] = .done
+
+        let queued = controller.queueChatMessage(
+            text: "continue please", attachments: [], clippedTexts: [], taskID: taskID
+        )
+
+        XCTAssertTrue(queued)
+        XCTAssertEqual(started, [taskID], "Sending to a .done chat immediately starts a fresh run")
+        XCTAssertTrue(sut.hasQueuedMessage(for: taskID))
+    }
+
+    /// A `.failed` task whose resume revives nothing (stall/deadlock, or an unrevivable
+    /// step) must NOT wake-loop: the first send attempts a resume; once that attempt has
+    /// completed and the engine is STILL `.failed`, the queue is discarded honestly
+    /// instead of re-resuming forever.
+    func testTryFlush_failedEngine_resumeDidNotRevive_secondTickDiscardsQueue() async {
+        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+        var resumed: [Int] = []
+        controller.resumeRunForTesting = { resumed.append($0) }
+        sut.appendQueuedMessage(msg("a"), for: 1)
+        store.engineState[1] = .failed
+
+        // Attempt #1: try to resume.
+        controller.tryFlushQueuedMessages()
+        XCTAssertEqual(resumed, [1], "First .failed send attempts a resume")
+        XCTAssertTrue(sut.hasQueuedMessage(for: 1), "Queue preserved while the attempt is pending")
+        XCTAssertNil(store.lastInfoMessage)
+
+        // Simulate the dispatched resume completing while the engine stays .failed.
+        controller.clearPendingResumeForQueueFlushForTesting(taskID: 1)
+
+        // Attempt #2: still .failed, prior attempt done → give up + discard honestly.
+        controller.tryFlushQueuedMessages()
+        XCTAssertEqual(resumed, [1], "No second resume — the prior attempt already failed to revive")
+        XCTAssertFalse(sut.hasQueuedMessage(for: 1), "Queue discarded once resume proved fruitless")
+        XCTAssertEqual(store.lastInfoMessage,
+                       "1 queued message(s) discarded — task failed and couldn't be retried.")
+    }
+
+    /// A new message via `queueChatMessage` has a not-yet-attempted ID, so a fresh send to
+    /// a still-`.failed` task attempts a resume rather than immediately discarding.
+    func testQueueChatMessage_newMessage_grantsFreshResumeAttempt() async {
+        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+        var resumed: [Int] = []
+        controller.resumeRunForTesting = { resumed.append($0) }
+        store.engineState[1] = .failed
+
+        // Attempt #1 (direct append) then simulate it completing, still failed.
+        sut.appendQueuedMessage(msg("a"), for: 1)
+        controller.tryFlushQueuedMessages()
+        controller.clearPendingResumeForQueueFlushForTesting(taskID: 1)
+        resumed.removeAll()
+
+        // A new message carries an un-attempted ID → its internal tryFlush attempts a
+        // fresh resume instead of give-up-discarding.
+        _ = controller.queueChatMessage(text: "b", attachments: [], clippedTexts: [], taskID: 1)
+
+        XCTAssertEqual(resumed, [1], "A new (un-attempted) message earns a fresh resume attempt")
+        XCTAssertTrue(sut.hasQueuedMessage(for: 1),
+                      "Messages remain queued for the fresh attempt (not discarded)")
+    }
+
+    /// REGRESSION: a doomed resume drives the engine through a TRANSIENT `.running`
+    /// (`engine.resume()` sets `.running` before the run loop re-detects the failed role
+    /// and transitions back to `.failed`). That transient `.running` tick must NOT reset
+    /// the one-shot give-up guard — otherwise the give-up never fires and the message
+    /// wake-loops (resume → .running → .failed → resume …) forever in production, even
+    /// though a `resumeRunForTesting`-based test (no real engine, no flicker) would pass.
+    func testTryFlush_failedEngine_transientRunningDoesNotDefeatGiveUp() async {
+        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+        var resumed: [Int] = []
+        controller.resumeRunForTesting = { resumed.append($0) }
+        sut.appendQueuedMessage(msg("a"), for: 1)
+        store.engineState[1] = .failed
+
+        // Attempt #1.
+        controller.tryFlushQueuedMessages()
+        XCTAssertEqual(resumed, [1])
+        controller.clearPendingResumeForQueueFlushForTesting(taskID: 1)
+
+        // The engine flickers through .running during the doomed resume…
+        store.engineState[1] = .running
+        controller.tryFlushQueuedMessages()
+        // …then re-fails. This .failed tick must GIVE UP, not grant a 2nd attempt.
+        store.engineState[1] = .failed
+        controller.tryFlushQueuedMessages()
+
+        XCTAssertEqual(resumed, [1],
+                       "Transient .running must not grant a second resume attempt")
+        XCTAssertFalse(sut.hasQueuedMessage(for: 1),
+                       "Give-up must still fire after a transient .running")
+        XCTAssertEqual(store.lastInfoMessage,
+                       "1 queued message(s) discarded — task failed and couldn't be retried.")
+    }
+
+    /// REGRESSION: a brand-new queued message must earn its OWN resume attempt, even on a
+    /// task that already had a (successful) attempt for a PRIOR message. Non-`queueChatMessage`
+    /// enqueue paths — notably the Autovisor's `message_task`, which calls
+    /// `appendQueuedMessage` directly — must not be silently discarded by a stale per-task
+    /// give-up marker.
+    func testTryFlush_failedEngine_brandNewMessageAfterPriorAttempt_getsFreshAttempt() async {
+        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+        var resumed: [Int] = []
+        controller.resumeRunForTesting = { resumed.append($0) }
+
+        // Episode 1: a message attempts a resume; simulate it SUCCEEDING (message consumed).
+        sut.appendQueuedMessage(msg("a"), for: 1)
+        store.engineState[1] = .failed
+        controller.tryFlushQueuedMessages()
+        controller.clearPendingResumeForQueueFlushForTesting(taskID: 1)
+        sut.clearQueuedMessages(for: 1)            // msgA consumed by the revived step
+        store.engineState[1] = .running
+        controller.tryFlushQueuedMessages()
+
+        // Episode 2: the task re-fails; a brand-new message arrives via a DIRECT append.
+        resumed.removeAll()
+        store.engineState[1] = .failed
+        sut.appendQueuedMessage(msg("b"), for: 1)  // NOT via queueChatMessage
+        controller.tryFlushQueuedMessages()
+
+        XCTAssertEqual(resumed, [1],
+                       "A brand-new queued message must earn its own resume attempt")
+        XCTAssertTrue(sut.hasQueuedMessage(for: 1),
+                      "The new message must not be discarded by a stale prior-attempt marker")
+    }
+
+    /// The give-up is target-AGNOSTIC (it works on message IDs, not targetRoleID): a
+    /// TARGETED message whose target role never runs in a failed task is discarded on
+    /// give-up. Documents intentional behavior — an undeliverable targeted message is
+    /// honestly discarded rather than held forever on a dead task.
+    func testTryFlush_failedEngine_targetedMessage_participatesInGiveUp() async {
+        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+        var resumed: [Int] = []
+        controller.resumeRunForTesting = { resumed.append($0) }
+        sut.appendQueuedMessage(
+            QuickCaptureFormState.QueuedChatMessage(
+                text: "for engineer", attachments: [], clippedTexts: [], targetRoleID: "engineer"
+            )!,
+            for: 1
+        )
+        store.engineState[1] = .failed
+
+        controller.tryFlushQueuedMessages()                  // attempt
+        controller.clearPendingResumeForQueueFlushForTesting(taskID: 1)
+        controller.tryFlushQueuedMessages()                  // give up
+
+        XCTAssertEqual(resumed, [1],
+                       "One attempt then give up — targeting grants no extra attempts")
+        XCTAssertFalse(sut.hasQueuedMessage(for: 1),
+                       "An undeliverable targeted message is discarded on give-up, not held forever")
+        XCTAssertEqual(store.lastInfoMessage,
+                       "1 queued message(s) discarded — task failed and couldn't be retried.")
+    }
+
+    /// HYGIENE: the give-up attempted-IDs map must not leak entries for tasks that no
+    /// longer have queued messages (deleted/consumed). `tryFlushQueuedMessages` prunes the
+    /// map to live-queue tasks so a removed task's entry doesn't accumulate.
+    func testTryFlush_prunesAttemptedEntriesForTasksWithoutQueuedMessages() async {
+        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+        controller.resumeRunForTesting = { _ in }
+
+        // Task 1: a .failed attempt records an entry in the map.
+        sut.appendQueuedMessage(msg("a"), for: 1)
+        store.engineState[1] = .failed
+        controller.tryFlushQueuedMessages()
+        XCTAssertTrue(controller._testHasFailedResumeAttempted(taskID: 1),
+                      "An attempt for task 1 records its message ID")
+
+        // Task 1's queue empties (deleted / consumed); task 2 gets an unrelated message.
+        sut.clearQueuedMessages(for: 1)
+        sut.appendQueuedMessage(msg("b"), for: 2)
+        store.engineState[2] = .failed
+        controller.tryFlushQueuedMessages()
+
+        XCTAssertFalse(controller._testHasFailedResumeAttempted(taskID: 1),
+                       "The stale entry for the now-empty-queue task 1 is pruned")
     }
 
     func testTryFlush_preservesAllQueuedOnRunning() async {

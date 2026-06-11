@@ -20,7 +20,10 @@ extension LLMExecutionService {
         networkLogger: NetworkLogger? = nil
     ) async -> String {
         guard let delegate else { return "Unable to process change request — delegate not available." }
-        guard let tid = taskIDForStep(stepID) else { return "Unable to process change request — no task context." }
+        let tid = task.id
+        guard isExecutionLive(stepID: stepID, taskID: tid) else {
+            return "Unable to process change request — no task context."
+        }
 
         let team = resolveTeam(task: task)
         let teamSettings = team?.settings ?? .default
@@ -204,6 +207,13 @@ extension LLMExecutionService {
             task.runs[runIndex].steps[stepIndex].messages.append(
                 StepMessage(role: .supervisor, content: amendmentContext)
             )
+            // Raw revision payload — `resetStepForRevision` prefers this over re-deriving
+            // from the last supervisor message, so the reset doesn't depend on the
+            // amendment block still being the last `.supervisor` entry in `step.messages`
+            // (`injectSupervisorCommentIfNeeded` appends "Supervisor Comment:" entries
+            // there). The "Supervisor Feedback: " attribution is applied once at send
+            // time, same as the requestRevision path.
+            task.runs[runIndex].steps[stepIndex].revisionComment = amendmentContext
             task.runs[runIndex].steps[stepIndex].updatedAt = MonotonicClock.shared.now()
 
             // Set role to revisionRequested — engine picks this up via startRevisionRoles()
@@ -261,6 +271,8 @@ extension LLMExecutionService {
                     task.runs[runIndex].steps[stepIndex].messages.append(
                         StepMessage(role: .supervisor, content: contextMsg)
                     )
+                    // Raw revision payload — same invariant as executeAmendment above.
+                    task.runs[runIndex].steps[stepIndex].revisionComment = contextMsg
                     task.runs[runIndex].roleStatuses[roleID] = .revisionRequested
                     task.runs[runIndex].steps[stepIndex].updatedAt = MonotonicClock.shared.now()
                     amendedRoles.append(roleID)

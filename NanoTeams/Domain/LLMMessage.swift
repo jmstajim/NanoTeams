@@ -41,6 +41,31 @@ nonisolated enum MessageSourceContext: String, Codable {
     /// source of truth so the write side (`NTMSOrchestrator.consumeQueuedSupervisorMessage`)
     /// and the read side (`LLMMessage.displayContent`) can't drift on rename.
     static let supervisorMessagePrefix = "Supervisor:\n"
+
+    /// Attribution marker for revision/correction feedback turns. `step.revisionComment`
+    /// holds the RAW text; this prefix is attached exactly once where the feedback
+    /// reaches the LLM — at the stateful send site (`LLMExecutionService+StepLifecycle`)
+    /// or baked into the single `StepMessage` copy that the stateless rebuild relays
+    /// (`PromptBuilder` reads `step.messages`). Single source of truth across the
+    /// write sites (`requestRevision`, `correctRole`) and the send site.
+    static let supervisorFeedbackPrefix = "Supervisor Feedback: "
+
+    /// Normalizes incoming feedback to its RAW form: trims whitespace and strips a
+    /// leading ``supervisorFeedbackPrefix`` if the author already included one — the
+    /// Autovisor's LLM sees the prefixed pattern in conversation history and can emit
+    /// it inside the `comment` argument; legacy `revisionComment` values persisted by
+    /// pre-fix builds carry it too. Idempotent, so every prefix-attaching site can
+    /// apply it unconditionally without double-stripping user text.
+    static func rawFeedback(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Match the marker without its trailing space: the outer trim can eat that
+        // space when the prefix arrives bare ("Supervisor Feedback:"), and model
+        // emissions sometimes omit it ("Supervisor Feedback:text").
+        let bareMarker = supervisorFeedbackPrefix.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix(bareMarker) else { return trimmed }
+        return String(trimmed.dropFirst(bareMarker.count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }
 
 // MARK: - LLM Role

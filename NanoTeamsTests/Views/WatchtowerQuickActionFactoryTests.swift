@@ -2,9 +2,13 @@ import XCTest
 @testable import NanoTeams
 
 /// Tests `WatchtowerNotificationType.QuickAction.makeActions(...)` — the factory
-/// driving the Watchtower action bar. Five conditional branches gate which
-/// buttons render; existing `WatchtowerNotificationTypeTests` only cover the
-/// type's display properties.
+/// driving the Watchtower action bar. Conditional branches gate which buttons
+/// render; existing `WatchtowerNotificationTypeTests` only cover the type's
+/// display properties.
+///
+/// Task-action tests pass `hasWorkFolder: false` so the Autovisor action
+/// stays out of the array and their `id` assertions stay focused on the branch
+/// under test. The Autovisor action has its own section below.
 @MainActor
 final class WatchtowerQuickActionFactoryTests: XCTestCase {
 
@@ -15,7 +19,11 @@ final class WatchtowerQuickActionFactoryTests: XCTestCase {
             activeTask: nil,
             engineStatus: nil,
             requiresFinalReview: false,
+            autovisorEnabled: false,
+            autovisorRunning: false,
+            hasWorkFolder: false,
             onNewTask: {},
+            onToggleAutovisor: {},
             onNavigateToTask: { _ in },
             onPauseRun: { _ in },
             onShowFinalReview: {},
@@ -30,7 +38,11 @@ final class WatchtowerQuickActionFactoryTests: XCTestCase {
             activeTask: task,
             engineStatus: nil,
             requiresFinalReview: false,
+            autovisorEnabled: false,
+            autovisorRunning: false,
+            hasWorkFolder: false,
             onNewTask: {},
+            onToggleAutovisor: {},
             onNavigateToTask: { _ in },
             onPauseRun: { _ in },
             onShowFinalReview: {},
@@ -45,7 +57,11 @@ final class WatchtowerQuickActionFactoryTests: XCTestCase {
             activeTask: makeRunningTask(),
             engineStatus: .running,
             requiresFinalReview: false,
+            autovisorEnabled: false,
+            autovisorRunning: false,
+            hasWorkFolder: false,
             onNewTask: {},
+            onToggleAutovisor: {},
             onNavigateToTask: { _ in },
             onPauseRun: { _ in },
             onShowFinalReview: {},
@@ -59,7 +75,11 @@ final class WatchtowerQuickActionFactoryTests: XCTestCase {
             activeTask: makeRunningTask(),
             engineStatus: .needsAcceptance,
             requiresFinalReview: false,
+            autovisorEnabled: false,
+            autovisorRunning: false,
+            hasWorkFolder: false,
             onNewTask: {},
+            onToggleAutovisor: {},
             onNavigateToTask: { _ in },
             onPauseRun: { _ in },
             onShowFinalReview: {},
@@ -73,7 +93,11 @@ final class WatchtowerQuickActionFactoryTests: XCTestCase {
             activeTask: makeRunningTask(),
             engineStatus: .done,
             requiresFinalReview: false,
+            autovisorEnabled: false,
+            autovisorRunning: false,
+            hasWorkFolder: false,
             onNewTask: {},
+            onToggleAutovisor: {},
             onNavigateToTask: { _ in },
             onPauseRun: { _ in },
             onShowFinalReview: {},
@@ -87,7 +111,11 @@ final class WatchtowerQuickActionFactoryTests: XCTestCase {
             activeTask: makeRunningTask(),
             engineStatus: .failed,
             requiresFinalReview: false,
+            autovisorEnabled: false,
+            autovisorRunning: false,
+            hasWorkFolder: false,
             onNewTask: {},
+            onToggleAutovisor: {},
             onNavigateToTask: { _ in },
             onPauseRun: { _ in },
             onShowFinalReview: {},
@@ -103,7 +131,11 @@ final class WatchtowerQuickActionFactoryTests: XCTestCase {
             activeTask: task,
             engineStatus: .done,
             requiresFinalReview: true,
+            autovisorEnabled: false,
+            autovisorRunning: false,
+            hasWorkFolder: false,
             onNewTask: {},
+            onToggleAutovisor: {},
             onNavigateToTask: { _ in },
             onPauseRun: { _ in },
             onShowFinalReview: {},
@@ -123,7 +155,11 @@ final class WatchtowerQuickActionFactoryTests: XCTestCase {
             activeTask: makeRunningTask(),
             engineStatus: .running,
             requiresFinalReview: false,
+            autovisorEnabled: false,
+            autovisorRunning: false,
+            hasWorkFolder: false,
             onNewTask: {},
+            onToggleAutovisor: {},
             onNavigateToTask: { _ in },
             onPauseRun: { _ in },
             onShowFinalReview: {},
@@ -134,6 +170,142 @@ final class WatchtowerQuickActionFactoryTests: XCTestCase {
         XCTAssertFalse(ids.contains("acceptTask"))
     }
 
+    // MARK: - Autovisor action
+
+    func testMakeActions_hasWorkFolder_insertsAutovisorSecond() {
+        // No active task → only New Task would show; FM must still be second.
+        let actions = QuickAction.makeActions(
+            activeTask: nil,
+            engineStatus: nil,
+            requiresFinalReview: false,
+            autovisorEnabled: false,
+            autovisorRunning: false,
+            hasWorkFolder: true,
+            onNewTask: {},
+            onToggleAutovisor: {},
+            onNavigateToTask: { _ in },
+            onPauseRun: { _ in },
+            onShowFinalReview: {},
+            onCloseTask: { _ in }
+        )
+        XCTAssertEqual(actions.map(\.id), ["newTask", "autovisor"])
+    }
+
+    func testMakeActions_hasWorkFolder_autovisorStaysSecondWithActiveTask() {
+        let actions = QuickAction.makeActions(
+            activeTask: makeRunningTask(),
+            engineStatus: .running,
+            requiresFinalReview: false,
+            autovisorEnabled: false,
+            autovisorRunning: false,
+            hasWorkFolder: true,
+            onNewTask: {},
+            onToggleAutovisor: {},
+            onNavigateToTask: { _ in },
+            onPauseRun: { _ in },
+            onShowFinalReview: {},
+            onCloseTask: { _ in }
+        )
+        let ids = actions.map(\.id)
+        XCTAssertEqual(ids.firstIndex(of: "autovisor"), 1,
+                       "Autovisor must be the second action, before task actions")
+        XCTAssertEqual(Array(ids.prefix(2)), ["newTask", "autovisor"])
+    }
+
+    func testMakeActions_noWorkFolder_omitsAutovisor() {
+        let actions = QuickAction.makeActions(
+            activeTask: makeRunningTask(),
+            engineStatus: .running,
+            requiresFinalReview: false,
+            autovisorEnabled: true,
+            autovisorRunning: true,
+            hasWorkFolder: false,
+            onNewTask: {},
+            onToggleAutovisor: {},
+            onNavigateToTask: { _ in },
+            onPauseRun: { _ in },
+            onShowFinalReview: {},
+            onCloseTask: { _ in }
+        )
+        XCTAssertFalse(actions.map(\.id).contains("autovisor"))
+    }
+
+    func testMakeActions_autovisorSubtitle_reflectsState() {
+        func subtitle(enabled: Bool, running: Bool) -> String? {
+            QuickAction.makeActions(
+                activeTask: nil,
+                engineStatus: nil,
+                requiresFinalReview: false,
+                autovisorEnabled: enabled,
+                autovisorRunning: running,
+                hasWorkFolder: true,
+                onNewTask: {},
+                onToggleAutovisor: {},
+                onNavigateToTask: { _ in },
+                onPauseRun: { _ in },
+                onShowFinalReview: {},
+                onCloseTask: { _ in }
+            ).first { $0.id == "autovisor" }?.subtitle
+        }
+        XCTAssertEqual(subtitle(enabled: false, running: false), "Off")
+        XCTAssertEqual(subtitle(enabled: true, running: false), "On")
+        XCTAssertEqual(subtitle(enabled: true, running: true), "Reviewing…")
+        // Inconsistent-but-reachable: `running` is derived from a separate snapshot
+        // read than `enabled` and can momentarily disagree during a toggle. The
+        // factory must report "Off" (running is only consulted when enabled), never
+        // "Reviewing…" on a disabled manager — pin it so a future ternary flatten
+        // can't silently regress.
+        XCTAssertEqual(subtitle(enabled: false, running: true), "Off")
+    }
+
+    func testMakeActions_autovisorAction_invokesToggle() {
+        var fired = false
+        let actions = QuickAction.makeActions(
+            activeTask: nil,
+            engineStatus: nil,
+            requiresFinalReview: false,
+            autovisorEnabled: false,
+            autovisorRunning: false,
+            hasWorkFolder: true,
+            onNewTask: {},
+            onToggleAutovisor: { fired = true },
+            onNavigateToTask: { _ in },
+            onPauseRun: { _ in },
+            onShowFinalReview: {},
+            onCloseTask: { _ in }
+        )
+        actions.first { $0.id == "autovisor" }?.action()
+        XCTAssertTrue(fired)
+    }
+
+    func testMakeActions_autovisor_presentationContract() {
+        // Pins the user-facing identity + the deliberate on/off color semantics
+        // (muted when off, accented when on — same as the old power toggle).
+        func autovisorAction(enabled: Bool) -> QuickAction? {
+            QuickAction.makeActions(
+                activeTask: nil,
+                engineStatus: nil,
+                requiresFinalReview: false,
+                autovisorEnabled: enabled,
+                autovisorRunning: false,
+                hasWorkFolder: true,
+                onNewTask: {},
+                onToggleAutovisor: {},
+                onNavigateToTask: { _ in },
+                onPauseRun: { _ in },
+                onShowFinalReview: {},
+                onCloseTask: { _ in }
+            ).first { $0.id == "autovisor" }
+        }
+        let off = autovisorAction(enabled: false)
+        XCTAssertEqual(off?.title, "Autovisor")
+        XCTAssertEqual(off?.icon, "power.circle.fill")
+        // Compared as a not-equal pair so the test pins the state→color mapping
+        // without coupling to a specific design-token Color value.
+        XCTAssertNotEqual(off?.color, autovisorAction(enabled: true)?.color,
+                          "icon color must differ between off and on state")
+    }
+
     // MARK: - Action invocation routing
 
     func testMakeActions_newTaskAction_invokesOnNewTask() {
@@ -142,7 +314,11 @@ final class WatchtowerQuickActionFactoryTests: XCTestCase {
             activeTask: nil,
             engineStatus: nil,
             requiresFinalReview: false,
+            autovisorEnabled: false,
+            autovisorRunning: false,
+            hasWorkFolder: false,
             onNewTask: { fired = true },
+            onToggleAutovisor: {},
             onNavigateToTask: { _ in },
             onPauseRun: { _ in },
             onShowFinalReview: {},
@@ -159,7 +335,11 @@ final class WatchtowerQuickActionFactoryTests: XCTestCase {
             activeTask: task,
             engineStatus: nil,
             requiresFinalReview: false,
+            autovisorEnabled: false,
+            autovisorRunning: false,
+            hasWorkFolder: false,
             onNewTask: {},
+            onToggleAutovisor: {},
             onNavigateToTask: { navigatedTo = $0 },
             onPauseRun: { _ in },
             onShowFinalReview: {},
@@ -176,7 +356,11 @@ final class WatchtowerQuickActionFactoryTests: XCTestCase {
             activeTask: task,
             engineStatus: .running,
             requiresFinalReview: false,
+            autovisorEnabled: false,
+            autovisorRunning: false,
+            hasWorkFolder: false,
             onNewTask: {},
+            onToggleAutovisor: {},
             onNavigateToTask: { _ in },
             onPauseRun: { paused = $0 },
             onShowFinalReview: {},
@@ -194,7 +378,11 @@ final class WatchtowerQuickActionFactoryTests: XCTestCase {
             activeTask: task,
             engineStatus: .done,
             requiresFinalReview: true,
+            autovisorEnabled: false,
+            autovisorRunning: false,
+            hasWorkFolder: false,
             onNewTask: {},
+            onToggleAutovisor: {},
             onNavigateToTask: { navigatedTo = $0 },
             onPauseRun: { _ in },
             onShowFinalReview: { reviewShown = true },
@@ -213,7 +401,11 @@ final class WatchtowerQuickActionFactoryTests: XCTestCase {
             activeTask: task,
             engineStatus: .done,
             requiresFinalReview: false,
+            autovisorEnabled: false,
+            autovisorRunning: false,
+            hasWorkFolder: false,
             onNewTask: {},
+            onToggleAutovisor: {},
             onNavigateToTask: { navigatedTo = $0 },
             onPauseRun: { _ in },
             onShowFinalReview: { reviewShown = true },
@@ -231,7 +423,11 @@ final class WatchtowerQuickActionFactoryTests: XCTestCase {
             activeTask: task,
             engineStatus: .done,
             requiresFinalReview: true,
+            autovisorEnabled: false,
+            autovisorRunning: false,
+            hasWorkFolder: false,
             onNewTask: {},
+            onToggleAutovisor: {},
             onNavigateToTask: { _ in },
             onPauseRun: { _ in },
             onShowFinalReview: {},

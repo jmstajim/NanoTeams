@@ -20,8 +20,10 @@ struct SidebarView: View {
     // internal — accessed from SidebarWorkFolderCards.swift.
     @State var isPresentingFolderPicker = false
     @State private var showCloseProjectConfirmation = false
+    @State private var showDeleteManagerConfirmation = false
     @State var recentProjects: [URL] = []
     @State private var isWatchtowerHovered = false
+    @State private var isAutovisorHovered = false
     @State private var isSearchButtonHovered = false
     @FocusState private var isSearchFieldFocused: Bool
 
@@ -48,6 +50,13 @@ struct SidebarView: View {
                                 .padding(.horizontal, Spacing.m)
                                 .padding(.bottom, Spacing.xs)
                         }
+                    }
+
+                    // Autovisor — top-level nav, shown only while enabled
+                    if let info = autovisorInfo {
+                        autovisorButton(info)
+                            .padding(.horizontal, Spacing.m)
+                            .padding(.bottom, Spacing.xs)
                     }
 
                     // Tasks section header
@@ -101,6 +110,22 @@ struct SidebarView: View {
             } message: {
                 Text("Tasks are currently running. Closing the work folder will stop all active tasks.")
             }
+            .confirmationDialog(
+                "Delete Autovisor?",
+                isPresented: $showDeleteManagerConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive) {
+                    Task {
+                        let wasAutovisorSelected = (selectedItem == .autovisor)
+                        await store.deleteAutovisor()
+                        if wasAutovisorSelected { selectedItem = .watchtower }
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This removes the Autovisor and its history, and turns the feature off. You can re-enable it later in Settings → Autovisor.")
+            }
             .fileImporter(
                 isPresented: $isPresentingFolderPicker,
                 allowedContentTypes: [.folder],
@@ -149,6 +174,24 @@ struct SidebarView: View {
 
     private var filteredTasks: [SidebarTaskItem] {
         taskState.filteredTasks(from: allTasks)
+    }
+
+    /// Live state for the Autovisor nav entry. `nil` (entry hidden) unless the
+    /// manager has been created (`autovisorTaskID != nil`) AND is enabled — it
+    /// disappears when turned off (re-enable from the Watchtower Quick Action).
+    /// `needsInput` means GENUINELY waiting on the human (escalation question) —
+    /// the deliberate `wait_for_events` idle park shares the same engine state but
+    /// is excluded so the icon doesn't pulse while the manager is just idle.
+    private struct ManagerRowInfo { let running: Bool; let needsInput: Bool }
+
+    private var autovisorInfo: ManagerRowInfo? {
+        guard let id = store.autovisorTaskID,
+              store.workFolder?.settings.autovisorEnabled == true else { return nil }
+        let state = engineState.taskEngineStates[id]
+        return ManagerRowInfo(
+            running: state == .running,
+            needsInput: state == .needsSupervisorInput && !store.autovisorIsIdleParked
+        )
     }
 
     // MARK: - Watchtower Button
@@ -373,6 +416,84 @@ struct SidebarView: View {
             .padding(.horizontal, Spacing.m)
         }
         .background(Colors.surfaceBackground)
+    }
+
+    /// Top-level, Watchtower-style selectable nav entry for the Autovisor,
+    /// shown under the work-folder card while the manager is enabled. Tapping routes
+    /// to `.autovisor` (its chat); the ⋯ menu offers Open Chat, Disable,
+    /// Delete, and Autovisor Settings (mirroring the work-folder card's menu affordance).
+    @ViewBuilder
+    private func autovisorButton(_ info: ManagerRowInfo) -> some View {
+        let isSelected = selectedItem == .autovisor
+        HStack(spacing: Spacing.xs) {
+            Button {
+                selectedItem = .autovisor
+            } label: {
+                HStack(spacing: Spacing.s) {
+                    ZStack {
+                        RoundedRectangle.squircle(CornerRadius.small)
+                            .fill(isSelected ? Colors.accent : Colors.surfaceElevated)
+                            .frame(width: 30, height: 30)
+                        Image(systemName: "folder.badge.person.crop")
+                            .font(Typography.caption)
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(
+                                isSelected ? AnyShapeStyle(Colors.surfaceBackground) : AnyShapeStyle(Colors.purple),
+                                isSelected ? AnyShapeStyle(Colors.surfaceBackground) : AnyShapeStyle(.secondary)
+                            )
+                            .symbolEffect(.pulse, options: .repeating,
+                                          isActive: !isSelected && (info.running || info.needsInput))
+                    }
+                    Text("Autovisor")
+                        .font(Typography.subheadlineSemibold)
+                        .foregroundStyle(isSelected ? .primary : .secondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Open the Autovisor chat")
+
+            Menu {
+                Button { selectedItem = .autovisor } label: {
+                    Label("Open Chat", systemImage: "arrow.right.circle")
+                }
+                Divider()
+                Button {
+                    if selectedItem == .autovisor { selectedItem = .watchtower }
+                    Task { await store.setAutovisorEnabled(false) }
+                } label: {
+                    Label("Disable", systemImage: "pause.circle")
+                }
+                Divider()
+                Button(role: .destructive) {
+                    showDeleteManagerConfirmation = true
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+                Divider()
+                Button {
+                    selectedSettingsTab = .autovisor
+                    openWindow(id: "settings")
+                } label: {
+                    Label("Autovisor Settings", systemImage: "gearshape")
+                }
+            } label: {
+                SidebarIconButton(icon: "ellipsis")
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+        }
+        .padding(.leading, Spacing.m)
+        .padding(.trailing, Spacing.xs)
+        .padding(.vertical, Spacing.s)
+        .background(
+            RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
+                .fill(isAutovisorHovered ? Colors.surfaceHover : Colors.surfaceCard)
+        )
+        .onHover { isAutovisorHovered = $0 }
     }
 
     @ViewBuilder

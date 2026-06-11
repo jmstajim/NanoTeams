@@ -26,21 +26,25 @@ struct WatchtowerAppUpdateCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.standard) {
-            HStack(spacing: Spacing.s) {
+            HStack(alignment: .top, spacing: Spacing.s) {
                 Image(systemName: "sparkles")
                     .font(.title3)
                     .foregroundStyle(Colors.accent)
                     .symbolEffect(.pulse)
+                    .padding(.top, 1)
 
                 VStack(alignment: .leading, spacing: Spacing.xxs) {
-                    Text("Update available")
+                    Text("NanoTeams \(release.tag) is ready")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(Colors.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
 
-                    Text(release.tag)
-                        .font(.caption.monospaced().weight(.medium))
-                        .foregroundStyle(Colors.accent)
+                    Text("Release notes and downloads are on GitHub")
+                        .font(Typography.caption)
+                        .foregroundStyle(Colors.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
+                .layoutPriority(1)
 
                 Spacer()
 
@@ -48,9 +52,9 @@ struct WatchtowerAppUpdateCard: View {
                     onUpdate()
                 } label: {
                     HStack(spacing: Spacing.xs) {
-                        Image(systemName: "arrow.down.circle.fill")
+                        Image(systemName: "arrow.up.right.circle.fill")
                             .font(.caption)
-                        Text("Update")
+                        Text("Open on GitHub")
                             .font(Typography.captionSemibold)
                     }
                     .foregroundStyle(Colors.textOnAccent)
@@ -58,19 +62,20 @@ struct WatchtowerAppUpdateCard: View {
                     .padding(.vertical, Spacing.xs)
                     .background(Capsule(style: .continuous).fill(Colors.accent))
                     .scaleEffect(isUpdateHovered ? 1.03 : 1.0)
+                    .fixedSize(horizontal: true, vertical: false)
                 }
                 .buttonStyle(.plain)
                 .trackHover($isUpdateHovered)
                 .animation(Animations.quick, value: isUpdateHovered)
 
-                SkipButton(onSkip: onSkip)
             }
+            .padding(.trailing, Spacing.standard)
 
             if !trimmedBodyLines.isEmpty {
-                Text(trimmedBodyLines.prefix(2).joined(separator: "\n"))
+                Text(trimmedBodyLines.prefix(7).joined(separator: "\n"))
                     .font(Typography.caption)
                     .foregroundStyle(Colors.textSecondary)
-                    .lineLimit(2)
+                    .lineLimit(7)
                     .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -80,13 +85,16 @@ struct WatchtowerAppUpdateCard: View {
                 .frame(height: 1)
                 .padding(.horizontal, Spacing.xs)
 
-            StarOnGitHubBanner(size: .compact)
+            StarOnGitHubBanner()
         }
         .padding(Spacing.standard)
         .background(
             RoundedRectangle.squircle(CornerRadius.medium)
                 .fill(Colors.accentTint)
         )
+        .overlay(alignment: .topTrailing) {
+            SkipButton(onSkip: onSkip)
+        }
     }
 }
 
@@ -101,17 +109,15 @@ private struct SkipButton: View {
             onSkip()
         } label: {
             Image(systemName: "xmark")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(isHovered ? Colors.textPrimary : Colors.textTertiary)
-                .frame(width: 24, height: 24)
-                .background(
-                    Circle().fill(isHovered ? Colors.surfaceHover : Color.clear)
-                )
-                .contentShape(Circle())
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(isHovered ? Colors.textPrimary : Colors.textSecondary)
+                .frame(width: 18, height: 18)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
-        .accessibilityLabel("Skip this update")
+        .padding(Spacing.xs)
+        .accessibilityLabel("Skip this version")
         .help("Skip this version")
         .trackHover($isHovered)
         .animation(Animations.quick, value: isHovered)
@@ -134,7 +140,7 @@ private struct SkipButton: View {
         )
     }
     .padding()
-    .frame(width: 600)
+    .frame(width: 400)
     .background(Colors.surfacePrimary)
     .environment(store)
 }

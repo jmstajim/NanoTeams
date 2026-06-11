@@ -14,12 +14,16 @@ extension LLMExecutionService {
         runIndex: Int,
         stepIndex: Int
     ) {
-        executionStates[stepID] = StepExecutionState(taskID: taskID)
+        let stepKey = TaskStepKey(taskID: taskID, stepID: stepID)
+        // Cancel any still-registered execution for this key BEFORE replacing the
+        // entry. The pre-fix order replaced first and then cancelled — which
+        // targeted the FRESH state's nil runningTask, silently leaking the
+        // previous execution on a same-key re-entry.
+        executionStates[stepKey]?.runningTask?.cancel()
+        executionStates[stepKey] = StepExecutionState()
         guard let delegate else { return }
         guard let workFolderRoot = delegate.workFolderURL else { return }
         guard task.runs[runIndex].steps[stepIndex].status == .running else { return }
-
-        executionStates[stepID]?.runningTask?.cancel()
 
         let isDefaultStorage = workFolderRoot == NTMSOrchestrator.defaultStorageURL
         let globalConfig = delegate.globalLLMConfig
@@ -92,6 +96,7 @@ extension LLMExecutionService {
                     effectiveConfig: effectiveConfig,
                     globalConfig: globalConfig,
                     stepID: stepID,
+                    taskID: taskID,
                     service: self
                 )
             } else {
@@ -105,7 +110,7 @@ extension LLMExecutionService {
                 var safetyIterations = 0
                 var conversation: [ChatMessage]
                 let tracker = ToolCallTracker()
-                let memoryStore = MemoryTagStore()
+                let memoryStore = MemoryTagStore(workFolderRoot: workFolderRoot)
                 var llmErrorCount = 0
                 var session: LLMSession?
                 var needsSessionFallback = false
@@ -130,22 +135,33 @@ extension LLMExecutionService {
                     // Revision continuation — send only the Supervisor's feedback via stateful session.
                     // The LLM server has the full prior conversation in its response chain.
                     session = LLMSession(responseID: sid)
-                    conversation = [ChatMessage(role: .user, content: "Supervisor Feedback: \(feedback)")]
+                    // `revisionComment` is raw by contract, but tasks persisted by older
+                    // builds stored the already-prefixed message content in it —
+                    // `rawFeedback` strips before prefixing so legacy data can't resurrect
+                    // the doubled "Supervisor Feedback: Supervisor Feedback:" output.
+                    let outbound = MessageSourceContext.supervisorFeedbackPrefix
+                        + MessageSourceContext.rawFeedback(feedback)
+                    conversation = [ChatMessage(role: .user, content: outbound)]
                     needsSessionFallback = true
 
-                    // Persist to llmConversation for activity feed display
+                    // Persist to llmConversation for activity feed display.
+                    // `.changeRequest` labels the bubble "(change request)" — without a
+                    // sourceContext, `sourceContextDisplayLabel` falls back to the generic
+                    // "(consultation)" for any message with a sourceRole.
                     await self.appendLLMMessage(
-                        stepID: stepID, role: .user,
-                        content: "Supervisor Feedback: \(feedback)",
-                        sourceRole: .supervisor)
+                        stepID: stepID, taskID: taskID, role: .user,
+                        content: outbound,
+                        sourceRole: .supervisor,
+                        sourceContext: .changeRequest)
                 } else {
                     conversation = fullConversation
                 }
 
                 // Clear saved session ID now that we've used it (prevents stale session on retry after failure)
                 if hasSupervisorContinuation || hasRevisionContinuation,
-                   let delegate = self.delegate, let tid = self.taskIDForStep(stepID) {
-                    await delegate.mutateTask(taskID: tid) { task in
+                   let delegate = self.delegate,
+                   self.isExecutionLive(stepID: stepID, taskID: taskID) {
+                    await delegate.mutateTask(taskID: taskID) { task in
                         guard let runIndex = task.runs.indices.last,
                               let stepIndex = task.runs[runIndex].steps.firstIndex(where: { $0.id == stepID })
                         else { return }
@@ -153,15 +169,36 @@ extension LLMExecutionService {
                     }
                 }
 
-                let iterationLimit = LLMConstants.maxToolIterations
-                let effectiveLimit = iterationLimit == 0 ? Int.max : iterationLimit
+                // No per-role iteration ceiling: the global maxToolIterations is 0
+                // (unbounded) for every step, the Autovisor manager included.
+                let effectiveLimit = LLMConstants.maxToolIterations == 0
+                    ? Int.max : LLMConstants.maxToolIterations
                 while safetyIterations < effectiveLimit {
                     if Task.isCancelled { throw CancellationError() }
-                    if executionStates[stepID]?.finishRequested == true {
-                        executionStates[stepID]?.finishRequested = false
-                        await self.persistSessionID(stepID: stepID, sessionID: session?.responseID)
-                        await self.persistTokenUsage(stepID: stepID, usage: cumulativeUsage)
-                        await self.completeStepNeedsAcceptance(stepID: stepID)
+                    if executionStates[stepKey]?.finishRequested == true {
+                        executionStates[stepKey]?.finishRequested = false
+                        await self.persistSessionID(stepID: stepID, taskID: taskID, sessionID: session?.responseID)
+                        await self.persistTokenUsage(stepID: stepID, taskID: taskID, usage: cumulativeUsage)
+                        await self.finishStepGraceful(stepID: stepID, taskID: taskID)
+                        return
+                    }
+                    // Autovisor idle park (`wait_for_events`): end the pass by parking
+                    // at `.needsSupervisorInput` with the session preserved, so a human
+                    // message continues the SAME conversation via stateful continuation.
+                    // Deliberately bypasses the `.supervisorQuestion` machinery — the
+                    // manager team is `.autonomous`, and the in-loop auto-answer would
+                    // answer the park itself (same direct-park pattern as the
+                    // `StepFlowControl` escalation caps). Chain stays valid: the
+                    // continuation sends the Supervisor's answer as a single
+                    // synthesized `ask_supervisor`-shaped tool result (this file's
+                    // `hasSupervisorContinuation` branch), which resolves the pending
+                    // tool_call on the server chain — the proven `ask_supervisor`
+                    // shape. The `wait_for_events` envelope in `llmConversation` only
+                    // ships on the stateless (`needsSessionFallback`) rebuild.
+                    if executionStates[stepKey]?.parkForEventsRequested == true {
+                        executionStates[stepKey]?.parkForEventsRequested = false
+                        await self.persistTokenUsage(stepID: stepID, taskID: taskID, usage: cumulativeUsage)
+                        await self.parkStepForEvents(stepID: stepID, taskID: taskID, sessionID: session?.responseID)
                         return
                     }
                     safetyIterations += 1
@@ -205,7 +242,7 @@ extension LLMExecutionService {
                         let msg = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                         let limitLabel = maxRetries > 0 ? "/\(maxRetries)" : ""
                         let retryNote = "LLM server error (attempt \(llmErrorCount)\(limitLabel)): \(msg). Retrying in \(LLMConstants.llmRetryDelaySeconds)s…"
-                        await appendLLMMessage(stepID: stepID, role: .assistant, content: retryNote)
+                        await appendLLMMessage(stepID: stepID, taskID: taskID, role: .assistant, content: retryNote)
                         ConversationRepairService.repairConversationIfNeeded(&conversation)
                         ConversationRepairService.collapseRedundantAssistantTextRuns(&conversation)
                         try await Task.sleep(for: .seconds(LLMConstants.llmRetryDelaySeconds))
@@ -216,14 +253,14 @@ extension LLMExecutionService {
 
                     switch stop {
                     case .completed:
-                        await self.persistSessionID(stepID: stepID, sessionID: session?.responseID)
-                        await self.persistTokenUsage(stepID: stepID, usage: cumulativeUsage)
-                        await self.completeStepSuccess(stepID: stepID)
+                        await self.persistSessionID(stepID: stepID, taskID: taskID, sessionID: session?.responseID)
+                        await self.persistTokenUsage(stepID: stepID, taskID: taskID, usage: cumulativeUsage)
+                        await self.completeStepSuccess(stepID: stepID, taskID: taskID)
                         return
                     case .needsSupervisorInput(let question):
-                        await self.persistTokenUsage(stepID: stepID, usage: cumulativeUsage)
+                        await self.persistTokenUsage(stepID: stepID, taskID: taskID, usage: cumulativeUsage)
                         let persisted = await self.setNeedsSupervisorInput(
-                            stepID: stepID, question: question,
+                            stepID: stepID, taskID: taskID, question: question,
                             sessionID: session?.responseID)
                         // Defense-in-depth: the inner caller (handleNoToolCalls cap branches)
                         // already handles persistence failures; this outer call is the last
@@ -233,38 +270,39 @@ extension LLMExecutionService {
                         if !persisted {
                             await self.completeStepFailure(
                                 stepID: stepID,
+                                taskID: taskID,
                                 errorMessage: "Failed to persist Supervisor question; step aborted.")
                         }
                         return
                     case .continueLoop:
                         continue
                     case .needsAcceptance:
-                        await self.persistSessionID(stepID: stepID, sessionID: session?.responseID)
-                        await self.persistTokenUsage(stepID: stepID, usage: cumulativeUsage)
-                        await self.completeStepNeedsAcceptance(stepID: stepID)
+                        await self.persistSessionID(stepID: stepID, taskID: taskID, sessionID: session?.responseID)
+                        await self.persistTokenUsage(stepID: stepID, taskID: taskID, usage: cumulativeUsage)
+                        await self.completeStepNeedsAcceptance(stepID: stepID, taskID: taskID)
                         return
                     case .toolFailure(let message):
-                        await self.persistSessionID(stepID: stepID, sessionID: session?.responseID)
-                        await self.persistTokenUsage(stepID: stepID, usage: cumulativeUsage)
-                        await self.completeStepFailure(stepID: stepID, errorMessage: message)
+                        await self.persistSessionID(stepID: stepID, taskID: taskID, sessionID: session?.responseID)
+                        await self.persistTokenUsage(stepID: stepID, taskID: taskID, usage: cumulativeUsage)
+                        await self.completeStepFailure(stepID: stepID, taskID: taskID, errorMessage: message)
                         return
                     }
                 }
 
-                await self.persistSessionID(stepID: stepID, sessionID: session?.responseID)
-                await self.persistTokenUsage(stepID: stepID, usage: cumulativeUsage)
+                await self.persistSessionID(stepID: stepID, taskID: taskID, sessionID: session?.responseID)
+                await self.persistTokenUsage(stepID: stepID, taskID: taskID, usage: cumulativeUsage)
                 await self.completeStepWithWarning(
-                    stepID: stepID, warning: "Tool loop iteration limit reached.")
+                    stepID: stepID, taskID: taskID, warning: "Tool loop iteration limit reached.")
             } catch is CancellationError {
-                await self.persistTokenUsage(stepID: stepID, usage: cumulativeUsage)
-                delegate.clearStreamingPreview(stepID: stepID)
+                await self.persistTokenUsage(stepID: stepID, taskID: taskID, usage: cumulativeUsage)
+                delegate.clearStreamingPreview(stepID: stepID, taskID: taskID)
             } catch {
                 let message =
                     (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                await self.completeStepFailure(stepID: stepID, errorMessage: message)
+                await self.completeStepFailure(stepID: stepID, taskID: taskID, errorMessage: message)
             }
         }
 
-        executionStates[stepID]?.runningTask = taskHandle
+        executionStates[stepKey]?.runningTask = taskHandle
     }
 }

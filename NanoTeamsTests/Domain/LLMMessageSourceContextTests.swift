@@ -44,6 +44,112 @@ final class LLMMessageSourceContextTests: XCTestCase {
         XCTAssertEqual(MessageSourceContext.supervisorMessage.displayLabel, "message")
     }
 
+    // MARK: - sourceContextDisplayLabel (bubble label contract)
+
+    func testSourceContextDisplayLabel_changeRequest() {
+        // Revision-continuation feedback messages carry `.changeRequest` so the
+        // bubble renders "(change request)" — pinned because the appendLLMMessage
+        // parameter defaults to nil, and dropping it compiles silently.
+        let msg = LLMMessage(
+            role: .user,
+            content: "Supervisor Feedback: fix it",
+            sourceRole: .supervisor,
+            sourceContext: .changeRequest
+        )
+        XCTAssertEqual(msg.sourceContextDisplayLabel, "change request")
+    }
+
+    func testSourceContextDisplayLabel_sourceRoleWithoutContext_fallsBackToConsultation() {
+        // The trap branch: ANY message with a sourceRole but no sourceContext renders
+        // "(consultation)". This is why revision feedback must set `.changeRequest` —
+        // the original mislabel bug was exactly this fallback firing.
+        let msg = LLMMessage(
+            role: .user,
+            content: "Supervisor Feedback: fix it",
+            sourceRole: .supervisor,
+            sourceContext: nil
+        )
+        XCTAssertEqual(msg.sourceContextDisplayLabel, "consultation")
+    }
+
+    func testSourceContextDisplayLabel_plainUserMessage_isInput() {
+        let msg = LLMMessage(role: .user, content: "Hello")
+        XCTAssertEqual(msg.sourceContextDisplayLabel, "input")
+    }
+
+    func testSourceContextDisplayLabel_supervisorMessage_isNil() {
+        // `.supervisorMessage` bubbles already show the role name — no secondary label.
+        let msg = LLMMessage(
+            role: .user,
+            content: "Supervisor:\nhi",
+            sourceRole: .supervisor,
+            sourceContext: .supervisorMessage
+        )
+        XCTAssertNil(msg.sourceContextDisplayLabel)
+    }
+
+    func testSupervisorFeedbackPrefix_constantValue() {
+        // The wire/persistence contract: write sites (requestRevision, correctRole)
+        // and the send site (StepLifecycle revision continuation) share this constant.
+        XCTAssertEqual(MessageSourceContext.supervisorFeedbackPrefix, "Supervisor Feedback: ")
+    }
+
+    // MARK: - rawFeedback normalization corners
+
+    func testRawFeedback_plainText_trimsOnly() {
+        XCTAssertEqual(MessageSourceContext.rawFeedback("  fix the bug  \n"), "fix the bug")
+    }
+
+    func testRawFeedback_stripsLeadingPrefix() {
+        XCTAssertEqual(
+            MessageSourceContext.rawFeedback("Supervisor Feedback: fix the bug"),
+            "fix the bug")
+    }
+
+    func testRawFeedback_isIdempotent() {
+        let once = MessageSourceContext.rawFeedback("Supervisor Feedback: fix the bug")
+        XCTAssertEqual(MessageSourceContext.rawFeedback(once), once,
+                       "Every prefix-attaching site applies it unconditionally — must not double-strip")
+    }
+
+    func testRawFeedback_stripsOnlyONELeadingPrefix() {
+        // A doubled legacy value loses one layer per pass; the send site applies
+        // rawFeedback once, so a pre-fix "Supervisor Feedback: Supervisor Feedback: x"
+        // resolves to a single prefix on the wire — not zero.
+        XCTAssertEqual(
+            MessageSourceContext.rawFeedback("Supervisor Feedback: Supervisor Feedback: x"),
+            "Supervisor Feedback: x")
+    }
+
+    func testRawFeedback_prefixMidTextIsNotStripped() {
+        let text = "Please change the line that says 'Supervisor Feedback: ' in the template"
+        XCTAssertEqual(MessageSourceContext.rawFeedback(text), text,
+                       "Only a LEADING prefix is attribution — mid-text occurrences are user content")
+    }
+
+    func testRawFeedback_prefixWithLeadingWhitespace_isStillStripped() {
+        // Trim happens before the prefix check, so "  Supervisor Feedback: x" normalizes.
+        XCTAssertEqual(MessageSourceContext.rawFeedback("  Supervisor Feedback: x"), "x")
+    }
+
+    func testRawFeedback_prefixOnly_normalizesToEmpty() {
+        // "Supervisor Feedback: " alone carries no feedback — entry guards
+        // (requestRevision / correctRole) reject the empty result loudly.
+        XCTAssertEqual(MessageSourceContext.rawFeedback("Supervisor Feedback: "), "")
+        XCTAssertEqual(MessageSourceContext.rawFeedback("Supervisor Feedback:    \n"), "")
+    }
+
+    func testRawFeedback_caseSensitive_lowercaseNotStripped() {
+        // Exact-match contract: only the canonical constant is attribution.
+        let text = "supervisor feedback: lowercase is user content"
+        XCTAssertEqual(MessageSourceContext.rawFeedback(text), text)
+    }
+
+    func testRawFeedback_multilinePreserved() {
+        let multiline = "Supervisor Feedback: line 1\nline 2\n- bullet"
+        XCTAssertEqual(MessageSourceContext.rawFeedback(multiline), "line 1\nline 2\n- bullet")
+    }
+
     // MARK: - displayContent strip for .supervisorMessage
 
     func testDisplayContent_stripsMultilineSupervisorHeader() {

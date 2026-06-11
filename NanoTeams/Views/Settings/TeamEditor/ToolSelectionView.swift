@@ -1,5 +1,39 @@
 import SwiftUI
 
+// MARK: - Tool Selection Logic (pure, testable)
+
+/// Pure set logic behind `ToolSelectionView`'s editable-tools filtering and
+/// Select-All / Clear-All. Extracted so the locked-tool-preservation invariant
+/// (Clear-All must never drop the Autovisor manager's mandatory tools) is unit-tested
+/// without rendering a view. See `ToolSelectionLogicTests`.
+nonisolated enum ToolSelectionLogic {
+
+    /// Tools the user may toggle: all category tools minus `locked`, narrowed to
+    /// `restrictTo` when non-nil. Order preserved.
+    static func editableTools(allCategoryTools: [String], locked: [String], restrictTo: Set<String>?) -> [String] {
+        let lockedSet = Set(locked)
+        return allCategoryTools.filter { tool in
+            if lockedSet.contains(tool) { return false }
+            if let restrict = restrictTo { return restrict.contains(tool) }
+            return true
+        }
+    }
+
+    /// True when every editable tool is already selected (drives the Clear/Select label).
+    static func isAllEditableSelected(selected: Set<String>, editable: [String]) -> Bool {
+        Set(editable).isSubset(of: selected)
+    }
+
+    /// Toggle Select-All: if all editable are selected, clear them; otherwise select them.
+    /// Either way, tools NOT in `editable` (locked/mandatory) are left untouched.
+    static func toggledSelectAll(selected: Set<String>, editable: [String]) -> Set<String> {
+        let editableSet = Set(editable)
+        return editableSet.isSubset(of: selected)
+            ? selected.subtracting(editableSet)
+            : selected.union(editableSet)
+    }
+}
+
 // MARK: - Tool Selection View
 
 /// Tool selector with categories, bulk actions (Select All / Deselect All per category),
@@ -18,6 +52,13 @@ struct ToolSelectionView: View {
     /// "2 teams + generated" / "1 team" / "generated"). Rendered as the hint
     /// next to the auto-injected `delegate_to_team` row.
     let delegationHint: String
+    /// Mandatory tools that can't be removed — rendered in a locked "Required"
+    /// section instead of as toggles. Used by the Autovisor manager role.
+    var lockedTools: [String] = []
+    /// When non-nil, only these tools are offered as toggles; every other tool is
+    /// hidden (can't be added). Used by the Autovisor manager role. `lockedTools`
+    /// are shown separately and need not appear here.
+    var restrictToTools: Set<String>? = nil
     @State private var searchText: String = ""
     @State private var showDescriptions: Bool = false
 
@@ -29,20 +70,26 @@ struct ToolSelectionView: View {
         )
     }
 
-    private var allToolNames: [String] {
-        toolCategories.flatMap(\.tools)
+    /// Tools the user may toggle. When `restrictToTools` is set, only the allowed
+    /// subset is editable; everything else is hidden (`lockedTools` are excluded —
+    /// they render in the Required section, never as toggles).
+    private var editableToolNames: [String] {
+        ToolSelectionLogic.editableTools(
+            allCategoryTools: toolCategories.flatMap(\.tools),
+            locked: lockedTools,
+            restrictTo: restrictToTools
+        )
     }
 
     private var filteredCategories: [ToolConstants.ToolCategoryDisplay] {
-        if searchText.isEmpty {
-            return toolCategories
-        }
+        let editable = Set(editableToolNames)
         let query = searchText.lowercased()
         return toolCategories.compactMap { category in
-            let matchingTools = category.tools.filter { $0.lowercased().contains(query) }
-            if matchingTools.isEmpty { return nil }
+            var tools = category.tools.filter { editable.contains($0) }
+            if !searchText.isEmpty { tools = tools.filter { $0.lowercased().contains(query) } }
+            if tools.isEmpty { return nil }
             return ToolConstants.ToolCategoryDisplay(
-                id: category.id, name: category.name, icon: category.icon, tools: matchingTools
+                id: category.id, name: category.name, icon: category.icon, tools: tools
             )
         }
     }
@@ -57,6 +104,14 @@ struct ToolSelectionView: View {
             || ToolNames.cancelDelegation.contains(query)
             || ToolNames.resumeDelegation.contains(query)
             || ToolNames.forwardToTeam.contains(query)
+    }
+
+    /// Locked tools matching the current search (shown in the Required section).
+    private var visibleLockedTools: [String] {
+        guard !lockedTools.isEmpty else { return [] }
+        if searchText.isEmpty { return lockedTools }
+        let query = searchText.lowercased()
+        return lockedTools.filter { $0.lowercased().contains(query) }
     }
 
     private var toolHints: [String: String] {
@@ -95,20 +150,18 @@ struct ToolSelectionView: View {
 
                 Spacer()
 
-                Text("\(selectedTools.count)/\(allToolNames.count)")
+                Text("\(selectedTools.intersection(editableToolNames).count)/\(editableToolNames.count)")
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .fixedSize()
 
                 Button {
-                    let all = Set(allToolNames)
-                    if selectedTools == all {
-                        selectedTools = []
-                    } else {
-                        selectedTools = all
-                    }
+                    selectedTools = ToolSelectionLogic.toggledSelectAll(
+                        selected: selectedTools, editable: editableToolNames
+                    )
                 } label: {
-                    Text(selectedTools.count == allToolNames.count ? "Clear All" : "Select All")
+                    Text(ToolSelectionLogic.isAllEditableSelected(selected: selectedTools, editable: editableToolNames)
+                         ? "Clear All" : "Select All")
                         .font(.caption)
                         .fixedSize()
                 }
@@ -121,12 +174,16 @@ struct ToolSelectionView: View {
             Divider()
 
             // Categories
-            if filteredCategories.isEmpty && !showAutoInjected {
+            if filteredCategories.isEmpty && !showAutoInjected && visibleLockedTools.isEmpty {
                 ContentUnavailableView.search(text: searchText)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
+                        if !visibleLockedTools.isEmpty {
+                            RequiredToolsSection(tools: visibleLockedTools)
+                        }
+
                         if showAutoInjected {
                             AutoInjectedToolsSection(
                                 producedArtifacts: producedArtifacts,
@@ -258,6 +315,59 @@ private struct AutoInjectedToolsSection: View {
         }
         .padding(.horizontal, Spacing.s)
         .padding(.vertical, Spacing.xs)
+    }
+}
+
+// MARK: - Required Tools Section
+
+/// Mandatory, non-removable tools (e.g. the Autovisor manager's management toolset).
+/// Rendered as locked rows so the user sees them but can't toggle them off.
+private struct RequiredToolsSection: View {
+    let tools: [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: Spacing.xs) {
+                Image(systemName: "lock.fill")
+                    .font(.caption2)
+                    .foregroundStyle(Colors.textTertiary)
+                Text("Required")
+                    .font(.caption)
+                    .fontWeight(.medium)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, Spacing.s)
+            .padding(.top, Spacing.m)
+            .padding(.bottom, Spacing.xs)
+
+            VStack(spacing: 0) {
+                ForEach(tools, id: \.self) { tool in
+                    HStack(spacing: Spacing.s) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Colors.textTertiary)
+                            .frame(width: 16)
+
+                        Text(tool)
+                            .font(.system(.callout, design: .monospaced))
+                            .foregroundStyle(.secondary)
+
+                        Spacer(minLength: 0)
+
+                        Text("Required")
+                            .font(.system(size: 9, weight: .semibold))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(Capsule(style: .continuous).fill(Colors.neutralTint))
+                            .foregroundStyle(Colors.textSecondary)
+                    }
+                    .padding(.horizontal, Spacing.s)
+                    .padding(.vertical, 5)
+                }
+            }
+            .background(Colors.surfaceCard)
+            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous))
+        }
     }
 }
 

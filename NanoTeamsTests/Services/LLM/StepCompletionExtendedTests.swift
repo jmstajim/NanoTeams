@@ -44,7 +44,7 @@ final class StepCompletionExtendedTests: XCTestCase {
         mockDelegate.taskToMutate = task
         let stepID = task.runs[0].steps[0].id
 
-        await service.completeStepSuccess(stepID: stepID)
+        await service.completeStepSuccess(stepID: stepID, taskID: task.id)
 
         let updated = mockDelegate.taskToMutate!.runs[0].steps[0]
         XCTAssertEqual(updated.status, .done)
@@ -57,7 +57,7 @@ final class StepCompletionExtendedTests: XCTestCase {
 
         XCTAssertNil(task.runs[0].steps[0].completedAt)
 
-        await service.completeStepSuccess(stepID: stepID)
+        await service.completeStepSuccess(stepID: stepID, taskID: task.id)
 
         let updated = mockDelegate.taskToMutate!.runs[0].steps[0]
         XCTAssertNotNil(updated.completedAt)
@@ -70,7 +70,7 @@ final class StepCompletionExtendedTests: XCTestCase {
         mockDelegate.taskToMutate = task
         let stepID = task.runs[0].steps[0].id
 
-        await service.completeStepWithWarning(stepID: stepID, warning: "Warning message")
+        await service.completeStepWithWarning(stepID: stepID, taskID: task.id, warning: "Warning message")
 
         let updated = mockDelegate.taskToMutate!.runs[0].steps[0]
         XCTAssertEqual(updated.status, .done)
@@ -81,7 +81,7 @@ final class StepCompletionExtendedTests: XCTestCase {
         mockDelegate.taskToMutate = task
         let stepID = task.runs[0].steps[0].id
 
-        await service.completeStepWithWarning(stepID: stepID, warning: "Test warn")
+        await service.completeStepWithWarning(stepID: stepID, taskID: task.id, warning: "Test warn")
 
         let updated = mockDelegate.taskToMutate!.runs[0].steps[0]
         XCTAssertTrue(updated.messages.contains {
@@ -97,7 +97,7 @@ final class StepCompletionExtendedTests: XCTestCase {
         let stepID = task.runs[0].steps[0].id
         let messagesBefore = task.runs[0].steps[0].messages.count
 
-        await service.completeStepWithWarning(stepID: stepID, warning: "   ")
+        await service.completeStepWithWarning(stepID: stepID, taskID: task.id, warning: "   ")
 
         let updated = mockDelegate.taskToMutate!.runs[0].steps[0]
         XCTAssertEqual(updated.messages.count, messagesBefore,
@@ -111,7 +111,7 @@ final class StepCompletionExtendedTests: XCTestCase {
         mockDelegate.taskToMutate = task
         let stepID = task.runs[0].steps[0].id
 
-        await service.completeStepFailure(stepID: stepID, errorMessage: "Build failed")
+        await service.completeStepFailure(stepID: stepID, taskID: task.id, errorMessage: "Build failed")
 
         let updated = mockDelegate.taskToMutate!.runs[0].steps[0]
         XCTAssertEqual(updated.status, .failed)
@@ -122,7 +122,7 @@ final class StepCompletionExtendedTests: XCTestCase {
         mockDelegate.taskToMutate = task
         let stepID = task.runs[0].steps[0].id
 
-        await service.completeStepFailure(stepID: stepID, errorMessage: "Connection refused")
+        await service.completeStepFailure(stepID: stepID, taskID: task.id, errorMessage: "Connection refused")
 
         let updated = mockDelegate.taskToMutate!.runs[0].steps[0]
         let hasError = updated.messages.contains { $0.content.contains("Connection refused") }
@@ -134,7 +134,7 @@ final class StepCompletionExtendedTests: XCTestCase {
         mockDelegate.taskToMutate = task
         let stepID = task.runs[0].steps[0].id
 
-        await service.completeStepFailure(stepID: stepID, errorMessage: "Error")
+        await service.completeStepFailure(stepID: stepID, taskID: task.id, errorMessage: "Error")
 
         let updated = mockDelegate.taskToMutate!.runs[0].steps[0]
         XCTAssertNotNil(updated.completedAt)
@@ -145,7 +145,7 @@ final class StepCompletionExtendedTests: XCTestCase {
         mockDelegate.taskToMutate = task
         let stepID = task.runs[0].steps[0].id
 
-        await service.completeStepFailure(stepID: stepID, errorMessage: "Error")
+        await service.completeStepFailure(stepID: stepID, taskID: task.id, errorMessage: "Error")
 
         XCTAssertTrue(mockDelegate.clearStreamingPreviewCalls.contains(stepID))
     }
@@ -157,7 +157,7 @@ final class StepCompletionExtendedTests: XCTestCase {
         mockDelegate.taskToMutate = task
         let stepID = task.runs[0].steps[0].id
 
-        await service.completeStepNeedsAcceptance(stepID: stepID)
+        await service.completeStepNeedsAcceptance(stepID: stepID, taskID: task.id)
 
         let updated = mockDelegate.taskToMutate!.runs[0].steps[0]
         XCTAssertEqual(updated.status, .needsApproval)
@@ -168,7 +168,7 @@ final class StepCompletionExtendedTests: XCTestCase {
         mockDelegate.taskToMutate = task
         let stepID = task.runs[0].steps[0].id
 
-        await service.completeStepNeedsAcceptance(stepID: stepID)
+        await service.completeStepNeedsAcceptance(stepID: stepID, taskID: task.id)
 
         XCTAssertTrue(mockDelegate.clearStreamingPreviewCalls.contains(stepID))
     }
@@ -178,18 +178,18 @@ final class StepCompletionExtendedTests: XCTestCase {
     func testCompleteStepSuccess_WithoutDelegate_DoesNotCrash() async {
         let plainService = LLMExecutionService(repository: NTMSRepository())
         // No delegate attached
-        await plainService.completeStepSuccess(stepID: "test_step")
+        await plainService.completeStepSuccess(stepID: "test_step", taskID: 0)
         // Should not crash
     }
 
-    func testCompleteStepWithWarning_WithoutTaskMapping_DoesNotCrash() async {
-        // stepID not registered in stepTaskMapping
-        await service.completeStepWithWarning(stepID: "test_step", warning: "Test")
-        // Should not crash (taskIDForStep returns nil)
+    func testCompleteStepWithWarning_WithoutLiveExecution_DoesNotCrash() async {
+        // No (taskID, stepID) execution registered — the liveness barrier drops the write
+        await service.completeStepWithWarning(stepID: "test_step", taskID: 0, warning: "Test")
+        // Must not crash: isExecutionLive short-circuits before any mutation
     }
 
-    func testCompleteStepFailure_WithoutTaskMapping_DoesNotCrash() async {
-        await service.completeStepFailure(stepID: "test_step", errorMessage: "Test")
+    func testCompleteStepFailure_WithoutLiveExecution_DoesNotCrash() async {
+        await service.completeStepFailure(stepID: "test_step", taskID: 0, errorMessage: "Test")
         // Should not crash
     }
 
@@ -200,7 +200,7 @@ final class StepCompletionExtendedTests: XCTestCase {
         task.runs[0].steps[0].artifacts = [Artifact(name: "Product Requirements")]
         mockDelegate.taskToMutate = task
 
-        let result = service.checkArtifactCompleteness(stepID: task.runs[0].steps[0].id)
+        let result = service.checkArtifactCompleteness(stepID: task.runs[0].steps[0].id, taskID: task.id)
         XCTAssertNotNil(result)
         if case .completed = result {} else {
             XCTFail("Expected .completed, got \(String(describing: result))")
@@ -212,7 +212,7 @@ final class StepCompletionExtendedTests: XCTestCase {
         // No artifacts created yet
         mockDelegate.taskToMutate = task
 
-        let result = service.checkArtifactCompleteness(stepID: task.runs[0].steps[0].id)
+        let result = service.checkArtifactCompleteness(stepID: task.runs[0].steps[0].id, taskID: task.id)
         XCTAssertNil(result)
     }
 
@@ -220,7 +220,7 @@ final class StepCompletionExtendedTests: XCTestCase {
         let task = createTaskWithExpectedArtifacts([])
         mockDelegate.taskToMutate = task
 
-        let result = service.checkArtifactCompleteness(stepID: task.runs[0].steps[0].id)
+        let result = service.checkArtifactCompleteness(stepID: task.runs[0].steps[0].id, taskID: task.id)
         XCTAssertNil(result)
     }
 
@@ -230,7 +230,7 @@ final class StepCompletionExtendedTests: XCTestCase {
         task.runs[0].steps[0].artifacts = [Artifact(name: "Engineering Notes")]
         mockDelegate.taskToMutate = task
 
-        let result = service.checkArtifactCompleteness(stepID: task.runs[0].steps[0].id)
+        let result = service.checkArtifactCompleteness(stepID: task.runs[0].steps[0].id, taskID: task.id)
         XCTAssertNotNil(result)
         if case .completed = result {} else {
             XCTFail("Expected .completed, got \(String(describing: result))")
@@ -245,7 +245,7 @@ final class StepCompletionExtendedTests: XCTestCase {
         ]
         mockDelegate.taskToMutate = task
 
-        let result = service.checkArtifactCompleteness(stepID: task.runs[0].steps[0].id)
+        let result = service.checkArtifactCompleteness(stepID: task.runs[0].steps[0].id, taskID: task.id)
         XCTAssertNotNil(result)
         if case .completed = result {} else {
             XCTFail("Expected .completed, got \(String(describing: result))")
@@ -257,7 +257,7 @@ final class StepCompletionExtendedTests: XCTestCase {
         task.runs[0].steps[0].artifacts = [Artifact(name: "Code Review")]
         mockDelegate.taskToMutate = task
 
-        let result = service.checkArtifactCompleteness(stepID: task.runs[0].steps[0].id)
+        let result = service.checkArtifactCompleteness(stepID: task.runs[0].steps[0].id, taskID: task.id)
         XCTAssertNil(result)
     }
 
@@ -265,14 +265,14 @@ final class StepCompletionExtendedTests: XCTestCase {
 
     func testRequestFinish_SetsFlag() {
         let stepID = "test_step"
-        service.requestFinish(stepID: stepID)
+        service.requestFinish(stepID: stepID, taskID: 0)
         // The flag is private, but we can verify it doesn't crash and clearRunningTask removes it
-        service.clearRunningTask(stepID: stepID)
+        service.clearRunningTask(stepID: stepID, taskID: 0)
     }
 
     func testRequestFinish_ClearedOnCancelAll() {
         let stepID = "test_step"
-        service.requestFinish(stepID: stepID)
+        service.requestFinish(stepID: stepID, taskID: 0)
         service.cancelAllExecutions()
         // Should not crash — flag cleaned up
     }

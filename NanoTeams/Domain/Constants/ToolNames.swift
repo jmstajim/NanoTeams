@@ -1,6 +1,6 @@
 import Foundation
 
-/// Compile-time string constants for all 33 tool names.
+/// Compile-time string constants for all 42 tool names.
 /// Use these instead of string literals to get compile-time checking on tool identifiers.
 nonisolated enum ToolNames {
     // File System (7)
@@ -46,4 +46,16 @@ nonisolated enum ToolNames {
     static let cancelDelegation = "cancel_delegation"
     static let resumeDelegation = "resume_delegation"
     static let forwardToTeam = "forward_to_team"
+    // Autovisor (10) — management tools for the per-folder automated Supervisor.
+    // All category=.collaboration, excludedInMeetings, availableToRoles only for the Manager role.
+    static let listTasks = "list_tasks"
+    static let taskStatus = "task_status"
+    static let createManagedTask = "create_managed_task"
+    static let controlTask = "control_task"
+    static let manageRole = "manage_role"
+    static let answerTaskQuestion = "answer_task_question"
+    static let messageTask = "message_task"
+    static let scheduleTask = "schedule_task"
+    static let setWorkFolderContext = "set_work_folder_context"
+    static let waitForEvents = "wait_for_events"
 }

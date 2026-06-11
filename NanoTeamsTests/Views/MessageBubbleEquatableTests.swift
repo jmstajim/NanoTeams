@@ -47,6 +47,7 @@ final class MessageBubbleEquatableTests: XCTestCase {
         thinking: String? = nil,
         processingProgress: Double? = nil,
         hasStreamActivity: Bool = false,
+        isStreamingToolCall: Bool = false,
         isStreaming: Bool = false,
         isImplicitStreamTarget: Bool = false,
         showHeader: Bool = true,
@@ -65,6 +66,7 @@ final class MessageBubbleEquatableTests: XCTestCase {
             thinking: thinking,
             processingProgress: processingProgress,
             hasStreamActivity: hasStreamActivity,
+            isStreamingToolCall: isStreamingToolCall,
             isStreaming: isStreaming,
             isImplicitStreamTarget: isImplicitStreamTarget,
             showHeader: showHeader,
@@ -123,6 +125,11 @@ final class MessageBubbleEquatableTests: XCTestCase {
 
     func testNotEqual_whenHasStreamActivityDiffers() async {
         XCTAssertNotEqual(Self.makeBubble(), Self.makeBubble(hasStreamActivity: true))
+    }
+
+    func testNotEqual_whenIsStreamingToolCallDiffers() async {
+        XCTAssertNotEqual(Self.makeBubble(), Self.makeBubble(isStreamingToolCall: true),
+                          "Tool-call flag flip must break == — otherwise .equatable() freezes the Thinking loader and drops the Generating fallback mid-stream.")
     }
 
     func testNotEqual_whenIsStreamingDiffers() async {

@@ -82,6 +82,8 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
         func startRunForTask(taskID _: Int) async {}
         func closeTask(taskID _: Int) async -> Bool { true }
         func lastErrorMessageForTask(_ taskID: Int) -> String? { nil }
+        func streamLastActivityAt(stepID _: String, taskID _: Int) -> Date? { nil }
+        func streamLiveText(stepID _: String, taskID _: Int) -> String? { nil }
         func stopEngineForTask(_ taskID: Int) {}
         func pauseRun(taskID _: Int) async {}
         func resumeRun(taskID _: Int) async {}
@@ -93,16 +95,23 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
             return answerSupervisorReturn
         }
 
+        func performAutovisorAction(_ action: AutovisorAction) async -> AutovisorActionResult { .success("ok") }
+        func persistAutovisorMemory(_ text: String) async -> Bool { true }
+        func autovisorLoadTask(_ taskID: Int) async -> NTMSTask? { loadedTask(taskID) }
+
         // MARK: LLMStreamingDelegate (no-op stubs)
-        func beginStreaming(stepID _: String, messageID _: UUID, role _: Role, taskID _: Int) async {}
-        func appendStreamingPreview(stepID _: String, messageID _: UUID, role _: Role, content _: String) {}
-        func replaceStreamingPreview(stepID _: String, messageID _: UUID, role _: Role, content _: String) {}
-        func appendStreamingThinking(stepID _: String, content _: String) {}
+        func beginStreaming(stepID _: String, taskID _: Int, messageID _: UUID, role _: Role) async {}
+        func appendStreamingPreview(stepID _: String, taskID _: Int, messageID _: UUID, role _: Role, content _: String) {}
+        func replaceStreamingPreview(stepID _: String, taskID _: Int, messageID _: UUID, role _: Role, content _: String) {}
+        func appendStreamingThinking(stepID _: String, taskID _: Int, content _: String) {}
         func commitStreaming(stepID _: String, taskID _: Int, content _: String, thinking _: String?) async {}
-        func clearStreamingPreview(stepID _: String) {}
-        func updateStreamingProcessingProgress(stepID _: String, progress _: Double) {}
-        func clearStreamingProcessingProgress(stepID _: String) {}
-        func markStreamActivity(stepID _: String) {}
+        func discardStreaming(stepID _: String, messageID _: UUID, taskID _: Int) async {}
+        func noteStreamLoop(taskID _: Int, stepID _: String, signal _: LoopSignal) -> Bool { true }
+        func clearStreamingPreview(stepID _: String, taskID _: Int) {}
+        func updateStreamingProcessingProgress(stepID _: String, taskID _: Int, progress _: Double) {}
+        func clearStreamingProcessingProgress(stepID _: String, taskID _: Int) {}
+        func markStreamActivity(stepID _: String, taskID _: Int) {}
+        func markStreamingToolCall(stepID _: String, taskID _: Int) {}
 
         // MARK: LLMMeetingDelegate (no-op stubs)
         func setActiveMeetingParticipants(_ participantIDs: Set<String>, for taskID: Int) {}

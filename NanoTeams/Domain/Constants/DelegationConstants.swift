@@ -34,11 +34,8 @@ nonisolated enum DelegationConstants {
     static let delegationTimeoutSeconds: TimeInterval = 1800
 
     // MARK: - Auto-detect repetition loop in delegated child team
-
-    /// Min seconds between two consecutive streaming-buffer scans for the
-    /// same child step. Without throttling, the detector would run on every
-    /// token append — O(n²) substring search per token kills throughput.
-    static let repetitionStreamingThrottleSeconds: TimeInterval = 3
+    // (Streaming-scan throttling moved to `LLMConstants.streamLoopScanCadenceChars`
+    // when streaming-loop detection relocated into `performStreamingCall`.)
 
     /// Min seconds between two consecutive auto-trigger fires for the same
     /// child task. After firing once, the parent role gets a paused envelope;
@@ -54,6 +51,55 @@ nonisolated enum DelegationConstants {
     /// the substring is too small to be a meaningful loop signal (a 3-char
     /// run is usually punctuation noise).
     static let repetitionMinSubstringChars = 8
+
+    /// Max substring length (chars) for within-message detection. Reasoning models
+    /// loop on whole *paragraphs* — and even on multi-paragraph *cycles*: seven real
+    /// production loops (Autovisor / Coding Assistant thinking buffers) repeated
+    /// ~233–1244-char blocks, all silently missed by the prior 200-char cap. The
+    /// largest (1244) was a 12-item template cycle (a varying token cycling through a
+    /// fixed list). The production path uses the tail-anchored `detectTailLoop`
+    /// (O(maxLen²), uniformly cheap), so 1500 covers the observed range with ~1.2×
+    /// headroom over the worst (1244) without any perf-vs-coverage tension. (Cycles
+    /// longer than 1500 — 15+ varying items — still escape the exact-period detector;
+    /// that's its ceiling.) See `RealWorldThinkingLoopDetectionTests`.
+    static let repetitionMaxSubstringChars = 1500
+
+    /// Tail window (chars) the within-message scan inspects. Must hold the binding
+    /// `period * requiredReps` across the tiers (`500 * 8 = 4000` for large blocks,
+    /// `1500 * 4 = 6000` for very-large cycles) plus phase slack so the required
+    /// consecutive reps fit regardless of where the window boundary lands. The prior
+    /// 2000 window couldn't hold even 5 reps of a ~440-char block, so loops never fired.
+    static let repetitionTailWindowChars = 9000
+
+    /// Substring-length threshold separating the "short phrase" regime from the
+    /// "paragraph block" regime. At or below this, a repeat needs only
+    /// `repetitionMinRepeats` (a short phrase looping 5× is obviously stuck). Above
+    /// it, the stricter `repetitionLargeBlockMinRepeats` applies — because a model
+    /// legitimately *stamps* a large identical block a few times (scaffolding 5–6
+    /// similar test cases / checklist items, then filling them in), whereas a real
+    /// loop re-emits it indefinitely. Set below the smallest observed loop period
+    /// (233) and above ordinary short phrases.
+    static let repetitionLargeSubstringChars = 120
+
+    /// Required consecutive reps for a *large* block (> `repetitionLargeSubstringChars`,
+    /// ≤ `repetitionVeryLargeSubstringChars`) to count as a loop. The real loops
+    /// repeated 12–70+ times; legitimate "stamp a few identical items then move on"
+    /// scaffolding tops out around 5–6, and an adversarial sweep found every false
+    /// positive sat at exactly 5 reps with blocks ≤ 488 chars. 8 cleanly separates them.
+    static let repetitionLargeBlockMinRepeats = 8
+
+    /// Substring-length threshold for the "very large block / multi-paragraph cycle"
+    /// regime. A block this big repeated even a few times is unambiguously a loop — no
+    /// legitimate scaffold stamps a >500-char block verbatim (the observed false
+    /// positives all sat ≤ 488 chars). Requiring the full `repetitionLargeBlockMinRepeats`
+    /// here would also need an impractically large tail window (8 × 1244 ≈ 10K), and
+    /// would make the model loop ~10K chars before firing.
+    static let repetitionVeryLargeSubstringChars = 500
+
+    /// Required consecutive reps for a *very large* block (> `repetitionVeryLargeSubstringChars`).
+    /// 4 verbatim reps of a 500–1500-char block is loop-grade with no realistic
+    /// false-positive, and `1500 * 4 = 6000` fits the 9000 tail window.
+    static let repetitionVeryLargeBlockMinRepeats = 4
 
     /// Min consecutive identical `(toolName, argumentsJSON)` pairs in a child
     /// step's `toolCalls` history before the tool-call-sequence detector

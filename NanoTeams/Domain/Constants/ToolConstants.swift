@@ -37,11 +37,41 @@ nonisolated enum ToolConstants {
                             tools: [TN.askSupervisor]),
         ToolCategoryDisplay(id: "vision", name: "Vision", icon: "eye.fill",
                             tools: [TN.analyzeImage]),
-        // Delegation tools (delegate_to_team + 4 companions) are NEVER manually
+        // Delegation tools (delegate_to_team + 3 companions) are NEVER manually
         // selectable — they auto-inject when the role's delegation settings
         // (`allowedDelegationTeamIDs` / `allowDelegationToGeneratedTeams`) are
         // populated. See `LLMExecutionService+ToolResolution` and the
         // Auto-injected section in `ToolSelectionView`. The Delegation tab in
         // the role editor is the only entry point.
     ]
+
+    /// COMPLETE categorization for the tool-DEFINITIONS editor
+    /// (`ToolDefinitionEditorSheetView`), which lists every registered tool. Unlike
+    /// `displayCategories` (the role-editor toolset picker — manually-selectable
+    /// tools only), this also groups the auto-injected / control-flow / manager
+    /// tools so none of them fall into an "Other" catch-all. Keep this exhaustive:
+    /// every tool in `ToolHandlerRegistry.allTypes` should map to exactly one
+    /// section here. Do NOT use it for `ToolSelectionView` — these extra tools are
+    /// not manually selectable.
+    static let definitionDisplayCategories: [ToolCategoryDisplay] =
+        displayCategories.map { category in
+            // The definitions list shows `conclude_meeting` alongside the other
+            // collaboration tools (it's auto-injected, so omitted from the
+            // role-editor picker's Collaboration section).
+            category.id == "collaboration"
+                ? ToolCategoryDisplay(id: category.id, name: category.name, icon: category.icon,
+                                      tools: category.tools + [TN.concludeMeeting])
+                : category
+        } + [
+            ToolCategoryDisplay(id: "artifacts", name: "Artifacts", icon: "doc.fill",
+                                tools: [TN.createArtifact]),
+            ToolCategoryDisplay(id: "teamGeneration", name: "Team Generation", icon: "person.3.sequence.fill",
+                                tools: [TN.createTeam]),
+            ToolCategoryDisplay(id: "delegation", name: "Delegation", icon: "arrowshape.turn.up.right.fill",
+                                tools: [TN.delegateToTeam, TN.cancelDelegation, TN.resumeDelegation, TN.forwardToTeam]),
+            ToolCategoryDisplay(id: "autovisor", name: "Autovisor", icon: "folder.badge.person.crop",
+                                tools: [TN.listTasks, TN.taskStatus, TN.createManagedTask, TN.controlTask,
+                                        TN.manageRole, TN.answerTaskQuestion, TN.messageTask, TN.scheduleTask,
+                                        TN.setWorkFolderContext, TN.waitForEvents]),
+        ]
 }

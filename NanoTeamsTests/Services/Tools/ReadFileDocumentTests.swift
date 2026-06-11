@@ -196,10 +196,13 @@ final class ReadFileDocumentTests: XCTestCase {
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("<config>"))
-        // The wire encoder may escape `/` as `\/` in JSON — accept either form.
+        // The wire encoder keeps slashes literal (`.withoutEscapingSlashes`), so the
+        // XML closing tag appears verbatim — never escaped as `<\/key>`.
         let json = results[0].outputJSON
-        XCTAssertTrue(json.contains("</key>") || json.contains("<\\/key>"),
+        XCTAssertTrue(json.contains("</key>"),
                       "XML closing tag must be preserved verbatim: \(json)")
+        XCTAssertFalse(json.contains("<\\/key>"),
+                       "slash must not be escaped to \\/: \(json)")
     }
 
     // MARK: - read_file with plain text (unchanged behavior)
@@ -842,8 +845,9 @@ final class ReadFileDocumentTests: XCTestCase {
         let results = runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("nested.rtf"))
-        // JSON serializer escapes slashes as `\/`; assert on the escaped form.
-        XCTAssertTrue(results[0].outputJSON.contains("deep\\/nested\\/path"),
+        // Wire encoder keeps slashes literal (`.withoutEscapingSlashes`) so the
+        // model never sees `\/` in tool results.
+        XCTAssertTrue(results[0].outputJSON.contains("deep/nested/path"),
                       "search must preserve nested path in results: \(results[0].outputJSON)")
     }
 

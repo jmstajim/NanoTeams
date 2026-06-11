@@ -69,6 +69,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
             result: result,
             toolCallID: UUID(),
             stepID: "step1",
+            taskID: 1,
             conversationMessages: &convo
         )
 
@@ -94,6 +95,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
             result: result,
             toolCallID: UUID(),
             stepID: "step1",
+            taskID: 1,
             conversationMessages: &convo
         )
 
@@ -117,6 +119,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
             result: result,
             toolCallID: UUID(),
             stepID: "step1",
+            taskID: 1,
             conversationMessages: &convo
         )
 
@@ -136,6 +139,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
             result: makeExploratorySearchToolResult(),
             toolCallID: UUID(),
             stepID: "step1",
+            taskID: 1,
             conversationMessages: &convo
         )
 
@@ -152,6 +156,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
             result: result,
             toolCallID: UUID(),
             stepID: "step1",
+            taskID: 1,
             conversationMessages: &convo
         )
 
@@ -180,6 +185,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
             result: makeExploratorySearchToolResult(query: "scroll"),
             toolCallID: UUID(),
             stepID: "step1",
+            taskID: 1,
             conversationMessages: &convo
         )
 
@@ -231,6 +237,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
         await service.appendExploratorySearchResult(
             result: makeExploratorySearchToolResult(query: "scroll"),
             toolCallID: UUID(), stepID: "step1",
+            taskID: 1,
             conversationMessages: &convo
         )
 
@@ -256,6 +263,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
         await service.appendExploratorySearchResult(
             result: makeExploratorySearchToolResult(query: "scroll"),
             toolCallID: UUID(), stepID: "step1",
+            taskID: 1,
             conversationMessages: &convo
         )
 
@@ -277,6 +285,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
         await service.appendExploratorySearchResult(
             result: makeExploratorySearchToolResult(query: "scroll"),
             toolCallID: UUID(), stepID: "step1",
+            taskID: 1,
             conversationMessages: &convo
         )
 
@@ -300,6 +309,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
         await service.appendExploratorySearchResult(
             result: makeExploratorySearchToolResult(query: "scroll"),
             toolCallID: UUID(), stepID: "step1",
+            taskID: 1,
             conversationMessages: &convo
         )
 
@@ -327,7 +337,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
         let payload = try ExploratorySearchPayload(
             query: "x",
             mode: .substring,
-            paths: ["/etc/passwd"],  // absolute → resolver throws
+            paths: ["/etc/passwd"],  // absolute & outside the work folder → resolver throws
             fileGlob: nil,
             contextBefore: 0,
             contextAfter: 0,
@@ -348,6 +358,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
             result: result,
             toolCallID: UUID(),
             stepID: "step1",
+            taskID: 1,
             conversationMessages: &convo
         )
 
@@ -385,6 +396,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
             result: result,
             toolCallID: UUID(),
             stepID: "step1",
+            taskID: 1,
             conversationMessages: &convo
         )
 
@@ -408,6 +420,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
             result: makeExploratorySearchToolResult(),
             toolCallID: UUID(),
             stepID: "step1",
+            taskID: 1,
             conversationMessages: &convo
         )
 
@@ -432,6 +445,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
             result: makeExploratorySearchToolResult(),
             toolCallID: UUID(),
             stepID: "step1",
+            taskID: 1,
             conversationMessages: &convo
         )
 
@@ -461,6 +475,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
             result: makeExploratorySearchToolResult(query: "scroll"),
             toolCallID: UUID(),
             stepID: "step1",
+            taskID: 1,
             conversationMessages: &convo
         )
 
@@ -489,6 +504,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
             result: makeExploratorySearchToolResult(),
             toolCallID: UUID(),
             stepID: "step1",
+            taskID: 1,
             conversationMessages: &convo,
             tracker: tracker
         )
@@ -530,6 +546,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
             result: makeExploratorySearchToolResult(query: "scroll"),
             toolCallID: UUID(),
             stepID: "step1",
+            taskID: 1,
             conversationMessages: &convo
         )
 
@@ -567,6 +584,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
             result: makeExploratorySearchToolResult(query: "пользователь"),
             toolCallID: UUID(),
             stepID: "step1",
+            taskID: 1,
             conversationMessages: &convo
         )
 
@@ -597,6 +615,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
             result: makeExploratorySearchToolResult(query: "scroll"),
             toolCallID: UUID(),
             stepID: "step1",
+            taskID: 1,
             conversationMessages: &convo
         )
 
@@ -622,6 +641,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
             result: makeExploratorySearchToolResult(query: "Scroll"),
             toolCallID: UUID(),
             stepID: "step1",
+            taskID: 1,
             conversationMessages: &convo
         )
 
@@ -644,6 +664,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
             result: makeExploratorySearchToolResult(),
             toolCallID: UUID(),
             stepID: "step1",
+            taskID: 1,
             conversationMessages: &convo
         )
 
@@ -673,6 +694,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
             result: makeExploratorySearchToolResult(query: "anything"),
             toolCallID: UUID(),
             stepID: "step1",
+            taskID: 1,
             conversationMessages: &convo
         )
 
@@ -705,6 +727,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
             result: makeExploratorySearchToolResult(query: "search"),
             toolCallID: UUID(),
             stepID: "step1",
+            taskID: 1,
             conversationMessages: &convo
         )
 
@@ -739,6 +762,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
             result: makeExploratorySearchToolResult(query: "Foo"),
             toolCallID: UUID(),
             stepID: "step1",
+            taskID: 1,
             conversationMessages: &convo
         )
 
@@ -789,6 +813,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
             result: result,
             toolCallID: UUID(),
             stepID: "step1",
+            taskID: 1,
             conversationMessages: &convo
         )
 
@@ -825,6 +850,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
             result: makeExploratorySearchToolResult(query: "Search"),
             toolCallID: UUID(),
             stepID: "step1",
+            taskID: 1,
             conversationMessages: &convo
         )
 

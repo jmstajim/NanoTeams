@@ -59,10 +59,15 @@ extension LLMExecutionService {
     }
 
     /// Persists a consultation chat to the run.
+    ///
+    /// `stepID` is the EXECUTING step driving the consultation/meeting (not the
+    /// consulted role) — the `isExecutionLive` barrier drops the write when that
+    /// execution was torn down mid-consultation, so an orphaned save can't land
+    /// on a fresh run after a recurrence supersede.
     func saveConsultationChat(
-        taskID: Int, runIndex: Int, roleID: String, chat: RoleConsultationChat
+        stepID: String, taskID: Int, runIndex: Int, roleID: String, chat: RoleConsultationChat
     ) async {
-        guard let delegate else { return }
+        guard let delegate, isExecutionLive(stepID: stepID, taskID: taskID) else { return }
         await delegate.mutateTask(taskID: taskID) { task in
             guard runIndex < task.runs.count else { return }
             task.runs[runIndex].consultationChats[roleID] = chat

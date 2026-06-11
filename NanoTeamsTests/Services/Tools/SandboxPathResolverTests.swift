@@ -353,4 +353,288 @@ final class SandboxPathResolverTests: XCTestCase {
         let url = try resolver.resolveFileURL(relativePath: "./subdir/./file.txt")
         XCTAssertFalse(url.path.contains("./"))
     }
+
+    // MARK: - Absolute Paths Under Root (relativized)
+
+    func testResolveAbsolutePathUnderRoot_succeeds() throws {
+        let abs = tempProjectRoot.appendingPathComponent("src/engine/Game.js").path
+        let url = try resolver.resolveFileURL(relativePath: abs)
+        let expected = tempProjectRoot
+            .appendingPathComponent("src")
+            .appendingPathComponent("engine")
+            .appendingPathComponent("Game.js")
+            .standardizedFileURL
+        XCTAssertEqual(url, expected)
+    }
+
+    func testResolveAbsolutePathEqualToRoot_returnsRoot() throws {
+        let url = try resolver.resolveFileURL(relativePath: tempProjectRoot.path)
+        XCTAssertEqual(url, tempProjectRoot.standardizedFileURL)
+    }
+
+    func testResolveAbsolutePathOutsideRoot_throwsAbsolutePathNotAllowed() {
+        XCTAssertThrowsError(try resolver.resolveFileURL(relativePath: "/etc/hosts")) { error in
+            guard case SandboxPathError.absolutePathNotAllowed(let p) = error else {
+                XCTFail("Expected absolutePathNotAllowed, got \(error)"); return
+            }
+            XCTAssertEqual(p, "/etc/hosts")  // original raw string preserved
+        }
+    }
+
+    func testAbsolutePathRelativizingIntoInternalDir_throwsRestrictedPath() throws {
+        let internalDir = tempProjectRoot.appendingPathComponent(".nanoteams/internal", isDirectory: true)
+        let r = SandboxPathResolver(workFolderRoot: tempProjectRoot, internalDir: internalDir)
+        let abs = tempProjectRoot.appendingPathComponent(".nanoteams/internal/project.json").path
+        XCTAssertThrowsError(try r.resolveFileURL(relativePath: abs)) { error in
+            guard case SandboxPathError.restrictedPath = error else {
+                XCTFail("Expected restrictedPath, got \(error)"); return
+            }
+        }
+    }
+
+    // MARK: - Redundant Work-Folder-Name Prefix (existence-aware strip)
+
+    /// The reported bug: work folder named `Survivors`, model passes `Survivors/src/...`.
+    func testRedundantWorkFolderNamePrefix_stripped_whenSubdirMissing() throws {
+        let named = tempProjectRoot.appendingPathComponent("Survivors", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: named.appendingPathComponent("src/engine"), withIntermediateDirectories: true)
+        let r = SandboxPathResolver(workFolderRoot: named)
+        let url = try r.resolveFileURL(relativePath: "Survivors/src/engine/Game.js")
+        XCTAssertEqual(url, named.appendingPathComponent("src/engine/Game.js").standardizedFileURL)
+    }
+
+    func testRedundantPrefix_caseInsensitiveMatch_stripped() throws {
+        let named = tempProjectRoot.appendingPathComponent("Survivors", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: named.appendingPathComponent("src"), withIntermediateDirectories: true)
+        let r = SandboxPathResolver(workFolderRoot: named)
+        let url = try r.resolveFileURL(relativePath: "survivors/src/x.js")
+        XCTAssertEqual(url, named.appendingPathComponent("src/x.js").standardizedFileURL)
+    }
+
+    /// A genuine same-named subdirectory that EXISTS wins over the strip.
+    func testGenuineSameNamedSubdir_isNotStripped_whenExists() throws {
+        let named = tempProjectRoot.appendingPathComponent("Survivors", isDirectory: true)
+        let subdir = named.appendingPathComponent("Survivors", isDirectory: true)
+        try FileManager.default.createDirectory(at: subdir, withIntermediateDirectories: true)
+        try "x".write(to: subdir.appendingPathComponent("keep.txt"), atomically: true, encoding: .utf8)
+        let r = SandboxPathResolver(workFolderRoot: named)
+        let url = try r.resolveFileURL(relativePath: "Survivors/keep.txt")
+        XCTAssertEqual(url, subdir.appendingPathComponent("keep.txt").standardizedFileURL)
+    }
+
+    /// New-file write under a redundant prefix (nothing exists) → stripped.
+    func testNewFileUnderRedundantPrefix_strips() throws {
+        let named = tempProjectRoot.appendingPathComponent("Survivors", isDirectory: true)
+        try FileManager.default.createDirectory(at: named, withIntermediateDirectories: true)
+        let r = SandboxPathResolver(workFolderRoot: named)
+        let url = try r.resolveFileURL(relativePath: "Survivors/new/output.txt")
+        XCTAssertEqual(url, named.appendingPathComponent("new/output.txt").standardizedFileURL)
+    }
+
+    /// The directory-existence fix: a NEW file into a real same-named subdir is NOT stripped,
+    /// even though the file itself doesn't exist yet (full-path existence would have stripped it).
+    func testNewFileIntoGenuineSameNamedSubdir_isNotStripped() throws {
+        let named = tempProjectRoot.appendingPathComponent("app", isDirectory: true)
+        let subdir = named.appendingPathComponent("app", isDirectory: true)
+        try FileManager.default.createDirectory(at: subdir, withIntermediateDirectories: true)
+        let r = SandboxPathResolver(workFolderRoot: named)
+        let url = try r.resolveFileURL(relativePath: "app/new/Button.tsx")
+        XCTAssertEqual(url, subdir.appendingPathComponent("new/Button.tsx").standardizedFileURL)
+    }
+
+    // MARK: - relativizePathspec (git best-effort normalization)
+
+    func testRelativizePathspec_redundantPrefix_relativized() throws {
+        let named = tempProjectRoot.appendingPathComponent("repo", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: named.appendingPathComponent("src"), withIntermediateDirectories: true)
+        let r = SandboxPathResolver(workFolderRoot: named)
+        XCTAssertEqual(r.relativizePathspec("repo/src/main.swift"), "src/main.swift")
+    }
+
+    func testRelativizePathspec_absoluteUnderRoot_relativized() {
+        let abs = tempProjectRoot.appendingPathComponent("a/b.txt").path
+        XCTAssertEqual(resolver.relativizePathspec(abs), "a/b.txt")
+    }
+
+    func testRelativizePathspec_glob_unchanged() {
+        XCTAssertEqual(resolver.relativizePathspec("*.swift"), "*.swift")
+        XCTAssertEqual(resolver.relativizePathspec("src/**/*.ts"), "src/**/*.ts")
+    }
+
+    func testRelativizePathspec_magic_unchanged() {
+        XCTAssertEqual(resolver.relativizePathspec(":(exclude)foo"), ":(exclude)foo")
+    }
+
+    func testRelativizePathspec_plainRelative_unchanged() {
+        XCTAssertEqual(resolver.relativizePathspec("src/x.js"), "src/x.js")
+    }
+
+    func testRelativizePathspec_escape_returnsRaw() {
+        XCTAssertEqual(resolver.relativizePathspec("../x"), "../x")
+    }
+
+    func testRelativizePathspec_bareWorkspaceName_unchanged() {
+        let name = resolver.workFolderRoot.lastPathComponent
+        XCTAssertEqual(resolver.relativizePathspec(name), name)
+    }
+
+    // MARK: - Corner Cases: Absolute Path Arithmetic
+
+    /// Absolute path containing `..` that standardizes back INSIDE the root resolves
+    /// (the absolute branch standardizes before the boundary check) — unlike a RELATIVE
+    /// `..` which is rejected outright. Pins that intentional asymmetry.
+    func testResolveAbsolutePathWithDotDotInsideRoot_resolves() throws {
+        let raw = tempProjectRoot.path + "/src/../lib/x.js"
+        let url = try resolver.resolveFileURL(relativePath: raw)
+        XCTAssertEqual(url, tempProjectRoot.appendingPathComponent("lib/x.js").standardizedFileURL)
+    }
+
+    /// Absolute path with `..` that escapes the root after standardization is rejected,
+    /// with the ORIGINAL raw string preserved — `..` can't be smuggled via the absolute branch.
+    func testResolveAbsolutePathWithDotDotEscaping_throwsAbsolutePathNotAllowed() {
+        let raw = tempProjectRoot.path + "/../sibling/secret.txt"
+        XCTAssertThrowsError(try resolver.resolveFileURL(relativePath: raw)) { error in
+            guard case SandboxPathError.absolutePathNotAllowed(let p) = error else {
+                return XCTFail("Expected absolutePathNotAllowed, got \(error)")
+            }
+            XCTAssertEqual(p, raw)
+        }
+    }
+
+    func testResolveAbsolutePathWithDoubleSlashesAndTrailing_normalizes() throws {
+        let absDouble = tempProjectRoot.path + "//src///x.js"
+        XCTAssertEqual(
+            try resolver.resolveFileURL(relativePath: absDouble),
+            tempProjectRoot.appendingPathComponent("src/x.js").standardizedFileURL)
+
+        let absTrailing = tempProjectRoot.appendingPathComponent("src").path + "/"
+        XCTAssertEqual(
+            try resolver.resolveFileURL(relativePath: absTrailing),
+            tempProjectRoot.appendingPathComponent("src").standardizedFileURL)
+    }
+
+    // MARK: - Corner Cases: Redundant Prefix (loop + existence gate)
+
+    /// A DOUBLED prefix (`Foo/Foo/src`) strips BOTH leading components when no `Foo` subdir
+    /// exists — the strip loops. Without looping only one would be removed.
+    func testDoubleRedundantPrefix_stripsAllLeading_whenNoSubdir() throws {
+        let named = tempProjectRoot.appendingPathComponent("Foo", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: named.appendingPathComponent("src"), withIntermediateDirectories: true)
+        let r = SandboxPathResolver(workFolderRoot: named)
+        XCTAssertEqual(
+            try r.resolveFileURL(relativePath: "Foo/Foo/src/x.js"),
+            named.appendingPathComponent("src/x.js").standardizedFileURL)
+    }
+
+    /// When a genuine same-named subdir exists, the loop breaks on the first iteration and
+    /// keeps the whole path (the model's nested `Foo/Foo/...` is honored).
+    func testDoubleRedundantPrefix_keptWhenSubdirExists() throws {
+        let named = tempProjectRoot.appendingPathComponent("Foo", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: named.appendingPathComponent("Foo"), withIntermediateDirectories: true)
+        let r = SandboxPathResolver(workFolderRoot: named)
+        XCTAssertEqual(
+            try r.resolveFileURL(relativePath: "Foo/Foo/x.js"),
+            named.appendingPathComponent("Foo/Foo/x.js").standardizedFileURL)
+    }
+
+    func testRedundantPrefixTrailingSlash_resolvesToRoot() throws {
+        let named = tempProjectRoot.appendingPathComponent("Foo", isDirectory: true)
+        try FileManager.default.createDirectory(at: named, withIntermediateDirectories: true)
+        XCTAssertEqual(try r(named).resolveFileURL(relativePath: "Foo/"), named.standardizedFileURL)
+    }
+
+    /// Regression pin for the removed bare-name shortcut: bare work-folder name → root.
+    func testBareRedundantName_resolvesToRoot_whenNoSubdir() throws {
+        let named = tempProjectRoot.appendingPathComponent("Survivors", isDirectory: true)
+        try FileManager.default.createDirectory(at: named, withIntermediateDirectories: true)
+        XCTAssertEqual(try r(named).resolveFileURL(relativePath: "Survivors"), named.standardizedFileURL)
+    }
+
+    /// Bare name with a genuine same-named subdir resolves to the subdir (existence gate
+    /// flips the bare-name case too, not just multi-component).
+    func testBareName_resolvesToSubdir_whenSameNamedSubdirExists() throws {
+        let named = tempProjectRoot.appendingPathComponent("app", isDirectory: true)
+        let subdir = named.appendingPathComponent("app", isDirectory: true)
+        try FileManager.default.createDirectory(at: subdir, withIntermediateDirectories: true)
+        XCTAssertEqual(try r(named).resolveFileURL(relativePath: "app"), subdir.standardizedFileURL)
+    }
+
+    /// A same-named regular FILE (not directory) does NOT block the strip — pins the isDir gate.
+    func testRedundantPrefix_sameNamedFileNotDirectory_isStripped() throws {
+        let named = tempProjectRoot.appendingPathComponent("Foo", isDirectory: true)
+        try FileManager.default.createDirectory(at: named, withIntermediateDirectories: true)
+        try "x".write(to: named.appendingPathComponent("Foo"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(
+            try r(named).resolveFileURL(relativePath: "Foo/bar.txt"),
+            named.appendingPathComponent("bar.txt").standardizedFileURL)
+    }
+
+    /// A same-named DANGLING SYMLINK is a real named entity → NOT stripped. `fileExists`
+    /// follows the link and reports false, which would otherwise silently redirect
+    /// `Foo/bar.txt` to `<root>/bar.txt`; keeping it instead fails loudly downstream
+    /// (not-found), the safer mode. Pins the symlink branch of the strip gate.
+    func testRedundantPrefix_sameNamedDanglingSymlink_isNotStripped() throws {
+        let named = tempProjectRoot.appendingPathComponent("Foo", isDirectory: true)
+        try FileManager.default.createDirectory(at: named, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: named.appendingPathComponent("Foo"),
+            withDestinationURL: named.appendingPathComponent("nonexistent-target"))
+        XCTAssertEqual(
+            try r(named).resolveFileURL(relativePath: "Foo/bar.txt"),
+            named.appendingPathComponent("Foo/bar.txt").standardizedFileURL)
+    }
+
+    // MARK: - Corner Cases: relativizePathspec decision table
+
+    func testRelativizePathspec_emptyAndWhitespace_returnsRaw() {
+        XCTAssertEqual(resolver.relativizePathspec(""), "")
+        XCTAssertEqual(resolver.relativizePathspec("   "), "   ")
+    }
+
+    /// `:` is treated as pathspec magic only at position 0; elsewhere it's an ordinary
+    /// filename char that round-trips losslessly.
+    func testRelativizePathspec_colonNotAtStart_roundTripsIdentity() {
+        XCTAssertEqual(resolver.relativizePathspec("src:lib"), "src:lib")
+    }
+
+    /// Glob heuristic is `{*, ?, [}` only: `[` triggers raw passthrough; `]` alone does not.
+    func testRelativizePathspec_bracketHeuristic_asymmetric() {
+        XCTAssertEqual(resolver.relativizePathspec("src/[abc"), "src/[abc")
+        XCTAssertEqual(resolver.relativizePathspec("a]b.txt"), "a]b.txt")
+    }
+
+    /// A pathspec resolving into `.nanoteams/internal` throws restrictedPath inside the
+    /// resolver → swallowed → raw handed back to git.
+    func testRelativizePathspec_internalDirPath_returnsRaw() {
+        let internalDir = tempProjectRoot.appendingPathComponent(".nanoteams/internal", isDirectory: true)
+        let withInternal = SandboxPathResolver(workFolderRoot: tempProjectRoot, internalDir: internalDir)
+        XCTAssertEqual(
+            withInternal.relativizePathspec(".nanoteams/internal/workfolder.json"),
+            ".nanoteams/internal/workfolder.json")
+    }
+
+    func testRelativizePathspec_absoluteOutsideRoot_returnsRaw() {
+        XCTAssertEqual(resolver.relativizePathspec("/etc/passwd"), "/etc/passwd")
+    }
+
+    /// Redundant prefix that resolves to bare root → empty relative → returns raw (don't
+    /// over-broaden a bare-name pathspec to `.`).
+    func testRelativizePathspec_bareRootViaRedundantPrefix_returnsRaw() throws {
+        let named = tempProjectRoot.appendingPathComponent("repo", isDirectory: true)
+        try FileManager.default.createDirectory(at: named, withIntermediateDirectories: true)
+        XCTAssertEqual(r(named).relativizePathspec("repo"), "repo")
+    }
+
+    func testRelativizePathspec_absoluteEqualToRoot_returnsRaw() {
+        XCTAssertEqual(resolver.relativizePathspec(tempProjectRoot.path), tempProjectRoot.path)
+    }
+
+    // MARK: - Helpers
+
+    private func r(_ root: URL) -> SandboxPathResolver { SandboxPathResolver(workFolderRoot: root) }
 }

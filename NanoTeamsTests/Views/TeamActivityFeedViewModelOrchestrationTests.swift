@@ -14,7 +14,8 @@ import XCTest
 ///
 /// 2. `resetForTaskSwitch()` cancels any in-flight debounced rebuild Task.
 ///    Regression would let a rebuild from task A land after the user switched
-///    to task B, overwriting B's cached items with A's data (CLAUDE.md Rule #40).
+///    to task B, overwriting B's cached items with A's data (CLAUDE.md
+///    "Async cache invalidation pattern" rule).
 ///
 /// 3. `scheduleStructuralRebuild` debounce coalescing — two calls within the
 ///    debounce window must collapse to a single rebuild. Regression would turn
@@ -77,7 +78,7 @@ final class TeamActivityFeedViewModelOrchestrationTests: XCTestCase {
         XCTAssertEqual(viewModel.cachedAllSteps.count, 2)
     }
 
-    // MARK: - Task Switch Cancellation (Rule #40 regression guard)
+    // MARK: - Task Switch Cancellation (stale-async-overwrite regression guard)
 
     /// `resetForTaskSwitch()` must cancel any in-flight debounced rebuild so
     /// stale work from the previous task cannot overwrite the fresh VM state.
@@ -97,9 +98,16 @@ final class TeamActivityFeedViewModelOrchestrationTests: XCTestCase {
             delayMilliseconds: 200
         )
         viewModel.resetForTaskSwitch()
+        let versionAfterReset = viewModel.timelineVersion
 
         // Wait well past the debounce window to let any un-cancelled task land.
         try? await Task.sleep(for: .milliseconds(400))
+
+        // An un-cancelled rebuild would bump `timelineVersion` (rebuildTimeline
+        // increments unconditionally) — the cache assertions alone can't catch
+        // it because a stale rebuild of the cleared context produces empty items.
+        XCTAssertEqual(viewModel.timelineVersion, versionAfterReset,
+                       "Cancelled rebuild must not fire after task switch")
 
         // After reset, caches are empty AND the pending rebuild did not resurrect them.
         XCTAssertTrue(viewModel.cachedTimelineItems.isEmpty,
@@ -112,8 +120,11 @@ final class TeamActivityFeedViewModelOrchestrationTests: XCTestCase {
     // MARK: - Debounce Coalescing
 
     /// Two rapid calls to `scheduleStructuralRebuild` within the debounce window
-    /// must collapse into a single rebuild. We assert this indirectly: the first
-    /// call's onComplete must NOT fire (it was cancelled), only the second one does.
+    /// must collapse into a single rebuild. Each rebuild bumps `timelineVersion`,
+    /// so after both calls settle the version must have advanced exactly once.
+    /// Relies on `rebuildTimeline` bumping unconditionally (no fingerprint guard
+    /// on the scheduled path) — if that changes, this assertion no longer
+    /// distinguishes coalescing from a no-op second rebuild.
     func testScheduleStructuralRebuild_rapidCalls_coalesce() async {
         let role = makeRole(id: "r1")
         let run = Run(id: 0, steps: [makeStep(roleDefinitionID: "r1")])
@@ -121,20 +132,122 @@ final class TeamActivityFeedViewModelOrchestrationTests: XCTestCase {
 
         // Seed fingerprint so rebuild has inputs to work with.
         viewModel.recomputeAndRebuild(context: context)
+        let seededVersion = viewModel.timelineVersion
 
-        let firstCompleted = expectation(description: "first onComplete")
-        firstCompleted.isInverted = true  // must NOT fire
-        let secondCompleted = expectation(description: "second onComplete")
-
-        viewModel.scheduleStructuralRebuild(context: context, delayMilliseconds: 50) {
-            firstCompleted.fulfill()
-        }
+        viewModel.scheduleStructuralRebuild(context: context, delayMilliseconds: 50)
         // Immediately re-schedule — this must cancel the first task.
-        viewModel.scheduleStructuralRebuild(context: context, delayMilliseconds: 50) {
-            secondCompleted.fulfill()
-        }
+        viewModel.scheduleStructuralRebuild(context: context, delayMilliseconds: 50)
 
-        await fulfillment(of: [firstCompleted, secondCompleted], timeout: 0.5)
+        // Wait well past the debounce window so any un-cancelled task lands.
+        try? await Task.sleep(for: .milliseconds(300))
+
+        XCTAssertEqual(viewModel.timelineVersion, seededVersion + 1,
+                       "Coalesced schedules must produce exactly one rebuild")
+    }
+
+    // MARK: - At-Bottom Detection (isNearBottom geometry helper)
+
+    /// Truth table for the pure geometry helper that drives auto-scroll gating
+    /// and the scroll-to-bottom button. Threshold is 60pt.
+    func testIsNearBottom_exactlyAtBottom() {
+        // content 1000, container 400 → max offset 600; sitting exactly there.
+        XCTAssertTrue(TeamActivityFeedViewModel.isNearBottom(
+            contentOffsetY: 600, contentHeight: 1000, containerHeight: 400, bottomInset: 0))
+    }
+
+    func testIsNearBottom_withinThreshold() {
+        // 59pt above the bottom — still counts as at bottom.
+        XCTAssertTrue(TeamActivityFeedViewModel.isNearBottom(
+            contentOffsetY: 541, contentHeight: 1000, containerHeight: 400, bottomInset: 0))
+    }
+
+    func testIsNearBottom_exactlyAtThreshold() {
+        // Exactly 60pt above the bottom — the contract is ≤, so this counts.
+        XCTAssertTrue(TeamActivityFeedViewModel.isNearBottom(
+            contentOffsetY: 540, contentHeight: 1000, containerHeight: 400, bottomInset: 0))
+    }
+
+    func testIsNearBottom_beyondThreshold() {
+        // 61pt above the bottom — user has scrolled up.
+        XCTAssertFalse(TeamActivityFeedViewModel.isNearBottom(
+            contentOffsetY: 539, contentHeight: 1000, containerHeight: 400, bottomInset: 0))
+    }
+
+    func testIsNearBottom_bottomOvershoot_rubberBand_isTrue() {
+        // Trackpad bounce past the bottom (offset > max 600) — distance goes
+        // negative; bouncing at the bottom must not flash the button.
+        XCTAssertTrue(TeamActivityFeedViewModel.isNearBottom(
+            contentOffsetY: 650, contentHeight: 1000, containerHeight: 400, bottomInset: 0))
+    }
+
+    func testIsNearBottom_topRubberBand_isFalse() {
+        // Negative offset (rubber-banding at the top of long content) must not
+        // read as "at bottom".
+        XCTAssertFalse(TeamActivityFeedViewModel.isNearBottom(
+            contentOffsetY: -50, contentHeight: 1000, containerHeight: 400, bottomInset: 0))
+    }
+
+    func testIsNearBottom_contentShorterThanContainer_alwaysTrue() {
+        // Nothing to scroll — distance is negative.
+        XCTAssertTrue(TeamActivityFeedViewModel.isNearBottom(
+            contentOffsetY: 0, contentHeight: 200, containerHeight: 400, bottomInset: 0))
+    }
+
+    func testIsNearBottom_bottomInsetExtendsScrollableRange() {
+        // With a 100pt bottom inset, max offset is 700; 600 is 100pt short → not at bottom.
+        XCTAssertFalse(TeamActivityFeedViewModel.isNearBottom(
+            contentOffsetY: 600, contentHeight: 1000, containerHeight: 400, bottomInset: 100))
+        // At the inset-extended bottom, it is.
+        XCTAssertTrue(TeamActivityFeedViewModel.isNearBottom(
+            contentOffsetY: 700, contentHeight: 1000, containerHeight: 400, bottomInset: 100))
+    }
+
+    /// Task switch must reset `isNearBottom` to true — a stale `false` carried
+    /// from the previous task would flash the scroll-to-bottom button before
+    /// the new task's geometry lands.
+    func testResetForTaskSwitch_restoresIsNearBottom() {
+        viewModel.isNearBottom = false
+        viewModel.resetForTaskSwitch()
+        XCTAssertTrue(viewModel.isNearBottom)
+        XCTAssertTrue(viewModel.needsScrollToBottom)
+    }
+
+    // MARK: - Scroll Action Policy (consumeScrollAction)
+
+    /// Task-switch flag outranks the at-bottom gate and produces an instant jump —
+    /// even when the user was scrolled up in the previous task.
+    func testConsumeScrollAction_needsScrollToBottom_jumpsAndOutranksGate() {
+        viewModel.needsScrollToBottom = true
+        viewModel.isNearBottom = false
+        XCTAssertEqual(viewModel.consumeScrollAction(), .jump)
+    }
+
+    /// The task-switch flag is consumed exactly once — the next rebuild falls
+    /// through to the regular at-bottom gate.
+    func testConsumeScrollAction_jumpConsumedExactlyOnce() {
+        viewModel.needsScrollToBottom = true
+        viewModel.isNearBottom = false
+        XCTAssertEqual(viewModel.consumeScrollAction(), .jump)
+        XCTAssertFalse(viewModel.needsScrollToBottom)
+        XCTAssertNil(viewModel.consumeScrollAction(),
+                     "Second rebuild must not jump again — flag was consumed")
+    }
+
+    /// New items while the user sits at the bottom → smooth animated scroll.
+    func testConsumeScrollAction_atBottom_animates() {
+        viewModel.needsScrollToBottom = false
+        viewModel.isNearBottom = true
+        XCTAssertEqual(viewModel.consumeScrollAction(), .animate)
+        // The gate is level-based, not one-shot: staying at the bottom keeps scrolling.
+        XCTAssertEqual(viewModel.consumeScrollAction(), .animate)
+    }
+
+    /// User scrolled up to read history → no scroll at all (the core
+    /// "never yank the user down" contract of this feature).
+    func testConsumeScrollAction_scrolledUp_doesNothing() {
+        viewModel.needsScrollToBottom = false
+        viewModel.isNearBottom = false
+        XCTAssertNil(viewModel.consumeScrollAction())
     }
 
     // MARK: - Step Filtering (computeAllSteps via recomputeSteps)

@@ -54,6 +54,44 @@ final class JSONCoderFactoryTests: XCTestCase {
         XCTAssertTrue(json.contains("1970-01-01T00:00:00.000Z"), "Expected ISO 8601 date with fractional seconds, got: \(json)")
     }
 
+    // MARK: - Wire Encoder
+
+    func testWireEncoderHasExpectedFormatting() {
+        let encoder = JSONCoderFactory.makeWireEncoder()
+        XCTAssertTrue(encoder.outputFormatting.contains(.sortedKeys))
+        // Forward slashes must stay literal so small models don't mis-transcribe
+        // `\/` into backslashes in their edit_file anchors.
+        XCTAssertTrue(encoder.outputFormatting.contains(.withoutEscapingSlashes))
+    }
+
+    func testWireEncoderKeepsForwardSlashesLiteral() throws {
+        let encoder = JSONCoderFactory.makeWireEncoder()
+        let data = try encoder.encode("../systems/Foo.js")
+        let json = String(data: data, encoding: .utf8)!
+        XCTAssertEqual(json, "\"../systems/Foo.js\"", "Forward slash must not be escaped to \\/, got: \(json)")
+    }
+
+    func testWireEncoderStillEscapesLiteralBackslash() throws {
+        let encoder = JSONCoderFactory.makeWireEncoder()
+        // A path that genuinely contains a backslash must round-trip intact.
+        let data = try encoder.encode("../systems\\Foo.js")
+        let json = String(data: data, encoding: .utf8)!
+        XCTAssertEqual(json, "\"../systems\\\\Foo.js\"", "Literal backslash must escape to \\\\, got: \(json)")
+    }
+
+    /// Corner: dropping slash escaping must never produce malformed JSON. Every
+    /// tricky string must still decode back to its exact value.
+    func testWireEncoderRoundTripsTrickyStrings() throws {
+        let encoder = JSONCoderFactory.makeWireEncoder()
+        let decoder = JSONDecoder()
+        let cases = ["", "a/b/c", "a\\b", "q\"q", "n\nl\tt", "Юни/код\\x", "..\\/x"]
+        for original in cases {
+            let data = try encoder.encode(original)
+            let decoded = try decoder.decode(String.self, from: data)
+            XCTAssertEqual(decoded, original, "round-trip failed for \(original)")
+        }
+    }
+
     // MARK: - Date Decoder
 
     func testDateDecoderDecodesISO8601() throws {

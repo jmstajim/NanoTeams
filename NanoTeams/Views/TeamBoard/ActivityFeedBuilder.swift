@@ -476,16 +476,33 @@ nonisolated enum ActivityFeedBuilder {
                    .trimmingCharacters(in: .whitespacesAndNewlines),
                !escalationQ.isEmpty,
                step.supervisorAnswer != nil {
+                // Latest answer turn = the stable anchor for sort position, item
+                // identity, AND the thinking bound. `step.updatedAt` is re-stamped
+                // by every later mutation (tool calls, messages), which made the
+                // card drift below items that happened AFTER the answer; a fresh
+                // UUID() per rebuild broke item identity + the supervisorThinking
+                // window dedup; an unbounded thinking lookup re-bound the card's
+                // "Thinking" row to post-answer reasoning as the step kept running.
+                // The `??` arms are reachable only for task.json persisted before
+                // `StepMessagingService.answerSupervisorQuestion` started appending
+                // the `.supervisorAnswer` message in the same mutation that sets
+                // `supervisorAnswer` — every live escalation-path writer routes
+                // through it, so legacy data keeps the old behavior and new data
+                // never hits the fallback.
+                let answerMsg = answerMessages.last
+                let anchor = answerMsg?.createdAt ?? step.updatedAt
                 let thinking = step.llmConversation
-                    .last(where: { $0.role == .assistant && $0.thinking != nil })?.thinking
+                    .last(where: {
+                        $0.role == .assistant && $0.thinking != nil && $0.createdAt <= anchor
+                    })?.thinking
                 appendSupervisorInputNotification(
                     into: &items,
                     step: step,
                     rawAnswer: step.supervisorAnswer,
                     question: escalationQ,
-                    toolCallID: UUID(),  // synthetic — escalation path has no real tool call
+                    toolCallID: answerMsg?.id ?? UUID(),
                     thinking: thinking,
-                    timestamp: step.updatedAt,
+                    timestamp: anchor,
                     mergeStructuredAttachmentPaths: true,
                     originTaskID: originTaskID
                 )
@@ -547,7 +564,8 @@ nonisolated enum ActivityFeedBuilder {
                 question: question, answer: answer,
                 answerAttachmentPaths: attachmentPaths,
                 answerClippedTexts: answerClippedTexts,
-                toolCallID: toolCallID, thinking: thinking
+                toolCallID: toolCallID, thinking: thinking,
+                wasAutoAnswered: step.supervisorAnswerWasAuto
             ),
             createdAt: timestamp,
             originTaskID: originTaskID

@@ -111,14 +111,15 @@ extension LLMExecutionService {
         //     a seeded state entry and shouldn't auto-cancel.
         // (b) a new step installed its own task during our await — clearing
         //     unconditionally would clobber the successor's pointer.
-        let hadStateAtStart = executionStates[roleID] != nil
-        executionStates[roleID]?.currentToolBatchTask = batchTask
-        if hadStateAtStart && executionStates[roleID]?.currentToolBatchTask != batchTask {
+        let stepKey = TaskStepKey(taskID: task.id, stepID: roleID)
+        let hadStateAtStart = executionStates[stepKey] != nil
+        executionStates[stepKey]?.currentToolBatchTask = batchTask
+        if hadStateAtStart && executionStates[stepKey]?.currentToolBatchTask != batchTask {
             batchTask.cancel()
         }
         let freshResults = await batchTask.value
-        if executionStates[roleID]?.currentToolBatchTask == batchTask {
-            executionStates[roleID]?.currentToolBatchTask = nil
+        if executionStates[stepKey]?.currentToolBatchTask == batchTask {
+            executionStates[stepKey]?.currentToolBatchTask = nil
         }
 
         var freshIdx = 0

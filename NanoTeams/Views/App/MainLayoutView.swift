@@ -18,6 +18,7 @@ struct MainLayoutView: View {
 
     enum NavigationItem: Hashable {
         case watchtower
+        case autovisor
         case task(Int)
     }
 
@@ -130,6 +131,11 @@ struct MainLayoutView: View {
             // Single handler: refreshes the panel + drives queue flush. The controller
             // owns both concerns so the wiring is testable without mounting the view.
             QuickCaptureController.shared.handleEngineStateChanged()
+            // Immediate event-wake for the Autovisor (a task entered
+            // needsSupervisorInput / failed / completed). Debounced (fresh pass)
+            // or injected live into the conversation (manager mid-review) inside;
+            // the poll loop is the level-triggered backstop.
+            Task { await store.wakeAutovisorForEvents() }
         }
         .onChange(of: store.activeTask?.closedAt) { _, newValue in
             QuickCaptureController.shared.handleActiveTaskClosedAtChanged(
@@ -174,6 +180,8 @@ struct MainLayoutView: View {
         case .watchtower, .none:
             @Bindable var config = config
             WatchtowerView(taskState: taskState, navigationSelection: $selectedItem, clearedUpToDate: $config.timelineClearedUpToDate)
+        case .autovisor:
+            autovisorDetail
         case .task(let id):
             if store.activeTask?.id == id {
                 TeamBoardView(workFolder: store.workFolder)
@@ -185,6 +193,31 @@ struct MainLayoutView: View {
                     .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
                     .task { await store.switchTask(to: id) }
             }
+        }
+    }
+
+    /// The Autovisor's activity feed — its hidden task rendered through the
+    /// standard TeamBoard (switchTask makes it active; the sidebar still hides it).
+    @ViewBuilder
+    private var autovisorDetail: some View {
+        if let id = store.autovisorTaskID {
+            if store.activeTask?.id == id {
+                TeamBoardView(workFolder: store.workFolder).id(id)
+            } else {
+                NTMSLoader(.large)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(NTMSBackground())
+                    .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+                    .task { await store.switchTask(to: id) }
+            }
+        } else {
+            ContentUnavailableView(
+                "Autovisor is off",
+                systemImage: "folder.badge.person.crop",
+                description: Text("Enable it in Settings → Autovisor.")
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(NTMSBackground())
         }
     }
 }

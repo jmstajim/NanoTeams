@@ -30,6 +30,14 @@ extension NTMSOrchestrator {
     func openWorkFolder(_ url: URL) async {
         stopAllEngines()
         stopAutomationScheduler()
+        // Clear the previous folder's auto-off deadline BEFORE the new poll loop
+        // starts (below): its first tick sleeps only until the next minute boundary
+        // and could fire `evaluateAutovisorAutoDisable` with a stale (possibly
+        // expired) deadline against the NEW folder's snapshot — spuriously
+        // disabling its Autovisor. Clear only — `rearmAutovisorAutoDisable()` here
+        // would re-arm from the OLD folder's still-loaded snapshot; the fresh
+        // re-arm for this folder happens after `ensureAutovisorTask()`.
+        clearAutovisorAutoDisable()
         llmExecutionService.cancelAllExecutions()
         await tearDownSearchIndexCoordinator()
         workFolderURL = url
@@ -68,10 +76,37 @@ extension NTMSOrchestrator {
             // appear in memory when a fresh `delegate_to_team` runs.
             await ensureDelegationDescendantsLoaded(of: self.activeTaskID)
 
+            // Sweep the REST of the index: the block above recovered only the
+            // active task (+ its descendants via the load above), so every
+            // other task that was running when the app quit still shows a
+            // stale "Working" summary in the sidebar. Runs BEFORE the
+            // scheduler and the Autovisor's open-time review — both read
+            // statuses and must see honest values.
+            await recoverStaleStatusesAcrossIndex(folderURL: url)
+
             // Start recurring-task scheduling + run-timeout watchdog for this
             // folder. Runs after descendants are loaded so the scheduler's
             // eviction never drops a task the active feed/graph still needs.
             await startAutomationScheduler()
+
+            // Autovisor: ensure the team is always present in teams.json (regardless
+            // of the enabled toggle) so it shows as a protected entry in Settings →
+            // Teams. The manager *task/run* below stays gated by `autovisorEnabled`.
+            await ensureAutovisorTeam()
+
+            // Autovisor: ensure the hidden singleton manager task exists (lazily,
+            // only when enabled) and kick off an open-time review pass. The open-time
+            // run is mandatory (dive-deeper finding 11) — tasks left waiting for the
+            // manager after restart would otherwise hang, since the event-wake is
+            // edge-triggered (no transition on load) and missed recurrence slots are
+            // skipped. Runs after the scheduler so the manager's recurrence is live.
+            await ensureAutovisorTask()
+
+            // Auto-off sleep timer: the deadline is in-memory by design, so every
+            // launch / folder switch re-arms a fresh countdown from "now" (and
+            // clears it when this folder has the feature off — including default
+            // storage, which `closeProject`/`resetAllData` funnel into).
+            rearmAutovisorAutoDisable()
 
             if !snapshot.deferredReconcileTeamIDs.isEmpty {
                 let count = snapshot.deferredReconcileTeamIDs.count
@@ -90,6 +125,87 @@ extension NTMSOrchestrator {
         // is nil and reconcile will unload anything we had loaded for the
         // prior folder.
         await reconcileEmbeddingLifecycle()
+    }
+
+    // MARK: - Stale Status Sweep
+
+    /// Startup sweep: recovers stale "active-looking" statuses for every task in
+    /// the index that has no live engine, then evicts what the UI doesn't need.
+    /// Error banners are aggregated into ONE summary message (same pattern as
+    /// `ensureDelegationDescendantsLoaded` — a serial loop without aggregation
+    /// would silently show only the last failure). Per-iteration restores go to
+    /// the banner value captured just before that iteration's calls (not a
+    /// pre-loop snapshot), so a banner set by a concurrent path during an
+    /// earlier iteration's awaits isn't destroyed.
+    func recoverStaleStatusesAcrossIndex(folderURL: URL) async {
+        let staleEntries = (snapshot?.tasksIndex.tasks ?? [])
+            .filter { $0.status == .running || $0.status == .needsSupervisorInput }
+            .map { (id: $0.id, status: $0.status) }            // snapshot — mutateTask re-sorts the live array mid-loop
+        guard !staleEntries.isEmpty else { return }
+        var failedIDs: [Int] = []
+        for entry in staleEntries {
+            let taskID = entry.id
+            guard taskID != activeTaskID else { continue }     // recovered earlier in openWorkFolder
+            guard taskEngines[taskID] == nil else { continue } // defensive: never touch a live engine
+            // Folder-switch guard sits SYNCHRONOUSLY before every persist-capable
+            // call — no suspension point between the check and the callee's
+            // folder-URL capture (`mutateTask` / `ensureTaskLoaded` both bind
+            // `workFolderURL` synchronously at entry; the detached disk write
+            // targets that captured URL). Task IDs are per-folder sequential
+            // ints — a stale ID from the old index must never resolve against
+            // (and persist into) a different folder. `break`, not `return`:
+            // failures collected so far still get their aggregate banner.
+            guard workFolderURL == folderURL else { break }
+            let bannerBefore = lastErrorMessage
+            if var probe = loadedTask(taskID) {
+                // In-process re-open: `apply` preserved `loadedTasks` (same folder),
+                // so `ensureTaskLoaded` would short-circuit without recovering.
+                // Probe first so chat-mode steady-state `.running` doesn't churn updatedAt.
+                guard StatusRecoveryService.recoverStaleStatuses(in: &probe) else { continue }
+                let persisted = await mutateTask(taskID: taskID) {
+                    _ = StatusRecoveryService.recoverStaleStatuses(in: &$0)
+                }
+                if !persisted {
+                    failedIDs.append(taskID)
+                    lastErrorMessage = bannerBefore            // restore: aggregate banner below
+                }
+                // Parity with the ensureTaskLoaded branch (which seeds via
+                // syncEngineStateFromRun): `stopAllEngines()` at open wiped the
+                // engine entry and `switchTask` never re-seeds — neither its
+                // fast path nor (after the eviction below forces a cold read)
+                // its slow path — so TeamBoard would show Start instead of Resume.
+                if let recovered = loadedTask(taskID) {
+                    syncEngineStateFromRun(taskID: taskID, task: recovered)
+                }
+            } else {
+                let persisted = await ensureTaskLoaded(taskID)
+                guard let loaded = loadedTask(taskID) else {   // load failed (missing/corrupt task.json) — collect, keep sweeping
+                    failedIDs.append(taskID)
+                    lastErrorMessage = bannerBefore            // restore: aggregate banner below
+                    continue
+                }
+                // The sweep owns reporting from here: restore any per-task banner
+                // `ensureTaskLoaded` set (e.g. "may diverge from disk" after a
+                // recovery whose persist failed) — the convergence write below
+                // retries that exact write, so the banner is either about to be
+                // healed or re-collected into the aggregate.
+                lastErrorMessage = bannerBefore
+                // Crash-window mismatch: index said .running but the task's steps
+                // were already terminal → recovery was a no-op and nothing was
+                // persisted, so the DISK index would stay stale and re-trigger
+                // this sweep on every open. Converge it with one narrow write
+                // (which doubles as the retry for a failed recovery persist).
+                if !persisted, loaded.toSummary().status != entry.status {
+                    do { try repository.updateTaskOnly(at: folderURL, task: loaded) }
+                    catch { failedIDs.append(taskID) }
+                }
+            }
+            evictIfReclaimable(taskID)
+        }
+        if !failedIDs.isEmpty {
+            lastErrorMessage = "Could not recover status for \(failedIDs.count) task(s): " +
+                failedIDs.map { "#\($0)" }.joined(separator: ", ")
+        }
     }
 
     // MARK: - Search Index Coordinator Lifecycle
@@ -400,6 +516,68 @@ extension NTMSOrchestrator {
         }
     }
 
+    // MARK: - Autovisor settings
+
+    func updateAutovisorGoal(_ goal: String) async {
+        await mutateWorkFolder { proj in
+            proj.settings.autovisorGoal = goal
+        }
+        // The manager's brief (rendered as "## Supervisor Goal") IS its goal —
+        // keep the task's `supervisorTask` in lock-step so the prompt and the
+        // manager's own activity feed reflect the edited goal immediately. The
+        // manager is a background task that can be evicted from `loadedTasks`, so
+        // load it first (mirrors `updateTaskTitle`): without this, `mutateTask`'s
+        // background branch fails with a misleading "task not loaded" banner and
+        // the brief silently diverges from the persisted goal until the next
+        // `ensureAutovisorTask`.
+        if let id = autovisorTaskID {
+            await ensureTaskLoaded(id)
+            guard loadedTask(id) != nil else { return }  // load error already surfaced
+            await mutateTask(taskID: id) { task in
+                if task.supervisorTask != goal { task.supervisorTask = goal }
+            }
+        }
+    }
+
+    /// Persists the Autovisor's standing memory. Used by both the Settings
+    /// editor and the manager's own `update_scratchpad` write-through.
+    func updateAutovisorMemory(_ memory: String) async {
+        await mutateWorkFolder { proj in
+            proj.settings.autovisorMemory = memory
+        }
+    }
+
+    /// Persists the Autovisor's event-wake triggers + debounce + auto-off timer.
+    /// `clamped()` re-floors `minSecondsBetweenRuns`/`autoDisableAfterSeconds` here
+    /// because the editor's bindings mutate the fields directly, bypassing the init
+    /// clamps (same rationale as `updateAutovisorTuning`).
+    func updateAutovisorActivation(_ activation: AutovisorActivation) async {
+        let oldAutoOff = snapshot?.workFolder.settings.autovisorActivation.effectiveAutoDisableAfterSeconds
+        await mutateWorkFolder { proj in
+            proj.settings.autovisorActivation = activation.clamped()
+        }
+        // Sleep timer: any persisted change to the EFFECTIVE duration (toggle or
+        // value) re-arms from "now" — that's the sleep-timer contract. Compare
+        // PERSISTED old vs new (post-clamp, post-write) so flipping an unrelated
+        // wake trigger — the whole struct arrives via `.onChange(of: activation)` —
+        // never resets a running timer, and a failed write re-arms nothing.
+        let newAutoOff = snapshot?.workFolder.settings.autovisorActivation.effectiveAutoDisableAfterSeconds
+        if oldAutoOff != newAutoOff {
+            rearmAutovisorAutoDisable()
+        }
+    }
+
+    /// Persists the Autovisor's numeric behaviour caps (throughput + stuck
+    /// detection). Read live by `createManagedTask` and the stuck detector — no
+    /// engine restart needed. `clamped()` re-applies the floors here because the
+    /// editor's `$tuning.field` bindings mutate fields directly, bypassing the
+    /// init clamps.
+    func updateAutovisorTuning(_ tuning: AutovisorTuning) async {
+        await mutateWorkFolder { proj in
+            proj.settings.autovisorTuning = tuning.clamped()
+        }
+    }
+
     func fetchAvailableSchemes() async -> [String] {
         guard let workFolderRoot = workFolderURL else { return [] }
         return await workFolderManagementService.fetchAvailableSchemes(workFolderRoot: workFolderRoot)
@@ -424,6 +602,9 @@ extension NTMSOrchestrator {
         do {
             let snapshot = try settingsService.resetWorkFolderSettings(at: url)
             apply(snapshot)
+            // Reset re-bootstraps the default templates (which exclude Autovisor) —
+            // re-seed the always-present protected singleton so it survives a reset.
+            await ensureAutovisorTeam()
         } catch {
             self.lastErrorMessage = error.localizedDescription
         }
@@ -433,8 +614,20 @@ extension NTMSOrchestrator {
 
     /// Switches to a different team and syncs roleStatuses in the current run.
     func switchTeam(to teamID: NTMSID) async {
+        // The Autovisor manager is permanently bound to its own team — re-teaming
+        // it would drop its steps/role statuses and break the manager. The UI
+        // (TeamActivityFeedView.teamHeaderMenu) renders a static label there, so
+        // this guard is defense-in-depth. Careful: both ids are Int?, and a bare
+        // `==` is true when BOTH are nil (no active task + no manager pinned),
+        // which would wrongly block the switch — unwrap before comparing.
+        if let id = activeTaskID, id == autovisorTaskID { return }
         guard let currentSnapshot = snapshot else { return }
-        guard let team = currentSnapshot.workFolder.teams.first(where: { $0.id == teamID }) else { return }
+        // Symmetric protection: a normal task must never be re-teamed ONTO the
+        // Autovisor team either — it would acquire the manager's management tools
+        // and its scratchpad writes would overwrite the real manager's memory
+        // (isAutovisorStep keys on the team's templateID, not the pinned task id).
+        guard let team = currentSnapshot.workFolder.teams.first(where: { $0.id == teamID }),
+              !team.isManagedSingleton else { return }
 
         // Writes only workfolder.json (activeTeamID diff).
         await mutateWorkFolder { proj in

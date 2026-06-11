@@ -37,6 +37,7 @@ extension LLMExecutionService {
         effectiveConfig: LLMConfig,
         globalConfig: LLMConfig,
         stepID: String,
+        taskID: Int,
         service: LLMExecutionService,
         session: any NetworkSession = URLSession.shared,
         resolver: any LLMTokenResolver = DefaultLLMTokenResolver()
@@ -47,7 +48,7 @@ extension LLMExecutionService {
             session: session,
             resolver: resolver,
             appendSystemMessage: { content in
-                await service.appendLLMMessage(stepID: stepID, role: .system, content: content)
+                await service.appendLLMMessage(stepID: stepID, taskID: taskID, role: .system, content: content)
             }
         )
     }
@@ -169,8 +170,24 @@ extension LLMExecutionService {
             allowedIDs = SystemTemplates.fallbackToolIDs[role.baseID] ?? SystemTemplates.fallbackCustomRoleToolIDs
         }
 
-        // 3. Filter all tools (and strip control-flow tools that have a dedicated invocation path)
-        let allTools = ToolDefinitionRegistry.shared.allToolSchemas()
+        // 3. Build the candidate set from the LIVE handler registry — the
+        // authoritative list of tools that actually have runnable handlers —
+        // overlaid with any persisted user customizations (edited descriptions
+        // in tools.json). Sourcing availability from the persisted snapshot
+        // alone is unsafe: tools.json lags the bundled set until a version-bump
+        // reconcile or explicit save runs, so a freshly added tool (e.g. the
+        // Autovisor management tools) is absent from the snapshot and would
+        // be silently dropped here — the model calls it and hits
+        // `tool_not_authorized` even though its handler is registered and
+        // runnable. The same gap silently drops the `ask_supervisor` /
+        // `conclude_meeting` / delegation auto-injections below (all sourced
+        // from `allTools`). Then strip control-flow tools that have a dedicated
+        // invocation path.
+        let persistedByName = Dictionary(
+            ToolDefinitionRegistry.shared.allToolSchemas().map { ($0.name, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let allTools = ToolHandlerRegistry.allSchemas.map { persistedByName[$0.name] ?? $0 }
         let unavailable = ToolHandlerRegistry.unavailableToRoles
         var allowedTools = allTools.filter { toolDef in
             allowedIDs.contains(toolDef.name) && !unavailable.contains(toolDef.name)
@@ -203,8 +220,19 @@ extension LLMExecutionService {
             allowedTools.removeAll { $0.name == tn.analyzeImage }
         }
 
-        // 4. Auto-inject ask_supervisor for non-producing, non-observer roles
-        if let roleDefinition, roleDefinition.shouldAutoInjectAskSupervisor {
+        // 3.3 Autovisor: embed the team catalog inline in create_managed_task's
+        // description (per-build, same pattern as delegate_to_team) so the manager knows
+        // valid team_ids. Only the hidden Manager role carries create_managed_task.
+        if let idx = allowedTools.firstIndex(where: { $0.name == tn.createManagedTask }) {
+            allowedTools[idx] = CreateManagedTaskTool.buildSchema(allTeams: allTeams)
+        }
+
+        // 4. Auto-inject ask_supervisor for non-producing, non-observer roles —
+        // EXCEPT the Autovisor. The manager IS the top Supervisor (no one to
+        // escalate to); under autonomous mode its own ask_supervisor would just be
+        // auto-answered in a self-loop. The human steers it by messaging it instead.
+        if let roleDefinition, roleDefinition.shouldAutoInjectAskSupervisor,
+           team?.templateID != AutovisorConstants.teamTemplateID {
             if let supervisorTool = allTools.first(where: { $0.name == tn.askSupervisor }) {
                 if !allowedTools.contains(where: { $0.name == tn.askSupervisor }) {
                     allowedTools.append(supervisorTool)

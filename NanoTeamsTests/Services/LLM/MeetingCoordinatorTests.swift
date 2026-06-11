@@ -22,7 +22,18 @@ final class MeetingCoordinatorTests: XCTestCase {
         XCTAssertTrue(excluded.contains(TN.cancelDelegation))
         XCTAssertTrue(excluded.contains(TN.resumeDelegation))
         XCTAssertTrue(excluded.contains(TN.forwardToTeam))
-        XCTAssertEqual(excluded.count, 12)
+        // Autovisor management tools (all excludedInMeetings).
+        XCTAssertTrue(excluded.contains(TN.listTasks))
+        XCTAssertTrue(excluded.contains(TN.taskStatus))
+        XCTAssertTrue(excluded.contains(TN.createManagedTask))
+        XCTAssertTrue(excluded.contains(TN.controlTask))
+        XCTAssertTrue(excluded.contains(TN.manageRole))
+        XCTAssertTrue(excluded.contains(TN.answerTaskQuestion))
+        XCTAssertTrue(excluded.contains(TN.messageTask))
+        XCTAssertTrue(excluded.contains(TN.scheduleTask))
+        XCTAssertTrue(excluded.contains(TN.setWorkFolderContext))
+        XCTAssertTrue(excluded.contains(TN.waitForEvents))
+        XCTAssertEqual(excluded.count, 22)
     }
 
     // MARK: - filterMeetingTools

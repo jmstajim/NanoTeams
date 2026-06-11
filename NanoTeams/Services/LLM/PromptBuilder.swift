@@ -121,8 +121,11 @@ nonisolated struct PromptBuilder {
             ChatMessage(role: .system, content: system)
         ]
 
-        // 1. Supervisor Task FIRST
-        if let supervisorTaskSection = buildSupervisorTaskSection(task: context.task) {
+        // 1. Supervisor Task FIRST. The Autovisor renders it as "Supervisor
+        //    Goal" — its brief IS its goal (kept in sync with settings.autovisorGoal).
+        let supervisorHeader = context.activeTeam?.templateID == AutovisorConstants.teamTemplateID
+            ? "Supervisor Goal" : "Supervisor Task"
+        if let supervisorTaskSection = buildSupervisorTaskSection(task: context.task, header: supervisorHeader) {
             messages.append(ChatMessage(role: .user, content: supervisorTaskSection))
         }
 

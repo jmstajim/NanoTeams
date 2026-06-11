@@ -91,7 +91,9 @@ struct ToolDefinitionEditorView: View {
     }
 
     private var categorizedTools: [ToolCategoryGroup] {
-        let categories = ToolConstants.displayCategories
+        // Complete categorization (delegation / Autovisor / auto-injected tools
+        // included) so the definitions list has named sections instead of "Other".
+        let categories = ToolConstants.definitionDisplayCategories
         let toolsByID = Dictionary(uniqueKeysWithValues: tools.map { ($0.id, $0) })
         var usedIDs = Set<String>()
         var groups: [ToolCategoryGroup] = []

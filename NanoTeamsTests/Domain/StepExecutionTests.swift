@@ -44,6 +44,7 @@ final class StepExecutionTests: XCTestCase {
             needsSupervisorInput: true,
             supervisorQuestion: "Should I continue?",
             supervisorAnswer: "Yes",
+            supervisorAnswerWasAuto: true,
             supervisorCommentForNext: "Good job",
             tokenUsage: TokenUsage(inputTokens: 100, outputTokens: 50),
             llmConversation: [LLMMessage(role: .user, content: "Hello")],
@@ -64,6 +65,7 @@ final class StepExecutionTests: XCTestCase {
         XCTAssertFalse(step.needsSupervisorInput)
         XCTAssertNil(step.supervisorQuestion)
         XCTAssertNil(step.supervisorAnswer)
+        XCTAssertFalse(step.supervisorAnswerWasAuto)
         XCTAssertNil(step.supervisorCommentForNext)
         XCTAssertNil(step.tokenUsage)
         XCTAssertTrue(step.llmConversation.isEmpty)

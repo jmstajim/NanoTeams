@@ -176,7 +176,7 @@ final class ToolExecutionTests: XCTestCase {
                 isError: false
             )
         }
-        service.executionStates["test_role"] = LLMExecutionService.StepExecutionState(taskID: 0)
+        service.executionStates[TaskStepKey(taskID: 0, stepID: "test_role")] = LLMExecutionService.StepExecutionState()
         let probeRuntime = ToolRuntime(registry: registry, logger: nil)
 
         for _ in 0..<2 {
@@ -207,7 +207,7 @@ final class ToolExecutionTests: XCTestCase {
         let args = #"{"path":"dup.txt","content":"hello"}"#
         let call1 = makeToolCall(name: "write_file", args: args)
         let call2 = makeToolCall(name: "write_file", args: args)
-        service.executionStates["test_role"] = LLMExecutionService.StepExecutionState(taskID: 0)
+        service.executionStates[TaskStepKey(taskID: 0, stepID: "test_role")] = LLMExecutionService.StepExecutionState()
 
         let batch = await service.executeToolCalls(
             resolvedToolCalls: [call1, call2],
@@ -396,7 +396,7 @@ final class ToolExecutionTests: XCTestCase {
         }
         // Seed an execution state so `currentToolBatchTask` wiring uses the
         // real path rather than the orphan-cancel branch.
-        service.executionStates["test_role"] = LLMExecutionService.StepExecutionState(taskID: 0)
+        service.executionStates[TaskStepKey(taskID: 0, stepID: "test_role")] = LLMExecutionService.StepExecutionState()
 
         let probeRuntime = ToolRuntime(registry: registry, logger: nil)
         let batch = await service.executeToolCalls(
@@ -447,7 +447,7 @@ final class ToolExecutionTests: XCTestCase {
             )
         }
 
-        service.executionStates["test_role"] = LLMExecutionService.StepExecutionState(taskID: 0)
+        service.executionStates[TaskStepKey(taskID: 0, stepID: "test_role")] = LLMExecutionService.StepExecutionState()
         let probeRuntime = ToolRuntime(registry: registry, logger: nil)
         let call1 = makeToolCall(name: probe1Name)
         let call2 = makeToolCall(name: probe2Name)
@@ -579,6 +579,7 @@ final class ToolExecutionTests: XCTestCase {
 
         await service.injectMemories(
             stepID: stepID,
+            taskID: 0,
             memoryStore: memoryStore,
             session: session,
             conversationMessages: &messages
@@ -604,11 +605,11 @@ final class ToolExecutionTests: XCTestCase {
         setupDelegateWithTask(stepID: stepID)
 
         await service.injectMemories(
-            stepID: stepID, memoryStore: memoryStore,
+            stepID: stepID, taskID: 0, memoryStore: memoryStore,
             session: session, conversationMessages: &messages
         )
         await service.injectMemories(
-            stepID: stepID, memoryStore: memoryStore,
+            stepID: stepID, taskID: 0, memoryStore: memoryStore,
             session: session, conversationMessages: &messages
         )
 
@@ -626,7 +627,7 @@ final class ToolExecutionTests: XCTestCase {
         setupDelegateWithTask(stepID: stepID)
 
         await service.injectMemories(
-            stepID: stepID, memoryStore: memoryStore,
+            stepID: stepID, taskID: 0, memoryStore: memoryStore,
             session: session, conversationMessages: &messages
         )
 
@@ -652,7 +653,7 @@ final class ToolExecutionTests: XCTestCase {
         setupDelegateWithTask(stepID: stepID)
 
         await service.injectMemories(
-            stepID: stepID, memoryStore: memoryStore,
+            stepID: stepID, taskID: 0, memoryStore: memoryStore,
             session: session, conversationMessages: &messages
         )
 
@@ -670,11 +671,12 @@ final class ToolExecutionTests: XCTestCase {
         ]
 
         service._testRegisterStepTask(stepID: stepID, taskID: Int())
-        service._testSetMemoriesMessageIndex(stepID: stepID, index: 0)
+        service._testSetMemoriesMessageIndex(stepID: stepID, taskID: 0, index: 0)
         setupDelegateWithTask(stepID: stepID)
 
         await service.injectMemories(
             stepID: stepID,
+            taskID: 0,
             memoryStore: memoryStore,
             session: nil,
             conversationMessages: &messages
@@ -700,13 +702,14 @@ final class ToolExecutionTests: XCTestCase {
 
         await service.injectMemories(
             stepID: stepID,
+            taskID: 0,
             memoryStore: memoryStore,
             session: nil,
             conversationMessages: &messages
         )
 
         XCTAssertEqual(messages.count, 3)
-        XCTAssertEqual(service._testGetMemoriesMessageIndex(stepID: stepID), 2)
+        XCTAssertEqual(service._testGetMemoriesMessageIndex(stepID: stepID, taskID: 0), 2)
     }
 
     // MARK: - checkAndInjectLoopWarning
@@ -723,6 +726,7 @@ final class ToolExecutionTests: XCTestCase {
 
         await service.checkAndInjectLoopWarning(
             stepID: stepID,
+            taskID: 0,
             tracker: tracker,
             conversationMessages: &messages
         )
@@ -749,6 +753,7 @@ final class ToolExecutionTests: XCTestCase {
 
         await service.checkAndInjectLoopWarning(
             stepID: stepID,
+            taskID: 0,
             tracker: tracker,
             conversationMessages: &messages
         )
@@ -787,6 +792,49 @@ final class ToolExecutionTests: XCTestCase {
         XCTAssertNil(result, "Manual mode should not auto-answer")
     }
 
+    func testHandleSupervisorAutoAnswer_autovisorSupervised_suppressesAutoAnswer() async {
+        // Autovisor universal-supervisor gate (AutovisorPolicy.supervisesTask):
+        // a top-level non-manager task in autonomous mode must NOT be
+        // auto-answered while the feature + trigger are on — the step parks at
+        // .needsSupervisorInput and the manager answers it. Returning nil here
+        // (without touching the conversation) is what makes the tool loop stop
+        // for supervisor instead of generating an in-loop answer.
+        mockDelegate.snapshot = WorkFolderContext(
+            projection: WorkFolderProjection(
+                state: WorkFolderState(name: "Test", autovisorTaskID: 99),
+                settings: ProjectSettings(autovisorEnabled: true),
+                teams: []
+            ),
+            tasksIndex: TasksIndex(),
+            toolDefinitions: [],
+            activeTaskID: nil,
+            activeTask: nil
+        )
+
+        let outcome = LLMExecutionService.ToolResultsOutcome(
+            shouldStopForSupervisor: true,
+            supervisorQuestion: "What framework?",
+            supervisorToolCallProviderID: "tc-1"
+        )
+        var messages: [ChatMessage] = []
+        let task = makeTask()  // id 0, top-level — not the manager (99)
+
+        let result = await service.handleSupervisorAutoAnswer(
+            outcome: outcome,
+            stepID: "test_step",
+            supervisorMode: .autonomous,
+            task: task,
+            runIndex: 0,
+            stepIndex: 0,
+            client: NativeLMStudioClient(),
+            config: LLMConfig(),
+            conversationMessages: &messages
+        )
+
+        XCTAssertNil(result, "Supervised task must not auto-answer — the manager answers it")
+        XCTAssertTrue(messages.isEmpty, "Suppression must not inject any answer message")
+    }
+
     func testHandleSupervisorAutoAnswer_noQuestion_returnsNil() async {
         let stepID = "test_step"
         let outcome = LLMExecutionService.ToolResultsOutcome(
@@ -817,37 +865,37 @@ final class ToolExecutionTests: XCTestCase {
     func testClearRunningTask_cleansAllState() {
         let stepID = "test_step"
 
-        service._testSetPlanMessageIndex(stepID: stepID, index: 5)
-        service._testSetMemoriesMessageIndex(stepID: stepID, index: 3)
-        service._testSetOriginalSystemPrompt(stepID: stepID, prompt: "test")
+        service._testSetPlanMessageIndex(stepID: stepID, taskID: 0, index: 5)
+        service._testSetMemoriesMessageIndex(stepID: stepID, taskID: 0, index: 3)
+        service._testSetOriginalSystemPrompt(stepID: stepID, taskID: 0, prompt: "test")
 
-        service.clearRunningTask(stepID: stepID)
+        service.clearRunningTask(stepID: stepID, taskID: 0)
 
-        XCTAssertNil(service._testGetPlanMessageIndex(stepID: stepID))
-        XCTAssertNil(service._testGetMemoriesMessageIndex(stepID: stepID))
-        XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: stepID))
+        XCTAssertNil(service._testGetPlanMessageIndex(stepID: stepID, taskID: 0))
+        XCTAssertNil(service._testGetMemoriesMessageIndex(stepID: stepID, taskID: 0))
+        XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: stepID, taskID: 0))
     }
 
     func testCancelStepExecution_cleansState() async {
         let stepID = "test_step"
 
-        service._testSetPlanMessageIndex(stepID: stepID, index: 5)
-        service._testSetMemoriesMessageIndex(stepID: stepID, index: 3)
-        service._testSetOriginalSystemPrompt(stepID: stepID, prompt: "test")
+        service._testSetPlanMessageIndex(stepID: stepID, taskID: 0, index: 5)
+        service._testSetMemoriesMessageIndex(stepID: stepID, taskID: 0, index: 3)
+        service._testSetOriginalSystemPrompt(stepID: stepID, taskID: 0, prompt: "test")
 
-        await service.cancelStepExecution(stepID: stepID)
+        await service.cancelStepExecution(stepID: stepID, taskID: 0)
 
-        XCTAssertNil(service._testGetPlanMessageIndex(stepID: stepID))
-        XCTAssertNil(service._testGetMemoriesMessageIndex(stepID: stepID))
-        XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: stepID))
+        XCTAssertNil(service._testGetPlanMessageIndex(stepID: stepID, taskID: 0))
+        XCTAssertNil(service._testGetMemoriesMessageIndex(stepID: stepID, taskID: 0))
+        XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: stepID, taskID: 0))
     }
 
     func testCancelAllExecutions_cleansAllState() {
         let step1 = "step1"
         let step2 = "step2"
 
-        service._testSetPlanMessageIndex(stepID: step1, index: 1)
-        service._testSetPlanMessageIndex(stepID: step2, index: 2)
+        service._testSetPlanMessageIndex(stepID: step1, taskID: 0, index: 1)
+        service._testSetPlanMessageIndex(stepID: step2, taskID: 0, index: 2)
 
         service.cancelAllExecutions()
 

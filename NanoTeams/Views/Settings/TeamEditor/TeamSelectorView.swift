@@ -7,6 +7,8 @@ import SwiftUI
 struct TeamSelectorView: View {
     let teams: [Team]
     let activeTeamID: NTMSID
+    let canDelete: Bool
+    let canDuplicate: Bool
     let onSelect: (NTMSID) -> Void
     let onAdd: () -> Void
     let onGenerate: () -> Void
@@ -24,22 +26,17 @@ struct TeamSelectorView: View {
 
             Divider()
 
-            // Team list
-            ForEach(teams) { team in
-                Button {
-                    onSelect(team.id)
-                } label: {
-                    HStack {
-                        if team.id == activeTeamID {
-                            Image(systemName: "checkmark")
-                        }
-                        Text(team.name)
+            // Team list — regular teams first, then the managed singleton
+            // (Autovisor) behind its own divider so it reads as a distinct entry.
+            ForEach(teams.filter { !$0.isManagedSingleton }) { team in
+                teamRow(team)
+            }
 
-                        Spacer()
-
-                        Text("\(team.memberCount) members")
-                            .foregroundStyle(.secondary)
-                    }
+            let singletons = teams.filter { $0.isManagedSingleton }
+            if !singletons.isEmpty {
+                Divider()
+                ForEach(singletons) { team in
+                    teamRow(team)
                 }
             }
 
@@ -52,13 +49,15 @@ struct TeamSelectorView: View {
                 Label("New Team...", systemImage: "plus")
             }
 
-            Button {
-                onDuplicate()
-            } label: {
-                Label("Duplicate Team", systemImage: "doc.on.doc")
+            if canDuplicate {
+                Button {
+                    onDuplicate()
+                } label: {
+                    Label("Duplicate Team", systemImage: "doc.on.doc")
+                }
             }
 
-            if teams.count > 1 {
+            if canDelete {
                 Divider()
 
                 Button(role: .destructive) {
@@ -110,6 +109,25 @@ struct TeamSelectorView: View {
         .fixedSize()
     }
 
+    @ViewBuilder
+    private func teamRow(_ team: Team) -> some View {
+        Button {
+            onSelect(team.id)
+        } label: {
+            HStack {
+                if team.id == activeTeamID {
+                    Image(systemName: "checkmark")
+                }
+                Text(team.name)
+
+                Spacer()
+
+                Text("\(team.memberCount) members")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
     private var activeTeam: Team? {
         teams.first { $0.id == activeTeamID }
     }
@@ -133,6 +151,8 @@ struct TeamSelectorView: View {
     TeamSelectorView(
         teams: [team1, team2],
         activeTeamID: team1.id,
+        canDelete: true,
+        canDuplicate: true,
         onSelect: { _ in },
         onAdd: {},
         onGenerate: {},

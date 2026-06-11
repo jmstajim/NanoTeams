@@ -23,7 +23,7 @@ extension NTMSOrchestrator {
         // Cancel LLM for steps being reset
         if let task = loadedTask(taskID), let run = task.runs.last {
             for step in run.steps where rolesToReset.contains(step.effectiveRoleID) {
-                await llmExecutionService.cancelStepExecution(stepID: step.id)
+                await llmExecutionService.cancelStepExecution(stepID: step.id, taskID: taskID)
             }
         }
 
@@ -62,30 +62,43 @@ extension NTMSOrchestrator {
     }
 
     /// Finishes an advisory role immediately — sets step and role to `.done`.
-    /// Can be called at any point once the role is ready or working.
+    /// Can be called at any point once the role is ready or working. Fire-and-forget
+    /// wrapper around `finishAdvisoryRoleAwaiting` for UI call sites (button actions).
     func finishAdvisoryRole(taskID: Int, roleID: String) {
-        Task {
-            // 1. Cancel running LLM task if step is active
-            if let step = loadedTask(taskID)?.runs.last?.stepsByRoleBaseID()[roleID] {
-                await llmExecutionService.cancelStepExecution(stepID: step.id)
-                clearStreamingPreview(stepID: step.id)
-            }
+        Task { _ = await self.finishAdvisoryRoleAwaiting(taskID: taskID, roleID: roleID) }
+    }
 
-            // 2. Mutate: step → .done, role → .done
-            await self.mutateTask(taskID: taskID) { task in
-                guard var run = task.runs.last else { return }
-                if let s = run.steps.firstIndex(where: { $0.effectiveRoleID == roleID }) {
-                    run.steps[s].status = .done
-                    run.steps[s].completedAt = MonotonicClock.shared.now()
-                }
-                run.roleStatuses[roleID] = .done
-                run.updatedAt = MonotonicClock.shared.now()
-                task.runs[task.runs.count - 1] = run
-            }
-
-            // 3. Wake engine to check completion / start dependents
-            taskEngines[taskID]?.notifyExternalEvent()
+    /// Awaitable core of advisory finish. Returns `true` iff a matching step was
+    /// found and set to `.done` — so callers that need a real outcome (the Folder
+    /// Manager's `finish_advisory`) can report success/failure instead of assuming
+    /// the fire-and-forget `Task` succeeded.
+    @discardableResult
+    func finishAdvisoryRoleAwaiting(taskID: Int, roleID: String) async -> Bool {
+        // 1. Cancel running LLM task if step is active
+        if let step = loadedTask(taskID)?.runs.last?.stepsByRoleBaseID()[roleID] {
+            await llmExecutionService.cancelStepExecution(stepID: step.id, taskID: taskID)
+            clearStreamingPreview(stepID: step.id, taskID: taskID)
         }
+
+        // 2. Mutate: step → .done, role → .done
+        await mutateTask(taskID: taskID) { task in
+            guard var run = task.runs.last else { return }
+            if let s = run.steps.firstIndex(where: { $0.effectiveRoleID == roleID }) {
+                run.steps[s].status = .done
+                run.steps[s].completedAt = MonotonicClock.shared.now()
+            }
+            run.roleStatuses[roleID] = .done
+            run.updatedAt = MonotonicClock.shared.now()
+            task.runs[task.runs.count - 1] = run
+        }
+
+        // 3. Wake engine to check completion / start dependents
+        taskEngines[taskID]?.notifyExternalEvent()
+
+        // Verify the step actually reached .done (mutateTask returning true means
+        // "persisted", not "did something" — CLAUDE.md §7).
+        return loadedTask(taskID)?.runs.last?.steps
+            .first(where: { $0.effectiveRoleID == roleID })?.status == .done
     }
 
     /// Supervisor accepts a role's work, advancing it to `.accepted`.
@@ -125,7 +138,8 @@ extension NTMSOrchestrator {
             lastErrorMessage = "Correct Role requires the task to be paused."
             return
         }
-        let trimmed = comment.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Normalize to raw — same trim + caller-supplied-prefix strip as requestRevision.
+        let trimmed = MessageSourceContext.rawFeedback(comment)
         guard !trimmed.isEmpty else {
             lastErrorMessage = "Correction text cannot be empty."
             return
@@ -152,7 +166,7 @@ extension NTMSOrchestrator {
         if step.needsSupervisorInput {
             _ = await answerSupervisorQuestion(
                 stepID: step.id, taskID: taskID,
-                answer: "Supervisor Feedback: \(trimmed)"
+                answer: MessageSourceContext.supervisorFeedbackPrefix + trimmed
             )
             return
         }
@@ -171,7 +185,7 @@ extension NTMSOrchestrator {
             else { return }
             task.runs[runIndex].steps[stepIndex].messages.append(StepMessage(
                 role: .supervisor,
-                content: "Supervisor Feedback: \(trimmed)"
+                content: MessageSourceContext.supervisorFeedbackPrefix + trimmed
             ))
             task.runs[runIndex].steps[stepIndex].revisionComment = trimmed
             task.runs[runIndex].steps[stepIndex].updatedAt = MonotonicClock.shared.now()
@@ -188,20 +202,64 @@ extension NTMSOrchestrator {
     }
 
     /// Supervisor requests changes for a role, appending feedback and transitioning to `.revisionRequested`.
+    ///
+    /// Requires the role's step to be `.done` or `.failed` — the only states
+    /// `resetStepForRevision` can act on. Any other status fails loudly via
+    /// `lastErrorMessage`: without the gate, flipping a live step to
+    /// `.revisionRequested` makes the engine's revision branch call `runStep` on a
+    /// step that never reset, spawning a second concurrent LLM execution into the
+    /// same step. The Autovisor `manage_role(request_changes)` wrapper converts the
+    /// surfaced error into a failure envelope (honest-results contract).
     func requestRevision(taskID: Int, roleID: String, comment: String) async {
-        await mutateTask(taskID: taskID) { task in
-            guard var run = task.runs.last else { return }
-            run.roleStatuses[roleID] = .revisionRequested
-            if let stepIndex = run.steps.firstIndex(where: { $0.effectiveRoleID == roleID }) {
-                var step = run.steps[stepIndex]
-                step.messages.append(StepMessage(
-                    role: .supervisor,
-                    content: "Supervisor Feedback: \(comment)"
-                ))
-                run.steps[stepIndex] = step
-            }
-            run.updatedAt = MonotonicClock.shared.now()
-            task.runs[task.runs.count - 1] = run
+        // Normalize to raw: trims, and strips a caller-supplied prefix (the Autovisor's
+        // LLM sees prefixed feedback in history and can echo it inside `comment`).
+        let raw = MessageSourceContext.rawFeedback(comment)
+        guard !raw.isEmpty else {
+            lastErrorMessage = "Revision comment cannot be empty."
+            return
+        }
+
+        guard let step = loadedTask(taskID)?.runs.last?.steps
+            .first(where: { $0.effectiveRoleID == roleID }),
+            step.status == .done || step.status == .failed
+        else {
+            lastErrorMessage =
+                "Cannot request changes from '\(roleID)' — the role has no completed work to revise."
+            return
+        }
+
+        let stepID = step.id
+        let persisted = await mutateTask(taskID: taskID) { task in
+            guard let runIndex = task.runs.indices.last,
+                  let stepIndex = task.runs[runIndex].steps.firstIndex(where: {
+                      // Re-verify status inside the closure — the step could transition
+                      // between the outer guard and this mutation (engine runs async).
+                      $0.id == stepID && ($0.status == .done || $0.status == .failed)
+                  })
+            else { return }
+            // roleStatuses flips together with the step mutation — a partial write
+            // (.revisionRequested with no recorded feedback) would make the engine
+            // re-run the role blind on the generic default comment.
+            task.runs[runIndex].roleStatuses[roleID] = .revisionRequested
+            task.runs[runIndex].steps[stepIndex].messages.append(StepMessage(
+                role: .supervisor,
+                content: MessageSourceContext.supervisorFeedbackPrefix + raw
+            ))
+            // Raw comment — see MessageSourceContext.supervisorFeedbackPrefix for the
+            // single-application contract (prefix attached once where it reaches the LLM).
+            task.runs[runIndex].steps[stepIndex].revisionComment = raw
+            task.runs[runIndex].steps[stepIndex].updatedAt = MonotonicClock.shared.now()
+            task.runs[runIndex].updatedAt = MonotonicClock.shared.now()
+        }
+        // `mutateTask` returning true means "persisted", not "the closure did something"
+        // (CLAUDE.md §7) — re-read to confirm the revision actually landed.
+        guard persisted,
+              loadedTask(taskID)?.runs.last?.steps
+                  .first(where: { $0.id == stepID })?.revisionComment == raw
+        else {
+            lastErrorMessage =
+                "Could not request changes from '\(roleID)' — step state changed."
+            return
         }
         notifyEngineExternalEvent(taskID: taskID)
     }

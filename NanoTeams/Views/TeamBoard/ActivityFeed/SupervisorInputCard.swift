@@ -8,6 +8,13 @@ import SwiftUI
 /// Active / in-flight questions are owned by the docked `TeamActivityComposer`
 /// — `ActivityFeedBuilder.emitItems` skips emitting a card for them so the
 /// answering surface is never duplicated.
+///
+/// Two distinct flags: `wasAutoAnswered` (from `StepExecution.supervisorAnswerWasAuto`)
+/// decides how a RESOLVED answer is attributed — "Auto-answered" badge vs the
+/// human checkmark. `isAutoAnswering` (team is autonomous) only drives the
+/// in-progress loader for an unresolved question. Keying the resolved badge on
+/// the team mode mislabeled human answers in autonomous teams (e.g. a reply to
+/// the Autovisor's idle park).
 struct SupervisorInputCard: View {
     let question: String
     let answer: String?
@@ -18,6 +25,7 @@ struct SupervisorInputCard: View {
     let thinkingID: UUID
     let roleName: String
     let isAutoAnswering: Bool
+    var wasAutoAnswered: Bool = false
 
     @Environment(\.openWindow) private var openWindow
 
@@ -36,7 +44,7 @@ struct SupervisorInputCard: View {
                 .textSelection(.enabled)
 
             if isResolved, let answer {
-                if isAutoAnswering {
+                if wasAutoAnswered {
                     autoAnsweredResult(answer: answer)
                 } else if !answer.isEmpty {
                     HStack(alignment: .firstTextBaseline, spacing: 4) {

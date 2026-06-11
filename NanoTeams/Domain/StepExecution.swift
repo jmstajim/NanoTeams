@@ -42,6 +42,13 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
     /// Work-folder-root-relative file paths attached to the supervisor's answer.
     var supervisorAnswerAttachmentPaths: [String]
 
+    /// Whether `supervisorAnswer` was produced by an automated path
+    /// (`SupervisorAutoAnswerService`, a delegating parent role, the Autovisor)
+    /// rather than typed by the human. Drives the activity feed's
+    /// "Auto-answered" badge — the pre-flag heuristic ("team is autonomous ⇒
+    /// auto-answered") mislabeled human answers to the Autovisor's idle park.
+    var supervisorAnswerWasAuto: Bool = false
+
     /// Optional Supervisor comment that should be injected as an extra message into the next step.
     var supervisorCommentForNext: String?
 
@@ -161,6 +168,7 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         supervisorQuestion: String? = nil,
         supervisorAnswer: String? = nil,
         supervisorAnswerAttachmentPaths: [String] = [],
+        supervisorAnswerWasAuto: Bool = false,
         supervisorCommentForNext: String? = nil,
         tokenUsage: TokenUsage? = nil,
         llmConversation: [LLMMessage] = [],
@@ -191,6 +199,7 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         self.supervisorQuestion = supervisorQuestion
         self.supervisorAnswer = supervisorAnswer
         self.supervisorAnswerAttachmentPaths = supervisorAnswerAttachmentPaths
+        self.supervisorAnswerWasAuto = supervisorAnswerWasAuto
         self.supervisorCommentForNext = supervisorCommentForNext
         self.tokenUsage = tokenUsage
         self.llmConversation = llmConversation
@@ -231,6 +240,7 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         case supervisorQuestion
         case supervisorAnswer
         case supervisorAnswerAttachmentPaths
+        case supervisorAnswerWasAuto
         case supervisorCommentForNext
         case tokenUsage
         case llmConversation
@@ -269,6 +279,7 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         self.supervisorQuestion = try c.decodeIfPresent(String.self, forKey: .supervisorQuestion)
         self.supervisorAnswer = try c.decodeIfPresent(String.self, forKey: .supervisorAnswer)
         self.supervisorAnswerAttachmentPaths = try c.decodeIfPresent([String].self, forKey: .supervisorAnswerAttachmentPaths) ?? []
+        self.supervisorAnswerWasAuto = try c.decodeIfPresent(Bool.self, forKey: .supervisorAnswerWasAuto) ?? false
         self.supervisorCommentForNext = try c.decodeIfPresent(String.self, forKey: .supervisorCommentForNext)
         self.tokenUsage = try c.decodeIfPresent(TokenUsage.self, forKey: .tokenUsage)
         self.llmConversation =
@@ -324,6 +335,9 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         try c.encodeIfPresent(supervisorAnswer, forKey: .supervisorAnswer)
         if !supervisorAnswerAttachmentPaths.isEmpty {
             try c.encode(supervisorAnswerAttachmentPaths, forKey: .supervisorAnswerAttachmentPaths)
+        }
+        if supervisorAnswerWasAuto {
+            try c.encode(supervisorAnswerWasAuto, forKey: .supervisorAnswerWasAuto)
         }
         try c.encodeIfPresent(supervisorCommentForNext, forKey: .supervisorCommentForNext)
         try c.encodeIfPresent(tokenUsage, forKey: .tokenUsage)
@@ -390,6 +404,7 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         supervisorQuestion = nil
         supervisorAnswer = nil
         supervisorAnswerAttachmentPaths = []
+        supervisorAnswerWasAuto = false
         supervisorCommentForNext = nil
         tokenUsage = nil
         llmConversation = []

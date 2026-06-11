@@ -59,6 +59,37 @@ enum RoleEditorConcludeMeetingPredicate {
     }
 }
 
+// MARK: - Role Editor Section Policy (pure, testable)
+
+/// Pure policy for which editor sections a role exposes and whether it auto-injects
+/// `ask_supervisor`. Extracted so the managed-singleton (Autovisor) restrictions are
+/// unit-tested without a SwiftUI host. See `RoleEditorSectionPolicyTests`.
+nonisolated enum RoleEditorSectionPolicy {
+
+    /// - Supervisor: General + Dependencies only (user-controlled, not LLM-driven).
+    /// - Managed singleton (Autovisor) manager: Prompt + Tools only (identity,
+    ///   dependencies, delegation are structural/template-owned).
+    /// - Any other non-Supervisor role: the full set.
+    static func availableSections(isSupervisor: Bool, isManagedSingleton: Bool) -> [RoleSection] {
+        if isSupervisor { return [.general, .dependencies] }
+        if isManagedSingleton { return [.prompt, .tools] }
+        return RoleSection.allCases
+    }
+
+    /// The section the editor opens on: the default when it's available, otherwise the
+    /// first available (e.g. the manager's default `.general` isn't offered → opens `.prompt`).
+    static func initialSection(defaultSection: RoleSection, available: [RoleSection]) -> RoleSection {
+        available.contains(defaultSection) ? defaultSection : (available.first ?? defaultSection)
+    }
+
+    /// Whether `ask_supervisor` is actually auto-injected at runtime for this role.
+    /// False for the Autovisor manager — it IS the top Supervisor (runtime excludes it),
+    /// so the editor must not show it as auto-injected.
+    static func injectsAskSupervisor(isManagedSingleton: Bool) -> Bool {
+        !isManagedSingleton
+    }
+}
+
 // MARK: - Role Editor Sheet
 
 /// Sheet for creating/editing team roles with tabbed sections.
@@ -80,9 +111,18 @@ struct RoleEditorSheet: View {
         self._team = team
         self.mode = mode
         self.onSave = onSave
-        let initialState: RoleEditorState
+        var initialState: RoleEditorState
         if case .edit(let role) = mode {
             initialState = RoleEditorState.loaded(from: role)
+            // Open on a section that's actually available (e.g. the managed singleton's
+            // default `.general` isn't offered → open `.prompt`), never an absent tab.
+            initialState.activeSection = RoleEditorSectionPolicy.initialSection(
+                defaultSection: initialState.activeSection,
+                available: RoleEditorSectionPolicy.availableSections(
+                    isSupervisor: role.isSupervisor,
+                    isManagedSingleton: team.wrappedValue.isManagedSingleton
+                )
+            )
         } else {
             initialState = RoleEditorState()
         }
@@ -95,6 +135,12 @@ struct RoleEditorSheet: View {
             return role.isSupervisor
         }
         return false
+    }
+
+    /// True when editing the managed singleton's (Autovisor's) Manager role — its
+    /// tool policy is locked-mandatory + restricted-optional (see `AutovisorConstants`).
+    private var isManagedSingletonRole: Bool {
+        team.isManagedSingleton && !isEditingSupervisor
     }
 
     /// True if this role will get `conclude_meeting` auto-injected at runtime
@@ -114,10 +160,10 @@ struct RoleEditorSheet: View {
     ///   user enables delegation, so any non-Supervisor role can become a
     ///   delegator from this surface.
     private var availableSections: [RoleSection] {
-        if isEditingSupervisor {
-            return [.general, .dependencies]
-        }
-        return RoleSection.allCases
+        RoleEditorSectionPolicy.availableSections(
+            isSupervisor: isEditingSupervisor,
+            isManagedSingleton: team.isManagedSingleton
+        )
     }
 
     var body: some View {
@@ -174,7 +220,17 @@ struct RoleEditorSheet: View {
         case .prompt:
             RoleEditorPromptTab(editorState: $editorState, mode: mode, team: team)
         case .tools:
-            RoleEditorToolsTab(editorState: $editorState, isMeetingCoordinator: willAutoInjectConcludeMeeting)
+            RoleEditorToolsTab(
+                editorState: $editorState,
+                isMeetingCoordinator: willAutoInjectConcludeMeeting,
+                lockedTools: isManagedSingletonRole ? AutovisorConstants.managerMandatoryToolIDs : [],
+                restrictToTools: isManagedSingletonRole ? Set(AutovisorConstants.managerDefaultToolIDs) : nil,
+                // The Autovisor manager IS the top Supervisor — runtime never injects
+                // ask_supervisor for it, so the editor must not show it as auto-injected.
+                injectsAskSupervisor: RoleEditorSectionPolicy.injectsAskSupervisor(
+                    isManagedSingleton: isManagedSingletonRole
+                )
+            )
         case .dependencies:
             RoleEditorDependenciesTab(editorState: $editorState, isEditingSupervisor: isEditingSupervisor, team: $team)
         case .llm:

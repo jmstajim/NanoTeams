@@ -20,12 +20,14 @@ final class BubbleInputsTests: XCTestCase {
             content: "live",
             thinking: "thoughts",
             processingProgress: 0.42,
-            hasStreamActivity: true
+            hasStreamActivity: true,
+            isStreamingToolCall: false
         )
         XCTAssertEqual(inputs.contentForBubble, "live")
         XCTAssertEqual(inputs.thinkingForBubble, "thoughts")
         XCTAssertEqual(inputs.processingProgress, 0.42)
         XCTAssertTrue(inputs.hasStreamActivity)
+        XCTAssertFalse(inputs.isStreamingToolCall)
         XCTAssertTrue(inputs.attachmentPaths.isEmpty,
                       "Streaming bubbles never carry attachment paths.")
         XCTAssertTrue(inputs.clippedTexts.isEmpty,
@@ -49,22 +51,36 @@ final class BubbleInputsTests: XCTestCase {
                      "Committed bubbles never carry processingProgress.")
         XCTAssertFalse(inputs.hasStreamActivity,
                        "Committed bubbles never claim stream activity.")
+        XCTAssertFalse(inputs.isStreamingToolCall,
+                       "Committed bubbles never claim tool-call streaming — no stale 'Generating'.")
     }
 
     /// `isStreaming` flag matches the case discriminator. Pinned so the
     /// dispatcher's `inputs.isStreaming` forwarding to `MessageBubbleView`
     /// stays in sync if the cases ever rearrange.
     func testIsStreaming_matchesCase() async {
-        let s = BubbleInputs.streaming(content: "x", thinking: nil, processingProgress: nil, hasStreamActivity: false)
+        let s = BubbleInputs.streaming(content: "x", thinking: nil, processingProgress: nil, hasStreamActivity: false, isStreamingToolCall: false)
         let c = BubbleInputs.committed(content: "x", thinking: nil, attachmentPaths: [], clippedTexts: [])
         XCTAssertTrue(s.isStreaming)
         XCTAssertFalse(c.isStreaming)
     }
 
+    /// Streaming case surfaces the tool-call flag through its accessor.
+    func testStreamingAccessor_surfacesIsStreamingToolCall() async {
+        let inputs = BubbleInputs.streaming(
+            content: "frozen prose",
+            thinking: nil,
+            processingProgress: nil,
+            hasStreamActivity: true,
+            isStreamingToolCall: true
+        )
+        XCTAssertTrue(inputs.isStreamingToolCall)
+    }
+
     // MARK: - Equatable synthesis
 
     func testEquatable_streamingVsCommitted_sameContent_neverEqual() async {
-        let s = BubbleInputs.streaming(content: "x", thinking: nil, processingProgress: nil, hasStreamActivity: false)
+        let s = BubbleInputs.streaming(content: "x", thinking: nil, processingProgress: nil, hasStreamActivity: false, isStreamingToolCall: false)
         let c = BubbleInputs.committed(content: "x", thinking: nil, attachmentPaths: [], clippedTexts: [])
         XCTAssertNotEqual(s, c, "Cross-case must never compare equal even with same content.")
     }
@@ -76,8 +92,14 @@ final class BubbleInputsTests: XCTestCase {
     }
 
     func testEquatable_sameCaseDifferentField_areNotEqual() async {
-        let a = BubbleInputs.streaming(content: "x", thinking: nil, processingProgress: 0.1, hasStreamActivity: true)
-        let b = BubbleInputs.streaming(content: "x", thinking: nil, processingProgress: 0.2, hasStreamActivity: true)
+        let a = BubbleInputs.streaming(content: "x", thinking: nil, processingProgress: 0.1, hasStreamActivity: true, isStreamingToolCall: false)
+        let b = BubbleInputs.streaming(content: "x", thinking: nil, processingProgress: 0.2, hasStreamActivity: true, isStreamingToolCall: false)
         XCTAssertNotEqual(a, b, "Different progress in same case must compare not-equal.")
+    }
+
+    func testEquatable_differentToolCallFlag_areNotEqual() async {
+        let a = BubbleInputs.streaming(content: "x", thinking: nil, processingProgress: nil, hasStreamActivity: true, isStreamingToolCall: false)
+        let b = BubbleInputs.streaming(content: "x", thinking: nil, processingProgress: nil, hasStreamActivity: true, isStreamingToolCall: true)
+        XCTAssertNotEqual(a, b, "Tool-call flag flip must propagate through Equatable — the TimelineView tick relies on it.")
     }
 }

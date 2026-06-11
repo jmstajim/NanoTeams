@@ -58,20 +58,57 @@ final class QuickCaptureController {
     @ObservationIgnored private var lastRefreshedTaskID: Int?
     @ObservationIgnored private var didSetupHotkeys = false
 
-    /// In-flight guard for the queue-driven `resumeRun` wake-up. Prevents two
-    /// `tryFlush` ticks (e.g. an enqueue immediately followed by an engineState
-    /// onChange) from spawning two concurrent `resumeRun(taskID:)` calls before
-    /// the first transitions the engine out of `.paused`. Cleared in the
-    /// dispatched `Task`'s `defer` so back-to-back callers within the same
-    /// in-flight cycle collapse to one resume.
+    /// In-flight guard for the queue-driven wake-ups (`resumeRun` AND the
+    /// `.done`-chat `startRun`). Prevents two `tryFlush` ticks (e.g. an enqueue
+    /// immediately followed by an engineState onChange) from spawning two
+    /// concurrent wake calls before the first transitions the engine. Cleared in
+    /// the dispatched `Task`'s `defer` so back-to-back callers within the same
+    /// in-flight cycle collapse to one wake. Shared across both wake modes — a
+    /// task can only be in one wake at a time, so a racing `.done`-start and a
+    /// flickering `.failed`-resume dedupe against each other too.
     @ObservationIgnored private var pendingResumeForQueueFlush: Set<Int> = []
 
+    /// One-shot guard for `.failed`-engine queue resumes, keyed by the specific queued
+    /// MESSAGE IDs a `resumeRun` was already attempted for. A `.failed` task routes a
+    /// queued message to `resumeRun` (which revives transiently-failed steps). But if a
+    /// resume completes and the engine lands back at `.failed` with the message still
+    /// unconsumed — no revivable step — re-resuming would loop forever
+    /// (wake→terminal→onChange→wake…). Tracking the attempted message IDs (not a
+    /// per-task bool) makes the guard robust two ways: (1) a brand-new message — from
+    /// ANY enqueue path, including the Autovisor's `message_task` which appends
+    /// directly, not via `queueChatMessage` — has an ID not yet attempted, so it always
+    /// earns a fresh attempt; (2) the transient `.running` that a wake sets before the
+    /// run re-terminates can't reset the guard (only the terminal arms touch the maps).
+    /// Consumed IDs prune themselves: each tick intersects with the live queue. Give up
+    /// only when every still-queued message has already been attempted and no attempt
+    /// is in-flight.
+    ///
+    /// DELIBERATELY SEPARATE from `chatStartAttemptedMessageIDs`: the two wake
+    /// mechanisms operate on different state (revive an existing run vs create a fresh
+    /// one), so a spent `.failed`-resume attempt is no evidence that a `.done`-chat
+    /// start would also fail — sharing one map would prematurely discard a message on
+    /// a `.failed`→`.done` transition without the second mechanism ever being tried.
+    @ObservationIgnored private var failedResumeAttemptedMessageIDs: [Int: Set<UUID>] = [:]
+
+    /// `.done`-chat counterpart of `failedResumeAttemptedMessageIDs`: one `startRun`
+    /// attempt per message ID. The fresh run drains the queue on iteration 1, so the
+    /// only way a message survives a completed attempt is a consume-side persistence
+    /// failure that re-prepended the batch — bound that to one full LLM pass per
+    /// message instead of a wake-loop. Same set algebra, same self-pruning.
+    @ObservationIgnored private var chatStartAttemptedMessageIDs: [Int: Set<UUID>] = [:]
+
     /// Test seam — overrides the `Task { resumeRun }` dispatched by the
-    /// `.paused`/`.pending`/`.none` branch of `tryFlushQueuedMessages`. Production
-    /// path is `nil`. Tests inject a synchronous closure so the in-flight guard
-    /// + branch routing can be exercised without spinning a real engine. Mirrors
-    /// the `engineFactory` seam pattern in `NTMSOrchestrator`.
+    /// `.paused`/`.pending`/`.none`/`.failed` branches of `tryFlushQueuedMessages`.
+    /// Production path is `nil`. Tests inject a synchronous closure so the in-flight
+    /// guard + branch routing can be exercised without spinning a real engine. Mirrors
+    /// the `engineFactory` seam pattern in `NTMSOrchestrator`. The in-flight flag is
+    /// intentionally NOT cleared after the closure (mirrors the in-flight `Task`);
+    /// tests simulate completion via `clearPendingResumeForQueueFlushForTesting`.
     @ObservationIgnored var resumeRunForTesting: ((Int) -> Void)?
+
+    /// Test seam — same contract as `resumeRunForTesting`, for the `Task { startRun }`
+    /// dispatched by the `.done`-chat branch (`QueueWakeMode.start`).
+    @ObservationIgnored var startRunForTesting: ((Int) -> Void)?
 
     // MARK: - Hotkey IDs
 
@@ -427,8 +464,10 @@ final class QuickCaptureController {
     /// restarting the role (`NTMSOrchestrator.restartRole`) resets the step's
     /// session, so iteration 1 of the restarted step satisfies the injection
     /// hook's guard and delivers them.
-    /// Returns `true` if the message was queued (validated non-empty via
-    /// `QueuedChatMessage.init?`), `false` if rejected.
+    /// Returns `true` if the message was queued AND survived the immediate flush;
+    /// `false` if rejected (empty payload via `QueuedChatMessage.init?`) or
+    /// synchronously discarded by the flush (non-chat completed task, closed
+    /// task) — callers keep the draft and must not show a "queued" confirmation.
     @discardableResult
     func queueChatMessage(
         text: String,
@@ -480,24 +519,41 @@ final class QuickCaptureController {
         // `.needsSupervisorInput` and `.paused`/`.pending`/`.none` it triggers the
         // appropriate dispatch path.
         tryFlushQueuedMessages()
-        return true
+        // Honest return: the SYNCHRONOUS part of the flush can discard this very
+        // message (non-chat `.done` arm; closed-task discard in
+        // `wakeRunForQueuedMessages`). Callers use the Bool to clear their draft
+        // and show a "queued" confirmation banner — returning `true` after a
+        // discard would destroy the draft and overwrite the discard banner with a
+        // lie. The async consumption paths (`.needsSupervisorInput` flush Task,
+        // resume/start wakes) can't pop before this returns (no await between
+        // their dispatch and here), so "still queued" is exactly "not discarded".
+        return formState.queuedMessages(for: taskID).contains { $0.id == message.id }
     }
 
     /// Backstop for the queue — handles the `.needsSupervisorInput` case (primary
     /// consumption happens in `LLMExecutionService.injectQueuedSupervisorMessage`
     /// for `.running` roles). Drains every eligible queued message for the chosen
     /// waiting role into one combined `answerSupervisorQuestion` call (matches the
-    /// primary path's drain-all-at-once batching), or discards the entire task's
-    /// queue on `.done` / `.failed`. Called from
+    /// primary path's drain-all-at-once batching). Called from
     /// `MainLayoutView.onChange(of: engineState.taskEngineStates)` — panel-visibility
     /// independent (queue must resolve even when the overlay is closed).
     ///
+    /// `.done` splits by team kind. A non-chat pipeline that reached `.done` is
+    /// genuinely finished — discard the queue with a banner (reopening is
+    /// `restartRole`'s job). A CHAT task at `.done` is just an ended turn/pass:
+    /// chat-mode advisory steps DO reach `.done` via `markChatModeAdvisoryStepDone`
+    /// (`attemptAdvisoryAutoFinish` after 3 no-tool turns; historically also the
+    /// Autovisor's `wait_for_events`, which now parks instead) — so a queued
+    /// message wakes the task with a FRESH `startRun` (`resumeRun` would re-enter
+    /// the all-terminal run, execute no step, and bounce straight back to `.done`).
+    /// The fresh run's step has `session == nil`, so the iteration-1 injection
+    /// gate passes and the queue drains.
+    ///
     /// Terminal-state discard surfaces `store.lastInfoMessage` with a count so users
-    /// aren't silently stranded. The terminal paths in practice: non-chat teams finish
-    /// their pipeline and reach `.done`; any team can reach `.failed` (LLM/network
-    /// errors, or the `TeamEngine+RunLoop` stall detector). Chat-mode teams do not
-    /// naturally reach `.done` because `allRolesComplete(isChatMode:)` hard-returns
-    /// `false` — chat runs terminate only via `.failed` or user close.
+    /// aren't silently stranded. `.failed` (any team) and `.done`-chat each apply an
+    /// attempted-message-IDs give-up so an unconsumable queue can't wake-loop — via
+    /// SEPARATE maps, because the two wake mechanisms are independent (see the
+    /// `failedResumeAttemptedMessageIDs` doc).
     ///
     /// NOTE: This discards at the **task** level on engine-terminal states only —
     /// it does NOT fire on individual role completion. Queued messages for a
@@ -505,16 +561,77 @@ final class QuickCaptureController {
     /// of the restarted step.
     func tryFlushQueuedMessages() {
         guard let store else { return }
+        // Prune both give-up attempted-IDs maps to tasks that still have queued
+        // messages, so entries for deleted/consumed tasks don't accumulate. Safe:
+        // the `.failed` and `.done`-chat arms only read entries for tasks present
+        // in `taskIDsWithQueuedMessages` (kept here).
+        if !failedResumeAttemptedMessageIDs.isEmpty {
+            failedResumeAttemptedMessageIDs = failedResumeAttemptedMessageIDs.filter {
+                formState.hasQueuedMessage(for: $0.key)
+            }
+        }
+        if !chatStartAttemptedMessageIDs.isEmpty {
+            chatStartAttemptedMessageIDs = chatStartAttemptedMessageIDs.filter {
+                formState.hasQueuedMessage(for: $0.key)
+            }
+        }
         for taskID in formState.taskIDsWithQueuedMessages {
             switch store.taskEngineStates[taskID] {
             case .needsSupervisorInput:
                 Task { @MainActor [weak self] in await self?.flushQueuedChatMessage(taskID: taskID) }
-            case .done, .failed:
-                let count = formState.queuedMessages(for: taskID).count
-                formState.clearQueuedMessages(for: taskID)
-                if count > 0 {
-                    let reason = store.taskEngineStates[taskID] == .failed ? "failed" : "completed"
-                    store.lastInfoMessage = "\(count) queued message(s) discarded — task \(reason)."
+            case .done:
+                if Self.isChatModeTask(taskID, store: store) {
+                    // Chat-mode `.done` is an ended turn, not a finished pipeline —
+                    // a queued message continues the chat via a fresh run (drained
+                    // on iteration 1). Same give-up shape as `.failed` (own map) so a
+                    // run that completes WITHOUT consuming the queue (persistence
+                    // failure re-prepends the batch) can't wake-loop LLM passes.
+                    let queuedIDs = Set(formState.queuedMessages(for: taskID).map(\.id))
+                    let attempted = (chatStartAttemptedMessageIDs[taskID] ?? []).intersection(queuedIDs)
+                    let allAlreadyAttempted = !queuedIDs.isEmpty && queuedIDs.isSubset(of: attempted)
+                    if allAlreadyAttempted, !pendingResumeForQueueFlush.contains(taskID) {
+                        formState.clearQueuedMessages(for: taskID)
+                        chatStartAttemptedMessageIDs[taskID] = nil
+                        store.lastInfoMessage = "\(queuedIDs.count) queued message(s) discarded — the chat couldn't be restarted."
+                    } else {
+                        chatStartAttemptedMessageIDs[taskID] = attempted.union(queuedIDs)
+                        wakeRunForQueuedMessages(taskID: taskID, store: store, mode: .start)
+                    }
+                } else {
+                    // A completed non-chat task is reopened via `restartRole`, not by
+                    // a stray message — discard the queue and surface the count so
+                    // the user isn't silently stranded.
+                    failedResumeAttemptedMessageIDs[taskID] = nil
+                    chatStartAttemptedMessageIDs[taskID] = nil
+                    let count = formState.queuedMessages(for: taskID).count
+                    formState.clearQueuedMessages(for: taskID)
+                    if count > 0 {
+                        store.lastInfoMessage = "\(count) queued message(s) discarded — task completed."
+                    }
+                }
+            case .failed:
+                // First send → attempt a resume: `resumeRun` revives transiently-failed
+                // steps (retry, conversation intact) and the queue drains on the revived
+                // step's first iteration. But if every queued message has ALREADY had an
+                // attempt that completed (not in-flight) and the engine is STILL `.failed`,
+                // the run had no revivable step — resuming again would wake-loop
+                // (resume→re-fail→onChange→resume…) and the messages would never be
+                // consumed. Discard honestly instead (restores the pre-change "task failed"
+                // feedback). Keyed by message ID so a brand-new message (any enqueue path)
+                // always earns its own attempt, and the transient `.running` of a doomed
+                // resume can't reset the guard. Prune to the live queue so consumed IDs drop.
+                let queuedIDs = Set(formState.queuedMessages(for: taskID).map(\.id))
+                let attempted = (failedResumeAttemptedMessageIDs[taskID] ?? []).intersection(queuedIDs)
+                let allAlreadyAttempted = !queuedIDs.isEmpty && queuedIDs.isSubset(of: attempted)
+                if allAlreadyAttempted, !pendingResumeForQueueFlush.contains(taskID) {
+                    formState.clearQueuedMessages(for: taskID)
+                    failedResumeAttemptedMessageIDs[taskID] = nil
+                    if !queuedIDs.isEmpty {
+                        store.lastInfoMessage = "\(queuedIDs.count) queued message(s) discarded — task failed and couldn't be retried."
+                    }
+                } else {
+                    failedResumeAttemptedMessageIDs[taskID] = attempted.union(queuedIDs)
+                    wakeRunForQueuedMessages(taskID: taskID, store: store)
                 }
             case .paused, .pending, .none:
                 // Wake the run so the primary path (`injectQueuedSupervisorMessage`)
@@ -528,44 +645,119 @@ final class QuickCaptureController {
         }
     }
 
-    /// Dispatches a `resumeRun(taskID:)` for a `.paused`/`.pending`/`.none` engine
-    /// when the task has queued messages. Three guards — in priority order:
+    /// How a queue-driven wake revives the task.
+    /// `.resume` — `resumeRun`: paused/pending/failed runs with a revivable step.
+    /// `.start` — `startRun`: chat-mode tasks whose run ended `.done`. `resumeRun`
+    /// is useless there — it re-enters the same all-terminal run, never executes a
+    /// step, and flips straight back to `.done` (the engine's chat auto-complete
+    /// arm), wake-looping via the onChange it triggers. A FRESH run's step has
+    /// `session == nil`, so the iteration-1 injection gate passes and the queue
+    /// drains — the proven `sendMessageToAutovisor` pattern.
+    enum QueueWakeMode { case resume, start }
+
+    /// Dispatches a wake (`resumeRun` or `startRun`, per `mode`) for an engine
+    /// whose task has queued messages. Three guards — in priority order:
     ///
     /// 1. **Closed-task discard** — `closedAt != nil` means the task is finalized
     ///    (active-task close is normally caught by `handleActiveTaskClosedAtChanged`,
     ///    but: (a) there's a race when `stopEngine` removes the engine state before
     ///    the `closedAt` onChange fires, and (b) background-task close has no
     ///    closedAt onChange wired). Drop the queue and surface the discard message
-    ///    so we don't resurrect a closed task by creating a fresh engine.
-    /// 2. **In-flight dedupe** — a single resumeRun per (taskID, in-flight cycle).
-    ///    Multiple `tryFlush` ticks can fire before the first resume changes
+    ///    so we don't resurrect a closed task by creating a fresh engine. The
+    ///    `.start` path re-checks AFTER loading the task: `startRun` has NO closed
+    ///    guard and `createNewRun` CLEARS `closedAt`, so waking an unloaded closed
+    ///    background task (sync check nil-soft) would silently REOPEN it.
+    /// 2. **In-flight dedupe** — a single wake per (taskID, in-flight cycle).
+    ///    Multiple `tryFlush` ticks can fire before the first wake changes
     ///    engineState (see `pendingResumeForQueueFlush` doc).
-    /// 3. **Test seam** — `resumeRunForTesting` short-circuits the `Task` dispatch
-    ///    so unit tests can assert call sequencing synchronously.
-    private func wakeRunForQueuedMessages(taskID: Int, store: NTMSOrchestrator) {
+    /// 3. **Test seam** — `resumeRunForTesting`/`startRunForTesting` short-circuit
+    ///    the `Task` dispatch so unit tests can assert call sequencing synchronously.
+    private func wakeRunForQueuedMessages(
+        taskID: Int, store: NTMSOrchestrator, mode: QueueWakeMode = .resume
+    ) {
         if store.loadedTask(taskID)?.closedAt != nil {
-            let count = formState.queuedMessages(for: taskID).count
-            formState.clearQueuedMessages(for: taskID)
-            if count > 0 {
-                store.lastInfoMessage = "\(count) queued message(s) discarded — task closed."
-            }
+            discardQueueForClosedTask(taskID: taskID, store: store)
             return
         }
         guard !pendingResumeForQueueFlush.contains(taskID) else { return }
         pendingResumeForQueueFlush.insert(taskID)
-        if let resume = resumeRunForTesting {
-            // Test path: the in-flight flag is intentionally NOT cleared after
-            // the closure — that mirrors production semantics where the flag
-            // stays set while the dispatched `Task` is in flight. Tests that
-            // need to simulate "Task finished, ready for next resume" call
-            // `clearPendingResumeForQueueFlushForTesting(taskID:)` explicitly.
-            resume(taskID)
+        switch mode {
+        case .resume:
+            if let resume = resumeRunForTesting {
+                // Test path: the in-flight flag is intentionally NOT cleared after
+                // the closure — that mirrors production semantics where the flag
+                // stays set while the dispatched `Task` is in flight. Tests that
+                // need to simulate "Task finished, ready for next resume" call
+                // `clearPendingResumeForQueueFlushForTesting(taskID:)` explicitly.
+                resume(taskID)
+                return
+            }
+            Task { @MainActor [weak self] in
+                defer { self?.pendingResumeForQueueFlush.remove(taskID) }
+                await self?.store?.resumeRun(taskID: taskID)
+            }
+        case .start:
+            if let start = startRunForTesting {
+                start(taskID)
+                return
+            }
+            Task { @MainActor [weak self] in
+                defer { self?.pendingResumeForQueueFlush.remove(taskID) }
+                await self?.performStartWake(taskID: taskID)
+            }
+        }
+    }
+
+    /// Body of the `.start` wake's dispatched Task — extracted (mirrors
+    /// `flushQueuedChatMessage`) so the async path is directly testable; the
+    /// `startRunForTesting` seam bypasses it. Re-checks the task AFTER loading:
+    /// `startRun` has NO closed guard and `createNewRun` CLEARS `closedAt`, so
+    /// waking an unloaded closed background task (the sync pre-check is nil-soft)
+    /// would silently REOPEN it. The load itself must be bound explicitly — a
+    /// failed load (task deleted concurrently, unreadable task.json) would make
+    /// `loadedTask(taskID)?.closedAt == nil` vacuously true and start a run
+    /// against a phantom task; instead surface the error and keep the queue for
+    /// a later tick.
+    func performStartWake(taskID: Int) async {
+        guard let store else { return }
+        await store.ensureTaskLoaded(taskID)
+        guard let task = store.loadedTask(taskID) else {
+            // No startRun ran — this was NOT a real attempt, but the `.done`-chat
+            // arm stamped `chatStartAttemptedMessageIDs` BEFORE dispatching us.
+            // Un-stamp so the next tick genuinely retries; leaving the stamp
+            // would discard the queue with a misattributed "chat couldn't be
+            // restarted" banner right after promising "kept in queue".
+            chatStartAttemptedMessageIDs[taskID] = nil
+            store.lastErrorMessage =
+                "Couldn't load task #\(taskID) to deliver queued message(s) — kept in queue."
             return
         }
-        Task { @MainActor [weak self] in
-            defer { self?.pendingResumeForQueueFlush.remove(taskID) }
-            await self?.store?.resumeRun(taskID: taskID)
+        guard task.closedAt == nil else {
+            discardQueueForClosedTask(taskID: taskID, store: store)
+            return
         }
+        await store.startRun(taskID: taskID)
+    }
+
+    /// Shared closed-task discard for the wake paths: drop the queue and surface
+    /// the count so the user isn't silently stranded (and a closed task is never
+    /// resurrected by a stray message).
+    private func discardQueueForClosedTask(taskID: Int, store: NTMSOrchestrator) {
+        let count = formState.queuedMessages(for: taskID).count
+        formState.clearQueuedMessages(for: taskID)
+        if count > 0 {
+            store.lastInfoMessage = "\(count) queued message(s) discarded — task closed."
+        }
+    }
+
+    /// Chat-mode lookup that works for unloaded background tasks: prefers the
+    /// loaded task (authoritative — `generatedTeam.isChatMode` dominates), falls
+    /// back to the tasks-index summary (`TaskSummary.isChatMode`). Defaults to
+    /// `false` when neither source knows the task, preserving the non-chat
+    /// discard behavior.
+    static func isChatModeTask(_ taskID: Int, store: NTMSOrchestrator) -> Bool {
+        if let task = store.loadedTask(taskID) { return task.isChatMode }
+        return store.snapshot?.tasksIndex.tasks.first(where: { $0.id == taskID })?.isChatMode ?? false
     }
 
     #if DEBUG
@@ -576,12 +768,25 @@ final class QuickCaptureController {
     func clearPendingResumeForQueueFlushForTesting(taskID: Int) {
         pendingResumeForQueueFlush.remove(taskID)
     }
+
+    /// Test-only: whether the `.failed`-resume give-up map still holds an entry for
+    /// `taskID`. Lets tests assert the map is pruned for tasks with no queued messages.
+    func _testHasFailedResumeAttempted(taskID: Int) -> Bool {
+        failedResumeAttemptedMessageIDs[taskID] != nil
+    }
+
+    /// Test-only sibling for the `.done`-chat give-up map.
+    func _testHasChatStartAttempted(taskID: Int) -> Bool {
+        chatStartAttemptedMessageIDs[taskID] != nil
+    }
     #endif
 
     /// Discards all queued chat messages for the given task. Use on task delete/close
     /// to prevent a stale queue from re-applying to a reincarnated task ID.
     func discardQueuedChatMessage(taskID: Int) {
         formState.clearQueuedMessages(for: taskID)
+        failedResumeAttemptedMessageIDs[taskID] = nil
+        chatStartAttemptedMessageIDs[taskID] = nil
     }
 
     // MARK: - MainLayoutView onChange Handlers
@@ -669,12 +874,18 @@ final class QuickCaptureController {
         }
         let combinedAnswer = bodies.joined(separator: "\n")
 
+        // Attribution for the resolved-answer badge: auto only when EVERY drained
+        // message was authored by an automated supervisor (the Autovisor's
+        // `message_task`) — any human content in the batch makes it a human answer.
+        let allAutomated = popped.allSatisfy(\.isFromAutomatedSupervisor)
+
         // answerSupervisorQuestion auto-resumes the run — do NOT call resumeRun separately.
         let delivered = await store.answerSupervisorQuestion(
             stepID: step.id,
             taskID: taskID,
             answer: combinedAnswer,
-            attachments: combinedAttachments
+            attachments: combinedAttachments,
+            isAutoAnswer: allAutomated
         )
         if !delivered {
             // Re-insert at HEAD (not append) so FIFO holds even if new messages

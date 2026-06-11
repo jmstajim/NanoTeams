@@ -38,6 +38,20 @@ extension NTMSOrchestrator {
             return
         }
 
+        // Autovisor run start (any path: event-wake, recurrence, Run-now,
+        // open-time pass). Stamp the wake-debounce clock so an event can't
+        // immediately re-trigger a fresh review on top of this one, reset the
+        // per-review creation counter, and seed the mid-review notice dedup set
+        // with everything matching right now — the pass observes those via
+        // list_tasks, so only conditions that NEWLY arise mid-pass inject a
+        // live notice (otherwise the manager's own `.running` transition
+        // re-fires the observer and duplicates the triggering condition).
+        if taskID == autovisorTaskID {
+            autovisorLastWakeAt = Date()
+            autovisorCreationsThisReview = 0
+            seedAutovisorNotifiedKeysForPassStart()
+        }
+
         let engine = engineForTask(taskID)
         engine.start()
     }
@@ -85,7 +99,7 @@ extension NTMSOrchestrator {
         if let runTask = loadedTask(taskID), let run = runTask.runs.last {
             for step in run.steps {
                 if step.activeDelegationChildID != nil { continue }
-                await llmExecutionService.cancelStepExecution(stepID: step.id)
+                await llmExecutionService.cancelStepExecution(stepID: step.id, taskID: taskID)
                 if step.status == .running || step.status == .needsSupervisorInput {
                     await pauseStep(stepID: step.id, taskID: taskID)
                 }
@@ -126,12 +140,71 @@ extension NTMSOrchestrator {
 
         guard let task = loadedTask(taskID), let run = task.runs.last else { return }
 
+        // A closed task is terminal — never revive/restart it. Defends against the race
+        // where `closeTask`/`removeTask` lands AFTER `wakeRunForQueuedMessages` dispatched
+        // its `Task { resumeRun }` (that path's `closedAt` check is pre-dispatch only). All
+        // legitimate resumers (Play→startRun, answerSupervisorQuestion, correctRole) target
+        // open tasks; restartRole clears `closedAt` before re-running, so it's unaffected.
+        guard task.closedAt == nil else { return }
+
         // Cascade resume to delegated children FIRST so when this method returns
         // the parent's `delegate_to_team` handler — if its runStep was preserved
         // through the pause — sees its child engine actively making progress.
         // (See pauseRun for the symmetric case.)
         for childID in childTaskIDs(of: taskID) {
             await resumeRun(taskID: childID, visited: nextVisited)
+        }
+
+        // Revive failed steps (transient LLM/stall failure) so sending a message RETRIES
+        // the task instead of leaving it dead. Runs BEFORE the mid-delegation short-circuit
+        // below so a clean failed *sibling* is revived even when another step is
+        // mid-`delegate_to_team` — otherwise the short-circuit would skip it and the run
+        // loop would re-fail immediately on the lingering `.failed` role. Skips any failed
+        // step that still carries `activeDelegationChildID`: its model chain has an
+        // unresolved `delegate_to_team` tool_call, so a blind re-run would poison the chain
+        // (that step needs `cancel_delegation`, not a retry). Flip step .failed→.paused AND
+        // role .failed→.working in ONE closure, preserving llmConversation/artifacts/
+        // toolCalls/llmSessionID — a retry, NOT a reset(); markStepRunning then promotes the
+        // .paused step to .running on runStep. Disjoint from branches 1/1.5/3 (which handle
+        // .paused/.pending steps): branches 1/1.5 read the pre-revival `run` snapshot, where
+        // a revived step is still `.failed` and so matches neither their `.paused` nor
+        // `.pending` filter; branch 3 re-reads after revival and sees the step as `.running`,
+        // which also doesn't match its `.paused` filter. No double-processing either way.
+        if let failedRun = loadedTask(taskID)?.runs.last {
+            for step in failedRun.steps
+            where step.status == .failed && step.activeDelegationChildID == nil {
+                let roleID = step.effectiveRoleID
+                let stepID = step.id
+                // Only revive a genuinely in-play role: a .failed step's role is normally
+                // .failed (reconciled) or transiently .working (pre-reconcile). Never flip a
+                // settled role (.done/.accepted/.skipped/…) to .working — that would
+                // resurrect finished work and corrupt the role↔step contract (mirrors the
+                // defensive role guard in branch 1.5).
+                let roleStatus = failedRun.roleStatuses[roleID]
+                guard roleStatus == .failed || roleStatus == .working else { continue }
+                await mutateTask(taskID: taskID) { task in
+                    guard let ri = task.runs.indices.last,
+                          let si = task.runs[ri].steps.firstIndex(
+                              where: { $0.id == stepID && $0.status == .failed }
+                          )
+                    else { return }
+                    task.runs[ri].steps[si].status = .paused
+                    task.runs[ri].steps[si].completedAt = nil
+                    task.runs[ri].roleStatuses[roleID] = .working
+                    task.runs[ri].updatedAt = MonotonicClock.shared.now()
+                }
+                // mutateTask returning true means "persisted", not "did something"
+                // (CLAUDE.md §7) — verify the flip landed before restarting, else a
+                // still-.failed role would trip the run loop's immediate re-fail guard.
+                let post = loadedTask(taskID)?.runs.last
+                guard post?.steps.first(where: { $0.id == stepID })?.status == .paused,
+                      post?.roleStatuses[roleID] == .working
+                else {
+                    lastErrorMessage = "Couldn't revive failed step after retry: task state changed concurrently"
+                    continue
+                }
+                await runStep(stepID: stepID, taskID: taskID)
+            }
         }
 
         // Mid-delegation: parent's runStep Task was NOT cancelled on pause. The

@@ -134,5 +134,15 @@ nonisolated extension SystemTemplates {
                        TN.updateScratchpad,
                        TN.askSupervisor, TN.analyzeImage],
              requires: [supervisorTaskArtifactName]),
+
+        // MARK: Autovisor — per-folder automated Supervisor (hidden singleton team)
+        // Mandatory management tools + optional read-only/inspection tools — single
+        // source of truth in `AutovisorConstants` (also drives the role-editor's
+        // locked/hidden tool policy + the union-enforce on folder open).
+        // `requires: supervisorTaskArtifactName` makes it ADVISORY (not observer → engine
+        // runs it). NOT delegate_to_team / write / git / xcode.
+        role("autovisor", name: "Autovisor", icon: "folder.badge.person.crop",
+             toolIDs: AutovisorConstants.managerDefaultToolIDs,
+             requires: [supervisorTaskArtifactName]),
     ])
 }

@@ -19,7 +19,10 @@ extension LLMExecutionService {
         networkLogger: NetworkLogger? = nil
     ) async -> String {
         guard let delegate else { return "Unable to consult teammate — delegate not available." }
-        guard let tid = taskIDForStep(stepID) else { return "Unable to consult teammate — no task context." }
+        let tid = task.id
+        guard isExecutionLive(stepID: stepID, taskID: tid) else {
+            return "Unable to consult teammate — no task context."
+        }
 
         // Resolve team
         let team = resolveTeam(task: task)
@@ -150,28 +153,28 @@ extension LLMExecutionService {
             if let s = newSession { chat.sessionID = s.responseID }
             chat.updatedAt = MonotonicClock.shared.now()
             await saveConsultationChat(
-                taskID: tid, runIndex: runIndex, roleID: consultedRoleID, chat: chat
+                stepID: stepID, taskID: tid, runIndex: runIndex, roleID: consultedRoleID, chat: chat
             )
 
             // 7. Record consultation
             let responseTimeMs = Int(Date().timeIntervalSince(startTime) * 1000)
             consultation.complete(with: response, responseTimeMs: responseTimeMs)
-            await recordConsultation(stepID: stepID, consultation: consultation)
+            await recordConsultation(stepID: stepID, taskID: tid, consultation: consultation)
 
             return response
         } catch {
             consultation.fail()
-            await recordConsultation(stepID: stepID, consultation: consultation)
+            await recordConsultation(stepID: stepID, taskID: tid, consultation: consultation)
             return "Unable to get response from \(consultedRole.displayName): \(error.localizedDescription)"
         }
     }
 
     // MARK: - Consultation Record
 
-    func recordConsultation(stepID: String, consultation: TeammateConsultation) async {
-        guard let delegate, let tid = taskIDForStep(stepID) else { return }
+    func recordConsultation(stepID: String, taskID: Int, consultation: TeammateConsultation) async {
+        guard let delegate, isExecutionLive(stepID: stepID, taskID: taskID) else { return }
 
-        await delegate.mutateTask(taskID: tid) { task in
+        await delegate.mutateTask(taskID: taskID) { task in
             guard let runIndex = task.runs.indices.last else { return }
             guard let stepIndex = task.runs[runIndex].steps.firstIndex(where: { $0.id == stepID })
             else { return }

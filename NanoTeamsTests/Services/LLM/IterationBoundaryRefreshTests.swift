@@ -96,7 +96,7 @@ final class IterationBoundaryRefreshTests: XCTestCase {
             ToolSchema(name: ToolNames.createArtifact, description: "Artifact", parameters: .object(properties: [:])),
         ]
 
-        service._testSetOriginalSystemPrompt(stepID: stepID, prompt: originalPrompt)
+        service._testSetOriginalSystemPrompt(stepID: stepID, taskID: task.id, prompt: originalPrompt)
 
         var conversation: [ChatMessage] = [
             ChatMessage(role: .system, content: planningPrompt),
@@ -127,6 +127,7 @@ final class IterationBoundaryRefreshTests: XCTestCase {
         let tracker = ToolCallTracker()
         let (tools, resetSession) = await service.applyPlanningPhase(
             stepID: stepID,
+            taskID: task.id,
             roleForMessage: .softwareEngineer,
             tools: fullTools,
             step: refreshedStep,

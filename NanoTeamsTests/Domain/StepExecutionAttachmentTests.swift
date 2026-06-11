@@ -191,5 +191,35 @@ final class StepExecutionAttachmentTests: XCTestCase {
         let decoded = try JSONCoderFactory.makeDateDecoder().decode(StepExecution.self, from: data)
 
         XCTAssertTrue(decoded.supervisorAnswerAttachmentPaths.isEmpty)
+        // Pre-flag files also have no `supervisorAnswerWasAuto` — must decode to
+        // `false` (existing answers render as human; safe default for unknown
+        // attribution).
+        XCTAssertFalse(decoded.supervisorAnswerWasAuto)
+    }
+
+    // MARK: - supervisorAnswerWasAuto (same sparse encode style as the paths)
+
+    /// Encode key and decode key are two independently-editable strings — a typo
+    /// on either side would silently drop the "Auto-answered" attribution across
+    /// an app restart. The round-trip pins them in lock-step.
+    func testCodable_roundTrip_supervisorAnswerWasAuto_true() throws {
+        var step = StepExecution(id: "test_step", role: .softwareEngineer, title: "test")
+        step.supervisorAnswer = "auto reply"
+        step.supervisorAnswerWasAuto = true
+
+        let data = try JSONCoderFactory.makePersistenceEncoder().encode(step)
+        let decoded = try JSONCoderFactory.makeDateDecoder().decode(StepExecution.self, from: data)
+
+        XCTAssertTrue(decoded.supervisorAnswerWasAuto)
+    }
+
+    func testCodable_supervisorAnswerWasAuto_false_omittedFromJSON() throws {
+        let step = StepExecution(id: "test_step", role: .softwareEngineer, title: "test")
+
+        let data = try JSONCoderFactory.makePersistenceEncoder().encode(step)
+        let json = String(data: data, encoding: .utf8)!
+
+        XCTAssertFalse(json.contains("supervisorAnswerWasAuto"),
+                       "Sparse style: the flag is only written when true")
     }
 }

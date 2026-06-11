@@ -25,6 +25,19 @@ extension LLMExecutionService {
             return delegate.snapshot?.workFolder.activeTeam
         }()
 
+        // Autovisor: append its standing memory to globalContext so it lands in the
+        // manager's system prompt every fresh run (recurrence rebuilds the run, picking up
+        // the latest persisted memory). The GOAL is injected separately — it's the manager's
+        // brief, rendered as `## Supervisor Goal` by PromptBuilder. Other roles get plain
+        // globalContext.
+        let stepGlobalContext: String = {
+            let base = delegate.globalLLMContext
+            guard resolvedTeam?.templateID == AutovisorConstants.teamTemplateID else { return base }
+            let block = autovisorPromptBlock()
+            guard !block.isEmpty else { return base }
+            return base.isEmpty ? block : base + "\n\n" + block
+        }()
+
         let context = PromptBuilder.Context(
             task: task,
             step: step,
@@ -37,7 +50,7 @@ extension LLMExecutionService {
             },
             activeTeam: resolvedTeam,
             roleDefinition: resolvedTeam?.findRole(byIdentifier: step.effectiveRoleID),
-            globalContext: delegate.globalLLMContext
+            globalContext: stepGlobalContext
         )
 
         return PromptBuilder.buildChatMessages(context: context, tools: tools)
@@ -47,9 +60,10 @@ extension LLMExecutionService {
 
     func saveLLMConversation(
         stepID: String,
+        taskID: Int,
         messages: [ChatMessage]
     ) async {
-        guard let delegate, let tid = taskIDForStep(stepID) else { return }
+        guard let delegate, isExecutionLive(stepID: stepID, taskID: taskID) else { return }
         let now = MonotonicClock.shared.now()
         let llmMessages = messages.enumerated().map { index, msg in
             LLMMessage(
@@ -60,7 +74,7 @@ extension LLMExecutionService {
             )
         }
 
-        await delegate.mutateTask(taskID: tid) { task in
+        await delegate.mutateTask(taskID: taskID) { task in
             guard let runIndex = task.runs.indices.last else { return }
             guard let stepIndex = task.runs[runIndex].steps.firstIndex(where: { $0.id == stepID })
             else { return }
@@ -72,10 +86,10 @@ extension LLMExecutionService {
 
     /// Updates only the system message in the persisted llmConversation without replacing other messages.
     /// Used after planning phase to restore the original system prompt without losing thinking content.
-    func updatePersistedSystemMessage(stepID: String, content: String) async {
-        guard let delegate, let tid = taskIDForStep(stepID) else { return }
+    func updatePersistedSystemMessage(stepID: String, taskID: Int, content: String) async {
+        guard let delegate, isExecutionLive(stepID: stepID, taskID: taskID) else { return }
 
-        await delegate.mutateTask(taskID: tid) { task in
+        await delegate.mutateTask(taskID: taskID) { task in
             guard let runIndex = task.runs.indices.last else { return }
             guard let stepIndex = task.runs[runIndex].steps.firstIndex(where: { $0.id == stepID })
             else { return }
@@ -91,17 +105,17 @@ extension LLMExecutionService {
 
     // MARK: - LLM Message Appending
 
-    func appendLLMMessage(stepID: String, role: LLMRole, content: String, thinking: String? = nil, sourceRole: Role? = nil, sourceContext: MessageSourceContext? = nil) async {
+    func appendLLMMessage(stepID: String, taskID: Int, role: LLMRole, content: String, thinking: String? = nil, sourceRole: Role? = nil, sourceContext: MessageSourceContext? = nil) async {
         let cleanedContent = ConversationRepairService.cleanHarmonyTokens(content)
         let cleanedThinking = thinking.map { ConversationRepairService.cleanHarmonyTokens($0) }
         let hasContent = !cleanedContent.isEmpty
         let hasThinking = cleanedThinking.map { !$0.isEmpty } ?? false
         guard hasContent || hasThinking else { return }
-        guard let delegate, let tid = taskIDForStep(stepID) else { return }
+        guard let delegate, isExecutionLive(stepID: stepID, taskID: taskID) else { return }
 
         let msg = LLMMessage(role: role, content: cleanedContent, thinking: cleanedThinking, sourceRole: sourceRole, sourceContext: sourceContext)
 
-        await delegate.mutateTask(taskID: tid) { task in
+        await delegate.mutateTask(taskID: taskID) { task in
             TaskMutationService.appendLLMMessage(msg, to: stepID, in: &task)
         }
     }

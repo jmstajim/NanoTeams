@@ -61,11 +61,11 @@ final class EndToEndStepLifecycleTests: XCTestCase {
         mockDelegate.taskToMutate = task
 
         // Step 4: Check completeness — should detect all artifacts present
-        let stop = service.checkArtifactCompleteness(stepID: stepID)
+        let stop = service.checkArtifactCompleteness(stepID: stepID, taskID: task.id)
         XCTAssertNotNil(stop, "Should detect artifact completeness")
 
         // Step 5: Complete step
-        await service.completeStepSuccess(stepID: stepID)
+        await service.completeStepSuccess(stepID: stepID, taskID: task.id)
         let updated = mockDelegate.taskToMutate!.runs[0].steps[0]
         XCTAssertEqual(updated.status, .done)
         XCTAssertNotNil(updated.completedAt)
@@ -86,14 +86,14 @@ final class EndToEndStepLifecycleTests: XCTestCase {
         task.runs[0].steps[0].artifacts = [Artifact(name: "Product Requirements")]
         mockDelegate.taskToMutate = task
 
-        XCTAssertNil(service.checkArtifactCompleteness(stepID: stepID),
+        XCTAssertNil(service.checkArtifactCompleteness(stepID: stepID, taskID: task.id),
                      "Should NOT complete with partial artifacts")
 
         // Add second artifact — now complete
         task.runs[0].steps[0].artifacts.append(Artifact(name: "Acceptance Criteria"))
         mockDelegate.taskToMutate = task
 
-        XCTAssertNotNil(service.checkArtifactCompleteness(stepID: stepID),
+        XCTAssertNotNil(service.checkArtifactCompleteness(stepID: stepID, taskID: task.id),
                         "Should complete when all artifacts present")
     }
 
@@ -111,7 +111,7 @@ final class EndToEndStepLifecycleTests: XCTestCase {
 
         // Verify that checkArtifactCompleteness returns nil when no artifacts present
         mockDelegate.taskToMutate = task
-        let stop = service.checkArtifactCompleteness(stepID: stepID)
+        let stop = service.checkArtifactCompleteness(stepID: stepID, taskID: task.id)
         XCTAssertNil(stop, "Should NOT complete when artifacts are missing")
 
         // The role has expected artifacts but none created — this triggers retry
@@ -138,7 +138,7 @@ final class EndToEndStepLifecycleTests: XCTestCase {
                        "Advisory step with no expected artifacts should not be artifact-complete")
 
         // checkArtifactCompleteness returns nil for advisory roles
-        let stop = service.checkArtifactCompleteness(stepID: stepID)
+        let stop = service.checkArtifactCompleteness(stepID: stepID, taskID: task.id)
         XCTAssertNil(stop, "Advisory role should never auto-complete via artifact check")
     }
 
@@ -155,12 +155,12 @@ final class EndToEndStepLifecycleTests: XCTestCase {
         mockDelegate.taskToMutate = task
 
         // Complete once
-        await service.completeStepSuccess(stepID: stepID)
+        await service.completeStepSuccess(stepID: stepID, taskID: task.id)
         let firstCompletedAt = mockDelegate.taskToMutate!.runs[0].steps[0].completedAt
         XCTAssertNotNil(firstCompletedAt)
 
         // Complete again — status remains .done, completedAt unchanged
-        await service.completeStepSuccess(stepID: stepID)
+        await service.completeStepSuccess(stepID: stepID, taskID: task.id)
         let secondStatus = mockDelegate.taskToMutate!.runs[0].steps[0].status
         XCTAssertEqual(secondStatus, .done, "Status should remain .done after second completion")
     }
@@ -184,7 +184,7 @@ final class EndToEndStepLifecycleTests: XCTestCase {
 
         // checkArtifactCompleteness should return nil during revision
         // (old artifacts are stale, waiting for LLM to create updated ones)
-        let stop = service.checkArtifactCompleteness(stepID: stepID)
+        let stop = service.checkArtifactCompleteness(stepID: stepID, taskID: task.id)
         XCTAssertNil(stop, "Should NOT auto-complete during revision (stale artifacts)")
 
         // Clear revisionComment (simulates LLM creating a new artifact)
@@ -192,7 +192,7 @@ final class EndToEndStepLifecycleTests: XCTestCase {
         mockDelegate.taskToMutate = task
 
         // Now completeness should work again
-        let stopAfterClear = service.checkArtifactCompleteness(stepID: stepID)
+        let stopAfterClear = service.checkArtifactCompleteness(stepID: stepID, taskID: task.id)
         XCTAssertNotNil(stopAfterClear, "Should auto-complete after revisionComment cleared")
     }
 

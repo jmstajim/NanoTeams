@@ -21,10 +21,10 @@ nonisolated struct GitAddTool: ToolHandler {
     static let blockedInDefaultStorage = true
 
     let workFolderRoot: URL
+    let resolver: SandboxPathResolver
 
-    
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self {
-        Self(workFolderRoot: dependencies.workFolderRoot)
+        Self(workFolderRoot: dependencies.workFolderRoot, resolver: dependencies.resolver)
     }
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
@@ -45,8 +45,11 @@ nonisolated struct GitAddTool: ToolHandler {
                 throw ToolArgumentError.missingRequired("paths (or files / path / file)")
             }
 
+            // Tolerate absolute + redundant-work-folder-name path forms (globs/pathspec
+            // magic pass through untouched) so git_add behaves like the file tools.
+            let normalizedPaths = paths.map { resolver.relativizePathspec($0) }
             var gitArgs = ["add"]
-            gitArgs.append(contentsOf: paths)
+            gitArgs.append(contentsOf: normalizedPaths)
 
             let result = try ProcessRunner.runGit(gitArgs, in: workFolderRoot)
 
@@ -67,7 +70,7 @@ nonisolated struct GitAddTool: ToolHandler {
 
             return makeSuccessResult(
                 toolName: Self.name, args: args,
-                data: AddData(staged: paths)
+                data: AddData(staged: normalizedPaths)
             )
         }
     }

@@ -1478,6 +1478,163 @@ final class TeamModelTests: XCTestCase {
         XCTAssertNil(team.findRole(byIdentifier: "nonexistent"))
     }
 
+    // MARK: - findRole(byIdentifier:) normalized fallback (snake_case / spacing / case)
+
+    private func makeFindRoleTeam(_ roles: [TeamRoleDefinition]) -> Team {
+        Team(name: "Test", roles: roles, artifacts: [], settings: .default, graphLayout: .default)
+    }
+
+    /// The reported bug: an LLM emits snake_case `software_engineer` for the role
+    /// whose `systemRoleID` is camelCase `softwareEngineer`. It must resolve.
+    func testFindRoleByIdentifier_normalizesSnakeCaseToSystemRoleID() {
+        let role = TeamRoleDefinition(
+            id: UUID().uuidString, name: "Software Engineer",
+            prompt: "", toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies(requiredArtifacts: [], producesArtifacts: []),
+            systemRoleID: "softwareEngineer"
+        )
+        let team = makeFindRoleTeam([role])
+        XCTAssertEqual(team.findRole(byIdentifier: "software_engineer")?.systemRoleID, "softwareEngineer")
+    }
+
+    /// Custom role (no `systemRoleID`) — snake_case must still resolve via the display name.
+    func testFindRoleByIdentifier_normalizesSnakeCaseToDisplayName() {
+        let role = TeamRoleDefinition(
+            id: UUID().uuidString, name: "Backend Engineer",
+            prompt: "", toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies(requiredArtifacts: [], producesArtifacts: [])
+        )
+        let team = makeFindRoleTeam([role])
+        XCTAssertEqual(team.findRole(byIdentifier: "backend_engineer")?.name, "Backend Engineer")
+    }
+
+    func testFindRoleByIdentifier_normalizesVariousSeparatorsAndCasing() {
+        let role = TeamRoleDefinition(
+            id: UUID().uuidString, name: "Software Engineer",
+            prompt: "", toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies(requiredArtifacts: [], producesArtifacts: []),
+            systemRoleID: "softwareEngineer"
+        )
+        let team = makeFindRoleTeam([role])
+        for variant in [
+            "SOFTWARE_ENGINEER", "software-engineer", "softwareengineer",
+            "Software_Engineer", " software engineer ", "Software-Engineer",
+        ] {
+            XCTAssertEqual(team.findRole(byIdentifier: variant)?.systemRoleID, "softwareEngineer",
+                           "Expected variant '\(variant)' to resolve to softwareEngineer")
+        }
+    }
+
+    /// Exact id/systemRoleID/name matches must win before the normalized fallback.
+    func testFindRoleByIdentifier_exactMatchTakesPriorityOverNormalized() {
+        let exact = TeamRoleDefinition(
+            id: "software_engineer", name: "Alt Engineer",
+            prompt: "", toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies(requiredArtifacts: [], producesArtifacts: [])
+        )
+        let normalized = TeamRoleDefinition(
+            id: UUID().uuidString, name: "Software Engineer",
+            prompt: "", toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies(requiredArtifacts: [], producesArtifacts: []),
+            systemRoleID: "softwareEngineer"
+        )
+        let team = makeFindRoleTeam([normalized, exact])
+        XCTAssertEqual(team.findRole(byIdentifier: "software_engineer")?.id, "software_engineer",
+                       "Exact id match must win over the normalized 'Software Engineer' role")
+    }
+
+    func testFindRoleByIdentifier_emptyAndPunctuationOnlyReturnNil() {
+        let role = TeamRoleDefinition(
+            id: UUID().uuidString, name: "Engineer",
+            prompt: "", toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies(requiredArtifacts: [], producesArtifacts: [])
+        )
+        let team = makeFindRoleTeam([role])
+        XCTAssertNil(team.findRole(byIdentifier: ""))
+        XCTAssertNil(team.findRole(byIdentifier: "   "))
+        XCTAssertNil(team.findRole(byIdentifier: "___"))
+    }
+
+    func testFindRoleByIdentifier_unknownAfterNormalizationReturnsNil() {
+        let role = TeamRoleDefinition(
+            id: UUID().uuidString, name: "Engineer",
+            prompt: "", toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies(requiredArtifacts: [], producesArtifacts: [])
+        )
+        let team = makeFindRoleTeam([role])
+        XCTAssertNil(team.findRole(byIdentifier: "product_manager"))
+    }
+
+    /// Ambiguous normalized collision: two roles normalize to the same token and the
+    /// query matches neither exactly. The fallback must return nil (so the caller errors)
+    /// rather than silently binding whichever role appears first.
+    func testFindRoleByIdentifier_ambiguousNormalizedCollisionReturnsNil() {
+        let role1 = TeamRoleDefinition(
+            id: UUID().uuidString, name: "Software Engineer",
+            prompt: "", toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies(requiredArtifacts: [], producesArtifacts: []),
+            systemRoleID: "softwareEngineer"
+        )
+        let role2 = TeamRoleDefinition(
+            id: UUID().uuidString, name: "Software-Engineer",
+            prompt: "", toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies(requiredArtifacts: [], producesArtifacts: [])
+        )
+        let team = makeFindRoleTeam([role1, role2])
+        // Both normalize to "softwareengineer"; the snake_case query matches neither exactly.
+        XCTAssertNil(team.findRole(byIdentifier: "software_engineer"),
+                     "Ambiguous normalized collision should return nil, not arbitrarily pick the first role")
+        // An exact display-name query still resolves unambiguously.
+        XCTAssertEqual(team.findRole(byIdentifier: "Software-Engineer")?.id, role2.id)
+    }
+
+    /// Normalized fallback also matches on `id` (not just systemRoleID/name) — a custom
+    /// role with a human-readable id resolves from a spaced/hyphenated variant.
+    func testFindRoleByIdentifier_normalizesViaRoleID() {
+        let role = TeamRoleDefinition(
+            id: "code_reviewer", name: "Reviewer of Code",
+            prompt: "", toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies(requiredArtifacts: [], producesArtifacts: [])
+        )
+        let team = makeFindRoleTeam([role])
+        XCTAssertEqual(team.findRole(byIdentifier: "Code Reviewer")?.id, "code_reviewer")
+        XCTAssertEqual(team.findRole(byIdentifier: "code-reviewer")?.id, "code_reviewer")
+    }
+
+    /// Digits are preserved by normalization: `engineer_2` resolves to `engineer2`,
+    /// while the digit-less `engineer` does not match it.
+    func testFindRoleByIdentifier_preservesDigits() {
+        let role = TeamRoleDefinition(
+            id: UUID().uuidString, name: "Engineer 2",
+            prompt: "", toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies(requiredArtifacts: [], producesArtifacts: []),
+            systemRoleID: "engineer2"
+        )
+        let team = makeFindRoleTeam([role])
+        XCTAssertEqual(team.findRole(byIdentifier: "engineer_2")?.systemRoleID, "engineer2")
+        XCTAssertNil(team.findRole(byIdentifier: "engineer"),
+                     "Digit-less 'engineer' must not match 'engineer2'")
+    }
+
+    /// Exact systemRoleID match wins over a different role that only collides under
+    /// normalization — even when the colliding role appears first in the array.
+    func testFindRoleByIdentifier_exactSystemRoleIDBeatsNormalizedCollision() {
+        let exact = TeamRoleDefinition(
+            id: UUID().uuidString, name: "Tech Lead",
+            prompt: "", toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies(requiredArtifacts: [], producesArtifacts: []),
+            systemRoleID: "techLead"
+        )
+        let collider = TeamRoleDefinition(
+            id: UUID().uuidString, name: "Tech-Lead",
+            prompt: "", toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies(requiredArtifacts: [], producesArtifacts: [])
+        )
+        let team = makeFindRoleTeam([collider, exact])
+        XCTAssertEqual(team.findRole(byIdentifier: "techLead")?.id, exact.id,
+                       "Exact systemRoleID match must win over a normalized-only collision")
+    }
+
     // MARK: - rolesProducing / rolesRequiring (Round 3)
 
     func testRolesProducingAndRequiring() {

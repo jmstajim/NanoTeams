@@ -120,6 +120,7 @@ extension LLMExecutionService {
         case .cancelDelegation(let childTaskID, let reason):
             response = await handleCancelDelegation(
                 stepID: stepID,
+                taskID: task.id,
                 childTaskID: childTaskID,
                 reason: reason
             )
@@ -145,6 +146,29 @@ extension LLMExecutionService {
                 config: config
             )
 
+        // MARK: Autovisor management tools (no attribution turn — the manager's
+        // own activity feed renders these; the result is a plain JSON envelope).
+        case .listTasks:
+            response = await handleListTasks()
+        case .taskStatus(let taskID):
+            response = await handleTaskStatus(taskID: taskID)
+        case .createManagedTask(let title, let brief, let teamID):
+            response = await handleCreateManagedTask(title: title, brief: brief, teamID: teamID)
+        case .controlTask(let taskID, let verb):
+            response = await handleControlTask(taskID: taskID, verb: verb)
+        case .manageRole(let taskID, let roleID, let verb):
+            response = await handleManageRole(taskID: taskID, roleID: roleID, verb: verb)
+        case .answerTaskQuestion(let taskID, let answer):
+            response = await handleAnswerTaskQuestion(taskID: taskID, answer: answer)
+        case .messageTask(let taskID, let text, let roleID):
+            response = await handleMessageTask(taskID: taskID, text: text, roleID: roleID)
+        case .scheduleTask(let taskID, let intervalMinutes):
+            response = await handleScheduleTask(taskID: taskID, intervalMinutes: intervalMinutes)
+        case .setWorkFolderContext(let content):
+            response = await handleSetWorkFolderContext(content: content)
+        case .waitForEvents:
+            response = await handleWaitForEvents(stepID: stepID, taskID: task.id)
+
         default:
             // Unhandled collaboration signal — `processToolResults` routed it
             // here but no `case` matched. The empty `response` would silently
@@ -158,18 +182,28 @@ extension LLMExecutionService {
         // Reflect the deferred handler's outcome onto the persisted `StepToolCall`.
         // The placeholder written in `processToolResults` had `isError: false`
         // (scheduling envelope, status `pending`); only the deferred response
-        // knows whether the actual collaboration succeeded. Without this re-update,
-        // failed delegations / consultations / meetings render with a green ✓.
-        if envelopeStatus(response) == .failure {
+        // knows the real result. Two reflect cases:
+        //   • FAILURE (any signal) — flip the card green ✓ → red and surface the
+        //     real error envelope, so failed delegations / consultations /
+        //     meetings don't render as success.
+        //   • Autovisor signals (success OR failure) — these have no other UI
+        //     surface, so the card must show the real result (task list, status,
+        //     etc.) instead of the `{"status":"pending"}` placeholder. Rich-UI
+        //     collaboration tools (delegation / consultation / meeting) render their
+        //     content in dedicated surfaces (graph delegation layers, attribution
+        //     bubbles, meeting messages), so on success we intentionally leave their
+        //     placeholder card untouched.
+        let status = envelopeStatus(response)
+        if status == .failure || Self.isAutovisorSignal(result.signal) {
             let updated = ToolExecutionResult(
                 providerID: result.providerID,
                 toolName: result.toolName,
                 argumentsJSON: result.argumentsJSON,
                 outputJSON: response,
-                isError: true,
+                isError: status == .failure,
                 signal: result.signal
             )
-            await updateToolCallResult(stepID: stepID, toolCallID: toolCallID, result: updated)
+            await updateToolCallResult(stepID: stepID, taskID: task.id, toolCallID: toolCallID, result: updated)
         }
 
         let toolContent = buildCollaborationToolResult(toolName: result.toolName, response: response)
@@ -183,11 +217,11 @@ extension LLMExecutionService {
             [RESULT]
             \(toolContent)
             """
-        await appendLLMMessage(stepID: stepID, role: .tool, content: toolCallContent)
+        await appendLLMMessage(stepID: stepID, taskID: task.id, role: .tool, content: toolCallContent)
 
         if let attrRole = attributionRole, let attrContext = attributionContext {
             await appendLLMMessage(
-                stepID: stepID, role: .user, content: response,
+                stepID: stepID, taskID: task.id, role: .user, content: response,
                 sourceRole: attrRole, sourceContext: attrContext
             )
         }
@@ -201,6 +235,7 @@ extension LLMExecutionService {
     func processRegularToolResult(
         result: ToolExecutionResult,
         stepID: String,
+        taskID: Int,
         memoryStore: MemoryTagStore,
         iterationNumber: Int,
         conversationMessages: inout [ChatMessage],
@@ -227,22 +262,23 @@ extension LLMExecutionService {
             [RESULT]
             \(result.outputJSON)
             """
-        await appendLLMMessage(stepID: stepID, role: .tool, content: toolCallContent)
+        await appendLLMMessage(stepID: stepID, taskID: taskID, role: .tool, content: toolCallContent)
 
         // Process side effects (scratchpad, artifacts, error guidance) for ALL results,
         // including those in the same batch as a supervisor question.
         await processScratchpadResult(
             result: result,
             stepID: stepID,
+            taskID: taskID,
             memoryStore: memoryStore,
             conversationMessages: &conversationMessages
         )
-        await processCreateArtifactResult(result: result, stepID: stepID)
+        await processCreateArtifactResult(result: result, stepID: stepID, taskID: taskID)
 
         if result.isError {
             let guidance = buildToolErrorGuidance(result: result)
             conversationMessages.append(ChatMessage(role: .user, content: guidance))
-            await appendLLMMessage(stepID: stepID, role: .user, content: guidance)
+            await appendLLMMessage(stepID: stepID, taskID: taskID, role: .user, content: guidance)
         }
 
         if case .supervisorQuestion(let q) = result.signal {

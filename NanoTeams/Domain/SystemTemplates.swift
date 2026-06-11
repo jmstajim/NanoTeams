@@ -121,6 +121,7 @@ nonisolated enum SystemTemplates {
         "codingAssistant": TeamTemplateConfig(system: codingAssistantTemplate, consultation: genericConsultationTemplate,   meeting: genericMeetingTemplate),
         "codingAgent":   TeamTemplateConfig(system: codingAssistantTemplate, consultation: genericConsultationTemplate,   meeting: genericMeetingTemplate),
         "generated":     TeamTemplateConfig(system: genericTemplate,       consultation: genericConsultationTemplate,       meeting: genericMeetingTemplate),
+        "autovisor": TeamTemplateConfig(system: autovisorTemplate,     consultation: genericConsultationTemplate,       meeting: genericMeetingTemplate),
     ]
 
     /// Returns the default system prompt template for a given team template ID.

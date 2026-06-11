@@ -523,6 +523,7 @@ import SwiftUI
             )
         ],
         supervisorAnswer: "Target iOS 17+. We want to use the latest SwiftUI features and our analytics show 90% of users are on iOS 17.",
+        supervisorAnswerWasAuto: true,
         llmConversation: [
             LLMMessage(role: .assistant, content: "I need to determine the minimum iOS version for the project.", thinking: "The deployment target affects which APIs we can use. SwiftUI has major improvements in iOS 17. Let me ask the Supervisor."),
             LLMMessage(role: .user, content: "Supervisor answer: Target iOS 17+. We want to use the latest SwiftUI features and our analytics show 90% of users are on iOS 17.", sourceRole: .supervisor, sourceContext: .supervisorAnswer)
@@ -716,19 +717,19 @@ import SwiftUI
     // Configure streaming states
     let _ = {
         // 1. Processing progress
-        streaming.beginStreaming(stepID: processingStepID, messageID: processingMsgID, role: .techLead)
-        streaming.updateProcessingProgress(stepID: processingStepID, progress: 0.42)
+        streaming.beginStreaming(stepID: processingStepID, taskID: 0, messageID: processingMsgID, role: .techLead)
+        streaming.updateProcessingProgress(stepID: processingStepID, taskID: 0, progress: 0.42)
 
         // 2. Empty streaming (no content, no thinking, no progress)
-        streaming.beginStreaming(stepID: emptyStreamStepID, messageID: emptyStreamMsgID, role: .productManager)
+        streaming.beginStreaming(stepID: emptyStreamStepID, taskID: 0, messageID: emptyStreamMsgID, role: .productManager)
 
         // 3. Thinking only (no content yet)
-        streaming.beginStreaming(stepID: thinkingStreamStepID, messageID: thinkingStreamMsgID, role: .softwareEngineer)
-        streaming.appendThinking(stepID: thinkingStreamStepID, content: "I need to analyze the project structure and understand the existing codebase before writing any code...")
+        streaming.beginStreaming(stepID: thinkingStreamStepID, taskID: 0, messageID: thinkingStreamMsgID, role: .softwareEngineer)
+        streaming.appendThinking(stepID: thinkingStreamStepID, taskID: 0, content: "I need to analyze the project structure and understand the existing codebase before writing any code...")
 
         // 4. Content arriving
-        streaming.beginStreaming(stepID: contentStreamStepID, messageID: contentStreamMsgID, role: .techLead)
-        streaming.append(stepID: contentStreamStepID, messageID: contentStreamMsgID, role: .techLead, content: "Based on the requirements, I propose the following architecture for the notification system...")
+        streaming.beginStreaming(stepID: contentStreamStepID, taskID: 0, messageID: contentStreamMsgID, role: .techLead)
+        streaming.append(stepID: contentStreamStepID, taskID: 0, messageID: contentStreamMsgID, role: .techLead, content: "Based on the requirements, I propose the following architecture for the notification system...")
     }()
 
     TeamActivityFeedView(

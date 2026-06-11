@@ -93,6 +93,13 @@ final class QuickCaptureFormState {
         /// When non-nil, the message is delivered only when this specific role reaches
         /// `.needsSupervisorInput`. `nil` = any role / first asker wins.
         let targetRoleID: String?
+        /// `true` when an automated supervisor authored the message (the Autovisor's
+        /// `message_task`). When the `.needsSupervisorInput` backstop delivers the
+        /// message as a question ANSWER, this rides into
+        /// `answerSupervisorQuestion(isAutoAnswer:)` → `supervisorAnswerWasAuto`, so
+        /// the feed's "Auto-answered" badge stays honest. Human enqueue paths
+        /// (composer, QuickCapture, `sendMessageToAutovisor`) use the default `false`.
+        let isFromAutomatedSupervisor: Bool
         /// Monotonic timestamp — useful for diagnosing FIFO-order issues across task
         /// switches and for future "queued N seconds ago" UX.
         let createdAt: Date
@@ -105,6 +112,7 @@ final class QuickCaptureFormState {
             attachments: [StagedAttachment],
             clippedTexts: [String],
             targetRoleID: String? = nil,
+            isFromAutomatedSupervisor: Bool = false,
             id: UUID = UUID(),
             createdAt: Date = MonotonicClock.shared.now()
         ) {
@@ -117,6 +125,7 @@ final class QuickCaptureFormState {
             self.attachments = attachments
             self.clippedTexts = clippedTexts
             self.targetRoleID = targetRoleID
+            self.isFromAutomatedSupervisor = isFromAutomatedSupervisor
             self.createdAt = createdAt
         }
     }

@@ -32,6 +32,7 @@ nonisolated enum RoleColorDefaults {
         "assistant":        "#56C999",
         "codingAssistant":  "#8F82E6",
         "codingAgent":      "#8F82E6",
+        "autovisor":    "#46B8D0",
     ]
 
     /// Returns the default background hex for a system role ID, or blue for custom roles.

@@ -189,12 +189,14 @@ final class ToolErrorGuidanceTests: XCTestCase {
 
     // MARK: - anchor_not_found
 
-    /// `edit_file` returns ANCHOR_NOT_FOUND when `old_text` no longer matches —
-    /// the file changed since the last read. Generic "retry with correct
-    /// arguments" tells the model to fuzz `old_text` blindly instead of
-    /// re-reading. The bespoke branch names the path and prescribes "re-read".
-    /// Pin both the path embedding and the re-read direction.
-    func testGuidance_anchorNotFound_directsToReread() {
+    /// ANCHOR_NOT_FOUND means `old_text` doesn't match current content — almost
+    /// always a transcription error (a wrong character, lost whitespace, or `/`↔`\`
+    /// slash confusion), NOT a file mutation. The guidance must name the path, steer
+    /// toward an exact character-for-character match, and must NOT falsely claim the
+    /// content changed nor hard-demand a re-read (that deadlocks against the read
+    /// dedup's "Do NOT re-read"). It also must not append the generic retry-with-args
+    /// suffix.
+    func testGuidance_anchorNotFound_describesExactMatch_withoutClaimingChange() {
         let envelope = ToolExecutionResult(
             toolName: "edit_file",
             argumentsJSON: #"{"path":"src/foo.swift","old_text":"foo","new_text":"bar"}"#,
@@ -209,8 +211,12 @@ final class ToolErrorGuidanceTests: XCTestCase {
             "Expected path embedded in guidance, got: \(guidance)"
         )
         XCTAssertTrue(
-            guidance.lowercased().contains("re-read"),
-            "Expected explicit 're-read' direction, got: \(guidance)"
+            guidance.lowercased().contains("exactly"),
+            "Expected exact-match steering, got: \(guidance)"
+        )
+        XCTAssertFalse(
+            guidance.lowercased().contains("content changed"),
+            "Must not falsely claim the file content changed, got: \(guidance)"
         )
         XCTAssertFalse(
             guidance.contains("Retry the tool call with the correct arguments"),
@@ -237,6 +243,205 @@ final class ToolErrorGuidanceTests: XCTestCase {
         XCTAssertFalse(
             guidance.contains("''"),
             "Missing path must not render empty quotes, got: \(guidance)"
+        )
+    }
+
+    // MARK: - anchor_ambiguous
+
+    /// ANCHOR_AMBIGUOUS means the anchor IS findable — it matched several regions
+    /// once trailing whitespace is ignored. The anchor_not_found steering
+    /// ("character for character") prescribes the wrong repair and, worse, claims
+    /// the text was not found at all. The guidance must surface the envelope's
+    /// message (region count + "add more lines") and nothing from the not-found
+    /// branch.
+    func testGuidance_anchorAmbiguous_surfacesEnvelopeMessage_withoutNotFoundSteering() {
+        let envelope = ToolExecutionResult(
+            toolName: "edit_file",
+            argumentsJSON: #"{"path":"src/foo.swift","old_text":"m\nn","new_text":"X"}"#,
+            outputJSON: #"{"ok":false,"error":{"code":"ANCHOR_AMBIGUOUS","message":"old_text matches 2 regions when ignoring trailing whitespace — include more surrounding lines to disambiguate."}}"#,
+            isError: true
+        )
+
+        let guidance = sut.buildToolErrorGuidance(result: envelope)
+
+        XCTAssertTrue(
+            guidance.contains("matches 2 regions"),
+            "Envelope's region count must surface, got: \(guidance)"
+        )
+        XCTAssertFalse(
+            guidance.contains("not found"),
+            "Ambiguity guidance must not claim the anchor was not found, got: \(guidance)"
+        )
+        XCTAssertFalse(
+            guidance.contains("character for character"),
+            "Character-level steering prescribes the wrong repair for ambiguity, got: \(guidance)"
+        )
+        XCTAssertFalse(
+            guidance.contains("Retry the tool call with the correct arguments"),
+            "Generic retry-with-args suffix must not append to ambiguity guidance, got: \(guidance)"
+        )
+    }
+
+    /// Defensive: malformed ANCHOR_AMBIGUOUS envelope without a message — guidance
+    /// falls back to a synthesized add-more-lines instruction.
+    func testGuidance_anchorAmbiguous_missingMessage_fallsBack() {
+        let envelope = ToolExecutionResult(
+            toolName: "edit_file",
+            argumentsJSON: "{}",
+            outputJSON: #"{"ok":false,"error":{"code":"ANCHOR_AMBIGUOUS"}}"#,
+            isError: true
+        )
+
+        let guidance = sut.buildToolErrorGuidance(result: envelope)
+
+        XCTAssertTrue(
+            guidance.contains("more surrounding lines"),
+            "Fallback must still steer toward adding context lines, got: \(guidance)"
+        )
+        XCTAssertFalse(
+            guidance.contains("not found"),
+            "Fallback must not claim the anchor was not found, got: \(guidance)"
+        )
+    }
+
+    /// End-to-end twin of the hint-passthrough test below, for the ambiguity path:
+    /// a REAL EditFileTool envelope with ANCHOR_AMBIGUOUS must route into the
+    /// dedicated guidance branch — region count surfaced, no not-found steering.
+    func testGuidance_anchorAmbiguous_throughRealHandlerEnvelope() async throws {
+        let fm = FileManager.default
+        let tempDir = fm.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .standardizedFileURL
+        try fm.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tempDir) }
+        let paths = NTMSPaths(workFolderRoot: tempDir)
+        try fm.createDirectory(at: paths.nanoteamsDir, withIntermediateDirectories: true)
+        // Two regions matching "m\nn" once trailing whitespace is ignored.
+        try "m  \nn\nz\nm\t\nn\n".write(
+            to: tempDir.appendingPathComponent("amb.txt"), atomically: true, encoding: .utf8
+        )
+
+        let (_, runtime) = ToolRegistry.defaultRegistry(
+            workFolderRoot: tempDir,
+            toolCallsLogURL: paths.toolCallsJSONL(taskID: 0, runID: 0)
+        )
+        let context = ToolExecutionContext(workFolderRoot: tempDir, taskID: 0, runID: 0, roleID: "test_role")
+        let call = StepToolCall(
+            name: "edit_file",
+            argumentsJSON: #"{"path":"amb.txt","old_text":"m\nn","new_text":"X"}"#
+        )
+        let result = runtime.executeAll(context: context, toolCalls: [call])[0]
+        XCTAssertTrue(result.isError, "precondition: the edit must fail ambiguous")
+        XCTAssertTrue(result.outputJSON.contains("ANCHOR_AMBIGUOUS"), result.outputJSON)
+
+        let guidance = sut.buildToolErrorGuidance(result: result)
+
+        XCTAssertTrue(
+            guidance.contains("matches 2 regions"),
+            "Real envelope's region count must reach the guidance, got: \(guidance)"
+        )
+        XCTAssertFalse(
+            guidance.contains("not found"),
+            "Ambiguity guidance must not claim the anchor was not found, got: \(guidance)"
+        )
+        XCTAssertFalse(
+            guidance.contains("character for character"),
+            "Not-found steering must not leak into the ambiguity branch, got: \(guidance)"
+        )
+    }
+
+    // MARK: - anchor_not_found hint passthrough
+
+    /// When the handler attaches a specific diagnosis (`details.hint` — indentation
+    /// mismatch, whitespace-only anchor, anchor longer than file), the guidance must
+    /// re-state it LAST so the generic character-level steering doesn't bury it.
+    func testGuidance_anchorNotFound_withHint_appendsHintLast() {
+        let envelope = ToolExecutionResult(
+            toolName: "edit_file",
+            argumentsJSON: #"{"path":"src/foo.swift"}"#,
+            outputJSON: #"{"ok":false,"error":{"code":"ANCHOR_NOT_FOUND","message":"old_text not found in file.","details":{"hint":"Lines match ignoring indentation near line 3 — check leading whitespace (tabs vs spaces)."}}}"#,
+            isError: true
+        )
+
+        let guidance = sut.buildToolErrorGuidance(result: envelope)
+
+        XCTAssertTrue(
+            guidance.contains("near line 3"),
+            "Handler's diagnosis must pass through to the guidance, got: \(guidance)"
+        )
+        XCTAssertTrue(
+            guidance.hasSuffix("(tabs vs spaces)."),
+            "Hint must come last so it isn't buried by the generic steering, got: \(guidance)"
+        )
+        XCTAssertTrue(
+            guidance.contains("src/foo.swift"),
+            "Path framing must be preserved alongside the hint, got: \(guidance)"
+        )
+    }
+
+    /// End-to-end wire-contract pin: a REAL EditFileTool envelope (not a hand-rolled
+    /// fixture) must carry `details.hint` in exactly the shape this guidance parses.
+    /// If `ToolError`'s details encoding ever changes shape, the fixture-based tests
+    /// above stay green while the passthrough silently dies — this test fails instead.
+    func testGuidance_anchorNotFound_hintPassthrough_throughRealHandlerEnvelope() async throws {
+        let fm = FileManager.default
+        let tempDir = fm.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .standardizedFileURL
+        try fm.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tempDir) }
+        let paths = NTMSPaths(workFolderRoot: tempDir)
+        try fm.createDirectory(at: paths.nanoteamsDir, withIntermediateDirectories: true)
+        // Tab-indented file + space-indented anchor → indentation hint in details.
+        try "// header\n\n\tif (x) {\n\t\tgo();\n\t}\n".write(
+            to: tempDir.appendingPathComponent("m.swift"), atomically: true, encoding: .utf8
+        )
+
+        let (_, runtime) = ToolRegistry.defaultRegistry(
+            workFolderRoot: tempDir,
+            toolCallsLogURL: paths.toolCallsJSONL(taskID: 0, runID: 0)
+        )
+        let context = ToolExecutionContext(workFolderRoot: tempDir, taskID: 0, runID: 0, roleID: "test_role")
+        let args: [String: Any] = [
+            "path": "m.swift",
+            "old_text": "    if (x) {\n        go();\n    }",
+            "new_text": "    if (y) {\n        go();\n    }",
+        ]
+        let argsJSON = String(data: try JSONSerialization.data(withJSONObject: args), encoding: .utf8)!
+        let call = StepToolCall(name: "edit_file", argumentsJSON: argsJSON)
+        let result = runtime.executeAll(context: context, toolCalls: [call])[0]
+        XCTAssertTrue(result.isError, "precondition: the edit must fail with the indentation diagnosis")
+
+        let guidance = sut.buildToolErrorGuidance(result: result)
+
+        XCTAssertTrue(
+            guidance.contains("near line 3"),
+            "Real handler envelope's hint must survive the wire round-trip into guidance, got: \(guidance)"
+        )
+        XCTAssertTrue(
+            guidance.hasSuffix("(tabs vs spaces)."),
+            "Hint must still come last with a real envelope, got: \(guidance)"
+        )
+        XCTAssertTrue(
+            guidance.contains("m.swift"),
+            "Path framing must come from argumentsJSON, got: \(guidance)"
+        )
+    }
+
+    /// Defensive: an empty hint string must not append a dangling space.
+    func testGuidance_anchorNotFound_emptyHint_notAppended() {
+        let envelope = ToolExecutionResult(
+            toolName: "edit_file",
+            argumentsJSON: "{}",
+            outputJSON: #"{"ok":false,"error":{"code":"ANCHOR_NOT_FOUND","message":"old_text not found.","details":{"hint":""}}}"#,
+            isError: true
+        )
+
+        let guidance = sut.buildToolErrorGuidance(result: envelope)
+
+        XCTAssertFalse(
+            guidance.hasSuffix(" "),
+            "Empty hint must not leave a trailing space, got: '\(guidance)'"
         )
     }
 

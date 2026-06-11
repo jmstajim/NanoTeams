@@ -316,6 +316,74 @@ final class TeamEngineScenarioTests: XCTestCase {
                        "Engine should call resetStepForRevision for the revision-requested role")
     }
 
+    /// Regression (reported bug): after request_changes, the engine must NOT start a
+    /// downstream revision role while its upstream revision is still in progress.
+    /// B depends on A's artifact; both are .revisionRequested. A's step is held .running
+    /// (never completes), so B must remain gated and never start.
+    func testRevisionCascade_downstreamDoesNotStartWhileUpstreamRevising() async {
+        let supervisorRole = makeSupervisorRole()
+        let roleA = makeWorkerRole(id: "a", name: "A", requiredArtifacts: ["Supervisor Task"], producesArtifacts: ["Art A"])
+        let roleB = makeWorkerRole(id: "b", name: "B", requiredArtifacts: ["Art A"], producesArtifacts: ["Art B"])
+
+        let (team, settings) = makeTeamWith(roles: [supervisorRole, roleA, roleB])
+        mockStore.activeTeam = team
+        mockStore.teamSettings = settings
+
+        let stepAID = "a"
+        // A's step is mid-revision (.running), so it does NOT auto-complete via the
+        // run-loop reconcile pass — A stays .working and B must remain gated behind it.
+        let stepA = StepExecution(id: stepAID, role: .softwareEngineer, title: "A", status: .running, artifacts: [Artifact(name: "Art A")])
+        let stepB = StepExecution(id: "b", role: .codeReviewer, title: "B", status: .running, artifacts: [Artifact(name: "Art B")])
+
+        let run = Run(id: 0, steps: [stepA, stepB], roleStatuses: ["a": .revisionRequested, "b": .revisionRequested])
+        mockStore.activeTask = NTMSTask(id: 0, title: "T", supervisorTask: "G", runs: [run])
+        mockStore.producedArtifactNamesResult = ["Supervisor Task", "Art A", "Art B"]
+        // A's revision step keeps polling .running — so B stays gated behind A.
+        mockStore.stepStatusResults[stepAID] = .running
+        mockStore.findOrCreateStepResults = ["a": stepAID, "b": "b"]
+
+        sut.start()
+        try? await Task.sleep(for: .milliseconds(700))
+
+        XCTAssertTrue(mockStore.resetStepForRevisionCalls.contains(stepAID),
+                       "Upstream A's revision should start")
+        XCTAssertFalse(mockStore.findOrCreateStepCalls.contains("b"),
+                        "Downstream B must NOT start while A is still revising")
+    }
+
+    /// Defensive: a cyclic revision set (a⇐b, b⇐a both .revisionRequested) leaves no role
+    /// startable. The engine must fail loudly rather than busy-loop to the iteration cap.
+    func testRevisionCascade_cyclicRevisionRolesFailLoudly() async {
+        let supervisorRole = makeSupervisorRole()
+        let roleA = makeWorkerRole(id: "a", name: "A", requiredArtifacts: ["Art B"], producesArtifacts: ["Art A"])
+        let roleB = makeWorkerRole(id: "b", name: "B", requiredArtifacts: ["Art A"], producesArtifacts: ["Art B"])
+
+        let (team, settings) = makeTeamWith(roles: [supervisorRole, roleA, roleB])
+        mockStore.activeTeam = team
+        mockStore.teamSettings = settings
+
+        let run = Run(id: 0, roleStatuses: ["a": .revisionRequested, "b": .revisionRequested])
+        mockStore.activeTask = NTMSTask(id: 0, title: "T", supervisorTask: "G", runs: [run])
+        mockStore.producedArtifactNamesResult = ["Supervisor Task"]
+
+        let expectation = XCTestExpectation(description: "Engine fails on cyclic revision")
+        sut.onStateChanged = { state in
+            if state == .failed { expectation.fulfill() }
+        }
+
+        sut.start()
+        await fulfillment(of: [expectation], timeout: 2.0)
+
+        XCTAssertEqual(sut.state, .failed)
+        // Assert on "dependency cycle" — unique to the new revision fail-loud arm.
+        // (The pre-existing deadlock branch says "Execution stalled", so matching "stall"
+        // would also pass if the new arm were deleted and execution fell through.)
+        XCTAssertTrue(mockStore.setLastErrorMessageCalls.contains(where: { $0.lowercased().contains("dependency cycle") }),
+                       "Should surface the revision dependency-cycle error rather than spin")
+        XCTAssertTrue(mockStore.setLastErrorMessageCalls.contains(where: { $0.contains("[a, b]") }),
+                       "Error should name the blocked roles so the Supervisor knows what to fix")
+    }
+
     // MARK: - Scenario 6: deadlock detection
 
     /// When no roles can start (circular dependency), the engine should fail with an error message.

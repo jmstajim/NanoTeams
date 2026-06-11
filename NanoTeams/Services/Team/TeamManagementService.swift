@@ -31,9 +31,13 @@ nonisolated enum TeamManagementService {
         team.duplicate(withName: newName)
     }
 
-    /// Check if a team can be deleted (must have at least one team)
+    /// Check if a team can be deleted. The managed singleton (Autovisor) is never
+    /// deletable, and deletion must leave at least one user-deletable (non-singleton)
+    /// team behind so the folder always retains a usable working team.
     static func canDeleteTeam(in workFolder: WorkFolderProjection, teamID: NTMSID) -> Bool {
-        workFolder.teams.count > 1 && workFolder.teams.contains { $0.id == teamID }
+        guard let team = workFolder.teams.first(where: { $0.id == teamID }),
+              !team.isManagedSingleton else { return false }
+        return workFolder.teams.filter { !$0.isManagedSingleton }.count > 1
     }
 
     // MARK: - Role Management
@@ -195,6 +199,55 @@ nonisolated enum TeamManagementService {
             team.updatedAt = MonotonicClock.shared.now()
         }
         return teamChanged
+    }
+
+    /// Keeps the hidden Autovisor team in sync with template invariants the user
+    /// never customizes — the "Manager" role icon, the **mandatory** management tools,
+    /// and the Auto (nil) meeting coordinator. Icon + coordinator are overwritten; the
+    /// mandatory tools are **union-enforced** (additive) so they can never be lost, while
+    /// the user's optional-tool choices (toggled in the role editor) are preserved.
+    /// Pure + idempotent: returns true only when something actually changed, so a
+    /// caller running it inside `mutateWorkFolder` persists nothing on a no-op.
+    @discardableResult
+    nonisolated static func syncAutovisorTeamToTemplate(teams: inout [Team]) -> Bool {
+        guard let teamIndex = teams.firstIndex(where: { $0.templateID == AutovisorConstants.teamTemplateID })
+        else { return false }
+
+        var changed = false
+
+        // Manager role icon → template, and mandatory tools union-enforced (additive —
+        // does NOT remove user-toggled optional tools). The icon is template-owned (its
+        // General tab is hidden in the editor); the management tools define the manager.
+        if let template = SystemTemplates.roles[AutovisorConstants.managerRoleSystemID],
+           let roleIndex = teams[teamIndex].roles.firstIndex(where: {
+               $0.systemRoleID == AutovisorConstants.managerRoleSystemID
+           }) {
+            if teams[teamIndex].roles[roleIndex].icon != template.icon {
+                teams[teamIndex].roles[roleIndex].icon = template.icon
+                teams[teamIndex].roles[roleIndex].updatedAt = MonotonicClock.shared.now()
+                changed = true
+            }
+            let missingMandatory = AutovisorConstants.managerMandatoryToolIDs.filter {
+                !teams[teamIndex].roles[roleIndex].toolIDs.contains($0)
+            }
+            if !missingMandatory.isEmpty {
+                teams[teamIndex].roles[roleIndex].toolIDs.append(contentsOf: missingMandatory)
+                teams[teamIndex].roles[roleIndex].updatedAt = MonotonicClock.shared.now()
+                changed = true
+            }
+        }
+
+        // Meeting coordinator → Auto (nil). The lone Manager role is the only
+        // possible coordinator anyway; Auto reads correctly in the settings UI.
+        if teams[teamIndex].settings.meetingCoordinatorRoleID != nil {
+            teams[teamIndex].settings.meetingCoordinatorRoleID = nil
+            changed = true
+        }
+
+        if changed {
+            teams[teamIndex].updatedAt = MonotonicClock.shared.now()
+        }
+        return changed
     }
 }
 

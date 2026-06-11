@@ -22,7 +22,7 @@ final class ArtifactCaptureTests: XCTestCase {
         }
 
         store._testRegisterStepTask(stepID: engineerStep.id, taskID: taskID)
-        await store._testFinishStepWithWarning(stepID: engineerStep.id, warning: "Tool loop iteration limit reached.")
+        await store._testFinishStepWithWarning(stepID: engineerStep.id, taskID: taskID, warning: "Tool loop iteration limit reached.")
 
         let updatedStep = try XCTUnwrap(store.activeTask?.runs.last?.steps.first(where: { $0.id == engineerStep.id }))
         XCTAssertEqual(updatedStep.status, .done)

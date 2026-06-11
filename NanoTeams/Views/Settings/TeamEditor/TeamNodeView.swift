@@ -118,6 +118,8 @@ struct TeamNodeView: View {
             onDoubleTap?()
         }
         .contextMenu {
+            // Content is empty when neither action is available (e.g. the read-only
+            // managed singleton passes both closures as nil) → no menu is shown.
             if let onDoubleTap {
                 Button {
                     onDoubleTap()
@@ -126,15 +128,13 @@ struct TeamNodeView: View {
                 }
             }
 
-            if !isSupervisor {
-                Divider()
+            if !isSupervisor, let onRemoveFromGraph {
+                if onDoubleTap != nil { Divider() }
 
-                if let onRemoveFromGraph {
-                    Button {
-                        onRemoveFromGraph()
-                    } label: {
-                        Label("Remove from Graph", systemImage: "eye.slash")
-                    }
+                Button {
+                    onRemoveFromGraph()
+                } label: {
+                    Label("Remove from Graph", systemImage: "eye.slash")
                 }
             }
         }

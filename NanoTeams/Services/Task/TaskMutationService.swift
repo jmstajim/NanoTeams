@@ -204,11 +204,18 @@ nonisolated enum TaskMutationService {
     /// - Parameters:
     ///   - answer: The Supervisor answer.
     ///   - stepID: The step ID.
+    ///   - isAutoAnswer: `true` when an automated path (auto-answer service,
+    ///     delegating parent role, Autovisor) is answering — drives the feed's
+    ///     "Auto-answered" badge via `supervisorAnswerWasAuto`. Human callers
+    ///     use the default `false`.
     ///   - task: The task to mutate.
-    static func setSupervisorAnswer(_ answer: String, stepID: String, in task: inout NTMSTask) {
+    static func setSupervisorAnswer(
+        _ answer: String, stepID: String, isAutoAnswer: Bool = false, in task: inout NTMSTask
+    ) {
         guard let location = task.locateStepInLatestRun(stepID: stepID) else { return }
         task.runs[location.runIndex].steps[location.stepIndex].supervisorAnswer = answer
         task.runs[location.runIndex].steps[location.stepIndex].supervisorAnswerAttachmentPaths = []
+        task.runs[location.runIndex].steps[location.stepIndex].supervisorAnswerWasAuto = isAutoAnswer
         task.runs[location.runIndex].steps[location.stepIndex].needsSupervisorInput = false
         task.runs[location.runIndex].steps[location.stepIndex].updatedAt = MonotonicClock.shared.now()
     }
@@ -221,6 +228,15 @@ nonisolated enum TaskMutationService {
     static func appendLLMMessage(_ message: LLMMessage, to stepID: String, in task: inout NTMSTask) {
         guard let location = task.locateStepInLatestRun(stepID: stepID) else { return }
         task.runs[location.runIndex].steps[location.stepIndex].llmConversation.append(message)
+        task.runs[location.runIndex].steps[location.stepIndex].updatedAt = MonotonicClock.shared.now()
+    }
+
+    /// Removes an LLM message by id from a step's conversation. Used to drop the
+    /// pre-created empty assistant turn when a top-level thinking loop discards
+    /// its generation (`NTMSOrchestrator.discardStreaming`).
+    static func removeLLMMessage(id: UUID, from stepID: String, in task: inout NTMSTask) {
+        guard let location = task.locateStepInLatestRun(stepID: stepID) else { return }
+        task.runs[location.runIndex].steps[location.stepIndex].llmConversation.removeAll { $0.id == id }
         task.runs[location.runIndex].steps[location.stepIndex].updatedAt = MonotonicClock.shared.now()
     }
 

@@ -145,15 +145,15 @@ extension NTMSOrchestrator {
         lastErrorMessage = "Could not restore \(failedIDs.count) delegated \(plural) of task #\(taskID): \(list). Activity feed and graph may be incomplete."
     }
 
-    /// Returns the most recent error message attached to the orchestrator's
-    /// banner channel. V1 limitation: errors are not partitioned per-task, so
-    /// `taskID` is currently ignored — the same global string surfaces no matter
-    /// which task fails. Documented in the V2 follow-up list; partitioning needs
-    /// a per-task error store, not just an additional wrapper.
+    /// Returns the failure detail for `taskID`, derived from the task's OWN latest
+    /// run (`AutovisorStatus.lastError`) — NOT the global error banner, which can
+    /// belong to a different task and would mislead a caller (the Autovisor's
+    /// `task_status`, or `handleDelegateToTeam`'s child-failure envelope) into acting
+    /// on a healthy task. `nil` when the task hasn't failed.
     // periphery:ignore - protocol conformance (LLMStateDelegate)
     func lastErrorMessageForTask(_ taskID: Int) -> String? {
-        _ = taskID
-        return lastErrorMessage
+        guard let task = loadedTask(taskID) else { return nil }
+        return AutovisorStatus.lastError(for: task)
     }
 
     /// Hard-stops a task's engine and all of its descendant engines
@@ -198,7 +198,9 @@ extension NTMSOrchestrator {
     // periphery:ignore - protocol conformance (LLMStateDelegate)
     @discardableResult
     func answerSupervisorQuestion(taskID: Int, stepID: String, answer: String) async -> Bool {
-        await answerSupervisorQuestion(stepID: stepID, taskID: taskID, answer: answer)
+        // The delegating parent ROLE (an LLM) is answering the child's question —
+        // mark it auto so the child's feed shows the "Auto-answered" badge.
+        await answerSupervisorQuestion(stepID: stepID, taskID: taskID, answer: answer, isAutoAnswer: true)
     }
 
     // MARK: - Delegation Interrupt (Supervisor-driven abort)

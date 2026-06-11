@@ -64,6 +64,35 @@ final class TeamManagementServiceTests: XCTestCase {
         XCTAssertTrue(TeamManagementService.canDeleteTeam(in: wf, teamID: team1.id))
     }
 
+    func testCanDeleteTeam_managedSingleton_returnsFalse() {
+        // The Autovisor team is never deletable, even alongside other teams.
+        let normal = TeamManagementService.createTeam(name: "Team A")
+        let autovisor = TeamTemplateFactory.autovisor()
+        let wf = WorkFolderProjection(state: WorkFolderState(name: "TestProject"), settings: .defaults, teams: [normal, autovisor])
+
+        XCTAssertFalse(TeamManagementService.canDeleteTeam(in: wf, teamID: autovisor.id))
+    }
+
+    func testCanDeleteTeam_lastNonSingletonTeam_returnsFalse() {
+        // Deleting the only normal team (leaving just Autovisor) is not allowed —
+        // the folder must always retain a usable working team.
+        let normal = TeamManagementService.createTeam(name: "Team A")
+        let autovisor = TeamTemplateFactory.autovisor()
+        let wf = WorkFolderProjection(state: WorkFolderState(name: "TestProject"), settings: .defaults, teams: [normal, autovisor])
+
+        XCTAssertFalse(TeamManagementService.canDeleteTeam(in: wf, teamID: normal.id))
+    }
+
+    func testCanDeleteTeam_normalTeamWithAutovisorPresent_returnsTrue() {
+        // Two normal teams + Autovisor → deleting one normal team is allowed.
+        let team1 = TeamManagementService.createTeam(name: "Team A")
+        let team2 = TeamManagementService.createTeam(name: "Team B")
+        let autovisor = TeamTemplateFactory.autovisor()
+        let wf = WorkFolderProjection(state: WorkFolderState(name: "TestProject"), settings: .defaults, teams: [team1, team2, autovisor])
+
+        XCTAssertTrue(TeamManagementService.canDeleteTeam(in: wf, teamID: team1.id))
+    }
+
     func testCanDeleteTeam_nonExistentID_returnsFalse() {
         let team1 = TeamManagementService.createTeam(name: "Team A")
         let team2 = TeamManagementService.createTeam(name: "Team B")

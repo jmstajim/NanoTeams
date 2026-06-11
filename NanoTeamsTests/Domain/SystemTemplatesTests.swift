@@ -530,8 +530,8 @@ final class SystemTemplatesTests: XCTestCase {
 
     func testRoleTemplatesCount() {
         XCTAssertEqual(
-            SystemTemplates.roles.count, 22,
-            "Should have 22 built-in role templates (incl. Coding Agent)"
+            SystemTemplates.roles.count, 23,
+            "Should have 23 built-in role templates (incl. Autovisor)"
         )
     }
 

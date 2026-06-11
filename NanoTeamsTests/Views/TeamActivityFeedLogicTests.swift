@@ -107,7 +107,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         )
         for tagged in items {
             guard case let .notification(_, _, type, _, _) = tagged.item,
-                  case let .supervisorInput(question, answer, _, _, _, _) = type
+                  case let .supervisorInput(question, answer, _, _, _, _, _) = type
             else { continue }
             result.append((question, answer, tagged.item.createdAt))
         }
@@ -810,10 +810,21 @@ final class TeamActivityFeedLogicTests: XCTestCase {
 
     // MARK: - Bug 3: Thinking Streaming State
 
-    /// Replicates the thinking streaming logic from `messageBubbleContent()`.
-    /// Thinking spinner shows only while content hasn't started arriving.
-    private func isThinkingStreaming(isStreaming: Bool, hasContent: Bool) -> Bool {
-        isStreaming && !hasContent
+    /// Pins the PRODUCTION formula (`MessageBubbleView.isThinkingStreaming`),
+    /// not a test-local copy — deleting `|| isStreamingToolCall` from
+    /// production must fail these tests. Thinking spinner shows while content
+    /// hasn't started arriving, OR while a tool-call envelope is being
+    /// assembled (its text streams into the thinking preview, so the Thinking
+    /// row stays the live indicator even though the visible prose froze at
+    /// the marker).
+    private func isThinkingStreaming(
+        isStreaming: Bool, hasContent: Bool, isStreamingToolCall: Bool = false
+    ) -> Bool {
+        MessageBubbleView.isThinkingStreaming(
+            isStreaming: isStreaming,
+            hasMessageContent: hasContent,
+            isStreamingToolCall: isStreamingToolCall
+        )
     }
 
     func testThinkingStreamingWhileNoContent() {
@@ -831,6 +842,223 @@ final class TeamActivityFeedLogicTests: XCTestCase {
             "Thinking should not show spinner when not streaming")
         XCTAssertFalse(isThinkingStreaming(isStreaming: false, hasContent: true),
             "Thinking should not show spinner when not streaming (with content)")
+    }
+
+    func testThinkingStreamingDuringToolCallAssembly() {
+        XCTAssertTrue(
+            isThinkingStreaming(isStreaming: true, hasContent: true, isStreamingToolCall: true),
+            "During tool-call assembly the envelope streams into the thinking preview — the Thinking spinner must keep animating even though frozen prose is present")
+        XCTAssertTrue(
+            isThinkingStreaming(isStreaming: true, hasContent: false, isStreamingToolCall: true),
+            "Same without prose — envelope-only turns animate the Thinking row too")
+        XCTAssertFalse(
+            isThinkingStreaming(isStreaming: false, hasContent: true, isStreamingToolCall: true),
+            "isStreaming gate still rules — a stale flag on a committed bubble must not animate")
+    }
+
+    // MARK: - Trailing Thinking Row (chronological placement)
+
+    /// Pins the PRODUCTION formula (`MessageBubbleView.showsTrailingThinkingRow`).
+    /// The trailing animated "Thinking…" row renders BELOW the content when a
+    /// tool-call envelope streams into the thinking preview after prose froze
+    /// — the live activity is chronologically after the content. The top
+    /// thinking section goes static in that state (its `isStreaming` is
+    /// `isThinkingStreaming && !hasMessageContent`), so there is exactly one
+    /// live indicator at a time.
+    private func showsTrailingThinkingRow(
+        isStreaming: Bool, hasContent: Bool, isStreamingToolCall: Bool, hasThinking: Bool
+    ) -> Bool {
+        MessageBubbleView.showsTrailingThinkingRow(
+            isStreaming: isStreaming,
+            hasMessageContent: hasContent,
+            isStreamingToolCall: isStreamingToolCall,
+            hasThinkingContent: hasThinking
+        )
+    }
+
+    func testTrailingThinkingRow_showsDuringToolCallAssemblyWithContent() {
+        XCTAssertTrue(
+            showsTrailingThinkingRow(isStreaming: true, hasContent: true, isStreamingToolCall: true, hasThinking: true),
+            "Frozen prose + envelope streaming into the thinking preview — the animated row belongs below the content")
+    }
+
+    func testTrailingThinkingRow_hiddenWithoutContent() {
+        XCTAssertFalse(
+            showsTrailingThinkingRow(isStreaming: true, hasContent: false, isStreamingToolCall: true, hasThinking: true),
+            "No content yet — the TOP thinking section is the live indicator, no trailing row")
+        XCTAssertFalse(
+            showsTrailingThinkingRow(isStreaming: true, hasContent: false, isStreamingToolCall: false, hasThinking: true),
+            "Plain reasoning stream — top section animates, no trailing row")
+    }
+
+    func testTrailingThinkingRow_hiddenWithoutThinking() {
+        XCTAssertFalse(
+            showsTrailingThinkingRow(isStreaming: true, hasContent: true, isStreamingToolCall: true, hasThinking: false),
+            "Empty thinking preview — the indicator's 'Generating' fallback covers this gap, not the thinking row")
+    }
+
+    func testTrailingThinkingRow_hiddenWhileProseStreams() {
+        XCTAssertFalse(
+            showsTrailingThinkingRow(isStreaming: true, hasContent: true, isStreamingToolCall: false, hasThinking: true),
+            "Prose still growing, no tool call — the growing text is the live indicator")
+    }
+
+    func testTrailingThinkingRow_hiddenWhenNotStreaming() {
+        XCTAssertFalse(
+            showsTrailingThinkingRow(isStreaming: false, hasContent: true, isStreamingToolCall: true, hasThinking: true),
+            "Committed bubble — stale flags must not resurrect the trailing row")
+    }
+
+    func testTopThinkingRow_goesStaticDuringToolCallAssemblyWithContent() {
+        XCTAssertFalse(
+            MessageBubbleView.topThinkingRowAnimates(
+                isStreaming: true, hasMessageContent: true, isStreamingToolCall: true),
+            "Envelope assembly with frozen prose — the TRAILING row carries the animation; the top section must go static. (Passing plain isThinkingStreaming here would resurrect the double-animated-row bug.)")
+    }
+
+    func testTopThinkingRow_animatesWhileReasoningIsLiveTail() {
+        XCTAssertTrue(
+            MessageBubbleView.topThinkingRowAnimates(
+                isStreaming: true, hasMessageContent: false, isStreamingToolCall: false),
+            "Reasoning streaming, no content yet — top section is the live indicator")
+        XCTAssertTrue(
+            MessageBubbleView.topThinkingRowAnimates(
+                isStreaming: true, hasMessageContent: false, isStreamingToolCall: true),
+            "Envelope-only turn (no prose) — top section still carries the animation")
+    }
+
+    /// Exhaustive 16-combo pin of the "exactly one live thinking indicator"
+    /// invariant the doc comments promise: the top section and the trailing
+    /// row must never animate simultaneously, whatever the flags.
+    func testThinkingRows_neverBothAnimate() {
+        for isStreaming in [false, true] {
+            for hasContent in [false, true] {
+                for toolCall in [false, true] {
+                    for hasThinking in [false, true] {
+                        let top = MessageBubbleView.topThinkingRowAnimates(
+                            isStreaming: isStreaming,
+                            hasMessageContent: hasContent,
+                            isStreamingToolCall: toolCall)
+                        let trailing = MessageBubbleView.showsTrailingThinkingRow(
+                            isStreaming: isStreaming,
+                            hasMessageContent: hasContent,
+                            isStreamingToolCall: toolCall,
+                            hasThinkingContent: hasThinking)
+                        XCTAssertFalse(top && trailing,
+                            "Both thinking rows animating at once (isStreaming: \(isStreaming), hasContent: \(hasContent), toolCall: \(toolCall), hasThinking: \(hasThinking))")
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Corner cases: cross-component live-indicator invariants
+
+    /// Mirrors `MessageBubbleView.body`'s render gate for the top thinking
+    /// section: the row exists only when `hasThinkingContent`, and animates
+    /// per `topThinkingRowAnimates`. The helpers alone don't model the
+    /// `if hasThinkingContent` wrapper — these corner tests must, or the
+    /// matrix would report false conflicts for rows that never render.
+    private func renderedTopRowAnimates(
+        isStreaming: Bool, hasContent: Bool, toolCall: Bool, hasThinking: Bool
+    ) -> Bool {
+        hasThinking && MessageBubbleView.topThinkingRowAnimates(
+            isStreaming: isStreaming,
+            hasMessageContent: hasContent,
+            isStreamingToolCall: toolCall
+        )
+    }
+
+    /// Corner pin across the FULL flag matrix (128 combos), composing the
+    /// row helpers with the PRODUCTION `resolveStatusText`: at any moment at
+    /// most ONE live indicator renders — animated top row, animated trailing
+    /// row, or an indicator status text. Catches cross-component drift that
+    /// the per-symbol truth tables can't (e.g. a future `resolveStatusText`
+    /// branch returning text while `hasThinkingContent` is true would pass
+    /// its own suite but double-indicate here).
+    func testLiveIndicators_atMostOne_acrossFullFlagMatrix() {
+        for isStreaming in [false, true] {
+            for hasContent in [false, true] {
+                for toolCall in [false, true] {
+                    for hasThinking in [false, true] {
+                        for progress in [nil, 0.42] as [Double?] {
+                            for activity in [false, true] {
+                                // Production never sets both: resolveImplicitStreamTarget
+                                // returns false for the live preview target. The
+                                // `&& activity` conjunct is matrix pruning only (an
+                                // implicit target with no activity has no live
+                                // indicator candidates at all) — production does NOT
+                                // couple the two; `BubbleInputs.committed` zeroes
+                                // `hasStreamActivity` regardless.
+                                let implicitTarget = !isStreaming && activity
+
+                                let top = renderedTopRowAnimates(
+                                    isStreaming: isStreaming, hasContent: hasContent,
+                                    toolCall: toolCall, hasThinking: hasThinking)
+                                let trailing = MessageBubbleView.showsTrailingThinkingRow(
+                                    isStreaming: isStreaming,
+                                    hasMessageContent: hasContent,
+                                    isStreamingToolCall: toolCall,
+                                    hasThinkingContent: hasThinking)
+                                let statusText = MessageBubbleStreamingIndicator.resolveStatusText(
+                                    isStreaming: isStreaming,
+                                    isImplicitStreamTarget: implicitTarget,
+                                    hasMessageContent: hasContent,
+                                    hasThinkingContent: hasThinking,
+                                    processingProgress: progress,
+                                    hasStreamActivity: activity,
+                                    isStreamingToolCall: toolCall)
+
+                                let liveCount = [top, trailing, statusText != nil].filter(\.self).count
+                                XCTAssertLessThanOrEqual(liveCount, 1,
+                                    "Multiple live indicators (top: \(top), trailing: \(trailing), status: \(statusText ?? "nil")) at (isStreaming: \(isStreaming), hasContent: \(hasContent), toolCall: \(toolCall), hasThinking: \(hasThinking), progress: \(String(describing: progress)), activity: \(activity))")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Liveness corner pin — the inverse of the exclusivity test: while
+    /// streaming, the bubble must NEVER show zero animation. Every streaming
+    /// state must surface at least one live signal: an animated thinking row,
+    /// an indicator status text, or visibly growing prose (content present
+    /// with no tool-call freeze — the growing text itself is the indicator).
+    /// This is the regression class of the original 37s zero-animation
+    /// freeze during tool-call envelope assembly: a future edit that hides a
+    /// row without handing the live signal to another component fails here.
+    func testStreamingBubble_alwaysHasLiveSignal() {
+        for hasContent in [false, true] {
+            for toolCall in [false, true] {
+                for hasThinking in [false, true] {
+                    for progress in [nil, 0.42] as [Double?] {
+                        for activity in [false, true] {
+                            let top = renderedTopRowAnimates(
+                                isStreaming: true, hasContent: hasContent,
+                                toolCall: toolCall, hasThinking: hasThinking)
+                            let trailing = MessageBubbleView.showsTrailingThinkingRow(
+                                isStreaming: true,
+                                hasMessageContent: hasContent,
+                                isStreamingToolCall: toolCall,
+                                hasThinkingContent: hasThinking)
+                            let statusText = MessageBubbleStreamingIndicator.resolveStatusText(
+                                isStreaming: true,
+                                isImplicitStreamTarget: false,
+                                hasMessageContent: hasContent,
+                                hasThinkingContent: hasThinking,
+                                processingProgress: progress,
+                                hasStreamActivity: activity,
+                                isStreamingToolCall: toolCall)
+                            let growingProse = hasContent && !toolCall
+
+                            XCTAssertTrue(top || trailing || statusText != nil || growingProse,
+                                "Zero live signal while streaming at (hasContent: \(hasContent), toolCall: \(toolCall), hasThinking: \(hasThinking), progress: \(String(describing: progress)), activity: \(activity))")
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Bug 8: ModelTokenCleaner on Committed Content
@@ -896,19 +1124,19 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         let stepID = "test_step"
         let messageID = UUID()
 
-        streamingManager.beginStreaming(stepID: stepID, messageID: messageID, role: .softwareEngineer)
+        streamingManager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer)
 
         XCTAssertTrue(streamingManager.isStreaming(messageID: messageID))
-        XCTAssertEqual(streamingManager.streamingContent(for: stepID), "")
+        XCTAssertEqual(streamingManager.streamingContent(stepID: stepID, taskID: 0), "")
     }
 
     func testCommitEndsStreamingDetection() {
         let stepID = "test_step"
         let messageID = UUID()
 
-        streamingManager.beginStreaming(stepID: stepID, messageID: messageID, role: .softwareEngineer)
-        streamingManager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "Hello")
-        streamingManager.commit(stepID: stepID)
+        streamingManager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer)
+        streamingManager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "Hello")
+        streamingManager.commit(stepID: stepID, taskID: 0)
 
         XCTAssertFalse(streamingManager.isStreaming(messageID: messageID),
             "After commit, message should no longer be detected as streaming")
@@ -918,7 +1146,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         let stepID = "test_step"
         let messageID = UUID()
 
-        streamingManager.beginStreaming(stepID: stepID, messageID: messageID, role: .softwareEngineer)
+        streamingManager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer)
 
         // Pre-created empty LLMMessage
         let emptyMsg = LLMMessage(id: messageID, role: .assistant, content: "")
@@ -1008,13 +1236,13 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         let messageID = UUID()
 
         // Phase 1: Begin
-        streamingManager.beginStreaming(stepID: stepID, messageID: messageID, role: .softwareEngineer)
+        streamingManager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer)
         XCTAssertTrue(streamingManager.isStreaming(messageID: messageID))
 
         // Phase 2: Thinking arrives (content still empty)
-        streamingManager.appendThinking(stepID: stepID, content: "I need to analyze...")
-        let thinkingContent = streamingManager.streamingThinking(for: stepID)
-        let contentDuringThinking = streamingManager.streamingContent(for: stepID) ?? ""
+        streamingManager.appendThinking(stepID: stepID, taskID: 0, content: "I need to analyze...")
+        let thinkingContent = streamingManager.streamingThinking(stepID: stepID, taskID: 0)
+        let contentDuringThinking = streamingManager.streamingContent(stepID: stepID, taskID: 0) ?? ""
 
         XCTAssertEqual(thinkingContent, "I need to analyze...")
         XCTAssertTrue(contentDuringThinking.isEmpty)
@@ -1022,22 +1250,22 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         XCTAssertTrue(isThinkingStreaming(isStreaming: true, hasContent: !contentDuringThinking.isEmpty))
 
         // Phase 3: Content starts arriving (thinking is done)
-        streamingManager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "Here is ")
-        let contentAfterFirstToken = streamingManager.streamingContent(for: stepID) ?? ""
+        streamingManager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "Here is ")
+        let contentAfterFirstToken = streamingManager.streamingContent(stepID: stepID, taskID: 0) ?? ""
 
         XCTAssertFalse(contentAfterFirstToken.isEmpty)
         // Now: isThinkingStreaming = false (content arrived)
         XCTAssertFalse(isThinkingStreaming(isStreaming: true, hasContent: !contentAfterFirstToken.isEmpty))
 
         // Phase 4: More content
-        streamingManager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "the plan.")
-        XCTAssertEqual(streamingManager.streamingContent(for: stepID), "Here is the plan.")
+        streamingManager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "the plan.")
+        XCTAssertEqual(streamingManager.streamingContent(stepID: stepID, taskID: 0), "Here is the plan.")
 
         // Phase 5: Commit
-        streamingManager.commit(stepID: stepID)
+        streamingManager.commit(stepID: stepID, taskID: 0)
         XCTAssertFalse(streamingManager.isStreaming(messageID: messageID))
-        XCTAssertNil(streamingManager.streamingThinking(for: stepID))
-        XCTAssertNil(streamingManager.streamingContent(for: stepID))
+        XCTAssertNil(streamingManager.streamingThinking(stepID: stepID, taskID: 0))
+        XCTAssertNil(streamingManager.streamingContent(stepID: stepID, taskID: 0))
     }
 
     // MARK: - Bug 2: Engine State for Pause/Resume
@@ -1077,10 +1305,12 @@ final class TeamActivityFeedLogicTests: XCTestCase {
             isChatMode: true, engineState: .done))
     }
 
-    /// Even in chat mode, a truly failed engine means the user can't continue —
-    /// hiding the composer prevents the misleading "type to retry" affordance.
-    func testShouldShowComposer_chatMode_engineFailed_hidden() {
-        XCTAssertFalse(TeamActivityFeedView.shouldShowComposer(
+    /// A failed engine keeps the composer visible: sending a message resumes/retries
+    /// the run (`QuickCaptureController.tryFlushQueuedMessages` → `resumeRun` revives
+    /// the failed step). Chat-mode failed tasks (e.g. Coding Agent after an LLM error)
+    /// must be retryable by message.
+    func testShouldShowComposer_chatMode_engineFailed_visible() {
+        XCTAssertTrue(TeamActivityFeedView.shouldShowComposer(
             isReadOnly: false, activeTaskID: 1, closedAt: nil,
             isChatMode: true, engineState: .failed))
     }
@@ -1115,8 +1345,10 @@ final class TeamActivityFeedLogicTests: XCTestCase {
             isChatMode: false, engineState: .paused))
     }
 
-    func testShouldShowComposer_nonChat_engineFailed_hidden() {
-        XCTAssertFalse(TeamActivityFeedView.shouldShowComposer(
+    /// Non-chat failed task: composer stays visible so the Supervisor can send a
+    /// message to resume/retry the run (the user-reported flow). `.done`/`nil` still hide.
+    func testShouldShowComposer_nonChat_engineFailed_visible() {
+        XCTAssertTrue(TeamActivityFeedView.shouldShowComposer(
             isReadOnly: false, activeTaskID: 1, closedAt: nil,
             isChatMode: false, engineState: .failed))
     }
@@ -1125,6 +1357,14 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         XCTAssertFalse(TeamActivityFeedView.shouldShowComposer(
             isReadOnly: false, activeTaskID: 1, closedAt: nil,
             isChatMode: false, engineState: nil))
+    }
+
+    /// Read-only wins over the `.failed`-is-resumable rule: a read-only failed task hides
+    /// the composer (pins guard precedence — `isReadOnly` returns before the engineState switch).
+    func testShouldShowComposer_readOnly_nonChat_engineFailed_hidden() {
+        XCTAssertFalse(TeamActivityFeedView.shouldShowComposer(
+            isReadOnly: true, activeTaskID: 1, closedAt: nil,
+            isChatMode: false, engineState: .failed))
     }
 
     func testShouldShowComposer_readOnly_alwaysHidden() {

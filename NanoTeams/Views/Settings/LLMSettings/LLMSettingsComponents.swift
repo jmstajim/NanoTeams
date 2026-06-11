@@ -128,8 +128,8 @@ struct LLMModelPickerSection: View {
 // MARK: - Elevated Text Field
 
 /// TextField with surfaceElevated background and an inline reset button
-/// (Spotify-style) shown when the field's value differs from
-/// `defaultValue`. Used inside settings cards for the Server URL field.
+/// shown when the field's value differs from `defaultValue`.
+/// Used inside settings cards for the Server URL field.
 ///
 /// Two modes via `defaultValue`:
 /// - `""` (default): the field's "default" is empty (= inherit from a

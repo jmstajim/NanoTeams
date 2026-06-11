@@ -62,7 +62,7 @@ extension SidebarView {
         )
     }
 
-    /// Active project card — compact row with folder icon, name, dropdown, settings gear.
+    /// Active project card — compact row with folder icon, name, and an ⋯ actions menu (folder settings live at the bottom of that menu).
     func projectInfoCard(folder: URL) -> some View {
         let hasContext = !(store.workFolder?.settings.context.isEmpty ?? true)
         return VStack(alignment: .leading, spacing: Spacing.s) {
@@ -91,61 +91,57 @@ extension SidebarView {
 
                 Spacer(minLength: 0)
 
-                HStack(spacing: 0) {
-                    // Folder actions menu
-                    Menu {
-                        Button {
-                            NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: folder.path)
-                        } label: {
-                            Label("Reveal in Finder", systemImage: "arrow.right.circle")
-                        }
-                        if let coordinator = store.searchIndexCoordinator {
-                            Button {
-                                Task { await coordinator.rebuild() }
-                            } label: {
-                                Label(
-                                    coordinator.isBuilding ? "Rebuilding Index…" : "Rebuild Search Index",
-                                    systemImage: "arrow.clockwise"
-                                )
-                            }
-                            .disabled(coordinator.isBuilding)
-                        }
-                        Divider()
-                        let recents = recentProjects.prefix(5)
-                        if !recents.isEmpty {
-                            ForEach(Array(recents), id: \.self) { url in
-                                Button {
-                                    Task { await store.openWorkFolder(url) }
-                                } label: {
-                                    Label(url.lastPathComponent, systemImage: "folder.fill")
-                                }
-                                .disabled(url == store.workFolderURL)
-                            }
-                            Divider()
-                        }
-                        Button { isPresentingFolderPicker = true } label: {
-                            Label("Open Other...", systemImage: "folder.badge.plus")
-                        }
-                        Divider()
-                        Button(role: .destructive) { handleCloseProject() } label: {
-                            Label("Close Work Folder", systemImage: "xmark.circle")
-                        }
+                // Folder actions menu
+                Menu {
+                    Button {
+                        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: folder.path)
                     } label: {
-                        SidebarIconButton(icon: "ellipsis")
+                        Label("Reveal in Finder", systemImage: "arrow.right.circle")
                     }
-                    .menuStyle(.button)
-                    .buttonStyle(.plain)
-                    .menuIndicator(.hidden)
-
+                    if let coordinator = store.searchIndexCoordinator {
+                        Button {
+                            Task { await coordinator.rebuild() }
+                        } label: {
+                            Label(
+                                coordinator.isBuilding ? "Rebuilding Index…" : "Rebuild Search Index",
+                                systemImage: "arrow.clockwise"
+                            )
+                        }
+                        .disabled(coordinator.isBuilding)
+                    }
+                    Divider()
+                    let recents = recentProjects.prefix(5)
+                    if !recents.isEmpty {
+                        ForEach(Array(recents), id: \.self) { url in
+                            Button {
+                                Task { await store.openWorkFolder(url) }
+                            } label: {
+                                Label(url.lastPathComponent, systemImage: "folder.fill")
+                            }
+                            .disabled(url == store.workFolderURL)
+                        }
+                        Divider()
+                    }
+                    Button { isPresentingFolderPicker = true } label: {
+                        Label("Open Other...", systemImage: "folder.badge.plus")
+                    }
+                    Divider()
+                    Button(role: .destructive) { handleCloseProject() } label: {
+                        Label("Close Work Folder", systemImage: "xmark.circle")
+                    }
+                    Divider()
                     Button {
                         selectedSettingsTab = .workFolder
                         openWindow(id: "settings")
                     } label: {
-                        SidebarIconButton(icon: "gearshape")
+                        Label("Work Folder Settings", systemImage: "gearshape")
                     }
-                    .buttonStyle(.plain)
-                    .help("Work Folder Settings")
+                } label: {
+                    SidebarIconButton(icon: "ellipsis")
                 }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
             }
 
             // Context or generate button.
@@ -202,8 +198,9 @@ extension SidebarView {
 
 // MARK: - Sidebar Icon Button
 
-/// Compact circular icon button with hover highlight.
-private struct SidebarIconButton: View {
+/// Compact circular icon button with hover highlight. Shared by the work-folder
+/// card and the Autovisor nav entry (both expose an ⋯ actions menu).
+struct SidebarIconButton: View {
     let icon: String
     @State private var isHovered = false
 

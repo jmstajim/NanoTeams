@@ -258,6 +258,32 @@ nonisolated struct Team: Codable, Identifiable {
         !isChatMode
     }
 
+    /// True for infrastructure teams that must be hidden from every *task-assignment*
+    /// team picker (the Generated Team placeholder and the Autovisor team). They are
+    /// never chosen as a regular task's team, a delegation target, or a manager-spawned
+    /// task's team. Single source of truth for task-assignment picker / tool-catalog
+    /// filtering. NOTE: the Settings → Teams *config editor* is an exception — it uses
+    /// `isHiddenFromTeamEditor` instead, so Autovisor shows there as a protected entry.
+    var isHiddenFromPickers: Bool {
+        templateID == DelegationConstants.generatedTeamSentinel
+            || templateID == AutovisorConstants.teamTemplateID
+    }
+
+    /// True for teams hidden from the Settings → Teams configuration list. Only the
+    /// Generated Team placeholder qualifies (no roles, transient delegation sentinel).
+    /// The Autovisor team IS shown in the editor (as a protected, non-deletable,
+    /// non-duplicable entry) so it can be inspected/configured like any other team.
+    var isHiddenFromTeamEditor: Bool {
+        templateID == DelegationConstants.generatedTeamSentinel
+    }
+
+    /// True for the managed singleton (the Autovisor team) — a permanent fixture the
+    /// user must not delete or duplicate from the editor. Single source of truth for
+    /// delete/duplicate protection.
+    var isManagedSingleton: Bool {
+        templateID == AutovisorConstants.teamTemplateID
+    }
+
     /// Creates a new pending `StepExecution` for the given role ID.
     /// Returns `nil` if no role with that ID exists in this team.
     func makeStep(forRoleID roleID: String) -> StepExecution? {
@@ -309,12 +335,33 @@ nonisolated struct Team: Codable, Identifiable {
         updatedAt = MonotonicClock.shared.now()
     }
 
-    /// Find a role by any identifier: TeamRoleDefinition.id (UUID), systemRoleID (built-in ID), or name (display name).
+    /// Find a role by any identifier: TeamRoleDefinition.id (UUID), systemRoleID
+    /// (built-in ID), or display name. Exact id/systemRoleID (case-sensitive) and
+    /// case-insensitive name matches win first; otherwise a normalized fallback
+    /// (lowercase + strip non-alphanumerics) resolves the LLM's snake_case / spaced /
+    /// hyphenated guesses — e.g. `software_engineer` → the `softwareEngineer`
+    /// (systemRoleID) / "Software Engineer" (name) role. The normalized fallback
+    /// resolves only when exactly one role matches; an ambiguous collision returns nil
+    /// so the caller surfaces its own error rather than silently binding the wrong role.
     func findRole(byIdentifier identifier: String) -> TeamRoleDefinition? {
         if let role = roles.first(where: { $0.id == identifier }) { return role }
         if let role = roles.first(where: { $0.systemRoleID == identifier }) { return role }
         if let role = roles.first(where: { $0.name.caseInsensitiveCompare(identifier) == .orderedSame }) { return role }
-        return nil
+
+        let target = Self.normalizedRoleIdentifier(identifier)
+        guard !target.isEmpty else { return nil }
+        let matches = roles.filter { role in
+            Self.normalizedRoleIdentifier(role.id) == target
+                || role.systemRoleID.map(Self.normalizedRoleIdentifier) == target
+                || Self.normalizedRoleIdentifier(role.name) == target
+        }
+        return matches.count == 1 ? matches.first : nil
+    }
+
+    /// Lowercased, alphanumerics-only form used for tolerant identifier matching
+    /// (`"software_engineer"`, `"Software Engineer"`, `"softwareEngineer"` all → `"softwareengineer"`).
+    static func normalizedRoleIdentifier(_ s: String) -> String {
+        s.lowercased().filter { $0.isLetter || $0.isNumber }
     }
 
     /// Update a role in the team. Bumps both the role's `updatedAt`

@@ -85,6 +85,7 @@ final class LLMSliceAnchorTests: XCTestCase {
         // sawHarmonyMarker == true.
         _ = await service._testProcessStreamingResult(
             stepID: stepID,
+            taskID: task.id,
             assistantContent: "",
             sawHarmonyMarker: true,
             conversationMessages: &messages
@@ -132,14 +133,14 @@ final class LLMSliceAnchorTests: XCTestCase {
 
         // Malformed turn #1
         _ = await service._testProcessStreamingResult(
-            stepID: stepID, assistantContent: "", sawHarmonyMarker: true,
+            stepID: stepID, taskID: task.id, assistantContent: "", sawHarmonyMarker: true,
             conversationMessages: &messages)
         messages.append(ChatMessage(role: .user, content: Self.realNudge))
 
         // Malformed turn #2: processStreamingResult appends the anchor, then handleNoToolCalls
         // appends the nudge (real flow — the anchor is never the last message in production).
         _ = await service._testProcessStreamingResult(
-            stepID: stepID, assistantContent: "", sawHarmonyMarker: true,
+            stepID: stepID, taskID: task.id, assistantContent: "", sawHarmonyMarker: true,
             conversationMessages: &messages)
         messages.append(ChatMessage(role: .user, content: Self.realNudge))
 
@@ -163,6 +164,7 @@ final class LLMSliceAnchorTests: XCTestCase {
         var messages: [ChatMessage] = [ChatMessage(role: .system, content: "sys")]
         _ = await service._testProcessStreamingResult(
             stepID: stepID,
+            taskID: task.id,
             assistantContent: "Here is my reasoning and answer.",
             conversationMessages: &messages)
         let assistants = messages.filter { $0.role == .assistant }
@@ -178,6 +180,7 @@ final class LLMSliceAnchorTests: XCTestCase {
             argumentsJSON: #"{"path":"a.txt","content":"x"}"#)
         _ = await service._testProcessStreamingResult(
             stepID: stepID,
+            taskID: task.id,
             assistantContent: "",
             resolvedToolCalls: [call],
             sawHarmonyMarker: true,

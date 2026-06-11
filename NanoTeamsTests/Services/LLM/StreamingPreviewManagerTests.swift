@@ -30,55 +30,55 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let stepID = "test_step"
         let messageID = UUID()
 
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "Hello")
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "Hello")
 
-        XCTAssertNotNil(manager.preview(for: stepID))
+        XCTAssertNotNil(manager.preview(stepID: stepID, taskID: 0))
     }
 
     func testAppendSetsContent() {
         let stepID = "test_step"
         let messageID = UUID()
 
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "Hello")
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "Hello")
 
-        XCTAssertEqual(manager.preview(for: stepID)?.content, "Hello")
+        XCTAssertEqual(manager.preview(stepID: stepID, taskID: 0)?.content, "Hello")
     }
 
     func testAppendAccumulatesContent() {
         let stepID = "test_step"
         let messageID = UUID()
 
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "Hello")
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: " World")
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "Hello")
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: " World")
 
-        XCTAssertEqual(manager.preview(for: stepID)?.content, "Hello World")
+        XCTAssertEqual(manager.preview(stepID: stepID, taskID: 0)?.content, "Hello World")
     }
 
     func testAppendPreservesRole() {
         let stepID = "test_step"
         let messageID = UUID()
 
-        manager.append(stepID: stepID, messageID: messageID, role: .sre, content: "Test")
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .sre, content: "Test")
 
-        XCTAssertEqual(manager.preview(for: stepID)?.role, .sre)
+        XCTAssertEqual(manager.preview(stepID: stepID, taskID: 0)?.role, .sre)
     }
 
     func testAppendPreservesMessageID() {
         let stepID = "test_step"
         let messageID = UUID()
 
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "Test")
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "Test")
 
-        XCTAssertEqual(manager.preview(for: stepID)?.id, messageID)
+        XCTAssertEqual(manager.preview(stepID: stepID, taskID: 0)?.id, messageID)
     }
 
     func testAppendIgnoresEmptyContent() {
         let stepID = "test_step"
         let messageID = UUID()
 
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "")
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "")
 
-        XCTAssertNil(manager.preview(for: stepID))
+        XCTAssertNil(manager.preview(stepID: stepID, taskID: 0))
     }
 
     func testAppendMultipleSteps() {
@@ -87,11 +87,11 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let messageID1 = UUID()
         let messageID2 = UUID()
 
-        manager.append(stepID: stepID1, messageID: messageID1, role: .productManager, content: "Step 1")
-        manager.append(stepID: stepID2, messageID: messageID2, role: .softwareEngineer, content: "Step 2")
+        manager.append(stepID: stepID1, taskID: 0, messageID: messageID1, role: .productManager, content: "Step 1")
+        manager.append(stepID: stepID2, taskID: 0, messageID: messageID2, role: .softwareEngineer, content: "Step 2")
 
-        XCTAssertEqual(manager.preview(for: stepID1)?.content, "Step 1")
-        XCTAssertEqual(manager.preview(for: stepID2)?.content, "Step 2")
+        XCTAssertEqual(manager.preview(stepID: stepID1, taskID: 0)?.content, "Step 1")
+        XCTAssertEqual(manager.preview(stepID: stepID2, taskID: 0)?.content, "Step 2")
     }
 
     // MARK: - Commit Tests
@@ -100,8 +100,8 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let stepID = "test_step"
         let messageID = UUID()
 
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "Test")
-        let committed = manager.commit(stepID: stepID)
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "Test")
+        let committed = manager.commit(stepID: stepID, taskID: 0)
 
         XCTAssertNotNil(committed)
         XCTAssertEqual(committed?.content, "Test")
@@ -111,14 +111,14 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let stepID = "test_step"
         let messageID = UUID()
 
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "Test")
-        _ = manager.commit(stepID: stepID)
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "Test")
+        _ = manager.commit(stepID: stepID, taskID: 0)
 
-        XCTAssertNil(manager.preview(for: stepID))
+        XCTAssertNil(manager.preview(stepID: stepID, taskID: 0))
     }
 
     func testCommitReturnsNilForNonexistentStep() {
-        let committed = manager.commit(stepID: "test_step")
+        let committed = manager.commit(stepID: "test_step", taskID: 0)
 
         XCTAssertNil(committed)
     }
@@ -128,15 +128,15 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let messageID = UUID()
 
         // Append and then append only whitespace
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "   ")
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "   ")
         // The initial append of whitespace-only should still create a preview
         // but commit should return nil for whitespace-only content
 
         // First, let's create a valid preview then clear it and try again
-        manager.clear(stepID: stepID)
+        manager.clear(stepID: stepID, taskID: 0)
 
         // Try to commit a non-existent preview
-        let committed = manager.commit(stepID: stepID)
+        let committed = manager.commit(stepID: stepID, taskID: 0)
         XCTAssertNil(committed)
     }
 
@@ -145,12 +145,12 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let messageID = UUID()
 
         // Manually create a preview with whitespace content
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "a")
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "a")
         // Clear and recreate with whitespace
-        manager.clear(stepID: stepID)
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "   \n\t  ")
+        manager.clear(stepID: stepID, taskID: 0)
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "   \n\t  ")
 
-        let committed = manager.commit(stepID: stepID)
+        let committed = manager.commit(stepID: stepID, taskID: 0)
 
         // Should return nil because content is only whitespace
         XCTAssertNil(committed)
@@ -160,8 +160,8 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let stepID = "test_step"
         let messageID = UUID()
 
-        manager.append(stepID: stepID, messageID: messageID, role: .uxDesigner, content: "Design")
-        let committed = manager.commit(stepID: stepID)
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .uxDesigner, content: "Design")
+        let committed = manager.commit(stepID: stepID, taskID: 0)
 
         XCTAssertEqual(committed?.role, .uxDesigner)
     }
@@ -170,8 +170,8 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let stepID = "test_step"
         let messageID = UUID()
 
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "Test")
-        let committed = manager.commit(stepID: stepID)
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "Test")
+        let committed = manager.commit(stepID: stepID, taskID: 0)
 
         XCTAssertEqual(committed?.id, messageID)
     }
@@ -182,14 +182,14 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let stepID = "test_step"
         let messageID = UUID()
 
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "Test")
-        manager.clear(stepID: stepID)
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "Test")
+        manager.clear(stepID: stepID, taskID: 0)
 
-        XCTAssertNil(manager.preview(for: stepID))
+        XCTAssertNil(manager.preview(stepID: stepID, taskID: 0))
     }
 
     func testClearOnNonexistentStepDoesNothing() {
-        manager.clear(stepID: "test_step")
+        manager.clear(stepID: "test_step", taskID: 0)
 
         // Should not throw or crash
         XCTAssertTrue(manager.previews.isEmpty)
@@ -201,13 +201,13 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let messageID1 = UUID()
         let messageID2 = UUID()
 
-        manager.append(stepID: stepID1, messageID: messageID1, role: .productManager, content: "Step 1")
-        manager.append(stepID: stepID2, messageID: messageID2, role: .softwareEngineer, content: "Step 2")
+        manager.append(stepID: stepID1, taskID: 0, messageID: messageID1, role: .productManager, content: "Step 1")
+        manager.append(stepID: stepID2, taskID: 0, messageID: messageID2, role: .softwareEngineer, content: "Step 2")
 
-        manager.clear(stepID: stepID1)
+        manager.clear(stepID: stepID1, taskID: 0)
 
-        XCTAssertNil(manager.preview(for: stepID1))
-        XCTAssertNotNil(manager.preview(for: stepID2))
+        XCTAssertNil(manager.preview(stepID: stepID1, taskID: 0))
+        XCTAssertNotNil(manager.preview(stepID: stepID2, taskID: 0))
     }
 
     // MARK: - ClearAll Tests
@@ -218,8 +218,8 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let messageID1 = UUID()
         let messageID2 = UUID()
 
-        manager.append(stepID: stepID1, messageID: messageID1, role: .productManager, content: "Step 1")
-        manager.append(stepID: stepID2, messageID: messageID2, role: .softwareEngineer, content: "Step 2")
+        manager.append(stepID: stepID1, taskID: 0, messageID: messageID1, role: .productManager, content: "Step 1")
+        manager.append(stepID: stepID2, taskID: 0, messageID: messageID2, role: .softwareEngineer, content: "Step 2")
 
         manager.clearAll()
 
@@ -238,15 +238,15 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let stepID = "test_step"
         let messageID = UUID()
 
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "Test")
-        let preview = manager.preview(for: stepID)
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "Test")
+        let preview = manager.preview(stepID: stepID, taskID: 0)
 
         XCTAssertNotNil(preview)
         XCTAssertEqual(preview?.content, "Test")
     }
 
     func testPreviewReturnsNilForNonexistentStep() {
-        let preview = manager.preview(for: "nonexistent")
+        let preview = manager.preview(stepID: "nonexistent", taskID: 0)
 
         XCTAssertNil(preview)
     }
@@ -257,33 +257,33 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let stepID = "test_step"
         let messageID = UUID()
 
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "Test")
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "Test")
 
-        XCTAssertTrue(manager.hasPreview(for: stepID))
+        XCTAssertTrue(manager.hasPreview(stepID: stepID, taskID: 0))
     }
 
     func testHasPreviewReturnsFalseWhenNotExists() {
-        XCTAssertFalse(manager.hasPreview(for: "nonexistent"))
+        XCTAssertFalse(manager.hasPreview(stepID: "nonexistent", taskID: 0))
     }
 
     func testHasPreviewReturnsFalseAfterClear() {
         let stepID = "test_step"
         let messageID = UUID()
 
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "Test")
-        manager.clear(stepID: stepID)
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "Test")
+        manager.clear(stepID: stepID, taskID: 0)
 
-        XCTAssertFalse(manager.hasPreview(for: stepID))
+        XCTAssertFalse(manager.hasPreview(stepID: stepID, taskID: 0))
     }
 
     func testHasPreviewReturnsFalseAfterCommit() {
         let stepID = "test_step"
         let messageID = UUID()
 
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "Test")
-        _ = manager.commit(stepID: stepID)
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "Test")
+        _ = manager.commit(stepID: stepID, taskID: 0)
 
-        XCTAssertFalse(manager.hasPreview(for: stepID))
+        XCTAssertFalse(manager.hasPreview(stepID: stepID, taskID: 0))
     }
 
     // MARK: - Multiple Chunks Tests
@@ -295,10 +295,10 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let chunks = ["The ", "quick ", "brown ", "fox ", "jumps"]
 
         for chunk in chunks {
-            manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: chunk)
+            manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: chunk)
         }
 
-        let preview = manager.preview(for: stepID)
+        let preview = manager.preview(stepID: stepID, taskID: 0)
         XCTAssertEqual(preview?.content, "The quick brown fox jumps")
     }
 
@@ -306,11 +306,11 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let stepID = "test_step"
         let messageID = UUID()
 
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "Line 1\n")
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "Line 2\n")
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "Line 3")
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "Line 1\n")
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "Line 2\n")
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "Line 3")
 
-        let preview = manager.preview(for: stepID)
+        let preview = manager.preview(stepID: stepID, taskID: 0)
         XCTAssertEqual(preview?.content, "Line 1\nLine 2\nLine 3")
     }
 
@@ -321,10 +321,10 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let messageID = UUID()
 
         let before = Date()
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "Test")
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "Test")
         let after = Date()
 
-        let preview = manager.preview(for: stepID)
+        let preview = manager.preview(stepID: stepID, taskID: 0)
         XCTAssertNotNil(preview?.createdAt)
         XCTAssertGreaterThanOrEqual(preview!.createdAt, before)
         XCTAssertLessThanOrEqual(preview!.createdAt, after)
@@ -339,9 +339,9 @@ final class StreamingPreviewManagerTests: XCTestCase {
             let stepID = "step_\(index)"
             let messageID = UUID()
 
-            manager.append(stepID: stepID, messageID: messageID, role: role, content: "Test \(index)")
+            manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: role, content: "Test \(index)")
 
-            XCTAssertEqual(manager.preview(for: stepID)?.role, role)
+            XCTAssertEqual(manager.preview(stepID: stepID, taskID: 0)?.role, role)
         }
     }
 
@@ -350,52 +350,52 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let messageID = UUID()
         let customRole = Role.custom(id: "securityReviewer")
 
-        manager.append(stepID: stepID, messageID: messageID, role: customRole, content: "Security check")
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: customRole, content: "Security check")
 
-        XCTAssertEqual(manager.preview(for: stepID)?.role, customRole)
+        XCTAssertEqual(manager.preview(stepID: stepID, taskID: 0)?.role, customRole)
     }
 
     // MARK: - Structural Version Tests
 
     func testStructuralVersionIncrementsOnNewPreview() {
         let initial = manager.structuralVersion
-        manager.append(stepID: "test_step", messageID: UUID(), role: .softwareEngineer, content: "Hello")
+        manager.append(stepID: "test_step", taskID: 0, messageID: UUID(), role: .softwareEngineer, content: "Hello")
         XCTAssertEqual(manager.structuralVersion, initial + 1)
     }
 
     func testStructuralVersionDoesNotIncrementOnContentAppend() {
         let stepID = "test_step"
-        manager.append(stepID: stepID, messageID: UUID(), role: .softwareEngineer, content: "Hello")
+        manager.append(stepID: stepID, taskID: 0, messageID: UUID(), role: .softwareEngineer, content: "Hello")
         let afterFirst = manager.structuralVersion
-        manager.append(stepID: stepID, messageID: UUID(), role: .softwareEngineer, content: " World")
+        manager.append(stepID: stepID, taskID: 0, messageID: UUID(), role: .softwareEngineer, content: " World")
         XCTAssertEqual(manager.structuralVersion, afterFirst)
     }
 
     func testStructuralVersionIncrementsOnCommit() {
         let stepID = "test_step"
-        manager.append(stepID: stepID, messageID: UUID(), role: .softwareEngineer, content: "Test")
+        manager.append(stepID: stepID, taskID: 0, messageID: UUID(), role: .softwareEngineer, content: "Test")
         let afterAppend = manager.structuralVersion
-        manager.commit(stepID: stepID)
+        manager.commit(stepID: stepID, taskID: 0)
         XCTAssertEqual(manager.structuralVersion, afterAppend + 1)
     }
 
     func testStructuralVersionIncrementsOnClear() {
         let stepID = "test_step"
-        manager.append(stepID: stepID, messageID: UUID(), role: .softwareEngineer, content: "Test")
+        manager.append(stepID: stepID, taskID: 0, messageID: UUID(), role: .softwareEngineer, content: "Test")
         let afterAppend = manager.structuralVersion
-        manager.clear(stepID: stepID)
+        manager.clear(stepID: stepID, taskID: 0)
         XCTAssertEqual(manager.structuralVersion, afterAppend + 1)
     }
 
     func testStructuralVersionDoesNotIncrementOnClearNonexistent() {
         let before = manager.structuralVersion
-        manager.clear(stepID: "test_step")
+        manager.clear(stepID: "test_step", taskID: 0)
         XCTAssertEqual(manager.structuralVersion, before)
     }
 
     func testStructuralVersionIncrementsOnClearAll() {
-        manager.append(stepID: "test_step", messageID: UUID(), role: .softwareEngineer, content: "A")
-        manager.append(stepID: "test_step", messageID: UUID(), role: .softwareEngineer, content: "B")
+        manager.append(stepID: "test_step", taskID: 0, messageID: UUID(), role: .softwareEngineer, content: "A")
+        manager.append(stepID: "test_step", taskID: 0, messageID: UUID(), role: .softwareEngineer, content: "B")
         let afterAppends = manager.structuralVersion
         manager.clearAll()
         XCTAssertEqual(manager.structuralVersion, afterAppends + 1)
@@ -409,32 +409,32 @@ final class StreamingPreviewManagerTests: XCTestCase {
 
     func testStructuralVersionIncrementsOnBeginStreaming() {
         let initial = manager.structuralVersion
-        manager.beginStreaming(stepID: "test_step", messageID: UUID(), role: .softwareEngineer)
+        manager.beginStreaming(stepID: "test_step", taskID: 0, messageID: UUID(), role: .softwareEngineer)
         XCTAssertEqual(manager.structuralVersion, initial + 1)
     }
 
     func testStructuralVersionDoesNotIncrementOnBeginStreamingExistingStep() {
         let stepID = "test_step"
-        manager.beginStreaming(stepID: stepID, messageID: UUID(), role: .softwareEngineer)
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: UUID(), role: .softwareEngineer)
         let afterFirst = manager.structuralVersion
         // Re-begin on same step — preview already exists, no structural change
-        manager.beginStreaming(stepID: stepID, messageID: UUID(), role: .softwareEngineer)
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: UUID(), role: .softwareEngineer)
         XCTAssertEqual(manager.structuralVersion, afterFirst)
     }
 
     func testStructuralVersionDoesNotIncrementOnAppendThinking() {
         let stepID = "test_step"
-        manager.beginStreaming(stepID: stepID, messageID: UUID(), role: .softwareEngineer)
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: UUID(), role: .softwareEngineer)
         let afterBegin = manager.structuralVersion
-        manager.appendThinking(stepID: stepID, content: "Thinking...")
+        manager.appendThinking(stepID: stepID, taskID: 0, content: "Thinking...")
         XCTAssertEqual(manager.structuralVersion, afterBegin)
     }
 
     func testStructuralVersionDoesNotIncrementOnProcessingProgress() {
         let stepID = "test_step"
-        manager.beginStreaming(stepID: stepID, messageID: UUID(), role: .softwareEngineer)
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: UUID(), role: .softwareEngineer)
         let afterBegin = manager.structuralVersion
-        manager.updateProcessingProgress(stepID: stepID, progress: 0.5)
+        manager.updateProcessingProgress(stepID: stepID, taskID: 0, progress: 0.5)
         XCTAssertEqual(manager.structuralVersion, afterBegin)
     }
 
@@ -444,21 +444,21 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let stepID = "test_step"
         let messageID = UUID()
 
-        manager.beginStreaming(stepID: stepID, messageID: messageID, role: .techLead)
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .techLead)
 
-        XCTAssertNotNil(manager.preview(for: stepID))
-        XCTAssertEqual(manager.preview(for: stepID)?.id, messageID)
-        XCTAssertEqual(manager.preview(for: stepID)?.role, .techLead)
-        XCTAssertEqual(manager.preview(for: stepID)?.content, "")
+        XCTAssertNotNil(manager.preview(stepID: stepID, taskID: 0))
+        XCTAssertEqual(manager.preview(stepID: stepID, taskID: 0)?.id, messageID)
+        XCTAssertEqual(manager.preview(stepID: stepID, taskID: 0)?.role, .techLead)
+        XCTAssertEqual(manager.preview(stepID: stepID, taskID: 0)?.content, "")
     }
 
     func testBeginStreamingRegistersStreamingMessageID() {
         let stepID = "test_step"
         let messageID = UUID()
 
-        manager.beginStreaming(stepID: stepID, messageID: messageID, role: .softwareEngineer)
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer)
 
-        XCTAssertEqual(manager.streamingMessageIDs[stepID], messageID)
+        XCTAssertEqual(manager.streamingMessageIDs[TaskStepKey(taskID: 0, stepID: stepID)], messageID)
     }
 
     func testBeginStreamingOverwritesExistingPreview() {
@@ -466,16 +466,16 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let messageID1 = UUID()
         let messageID2 = UUID()
 
-        manager.beginStreaming(stepID: stepID, messageID: messageID1, role: .productManager)
-        manager.append(stepID: stepID, messageID: messageID1, role: .productManager, content: "Some content")
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID1, role: .productManager)
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID1, role: .productManager, content: "Some content")
 
         // Begin again on same step — should overwrite
-        manager.beginStreaming(stepID: stepID, messageID: messageID2, role: .techLead)
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID2, role: .techLead)
 
-        XCTAssertEqual(manager.preview(for: stepID)?.id, messageID2)
-        XCTAssertEqual(manager.preview(for: stepID)?.role, .techLead)
-        XCTAssertEqual(manager.preview(for: stepID)?.content, "")
-        XCTAssertEqual(manager.streamingMessageIDs[stepID], messageID2)
+        XCTAssertEqual(manager.preview(stepID: stepID, taskID: 0)?.id, messageID2)
+        XCTAssertEqual(manager.preview(stepID: stepID, taskID: 0)?.role, .techLead)
+        XCTAssertEqual(manager.preview(stepID: stepID, taskID: 0)?.content, "")
+        XCTAssertEqual(manager.streamingMessageIDs[TaskStepKey(taskID: 0, stepID: stepID)], messageID2)
     }
 
     // MARK: - isStreaming Tests
@@ -484,7 +484,7 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let stepID = "test_step"
         let messageID = UUID()
 
-        manager.beginStreaming(stepID: stepID, messageID: messageID, role: .softwareEngineer)
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer)
 
         XCTAssertTrue(manager.isStreaming(messageID: messageID))
     }
@@ -497,9 +497,9 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let stepID = "test_step"
         let messageID = UUID()
 
-        manager.beginStreaming(stepID: stepID, messageID: messageID, role: .softwareEngineer)
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "content")
-        manager.commit(stepID: stepID)
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer)
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "content")
+        manager.commit(stepID: stepID, taskID: 0)
 
         XCTAssertFalse(manager.isStreaming(messageID: messageID))
     }
@@ -508,8 +508,8 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let stepID = "test_step"
         let messageID = UUID()
 
-        manager.beginStreaming(stepID: stepID, messageID: messageID, role: .softwareEngineer)
-        manager.clear(stepID: stepID)
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer)
+        manager.clear(stepID: stepID, taskID: 0)
 
         XCTAssertFalse(manager.isStreaming(messageID: messageID))
     }
@@ -518,7 +518,7 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let stepID = "test_step"
         let messageID = UUID()
 
-        manager.beginStreaming(stepID: stepID, messageID: messageID, role: .softwareEngineer)
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer)
         manager.clearAll()
 
         XCTAssertFalse(manager.isStreaming(messageID: messageID))
@@ -530,141 +530,141 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let stepID = "test_step"
         let messageID = UUID()
 
-        manager.beginStreaming(stepID: stepID, messageID: messageID, role: .softwareEngineer)
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "Hello")
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: " World")
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer)
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "Hello")
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: " World")
 
-        XCTAssertEqual(manager.streamingContent(for: stepID), "Hello World")
+        XCTAssertEqual(manager.streamingContent(stepID: stepID, taskID: 0), "Hello World")
     }
 
     func testStreamingContentReturnsEmptyForNewStream() {
         let stepID = "test_step"
-        manager.beginStreaming(stepID: stepID, messageID: UUID(), role: .softwareEngineer)
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: UUID(), role: .softwareEngineer)
 
-        XCTAssertEqual(manager.streamingContent(for: stepID), "")
+        XCTAssertEqual(manager.streamingContent(stepID: stepID, taskID: 0), "")
     }
 
     func testStreamingContentReturnsNilForUnknownStep() {
-        XCTAssertNil(manager.streamingContent(for: "nonexistent"))
+        XCTAssertNil(manager.streamingContent(stepID: "nonexistent", taskID: 0))
     }
 
     func testStreamingContentReturnsNilAfterCommit() {
         let stepID = "test_step"
         let messageID = UUID()
 
-        manager.beginStreaming(stepID: stepID, messageID: messageID, role: .softwareEngineer)
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "data")
-        manager.commit(stepID: stepID)
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer)
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "data")
+        manager.commit(stepID: stepID, taskID: 0)
 
-        XCTAssertNil(manager.streamingContent(for: stepID))
+        XCTAssertNil(manager.streamingContent(stepID: stepID, taskID: 0))
     }
 
     // MARK: - Streaming Thinking Tests
 
     func testAppendThinkingAccumulatesContent() {
         let stepID = "test_step"
-        manager.beginStreaming(stepID: stepID, messageID: UUID(), role: .softwareEngineer)
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: UUID(), role: .softwareEngineer)
 
-        manager.appendThinking(stepID: stepID, content: "Let me ")
-        manager.appendThinking(stepID: stepID, content: "think about this...")
+        manager.appendThinking(stepID: stepID, taskID: 0, content: "Let me ")
+        manager.appendThinking(stepID: stepID, taskID: 0, content: "think about this...")
 
-        XCTAssertEqual(manager.streamingThinking(for: stepID), "Let me think about this...")
+        XCTAssertEqual(manager.streamingThinking(stepID: stepID, taskID: 0), "Let me think about this...")
     }
 
     func testAppendThinkingIgnoresEmptyContent() {
         let stepID = "test_step"
-        manager.beginStreaming(stepID: stepID, messageID: UUID(), role: .softwareEngineer)
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: UUID(), role: .softwareEngineer)
 
-        manager.appendThinking(stepID: stepID, content: "")
+        manager.appendThinking(stepID: stepID, taskID: 0, content: "")
 
-        XCTAssertNil(manager.streamingThinking(for: stepID))
+        XCTAssertNil(manager.streamingThinking(stepID: stepID, taskID: 0))
     }
 
     func testStreamingThinkingReturnsNilForUnknownStep() {
-        XCTAssertNil(manager.streamingThinking(for: "nonexistent"))
+        XCTAssertNil(manager.streamingThinking(stepID: "nonexistent", taskID: 0))
     }
 
     func testStreamingThinkingReturnsNilAfterCommit() {
         let stepID = "test_step"
-        manager.beginStreaming(stepID: stepID, messageID: UUID(), role: .softwareEngineer)
-        manager.appendThinking(stepID: stepID, content: "Reasoning...")
-        manager.commit(stepID: stepID)
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: UUID(), role: .softwareEngineer)
+        manager.appendThinking(stepID: stepID, taskID: 0, content: "Reasoning...")
+        manager.commit(stepID: stepID, taskID: 0)
 
-        XCTAssertNil(manager.streamingThinking(for: stepID))
+        XCTAssertNil(manager.streamingThinking(stepID: stepID, taskID: 0))
     }
 
     func testStreamingThinkingReturnsNilAfterClear() {
         let stepID = "test_step"
-        manager.beginStreaming(stepID: stepID, messageID: UUID(), role: .softwareEngineer)
-        manager.appendThinking(stepID: stepID, content: "Reasoning...")
-        manager.clear(stepID: stepID)
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: UUID(), role: .softwareEngineer)
+        manager.appendThinking(stepID: stepID, taskID: 0, content: "Reasoning...")
+        manager.clear(stepID: stepID, taskID: 0)
 
-        XCTAssertNil(manager.streamingThinking(for: stepID))
+        XCTAssertNil(manager.streamingThinking(stepID: stepID, taskID: 0))
     }
 
     func testStreamingThinkingReturnsNilAfterClearAll() {
         let stepID = "test_step"
-        manager.beginStreaming(stepID: stepID, messageID: UUID(), role: .softwareEngineer)
-        manager.appendThinking(stepID: stepID, content: "Reasoning...")
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: UUID(), role: .softwareEngineer)
+        manager.appendThinking(stepID: stepID, taskID: 0, content: "Reasoning...")
         manager.clearAll()
 
-        XCTAssertNil(manager.streamingThinking(for: stepID))
+        XCTAssertNil(manager.streamingThinking(stepID: stepID, taskID: 0))
     }
 
     // MARK: - Processing Progress Tests
 
     func testUpdateProcessingProgressStoresValue() {
         let stepID = "test_step"
-        manager.updateProcessingProgress(stepID: stepID, progress: 0.45)
+        manager.updateProcessingProgress(stepID: stepID, taskID: 0, progress: 0.45)
 
-        XCTAssertEqual(manager.processingProgress[stepID], 0.45)
+        XCTAssertEqual(manager.processingProgress[TaskStepKey(taskID: 0, stepID: stepID)], 0.45)
     }
 
     func testUpdateProcessingProgressUpdatesValue() {
         let stepID = "test_step"
-        manager.updateProcessingProgress(stepID: stepID, progress: 0.3)
-        manager.updateProcessingProgress(stepID: stepID, progress: 0.7)
+        manager.updateProcessingProgress(stepID: stepID, taskID: 0, progress: 0.3)
+        manager.updateProcessingProgress(stepID: stepID, taskID: 0, progress: 0.7)
 
-        XCTAssertEqual(manager.processingProgress[stepID], 0.7)
+        XCTAssertEqual(manager.processingProgress[TaskStepKey(taskID: 0, stepID: stepID)], 0.7)
     }
 
     func testClearProcessingProgressRemovesValue() {
         let stepID = "test_step"
-        manager.updateProcessingProgress(stepID: stepID, progress: 0.5)
-        manager.clearProcessingProgress(stepID: stepID)
+        manager.updateProcessingProgress(stepID: stepID, taskID: 0, progress: 0.5)
+        manager.clearProcessingProgress(stepID: stepID, taskID: 0)
 
-        XCTAssertNil(manager.processingProgress[stepID])
+        XCTAssertNil(manager.processingProgress[TaskStepKey(taskID: 0, stepID: stepID)])
     }
 
     func testClearProcessingProgressOnNonexistentIsNoOp() {
         // Should not crash
-        manager.clearProcessingProgress(stepID: "test_step")
+        manager.clearProcessingProgress(stepID: "test_step", taskID: 0)
         XCTAssertTrue(manager.processingProgress.isEmpty)
     }
 
     func testProcessingProgressClearedOnCommit() {
         let stepID = "test_step"
-        manager.beginStreaming(stepID: stepID, messageID: UUID(), role: .softwareEngineer)
-        manager.updateProcessingProgress(stepID: stepID, progress: 0.8)
-        manager.commit(stepID: stepID)
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: UUID(), role: .softwareEngineer)
+        manager.updateProcessingProgress(stepID: stepID, taskID: 0, progress: 0.8)
+        manager.commit(stepID: stepID, taskID: 0)
 
-        XCTAssertNil(manager.processingProgress[stepID])
+        XCTAssertNil(manager.processingProgress[TaskStepKey(taskID: 0, stepID: stepID)])
     }
 
     func testProcessingProgressClearedOnClear() {
         let stepID = "test_step"
-        manager.beginStreaming(stepID: stepID, messageID: UUID(), role: .softwareEngineer)
-        manager.updateProcessingProgress(stepID: stepID, progress: 0.5)
-        manager.clear(stepID: stepID)
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: UUID(), role: .softwareEngineer)
+        manager.updateProcessingProgress(stepID: stepID, taskID: 0, progress: 0.5)
+        manager.clear(stepID: stepID, taskID: 0)
 
-        XCTAssertNil(manager.processingProgress[stepID])
+        XCTAssertNil(manager.processingProgress[TaskStepKey(taskID: 0, stepID: stepID)])
     }
 
     func testProcessingProgressClearedOnClearAll() {
         let stepID1 = "step_1"
         let stepID2 = "step_2"
-        manager.updateProcessingProgress(stepID: stepID1, progress: 0.3)
-        manager.updateProcessingProgress(stepID: stepID2, progress: 0.6)
+        manager.updateProcessingProgress(stepID: stepID1, taskID: 0, progress: 0.3)
+        manager.updateProcessingProgress(stepID: stepID2, taskID: 0, progress: 0.6)
         manager.clearAll()
 
         XCTAssertTrue(manager.processingProgress.isEmpty)
@@ -676,18 +676,18 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let stepID = "test_step"
         let messageID = UUID()
 
-        manager.beginStreaming(stepID: stepID, messageID: messageID, role: .softwareEngineer)
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "content")
-        manager.appendThinking(stepID: stepID, content: "thinking")
-        manager.updateProcessingProgress(stepID: stepID, progress: 0.5)
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer)
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "content")
+        manager.appendThinking(stepID: stepID, taskID: 0, content: "thinking")
+        manager.updateProcessingProgress(stepID: stepID, taskID: 0, progress: 0.5)
 
-        manager.commit(stepID: stepID)
+        manager.commit(stepID: stepID, taskID: 0)
 
-        XCTAssertNil(manager.preview(for: stepID))
+        XCTAssertNil(manager.preview(stepID: stepID, taskID: 0))
         XCTAssertFalse(manager.isStreaming(messageID: messageID))
-        XCTAssertNil(manager.streamingThinking(for: stepID))
-        XCTAssertNil(manager.processingProgress[stepID])
-        XCTAssertNil(manager.streamingMessageIDs[stepID])
+        XCTAssertNil(manager.streamingThinking(stepID: stepID, taskID: 0))
+        XCTAssertNil(manager.processingProgress[TaskStepKey(taskID: 0, stepID: stepID)])
+        XCTAssertNil(manager.streamingMessageIDs[TaskStepKey(taskID: 0, stepID: stepID)])
     }
 
     // MARK: - Clear Clears All Streaming State
@@ -696,18 +696,18 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let stepID = "test_step"
         let messageID = UUID()
 
-        manager.beginStreaming(stepID: stepID, messageID: messageID, role: .softwareEngineer)
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "content")
-        manager.appendThinking(stepID: stepID, content: "thinking")
-        manager.updateProcessingProgress(stepID: stepID, progress: 0.5)
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer)
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "content")
+        manager.appendThinking(stepID: stepID, taskID: 0, content: "thinking")
+        manager.updateProcessingProgress(stepID: stepID, taskID: 0, progress: 0.5)
 
-        manager.clear(stepID: stepID)
+        manager.clear(stepID: stepID, taskID: 0)
 
-        XCTAssertNil(manager.preview(for: stepID))
+        XCTAssertNil(manager.preview(stepID: stepID, taskID: 0))
         XCTAssertFalse(manager.isStreaming(messageID: messageID))
-        XCTAssertNil(manager.streamingThinking(for: stepID))
-        XCTAssertNil(manager.processingProgress[stepID])
-        XCTAssertNil(manager.streamingMessageIDs[stepID])
+        XCTAssertNil(manager.streamingThinking(stepID: stepID, taskID: 0))
+        XCTAssertNil(manager.processingProgress[TaskStepKey(taskID: 0, stepID: stepID)])
+        XCTAssertNil(manager.streamingMessageIDs[TaskStepKey(taskID: 0, stepID: stepID)])
     }
 
     // MARK: - ClearAll Clears All Streaming State
@@ -718,12 +718,12 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let messageID1 = UUID()
         let messageID2 = UUID()
 
-        manager.beginStreaming(stepID: stepID1, messageID: messageID1, role: .productManager)
-        manager.beginStreaming(stepID: stepID2, messageID: messageID2, role: .softwareEngineer)
-        manager.appendThinking(stepID: stepID1, content: "think1")
-        manager.appendThinking(stepID: stepID2, content: "think2")
-        manager.updateProcessingProgress(stepID: stepID1, progress: 0.3)
-        manager.updateProcessingProgress(stepID: stepID2, progress: 0.7)
+        manager.beginStreaming(stepID: stepID1, taskID: 0, messageID: messageID1, role: .productManager)
+        manager.beginStreaming(stepID: stepID2, taskID: 0, messageID: messageID2, role: .softwareEngineer)
+        manager.appendThinking(stepID: stepID1, taskID: 0, content: "think1")
+        manager.appendThinking(stepID: stepID2, taskID: 0, content: "think2")
+        manager.updateProcessingProgress(stepID: stepID1, taskID: 0, progress: 0.3)
+        manager.updateProcessingProgress(stepID: stepID2, taskID: 0, progress: 0.7)
 
         manager.clearAll()
 
@@ -746,56 +746,56 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let messageID3 = UUID()
 
         // Begin streaming for 3 steps
-        manager.beginStreaming(stepID: stepID1, messageID: messageID1, role: .productManager)
-        manager.beginStreaming(stepID: stepID2, messageID: messageID2, role: .softwareEngineer)
-        manager.beginStreaming(stepID: stepID3, messageID: messageID3, role: .techLead)
+        manager.beginStreaming(stepID: stepID1, taskID: 0, messageID: messageID1, role: .productManager)
+        manager.beginStreaming(stepID: stepID2, taskID: 0, messageID: messageID2, role: .softwareEngineer)
+        manager.beginStreaming(stepID: stepID3, taskID: 0, messageID: messageID3, role: .techLead)
 
         // Append content independently
-        manager.append(stepID: stepID1, messageID: messageID1, role: .productManager, content: "Requirements: ")
-        manager.append(stepID: stepID2, messageID: messageID2, role: .softwareEngineer, content: "Code: ")
-        manager.append(stepID: stepID3, messageID: messageID3, role: .techLead, content: "Plan: ")
-        manager.append(stepID: stepID1, messageID: messageID1, role: .productManager, content: "feature X")
-        manager.append(stepID: stepID2, messageID: messageID2, role: .softwareEngineer, content: "func main()")
+        manager.append(stepID: stepID1, taskID: 0, messageID: messageID1, role: .productManager, content: "Requirements: ")
+        manager.append(stepID: stepID2, taskID: 0, messageID: messageID2, role: .softwareEngineer, content: "Code: ")
+        manager.append(stepID: stepID3, taskID: 0, messageID: messageID3, role: .techLead, content: "Plan: ")
+        manager.append(stepID: stepID1, taskID: 0, messageID: messageID1, role: .productManager, content: "feature X")
+        manager.append(stepID: stepID2, taskID: 0, messageID: messageID2, role: .softwareEngineer, content: "func main()")
 
         // Append thinking independently
-        manager.appendThinking(stepID: stepID1, content: "Analyzing requirements")
-        manager.appendThinking(stepID: stepID2, content: "Writing implementation")
+        manager.appendThinking(stepID: stepID1, taskID: 0, content: "Analyzing requirements")
+        manager.appendThinking(stepID: stepID2, taskID: 0, content: "Writing implementation")
 
         // Update processing progress independently
-        manager.updateProcessingProgress(stepID: stepID3, progress: 0.5)
+        manager.updateProcessingProgress(stepID: stepID3, taskID: 0, progress: 0.5)
 
         // Verify independent state
         XCTAssertTrue(manager.isStreaming(messageID: messageID1))
         XCTAssertTrue(manager.isStreaming(messageID: messageID2))
         XCTAssertTrue(manager.isStreaming(messageID: messageID3))
 
-        XCTAssertEqual(manager.streamingContent(for: stepID1), "Requirements: feature X")
-        XCTAssertEqual(manager.streamingContent(for: stepID2), "Code: func main()")
-        XCTAssertEqual(manager.streamingContent(for: stepID3), "Plan: ")
+        XCTAssertEqual(manager.streamingContent(stepID: stepID1, taskID: 0), "Requirements: feature X")
+        XCTAssertEqual(manager.streamingContent(stepID: stepID2, taskID: 0), "Code: func main()")
+        XCTAssertEqual(manager.streamingContent(stepID: stepID3, taskID: 0), "Plan: ")
 
-        XCTAssertEqual(manager.streamingThinking(for: stepID1), "Analyzing requirements")
-        XCTAssertEqual(manager.streamingThinking(for: stepID2), "Writing implementation")
-        XCTAssertNil(manager.streamingThinking(for: stepID3))
+        XCTAssertEqual(manager.streamingThinking(stepID: stepID1, taskID: 0), "Analyzing requirements")
+        XCTAssertEqual(manager.streamingThinking(stepID: stepID2, taskID: 0), "Writing implementation")
+        XCTAssertNil(manager.streamingThinking(stepID: stepID3, taskID: 0))
 
-        XCTAssertNil(manager.processingProgress[stepID1])
-        XCTAssertNil(manager.processingProgress[stepID2])
-        XCTAssertEqual(manager.processingProgress[stepID3], 0.5)
+        XCTAssertNil(manager.processingProgress[TaskStepKey(taskID: 0, stepID: stepID1)])
+        XCTAssertNil(manager.processingProgress[TaskStepKey(taskID: 0, stepID: stepID2)])
+        XCTAssertEqual(manager.processingProgress[TaskStepKey(taskID: 0, stepID: stepID3)], 0.5)
 
         // Commit step 1 — others unaffected
-        manager.commit(stepID: stepID1)
+        manager.commit(stepID: stepID1, taskID: 0)
 
         XCTAssertFalse(manager.isStreaming(messageID: messageID1))
         XCTAssertTrue(manager.isStreaming(messageID: messageID2))
         XCTAssertTrue(manager.isStreaming(messageID: messageID3))
-        XCTAssertNil(manager.streamingContent(for: stepID1))
-        XCTAssertEqual(manager.streamingContent(for: stepID2), "Code: func main()")
+        XCTAssertNil(manager.streamingContent(stepID: stepID1, taskID: 0))
+        XCTAssertEqual(manager.streamingContent(stepID: stepID2, taskID: 0), "Code: func main()")
 
         // Clear step 2 — step 3 unaffected
-        manager.clear(stepID: stepID2)
+        manager.clear(stepID: stepID2, taskID: 0)
 
         XCTAssertFalse(manager.isStreaming(messageID: messageID2))
         XCTAssertTrue(manager.isStreaming(messageID: messageID3))
-        XCTAssertEqual(manager.processingProgress[stepID3], 0.5)
+        XCTAssertEqual(manager.processingProgress[TaskStepKey(taskID: 0, stepID: stepID3)], 0.5)
     }
 
     // MARK: - Full Inline Streaming Lifecycle
@@ -805,38 +805,38 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let messageID = UUID()
 
         // Phase 1: Begin streaming (pre-create message)
-        manager.beginStreaming(stepID: stepID, messageID: messageID, role: .softwareEngineer)
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer)
         XCTAssertTrue(manager.isStreaming(messageID: messageID))
-        XCTAssertEqual(manager.streamingContent(for: stepID), "")
-        XCTAssertNil(manager.streamingThinking(for: stepID))
+        XCTAssertEqual(manager.streamingContent(stepID: stepID, taskID: 0), "")
+        XCTAssertNil(manager.streamingThinking(stepID: stepID, taskID: 0))
 
         // Phase 2: Processing progress (prompt processing)
-        manager.updateProcessingProgress(stepID: stepID, progress: 0.0)
-        XCTAssertEqual(manager.processingProgress[stepID], 0.0)
-        manager.updateProcessingProgress(stepID: stepID, progress: 0.5)
-        XCTAssertEqual(manager.processingProgress[stepID], 0.5)
-        manager.updateProcessingProgress(stepID: stepID, progress: 1.0)
-        XCTAssertEqual(manager.processingProgress[stepID], 1.0)
-        manager.clearProcessingProgress(stepID: stepID)
-        XCTAssertNil(manager.processingProgress[stepID])
+        manager.updateProcessingProgress(stepID: stepID, taskID: 0, progress: 0.0)
+        XCTAssertEqual(manager.processingProgress[TaskStepKey(taskID: 0, stepID: stepID)], 0.0)
+        manager.updateProcessingProgress(stepID: stepID, taskID: 0, progress: 0.5)
+        XCTAssertEqual(manager.processingProgress[TaskStepKey(taskID: 0, stepID: stepID)], 0.5)
+        manager.updateProcessingProgress(stepID: stepID, taskID: 0, progress: 1.0)
+        XCTAssertEqual(manager.processingProgress[TaskStepKey(taskID: 0, stepID: stepID)], 1.0)
+        manager.clearProcessingProgress(stepID: stepID, taskID: 0)
+        XCTAssertNil(manager.processingProgress[TaskStepKey(taskID: 0, stepID: stepID)])
 
         // Phase 3: Thinking starts streaming
-        manager.appendThinking(stepID: stepID, content: "I need to ")
-        manager.appendThinking(stepID: stepID, content: "analyze the code...")
-        XCTAssertEqual(manager.streamingThinking(for: stepID), "I need to analyze the code...")
+        manager.appendThinking(stepID: stepID, taskID: 0, content: "I need to ")
+        manager.appendThinking(stepID: stepID, taskID: 0, content: "analyze the code...")
+        XCTAssertEqual(manager.streamingThinking(stepID: stepID, taskID: 0), "I need to analyze the code...")
 
         // Phase 4: Content starts streaming
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "Here is ")
-        manager.append(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "the implementation.")
-        XCTAssertEqual(manager.streamingContent(for: stepID), "Here is the implementation.")
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "Here is ")
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "the implementation.")
+        XCTAssertEqual(manager.streamingContent(stepID: stepID, taskID: 0), "Here is the implementation.")
 
         // Phase 5: Commit (streaming ends)
-        let committed = manager.commit(stepID: stepID)
+        let committed = manager.commit(stepID: stepID, taskID: 0)
         XCTAssertNotNil(committed)
         XCTAssertEqual(committed?.content, "Here is the implementation.")
         XCTAssertFalse(manager.isStreaming(messageID: messageID))
-        XCTAssertNil(manager.streamingContent(for: stepID))
-        XCTAssertNil(manager.streamingThinking(for: stepID))
-        XCTAssertNil(manager.processingProgress[stepID])
+        XCTAssertNil(manager.streamingContent(stepID: stepID, taskID: 0))
+        XCTAssertNil(manager.streamingThinking(stepID: stepID, taskID: 0))
+        XCTAssertNil(manager.processingProgress[TaskStepKey(taskID: 0, stepID: stepID)])
     }
 }

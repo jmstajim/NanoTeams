@@ -58,6 +58,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
         needsSupervisorInput: Bool = false,
         supervisorQuestion: String? = nil,
         supervisorAnswer: String? = nil,
+        supervisorAnswerWasAuto: Bool = false,
         completedAt: Date? = nil,
         updatedAt: Date? = nil
     ) -> StepExecution {
@@ -73,6 +74,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
             needsSupervisorInput: needsSupervisorInput,
             supervisorQuestion: supervisorQuestion,
             supervisorAnswer: supervisorAnswer,
+            supervisorAnswerWasAuto: supervisorAnswerWasAuto,
             llmConversation: messages
         )
     }
@@ -547,11 +549,70 @@ final class ActivityFeedBuilderTests: XCTestCase {
         // NOT iter 2's question (the stale `supervisorAnswer` could be
         // mis-pinned to ask 2 if the indexing logic regressed — see the
         // screenshot bug from the original report).
-        guard case let .supervisorInput(question, answer, _, _, _, _) = notifications[0] else {
+        guard case let .supervisorInput(question, answer, _, _, _, _, _) = notifications[0] else {
             return XCTFail("Expected .supervisorInput notification")
         }
         XCTAssertEqual(question, "first?", "Card must carry iter 1's question, NOT iter 2's")
         XCTAssertEqual(answer, "yes", "Card must carry iter 1's answer, NOT a stale value or `(answered)` placeholder")
+    }
+
+    /// `wasAutoAnswered` threading: the notification must carry the step's
+    /// `supervisorAnswerWasAuto` verbatim — the card's "Auto-answered" badge keys
+    /// on WHO answered, never on the team's supervisor mode (a human reply to the
+    /// Autovisor's idle park in an autonomous team must render the checkmark).
+    func testSupervisorInputNotification_carriesWasAutoAnsweredFromStep() {
+        for flag in [true, false] {
+            let ask = makeToolCall(name: TN.askSupervisor, at: date(100), argumentsJSON: #"{"question":"q?"}"#)
+            let answerMsg = makeMessage(role: .user, content: "Supervisor answer: a", at: date(150),
+                                        sourceContext: .supervisorAnswer)
+            let step = makeStep(
+                messages: [answerMsg],
+                toolCalls: [ask],
+                status: .done,
+                supervisorAnswer: "a",
+                supervisorAnswerWasAuto: flag
+            )
+            let notifications: [ActivityNotificationType] = build(steps: [step]).compactMap {
+                if case .notification(_, _, let type, _, _) = $0.item { return type }
+                return nil
+            }
+            guard case let .supervisorInput(_, _, _, _, _, _, wasAutoAnswered) = notifications.first else {
+                return XCTFail("Expected .supervisorInput notification")
+            }
+            XCTAssertEqual(wasAutoAnswered, flag,
+                           "Notification must mirror step.supervisorAnswerWasAuto (\(flag))")
+        }
+    }
+
+    /// Documented granularity limit of `wasAutoAnswered` (step-latest flag): on a
+    /// step whose history holds MULTIPLE resolved Q&As, every card carries the
+    /// LATEST answer's attribution — per-question fidelity is not stored. This
+    /// test makes the limitation explicit so a future "fix" that changes the
+    /// behavior does so consciously, updating the docs with it.
+    func testMultiAskStep_allResolvedCards_carryLatestAttribution() {
+        let ask1 = makeToolCall(name: TN.askSupervisor, at: date(100), argumentsJSON: #"{"question":"first?"}"#)
+        let answer1 = makeMessage(role: .user, content: "Supervisor answer: by hand", at: date(150),
+                                  sourceContext: .supervisorAnswer)
+        let ask2 = makeToolCall(name: TN.askSupervisor, at: date(200), argumentsJSON: #"{"question":"second?"}"#)
+        let answer2 = makeMessage(role: .user, content: "Supervisor answer: by bot", at: date(250),
+                                  sourceContext: .supervisorAnswer)
+        let step = makeStep(
+            messages: [answer1, answer2],
+            toolCalls: [ask1, ask2],
+            status: .done,
+            supervisorAnswer: "by bot",
+            supervisorAnswerWasAuto: true  // latest answer was automated
+        )
+
+        let flags: [Bool] = build(steps: [step]).compactMap {
+            if case .notification(_, _, .supervisorInput(_, _, _, _, _, _, let wasAuto), _, _) = $0.item {
+                return wasAuto
+            }
+            return nil
+        }
+
+        XCTAssertEqual(flags, [true, true],
+                       "Step-latest flag stamps BOTH resolved cards — including the human-answered first Q&A")
     }
 
     /// Companion to the above: `activeSupervisorQuestions` must still surface
@@ -1033,7 +1094,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
         let result = build(steps: [step])
 
         let supervisorNotifs: [(question: String, answer: String?)] = result.compactMap {
-            if case let .notification(_, _, .supervisorInput(question, answer, _, _, _, _), _, _) = $0.item {
+            if case let .notification(_, _, .supervisorInput(question, answer, _, _, _, _, _), _, _) = $0.item {
                 return (question, answer)
             }
             return nil
@@ -1052,6 +1113,445 @@ final class ActivityFeedBuilderTests: XCTestCase {
             "Please read CLAUDE.md and propose 3 small fixes.",
             "Answer text must come from the supervisor-answer message body (with `Supervisor answer: ` prefix stripped)"
         )
+    }
+
+    /// The escalation-path answered card must sort at the ANSWER's timestamp,
+    /// not `step.updatedAt`. `updatedAt` is re-stamped by every later mutation
+    /// (each appended tool call), so anchoring on it made the card perpetually
+    /// drift below tool calls that executed AFTER the answer — the
+    /// "Autovisor asked card keeps moving down" bug.
+    func testEscalationAnsweredCard_usesAnswerMessageTimestamp_notStepUpdatedAt() {
+        let answer = makeMessage(
+            role: .user,
+            content: "Supervisor answer: не работают кнопки wasd",
+            at: date(200),
+            sourceContext: .supervisorAnswer
+        )
+        let laterTool1 = makeToolCall(name: "search", at: date(250))
+        let laterTool2 = makeToolCall(name: "read_file", at: date(300))
+        let step = makeStep(
+            messages: [answer],
+            toolCalls: [laterTool1, laterTool2],   // executed AFTER the answer
+            status: .running,
+            needsSupervisorInput: false,
+            supervisorQuestion: "Idle — waiting for events.",
+            supervisorAnswer: "не работают кнопки wasd",
+            updatedAt: date(400)                   // re-stamped by the latest mutation
+        )
+
+        let result = build(steps: [step])
+
+        guard let cardIndex = result.firstIndex(where: {
+            if case .notification(_, _, .supervisorInput, _, _) = $0.item { return true }
+            return false
+        }) else { return XCTFail("Expected a supervisorInput notification") }
+
+        if case let .notification(_, _, _, createdAt, _) = result[cardIndex].item {
+            XCTAssertEqual(
+                createdAt, date(200),
+                "Card must anchor on the answer message's createdAt, not step.updatedAt"
+            )
+        }
+        let toolIndices = result.indices.filter {
+            if case .toolCall = result[$0].item { return true }
+            return false
+        }
+        XCTAssertEqual(toolIndices.count, 2)
+        for toolIndex in toolIndices {
+            XCTAssertLessThan(
+                cardIndex, toolIndex,
+                "Answered card must render BEFORE tool calls that executed after the answer"
+            )
+        }
+    }
+
+    /// The escalation card's timeline-item id must be stable across rebuilds.
+    /// A fresh `UUID()` per build churned ForEach item identity (view
+    /// re-creation / re-animation) and broke the `supervisorThinking` window
+    /// dedupKey — clicking "Open in window" after any timeline rebuild
+    /// spawned a duplicate window instead of focusing the existing one.
+    func testEscalationAnsweredCard_identityStableAcrossRebuilds() {
+        let answer = makeMessage(
+            role: .user,
+            content: "Supervisor answer: ok",
+            at: date(200),
+            sourceContext: .supervisorAnswer
+        )
+        let step = makeStep(
+            messages: [answer],
+            toolCalls: [],
+            status: .running,
+            needsSupervisorInput: false,
+            supervisorQuestion: "Idle — waiting for events.",
+            supervisorAnswer: "ok",
+            updatedAt: date(210)
+        )
+
+        func cardID(in items: [ActivityFeedBuilder.TaggedItem]) -> String? {
+            items.first(where: {
+                if case .notification(_, _, .supervisorInput, _, _) = $0.item { return true }
+                return false
+            })?.item.id
+        }
+
+        let first = cardID(in: build(steps: [step]))
+        let second = cardID(in: build(steps: [step]))
+        XCTAssertNotNil(first)
+        XCTAssertEqual(
+            first, second,
+            "Escalation card identity must be anchored on the persisted answer message id, not a per-rebuild UUID()"
+        )
+    }
+
+    /// The card's "Thinking" row must show the reasoning that LED to the park
+    /// (last assistant thinking at or before the answer), not whatever the
+    /// model thought AFTER resuming — an unbounded `last(where:)` re-bound the
+    /// row to post-answer reasoning as the step kept running.
+    func testEscalationAnsweredCard_thinkingAnchoredToAnswerTime() {
+        let preParkThinking = makeMessage(
+            role: .assistant,
+            content: "Going idle.",
+            at: date(50),
+            thinking: "Nothing left to do — parking for events."
+        )
+        let answer = makeMessage(
+            role: .user,
+            content: "Supervisor answer: fix WASD",
+            at: date(200),
+            sourceContext: .supervisorAnswer
+        )
+        let postAnswerThinking = makeMessage(
+            role: .assistant,
+            content: "Investigating input handling.",
+            at: date(300),
+            thinking: "The user reports WASD keys broken — checking Input.js."
+        )
+        let step = makeStep(
+            messages: [preParkThinking, answer, postAnswerThinking],
+            toolCalls: [],
+            status: .running,
+            needsSupervisorInput: false,
+            supervisorQuestion: "Idle — waiting for events.",
+            supervisorAnswer: "fix WASD",
+            updatedAt: date(310)
+        )
+
+        let result = build(steps: [step])
+
+        guard let card = result.first(where: {
+            if case .notification(_, _, .supervisorInput, _, _) = $0.item { return true }
+            return false
+        }) else { return XCTFail("Expected a supervisorInput notification") }
+
+        if case let .notification(_, _, .supervisorInput(_, _, _, _, _, thinking, _), _, _) = card.item {
+            XCTAssertEqual(
+                thinking, "Nothing left to do — parking for events.",
+                "Thinking must be bounded by the answer timestamp — post-answer reasoning belongs to the resumed turn, not this card"
+            )
+        }
+    }
+
+    /// Legacy-data fallback: `supervisorAnswer` set but NO `.supervisorAnswer`
+    /// message in `llmConversation` (task.json persisted before
+    /// `StepMessagingService.answerSupervisorQuestion` appended the message in
+    /// the same mutation). The card must STILL emit, anchored on
+    /// `step.updatedAt` — a future "tightening" to `guard let answerMsg` would
+    /// silently vanish answered escalation cards for legacy tasks.
+    func testEscalationAnsweredCard_noAnswerMessage_fallsBackToStepUpdatedAt() {
+        let refusal = makeMessage(
+            role: .assistant,
+            content: "I can't identify a clear task.",
+            at: date(50)
+        )
+        let step = makeStep(
+            messages: [refusal],          // no .supervisorAnswer message — legacy shape
+            toolCalls: [],
+            status: .running,
+            needsSupervisorInput: false,
+            supervisorQuestion: "Please advise.",
+            supervisorAnswer: "legacy answer",
+            updatedAt: date(300)
+        )
+
+        let result = build(steps: [step])
+
+        guard let card = result.first(where: {
+            if case .notification(_, _, .supervisorInput, _, _) = $0.item { return true }
+            return false
+        }) else {
+            return XCTFail("Answered escalation card must still emit without an answer message (legacy data)")
+        }
+        if case let .notification(_, _, _, createdAt, _) = card.item {
+            XCTAssertEqual(
+                createdAt, date(300),
+                "Without an answer message the card falls back to step.updatedAt (pre-fix behavior)"
+            )
+        }
+    }
+
+    /// Multi-round park (the Autovisor scenario): wait_for_events parks →
+    /// answered → parks again → answered again, leaving 2+ `.supervisorAnswer`
+    /// messages in one long-lived step. The card renders only the LATEST round
+    /// (`supervisorQuestion`/`supervisorAnswer` are overwritten per round), so
+    /// it must anchor on `answerMessages.last` — a `.last` → `.first`
+    /// regression would jump the card back above all of round 2's activity and
+    /// re-bind its thinking row to round-1 reasoning.
+    func testEscalationAnsweredCard_multiRound_anchorsOnLatestAnswer() {
+        let round1Answer = makeMessage(
+            role: .user,
+            content: "Supervisor answer: round one",
+            at: date(100),
+            sourceContext: .supervisorAnswer
+        )
+        let betweenRoundsThinking = makeMessage(
+            role: .assistant,
+            content: "Parking again.",
+            at: date(300),
+            thinking: "Round-2 work done — going idle."
+        )
+        let round2Answer = makeMessage(
+            role: .user,
+            content: "Supervisor answer: round two",
+            at: date(500),
+            sourceContext: .supervisorAnswer
+        )
+        let step = makeStep(
+            messages: [round1Answer, betweenRoundsThinking, round2Answer],
+            toolCalls: [],
+            status: .running,
+            needsSupervisorInput: false,
+            supervisorQuestion: "Idle — waiting for events.",
+            supervisorAnswer: "round two",
+            updatedAt: date(510)
+        )
+
+        let result = build(steps: [step])
+
+        guard let card = result.first(where: {
+            if case .notification(_, _, .supervisorInput, _, _) = $0.item { return true }
+            return false
+        }) else { return XCTFail("Expected a supervisorInput notification") }
+
+        if case let .notification(_, _, .supervisorInput(_, _, _, _, _, thinking, _), createdAt, _) = card.item {
+            XCTAssertEqual(
+                createdAt, date(500),
+                "Card must anchor on the LATEST answer message, not the first"
+            )
+            XCTAssertEqual(
+                thinking, "Round-2 work done — going idle.",
+                "Thinking bound must be the latest answer's timestamp — round-2 reasoning, not round-1"
+            )
+        } else {
+            XCTFail("Expected a supervisorInput notification payload")
+        }
+    }
+
+    // MARK: - Escalation card corner cases
+
+    /// Whitespace-only `supervisorQuestion` must NOT produce a history card —
+    /// the branch trims before the emptiness check. Without the trim guard, an
+    /// engine path that writes `"  \n "` would render a card with a blank
+    /// question header above a real answer.
+    func testEscalationAnsweredCard_whitespaceOnlyQuestion_noCard() {
+        let answer = makeMessage(
+            role: .user,
+            content: "Supervisor answer: ok",
+            at: date(200),
+            sourceContext: .supervisorAnswer
+        )
+        let step = makeStep(
+            messages: [answer],
+            toolCalls: [],
+            status: .running,
+            needsSupervisorInput: false,
+            supervisorQuestion: "   \n  \t  ",
+            supervisorAnswer: "ok",
+            updatedAt: date(210)
+        )
+
+        let result = build(steps: [step])
+
+        XCTAssertFalse(
+            result.contains {
+                if case .notification(_, _, .supervisorInput, _, _) = $0.item { return true }
+                return false
+            },
+            "Whitespace-only question must be treated as no question — no history card"
+        )
+    }
+
+    /// A re-parked escalation step (`needsSupervisorInput == true`) must NOT
+    /// emit a history card even when a previous round's answer + answer
+    /// message are still present — active state is owned by the docked
+    /// composer (`activeSupervisorQuestions`), and a duplicate card would
+    /// surface the answering UI twice. This pins the `!stepIsActive` gate on
+    /// the escalation branch specifically (the normal-path equivalent is
+    /// covered by `testActiveNotificationExcludedFromTimeline`).
+    func testEscalationCard_reParkedStep_suppressedWhileActive() {
+        let round1Answer = makeMessage(
+            role: .user,
+            content: "Supervisor answer: round one",
+            at: date(100),
+            sourceContext: .supervisorAnswer
+        )
+        let step = makeStep(
+            messages: [round1Answer],
+            toolCalls: [],
+            status: .needsSupervisorInput,
+            needsSupervisorInput: true,           // round 2 parked
+            supervisorQuestion: "Idle — waiting for events.",
+            supervisorAnswer: "round one",         // stale round-1 leftovers
+            updatedAt: date(300)
+        )
+
+        let result = build(steps: [step])
+
+        XCTAssertFalse(
+            result.contains {
+                if case .notification(_, _, .supervisorInput, _, _) = $0.item { return true }
+                return false
+            },
+            "While the step is parked again, the composer owns the question — no history card"
+        )
+        XCTAssertEqual(
+            ActivityFeedBuilder.activeSupervisorQuestions(steps: [step]).count, 1,
+            "Sanity: the re-parked question must surface via the composer instead"
+        )
+    }
+
+    /// When the only assistant thinking in the conversation came AFTER the
+    /// answer (the model resumed and reasoned about the reply), the card's
+    /// thinking row must be nil — post-answer reasoning belongs to the resumed
+    /// turn's own bubble, not the question card.
+    func testEscalationAnsweredCard_onlyPostAnswerThinking_thinkingIsNil() {
+        let answer = makeMessage(
+            role: .user,
+            content: "Supervisor answer: fix WASD",
+            at: date(200),
+            sourceContext: .supervisorAnswer
+        )
+        let postAnswerThinking = makeMessage(
+            role: .assistant,
+            content: "On it.",
+            at: date(300),
+            thinking: "User reports broken keys — investigating."
+        )
+        let step = makeStep(
+            messages: [answer, postAnswerThinking],
+            toolCalls: [],
+            status: .running,
+            needsSupervisorInput: false,
+            supervisorQuestion: "Idle — waiting for events.",
+            supervisorAnswer: "fix WASD",
+            updatedAt: date(310)
+        )
+
+        let result = build(steps: [step])
+
+        guard let card = result.first(where: {
+            if case .notification(_, _, .supervisorInput, _, _) = $0.item { return true }
+            return false
+        }) else { return XCTFail("Expected a supervisorInput notification") }
+
+        if case let .notification(_, _, .supervisorInput(_, _, _, _, _, thinking, _), _, _) = card.item {
+            XCTAssertNil(
+                thinking,
+                "No pre-answer thinking exists — the card must not borrow post-answer reasoning"
+            )
+        } else {
+            XCTFail("Expected a supervisorInput notification payload")
+        }
+    }
+
+    /// The thinking bound is inclusive (`<=`, mirroring the normal path's
+    /// `<= call.createdAt`). `MonotonicClock` makes equal stamps impossible in
+    /// production, but persisted fixtures / imported data can carry them — a
+    /// refactor to strict `<` would silently drop a same-tick thinking turn.
+    func testEscalationAnsweredCard_thinkingAtExactAnchorTimestamp_included() {
+        let sameTick = date(200)
+        let parkThinking = makeMessage(
+            role: .assistant,
+            content: "Going idle.",
+            at: sameTick,
+            thinking: "Same-tick reasoning."
+        )
+        let answer = makeMessage(
+            role: .user,
+            content: "Supervisor answer: ok",
+            at: sameTick,
+            sourceContext: .supervisorAnswer
+        )
+        let step = makeStep(
+            messages: [parkThinking, answer],
+            toolCalls: [],
+            status: .running,
+            needsSupervisorInput: false,
+            supervisorQuestion: "Idle — waiting for events.",
+            supervisorAnswer: "ok",
+            updatedAt: date(210)
+        )
+
+        let result = build(steps: [step])
+
+        guard let card = result.first(where: {
+            if case .notification(_, _, .supervisorInput, _, _) = $0.item { return true }
+            return false
+        }) else { return XCTFail("Expected a supervisorInput notification") }
+
+        if case let .notification(_, _, .supervisorInput(_, _, _, _, _, thinking, _), _, _) = card.item {
+            XCTAssertEqual(
+                thinking, "Same-tick reasoning.",
+                "The bound must be inclusive — a thinking turn stamped exactly at the anchor belongs to the question"
+            )
+        } else {
+            XCTFail("Expected a supervisorInput notification payload")
+        }
+    }
+
+    /// Documented degradation of the legacy fallback: with no answer message
+    /// the anchor is `step.updatedAt`, which (being re-stamped last) bounds
+    /// nothing — the thinking lookup degenerates to the pre-fix unbounded scan
+    /// and shows the LATEST assistant reasoning. Acceptable for legacy data
+    /// (the step is settled, so the row is at least stable); this pin makes
+    /// the trade-off explicit instead of accidental.
+    func testEscalationAnsweredCard_legacyFallback_showsLatestThinking() {
+        let earlyThinking = makeMessage(
+            role: .assistant,
+            content: "Refusing.",
+            at: date(100),
+            thinking: "Early reasoning."
+        )
+        let lateThinking = makeMessage(
+            role: .assistant,
+            content: "Resumed.",
+            at: date(250),
+            thinking: "Late reasoning."
+        )
+        let step = makeStep(
+            messages: [earlyThinking, lateThinking],   // legacy: no .supervisorAnswer message
+            toolCalls: [],
+            status: .running,
+            needsSupervisorInput: false,
+            supervisorQuestion: "Please advise.",
+            supervisorAnswer: "legacy answer",
+            updatedAt: date(300)
+        )
+
+        let result = build(steps: [step])
+
+        guard let card = result.first(where: {
+            if case .notification(_, _, .supervisorInput, _, _) = $0.item { return true }
+            return false
+        }) else { return XCTFail("Expected a supervisorInput notification") }
+
+        if case let .notification(_, _, .supervisorInput(_, _, _, _, _, thinking, _), _, _) = card.item {
+            XCTAssertEqual(
+                thinking, "Late reasoning.",
+                "Legacy fallback anchors on updatedAt (latest stamp) — the bound filters nothing, latest thinking wins"
+            )
+        } else {
+            XCTFail("Expected a supervisorInput notification payload")
+        }
     }
 
     /// Discriminating test for the new gate vs the old `supervisorAnswer == nil`

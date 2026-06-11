@@ -10,6 +10,7 @@ struct SettingsView: View {
     nonisolated enum SettingsTab: String, CaseIterable, Identifiable, Codable {
         case llm = "LLM"
         case workFolder = "Work Folder"
+        case autovisor = "Autovisor"
         case general = "General"
         case dictation = "Dictation"
         case vision = "Vision"
@@ -25,7 +26,7 @@ struct SettingsView: View {
         var id: String { rawValue }
 
         private static let iconMap: [SettingsTab: String] = [
-            .llm: "brain", .workFolder: "folder", .general: "gearshape",
+            .llm: "brain", .workFolder: "folder", .autovisor: "folder.badge.person.crop", .general: "gearshape",
             .dictation: "mic", .vision: "eye", .exploratorySearch: "binoculars",
             .toolBehavior: "slider.horizontal.3",
             .debug: "ladybug",
@@ -59,7 +60,7 @@ struct SettingsView: View {
 
     private var settingsSidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
-            settingsSection("Configuration", tabs: [.general, .llm, .workFolder])
+            settingsSection("Configuration", tabs: [.general, .llm, .workFolder, .autovisor])
             settingsSection("Advanced", tabs: [.exploratorySearch, .vision, .dictation, .toolBehavior, .debug])
             settingsSection("Team", tabs: [.teams, .generateTeam, .tools])
             settingsSection("Support", tabs: [.help, .updates])
@@ -98,6 +99,9 @@ struct SettingsView: View {
         case .workFolder:
             WorkFolderSettingsView()
                 .navigationTitle(SettingsTab.workFolder.rawValue)
+        case .autovisor:
+            AutovisorSettingsView()
+                .navigationTitle(SettingsTab.autovisor.rawValue)
         case .general:
             GeneralSettingsView()
                 .navigationTitle(SettingsTab.general.rawValue)

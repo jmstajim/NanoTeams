@@ -1,122 +1,20 @@
 import XCTest
 @testable import NanoTeams
 
-/// Pins the substring-agnostic repetition detector that powers
-/// auto-trigger of Pause-and-Decide on a delegated child team that's stuck
-/// in a loop. Two modes:
+/// Pins the cross-message and tool-call-sequence modes of the repetition detector
+/// that powers auto-trigger of Pause-and-Decide on a stuck team:
 ///
-///  - within-message: one LLM output contains a substring repeated N+ times
-///    (the user's example "Oh wait Oh wait Oh wait..." but applies to ANY
-///    repeating phrase).
-///  - across-messages: the role keeps regenerating similar content each
-///    iteration without progress.
+///  - across-messages: the role keeps regenerating similar content each iteration
+///    without progress (fuzzy LCS overlap across recent outputs).
+///  - identical-tool-call-sequence: the same `(name, args)` pair emitted N× in a row.
 ///
-/// Both modes return diagnostic-bearing matches so the parent role's tool
-/// loop sees what specifically looped.
+/// The within-message (tail-anchored `detectTailLoop`) mode is covered by
+/// `DetectTailLoopCornerTests` + `RealWorldThinkingLoopDetectionTests`.
 final class MessageRepetitionDetectorTests: XCTestCase {
 
-    // MARK: - Within-message: positive cases
-
-    func testWithinMessage_detectsPhraseRepeatedFiveTimes() {
-        let text = "Let me think about this. Oh wait Oh wait Oh wait Oh wait Oh wait. Hmm."
-        let match = MessageRepetitionDetector.detectWithinMessage(text)
-        XCTAssertNotNil(match, "Five-times-repeated 'Oh wait' must be detected")
-        XCTAssertGreaterThanOrEqual(match?.repeatCount ?? 0, 5)
-        XCTAssertTrue(match?.substring.contains("Oh wait") ?? false,
-                      "Diagnostic must surface the repeating substring; got: \(match?.substring ?? "nil")")
-    }
-
-    func testWithinMessage_detectsCodePasteLoop() {
-        let snippet = "function foo() { return 1; }\n"
-        let text = "Here's the result:\n\n" + String(repeating: snippet, count: 6)
-        let match = MessageRepetitionDetector.detectWithinMessage(text)
-        XCTAssertNotNil(match)
-        XCTAssertTrue(match?.substring.contains("function foo") ?? false)
-    }
-
-    func testWithinMessage_detectsRussianPhraseLoop() {
-        let text = "ну так, подожди подожди подожди подожди подожди подожди. ой."
-        let match = MessageRepetitionDetector.detectWithinMessage(text)
-        XCTAssertNotNil(match,
-                        "Detector is substring-agnostic — non-English loops must fire too")
-        XCTAssertTrue(match?.substring.contains("подожди") ?? false)
-    }
-
-    func testWithinMessage_detectsLongerRepeat_winsOverShorter() {
-        // "abcdefgh" repeated 5 times should be reported, not the smaller
-        // "abc" sub-pattern that's also technically repeating.
-        let block = "abcdefgh"
-        let text = String(repeating: block, count: 6)
-        let match = MessageRepetitionDetector.detectWithinMessage(text, minSubstringChars: 3)
-        XCTAssertNotNil(match)
-        XCTAssertGreaterThanOrEqual(match?.substring.count ?? 0, block.count,
-                                     "Longer repeating block should win — higher signal")
-    }
-
-    /// Diagnostic envelope length is bounded so a 5×-repeat of a 2KB
-    /// paragraph doesn't blow up the tool result envelope.
-    func testWithinMessage_diagnosticTruncatesLongSubstring() {
-        // ~120-char block of varied content (passes the substantive-content
-        // guard) repeated 5 times. Block fits within `maxSubstringChars=200`
-        // default. The substring-truncation kicks in at 80 chars in the
-        // diagnostic, so the envelope stays compact even for long loop blocks.
-        let block = "alpha_beta_gamma_delta_epsilon_zeta_eta_theta_iota_kappa_lambda_mu_nu_xi_omicron_pi_rho_sigma_tau_upsilon_phi_chi_psi_omg!"
-        let text = String(repeating: block, count: 5)
-        let match = MessageRepetitionDetector.detectWithinMessage(text)
-        XCTAssertNotNil(match)
-        XCTAssertLessThanOrEqual(match?.diagnostic.count ?? 0, 250,
-                                  "Diagnostic must be short enough to embed in a paused envelope (got \(match?.diagnostic.count ?? -1) chars)")
-    }
-
-    // MARK: - Within-message: negative cases (no false positives)
-
-    func testWithinMessage_emptyText_returnsNil() {
-        XCTAssertNil(MessageRepetitionDetector.detectWithinMessage(""))
-    }
-
-    func testWithinMessage_shortText_returnsNil() {
-        XCTAssertNil(MessageRepetitionDetector.detectWithinMessage("Hello world"))
-    }
-
-    func testWithinMessage_normalProseNoRepetition_returnsNil() {
-        let text = """
-            The implementation reads the file, parses the JSON, validates each entry
-            against the schema, and writes the normalized output to disk. We log
-            every rejected entry so the user can inspect them later. There are no
-            external dependencies and the test suite covers the happy path plus
-            three edge cases.
-            """
-        XCTAssertNil(MessageRepetitionDetector.detectWithinMessage(text),
-                     "Normal narrative prose must not false-positive")
-    }
-
-    func testWithinMessage_markdownList_doesNotFalsePositive() {
-        let text = """
-            Here are the items:
-            - First item with some content
-            - Second item with different content
-            - Third item that's also unique
-            - Fourth item entirely separate
-            - Fifth and final item
-            """
-        XCTAssertNil(MessageRepetitionDetector.detectWithinMessage(text),
-                     "Markdown lists with unique content per line must not fire — the leading '- ' isn't a substantive loop")
-    }
-
-    /// A long run of identical characters (`-----` separator, whitespace
-    /// padding) is a single-char repeat, not a content loop. Must be
-    /// rejected by the substantive-content guard.
-    func testWithinMessage_singleCharRun_rejectsAsTrivial() {
-        let text = "Section break:\n" + String(repeating: "-", count: 100) + "\nMore content here."
-        XCTAssertNil(MessageRepetitionDetector.detectWithinMessage(text),
-                     "Single-character run is not a substantive loop")
-    }
-
-    func testWithinMessage_belowMinRepeats_returnsNil() {
-        // "Oh wait" only twice — below default minRepeats=5
-        let text = "Oh wait Oh wait. Got it."
-        XCTAssertNil(MessageRepetitionDetector.detectWithinMessage(text))
-    }
+    // NOTE: within-message (tail-anchored `detectTailLoop`) coverage lives in
+    // `DetectTailLoopCornerTests` + `RealWorldThinkingLoopDetectionTests`. This file
+    // pins the other two modes.
 
     // MARK: - Across-messages
 

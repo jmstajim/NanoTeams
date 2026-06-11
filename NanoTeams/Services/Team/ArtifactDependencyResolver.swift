@@ -97,6 +97,15 @@ nonisolated struct ArtifactDependencyResolver {
         return order.count == roles.count ? order : nil
     }
 
+    /// Role IDs the given role *directly* depends on — i.e. the producers of the
+    /// artifacts this role requires (using the cached graph). Inverse direction of
+    /// `getDownstreamRoles`, but direct-only (one hop) — not transitive like that BFS.
+    /// Used to serialize a revision cascade so a downstream role re-runs only after
+    /// its upstream's fresh artifacts exist.
+    func dependencyRoleIDs(of roleID: String) -> Set<String> {
+        roleDependsOn[roleID] ?? []
+    }
+
     /// Gets all roles that depend (directly or indirectly) on a given role, using cached graph.
     /// Excludes Supervisor from traversal to prevent circular cascades.
     func getDownstreamRoles(of roleID: String) -> Set<String> {

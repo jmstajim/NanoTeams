@@ -39,8 +39,8 @@ extension NTMSOrchestrator {
     // MARK: - Streaming (Inline Architecture)
 
     // periphery:ignore - protocol conformance (LLMStreamingDelegate)
-    func beginStreaming(stepID: String, messageID: UUID, role: Role, taskID: Int) async {
-        streamingPreviewManager.beginStreaming(stepID: stepID, messageID: messageID, role: role)
+    func beginStreaming(stepID: String, taskID: Int, messageID: UUID, role: Role) async {
+        streamingPreviewManager.beginStreaming(stepID: stepID, taskID: taskID, messageID: messageID, role: role)
 
         // Pre-create empty LLMMessage in step.llmConversation so timeline picks it up
         let msg = LLMMessage(id: messageID, role: .assistant, content: "")
@@ -49,54 +49,63 @@ extension NTMSOrchestrator {
         }
     }
 
-    func appendStreamingPreview(stepID: String, messageID: UUID, role: Role, content: String) {
-        streamingPreviewManager.append(stepID: stepID, messageID: messageID, role: role, content: content)
-        streamingPreviewManager.markStreamActivity(stepID: stepID)
-        considerStreamingForLoopDetection(stepID: stepID)
+    func appendStreamingPreview(stepID: String, taskID: Int, messageID: UUID, role: Role, content: String) {
+        streamingPreviewManager.append(stepID: stepID, taskID: taskID, messageID: messageID, role: role, content: content)
+        streamingPreviewManager.markStreamActivity(stepID: stepID, taskID: taskID)
     }
 
-    func replaceStreamingPreview(stepID: String, messageID: UUID, role: Role, content: String) {
-        streamingPreviewManager.replaceContent(stepID: stepID, messageID: messageID, role: role, content: content)
-        streamingPreviewManager.markStreamActivity(stepID: stepID)
-        considerStreamingForLoopDetection(stepID: stepID)
+    func replaceStreamingPreview(stepID: String, taskID: Int, messageID: UUID, role: Role, content: String) {
+        streamingPreviewManager.replaceContent(stepID: stepID, taskID: taskID, messageID: messageID, role: role, content: content)
+        streamingPreviewManager.markStreamActivity(stepID: stepID, taskID: taskID)
     }
 
-    func appendStreamingThinking(stepID: String, content: String) {
-        streamingPreviewManager.appendThinking(stepID: stepID, content: content)
-        streamingPreviewManager.markStreamActivity(stepID: stepID)
-        considerStreamingForLoopDetection(stepID: stepID)
+    func appendStreamingThinking(stepID: String, taskID: Int, content: String) {
+        streamingPreviewManager.appendThinking(stepID: stepID, taskID: taskID, content: content)
+        streamingPreviewManager.markStreamActivity(stepID: stepID, taskID: taskID)
     }
 
-    func markStreamActivity(stepID: String) {
-        streamingPreviewManager.markStreamActivity(stepID: stepID)
+    func markStreamActivity(stepID: String, taskID: Int) {
+        streamingPreviewManager.markStreamActivity(stepID: stepID, taskID: taskID)
     }
 
-    /// Throttled hook for the loop watcher. The watcher itself rate-limits
-    /// (only scans once every `repetitionStreamingThrottleSeconds` per step
-    /// AND stays in cooldown after firing) — this method is a cheap
-    /// dispatcher that the streaming pipeline calls on every token append
-    /// without measurable overhead. We resolve the taskID for `stepID`
-    /// once and short-circuit if the step isn't actually attached to a
-    /// child task.
-    private func considerStreamingForLoopDetection(stepID: String) {
-        guard let taskID = llmExecutionService.taskIDForStep(stepID) else { return }
-        let content = streamingPreviewManager.streamingContent(for: stepID) ?? ""
-        let thinking = streamingPreviewManager.streamingThinking(for: stepID) ?? ""
-        delegationLoopWatcher.considerStreamingBuffer(
-            taskID: taskID,
-            stepID: stepID,
-            content: content,
-            thinking: thinking
-        )
+    func markStreamingToolCall(stepID: String, taskID: Int) {
+        streamingPreviewManager.markStreamingToolCall(stepID: stepID, taskID: taskID)
+    }
+
+    /// Reactive in-stream streaming-loop signal for a CHILD task — forwards to
+    /// `DelegationLoopWatcher.noteStreamLoop` (cooldown + parent interrupt).
+    /// Detection itself runs inside `performStreamingCall`; this is the
+    /// `LLMStreamingDelegate` bridge. Returns whether the in-stream scanner
+    /// should advance its throttle baseline (see `noteStreamLoop` for the I4 rule).
+    // periphery:ignore - protocol conformance (LLMStreamingDelegate)
+    @discardableResult
+    func noteStreamLoop(taskID: Int, stepID: String, signal: LoopSignal) -> Bool {
+        delegationLoopWatcher.noteStreamLoop(taskID: taskID, stepID: stepID, signal: signal)
+    }
+
+    /// Discards a TOP-LEVEL looping generation: clears the streaming preview and
+    /// best-effort removes the pre-created empty assistant `LLMMessage` (planted by
+    /// `beginStreaming`). Used by `performStreamingCall` instead of `commitStreaming`
+    /// when a thinking loop breaks the stream. The removal is best-effort: on a
+    /// teardown race where the step has already left the latest run, `mutateTask`'s
+    /// closure no-ops and the empty turn is left — but it carries `content: ""` and
+    /// renders as nothing (empty bubbles are suppressed downstream), so it's inert.
+    // periphery:ignore - protocol conformance (LLMStreamingDelegate)
+    func discardStreaming(stepID: String, messageID: UUID, taskID: Int) async {
+        streamingPreviewManager.clear(stepID: stepID, taskID: taskID)
+        await mutateTask(taskID: taskID) { task in
+            TaskMutationService.removeLLMMessage(id: messageID, from: stepID, in: &task)
+        }
     }
 
     func commitStreaming(stepID: String, taskID: Int, content: String, thinking: String?) async {
         // Get the role from the preview before committing
-        let role = streamingPreviewManager.previews[stepID]?.role ?? .softwareEngineer
-        let messageID = streamingPreviewManager.streamingMessageIDs[stepID] ?? UUID()
+        let key = TaskStepKey(taskID: taskID, stepID: stepID)
+        let role = streamingPreviewManager.previews[key]?.role ?? .softwareEngineer
+        let messageID = streamingPreviewManager.streamingMessageIDs[key] ?? UUID()
 
         // Clear streaming state
-        streamingPreviewManager.commit(stepID: stepID)
+        streamingPreviewManager.commit(stepID: stepID, taskID: taskID)
 
         // Update both LLMMessage and StepMessage atomically
         mutateTaskInMemory(
@@ -112,72 +121,51 @@ extension NTMSOrchestrator {
                 )
             }, updateIndex: false)
 
-        // Post-commit loop detection: cheap single-pass scan on the
-        // finalized message + across-messages overlap on the role's
-        // recent outputs. Both checks no-op for non-child tasks, in
-        // cooldown, or below threshold — see `DelegationLoopWatcher`.
-        delegationLoopWatcher.considerCommittedMessage(
-            taskID: taskID,
-            stepID: stepID,
-            content: content,
-            thinking: thinking
-        )
+        // Post-commit loop detection (child tasks only): ONE consolidated scan of
+        // the finalized conversation + tool-call history via
+        // `DelegationLoopWatcher.considerCommitted` → `LoopScanner.scanCommitted`
+        // (tool-call sequence → within-message → across-messages, first wins).
+        // Reads the just-committed assistant turn back from `step.llmConversation`
+        // (commitStreamingContent updated it above). `thinking + content` is joined
+        // per message inside the scanner so tool-only turns (empty `content` after
+        // Harmony markers stripped) still contribute their reasoning text to the LCS.
+        // NB: `commitStreaming` runs BEFORE the current iteration's `appendToolCalls`,
+        // so `step.toolCalls` here is missing the just-finalized call — the
+        // `repetitionMinIdenticalToolCalls = 3` threshold accounts for this (fire on
+        // the 4th emitted identical call). The +5 suffix buffer keeps the scanner's
+        // `createdAt > cutoff` filter from stranding the suffix below `minRepeats`.
         if let task = loadedTask(taskID),
            let run = task.runs.last,
            let step = run.steps.first(where: { $0.id == stepID })
         {
-            // Across-messages: feed `thinking + content` per message so
-            // tool-only assistant turns (empty `content` because Harmony
-            // tool-call markers were stripped) still contribute their
-            // reasoning text to the LCS comparison. Without the thinking
-            // prefix every entry collapses to "" and `detectAcrossMessages`
-            // bails on its `minMessageChars` floor — silent no-op on every
-            // tool-only loop.
-            let recentRoleMessages = step.llmConversation
+            let recentAssistant = step.llmConversation
                 .filter { $0.role == .assistant }
-                .suffix(4)
-                .map { ($0.thinking ?? "") + "\n" + $0.content }
-            delegationLoopWatcher.considerConversation(
-                taskID: taskID,
-                recentRoleMessages: Array(recentRoleMessages)
-            )
-            // Tool-call sequence: the model can keep emitting one identical
-            // tool call per turn with empty `content` — invisible to the
-            // text-based modes above. Read from `step.toolCalls` (which
-            // includes cached/short-circuited calls — they're persisted via
-            // `appendToolCalls` regardless of cache hit). NB: `commitStreaming`
-            // runs BEFORE the current iteration's `appendToolCalls`
-            // (LLMExecutionService+Streaming.swift), so `step.toolCalls`
-            // here is missing the just-finalized call. The threshold
-            // `repetitionMinIdenticalToolCalls = 3` accounts for this — fire
-            // happens on the 4th actually-emitted identical call. We grab a
-            // wider suffix (+5 buffer) because the watcher's `considerToolCallSequence`
-            // filters by `createdAt > lastTrigger` to avoid false-positives on
-            // revision-retained history; without the buffer that filter could
-            // strand the suffix below `minRepeats`.
+                .suffix(5)
+                .map { (thinking: $0.thinking, content: $0.content, createdAt: $0.createdAt) }
             let recentCalls = step.toolCalls
                 .suffix(DelegationConstants.repetitionMinIdenticalToolCalls + 5)
                 .map { (name: $0.name, argsJSON: $0.argumentsJSON, createdAt: $0.createdAt) }
-            delegationLoopWatcher.considerToolCallSequence(
+            delegationLoopWatcher.considerCommitted(
                 taskID: taskID,
-                recentCalls: Array(recentCalls)
+                recentAssistant: Array(recentAssistant),
+                toolCalls: Array(recentCalls)
             )
         }
     }
 
-    func clearStreamingPreview(stepID: String) {
-        streamingPreviewManager.clear(stepID: stepID)
+    func clearStreamingPreview(stepID: String, taskID: Int) {
+        streamingPreviewManager.clear(stepID: stepID, taskID: taskID)
     }
 
     // MARK: - Processing Progress
 
     // periphery:ignore - protocol conformance (LLMStreamingDelegate)
-    func updateStreamingProcessingProgress(stepID: String, progress: Double) {
-        streamingPreviewManager.updateProcessingProgress(stepID: stepID, progress: progress)
+    func updateStreamingProcessingProgress(stepID: String, taskID: Int, progress: Double) {
+        streamingPreviewManager.updateProcessingProgress(stepID: stepID, taskID: taskID, progress: progress)
     }
 
     // periphery:ignore - protocol conformance (LLMStreamingDelegate)
-    func clearStreamingProcessingProgress(stepID: String) {
-        streamingPreviewManager.clearProcessingProgress(stepID: stepID)
+    func clearStreamingProcessingProgress(stepID: String, taskID: Int) {
+        streamingPreviewManager.clearProcessingProgress(stepID: stepID, taskID: taskID)
     }
 }

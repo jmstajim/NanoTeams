@@ -93,15 +93,29 @@ final class TaskEngineStoreAdapter: TeamEngineStore {
     /// Resets a completed step for revision (stateful continuation).
     /// Preserves all state (messages, artifacts, llmConversation, llmSessionID, scratchpad, toolCalls,
     /// amendments) so the LLM continues the conversation with full context.
-    /// Sets `revisionComment` from the last supervisor message to enable stateful session continuation
-    /// and prevent premature artifact completeness auto-completion.
+    /// Ensures `revisionComment` is set — preferring the raw comment stored by the
+    /// requesting flow, falling back to the last supervisor message — to enable stateful
+    /// session continuation and prevent premature artifact completeness auto-completion.
+    /// No-ops for any status other than `.done`/`.failed` (benign: a `.pending` step was
+    /// already reset by a prior pass).
     func resetStepForRevision(stepID: String) async {
         await orchestrator?.mutateTask(taskID: taskID) { task in
             guard let location = task.locateStepInLatestRun(stepID: stepID) else { return }
             let step = task.runs[location.runIndex].steps[location.stepIndex]
             let status = step.status
             if status == .done || status == .failed {
-                let feedback = step.messages.last(where: { $0.role == .supervisor })?.content
+                // Prefer the raw comment stored at the trigger site — `requestRevision`,
+                // `executeAmendment`, and `propagateAmendmentDownstream` all set it.
+                // The message fallback is defense-in-depth for steps persisted by older
+                // builds and future `.revisionRequested` writers; the send site strips a
+                // legacy "Supervisor Feedback: " prefix before re-applying, so even
+                // pre-fix data can't double the attribution. A whitespace-only stored
+                // comment is "no usable feedback" — fall through, like nil.
+                let storedComment = step.revisionComment.flatMap {
+                    $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0
+                }
+                let feedback = storedComment
+                    ?? step.messages.last(where: { $0.role == .supervisor })?.content
                     ?? "Please revise your work based on the requested changes."
                 task.runs[location.runIndex].steps[location.stepIndex].status = .pending
                 task.runs[location.runIndex].steps[location.stepIndex].completedAt = nil

@@ -6,10 +6,10 @@ extension LLMExecutionService {
 
     // MARK: - Token Usage
 
-    func persistTokenUsage(stepID: String, usage: TokenUsage) async {
+    func persistTokenUsage(stepID: String, taskID: Int, usage: TokenUsage) async {
         guard usage.inputTokens > 0 || usage.outputTokens > 0,
-              let delegate, let tid = taskIDForStep(stepID) else { return }
-        await delegate.mutateTask(taskID: tid) { task in
+              let delegate, isExecutionLive(stepID: stepID, taskID: taskID) else { return }
+        await delegate.mutateTask(taskID: taskID) { task in
             guard let runIndex = task.runs.indices.last,
                   let stepIndex = task.runs[runIndex].steps.firstIndex(where: { $0.id == stepID })
             else { return }
@@ -20,9 +20,9 @@ extension LLMExecutionService {
     // MARK: - Session Persistence
 
     /// Saves the LLM session ID so the step can resume via stateful continuation (e.g. after revision).
-    func persistSessionID(stepID: String, sessionID: String?) async {
-        guard let delegate, let tid = taskIDForStep(stepID) else { return }
-        await delegate.mutateTask(taskID: tid) { task in
+    func persistSessionID(stepID: String, taskID: Int, sessionID: String?) async {
+        guard let delegate, isExecutionLive(stepID: stepID, taskID: taskID) else { return }
+        await delegate.mutateTask(taskID: taskID) { task in
             guard let runIndex = task.runs.indices.last,
                   let stepIndex = task.runs[runIndex].steps.firstIndex(where: { $0.id == stepID })
             else { return }
@@ -32,10 +32,11 @@ extension LLMExecutionService {
 
     // MARK: - Tool Call Recording
 
-    func appendToolCalls(stepID: String, toolCalls: [StepToolCall]) async {
-        guard !toolCalls.isEmpty, let delegate, let tid = taskIDForStep(stepID) else { return }
+    func appendToolCalls(stepID: String, taskID: Int, toolCalls: [StepToolCall]) async {
+        guard !toolCalls.isEmpty, let delegate,
+              isExecutionLive(stepID: stepID, taskID: taskID) else { return }
 
-        await delegate.mutateTask(taskID: tid) { task in
+        await delegate.mutateTask(taskID: taskID) { task in
             for toolCall in toolCalls {
                 TaskMutationService.appendToolCall(toolCall, to: stepID, in: &task)
             }
@@ -44,11 +45,12 @@ extension LLMExecutionService {
 
     func updateToolCallResult(
         stepID: String,
+        taskID: Int,
         toolCallID: UUID,
         result: ToolExecutionResult
     ) async {
-        guard let delegate, let tid = taskIDForStep(stepID) else { return }
-        await delegate.mutateTask(taskID: tid) { task in
+        guard let delegate, isExecutionLive(stepID: stepID, taskID: taskID) else { return }
+        await delegate.mutateTask(taskID: taskID) { task in
             TaskMutationService.updateToolCallResult(
                 toolCallID: toolCallID,
                 resultJSON: result.outputJSON,
@@ -62,11 +64,11 @@ extension LLMExecutionService {
 
     // MARK: - Scratchpad
 
-    func updateScratchpad(stepID: String, content: String) async {
-        guard let delegate, let tid = taskIDForStep(stepID) else { return }
+    func updateScratchpad(stepID: String, taskID: Int, content: String) async {
+        guard let delegate, isExecutionLive(stepID: stepID, taskID: taskID) else { return }
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        await delegate.mutateTask(taskID: tid) { task in
+        await delegate.mutateTask(taskID: taskID) { task in
             guard let runIndex = task.runs.indices.last else { return }
             guard let stepIndex = task.runs[runIndex].steps.firstIndex(where: { $0.id == stepID })
             else { return }
@@ -101,12 +103,12 @@ extension LLMExecutionService {
         )
     }
 
-    func recordAutoSupervisorAnswer(stepID: String, question: String, answer: String) async {
-        guard let delegate, let tid = taskIDForStep(stepID) else { return }
+    func recordAutoSupervisorAnswer(stepID: String, taskID: Int, question: String, answer: String) async {
+        guard let delegate, isExecutionLive(stepID: stepID, taskID: taskID) else { return }
         let cleanQuestion = question.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanAnswer = answer.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        await delegate.mutateTask(taskID: tid) { task in
+        await delegate.mutateTask(taskID: taskID) { task in
             guard let runIndex = task.runs.indices.last else { return }
             guard let stepIndex = task.runs[runIndex].steps.firstIndex(where: { $0.id == stepID })
             else { return }
@@ -115,6 +117,7 @@ extension LLMExecutionService {
                 cleanQuestion.isEmpty ? nil : cleanQuestion
             task.runs[runIndex].steps[stepIndex].supervisorAnswer = cleanAnswer.isEmpty ? nil : cleanAnswer
             task.runs[runIndex].steps[stepIndex].supervisorAnswerAttachmentPaths = []
+            task.runs[runIndex].steps[stepIndex].supervisorAnswerWasAuto = true
             task.runs[runIndex].steps[stepIndex].needsSupervisorInput = false
 
             if task.runs[runIndex].steps[stepIndex].status == .needsSupervisorInput {
@@ -129,20 +132,23 @@ extension LLMExecutionService {
 
     /// Persists a Supervisor question on the step and transitions it to
     /// `.needsSupervisorInput`. Returns `true` only when the mutation actually
-    /// landed — i.e. delegate + step→task map + run/step indices all resolved
-    /// AND `mutateTask` persisted. Per CLAUDE.md §7, `mutateTask`'s `Bool`
+    /// landed — i.e. delegate attached + the (taskID, stepID) execution still live
+    /// + run/step indices resolved AND `mutateTask` persisted. Per CLAUDE.md §7, `mutateTask`'s `Bool`
     /// alone only proves persistence; the closure can short-circuit and still
     /// return `true`. Without the capture flag, callers using this as the
     /// escape hatch from a retry loop (parse-failure cap, drift cap) can
     /// transition the engine to "needs Supervisor input" with NO question
     /// rendered — which is strictly worse than the loop they replaced.
     @discardableResult
-    func setNeedsSupervisorInput(stepID: String, question: String, sessionID: String?) async -> Bool {
-        guard let delegate, let tid = taskIDForStep(stepID) else { return false }
+    func setNeedsSupervisorInput(stepID: String, taskID: Int, question: String, sessionID: String?) async -> Bool {
+        // The liveness gate matters doubly here: a post-teardown call would not just
+        // mis-write — it would flip a closed/paused task back to `.needsSupervisorInput`
+        // and fire the queued-message backstop, which auto-resumes the run.
+        guard let delegate, isExecutionLive(stepID: stepID, taskID: taskID) else { return false }
         let clean = question.trimmingCharacters(in: .whitespacesAndNewlines)
 
         var didApply = false
-        let mutated = await delegate.mutateTask(taskID: tid) { task in
+        let mutated = await delegate.mutateTask(taskID: taskID) { task in
             guard let runIndex = task.runs.indices.last else { return }
             guard let stepIndex = task.runs[runIndex].steps.firstIndex(where: { $0.id == stepID })
             else { return }
@@ -150,6 +156,7 @@ extension LLMExecutionService {
             task.runs[runIndex].steps[stepIndex].supervisorQuestion = clean.isEmpty ? nil : clean
             task.runs[runIndex].steps[stepIndex].supervisorAnswer = nil  // Clear stale answer from previous Q&A
             task.runs[runIndex].steps[stepIndex].supervisorAnswerAttachmentPaths = []
+            task.runs[runIndex].steps[stepIndex].supervisorAnswerWasAuto = false
             task.runs[runIndex].steps[stepIndex].llmSessionID = sessionID
             task.runs[runIndex].steps[stepIndex].needsSupervisorInput = true
             task.runs[runIndex].steps[stepIndex].status = .needsSupervisorInput
@@ -158,7 +165,7 @@ extension LLMExecutionService {
             didApply = true
         }
 
-        executionStates[stepID]?.runningTask = nil
+        executionStates[TaskStepKey(taskID: taskID, stepID: stepID)]?.runningTask = nil
         let success = mutated && didApply
         if success {
             // Backstop trigger: when a parallel role (CLAUDE.md "`TeamEngine`
@@ -172,7 +179,7 @@ extension LLMExecutionService {
             // queued messages stranded for this newly-waiting role would sit
             // until an unrelated state change surfaced them. Fire the backstop
             // directly from the mutation side.
-            delegate.notifyQueuedMessageBackstop(taskID: tid)
+            delegate.notifyQueuedMessageBackstop(taskID: taskID)
         }
         return success
     }

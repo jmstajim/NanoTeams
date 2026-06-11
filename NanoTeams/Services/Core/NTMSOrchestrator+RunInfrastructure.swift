@@ -32,11 +32,24 @@ extension NTMSOrchestrator {
     }
 
     /// Ensures a task is loaded into memory (for background execution).
-    func ensureTaskLoaded(_ taskID: Int) async {
-        if loadedTask(taskID) != nil { return }
-        guard let url = workFolderURL else { return }
+    ///
+    /// Loading is a background write path when recovery fires: `updateTaskOnly`
+    /// refreshes the DISK index, so the in-memory snapshot must move in lockstep
+    /// via `refreshBackgroundTaskInMemory` — a bare `loadedTasks[taskID] = task`
+    /// would leave a stale sidebar status label until the next mutation.
+    ///
+    /// - Returns: `true` when stale-status recovery fired AND was persisted to
+    ///   disk; `false` for a clean load, a short-circuit, a load failure, or a
+    ///   recovery whose persist failed. The startup sweep
+    ///   (`recoverStaleStatusesAcrossIndex`) uses this to decide whether the
+    ///   disk index still needs a convergence write.
+    @discardableResult
+    func ensureTaskLoaded(_ taskID: Int) async -> Bool {
+        if loadedTask(taskID) != nil { return false }
+        guard let url = workFolderURL else { return false }
         do {
             var task = try repository.loadTask(at: url, taskID: taskID)
+            var recoveryPersisted = false
             if StatusRecoveryService.recoverStaleStatuses(in: &task) {
                 // Persist recovered status. If this fails, memory and disk
                 // diverge — pause/resume cascades that re-read disk later see
@@ -44,14 +57,17 @@ extension NTMSOrchestrator {
                 // failure rather than silently swallowing via `try?`.
                 do {
                     try repository.updateTaskOnly(at: url, task: task)
+                    recoveryPersisted = true
                 } catch {
                     self.lastErrorMessage = "Could not persist recovered status for task #\(taskID): \(error.localizedDescription). In-memory state may diverge from disk."
                 }
             }
-            snapshot?.loadedTasks[taskID] = task
+            refreshBackgroundTaskInMemory(task)
             syncEngineStateFromRun(taskID: taskID, task: task)
+            return recoveryPersisted
         } catch {
             self.lastErrorMessage = error.localizedDescription
+            return false
         }
     }
 

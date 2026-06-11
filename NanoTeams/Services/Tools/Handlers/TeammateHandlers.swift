@@ -108,7 +108,7 @@ nonisolated struct AskTeammateTool: ToolHandler {
         description: "Ask a teammate a question. Limited per step.",
         parameters: JS.object(
             properties: [
-                "teammate": JS.string("Role ID from the current team."),
+                "teammate": JS.string("The teammate's name, as listed under Members."),
                 "question": JS.string("Question to ask."),
                 "context": JS.string("Optional extra context."),
             ],
@@ -254,7 +254,7 @@ nonisolated struct RequestChangesTool: ToolHandler {
         description: "Request changes to a teammate's completed work. Triggers a team vote; on approval the target role re-executes with your amendments.",
         parameters: JS.object(
             properties: [
-                "target_role": JS.string("Role ID of the teammate from the current team."),
+                "target_role": JS.string("The teammate's name, as listed under Members."),
                 "changes": JS.string("Detailed description of the changes needed"),
                 "reasoning": JS.string("Explanation of why these changes are necessary"),
             ],

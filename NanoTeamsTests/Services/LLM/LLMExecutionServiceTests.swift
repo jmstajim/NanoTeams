@@ -53,7 +53,21 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     var updateProcessingProgressCalls: [(String, Double)] = []
     var clearProcessingProgressCalls: [String] = []
     var markStreamActivityCalls: [String] = []
-    func markStreamActivity(stepID: String) { markStreamActivityCalls.append(stepID) }
+    func markStreamActivity(stepID: String, taskID: Int) {
+        markStreamActivityCalls.append(stepID)
+        streamingTaskIDTrace.append(("markStreamActivity", stepID, taskID))
+    }
+    var markStreamingToolCallCalls: [String] = []
+    func markStreamingToolCall(stepID: String, taskID: Int) {
+        markStreamingToolCallCalls.append(stepID)
+        streamingTaskIDTrace.append(("markStreamingToolCall", stepID, taskID))
+    }
+    /// Uniform (method, stepID, taskID) trace across every streaming-delegate call.
+    /// The per-method arrays above keep their legacy shapes (stepID-keyed) for
+    /// existing assertions — but that hides the taskID, so a production regression
+    /// that passes the WRONG task's id would be invisible to them. Tests that care
+    /// pin `streamingTaskIDTrace` instead (e.g. "every taskID recorded == task.id").
+    var streamingTaskIDTrace: [(method: String, stepID: String, taskID: Int)] = []
     var notifyQueuedMessageBackstopCalls: [Int] = []
     func notifyQueuedMessageBackstop(taskID: Int) {
         notifyQueuedMessageBackstopCalls.append(taskID)
@@ -83,36 +97,56 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
         return false
     }
 
-    func beginStreaming(stepID: String, messageID: UUID, role: Role, taskID: Int) async {
+    func beginStreaming(stepID: String, taskID: Int, messageID: UUID, role: Role) async {
         beginStreamingCalls.append((stepID, messageID, role, taskID))
+        streamingTaskIDTrace.append(("beginStreaming", stepID, taskID))
     }
 
-    func appendStreamingPreview(stepID: String, messageID: UUID, role: Role, content: String) {
+    func appendStreamingPreview(stepID: String, taskID: Int, messageID: UUID, role: Role, content: String) {
         appendStreamingPreviewCalls.append((stepID, messageID, role, content))
+        streamingTaskIDTrace.append(("appendStreamingPreview", stepID, taskID))
     }
 
-    func replaceStreamingPreview(stepID: String, messageID: UUID, role: Role, content: String) {
+    func replaceStreamingPreview(stepID: String, taskID: Int, messageID: UUID, role: Role, content: String) {
         replaceStreamingPreviewCalls.append((stepID, messageID, role, content))
+        streamingTaskIDTrace.append(("replaceStreamingPreview", stepID, taskID))
     }
 
-    func appendStreamingThinking(stepID: String, content: String) {
+    func appendStreamingThinking(stepID: String, taskID: Int, content: String) {
         appendStreamingThinkingCalls.append((stepID, content))
+        streamingTaskIDTrace.append(("appendStreamingThinking", stepID, taskID))
     }
 
     func commitStreaming(stepID: String, taskID: Int, content: String, thinking: String?) async {
         commitStreamingCalls.append((stepID, taskID, content, thinking))
+        streamingTaskIDTrace.append(("commitStreaming", stepID, taskID))
     }
 
-    func clearStreamingPreview(stepID: String) {
+    var discardStreamingCalls: [(stepID: String, messageID: UUID, taskID: Int)] = []
+    func discardStreaming(stepID: String, messageID: UUID, taskID: Int) async {
+        discardStreamingCalls.append((stepID, messageID, taskID))
+    }
+
+    var noteStreamLoopCalls: [(taskID: Int, stepID: String, signal: LoopSignal)] = []
+    var noteStreamLoopReturn = true
+    func noteStreamLoop(taskID: Int, stepID: String, signal: LoopSignal) -> Bool {
+        noteStreamLoopCalls.append((taskID, stepID, signal))
+        return noteStreamLoopReturn
+    }
+
+    func clearStreamingPreview(stepID: String, taskID: Int) {
         clearStreamingPreviewCalls.append(stepID)
+        streamingTaskIDTrace.append(("clearStreamingPreview", stepID, taskID))
     }
 
-    func updateStreamingProcessingProgress(stepID: String, progress: Double) {
+    func updateStreamingProcessingProgress(stepID: String, taskID: Int, progress: Double) {
         updateProcessingProgressCalls.append((stepID, progress))
+        streamingTaskIDTrace.append(("updateStreamingProcessingProgress", stepID, taskID))
     }
 
-    func clearStreamingProcessingProgress(stepID: String) {
+    func clearStreamingProcessingProgress(stepID: String, taskID: Int) {
         clearProcessingProgressCalls.append(stepID)
+        streamingTaskIDTrace.append(("clearStreamingProcessingProgress", stepID, taskID))
     }
 
     var setMeetingParticipantsCalls: [(Set<String>, Int)] = []
@@ -209,6 +243,12 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     var lastErrorPerTaskStub: [Int: String] = [:]
     func lastErrorMessageForTask(_ taskID: Int) -> String? { lastErrorPerTaskStub[taskID] }
 
+    var streamLastActivityStub: [String: Date] = [:]
+    func streamLastActivityAt(stepID: String, taskID: Int) -> Date? { streamLastActivityStub[stepID] }
+
+    var streamLiveTextStub: [String: String] = [:]
+    func streamLiveText(stepID: String, taskID: Int) -> String? { streamLiveTextStub[stepID] }
+
     var stopEngineCalls: [Int] = []
     func stopEngineForTask(_ taskID: Int) { stopEngineCalls.append(taskID) }
 
@@ -228,6 +268,20 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
         answerSupervisorCalls.append((taskID, stepID, answer))
         return true
     }
+
+    var autovisorActions: [AutovisorAction] = []
+    var autovisorActionResult: AutovisorActionResult = .success("ok")
+    func performAutovisorAction(_ action: AutovisorAction) async -> AutovisorActionResult {
+        autovisorActions.append(action)
+        return autovisorActionResult
+    }
+    var persistedAutovisorMemory: [String] = []
+    var persistAutovisorMemoryResult = true
+    func persistAutovisorMemory(_ text: String) async -> Bool {
+        persistedAutovisorMemory.append(text)
+        return persistAutovisorMemoryResult
+    }
+    func autovisorLoadTask(_ taskID: Int) async -> NTMSTask? { loadedTask(taskID) }
 }
 
 // MARK: - Test Helpers
@@ -331,15 +385,15 @@ final class LLMExecutionServiceTests: XCTestCase {
 
     func testIsStepRunningReturnsFalseInitially() {
         let stepID = "test_step"
-        XCTAssertFalse(service.isStepRunning(stepID: stepID))
+        XCTAssertFalse(service.isStepRunning(stepID: stepID, taskID: 0))
     }
 
     func testIsStepRunningForDifferentSteps() {
         let step1 = "step1"
         let step2 = "step2"
 
-        XCTAssertFalse(service.isStepRunning(stepID: step1))
-        XCTAssertFalse(service.isStepRunning(stepID: step2))
+        XCTAssertFalse(service.isStepRunning(stepID: step1, taskID: 0))
+        XCTAssertFalse(service.isStepRunning(stepID: step2, taskID: 0))
     }
 
     // MARK: - Cancellation Tests
@@ -348,9 +402,9 @@ final class LLMExecutionServiceTests: XCTestCase {
         let stepID = "test_step"
 
         // Should not crash even if step wasn't running
-        await service.cancelStepExecution(stepID: stepID)
+        await service.cancelStepExecution(stepID: stepID, taskID: 0)
 
-        XCTAssertFalse(service.isStepRunning(stepID: stepID))
+        XCTAssertFalse(service.isStepRunning(stepID: stepID, taskID: 0))
     }
 
     func testCancelAllExecutions() {
@@ -358,13 +412,13 @@ final class LLMExecutionServiceTests: XCTestCase {
         service.cancelAllExecutions()
 
         let stepID = "test_step"
-        XCTAssertFalse(service.isStepRunning(stepID: stepID))
+        XCTAssertFalse(service.isStepRunning(stepID: stepID, taskID: 0))
     }
 
     func testCancelStepClearsStreamingPreview() async {
         let stepID = "test_step"
 
-        await service.cancelStepExecution(stepID: stepID)
+        await service.cancelStepExecution(stepID: stepID, taskID: 0)
 
         // Verify clearStreamingPreview was called
         XCTAssertTrue(mockDelegate.clearStreamingPreviewCalls.contains(stepID))
@@ -374,26 +428,26 @@ final class LLMExecutionServiceTests: XCTestCase {
         let stepID = "test_step"
 
         // Set up a plan message index
-        service._testSetPlanMessageIndex(stepID: stepID, index: 10)
-        XCTAssertEqual(service._testGetPlanMessageIndex(stepID: stepID), 10)
+        service._testSetPlanMessageIndex(stepID: stepID, taskID: 0, index: 10)
+        XCTAssertEqual(service._testGetPlanMessageIndex(stepID: stepID, taskID: 0), 10)
 
         // Cancel step execution should clear the plan message index
-        await service.cancelStepExecution(stepID: stepID)
+        await service.cancelStepExecution(stepID: stepID, taskID: 0)
 
-        XCTAssertNil(service._testGetPlanMessageIndex(stepID: stepID))
+        XCTAssertNil(service._testGetPlanMessageIndex(stepID: stepID, taskID: 0))
     }
 
     func testCancelStepExecutionClearsMemoriesMessageIndex() async {
         let stepID = "test_step"
 
         // Set up a memories message index
-        service._testSetMemoriesMessageIndex(stepID: stepID, index: 7)
-        XCTAssertEqual(service._testGetMemoriesMessageIndex(stepID: stepID), 7)
+        service._testSetMemoriesMessageIndex(stepID: stepID, taskID: 0, index: 7)
+        XCTAssertEqual(service._testGetMemoriesMessageIndex(stepID: stepID, taskID: 0), 7)
 
         // Cancel step execution should clear the memories message index
-        await service.cancelStepExecution(stepID: stepID)
+        await service.cancelStepExecution(stepID: stepID, taskID: 0)
 
-        XCTAssertNil(service._testGetMemoriesMessageIndex(stepID: stepID))
+        XCTAssertNil(service._testGetMemoriesMessageIndex(stepID: stepID, taskID: 0))
     }
 
     func testCancelAllExecutionsClearsAllMessageIndices() {
@@ -402,10 +456,10 @@ final class LLMExecutionServiceTests: XCTestCase {
         let step3 = "step3"
 
         // Set up indices for multiple steps
-        service._testSetPlanMessageIndex(stepID: step1, index: 1)
-        service._testSetPlanMessageIndex(stepID: step2, index: 2)
-        service._testSetMemoriesMessageIndex(stepID: step2, index: 3)
-        service._testSetMemoriesMessageIndex(stepID: step3, index: 4)
+        service._testSetPlanMessageIndex(stepID: step1, taskID: 0, index: 1)
+        service._testSetPlanMessageIndex(stepID: step2, taskID: 0, index: 2)
+        service._testSetMemoriesMessageIndex(stepID: step2, taskID: 0, index: 3)
+        service._testSetMemoriesMessageIndex(stepID: step3, taskID: 0, index: 4)
 
         XCTAssertEqual(service._testPlanMessageIndexCount, 2)
         XCTAssertEqual(service._testMemoriesMessageIndexCount, 2)
@@ -423,13 +477,13 @@ final class LLMExecutionServiceTests: XCTestCase {
         let stepID = "test_step"
 
         // Set up an original system prompt
-        service._testSetOriginalSystemPrompt(stepID: stepID, prompt: "Original prompt content")
-        XCTAssertEqual(service._testGetOriginalSystemPrompt(stepID: stepID), "Original prompt content")
+        service._testSetOriginalSystemPrompt(stepID: stepID, taskID: 0, prompt: "Original prompt content")
+        XCTAssertEqual(service._testGetOriginalSystemPrompt(stepID: stepID, taskID: 0), "Original prompt content")
 
         // Cancel step execution should clear the original system prompt
-        await service.cancelStepExecution(stepID: stepID)
+        await service.cancelStepExecution(stepID: stepID, taskID: 0)
 
-        XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: stepID))
+        XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: stepID, taskID: 0))
     }
 
     func testCancelAllExecutionsClearsAllOriginalSystemPrompts() {
@@ -438,9 +492,9 @@ final class LLMExecutionServiceTests: XCTestCase {
         let step3 = "step3"
 
         // Set up original prompts for multiple steps
-        service._testSetOriginalSystemPrompt(stepID: step1, prompt: "Prompt 1")
-        service._testSetOriginalSystemPrompt(stepID: step2, prompt: "Prompt 2")
-        service._testSetOriginalSystemPrompt(stepID: step3, prompt: "Prompt 3")
+        service._testSetOriginalSystemPrompt(stepID: step1, taskID: 0, prompt: "Prompt 1")
+        service._testSetOriginalSystemPrompt(stepID: step2, taskID: 0, prompt: "Prompt 2")
+        service._testSetOriginalSystemPrompt(stepID: step3, taskID: 0, prompt: "Prompt 3")
 
         XCTAssertEqual(service._testOriginalSystemPromptCount, 3)
 
@@ -454,13 +508,13 @@ final class LLMExecutionServiceTests: XCTestCase {
         let stepID = "test_step"
 
         // Set up an original system prompt
-        service._testSetOriginalSystemPrompt(stepID: stepID, prompt: "Test prompt")
-        XCTAssertNotNil(service._testGetOriginalSystemPrompt(stepID: stepID))
+        service._testSetOriginalSystemPrompt(stepID: stepID, taskID: 0, prompt: "Test prompt")
+        XCTAssertNotNil(service._testGetOriginalSystemPrompt(stepID: stepID, taskID: 0))
 
         // Clear running task should also clear the original system prompt
-        service.clearRunningTask(stepID: stepID)
+        service.clearRunningTask(stepID: stepID, taskID: 0)
 
-        XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: stepID))
+        XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: stepID, taskID: 0))
     }
 
     func testOriginalSystemPromptStorageAndRetrieval() {
@@ -468,28 +522,28 @@ final class LLMExecutionServiceTests: XCTestCase {
         let prompt = "You are role-playing as Software Engineer. Focus on implementation."
 
         // Initially should be nil
-        XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: stepID))
+        XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: stepID, taskID: 0))
 
         // Set and verify
-        service._testSetOriginalSystemPrompt(stepID: stepID, prompt: prompt)
-        XCTAssertEqual(service._testGetOriginalSystemPrompt(stepID: stepID), prompt)
+        service._testSetOriginalSystemPrompt(stepID: stepID, taskID: 0, prompt: prompt)
+        XCTAssertEqual(service._testGetOriginalSystemPrompt(stepID: stepID, taskID: 0), prompt)
     }
 
     func testMultipleStepsHaveIndependentOriginalPrompts() {
         let step1 = "step1"
         let step2 = "step2"
 
-        service._testSetOriginalSystemPrompt(stepID: step1, prompt: "Prompt for step 1")
-        service._testSetOriginalSystemPrompt(stepID: step2, prompt: "Prompt for step 2")
+        service._testSetOriginalSystemPrompt(stepID: step1, taskID: 0, prompt: "Prompt for step 1")
+        service._testSetOriginalSystemPrompt(stepID: step2, taskID: 0, prompt: "Prompt for step 2")
 
-        XCTAssertEqual(service._testGetOriginalSystemPrompt(stepID: step1), "Prompt for step 1")
-        XCTAssertEqual(service._testGetOriginalSystemPrompt(stepID: step2), "Prompt for step 2")
+        XCTAssertEqual(service._testGetOriginalSystemPrompt(stepID: step1, taskID: 0), "Prompt for step 1")
+        XCTAssertEqual(service._testGetOriginalSystemPrompt(stepID: step2, taskID: 0), "Prompt for step 2")
 
         // Clear one should not affect the other
-        service.clearRunningTask(stepID: step1)
+        service.clearRunningTask(stepID: step1, taskID: 0)
 
-        XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: step1))
-        XCTAssertEqual(service._testGetOriginalSystemPrompt(stepID: step2), "Prompt for step 2")
+        XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: step1, taskID: 0))
+        XCTAssertEqual(service._testGetOriginalSystemPrompt(stepID: step2, taskID: 0), "Prompt for step 2")
     }
 
     // MARK: - Start Step Execution Guards Tests
@@ -509,7 +563,7 @@ final class LLMExecutionServiceTests: XCTestCase {
             stepIndex: 0
         )
 
-        XCTAssertFalse(service.isStepRunning(stepID: stepID))
+        XCTAssertFalse(service.isStepRunning(stepID: stepID, taskID: 0))
     }
 
     func testStartStepExecutionRequiresRunningStatus() {
@@ -1608,7 +1662,7 @@ final class LLMExecutionServiceStepCompletionTests: XCTestCase {
         mockDelegate.taskToMutate = task
         let stepID = task.runs[0].steps[0].id
 
-        await service.completeStepSuccess(stepID: stepID)
+        await service.completeStepSuccess(stepID: stepID, taskID: task.id)
 
         XCTAssertTrue(mockDelegate.clearStreamingPreviewCalls.contains(stepID))
     }
@@ -1618,7 +1672,7 @@ final class LLMExecutionServiceStepCompletionTests: XCTestCase {
         mockDelegate.taskToMutate = task
         let stepID = task.runs[0].steps[0].id
 
-        await service.completeStepSuccess(stepID: stepID)
+        await service.completeStepSuccess(stepID: stepID, taskID: task.id)
     }
 
     func testCompleteStepSuccessSetsStatusDone() async {
@@ -1626,7 +1680,7 @@ final class LLMExecutionServiceStepCompletionTests: XCTestCase {
         mockDelegate.taskToMutate = task
         let stepID = task.runs[0].steps[0].id
 
-        await service.completeStepSuccess(stepID: stepID)
+        await service.completeStepSuccess(stepID: stepID, taskID: task.id)
 
         // finalizeStepCompletion sets .done via TaskMutationService.updateStepStatus
         let updated = mockDelegate.taskToMutate!.runs[0].steps[0]
@@ -1639,9 +1693,9 @@ final class LLMExecutionServiceStepCompletionTests: XCTestCase {
         mockDelegate.taskToMutate = task
         let stepID = task.runs[0].steps[0].id
 
-        await service.completeStepSuccess(stepID: stepID)
+        await service.completeStepSuccess(stepID: stepID, taskID: task.id)
 
-        XCTAssertFalse(service.isStepRunning(stepID: stepID))
+        XCTAssertFalse(service.isStepRunning(stepID: stepID, taskID: 0))
     }
 
     // MARK: - completeStepWithWarning Tests
@@ -1651,7 +1705,7 @@ final class LLMExecutionServiceStepCompletionTests: XCTestCase {
         mockDelegate.taskToMutate = task
         let stepID = task.runs[0].steps[0].id
 
-        await service.completeStepWithWarning(stepID: stepID, warning: "Test warning")
+        await service.completeStepWithWarning(stepID: stepID, taskID: task.id, warning: "Test warning")
 
         XCTAssertTrue(mockDelegate.clearStreamingPreviewCalls.contains(stepID))
     }
@@ -1661,7 +1715,7 @@ final class LLMExecutionServiceStepCompletionTests: XCTestCase {
         mockDelegate.taskToMutate = task
         let stepID = task.runs[0].steps[0].id
 
-        await service.completeStepWithWarning(stepID: stepID, warning: "Test warning")
+        await service.completeStepWithWarning(stepID: stepID, taskID: task.id, warning: "Test warning")
     }
 
     func testCompleteStepWithWarningAppendsWarningMessage() async throws {
@@ -1669,7 +1723,7 @@ final class LLMExecutionServiceStepCompletionTests: XCTestCase {
         mockDelegate.taskToMutate = task
         let stepID = task.runs[0].steps[0].id
 
-        await service.completeStepWithWarning(stepID: stepID, warning: "My warning message")
+        await service.completeStepWithWarning(stepID: stepID, taskID: task.id, warning: "My warning message")
 
         let updatedTask = try XCTUnwrap(mockDelegate.taskToMutate)
         let step = updatedTask.runs[0].steps[0]
@@ -1687,7 +1741,7 @@ final class LLMExecutionServiceStepCompletionTests: XCTestCase {
         mockDelegate.taskToMutate = task
         let stepID = task.runs[0].steps[0].id
 
-        await service.completeStepFailure(stepID: stepID, errorMessage: "Test error")
+        await service.completeStepFailure(stepID: stepID, taskID: task.id, errorMessage: "Test error")
 
         XCTAssertTrue(mockDelegate.clearStreamingPreviewCalls.contains(stepID))
     }
@@ -1697,7 +1751,7 @@ final class LLMExecutionServiceStepCompletionTests: XCTestCase {
         mockDelegate.taskToMutate = task
         let stepID = task.runs[0].steps[0].id
 
-        await service.completeStepFailure(stepID: stepID, errorMessage: "Test error")
+        await service.completeStepFailure(stepID: stepID, taskID: task.id, errorMessage: "Test error")
     }
 
     func testCompleteStepFailureSetsFailedStatus() async {
@@ -1705,7 +1759,7 @@ final class LLMExecutionServiceStepCompletionTests: XCTestCase {
         mockDelegate.taskToMutate = task
         let stepID = task.runs[0].steps[0].id
 
-        await service.completeStepFailure(stepID: stepID, errorMessage: "Critical error")
+        await service.completeStepFailure(stepID: stepID, taskID: task.id, errorMessage: "Critical error")
 
         if let updatedTask = mockDelegate.taskToMutate {
             XCTAssertEqual(updatedTask.runs[0].steps[0].status, .failed)
@@ -1717,7 +1771,7 @@ final class LLMExecutionServiceStepCompletionTests: XCTestCase {
         mockDelegate.taskToMutate = task
         let stepID = task.runs[0].steps[0].id
 
-        await service.completeStepFailure(stepID: stepID, errorMessage: "Network timeout")
+        await service.completeStepFailure(stepID: stepID, taskID: task.id, errorMessage: "Network timeout")
 
         if let updatedTask = mockDelegate.taskToMutate {
             let step = updatedTask.runs[0].steps[0]
@@ -1733,35 +1787,35 @@ final class LLMExecutionServiceStepCompletionTests: XCTestCase {
     func testClearRunningTaskRemovesEntry() {
         let stepID = "test_step"
 
-        service.clearRunningTask(stepID: stepID)
+        service.clearRunningTask(stepID: stepID, taskID: 0)
 
-        XCTAssertFalse(service.isStepRunning(stepID: stepID))
+        XCTAssertFalse(service.isStepRunning(stepID: stepID, taskID: 0))
     }
 
     func testClearRunningTaskClearsPlanMessageIndex() {
         let stepID = "test_step"
 
         // Set up a plan message index
-        service._testSetPlanMessageIndex(stepID: stepID, index: 5)
-        XCTAssertEqual(service._testGetPlanMessageIndex(stepID: stepID), 5)
+        service._testSetPlanMessageIndex(stepID: stepID, taskID: 0, index: 5)
+        XCTAssertEqual(service._testGetPlanMessageIndex(stepID: stepID, taskID: 0), 5)
 
         // Clear running task should also clear the plan message index
-        service.clearRunningTask(stepID: stepID)
+        service.clearRunningTask(stepID: stepID, taskID: 0)
 
-        XCTAssertNil(service._testGetPlanMessageIndex(stepID: stepID))
+        XCTAssertNil(service._testGetPlanMessageIndex(stepID: stepID, taskID: 0))
     }
 
     func testClearRunningTaskClearsMemoriesMessageIndex() {
         let stepID = "test_step"
 
         // Set up a memories message index
-        service._testSetMemoriesMessageIndex(stepID: stepID, index: 3)
-        XCTAssertEqual(service._testGetMemoriesMessageIndex(stepID: stepID), 3)
+        service._testSetMemoriesMessageIndex(stepID: stepID, taskID: 0, index: 3)
+        XCTAssertEqual(service._testGetMemoriesMessageIndex(stepID: stepID, taskID: 0), 3)
 
         // Clear running task should also clear the memories message index
-        service.clearRunningTask(stepID: stepID)
+        service.clearRunningTask(stepID: stepID, taskID: 0)
 
-        XCTAssertNil(service._testGetMemoriesMessageIndex(stepID: stepID))
+        XCTAssertNil(service._testGetMemoriesMessageIndex(stepID: stepID, taskID: 0))
     }
 
     // MARK: - Team Member Validation Tests
@@ -2031,7 +2085,7 @@ final class LLMConversationSavingTests: XCTestCase {
         """
 
         // Set up: original prompt saved, current conversation has planning prompt
-        service._testSetOriginalSystemPrompt(stepID: stepID, prompt: implementationPrompt)
+        service._testSetOriginalSystemPrompt(stepID: stepID, taskID: 0, prompt: implementationPrompt)
 
         var conversationMessages = [
             ChatMessage(role: .system, content: planningPrompt),
@@ -2041,6 +2095,7 @@ final class LLMConversationSavingTests: XCTestCase {
         // Simulate implementation phase save (this should restore and save)
         await service._testSimulateImplementationPhaseSave(
             stepID: stepID,
+            taskID: task.id,
             conversationMessages: &conversationMessages,
             isFirstIteration: false
         )
@@ -2049,7 +2104,7 @@ final class LLMConversationSavingTests: XCTestCase {
         XCTAssertEqual(conversationMessages[0].content, implementationPrompt)
 
         // Verify: original prompt was cleared after restoration
-        XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: stepID))
+        XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: stepID, taskID: 0))
 
         // Verify: the task's llmConversation was updated with implementation prompt
         if let updatedTask = mockDelegate.taskToMutate {
@@ -2080,7 +2135,7 @@ final class LLMConversationSavingTests: XCTestCase {
         """
 
         // No original prompt saved
-        XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: stepID))
+        XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: stepID, taskID: 0))
 
         var conversationMessages = [
             ChatMessage(role: .system, content: planningPrompt)
@@ -2089,6 +2144,7 @@ final class LLMConversationSavingTests: XCTestCase {
         // Simulate with isFirstIteration = false, no original prompt
         await service._testSimulateImplementationPhaseSave(
             stepID: stepID,
+            taskID: task.id,
             conversationMessages: &conversationMessages,
             isFirstIteration: false
         )
@@ -2120,6 +2176,7 @@ final class LLMConversationSavingTests: XCTestCase {
         // Simulate first iteration (no planning phase)
         await service._testSimulateImplementationPhaseSave(
             stepID: stepID,
+            taskID: task.id,
             conversationMessages: &conversationMessages,
             isFirstIteration: true
         )
@@ -2145,7 +2202,7 @@ final class LLMConversationSavingTests: XCTestCase {
         let implementationPrompt = "Implementation prompt"
         let planningPrompt = "PLANNING PHASE prompt"
 
-        service._testSetOriginalSystemPrompt(stepID: stepID, prompt: implementationPrompt)
+        service._testSetOriginalSystemPrompt(stepID: stepID, taskID: 0, prompt: implementationPrompt)
 
         var conversationMessages = [
             ChatMessage(role: .system, content: planningPrompt)
@@ -2154,11 +2211,12 @@ final class LLMConversationSavingTests: XCTestCase {
         // First call: should restore and clear
         await service._testSimulateImplementationPhaseSave(
             stepID: stepID,
+            taskID: task.id,
             conversationMessages: &conversationMessages,
             isFirstIteration: false
         )
 
-        XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: stepID))
+        XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: stepID, taskID: 0))
         XCTAssertEqual(conversationMessages[0].content, implementationPrompt)
 
         // Manually revert to check second call behavior
@@ -2170,6 +2228,7 @@ final class LLMConversationSavingTests: XCTestCase {
         // Second call: should NOT restore (original already cleared)
         await service._testSimulateImplementationPhaseSave(
             stepID: stepID,
+            taskID: task.id,
             conversationMessages: &conversationMessages,
             isFirstIteration: false
         )
@@ -2371,6 +2430,9 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
 
     private final class MockStreamClient: LLMClient, @unchecked Sendable {
         var deltas: [StreamEvent] = []
+        /// When set, the stream throws this error AFTER yielding all `deltas`
+        /// — simulates a cancellation / transport failure mid-generation.
+        var finishError: Error?
 
         func streamChat(
             config: LLMConfig,
@@ -2382,11 +2444,12 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
             roleName: String?
         ) -> AsyncThrowingStream<StreamEvent, Error> {
             let events = deltas
+            let error = finishError
             return AsyncThrowingStream { continuation in
                 for event in events {
                     continuation.yield(event)
                 }
-                continuation.finish()
+                continuation.finish(throwing: error)
             }
         }
 
@@ -2405,8 +2468,9 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
         service.attach(delegate: mockDelegate)
-        // Register step→task mapping so taskIDForStep works
-        service.executionStates[stepID] = LLMExecutionService.StepExecutionState(taskID: taskID)
+        // Register the (taskID, stepID) execution state in the TaskStepKey-keyed registry
+        service.executionStates[TaskStepKey(taskID: taskID, stepID: stepID)] =
+            LLMExecutionService.StepExecutionState()
     }
 
     override func tearDown() {
@@ -2426,7 +2490,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         ]
 
         let result = try await service.performStreamingCall(
-            stepID: stepID, roleForMessage: .softwareEngineer,
+            stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
             tools: [], conversationMessages: [], session: nil,
             networkLogger: nil
@@ -2446,7 +2510,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         ]
 
         let result = try await service.performStreamingCall(
-            stepID: stepID, roleForMessage: .softwareEngineer,
+            stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
             tools: [], conversationMessages: [], session: nil,
             networkLogger: nil
@@ -2463,7 +2527,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         ]
 
         let result = try await service.performStreamingCall(
-            stepID: stepID, roleForMessage: .softwareEngineer,
+            stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
             tools: [], conversationMessages: [], session: nil,
             networkLogger: nil
@@ -2481,7 +2545,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         ]
 
         let result = try await service.performStreamingCall(
-            stepID: stepID, roleForMessage: .softwareEngineer,
+            stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
             tools: [], conversationMessages: [], session: nil,
             networkLogger: nil
@@ -2499,7 +2563,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         ]
 
         let result = try await service.performStreamingCall(
-            stepID: stepID, roleForMessage: .softwareEngineer,
+            stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
             tools: [], conversationMessages: [], session: nil,
             networkLogger: nil
@@ -2517,7 +2581,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         ]
 
         _ = try await service.performStreamingCall(
-            stepID: stepID, roleForMessage: .softwareEngineer,
+            stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
             tools: [], conversationMessages: [], session: nil,
             networkLogger: nil
@@ -2538,7 +2602,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         ]
 
         _ = try await service.performStreamingCall(
-            stepID: stepID, roleForMessage: .softwareEngineer,
+            stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
             tools: [], conversationMessages: [], session: nil,
             networkLogger: nil
@@ -2558,7 +2622,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         ]
 
         let result = try await service.performStreamingCall(
-            stepID: stepID, roleForMessage: .softwareEngineer,
+            stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
             tools: [], conversationMessages: [], session: nil,
             networkLogger: nil
@@ -2579,7 +2643,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         ]
 
         let result = try await service.performStreamingCall(
-            stepID: stepID, roleForMessage: .softwareEngineer,
+            stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
             tools: [], conversationMessages: [], session: nil,
             networkLogger: nil
@@ -2590,6 +2654,17 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         XCTAssertFalse(result.assistantContent.contains("<|ca"))
         XCTAssertFalse(result.assistantContent.contains("{"))
         XCTAssertEqual(result.assistantContent.count, 210)
+
+        // Envelope-as-thinking pipe across the split: the flip iteration must
+        // slice from `uiBuffer` (NOT the current delta), or the `<|ca` held
+        // from the prior delta would be dropped from the thinking preview.
+        // Exactly-once guards against double-piping (slice + raw delta).
+        let thinkingFed = mockDelegate.appendStreamingThinkingCalls.map(\.1).joined()
+        let envelope = "<|call|>{\"name\":\"ask_supervisor\"}<|end|>"
+        XCTAssertTrue(thinkingFed.contains(envelope),
+                      "Complete envelope (incl. the pre-detection partial marker) must reach the thinking preview — got: \(thinkingFed)")
+        XCTAssertEqual(thinkingFed.components(separatedBy: envelope).count - 1, 1,
+                       "Envelope must be piped exactly once — a second occurrence means the flip slice and the raw delta double-piped")
     }
 
     /// Content and marker mixed in a single delta.
@@ -2599,7 +2674,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         ]
 
         let result = try await service.performStreamingCall(
-            stepID: stepID, roleForMessage: .softwareEngineer,
+            stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
             tools: [], conversationMessages: [], session: nil,
             networkLogger: nil
@@ -2626,7 +2701,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         ]
 
         _ = try await service.performStreamingCall(
-            stepID: stepID, roleForMessage: .softwareEngineer,
+            stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
             tools: [], conversationMessages: [], session: nil,
             networkLogger: nil
@@ -2650,7 +2725,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         ]
 
         _ = try await service.performStreamingCall(
-            stepID: stepID, roleForMessage: .softwareEngineer,
+            stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
             tools: [], conversationMessages: [], session: nil,
             networkLogger: nil
@@ -2671,7 +2746,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         ]
 
         _ = try await service.performStreamingCall(
-            stepID: stepID, roleForMessage: .softwareEngineer,
+            stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
             tools: [], conversationMessages: [], session: nil,
             networkLogger: nil
@@ -2680,6 +2755,167 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         // Rewind must be called once with empty content (marker at position 0).
         XCTAssertEqual(mockDelegate.replaceStreamingPreviewCalls.count, 1)
         XCTAssertEqual(mockDelegate.replaceStreamingPreviewCalls[0].3, "")
+    }
+
+    // MARK: - Corner cases: envelope-as-thinking pipe + streamingToolCall flag
+
+    /// Joined thinking-pipe text — shared accessor for the corner pins below.
+    private var thinkingFed: String {
+        mockDelegate.appendStreamingThinkingCalls.map(\.1).joined()
+    }
+
+    /// Marker at position 0, no preamble at all (envelope-only turn): the
+    /// FULL envelope must reach the thinking preview, content stays empty,
+    /// and the flag fires — the bubble's only live surface is the
+    /// animated Thinking row.
+    func testMarkerAtStart_envelopeOnly_fullEnvelopePipedToThinking_flagSet() async throws {
+        let envelope = "<|call|>{\"name\":\"ask_supervisor\",\"arguments\":{}}<|end|>"
+        mockClient.deltas = [StreamEvent(contentDelta: envelope)]
+
+        let result = try await service.performStreamingCall(
+            stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
+            client: mockClient, config: LLMConfig(),
+            tools: [], conversationMessages: [], session: nil,
+            networkLogger: nil
+        )
+
+        XCTAssertTrue(result.assistantContent.isEmpty)
+        XCTAssertEqual(result.resolvedToolCalls.count, 1)
+        XCTAssertGreaterThanOrEqual(mockDelegate.markStreamingToolCallCalls.count, 1)
+        XCTAssertTrue(thinkingFed.contains(envelope),
+                      "Zero-preamble envelope must be piped whole into the thinking preview — got: \(thinkingFed)")
+    }
+
+    /// Flag breadth: the `<|channel|>` marker variant (not just `<|call|>`)
+    /// must set the tool-call flag and pipe the envelope to thinking — the
+    /// flag fires on ANY harmony marker, same granularity as
+    /// `sawHarmonyMarker` itself.
+    func testChannelMarker_setsToolCallFlag_andPipesEnvelopeToThinking() async throws {
+        mockClient.deltas = [
+            StreamEvent(contentDelta: "Sure."),
+            StreamEvent(contentDelta: "<|channel|>commentary to=ask_supervisor <|constrain|>json<|message|>{\"question\":\"Hi\"}")
+        ]
+
+        let result = try await service.performStreamingCall(
+            stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
+            client: mockClient, config: LLMConfig(),
+            tools: [], conversationMessages: [], session: nil,
+            networkLogger: nil
+        )
+
+        XCTAssertTrue(result.sawHarmonyMarker)
+        XCTAssertGreaterThanOrEqual(mockDelegate.markStreamingToolCallCalls.count, 1,
+                                     "<|channel|> envelopes must fire the flag too")
+        XCTAssertTrue(thinkingFed.contains("<|channel|>commentary"),
+                      "Channel-variant envelope must stream into the thinking preview")
+    }
+
+    /// Text AFTER `<|end|>` (a model continuing prose past its tool call)
+    /// belongs to the envelope side of the split: it must stay out of
+    /// `assistantContent` (frozen at the pre-marker prose) and surface in
+    /// the thinking preview instead — streamed text never just vanishes.
+    func testPostEnvelopeProse_staysOutOfContent_reachesThinkingPreview() async throws {
+        mockClient.deltas = [
+            StreamEvent(contentDelta: "Here is my answer."),
+            StreamEvent(contentDelta: "<|call|>{\"name\":\"ask_supervisor\",\"arguments\":{}}<|end|>"),
+            StreamEvent(contentDelta: "And one more consideration."),
+        ]
+
+        let result = try await service.performStreamingCall(
+            stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
+            client: mockClient, config: LLMConfig(),
+            tools: [], conversationMessages: [], session: nil,
+            networkLogger: nil
+        )
+
+        XCTAssertEqual(result.assistantContent, "Here is my answer.",
+                       "Content freezes at the marker — post-envelope prose must not reappear in the bubble text")
+        XCTAssertTrue(thinkingFed.contains("And one more consideration."),
+                      "Post-envelope prose lands in the harmony buffer and must surface via the thinking pipe")
+        XCTAssertEqual(result.resolvedToolCalls.count, 1)
+    }
+
+    /// Two DISTINCT tool calls in one stream: both must resolve (the dedup
+    /// break fires only on identical signatures) and both envelopes must
+    /// stream into the thinking preview.
+    func testTwoDistinctToolCalls_bothResolved_bothPipedToThinking() async throws {
+        mockClient.deltas = [
+            StreamEvent(contentDelta: "<|call|>{\"name\":\"read_file\",\"arguments\":{\"path\":\"a.swift\"}}<|end|>"),
+            StreamEvent(contentDelta: "<|call|>{\"name\":\"read_file\",\"arguments\":{\"path\":\"b.swift\"}}<|end|>"),
+        ]
+
+        let result = try await service.performStreamingCall(
+            stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
+            client: mockClient, config: LLMConfig(),
+            tools: [], conversationMessages: [], session: nil,
+            networkLogger: nil
+        )
+
+        XCTAssertEqual(result.resolvedToolCalls.count, 2,
+                       "Distinct calls must not trip the duplicate-signature loop break")
+        XCTAssertTrue(thinkingFed.contains("a.swift"))
+        XCTAssertTrue(thinkingFed.contains("b.swift"))
+    }
+
+    /// qwen-style reasoning-channel envelope (`<|call|>` inside
+    /// `reasoning.delta`, NOT content): the call resolves via the
+    /// post-stream thinking scan, the tool-call flag is NOT set (content
+    /// channel never saw a marker — documented asymmetry), and the UX is
+    /// still covered: the envelope streamed through the NORMAL thinking
+    /// path, so the Thinking row was live the whole time (no content →
+    /// `isThinkingStreaming` true without the flag).
+    func testReasoningChannelEnvelope_resolvesCall_withoutToolCallFlag() async throws {
+        mockClient.deltas = [
+            StreamEvent(thinkingDelta: "I should ask the supervisor. "),
+            StreamEvent(thinkingDelta: "<|call|>{\"name\":\"ask_supervisor\",\"arguments\":{\"question\":\"Hi\"}}<|end|>"),
+        ]
+
+        let result = try await service.performStreamingCall(
+            stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
+            client: mockClient, config: LLMConfig(),
+            tools: [], conversationMessages: [], session: nil,
+            networkLogger: nil
+        )
+
+        XCTAssertFalse(result.sawHarmonyMarker, "Marker lived in the reasoning channel only")
+        XCTAssertEqual(result.resolvedToolCalls.count, 1,
+                       "Reasoning-channel fallback must still extract the call")
+        XCTAssertTrue(mockDelegate.markStreamingToolCallCalls.isEmpty,
+                      "Flag is a content-channel/toolCallDeltas signal — reasoning-channel envelopes are already visible via the normal thinking stream")
+        XCTAssertTrue(thinkingFed.contains("<|call|>"),
+                      "Envelope streamed through the regular thinking path — the Thinking row was the live indicator")
+    }
+
+    /// Cancellation mid-envelope: the partial commit must carry the frozen
+    /// pre-marker prose and NO thinking (envelope text is preview-only on
+    /// every exit path, not just clean stream end).
+    func testCancellationMidEnvelope_commitsProse_thinkingNotPersisted() async throws {
+        mockClient.deltas = [
+            StreamEvent(contentDelta: "Let me fix that."),
+            StreamEvent(contentDelta: "<|call|>{\"name\":\"edit_file\",\"arguments\":{\"path\":\"x.swift\","),
+        ]
+        mockClient.finishError = CancellationError()
+
+        do {
+            _ = try await service.performStreamingCall(
+                stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
+                client: mockClient, config: LLMConfig(),
+                tools: [], conversationMessages: [], session: nil,
+                networkLogger: nil
+            )
+            XCTFail("Expected CancellationError to rethrow")
+        } catch is CancellationError {
+            // expected
+        }
+
+        XCTAssertEqual(mockDelegate.commitStreamingCalls.count, 1,
+                       "Cancellation must still commit the partial turn")
+        XCTAssertEqual(mockDelegate.commitStreamingCalls[0].2, "Let me fix that.",
+                       "Committed content is the frozen pre-marker prose")
+        XCTAssertNil(mockDelegate.commitStreamingCalls[0].3,
+                     "Partial envelope must not be persisted as thinking on the cancel path")
+        XCTAssertTrue(thinkingFed.contains("edit_file"),
+                      "The partial envelope WAS visible live via the thinking pipe before the cancel")
     }
 
     /// Whitespace-only `thinkingDelta` (e.g. an empty `[reasoning]\n\n[/reasoning]`
@@ -2693,7 +2929,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         ]
 
         _ = try await service.performStreamingCall(
-            stepID: stepID, roleForMessage: .softwareEngineer,
+            stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
             tools: [], conversationMessages: [], session: nil,
             networkLogger: nil
@@ -2714,7 +2950,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         ]
 
         _ = try await service.performStreamingCall(
-            stepID: stepID, roleForMessage: .softwareEngineer,
+            stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
             tools: [], conversationMessages: [], session: nil,
             networkLogger: nil
@@ -2736,7 +2972,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         ]
 
         _ = try await service.performStreamingCall(
-            stepID: stepID, roleForMessage: .softwareEngineer,
+            stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
             tools: [], conversationMessages: [], session: nil,
             networkLogger: nil
@@ -2801,7 +3037,7 @@ final class SetNeedsSupervisorInputBackstopTests: XCTestCase {
         service._testRegisterStepTask(stepID: step.id, taskID: task.id)
 
         let success = await service.setNeedsSupervisorInput(
-            stepID: step.id, question: "Confirm?", sessionID: "session-1"
+            stepID: step.id, taskID: task.id, question: "Confirm?", sessionID: "session-1"
         )
 
         XCTAssertTrue(success)
@@ -2818,7 +3054,7 @@ final class SetNeedsSupervisorInputBackstopTests: XCTestCase {
         service._testRegisterStepTask(stepID: "ghost_step", taskID: 99)
 
         let success = await service.setNeedsSupervisorInput(
-            stepID: "ghost_step", question: "Q?", sessionID: nil
+            stepID: "ghost_step", taskID: 99, question: "Q?", sessionID: nil
         )
 
         XCTAssertFalse(success)
@@ -2844,7 +3080,7 @@ final class SetNeedsSupervisorInputBackstopTests: XCTestCase {
         service._testRegisterStepTask(stepID: "wrong_step", taskID: task.id)
 
         let success = await service.setNeedsSupervisorInput(
-            stepID: "wrong_step", question: "Q?", sessionID: nil
+            stepID: "wrong_step", taskID: task.id, question: "Q?", sessionID: nil
         )
 
         XCTAssertFalse(success, "Eligibility gate (mutated && didApply) must fail")
@@ -2854,32 +3090,30 @@ final class SetNeedsSupervisorInputBackstopTests: XCTestCase {
         )
     }
 
-    /// Top guard: `setNeedsSupervisorInput` returns `false` immediately when
-    /// `taskIDForStep(stepID)` resolves to `nil`. The hook MUST NOT fire — there
-    /// is nothing to drain because we never got as far as a task.
+    /// Unknown task: `taskID` is now an explicit parameter (the pre-refactor
+    /// `taskIDForStep` registry lookup is gone), so a step that was never
+    /// registered surfaces as a `mutateTask` miss — the mock can't resolve the
+    /// task, the mutation doesn't apply, and the hook MUST NOT fire.
     ///
-    /// Without this anti-test, a regression that moves the hook ABOVE the top
-    /// `guard let delegate, let tid = taskIDForStep(stepID) else { return false }`
-    /// would pass the other three tests in this suite (they all register a
-    /// stepID before exercising the method). Catches "hook fires on every
-    /// invocation regardless of whether the mutation even started".
+    /// Catches "hook fires on every invocation regardless of whether the
+    /// mutation even started".
     func testSetNeedsSupervisorInput_skipsBackstop_whenStepIDUnregistered() async {
-        // No `_testRegisterStepTask` call → `taskIDForStep` returns nil.
+        // No (taskID, stepID) execution registered → the `isExecutionLive` barrier
+        // short-circuits BEFORE any mutation is attempted. This is the post-teardown
+        // write barrier: an orphaned call must not flip a closed/paused task back to
+        // `.needsSupervisorInput`, and must not fire the auto-resuming backstop.
         let success = await service.setNeedsSupervisorInput(
-            stepID: "unknown_step", question: "Q?", sessionID: nil
+            stepID: "unknown_step", taskID: 0, question: "Q?", sessionID: nil
         )
 
-        XCTAssertFalse(success, "Top guard must reject unknown stepID")
+        XCTAssertFalse(success, "Unregistered (taskID, stepID) must reject the mutation")
         XCTAssertTrue(
             mockDelegate.notifyQueuedMessageBackstopCalls.isEmpty,
-            "Hook must NOT fire when taskIDForStep returns nil"
+            "Hook must NOT fire when the execution is not live"
         )
-        // Belt-and-suspenders: mutateTask must not have been called either, since
-        // we never made it past the top guard. If a refactor moves the hook
-        // above the guard, this expectation fails alongside the call-count check.
         XCTAssertTrue(
             mockDelegate.eventLog.isEmpty,
-            "Top guard must short-circuit before any delegate call"
+            "The liveness barrier must drop the write before mutateTask is even attempted"
         )
     }
 
@@ -2904,7 +3138,7 @@ final class SetNeedsSupervisorInputBackstopTests: XCTestCase {
         service._testRegisterStepTask(stepID: step.id, taskID: task.id)
 
         _ = await service.setNeedsSupervisorInput(
-            stepID: step.id, question: "Q?", sessionID: nil
+            stepID: step.id, taskID: task.id, question: "Q?", sessionID: nil
         )
 
         XCTAssertEqual(
@@ -2936,7 +3170,7 @@ final class SetNeedsSupervisorInputBackstopTests: XCTestCase {
         // doesn't model the engine, but the call surface is the same.
         for _ in 1...3 {
             let success = await service.setNeedsSupervisorInput(
-                stepID: step.id, question: "Q?", sessionID: nil
+                stepID: step.id, taskID: task.id, question: "Q?", sessionID: nil
             )
             XCTAssertTrue(success)
         }
@@ -2980,13 +3214,13 @@ final class SetNeedsSupervisorInputBackstopTests: XCTestCase {
 
         // Role A asks first.
         let successA = await service.setNeedsSupervisorInput(
-            stepID: stepA.id, question: "From A", sessionID: nil
+            stepID: stepA.id, taskID: task.id, question: "From A", sessionID: nil
         )
         // Role B asks second — engine state would be unchanged in production
         // (already `.needsSupervisorInput` because of A), but the hook still
         // fires from the mutation side. This is the bug condition.
         let successB = await service.setNeedsSupervisorInput(
-            stepID: stepB.id, question: "From B", sessionID: nil
+            stepID: stepB.id, taskID: task.id, question: "From B", sessionID: nil
         )
 
         XCTAssertTrue(successA)

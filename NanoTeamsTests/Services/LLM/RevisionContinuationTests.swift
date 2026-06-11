@@ -160,7 +160,7 @@ final class RevisionContinuationTests: XCTestCase {
         mockDelegate.taskToMutate = task
         service._testRegisterStepTask(stepID: stepID, taskID: task.id)
 
-        let result = service.checkArtifactCompleteness(stepID: stepID)
+        let result = service.checkArtifactCompleteness(stepID: stepID, taskID: task.id)
         XCTAssertNil(result,
                      "Should NOT auto-complete when revisionComment is set — old artifacts are from prior execution")
     }
@@ -179,7 +179,7 @@ final class RevisionContinuationTests: XCTestCase {
         mockDelegate.taskToMutate = task
         service._testRegisterStepTask(stepID: stepID, taskID: task.id)
 
-        let result = service.checkArtifactCompleteness(stepID: stepID)
+        let result = service.checkArtifactCompleteness(stepID: stepID, taskID: task.id)
         XCTAssertNotNil(result, "Should auto-complete when revisionComment is nil and artifacts are complete")
     }
 
@@ -204,7 +204,7 @@ final class RevisionContinuationTests: XCTestCase {
             isError: false,
             signal: .artifact(name: "Product Requirements", content: "Updated content", format: nil)
         )
-        await service.processCreateArtifactResult(result: result, stepID: stepID)
+        await service.processCreateArtifactResult(result: result, stepID: stepID, taskID: task.id)
 
         let updated = mockDelegate.taskToMutate!.runs[0].steps[0]
         XCTAssertNil(updated.revisionComment,
@@ -222,7 +222,7 @@ final class RevisionContinuationTests: XCTestCase {
         service._testRegisterStepTask(stepID: stepID, taskID: task.id)
 
         // Persist a session ID
-        await service.persistSessionID(stepID: stepID, sessionID: "response-xyz-456")
+        await service.persistSessionID(stepID: stepID, taskID: task.id, sessionID: "response-xyz-456")
 
         let updated = mockDelegate.taskToMutate!.runs[0].steps[0]
         XCTAssertEqual(updated.llmSessionID, "response-xyz-456",
@@ -236,7 +236,7 @@ final class RevisionContinuationTests: XCTestCase {
         mockDelegate.taskToMutate = task
         service._testRegisterStepTask(stepID: stepID, taskID: task.id)
 
-        await service.persistSessionID(stepID: stepID, sessionID: nil)
+        await service.persistSessionID(stepID: stepID, taskID: task.id, sessionID: nil)
 
         let updated = mockDelegate.taskToMutate!.runs[0].steps[0]
         XCTAssertNil(updated.llmSessionID, "Passing nil should clear the session ID")
@@ -261,14 +261,20 @@ final class RevisionContinuationTests: XCTestCase {
         return task
     }
 
-    /// Simulates `resetStepForRevision` logic inline (since we can't call the adapter directly).
+    /// Simulates `resetStepForRevision` logic inline, mirroring
+    /// `TaskEngineStoreAdapter.resetStepForRevision`'s full fallback chain. These tests
+    /// pin StepExecution-field PRESERVATION through the reset; the authoritative pin for
+    /// the fallback-chain behavior itself is `RequestRevisionTests`, which drives the
+    /// real adapter end-to-end.
     private func simulateResetStepForRevision(task: inout NTMSTask, stepID: String) async {
         await mockDelegate.mutateTask(taskID: task.id) { task in
             guard let location = task.locateStepInLatestRun(stepID: stepID) else { return }
             let step = task.runs[location.runIndex].steps[location.stepIndex]
             let status = step.status
             if status == .done || status == .failed {
-                let feedback = step.messages.last(where: { $0.role == .supervisor })?.content
+                let feedback = step.revisionComment
+                    ?? step.messages.last(where: { $0.role == .supervisor })?.content
+                    ?? "Please revise your work based on the requested changes."
                 task.runs[location.runIndex].steps[location.stepIndex].status = .pending
                 task.runs[location.runIndex].steps[location.stepIndex].completedAt = nil
                 task.runs[location.runIndex].steps[location.stepIndex].revisionComment = feedback

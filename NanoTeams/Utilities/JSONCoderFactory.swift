@@ -67,11 +67,18 @@ nonisolated enum JSONCoderFactory {
         return encoder
     }
 
-    /// Wire encoder: sortedKeys only. No dates.
-    /// Used by: NativeLMStudioClient, Tools+Envelope (tool result JSON).
+    /// Wire encoder: sortedKeys + withoutEscapingSlashes. No dates.
+    /// Used by: NativeLMStudioClient (request payload), Tools+Envelope (tool
+    /// result JSON), LMStudioEmbeddingClient, MemoryTagStore (tagged read content).
+    /// `.withoutEscapingSlashes` keeps forward slashes literal (`/`, not `\/`) in
+    /// tool results the LLM reads back. Without it, small models mis-transcribe the
+    /// `\/` sequences in file paths/content into literal backslashes in their
+    /// `edit_file` `old_text` anchors, which then never match — producing an
+    /// unbreakable edit→re-read loop. LM Studio's JSON parser treats `/` and `\/`
+    /// identically, so the outgoing payload is unaffected semantically.
     static func makeWireEncoder() -> JSONEncoder {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         return encoder
     }
 

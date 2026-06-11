@@ -211,6 +211,93 @@ final class ToolsGitTests: XCTestCase {
         XCTAssertTrue(results[0].outputJSON.contains("file_alias.txt"))
     }
 
+    // MARK: - git_add path normalization (absolute / redundant-prefix / glob)
+
+    /// An absolute path under the repo root stages the file AND reports the repo-relative
+    /// form in `staged:` (not the absolute string).
+    func testGitAdd_absolutePathUnderRoot_stagesRelativeAndReportsRelative() throws {
+        try fileManager.createDirectory(
+            at: tempDir.appendingPathComponent("sub"), withIntermediateDirectories: true)
+        let fileURL = tempDir.appendingPathComponent("sub/file.txt")
+        try "content".write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let call = StepToolCall(name: "git_add", argumentsJSON: "{\"paths\": [\"\(fileURL.path)\"]}")
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        // The envelope JSON-escapes `/` as `\/`; normalize before substring checks.
+        let out = results[0].outputJSON.replacingOccurrences(of: "\\/", with: "/")
+        XCTAssertFalse(results[0].isError, "got: \(out)")
+        XCTAssertTrue(out.contains("sub/file.txt"), "staged should report the relative path: \(out)")
+        XCTAssertFalse(out.contains(fileURL.path), "should not echo the absolute path: \(out)")
+        let status = try runGitCommand(["status", "--porcelain"])
+        XCTAssertTrue(status.contains("A  sub/file.txt") || status.contains("A sub/file.txt"), "got: \(status)")
+    }
+
+    /// A redundant leading work-folder-name component is stripped end-to-end through the handler.
+    func testGitAdd_redundantWorkFolderNamePrefix_stripsAndStages() throws {
+        try "content".write(to: tempDir.appendingPathComponent("redundant.txt"), atomically: true, encoding: .utf8)
+        let prefix = tempDir.lastPathComponent
+        let call = StepToolCall(name: "git_add", argumentsJSON: "{\"paths\": [\"\(prefix)/redundant.txt\"]}")
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError, "got: \(results[0].outputJSON)")
+        XCTAssertTrue(results[0].outputJSON.contains("redundant.txt"))
+        let status = try runGitCommand(["status", "--porcelain"])
+        XCTAssertTrue(status.contains("A  redundant.txt") || status.contains("A redundant.txt"), "got: \(status)")
+    }
+
+    /// A glob pathspec passes through untouched so git itself expands it.
+    func testGitAdd_globPathspec_passesThroughAndStagesMatches() throws {
+        try "A".write(to: tempDir.appendingPathComponent("g1.txt"), atomically: true, encoding: .utf8)
+        try "B".write(to: tempDir.appendingPathComponent("g2.txt"), atomically: true, encoding: .utf8)
+        let call = StepToolCall(name: "git_add", argumentsJSON: "{\"paths\": [\"*.txt\"]}")
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError, "got: \(results[0].outputJSON)")
+        let status = try runGitCommand(["status", "--porcelain"])
+        XCTAssertTrue(status.contains("g1.txt"), "got: \(status)")
+        XCTAssertTrue(status.contains("g2.txt"), "got: \(status)")
+    }
+
+    /// git_diff's `paths` filter is normalized too. Uses a REDUNDANT-PREFIX scope (not an
+    /// absolute path) deliberately: git resolves absolute pathspecs natively, so an
+    /// absolute-scope test would pass even with normalization removed (tautological). With
+    /// the raw `<rootName>/scoped.txt` git finds nothing (literal nonexistent path); only
+    /// `relativizePathspec` stripping the prefix to `scoped.txt` surfaces the change — so
+    /// this test fails if the `.map { relativizePathspec }` is dropped from git_diff.
+    func testGitDiff_redundantPrefixScope_normalizes() throws {
+        try "v1\n".write(to: tempDir.appendingPathComponent("scoped.txt"), atomically: true, encoding: .utf8)
+        _ = try runGitCommand(["add", "scoped.txt"])
+        _ = try runGitCommand(["commit", "-m", "init"])
+        try "v2\n".write(to: tempDir.appendingPathComponent("scoped.txt"), atomically: true, encoding: .utf8)
+
+        let scoped = "\(tempDir.lastPathComponent)/scoped.txt"
+        let call = StepToolCall(name: "git_diff", argumentsJSON: "{\"paths\": [\"\(scoped)\"]}")
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError, "got: \(results[0].outputJSON)")
+        XCTAssertTrue(results[0].outputJSON.contains("scoped.txt"),
+                      "diff scoped by a redundant-prefix path should show the change: \(results[0].outputJSON)")
+    }
+
+    /// git_log's `paths` filter is normalized too. REDUNDANT-PREFIX scope (see git_diff
+    /// sibling for why absolute would be tautological): raw `<rootName>/logged.txt` finds no
+    /// commits; only `relativizePathspec` stripping to `logged.txt` surfaces the commit, so
+    /// this fails if the `.map { relativizePathspec }` is dropped from git_log.
+    func testGitLog_redundantPrefixScope_normalizes() throws {
+        try "x\n".write(to: tempDir.appendingPathComponent("logged.txt"), atomically: true, encoding: .utf8)
+        _ = try runGitCommand(["add", "logged.txt"])
+        _ = try runGitCommand(["commit", "-m", "add logged file"])
+
+        let scoped = "\(tempDir.lastPathComponent)/logged.txt"
+        let call = StepToolCall(name: "git_log", argumentsJSON: "{\"paths\": [\"\(scoped)\"]}")
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError, "got: \(results[0].outputJSON)")
+        XCTAssertTrue(results[0].outputJSON.contains("add logged file"),
+                      "git_log scoped by a redundant-prefix path should find the commit: \(results[0].outputJSON)")
+    }
+
     func testGitAdd_missingPathsArgument() {
         let call = StepToolCall(name: "git_add", argumentsJSON: "{}")
         let results = runtime.executeAll(context: context, toolCalls: [call])

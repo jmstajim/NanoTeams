@@ -164,7 +164,11 @@ struct QuickAction: Identifiable {
         activeTask: NTMSTask?,
         engineStatus: TeamEngineState?,
         requiresFinalReview: Bool,
+        autovisorEnabled: Bool,
+        autovisorRunning: Bool,
+        hasWorkFolder: Bool,
         onNewTask: @escaping () -> Void,
+        onToggleAutovisor: @escaping () -> Void,
         onNavigateToTask: @escaping (Int) -> Void,
         onPauseRun: @escaping (Int) -> Void,
         onShowFinalReview: @escaping () -> Void,
@@ -175,6 +179,24 @@ struct QuickAction: Identifiable {
         actions.append(QuickAction(id: "newTask", title: "New Task", subtitle: "or chat", icon: "plus.circle.fill", color: Colors.accent) {
             onNewTask()
         })
+
+        // Autovisor toggle — pinned as the second action whenever a real
+        // work folder is open (mirrors the big card's `hasRealWorkFolder` gate).
+        // Tapping flips the per-folder automated supervisor on/off; the subtitle
+        // reflects its live state. Off = muted icon, on = green, same semantics
+        // as `AutovisorPowerToggle`.
+        if hasWorkFolder {
+            let status = autovisorEnabled ? (autovisorRunning ? "Reviewing…" : "On") : "Off"
+            actions.append(QuickAction(
+                id: "autovisor",
+                title: "Autovisor",
+                subtitle: status,
+                icon: "power.circle.fill",
+                color: autovisorEnabled ? Colors.success : Colors.textSecondary
+            ) {
+                onToggleAutovisor()
+            })
+        }
 
         guard let activeTask else { return actions }
         let taskID = activeTask.id

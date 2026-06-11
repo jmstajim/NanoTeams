@@ -130,6 +130,30 @@ final class ResumeAfterRestartAnswerTests: NTMSOrchestratorTestBase {
         XCTAssertEqual(step?.supervisorAnswer, "продолжай")
         XCTAssertFalse(step?.needsSupervisorInput ?? true,
                        "needsSupervisorInput flag must be cleared")
+        XCTAssertEqual(step?.supervisorAnswerWasAuto, false,
+                       "Human surfaces use the default isAutoAnswer=false — checkmark, not the badge")
+    }
+
+    // MARK: - isAutoAnswer threading (defaulted param — deleting an argument still compiles)
+
+    /// The 3-arg LLMStateDelegate shim (used by `DelegatedSupervisorAnswerService` —
+    /// a delegating parent ROLE answering) must thread `isAutoAnswer: true` all the
+    /// way to `step.supervisorAnswerWasAuto`. Because the parameter is defaulted at
+    /// every hop, silently dropping the argument at any call site still compiles —
+    /// this pins the full chain (shim → orchestrator → StepMessagingService → step).
+    func testDelegationShim_answer_marksWasAutoAnswered() async {
+        await sut.openWorkFolder(tempDir)
+        let id = await sut.createTask(title: "Чат", supervisorTask: "привет")!
+        await seedPostRestartState(taskID: id)
+
+        _ = await sut.answerSupervisorQuestion(
+            taskID: id, stepID: "coding_assistant", answer: "use SQLite"
+        )
+
+        let step = sut.loadedTask(id)?.runs.last?.steps.first
+        XCTAssertEqual(step?.supervisorAnswer, "use SQLite")
+        XCTAssertEqual(step?.supervisorAnswerWasAuto, true,
+                       "The delegation shim is an automated answerer — must set the badge flag")
     }
 
     func testPostRestart_answer_engineStateLeavesPaused() async {

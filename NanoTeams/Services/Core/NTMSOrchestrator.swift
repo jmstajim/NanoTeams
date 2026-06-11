@@ -152,13 +152,16 @@ final class NTMSOrchestrator {
     /// All top-level tasks currently in memory (active + background).
     /// Child tasks created via `delegate_to_team` (`parentTaskID != nil`) are excluded —
     /// they are internal to the parent's tool call and never surface as Supervisor work.
+    /// The Autovisor task is also excluded: it IS the (automated) Supervisor, so it
+    /// must not appear as supervised work in Watchtower notifications.
     var allLoadedTasks: [NTMSTask] {
+        let managerID = autovisorTaskID
         var tasks: [NTMSTask] = []
-        if let active = activeTask, active.parentTaskID == nil {
+        if let active = activeTask, active.parentTaskID == nil, active.id != managerID {
             tasks.append(active)
         }
         if let loaded = snapshot?.loadedTasks {
-            for (id, task) in loaded where id != activeTaskID && task.parentTaskID == nil {
+            for (id, task) in loaded where id != activeTaskID && task.parentTaskID == nil && id != managerID {
                 tasks.append(task)
             }
         }
@@ -236,6 +239,44 @@ final class NTMSOrchestrator {
     /// because `QuickCaptureController` already owns the strong reference to the
     /// shared form state.
     @ObservationIgnored weak var quickCaptureFormState: QuickCaptureFormState?
+
+    /// Debounce timestamp for Autovisor event-wakes — bounds how often events
+    /// (a task needing input / failing / completing) can spawn a manager review,
+    /// per `AutovisorActivation.minSecondsBetweenRuns`. Stamped on EVERY manager
+    /// run start (event-wake, recurrence, Run-now, open-time) so a recurrence-driven
+    /// run can't be immediately re-triggered by an event.
+    @ObservationIgnored var autovisorLastWakeAt: Date?
+
+    /// Top-level task ids the Autovisor has already seen, so the `onTaskCreated`
+    /// activation trigger fires once per genuinely-new task rather than every tick.
+    /// Seeded at open from the existing tasks; refreshed whenever the manager wakes.
+    @ObservationIgnored var autovisorSeenTaskIDs: Set<Int> = []
+
+    /// (task, trigger) conditions already delivered into the manager's LIVE
+    /// conversation as a mid-review event notice, so a still-matching level doesn't
+    /// re-inject the same message every tick of a long pass. Scoped to the
+    /// mid-review injection branch ONLY — the fresh-pass wake path deliberately
+    /// stays edge-dedup-free (a `handled`-style set there was adversarially
+    /// rejected; see `testWake_afterDebounceWindow_reFires`). Seeded with every
+    /// non-stuck condition matching at pass start (`seedAutovisorNotifiedKeysForPassStart`
+    /// deliberately passes `stuck: []` — one stuck notice per pass is intended)
+    /// and pruned on each wake to keys still matching among the triggers that wake
+    /// evaluated (`.stuck` keys survive observer wakes, which never run the stuck
+    /// detector), so a condition that clears and later re-fires notifies again.
+    @ObservationIgnored var autovisorNotifiedAttentionKeys: Set<AutovisorAttentionKey> = []
+
+    /// Tasks the Autovisor created during the CURRENT review pass. Reset to 0
+    /// on each manager run start (in `startRun`); bounded in `createManagedTask` by
+    /// `settings.autovisorTuning.maxManagedTasksPerReview` (default
+    /// `AutovisorConstants.maxManagedTasksPerReview`).
+    @ObservationIgnored var autovisorCreationsThisReview: Int = 0
+
+    /// In-memory auto-off deadline (sleep timer). Armed by `rearmAutovisorAutoDisable`
+    /// on enable / duration edit / folder open; consumed by `evaluateAutovisorAutoDisable`
+    /// each scheduler tick. Deliberately NOT persisted — the countdown restarts fresh
+    /// each launch. Observable (unlike the wake bookkeeping above) so Settings can show
+    /// the off time; it changes rarely, so no hot-path cost.
+    var autovisorAutoDisableAt: Date?
 
     /// Default internal storage used when no real work folder is selected.
     /// Teams like Quest Party and Discussion Club work without a real folder.
@@ -713,18 +754,28 @@ final class NTMSOrchestrator {
     // MARK: - Private
 
     func apply(_ snapshot: WorkFolderContext) {
+        let previousTaskID = activeTaskID
+        let previousFolderID = self.snapshot?.projection.id
         let previousActiveRunID = activeTask?.runs.last?.id
         let previousSelectedRunID = selectedRunID
 
-        // Preserve loadedTasks from old snapshot
+        // Preserve loadedTasks from the old snapshot — but ONLY within the same
+        // work folder. Task IDs are sequential ints per folder, so collisions
+        // across folders are the norm: carrying folder A's loaded tasks into
+        // folder B's snapshot lets any background write path (status sweep,
+        // recurrence reconcile, mutateTask) resolve a colliding ID against the
+        // ghost and persist folder A's content into folder B's task.json.
         var newSnapshot = snapshot
-        if let oldLoaded = self.snapshot?.loadedTasks {
+        let sameFolder = previousFolderID == newSnapshot.projection.id
+        if sameFolder, let oldLoaded = self.snapshot?.loadedTasks {
             newSnapshot.loadedTasks = oldLoaded
         }
 
-        // When the active task changes, preserve the old active task in loadedTasks
-        // so background engines can still access it via loadedTask(_:).
-        if let oldTaskID = activeTaskID,
+        // When the active task changes (within the same folder), preserve the
+        // old active task in loadedTasks so background engines can still access
+        // it via loadedTask(_:).
+        if sameFolder,
+           let oldTaskID = activeTaskID,
            let oldTask = activeTask,
            oldTaskID != newSnapshot.activeTaskID {
             newSnapshot.loadedTasks[oldTaskID] = oldTask
@@ -735,6 +786,18 @@ final class NTMSOrchestrator {
         self.activeTask = newSnapshot.activeTask
         self.toolDefinitions = newSnapshot.toolDefinitions
         ToolDefinitionRegistry.shared.update(newSnapshot.toolDefinitions)
+
+        // The preserve logic in syncSelectedRunID only makes sense within ONE
+        // task. Run IDs are sequential ints per task (0, 1, 2…) AND task IDs are
+        // sequential ints per work folder, so on a task switch — or a folder
+        // switch where the new folder's active task happens to share the old
+        // task's id — the old selection can collide with an unrelated run id in
+        // the new task and pin the feed to a stale run (seen as "task ran but
+        // the chat shows nothing new"). Reset to the new task's latest run.
+        if previousTaskID != newSnapshot.activeTaskID || previousFolderID != newSnapshot.projection.id {
+            selectedRunID = newSnapshot.activeTask?.runs.last?.id
+            return
+        }
 
         syncSelectedRunID(
             task: newSnapshot.activeTask,
@@ -819,8 +882,9 @@ extension NTMSOrchestrator: LLMExecutionDelegate {}
             llmExecutionService._testRegisterStepTask(stepID: stepID, taskID: taskID)
         }
 
-        func _testFinishStepWithWarning(stepID: String, warning: String) async {
-            await llmExecutionService._testFinishStepWithWarning(stepID: stepID, warning: warning)
+        func _testFinishStepWithWarning(stepID: String, taskID: Int, warning: String) async {
+            await llmExecutionService._testFinishStepWithWarning(
+                stepID: stepID, taskID: taskID, warning: warning)
         }
 
         // periphery:ignore - used in #if DEBUG inside SidebarView.swift #Preview at line 477

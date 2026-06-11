@@ -241,6 +241,263 @@ final class NTMSTaskLogicTests: XCTestCase {
         XCTAssertEqual(task.derivedStatusFromActiveRun(), .needsSupervisorAcceptance)
     }
 
+    // MARK: - derivedStatus + closedAt (Accept & Close) Tests
+
+    /// Regression for the reported bug: "Accept & Close" on a paused non-chat
+    /// task. `closeTask` finalizes the running/paused step to `.done` but leaves
+    /// never-ran downstream roles as `.idle`/`.ready` (they have no step). The
+    /// closed task must derive `.done`, not `.running` ("Working").
+    func testDerivedStatus_closedWhilePaused_idleDownstreamRoles_returnsDone() {
+        var task = NTMSTask(id: 0, title: "Test", supervisorTask: "Goal")
+        task.closedAt = Date()
+        task.runs = [
+            Run(id: 0, steps: [
+                StepExecution(id: "test_step", role: .productManager, title: "PO", status: .done),
+                StepExecution(id: "test_step", role: .softwareEngineer, title: "Eng", status: .done)
+            ], roleStatuses: [
+                "supervisor": .done,
+                "pm": .done,
+                "eng": .done,
+                "swe": .idle,    // downstream role that never ran
+                "cr": .ready
+            ])
+        ]
+
+        XCTAssertEqual(task.derivedStatusFromActiveRun(), .done)
+    }
+
+    /// `closeTask` deliberately preserves `.pending` steps (never-started roles).
+    /// A leftover `.pending` step makes the step summary's base `.running`, so a
+    /// closed task with one must still derive `.done` via the `!hasRunning` guard.
+    func testDerivedStatus_closedWithPendingStep_returnsDone() {
+        var task = NTMSTask(id: 0, title: "Test", supervisorTask: "Goal")
+        task.closedAt = Date()
+        task.runs = [
+            Run(id: 0, steps: [
+                StepExecution(id: "test_step", role: .productManager, title: "PO", status: .done),
+                StepExecution(id: "test_step", role: .softwareEngineer, title: "Eng", status: .pending)
+            ])
+        ]
+
+        XCTAssertEqual(task.derivedStatusFromActiveRun(), .done)
+    }
+
+    /// A task closed before its run ever created a step still derives `.done`
+    /// (the empty-steps guard honors `closedAt`).
+    func testDerivedStatus_closedWithEmptyStepsRun_returnsDone() {
+        var task = NTMSTask(id: 0, title: "Test", supervisorTask: "Goal")
+        task.closedAt = Date()
+        task.runs = [Run(id: 0, steps: [])]
+
+        XCTAssertEqual(task.derivedStatusFromActiveRun(), .done)
+    }
+
+    /// Defense (F1): `closedAt` is set but a step is actually `.running` (e.g.
+    /// `resumeRun`, which has no `closedAt` guard, restarted it). The `!hasRunning`
+    /// gate must NOT mask a live run as `.done` — surface its true status.
+    func testDerivedStatus_closedWithRunningStep_doesNotMaskAsRunning() {
+        var task = NTMSTask(id: 0, title: "Test", supervisorTask: "Goal")
+        task.closedAt = Date()
+        task.runs = [
+            Run(id: 0, steps: [
+                StepExecution(id: "test_step", role: .softwareEngineer, title: "Eng", status: .running)
+            ], roleStatuses: ["eng": .working])
+        ]
+
+        XCTAssertEqual(task.derivedStatusFromActiveRun(), .running)
+    }
+
+    /// A closed task with a leftover failed step surfaces `.failed` (failures are
+    /// preserved for diagnostics, mirroring `closeTask`'s failed-step preservation).
+    func testDerivedStatus_closedWithFailedStep_returnsFailed() {
+        var task = NTMSTask(id: 0, title: "Test", supervisorTask: "Goal")
+        task.closedAt = Date()
+        task.runs = [
+            Run(id: 0, steps: [
+                StepExecution(id: "test_step", role: .softwareEngineer, title: "Eng", status: .failed)
+            ], roleStatuses: ["eng": .failed])
+        ]
+
+        XCTAssertEqual(task.derivedStatusFromActiveRun(), .failed)
+    }
+
+    /// A closed task with a leftover `.needsSupervisorInput` step must not resurface
+    /// as "needs input" — closing is terminal. Distinct `stepStatusSummary` flag from
+    /// the other closed tests (`closeTask` normally finalizes these, so this pins the
+    /// guard's defensive coverage).
+    func testDerivedStatus_closedWithNeedsSupervisorInputStep_returnsDone() {
+        var task = NTMSTask(id: 0, title: "Test", supervisorTask: "Goal")
+        task.closedAt = Date()
+        task.runs = [
+            Run(id: 0, steps: [
+                StepExecution(id: "test_step", role: .productManager, title: "PO", status: .done),
+                StepExecution(id: "test_step", role: .softwareEngineer, title: "Eng", status: .needsSupervisorInput)
+            ])
+        ]
+
+        XCTAssertEqual(task.derivedStatusFromActiveRun(), .done)
+    }
+
+    /// A closed task with a leftover `.needsApproval` step → `.done`. `closeTask` does
+    /// NOT finalize `.needsApproval` steps, so this shape is genuinely reachable — and
+    /// it's the one explicitly named in the guard's comment.
+    func testDerivedStatus_closedWithNeedsApprovalStep_returnsDone() {
+        var task = NTMSTask(id: 0, title: "Test", supervisorTask: "Goal")
+        task.closedAt = Date()
+        task.runs = [
+            Run(id: 0, steps: [
+                StepExecution(id: "test_step", role: .productManager, title: "PO", status: .done),
+                StepExecution(id: "test_step", role: .softwareEngineer, title: "Eng", status: .needsApproval)
+            ])
+        ]
+
+        XCTAssertEqual(task.derivedStatusFromActiveRun(), .done)
+    }
+
+    /// Defense interaction: a closed task with BOTH a `.running` and a `.failed` step
+    /// surfaces `.failed` — `!hasRunning` bypasses the closed-guard, and `.failed` wins
+    /// the base priority. Distinguishes from the pure-running case (which yields `.running`).
+    func testDerivedStatus_closedWithRunningAndFailedStep_returnsFailed() {
+        var task = NTMSTask(id: 0, title: "Test", supervisorTask: "Goal")
+        task.closedAt = Date()
+        task.runs = [
+            Run(id: 0, steps: [
+                StepExecution(id: "test_step", role: .productManager, title: "PO", status: .running),
+                StepExecution(id: "test_step", role: .softwareEngineer, title: "Eng", status: .failed)
+            ])
+        ]
+
+        XCTAssertEqual(task.derivedStatusFromActiveRun(), .failed)
+    }
+
+    /// A task closed before it ever created a run is still terminal → `.done`
+    /// (the no-runs guard honors `closedAt`). Stored `status` is ignored when closed.
+    func testDerivedStatus_closedWithNoRuns_returnsDone() {
+        var task = NTMSTask(id: 0, title: "Test", supervisorTask: "Goal", status: .paused)
+        task.closedAt = Date()
+        // runs intentionally left empty
+
+        XCTAssertEqual(task.derivedStatusFromActiveRun(), .done)
+    }
+
+    // MARK: - derivedStatus additional corner cases
+
+    /// The literal reported shape at the step level: closed + a still-`.paused` step
+    /// (e.g. before closeTask's finalization ran, or as defense). `!hasRunning` holds
+    /// for a paused step, so the closed-guard resolves it to `.done`, not "Working".
+    func testDerivedStatus_closedWithPausedStep_returnsDone() {
+        var task = NTMSTask(id: 0, title: "Test", supervisorTask: "Goal")
+        task.closedAt = Date()
+        task.runs = [
+            Run(id: 0, steps: [
+                StepExecution(id: "test_step", role: .softwareEngineer, title: "Eng", status: .paused)
+            ], roleStatuses: ["eng": .working])
+        ]
+
+        XCTAssertEqual(task.derivedStatusFromActiveRun(), .done)
+    }
+
+    /// Negative clause of the paused-override: stored `status == .paused` but a step is
+    /// actually `.running` (`hasRunning` true → the `&& !s.hasRunning` guard fails), so
+    /// the live work wins and the task reads `.running`, not a stale `.paused`.
+    func testDerivedStatus_pausedStatus_withRunningStep_returnsRunning() {
+        var task = NTMSTask(id: 0, title: "Test", supervisorTask: "Goal", status: .paused)
+        task.runs = [
+            Run(id: 0, steps: [
+                StepExecution(id: "test_step", role: .softwareEngineer, title: "Eng", status: .running)
+            ], roleStatuses: ["eng": .working])
+        ]
+
+        XCTAssertEqual(task.derivedStatusFromActiveRun(), .running)
+    }
+
+    /// All steps `.done` but a role is `.revisionRequested` (not complete, not awaiting
+    /// acceptance) → `.running`. Distinct from the `.working` leftover case; pins that
+    /// revision-in-progress keeps the task active rather than ready-for-acceptance.
+    func testDerivedStatus_allStepsDone_roleRevisionRequested_returnsRunning() {
+        var task = NTMSTask(id: 0, title: "Test", supervisorTask: "Goal")
+        task.runs = [
+            Run(id: 0, steps: [
+                StepExecution(id: "test_step", role: .productManager, title: "PO", status: .done),
+                StepExecution(id: "test_step", role: .softwareEngineer, title: "Eng", status: .done)
+            ], roleStatuses: [
+                "pm": .done,
+                "eng": .revisionRequested
+            ])
+        ]
+
+        XCTAssertEqual(task.derivedStatusFromActiveRun(), .running)
+    }
+
+    /// All steps `.done` with roles `.accepted` + `.done` (both `isComplete`) → all roles
+    /// complete → `.needsSupervisorAcceptance`. Pins that `.accepted` counts as complete,
+    /// not just `.done`.
+    func testDerivedStatus_allStepsDone_rolesAcceptedComplete_returnsNeedsSupervisorAcceptance() {
+        var task = NTMSTask(id: 0, title: "Test", supervisorTask: "Goal")
+        task.runs = [
+            Run(id: 0, steps: [
+                StepExecution(id: "test_step", role: .productManager, title: "PO", status: .done),
+                StepExecution(id: "test_step", role: .softwareEngineer, title: "Eng", status: .done)
+            ], roleStatuses: [
+                "pm": .accepted,
+                "eng": .done
+            ])
+        ]
+
+        XCTAssertEqual(task.derivedStatusFromActiveRun(), .needsSupervisorAcceptance)
+    }
+
+    /// A lone `.needsApproval` step (no running/paused) derives `.paused` at the task
+    /// level — `derivedTaskStatus` maps `hasNeedsApproval && !hasRunning` → `.paused`,
+    /// and the `default` arm passes it through. Pins the internal bridge state's surface.
+    func testDerivedStatus_singleNeedsApprovalStep_returnsPaused() {
+        var task = NTMSTask(id: 0, title: "Test", supervisorTask: "Goal")
+        task.runs = [
+            Run(id: 0, steps: [
+                StepExecution(id: "test_step", role: .softwareEngineer, title: "Eng", status: .needsApproval)
+            ])
+        ]
+
+        XCTAssertEqual(task.derivedStatusFromActiveRun(), .paused)
+    }
+
+    /// All steps `.done` with a `.skipped` role (observer / error-recovery skip)
+    /// alongside `.done` roles → all roles count as complete (`.skipped.isComplete`
+    /// is true) → `.needsSupervisorAcceptance`. Pins that a skipped role does NOT
+    /// block final acceptance — the only `RoleExecutionStatus` not otherwise covered.
+    func testDerivedStatus_allStepsDone_roleSkipped_countsAsComplete() {
+        var task = NTMSTask(id: 0, title: "Test", supervisorTask: "Goal")
+        task.runs = [
+            Run(id: 0, steps: [
+                StepExecution(id: "test_step", role: .productManager, title: "PO", status: .done),
+                StepExecution(id: "test_step", role: .softwareEngineer, title: "Eng", status: .done)
+            ], roleStatuses: [
+                "pm": .done,
+                "observer": .skipped
+            ])
+        ]
+
+        XCTAssertEqual(task.derivedStatusFromActiveRun(), .needsSupervisorAcceptance)
+    }
+
+    /// A `.skipped` role does not RESCUE an otherwise-incomplete set: `.skipped`
+    /// (complete) + `.working` (not complete, not acceptance) → `.running`. Guards
+    /// against a bug that treats the mere presence of `.skipped` as "all complete".
+    func testDerivedStatus_allStepsDone_skippedPlusWorking_returnsRunning() {
+        var task = NTMSTask(id: 0, title: "Test", supervisorTask: "Goal")
+        task.runs = [
+            Run(id: 0, steps: [
+                StepExecution(id: "test_step", role: .productManager, title: "PO", status: .done),
+                StepExecution(id: "test_step", role: .softwareEngineer, title: "Eng", status: .done)
+            ], roleStatuses: [
+                "observer": .skipped,
+                "eng": .working
+            ])
+        ]
+
+        XCTAssertEqual(task.derivedStatusFromActiveRun(), .running)
+    }
+
     // MARK: - toSummary Tests
 
     func testToSummary() {

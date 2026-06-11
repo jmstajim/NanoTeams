@@ -23,8 +23,8 @@ final class DelegationLoopWatcherTests: XCTestCase {
         return url
     }
 
-    /// Helper: produce a string that's guaranteed to fire
-    /// `MessageRepetitionDetector.detectWithinMessage` with default thresholds.
+    /// Helper: produce a string that's guaranteed to fire the within-message
+    /// detector (`MessageRepetitionDetector.detectTailLoop`).
     private func loopText() -> String {
         // "Oh, wait! " is 10 chars (substantive content) — repeated 8 times
         // exceeds default minRepeats=5.
@@ -33,6 +33,34 @@ final class DelegationLoopWatcherTests: XCTestCase {
 
     private func cleanText() -> String {
         "The implementation reads the file, validates the schema, and writes the result. Nothing repeats here in any pathological way."
+    }
+
+    // MARK: - considerCommitted helpers (post-commit hooks unified into one entry)
+
+    /// Drives the within-message path: one finalized assistant turn.
+    private func commitWithin(
+        _ w: DelegationLoopWatcher, _ taskID: Int, content: String, thinking: String? = nil
+    ) {
+        w.considerCommitted(
+            taskID: taskID,
+            recentAssistant: [(thinking: thinking, content: content, createdAt: Date())],
+            toolCalls: []
+        )
+    }
+
+    /// Drives the across-messages path: N finalized assistant turns (content-only).
+    private func commitAcross(_ w: DelegationLoopWatcher, _ taskID: Int, messages: [String]) {
+        let tuples: [(thinking: String?, content: String, createdAt: Date)] =
+            messages.map { (thinking: nil, content: $0, createdAt: Date()) }
+        w.considerCommitted(taskID: taskID, recentAssistant: tuples, toolCalls: [])
+    }
+
+    /// Drives the tool-call-sequence path.
+    private func commitTools(
+        _ w: DelegationLoopWatcher, _ taskID: Int,
+        calls: [(name: String, argsJSON: String, createdAt: Date)]
+    ) {
+        w.considerCommitted(taskID: taskID, recentAssistant: [], toolCalls: calls)
     }
 
     // MARK: - Child-task gating
@@ -49,12 +77,7 @@ final class DelegationLoopWatcherTests: XCTestCase {
         let parentID = await store.createTask(title: "Parent", supervisorTask: "...")
         guard let parentID else { return XCTFail("task creation failed") }
 
-        store.delegationLoopWatcher.considerCommittedMessage(
-            taskID: parentID,
-            stepID: "any",
-            content: loopText(),
-            thinking: nil
-        )
+        commitWithin(store.delegationLoopWatcher, parentID, content: loopText())
 
         XCTAssertNil(
             store.delegationLoopWatcher._testLastTrigger(forTaskID: parentID),
@@ -67,12 +90,7 @@ final class DelegationLoopWatcherTests: XCTestCase {
     func testWatcher_childTask_cleanOutput_noTrigger() async {
         let (store, childID) = await makeChildTaskWithAwaiter()
 
-        store.delegationLoopWatcher.considerCommittedMessage(
-            taskID: childID,
-            stepID: "engineer",
-            content: cleanText(),
-            thinking: nil
-        )
+        commitWithin(store.delegationLoopWatcher, childID, content: cleanText())
 
         XCTAssertNil(store.delegationLoopWatcher._testLastTrigger(forTaskID: childID),
                      "Clean child output must not trigger interrupt")
@@ -101,12 +119,7 @@ final class DelegationLoopWatcherTests: XCTestCase {
         XCTAssertTrue(store.completionAwaiter.hasWaiters(for: childID),
                       "Test setup invariant: awaiter must have a waiter before we fire")
 
-        store.delegationLoopWatcher.considerCommittedMessage(
-            taskID: childID,
-            stepID: "engineer",
-            content: loopText(),
-            thinking: nil
-        )
+        commitWithin(store.delegationLoopWatcher, childID, content: loopText())
 
         // The handler task must resume with a parentMessageQueued outcome.
         await handlerTask.value
@@ -142,9 +155,7 @@ final class DelegationLoopWatcherTests: XCTestCase {
             try? await Task.sleep(for: .milliseconds(1))
             attempts += 1
         }
-        store.delegationLoopWatcher.considerCommittedMessage(
-            taskID: childID, stepID: "engineer", content: loopText(), thinking: nil
-        )
+        commitWithin(store.delegationLoopWatcher, childID, content: loopText())
         await handler1.value
         let firstTrigger = store.delegationLoopWatcher._testLastTrigger(forTaskID: childID)
         XCTAssertNotNil(firstTrigger)
@@ -160,9 +171,7 @@ final class DelegationLoopWatcherTests: XCTestCase {
             try? await Task.sleep(for: .milliseconds(1))
             attempts += 1
         }
-        store.delegationLoopWatcher.considerCommittedMessage(
-            taskID: childID, stepID: "engineer", content: loopText(), thinking: nil
-        )
+        commitWithin(store.delegationLoopWatcher, childID, content: loopText())
 
         // Give the (non-)wake a moment, then cancel the awaiter and verify
         // it never resumed via the watcher path.
@@ -180,15 +189,15 @@ final class DelegationLoopWatcherTests: XCTestCase {
         )
     }
 
-    // MARK: - Thinking-only loop (user's primary scenario)
+    // MARK: - noteStreamLoop (in-stream signal → parent interrupt)
 
-    /// Reasoning models can loop in their `thinking` buffer without ever
-    /// emitting `content` — pre-fix they'd burn the 30-minute delegation
-    /// timeout silently because the post-commit hook never fires (no
-    /// commit happens). The streaming hook reads `streamingThinking` and
-    /// runs the detector on the thinking buffer alone, catching the
-    /// "Oh wait Oh wait Oh wait..." case the user reported.
-    func testWatcher_thinkingOnlyLoop_firesViaStreamingHook() async {
+    /// Detection now runs in `performStreamingCall`; the watcher's streaming entry
+    /// is `noteStreamLoop`, which fires the parent interrupt given a `LoopSignal`.
+    /// A successful fire records cooldown and returns `true` (advance the in-stream
+    /// throttle baseline). The user's reasoning-model-stuck (thinking-only) case is
+    /// detected by `LoopScanner.scanStreaming` (see `LoopScannerTests`); here we pin
+    /// the fire/cooldown/advance contract.
+    func testWatcher_noteStreamLoop_firesInterrupt_andRecordsCooldown() async {
         let (store, childID) = await makeChildTaskWithAwaiter()
 
         let outcomeBox = OutcomeBox()
@@ -201,33 +210,83 @@ final class DelegationLoopWatcherTests: XCTestCase {
             attempts += 1
         }
 
-        // Empty content, thinking buffer carries the loop — the user's
-        // reasoning-model-stuck scenario.
-        store.delegationLoopWatcher.considerStreamingBuffer(
-            taskID: childID,
-            stepID: "engineer",
-            content: "",
-            thinking: loopText()
-        )
+        let advance = store.delegationLoopWatcher.noteStreamLoop(
+            taskID: childID, stepID: "engineer",
+            signal: .withinMessage(diagnostic: "Oh wait Oh wait Oh wait"))
 
         await handlerTask.value
         guard let outcome = outcomeBox.value else {
-            return XCTFail("Streaming hook must fire on thinking-only loops — pre-fix would have hung until 30-min timeout")
+            return XCTFail("noteStreamLoop must fire the parent interrupt on a signal")
         }
         guard case .parentMessageQueued = outcome else {
-            return XCTFail("Expected .parentMessageQueued from streaming-hook detection, got \(outcome)")
+            return XCTFail("Expected .parentMessageQueued from noteStreamLoop, got \(outcome)")
         }
+        XCTAssertTrue(advance, "A successful fire advances the in-stream throttle baseline (returns true)")
         XCTAssertNotNil(
             store.delegationLoopWatcher._testLastTrigger(forTaskID: childID),
-            "Cooldown timestamp must be recorded after the thinking-only fire"
+            "Cooldown timestamp must be recorded after the fire"
         )
+    }
+
+    /// I4: when `notifyDelegationInterrupt` returns false (no waiter — the race
+    /// between `setActiveDelegation` and `awaitTaskTerminalState`), `noteStreamLoop`
+    /// returns `false` so the in-stream scanner does NOT advance its throttle
+    /// baseline — it keeps re-scanning until the awaiter registers. Cooldown is also
+    /// not set. This is the I4 invariant relocated from the old throttle-stamp logic.
+    func testWatcher_noteStreamLoop_noWaiter_returnsFalse_andNoCooldown() async {
+        let (store, childID) = await makeChildTaskWithAwaiter()
+        XCTAssertFalse(store.completionAwaiter.hasWaiters(for: childID),
+                       "Test setup invariant: no waiter must be registered to exercise the race")
+
+        let advance = store.delegationLoopWatcher.noteStreamLoop(
+            taskID: childID, stepID: "engineer", signal: .withinMessage(diagnostic: "loop"))
+
+        XCTAssertFalse(advance,
+                       "I4: no-waiter race must return false so the in-stream throttle holds and re-scans")
+        XCTAssertNil(store.delegationLoopWatcher._testLastTrigger(forTaskID: childID),
+                     "Cooldown must NOT be set on a failed fire")
+    }
+
+    /// In cooldown, `noteStreamLoop` returns `true` (advance the throttle — no point
+    /// re-scanning while the parent role's reaction plays out) without firing again.
+    func testWatcher_noteStreamLoop_inCooldown_returnsTrue_doesNotRefire() async {
+        let (store, childID) = await makeChildTaskWithAwaiter()
+        store.delegationLoopWatcher._testForceTrigger(forTaskID: childID, at: Date())
+        let trigger = store.delegationLoopWatcher._testLastTrigger(forTaskID: childID)
+
+        let advance = store.delegationLoopWatcher.noteStreamLoop(
+            taskID: childID, stepID: "engineer", signal: .withinMessage(diagnostic: "loop"))
+
+        XCTAssertTrue(advance, "In cooldown → advance the in-stream throttle (returns true)")
+        XCTAssertEqual(store.delegationLoopWatcher._testLastTrigger(forTaskID: childID), trigger,
+                       "Cooldown must suppress a re-fire (trigger timestamp unchanged)")
+    }
+
+    /// Top-level (non-delegated) task must NOT fire from `noteStreamLoop` — same
+    /// child-task gating as every other hook. Returns true (advance) since there's
+    /// nothing to re-scan for.
+    func testWatcher_noteStreamLoop_topLevelTask_noFire() async {
+        let store = makeOrchestrator()
+        let root = makeWorkFolderRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        await store.openWorkFolder(root)
+        guard let parentID = await store.createTask(title: "Parent", supervisorTask: "...") else {
+            return XCTFail("task creation failed")
+        }
+
+        let advance = store.delegationLoopWatcher.noteStreamLoop(
+            taskID: parentID, stepID: "any", signal: .withinMessage(diagnostic: "loop"))
+
+        XCTAssertTrue(advance, "Top-level isn't watched here → advance, don't re-scan")
+        XCTAssertNil(store.delegationLoopWatcher._testLastTrigger(forTaskID: parentID),
+                     "Top-level task must not register a trigger — no parent awaiter to wake")
     }
 
     // MARK: - Across-messages hook
 
-    /// `considerConversation` gets the role's recent assistant outputs
-    /// after each commit. When ≥2 of the last 3 messages have high
-    /// pairwise overlap, the watcher fires — catches strategic loops
+    /// `considerCommitted`'s across-messages branch gets the role's recent
+    /// assistant outputs after each commit. When ≥2 of the last 3 messages have
+    /// high pairwise overlap, the watcher fires — catches strategic loops
     /// where each iteration regenerates similar content.
     func testWatcher_acrossMessagesHook_firesOnConversationOverlap() async {
         let (store, childID) = await makeChildTaskWithAwaiter()
@@ -254,10 +313,7 @@ final class DelegationLoopWatcherTests: XCTestCase {
             nearly + " (One more time — same general direction.)",
         ]
 
-        store.delegationLoopWatcher.considerConversation(
-            taskID: childID,
-            recentRoleMessages: messages
-        )
+        commitAcross(store.delegationLoopWatcher, childID, messages: messages)
 
         await handlerTask.value
         guard let outcome = outcomeBox.value else {
@@ -290,16 +346,13 @@ final class DelegationLoopWatcherTests: XCTestCase {
             try? await Task.sleep(for: .milliseconds(1))
             attempts += 1
         }
-        store.delegationLoopWatcher.considerCommittedMessage(
-            taskID: childID, stepID: "engineer",
-            content: loopText(), thinking: nil
-        )
+        commitWithin(store.delegationLoopWatcher, childID, content: loopText())
         await handler1.value
         let firstTrigger = store.delegationLoopWatcher._testLastTrigger(forTaskID: childID)
         XCTAssertNotNil(firstTrigger)
 
-        // Second fire via streaming hook on same child — must be blocked
-        // by cooldown (different hook type, same task).
+        // Second fire via the streaming entry (noteStreamLoop) on same child —
+        // must be blocked by cooldown (different hook type, same task).
         let outcomeBox2 = OutcomeBox()
         let handler2 = Task { @MainActor in
             outcomeBox2.value = await store.completionAwaiter.register(taskID: childID)
@@ -309,14 +362,12 @@ final class DelegationLoopWatcherTests: XCTestCase {
             try? await Task.sleep(for: .milliseconds(1))
             attempts += 1
         }
-        store.delegationLoopWatcher.considerStreamingBuffer(
-            taskID: childID, stepID: "engineer",
-            content: loopText(), thinking: ""
-        )
+        _ = store.delegationLoopWatcher.noteStreamLoop(
+            taskID: childID, stepID: "engineer", signal: .withinMessage(diagnostic: "loop"))
 
         try? await Task.sleep(for: .milliseconds(50))
         XCTAssertNil(outcomeBox2.value,
-                     "Cooldown must span hook types — streaming hook must NOT re-fire while a recent commit-hook fire is in cooldown")
+                     "Cooldown must span hook types — noteStreamLoop must NOT re-fire while a recent commit-hook fire is in cooldown")
         store.completionAwaiter.cancelAll(taskID: childID)
         await handler2.value
 
@@ -324,106 +375,12 @@ final class DelegationLoopWatcherTests: XCTestCase {
                        "Cooldown timestamp must not advance on suppressed cross-hook-type fire")
     }
 
-    // MARK: - Streaming throttle
-
-    /// Streaming hook is throttled per-step — calling it repeatedly within
-    /// the throttle window must not re-run the (expensive) detector.
-    func testWatcher_streamingThrottle_skipsRapidRescans() async {
-        let (store, childID) = await makeChildTaskWithAwaiter()
-
-        // No awaiter registered — even if the detector fires, the watcher
-        // returns false from `notifyDelegationInterrupt` and doesn't set
-        // cooldown. We verify here that the THROTTLE itself prevents re-scan
-        // (testable via `lastStreamingScanByStep` indirectly: a second call
-        // within the throttle window returns immediately).
-
-        // First call — passes throttle, finds match, but no waiter so
-        // notifyDelegationInterrupt returns false → no cooldown set.
-        store.delegationLoopWatcher.considerStreamingBuffer(
-            taskID: childID, stepID: "engineer",
-            content: loopText(), thinking: ""
-        )
-        XCTAssertNil(store.delegationLoopWatcher._testLastTrigger(forTaskID: childID),
-                     "No waiter → no successful fire → no cooldown")
-
-        // Second call within throttle window must be a no-op (we can't
-        // observe it directly, but we verify behavior is consistent — no
-        // crash, no state change). The real win is in production: this
-        // saves an O(n²) substring search on every token append.
-        store.delegationLoopWatcher.considerStreamingBuffer(
-            taskID: childID, stepID: "engineer",
-            content: loopText(), thinking: ""
-        )
-        // No-op assertion, just verifying no state was perturbed.
-        XCTAssertNil(store.delegationLoopWatcher._testLastTrigger(forTaskID: childID))
-    }
-
-    // MARK: - I4: throttle stamp NOT burned on no-waiter race
-
-    /// Pin (I4): when the detector finds a match but
-    /// `notifyDelegationInterrupt` returns `false` (no waiter registered —
-    /// race window between `setActiveDelegation` and
-    /// `awaitTaskTerminalState`), the throttle stamp MUST NOT be set.
-    /// Otherwise the next legitimate signal — arriving once the awaiter
-    /// has registered — would be silently swallowed for the full
-    /// `repetitionStreamingThrottleSeconds` window.
-    ///
-    /// Pre-fix: `lastStreamingScanByStep[stepID] = now` ran eagerly at
-    /// the top of `considerStreamingBuffer`, before the cooldown check
-    /// and before the detector. Setting the stamp regardless of outcome
-    /// burned the throttle on race-with-`startRunForTask`.
-    func testWatcher_throttleNotBurned_whenNotifyDelegationInterruptReturnsFalse() async {
-        let (store, childID) = await makeChildTaskWithAwaiter()
-
-        // No awaiter registered for childID → notifyDelegationInterrupt
-        // will return false. Detector will find a match in `loopText()`.
-        XCTAssertFalse(store.completionAwaiter.hasWaiters(for: childID),
-                       "Test setup invariant: no waiter must be registered to exercise the race")
-
-        store.delegationLoopWatcher.considerStreamingBuffer(
-            taskID: childID,
-            stepID: "engineer",
-            content: loopText(),
-            thinking: ""
-        )
-
-        // The fix: stamp must be nil because firing failed (no waiter).
-        // Pre-fix this test FAILS — the stamp was set eagerly at function
-        // entry, swallowing the next legitimate signal once the awaiter
-        // finally registered.
-        XCTAssertNil(
-            store.delegationLoopWatcher._testLastStreamingScan(forStepID: "engineer"),
-            "I4: throttle stamp must NOT be set when notifyDelegationInterrupt returns false — otherwise the next legitimate signal (arriving after the awaiter registers) would be silently throttled out for repetitionStreamingThrottleSeconds."
-        )
-        XCTAssertNil(
-            store.delegationLoopWatcher._testLastTrigger(forTaskID: childID),
-            "Cooldown also must NOT be set on failed fire — paired with the throttle invariant"
-        )
-    }
-
-    /// Counter-test: when the detector finds NO match (clean stream), the
-    /// throttle stamp IS set so we don't redo the substring search on the
-    /// very next token. This is the fast-skip path; it MUST continue to
-    /// stamp.
-    func testWatcher_throttleSetOnCleanStreamingPass_avoidsRescan() async {
-        let (store, childID) = await makeChildTaskWithAwaiter()
-
-        store.delegationLoopWatcher.considerStreamingBuffer(
-            taskID: childID,
-            stepID: "engineer",
-            content: cleanText(),
-            thinking: ""
-        )
-
-        XCTAssertNotNil(
-            store.delegationLoopWatcher._testLastStreamingScan(forStepID: "engineer"),
-            "Throttle MUST be set on the no-match path — this is the substring-scan-cost guard"
-        )
-        XCTAssertNil(
-            store.delegationLoopWatcher._testLastTrigger(forTaskID: childID),
-            "No detector match → no fire → no cooldown"
-        )
-    }
+    // The per-step streaming THROTTLE and its I4 stamp logic moved into
+    // `performStreamingCall`'s in-stream growth-counter (the watcher no longer owns
+    // `lastStreamingScanByStep`). The I4 invariant is now pinned at the watcher
+    // boundary by `testWatcher_noteStreamLoop_noWaiter_returnsFalse_andNoCooldown`
+    // (the scanner honors that bool to hold/advance its baseline), and the cadence
+    // throttle itself is exercised by the in-stream tests.
 
     // MARK: - Tool-call sequence hook
 
@@ -454,7 +411,7 @@ final class DelegationLoopWatcherTests: XCTestCase {
             (name: "read_file", argsJSON: #"{"path":"script.js"}"#, createdAt: now.addingTimeInterval(-2)),
             (name: "read_file", argsJSON: #"{"path":"script.js"}"#, createdAt: now),
         ]
-        store.delegationLoopWatcher.considerToolCallSequence(taskID: childID, recentCalls: calls)
+        commitTools(store.delegationLoopWatcher, childID, calls: calls)
 
         await handlerTask.value
         guard let outcome = outcomeBox.value else {
@@ -487,7 +444,7 @@ final class DelegationLoopWatcherTests: XCTestCase {
             repeating: (name: "read_file", argsJSON: #"{"path":"x"}"#, createdAt: now),
             count: 100
         )
-        store.delegationLoopWatcher.considerToolCallSequence(taskID: parentID, recentCalls: calls)
+        commitTools(store.delegationLoopWatcher, parentID, calls: calls)
 
         XCTAssertNil(
             store.delegationLoopWatcher._testLastTrigger(forTaskID: parentID),
@@ -495,9 +452,9 @@ final class DelegationLoopWatcherTests: XCTestCase {
         )
     }
 
-    /// Cooldown is keyed by child task id and is shared across hook types —
-    /// after a successful fire via `considerCommittedMessage`, a subsequent
-    /// `considerToolCallSequence` on the same child must be suppressed.
+    /// Cooldown is keyed by child task id and is shared across detection modes —
+    /// after a successful within-message fire via `considerCommitted`, a subsequent
+    /// tool-call-sequence `considerCommitted` on the same child must be suppressed.
     /// Without this, a long thinking-loop fire followed by a tool-spam loop
     /// in the same conversation would trap the role in back-to-back paused
     /// envelopes.
@@ -514,10 +471,7 @@ final class DelegationLoopWatcherTests: XCTestCase {
             try? await Task.sleep(for: .milliseconds(1))
             attempts += 1
         }
-        store.delegationLoopWatcher.considerCommittedMessage(
-            taskID: childID, stepID: "engineer",
-            content: loopText(), thinking: nil
-        )
+        commitWithin(store.delegationLoopWatcher, childID, content: loopText())
         await handler1.value
         let firstTrigger = store.delegationLoopWatcher._testLastTrigger(forTaskID: childID)
         XCTAssertNotNil(firstTrigger, "First fire must record cooldown")
@@ -538,7 +492,7 @@ final class DelegationLoopWatcherTests: XCTestCase {
             repeating: (name: "read_file", argsJSON: #"{"path":"x"}"#, createdAt: now),
             count: 3
         )
-        store.delegationLoopWatcher.considerToolCallSequence(taskID: childID, recentCalls: calls)
+        commitTools(store.delegationLoopWatcher, childID, calls: calls)
 
         try? await Task.sleep(for: .milliseconds(50))
         XCTAssertNil(outcomeBox2.value,
@@ -593,7 +547,7 @@ final class DelegationLoopWatcherTests: XCTestCase {
             attempts += 1
         }
 
-        store.delegationLoopWatcher.considerToolCallSequence(taskID: childID, recentCalls: calls)
+        commitTools(store.delegationLoopWatcher, childID, calls: calls)
 
         // Filter must reduce the visible suffix to just 1 fresh call → below
         // minRepeats=3 → no fire. Awaiter stays suspended.
@@ -642,7 +596,7 @@ final class DelegationLoopWatcherTests: XCTestCase {
             attempts += 1
         }
 
-        store.delegationLoopWatcher.considerToolCallSequence(taskID: childID, recentCalls: calls)
+        commitTools(store.delegationLoopWatcher, childID, calls: calls)
 
         await handlerTask.value
         guard let outcome = outcomeBox.value else {
@@ -656,6 +610,69 @@ final class DelegationLoopWatcherTests: XCTestCase {
             firstTriggerAt,
             "Successful re-fire must advance the trigger timestamp"
         )
+    }
+
+    // MARK: - createdAt cutoff applies to within/across (not just tool-call)
+
+    /// The unified `considerCommitted` applies the `lastTrigger` cutoff to ALL three
+    /// modes — including within-message. A looping message from BEFORE the last fire
+    /// (e.g. revision-retained `llmConversation`) must NOT re-fire after cooldown.
+    /// (Pre-collapse, `considerCommittedMessage`/`considerConversation` had no cutoff;
+    /// this pins the new, stricter — and correct — behavior.)
+    func testWatcher_considerCommitted_withinMessage_preTriggerLoop_filteredOut() async {
+        let (store, childID) = await makeChildTaskWithAwaiter()
+        let firstTriggerAt = Date(timeIntervalSinceNow: -120)  // past 30s cooldown
+        store.delegationLoopWatcher._testForceTrigger(forTaskID: childID, at: firstTriggerAt)
+
+        let outcomeBox = OutcomeBox()
+        let handlerTask = Task { @MainActor in
+            outcomeBox.value = await store.completionAwaiter.register(taskID: childID)
+        }
+        var attempts = 0
+        while !store.completionAwaiter.hasWaiters(for: childID), attempts < 50 {
+            try? await Task.sleep(for: .milliseconds(1)); attempts += 1
+        }
+
+        // A within-message loop in a message created BEFORE the last trigger.
+        store.delegationLoopWatcher.considerCommitted(
+            taskID: childID,
+            recentAssistant: [(thinking: nil, content: loopText(), createdAt: firstTriggerAt.addingTimeInterval(-10))],
+            toolCalls: [])
+
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertNil(outcomeBox.value,
+                     "A within-message loop in a pre-trigger message must be filtered by the cutoff — no re-fire")
+        store.completionAwaiter.cancelAll(taskID: childID)
+        await handlerTask.value
+        XCTAssertEqual(store.delegationLoopWatcher._testLastTrigger(forTaskID: childID), firstTriggerAt)
+    }
+
+    /// Counter-test: a FRESH within-message loop (created after the last trigger,
+    /// cooldown expired) DOES fire via `considerCommitted`.
+    func testWatcher_considerCommitted_withinMessage_freshLoop_fires() async {
+        let (store, childID) = await makeChildTaskWithAwaiter()
+        let firstTriggerAt = Date(timeIntervalSinceNow: -120)
+        store.delegationLoopWatcher._testForceTrigger(forTaskID: childID, at: firstTriggerAt)
+
+        let outcomeBox = OutcomeBox()
+        let handlerTask = Task { @MainActor in
+            outcomeBox.value = await store.completionAwaiter.register(taskID: childID)
+        }
+        var attempts = 0
+        while !store.completionAwaiter.hasWaiters(for: childID), attempts < 50 {
+            try? await Task.sleep(for: .milliseconds(1)); attempts += 1
+        }
+
+        store.delegationLoopWatcher.considerCommitted(
+            taskID: childID,
+            recentAssistant: [(thinking: nil, content: loopText(), createdAt: firstTriggerAt.addingTimeInterval(60))],
+            toolCalls: [])
+
+        await handlerTask.value
+        guard case .parentMessageQueued(let text)? = outcomeBox.value else {
+            return XCTFail("A fresh within-message loop must fire via considerCommitted")
+        }
+        XCTAssertTrue(text.contains("within-message"), "scope must be within-message; got: \(text)")
     }
 
     // MARK: - Across-messages with thinking (caller-side join contract)
@@ -696,10 +713,7 @@ final class DelegationLoopWatcherTests: XCTestCase {
             thinking + " Same approach.\n",
         ]
 
-        store.delegationLoopWatcher.considerConversation(
-            taskID: childID,
-            recentRoleMessages: messages
-        )
+        commitAcross(store.delegationLoopWatcher, childID, messages: messages)
 
         await handlerTask.value
         guard let outcome = outcomeBox.value else {

@@ -13,13 +13,14 @@ final class FeatureTipIDTests: XCTestCase {
         XCTAssertEqual(FeatureTipID.exploratorySearch.rawValue, "exploratorySearch")
         XCTAssertEqual(FeatureTipID.vision.rawValue, "vision")
         XCTAssertEqual(FeatureTipID.dictation.rawValue, "dictation")
+        XCTAssertEqual(FeatureTipID.autovisor.rawValue, "autovisor")
     }
 
     func testAllCases_orderMatchesShelfOrder() {
         // Display order in the Watchtower Setup shelf must put LLM first
         // because LLM reachability is the foundational setting — see
         // WatchtowerSetupSection.visibleTips.
-        XCTAssertEqual(FeatureTipID.allCases, [.llm, .exploratorySearch, .vision, .dictation])
+        XCTAssertEqual(FeatureTipID.allCases, [.llm, .exploratorySearch, .vision, .dictation, .autovisor])
     }
 
     func testRawValueRoundTrip() {

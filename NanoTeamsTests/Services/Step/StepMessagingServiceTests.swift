@@ -102,6 +102,33 @@ final class StepMessagingServiceTests: XCTestCase {
         XCTAssertFalse(step.needsSupervisorInput)
     }
 
+    /// Human answers (default `isAutoAnswer: false`) must NOT carry the auto flag —
+    /// the feed's "Auto-answered" badge keys on `supervisorAnswerWasAuto`, not the
+    /// team's supervisor mode (the pre-flag heuristic mislabeled human replies to
+    /// the Autovisor's idle park).
+    func testAnswerSupervisorQuestion_humanDefault_clearsWasAutoFlag() {
+        var (task, stepID) = createTaskWithStep()
+        task.runs[0].steps[0].needsSupervisorInput = true
+        task.runs[0].steps[0].supervisorAnswerWasAuto = true  // stale from a prior auto Q&A
+
+        StepMessagingService.answerSupervisorQuestion(stepID: stepID, answer: "Yes", in: &task)
+
+        XCTAssertFalse(task.runs[0].steps[0].supervisorAnswerWasAuto,
+                       "A human answer must reset the auto-answered attribution")
+    }
+
+    /// Automated answer paths (delegating parent role, Autovisor) pass
+    /// `isAutoAnswer: true` — the flag rides to the step for the feed badge.
+    func testAnswerSupervisorQuestion_isAutoAnswer_setsWasAutoFlag() {
+        var (task, stepID) = createTaskWithStep()
+        task.runs[0].steps[0].needsSupervisorInput = true
+
+        StepMessagingService.answerSupervisorQuestion(
+            stepID: stepID, answer: "Auto reply", isAutoAnswer: true, in: &task)
+
+        XCTAssertTrue(task.runs[0].steps[0].supervisorAnswerWasAuto)
+    }
+
     func testAnswerSupervisorQuestion_trimsAnswer() {
         var (task, stepID) = createTaskWithStep()
         task.runs[0].steps[0].needsSupervisorInput = true

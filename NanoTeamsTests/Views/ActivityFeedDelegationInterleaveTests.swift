@@ -121,6 +121,50 @@ final class ActivityFeedDelegationInterleaveTests: XCTestCase {
         XCTAssertEqual(result[1].item.originTaskID, 42, "Descendant item must carry child task ID")
     }
 
+    /// Integration of the resolver's stale-child filtering with the timeline
+    /// build: a delegation history referencing one LOADED child and one DELETED
+    /// child must render the loaded child's items (stamped with its own
+    /// originTaskID) and nothing from the deleted one — no crash, no item with
+    /// the dead id, no stale messages mis-stamped onto another task.
+    func testInterleave_staleDescendantFilteredOut_loadedSiblingStillRendered() {
+        let parentStep = delegatingStep(stepID: "ca", history: [42, 43])
+        let run0 = Run(id: 0, steps: [parentStep])
+
+        let childStep = makeStep(role: .softwareEngineer, stepID: "swe_42", messages: [
+            makeMessage(role: .softwareEngineer, content: "from 42", at: date(150)),
+        ])
+        let child42 = NTMSTask(
+            id: 42, title: "Child 42", supervisorTask: "do",
+            runs: [Run(id: 0, steps: [childStep])],
+            parentTaskID: 1, parentRoleID: "ca", delegationDepth: 1
+        )
+        // Child 43 was deleted/unloaded — absent from tasksByID.
+        let resolved = ActivityFeedBuilder.resolveRunScopedDescendants(
+            displayedRun: run0, tasksByID: [42: child42], resolveTeam: makeResolveTeam()
+        )
+        XCTAssertEqual(resolved.map(\.task.id), [42], "Only the loaded child hydrates")
+
+        let result = ActivityFeedBuilder.buildTimelineItems(
+            steps: [parentStep],
+            run: run0,
+            activeTaskID: 1,
+            descendantTasks: resolved,
+            stepArtifactContentCache: [:],
+            debugModeEnabled: true,
+            isStreaming: { _ in false }
+        )
+
+        let origins = Set(result.map(\.item.originTaskID))
+        XCTAssertFalse(origins.contains(43), "No item may carry the deleted child's id")
+        let childContents = result.compactMap { tagged -> String? in
+            guard tagged.item.originTaskID == 42,
+                  case .llmMessage(let msg, _, _, _) = tagged.item else { return nil }
+            return msg.content
+        }
+        XCTAssertEqual(childContents, ["from 42"],
+                       "The loaded sibling's items render under its own originTaskID")
+    }
+
     // MARK: - Boundary band
 
     func testBoundary_intoChild_fires() {

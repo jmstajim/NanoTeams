@@ -48,11 +48,12 @@ final class NTMSRepositoryReconcileTests: XCTestCase {
                        "first open must stamp the current app version")
     }
 
-    func testFirstOpen_bumpsSchemaToVersion6() throws {
+    func testFirstOpen_bumpsSchemaToCurrentVersion() throws {
         _ = try sut.openOrCreateWorkFolder(at: root)
 
         let state = try AtomicJSONStore().read(WorkFolderState.self, from: paths.workFolderJSON)
-        XCTAssertEqual(state.schemaVersion, 6)
+        // WorkFolderState is at schemaVersion 7 (gained `autovisorTaskID`).
+        XCTAssertEqual(state.schemaVersion, 7)
     }
 
     // MARK: - Version-bump triggers reconcile
@@ -90,6 +91,119 @@ final class NTMSRepositoryReconcileTests: XCTestCase {
         )
         XCTAssertEqual(reconciled.teams[newIdx].roles[seIdx].prompt, originalPrompt,
                        "reconcile must overwrite stale system-role scalar fields")
+    }
+
+    /// The Autovisor team is bundled but hidden (not in `Team.defaultTeams`), so the
+    /// reconcile pass indexes it explicitly. A version bump must refresh the manager
+    /// role's prompt to the bundled text WITHOUT resetting user-toggled optional tools
+    /// — the manager's tool policy is additive by design (`syncAutovisorTeamToTemplate`
+    /// union-enforces mandatory tools and never removes user-disabled optional ones).
+    func testVersionBump_refreshesAutovisorManagerPrompt_preservingToolToggles() throws {
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        let store = AtomicJSONStore()
+        var teamsFile = try store.read(TeamsFile.self, from: paths.teamsJSON)
+        var autovisor = TeamTemplateFactory.autovisor()
+        let managerIdx = try XCTUnwrap(autovisor.roles.firstIndex {
+            $0.systemRoleID == AutovisorConstants.managerRoleSystemID
+        })
+        let bundledPrompt = autovisor.roles[managerIdx].prompt
+        // Simulate a team seeded by an older build: stale prompt + the user having
+        // switched OFF an optional tool (a persisted choice, NOT union-enforced).
+        autovisor.roles[managerIdx].prompt = "OLD BUILD PROMPT"
+        autovisor.roles[managerIdx].toolIDs.removeAll { $0 == ToolNames.analyzeImage }
+        teamsFile.teams.append(autovisor)
+        try store.write(teamsFile, to: paths.teamsJSON)
+
+        var state = try store.read(WorkFolderState.self, from: paths.workFolderJSON)
+        state.lastAppliedAppVersion = ""
+        try store.write(state, to: paths.workFolderJSON)
+
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        let reconciled = try store.read(TeamsFile.self, from: paths.teamsJSON)
+        let teamIdx = try XCTUnwrap(reconciled.teams.firstIndex {
+            $0.templateID == AutovisorConstants.teamTemplateID
+        })
+        let roleIdx = try XCTUnwrap(reconciled.teams[teamIdx].roles.firstIndex {
+            $0.systemRoleID == AutovisorConstants.managerRoleSystemID
+        })
+        XCTAssertEqual(reconciled.teams[teamIdx].roles[roleIdx].prompt, bundledPrompt,
+                       "version bump must refresh the hidden Autovisor team's manager prompt")
+        XCTAssertFalse(
+            reconciled.teams[teamIdx].roles[roleIdx].toolIDs.contains(ToolNames.analyzeImage),
+            "reconcile must not resurrect a user-disabled optional tool"
+        )
+    }
+
+    /// The Autovisor manager parks at `.needsSupervisorInput` at the end of every
+    /// review pass while its role status stays `.working` — if that deferred
+    /// reconcile like other teams, an enabled Autovisor would hold the watermark
+    /// on EVERY open and bundled updates would never land anywhere. Reconciling
+    /// it despite the active role is safe because the autovisor branch never
+    /// rewrites toolIDs (the only thing deferral protects).
+    func testRunningAutovisorRole_doesNotDeferReconcile() throws {
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        let store = AtomicJSONStore()
+        var teamsFile = try store.read(TeamsFile.self, from: paths.teamsJSON)
+        var autovisor = TeamTemplateFactory.autovisor()
+        let managerIdx = try XCTUnwrap(autovisor.roles.firstIndex {
+            $0.systemRoleID == AutovisorConstants.managerRoleSystemID
+        })
+        let bundledPrompt = autovisor.roles[managerIdx].prompt
+        let managerRoleID = autovisor.roles[managerIdx].id
+        autovisor.roles[managerIdx].prompt = "OLD BUILD PROMPT"
+        let autovisorTeamID = autovisor.id
+        teamsFile.teams.append(autovisor)
+        try store.write(teamsFile, to: paths.teamsJSON)
+
+        // Fabricate the parked manager task: role status .working (how a parked
+        // pass persists) pointing at the autovisor team.
+        try fm.createDirectory(
+            at: paths.internalTaskDir(taskID: 0), withIntermediateDirectories: true
+        )
+        let run = Run(
+            id: 0,
+            steps: [],
+            roleStatuses: [managerRoleID: .working],
+            teamID: autovisorTeamID
+        )
+        let task = NTMSTask(
+            id: 0,
+            title: "Autovisor",
+            supervisorTask: "review",
+            status: .running,
+            runs: [run],
+            preferredTeamID: autovisorTeamID
+        )
+        try store.write(task, to: paths.taskJSON(taskID: 0))
+        let index = TasksIndex(
+            schemaVersion: 1,
+            tasks: [TaskSummary(id: 0, title: "Autovisor", status: .running)],
+            nextTaskID: 1
+        )
+        try store.write(index, to: paths.tasksIndexJSON)
+
+        var state = try store.read(WorkFolderState.self, from: paths.workFolderJSON)
+        let stampedBeforeReopen = state.lastAppliedAppVersion
+        state.lastAppliedAppVersion = ""
+        try store.write(state, to: paths.workFolderJSON)
+
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        let reconciled = try store.read(TeamsFile.self, from: paths.teamsJSON)
+        let team = try XCTUnwrap(reconciled.teams.first {
+            $0.templateID == AutovisorConstants.teamTemplateID
+        })
+        let manager = try XCTUnwrap(team.roles.first {
+            $0.systemRoleID == AutovisorConstants.managerRoleSystemID
+        })
+        XCTAssertEqual(manager.prompt, bundledPrompt,
+                       "an active manager role must not defer the autovisor reconcile")
+        let stateAfter = try store.read(WorkFolderState.self, from: paths.workFolderJSON)
+        XCTAssertEqual(stateAfter.lastAppliedAppVersion, stampedBeforeReopen,
+                       "watermark must advance — only the autovisor team was active")
     }
 
     func testSameVersionRerun_isNoop() throws {
@@ -327,5 +441,35 @@ final class NTMSRepositoryReconcileTests: XCTestCase {
         let gen = try XCTUnwrap(after.teams.first { $0.id == "generated_team_test" })
         XCTAssertEqual(gen.systemPromptTemplate, "CUSTOM PROMPT",
                        "generated teams must be excluded from version-bump reconcile")
+    }
+
+    /// The Autovisor team is a lazily-created `templateID == "autovisor"` singleton
+    /// that persists in teams.json. A team stored under a prior app version carries
+    /// the OLD generic system template; the version-bump reconcile must rewrite it
+    /// to the dedicated `autovisorTemplate` (re-applied by templateID). Pins the
+    /// migration path the dedicated-template change relies on for existing installs.
+    func testVersionBump_rewritesStoredAutovisorTemplate() throws {
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        // Seed a stale Autovisor team carrying the template it used to inherit.
+        let store = AtomicJSONStore()
+        var teamsFile = try store.read(TeamsFile.self, from: paths.teamsJSON)
+        var stale = TeamTemplateFactory.autovisor()
+        stale.systemPromptTemplate = SystemTemplates.genericTemplate
+        teamsFile.teams.append(stale)
+        try store.write(teamsFile, to: paths.teamsJSON)
+
+        var state = try store.read(WorkFolderState.self, from: paths.workFolderJSON)
+        state.lastAppliedAppVersion = ""
+        try store.write(state, to: paths.workFolderJSON)
+
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        let after = try store.read(TeamsFile.self, from: paths.teamsJSON)
+        let mgr = try XCTUnwrap(after.teams.first { $0.templateID == AutovisorConstants.teamTemplateID })
+        XCTAssertEqual(mgr.systemPromptTemplate, SystemTemplates.autovisorTemplate,
+                       "reconcile must rewrite a stored Autovisor team to the dedicated single-role template")
+        XCTAssertFalse(mgr.systemPromptTemplate.contains("Submit each deliverable"),
+                       "the stale generic deliverable Final reminder must not survive reconcile")
     }
 }

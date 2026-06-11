@@ -72,6 +72,18 @@ nonisolated enum ToolHandlerRegistry {
         CancelDelegationTool.self,
         ResumeDelegationTool.self,
         ForwardToTeamTool.self,
+
+        // Autovisor (management tools — only in the hidden Manager role's toolset)
+        ListTasksTool.self,
+        TaskStatusTool.self,
+        CreateManagedTaskTool.self,
+        ControlTaskTool.self,
+        ManageRoleTool.self,
+        AnswerTaskQuestionTool.self,
+        MessageTaskTool.self,
+        ScheduleTaskTool.self,
+        SetWorkFolderContextTool.self,
+        WaitForEventsTool.self,
     ]
 
     // MARK: - Schema & Metadata Queries (cached)

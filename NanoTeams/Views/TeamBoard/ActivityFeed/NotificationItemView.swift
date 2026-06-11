@@ -38,7 +38,7 @@ struct NotificationItemView: View {
     @ViewBuilder
     private var notificationContent: some View {
         switch type {
-        case .supervisorInput(let question, let answer, let answerAttachmentPaths, let answerClippedTexts, let toolCallID, let thinking):
+        case .supervisorInput(let question, let answer, let answerAttachmentPaths, let answerClippedTexts, let toolCallID, let thinking, let wasAutoAnswered):
             SupervisorInputCard(
                 question: question,
                 answer: answer,
@@ -48,7 +48,8 @@ struct NotificationItemView: View {
                 thinking: thinking,
                 thinkingID: toolCallID,
                 roleName: role.displayName,
-                isAutoAnswering: isAutoAnswering
+                isAutoAnswering: isAutoAnswering,
+                wasAutoAnswered: wasAutoAnswered
             )
         case .failed(let errorMessage):
             FailedNotificationCard(errorMessage: errorMessage)
@@ -67,7 +68,8 @@ struct NotificationItemView: View {
             answerAttachmentPaths: [],
             answerClippedTexts: [],
             toolCallID: UUID(),
-            thinking: nil
+            thinking: nil,
+            wasAutoAnswered: false
         ),
         isAutoAnswering: false
     )
@@ -88,7 +90,8 @@ struct NotificationItemView: View {
             answerAttachmentPaths: [],
             answerClippedTexts: [],
             toolCallID: UUID(),
-            thinking: "I need guidance on the concurrency approach."
+            thinking: "I need guidance on the concurrency approach.",
+            wasAutoAnswered: true
         ),
         isAutoAnswering: true
     )

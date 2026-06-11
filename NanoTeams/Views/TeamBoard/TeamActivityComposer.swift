@@ -58,9 +58,18 @@ struct TeamActivityComposer: View {
     let roleDefinitions: [TeamRoleDefinition]
     let isChatMode: Bool
     let taskID: Int
-    /// Role IDs currently `.working` — only these are valid queue targets.
-    /// Supervisor cannot message an idle / done / failed role through this composer.
+    /// Role IDs currently `.working` — the only valid *targeted* queue targets (live
+    /// steering). Supervisor cannot narrow-queue to an idle / done role.
     let workingRoleIDs: Set<String>
+    /// Role IDs currently `.failed`. The composer names one as the retry target
+    /// ("Send a message to X to retry…") and offers a chip for it; sending queues
+    /// untargeted (the role isn't `.working`) and rides the `.failed` resume path.
+    let failedRoleIDs: Set<String>
+    /// Whether the composer may auto-resolve to `candidateRoles.first` when nothing is
+    /// working/asking/failed. True for chat mode and resumable-by-send states
+    /// (`.paused`/`.pending`/`.failed`); false for `.needsAcceptance` (done, awaiting
+    /// review) so the composer goes inert instead of naming an arbitrary role.
+    let allowsRoleFallback: Bool
     /// One Answer chip is rendered per pending question, in input order. Empty = no
     /// pending input. Multiple entries are possible whenever the dependency graph
     /// has parallel branches (CLAUDE.md #45 — TeamEngine starts ready roles
@@ -129,7 +138,9 @@ struct TeamActivityComposer: View {
             selected: selectedRecipient,
             activeQuestions: activeQuestions,
             selectableRoles: selectableRoles,
-            candidateRoles: candidateRoles
+            failedRoles: failedRoles,
+            candidateRoles: candidateRoles,
+            allowsRoleFallback: allowsRoleFallback
         )
     }
 
@@ -150,6 +161,16 @@ struct TeamActivityComposer: View {
     private var candidateRoles: [TeamRoleDefinition] {
         Self.computeCandidateRoles(
             roles: roleDefinitions,
+            askingRoleIDs: askingRoleIDs
+        )
+    }
+
+    /// `.failed` roles eligible as a named retry target — non-supervisor, non-observer,
+    /// not currently asking (askers route through their own Answer chip).
+    private var failedRoles: [TeamRoleDefinition] {
+        Self.computeFailedRoles(
+            roles: roleDefinitions,
+            failedRoleIDs: failedRoleIDs,
             askingRoleIDs: askingRoleIDs
         )
     }
@@ -178,18 +199,12 @@ struct TeamActivityComposer: View {
     }
 
     private var placeholderText: String {
-        switch effectiveRecipient {
-        case .answer:
-            return "Answer…"
-        case .role(let id):
-            // If the role isn't currently working, there's no queue to wait on.
-            let isWorking = workingRoleIDs.contains(id)
-            return isWorking
-                ? "Queue a message for \(roleName(id))…"
-                : "Send a message to \(roleName(id))…"
-        case nil:
-            return "No active recipient — wait for a role to start working…"
-        }
+        Self.placeholderText(
+            recipient: effectiveRecipient,
+            workingRoleIDs: workingRoleIDs,
+            failedRoleIDs: failedRoleIDs,
+            roleDefinitions: roleDefinitions
+        )
     }
 
     // MARK: - Body
@@ -269,7 +284,9 @@ struct TeamActivityComposer: View {
         Self.computeChipOptions(
             roles: roleDefinitions,
             workingRoleIDs: workingRoleIDs,
-            activeQuestions: activeQuestions
+            failedRoleIDs: failedRoleIDs,
+            activeQuestions: activeQuestions,
+            allowsRoleFallback: allowsRoleFallback
         )
     }
 
@@ -613,18 +630,23 @@ struct TeamActivityComposer: View {
                 // generic message here.
             }
         case .role(let id):
-            // Queue a message narrowed to a specific working role — delivered when THAT
-            // role reaches `.needsSupervisorInput`. For stronger interventions
-            // (cancelling mid-stream work, conversation-preserving correction), use
-            // the "Correct Role…" sheet on the graph/banner — that path goes through
-            // `NTMSOrchestrator.correctRole` and is the right tool for pause+redirect.
+            // Queue a message for a role. When the role is currently working, narrow
+            // delivery to it (steering for a live role). When NO role is working — a
+            // paused/failed resume, or an idle team between chat turns — the resolved
+            // `id` is just `candidateRoles.first`, so queue UNTARGETED: whichever role
+            // resumes consumes it via the untargeted tier of
+            // `injectQueuedSupervisorMessage`, rather than mis-targeting an arbitrary
+            // role. For conversation-preserving correction of a paused role, use the
+            // "Correct Role…" sheet (routes through `NTMSOrchestrator.correctRole`).
+            let isWorking = workingRoleIDs.contains(id)
             let queued = QuickCaptureController.shared.queueChatMessage(
                 text: text, attachments: attachments, clippedTexts: clippedTexts,
-                taskID: taskID, targetRoleID: id
+                taskID: taskID,
+                targetRoleID: Self.queueTarget(roleID: id, workingRoleIDs: workingRoleIDs)
             )
             if queued {
                 clearComposer()
-                store.lastInfoMessage = "Queued for \(roleName(id)) — will deliver on the next request."
+                store.lastInfoMessage = Self.queuedRoleInfoMessage(roleName: roleName(id), isWorking: isWorking)
             }
         case nil:
             // unreachable: canSubmit gates nil
@@ -670,19 +692,80 @@ extension TeamActivityComposer {
     /// 2. If any question is pending → `.answer(stepID:)` for the FIRST pending question
     ///    (Answer chips are leftmost in the row, in input order).
     /// 3. Otherwise the first selectable (working) role — matches the next chip in the row.
-    /// 4. Otherwise the first candidate role — matches the single-candidate fallback chip.
-    /// 5. Otherwise `nil` — no chip exists, the chip row collapses, `canSubmit` is false.
+    /// 4. Otherwise the first `.failed` role — the retry target (named; chip emitted).
+    /// 5. Otherwise, when `allowsRoleFallback` (chat / resumable-by-send state), the first
+    ///    candidate role — so an idle chat team or a paused/pending/failed multi-role team
+    ///    can still send. The gate is uniform across single- AND multi-candidate: a
+    ///    single-role *non-chat* team awaiting acceptance (e.g. Startup) must NOT resolve to
+    ///    its sole role (sending there is a no-op), so it falls through to `nil`.
+    /// 6. Otherwise `nil` — `.needsAcceptance` and transient gaps: no recipient, the chip
+    ///    row collapses, `canSubmit` is false (composer inert instead of naming a role).
     static func resolveEffectiveRecipient(
         selected: Recipient?,
         activeQuestions: [TeamActivityActiveQuestion],
         selectableRoles: [TeamRoleDefinition],
-        candidateRoles: [TeamRoleDefinition]
+        failedRoles: [TeamRoleDefinition] = [],
+        candidateRoles: [TeamRoleDefinition],
+        allowsRoleFallback: Bool = false
     ) -> Recipient? {
         if let explicit = selected { return explicit }
         if let q = activeQuestions.first { return .answer(stepID: q.stepID) }
         if let first = selectableRoles.first { return .role(id: first.id) }
-        if let first = candidateRoles.first { return .role(id: first.id) }
+        if let first = failedRoles.first { return .role(id: first.id) }
+        if allowsRoleFallback, let first = candidateRoles.first { return .role(id: first.id) }
         return nil
+    }
+
+    /// Queue target for the `.role` submit branch. Deliver to the role only when it's
+    /// currently working (live-role steering). When no role is working — a paused/failed
+    /// resume, or an idle team between chat turns, where the resolved recipient is just
+    /// `candidateRoles.first` — return `nil` so the message is queued untargeted and
+    /// consumed by whichever role resumes, rather than mis-targeted to an arbitrary role.
+    static func queueTarget(roleID: String, workingRoleIDs: Set<String>) -> String? {
+        workingRoleIDs.contains(roleID) ? roleID : nil
+    }
+
+    /// Confirmation banner for a queued `.role` submit. Working role → targeted-delivery
+    /// wording; non-working role (paused/failed resume, or an idle team between chat turns)
+    /// → "resuming the task" wording, since the message queues untargeted and rides the
+    /// resumed run.
+    static func queuedRoleInfoMessage(roleName: String, isWorking: Bool) -> String {
+        isWorking
+            ? "Queued for \(roleName) — will deliver on the next request."
+            : "Message queued — resuming the task; it'll be picked up on the next request."
+    }
+
+    /// Placeholder shown in the composer's text field:
+    /// - `.answer` → "Answer…"
+    /// - `.role(X)` where X is working → "Queue a message for X…" (targeted live steering)
+    /// - `.role(X)` where X is failed → "Send a message to X to retry…" (resume path)
+    /// - `.role(X)` in a single-role team → "Send a message to X…" (chat, named)
+    /// - `.role` multi-role fallback (paused/chat resume) → "Send a message…"
+    ///   (role-agnostic — the resolved id is just `candidateRoles.first`, never surfaced)
+    /// - `nil` → the no-recipient hint (composer inert).
+    static func placeholderText(
+        recipient: Recipient?,
+        workingRoleIDs: Set<String>,
+        failedRoleIDs: Set<String> = [],
+        roleDefinitions: [TeamRoleDefinition]
+    ) -> String {
+        switch recipient {
+        case .answer:
+            return "Answer…"
+        case .role(let id):
+            let name = roleDefinitions.first(where: { $0.id == id })?.name ?? id
+            if workingRoleIDs.contains(id) { return "Queue a message for \(name)…" }
+            if failedRoleIDs.contains(id) { return "Send a message to \(name) to retry…" }
+            // Single-role team (e.g. chat assistant idle between turns): name the role.
+            // Otherwise the recipient is an arbitrary `candidateRoles.first` resume target —
+            // stay role-agnostic so the composer never names a role the user didn't pick.
+            if roleDefinitions.filter({ !$0.isSupervisor }).count <= 1 {
+                return "Send a message to \(name)…"
+            }
+            return "Send a message…"
+        case nil:
+            return "No active recipient — accept, restart a role, or request changes."
+        }
     }
 
     /// Pure submit-gate. The composer can submit when there is content (text,
@@ -785,6 +868,24 @@ extension TeamActivityComposer {
         }
     }
 
+    /// `.failed` roles eligible as a named retry target — non-supervisor, non-observer, not
+    /// currently asking (askers route through their own Answer chip). Single source of truth
+    /// shared by the instance `failedRoles` (which feeds `resolveEffectiveRecipient`) and
+    /// `computeChipOptions`, so the resolver and the chip row can never disagree on which
+    /// roles count as failed.
+    static func computeFailedRoles(
+        roles: [TeamRoleDefinition],
+        failedRoleIDs: Set<String>,
+        askingRoleIDs: Set<String>
+    ) -> [TeamRoleDefinition] {
+        roles.filter {
+            failedRoleIDs.contains($0.id)
+                && !$0.isSupervisor
+                && !$0.isObserver
+                && !askingRoleIDs.contains($0.id)
+        }
+    }
+
     /// Every non-supervisor, non-observer role in the team, excluding the askers.
     /// Used as a fallback when no role is currently `.working` but we still want
     /// to offer a sensible chip (e.g. a one-role team whose sole role is idle
@@ -798,17 +899,23 @@ extension TeamActivityComposer {
         }
     }
 
-    /// Ordered chips: one Answer chip per pending question (in input order), then
-    /// one per working role, with a single-candidate fallback for idle one-role teams.
-    /// Returns `[]` when no recipient exists — the chip row collapses and `canSubmit` is false.
+    /// Ordered chips: one Answer chip per pending question (in input order), then one per
+    /// working role, then one per `.failed` role (retry target), with a single-candidate
+    /// fallback for idle one-role teams. Returns `[]` when no recipient exists — the chip
+    /// row collapses and `canSubmit` is false.
     static func computeChipOptions(
         roles: [TeamRoleDefinition],
         workingRoleIDs: Set<String>,
-        activeQuestions: [TeamActivityActiveQuestion]
+        failedRoleIDs: Set<String> = [],
+        activeQuestions: [TeamActivityActiveQuestion],
+        allowsRoleFallback: Bool = false
     ) -> [ChipOption] {
         let askingRoleIDs = Set(activeQuestions.map(\.askingRoleID))
         let selectable = computeSelectableRoles(
             roles: roles, workingRoleIDs: workingRoleIDs, askingRoleIDs: askingRoleIDs
+        )
+        let failed = computeFailedRoles(
+            roles: roles, failedRoleIDs: failedRoleIDs, askingRoleIDs: askingRoleIDs
         )
         let candidates = computeCandidateRoles(roles: roles, askingRoleIDs: askingRoleIDs)
 
@@ -824,12 +931,18 @@ extension TeamActivityComposer {
         for role in selectable {
             options.append(.init(recipient: .role(id: role.id), label: role.name, icon: role.icon))
         }
-        // Fallback for single-role teams whose one role is idle: surface that role's
-        // chip by name so the composer still has a recipient between chat turns.
+        for role in failed where !workingRoleIDs.contains(role.id) {
+            options.append(.init(recipient: .role(id: role.id), label: role.name, icon: "arrow.clockwise"))
+        }
+        // Fallback for single-role teams whose one role is idle: surface that role's chip by
+        // name so the composer still has a recipient between chat turns. Gated by
+        // `allowsRoleFallback` (matches the resolver) so a single-role NON-chat team awaiting
+        // acceptance shows no chip — otherwise the chip would be a tap-trap that resolves to
+        // a recipient whose send is a no-op.
         let alreadyHasRoleChip = options.contains {
             if case .role = $0.recipient { return true } else { return false }
         }
-        if !alreadyHasRoleChip, candidates.count == 1, let only = candidates.first {
+        if allowsRoleFallback, !alreadyHasRoleChip, candidates.count == 1, let only = candidates.first {
             options.append(.init(recipient: .role(id: only.id), label: only.name, icon: only.icon))
         }
         return options
@@ -847,6 +960,8 @@ extension TeamActivityComposer {
         isChatMode: true,
         taskID: 0,
         workingRoleIDs: Set(Team.default.roles.map(\.id)),
+        failedRoleIDs: [],
+        allowsRoleFallback: true,
         activeQuestions: [],
         maxHeight: .infinity
     )
@@ -869,6 +984,8 @@ extension TeamActivityComposer {
         isChatMode: false,
         taskID: taskID,
         workingRoleIDs: Set(roles.map(\.id)),
+        failedRoleIDs: [],
+        allowsRoleFallback: false,
         activeQuestions: [],
         maxHeight: .infinity
     )

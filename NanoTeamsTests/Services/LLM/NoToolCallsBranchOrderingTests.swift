@@ -366,7 +366,7 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
     func testFirstThinkingDrift_sendsTargetedNudgeAndIncrementsCounter() async {
         let hugeThinking = String(repeating: "a", count: 20_000)
         var messages: [ChatMessage] = []
-        XCTAssertEqual(service._testDriftCounter(stepID: stepID), 0)
+        XCTAssertEqual(service._testDriftCounter(stepID: stepID, taskID: task.id), 0)
 
         let stop = await service._testHandleNoToolCalls(
             stepID: stepID,
@@ -391,7 +391,7 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
             nudge.contains("20k characters"),
             "Nudge should report approximate thinking length, got: \(nudge)"
         )
-        XCTAssertEqual(service._testDriftCounter(stepID: stepID), 1)
+        XCTAssertEqual(service._testDriftCounter(stepID: stepID, taskID: task.id), 1)
     }
 
     /// Second consecutive drift escalates to the supervisor. The engine has no
@@ -411,7 +411,7 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
             conversationMessages: &messages,
             thinkingContent: hugeThinking
         )
-        XCTAssertEqual(service._testDriftCounter(stepID: stepID), 1)
+        XCTAssertEqual(service._testDriftCounter(stepID: stepID, taskID: task.id), 1)
 
         // Second drift: escalate
         var messages2: [ChatMessage] = []
@@ -437,7 +437,7 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
             "Escalation should mention the consecutive trigger, got: \(question)"
         )
         // Counter reset so a supervisor-driven restart starts clean.
-        XCTAssertEqual(service._testDriftCounter(stepID: stepID), 0)
+        XCTAssertEqual(service._testDriftCounter(stepID: stepID, taskID: task.id), 0)
     }
 
     /// Short thinking (below threshold) must not trip drift detection — falls
@@ -464,7 +464,7 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
             retry.contains("Missing deliverables"),
             "Short thinking + producing role should fall through to artifact nudge; got: \(retry)"
         )
-        XCTAssertEqual(service._testDriftCounter(stepID: stepID), 0)
+        XCTAssertEqual(service._testDriftCounter(stepID: stepID, taskID: task.id), 0)
     }
 
     /// Long thinking AND user-visible content is not drift — model is at least
@@ -486,7 +486,7 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
             retry.contains("Internal reasoning is not a tool call"),
             "Drift should require empty content; got: \(retry)"
         )
-        XCTAssertEqual(service._testDriftCounter(stepID: stepID), 0)
+        XCTAssertEqual(service._testDriftCounter(stepID: stepID, taskID: task.id), 0)
     }
 
     // After a tool call executes between two drift turns, the second drift must
@@ -506,11 +506,11 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
             task: task, roleDefinition: nil,
             conversationMessages: &messages, thinkingContent: huge
         )
-        XCTAssertEqual(service._testDriftCounter(stepID: stepID), 1)
+        XCTAssertEqual(service._testDriftCounter(stepID: stepID, taskID: task.id), 1)
 
         // Simulate tool-call execution between drifts.
-        service._testResetDriftCounter(stepID: stepID)
-        XCTAssertEqual(service._testDriftCounter(stepID: stepID), 0)
+        service._testResetDriftCounter(stepID: stepID, taskID: task.id)
+        XCTAssertEqual(service._testDriftCounter(stepID: stepID, taskID: task.id), 0)
 
         // Second drift after reset → counter = 1 again, NUDGE not escalation.
         var messages2: [ChatMessage] = []
@@ -523,7 +523,7 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
             XCTFail("After reset, second drift must nudge (continueLoop), not escalate. Got \(stop)")
             return
         }
-        XCTAssertEqual(service._testDriftCounter(stepID: stepID), 1)
+        XCTAssertEqual(service._testDriftCounter(stepID: stepID, taskID: task.id), 1)
         XCTAssertTrue(
             (messages2[0].content ?? "").contains("Internal reasoning is not a tool call"),
             "Should send drift nudge, not escalation message"
@@ -546,7 +546,7 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
             task: task, roleDefinition: role,
             conversationMessages: &pre, thinkingContent: huge
         )
-        XCTAssertEqual(service._testDriftCounter(stepID: stepID), 1)
+        XCTAssertEqual(service._testDriftCounter(stepID: stepID, taskID: task.id), 1)
 
         // Now activate revision on the step.
         mockDelegate.taskToMutate?.runs[0].steps[0].revisionComment = "Please redo X"
@@ -563,7 +563,7 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
             return
         }
         XCTAssertEqual(
-            service._testDriftCounter(stepID: stepID), 0,
+            service._testDriftCounter(stepID: stepID, taskID: task.id), 0,
             "Counter must reset on revision-mode drift to prevent post-revision pre-arming"
         )
         XCTAssertFalse(

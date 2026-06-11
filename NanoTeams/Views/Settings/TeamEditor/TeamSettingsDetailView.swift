@@ -17,15 +17,21 @@ struct TeamSettingsDetailView: View {
     var body: some View {
         Form {
             generalSection
-            acceptanceSection
-            supervisorModeSection
-            TeamSettingsCollaborationSection(
-                team: $team,
-                supervisorCanBeInvited: $supervisorCanBeInvited,
-                nonSupervisorRoles: nonSupervisorRoles,
-                onSave: onSave
-            )
-            TeamSettingsLimitsSection(limits: $limits)
+            // The managed singleton (Autovisor) hides settings it can't honor:
+            // acceptance/supervisor-mode are forced for the autonomous chat-mode
+            // manager (changing them breaks it), and collaboration/limits are
+            // meaningless for its single management role.
+            if !team.isManagedSingleton {
+                acceptanceSection
+                supervisorModeSection
+                TeamSettingsCollaborationSection(
+                    team: $team,
+                    supervisorCanBeInvited: $supervisorCanBeInvited,
+                    nonSupervisorRoles: nonSupervisorRoles,
+                    onSave: onSave
+                )
+                TeamSettingsLimitsSection(limits: $limits)
+            }
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)

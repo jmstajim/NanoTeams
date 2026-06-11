@@ -10,6 +10,7 @@ extension LLMExecutionService {
         result: ToolExecutionResult,
         toolCallID: UUID,
         stepID: String,
+        taskID: Int,
         client: any LLMClient,
         config _: LLMConfig,
         networkLogger: NetworkLogger?,
@@ -70,7 +71,7 @@ extension LLMExecutionService {
         conversationMessages.append(ChatMessage(
             role: .tool, content: envelope, toolCallID: result.providerID
         ))
-        await appendLLMMessage(stepID: stepID, role: .tool, content: """
+        await appendLLMMessage(stepID: stepID, taskID: taskID, role: .tool, content: """
             [CALL] \(result.toolName)
             Arguments: \(result.argumentsJSON)
 
@@ -86,7 +87,7 @@ extension LLMExecutionService {
             outputJSON: envelope,
             isError: isError
         )
-        await updateToolCallResult(stepID: stepID, toolCallID: toolCallID, result: finalResult)
+        await updateToolCallResult(stepID: stepID, taskID: taskID, toolCallID: toolCallID, result: finalResult)
 
         // Record the FINAL vision result in the tool-call tracker. The upstream
         // `processToolResults` skips `.visionAnalysis` from its pre-record loop

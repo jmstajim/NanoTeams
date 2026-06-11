@@ -68,6 +68,36 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
         XCTAssertFalse(t.hasPrefix("You are"), "codingAssistantTemplate must not open with 'You are X...'")
     }
 
+    // MARK: - Autovisor (single-role manager, no Team / Deliverables)
+
+    func testAutovisorTemplate_usesHeaderedScaffolding() {
+        let t = SystemTemplates.autovisorTemplate
+        for section in ["## Role", "## Conversation mechanics", "## Guidance", "## Final reminder"] {
+            XCTAssertTrue(t.contains(section), "autovisorTemplate must contain `\(section)`")
+        }
+        // Single-role template — must NOT carry the team-shaped sections.
+        for section in ["## Team", "## Deliverables"] {
+            XCTAssertFalse(t.contains(section), "autovisorTemplate must NOT contain `\(section)` (one-role team)")
+        }
+        // The FR's job is the termination contract: a pass ends via `wait_for_events`.
+        XCTAssertTrue(t.contains("wait_for_events"),
+                      "autovisorTemplate FR must steer toward `wait_for_events` (how a pass ends)")
+        // End-position restate (Liu2024): the context refresh is the instruction the
+        // manager keeps forgetting — it must be reinforced in the Final reminder,
+        // anchored to BEFORE task creation (workers read the context at task start).
+        XCTAssertTrue(t.contains("Work Folder Context"),
+                      "autovisorTemplate FR must restate the Work Folder Context refresh")
+        // Canary against an accidental repoint back to a producing-role template:
+        // the deliverable-submission FR only exists in templates the Autovisor must NOT use.
+        XCTAssertFalse(t.contains("Submit each deliverable"),
+                       "autovisorTemplate must not carry the generic deliverable-submission Final reminder")
+    }
+
+    func testAutovisorTemplate_doesNotOpenWithYouAre() {
+        let t = SystemTemplates.autovisorTemplate.trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertFalse(t.hasPrefix("You are"), "autovisorTemplate must not open with 'You are X...'")
+    }
+
     // MARK: - Consultation templates (every variant carries `## Final reminder`)
 
     func testEveryConsultationTemplate_hasFinalReminder() {
@@ -170,6 +200,7 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
             ("assistantTemplate", SystemTemplates.assistantTemplate),
             ("codingAssistantTemplate", SystemTemplates.codingAssistantTemplate),
             ("genericTemplate", SystemTemplates.genericTemplate),
+            ("autovisorTemplate", SystemTemplates.autovisorTemplate),
         ]
         for (name, template) in stepTemplates {
             let lines = template.split(separator: "\n", omittingEmptySubsequences: false)
@@ -203,6 +234,7 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
             ("assistantTemplate", SystemTemplates.assistantTemplate, false),
             ("codingAssistantTemplate", SystemTemplates.codingAssistantTemplate, false),
             ("genericTemplate", SystemTemplates.genericTemplate, true),
+            ("autovisorTemplate", SystemTemplates.autovisorTemplate, false), // one-role team, no `## Team`
         ]
         for (name, body, expectsTeam) in stepTemplates {
             let h2Sections = body.split(separator: "\n").compactMap { line -> String? in
@@ -291,6 +323,7 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
             ("genericTemplate", SystemTemplates.genericTemplate),
             ("assistantTemplate", SystemTemplates.assistantTemplate),
             ("codingAssistantTemplate", SystemTemplates.codingAssistantTemplate),
+            ("autovisorTemplate", SystemTemplates.autovisorTemplate),
             ("softwareConsultationTemplate", SystemTemplates.softwareConsultationTemplate),
             ("questPartyConsultationTemplate", SystemTemplates.questPartyConsultationTemplate),
             ("discussionConsultationTemplate", SystemTemplates.discussionConsultationTemplate),

@@ -176,6 +176,37 @@ struct TeamActivityFeedView: View {
         return Set(statuses.compactMap { id, status in status == .working ? id : nil })
     }
 
+    /// Role IDs currently `.failed` — the composer names one of these as the retry target
+    /// ("Send a message to X to retry…") so the resume path (commit "Resume a paused or
+    /// failed task by sending a message") gets a meaningful label instead of an arbitrary
+    /// `candidateRoles.first`.
+    private var failedRoleIDs: Set<String> {
+        guard let statuses = run?.roleStatuses else { return [] }
+        return Set(statuses.compactMap { id, status in status == .failed ? id : nil })
+    }
+
+    private var allowsRoleFallback: Bool {
+        Self.allowsRoleFallback(
+            isChatMode: isChatMode,
+            engineState: store.activeTaskID.flatMap { engineStateEnv[$0] }
+        )
+    }
+
+    /// Whether the composer may auto-resolve to a candidate role when nothing is working
+    /// and nothing is asking. True for chat mode (always messageable) and for
+    /// resumable-by-send engine states (`.paused`/`.pending`/`.failed`, where a queued
+    /// message wakes `resumeRun`). False for `.needsAcceptance` (done, awaiting review) and
+    /// the transient `.running` no-working-role gap — there the composer goes inert instead
+    /// of naming an arbitrary role. Static seam so the engine-state mapping (the heart of
+    /// the inert-on-review / retry-on-failed fix) is unit-testable without mounting the view.
+    static func allowsRoleFallback(isChatMode: Bool, engineState: TeamEngineState?) -> Bool {
+        if isChatMode { return true }
+        switch engineState {
+        case .paused, .pending, .failed: return true
+        default: return false
+        }
+    }
+
     /// All active supervisor questions, mapped into the composer's lightweight snapshot
     /// type. The engine runs ready roles in parallel (CLAUDE.md #45), so several roles
     /// can sit in `.needsSupervisorInput` simultaneously — the composer renders one
@@ -202,11 +233,14 @@ struct TeamActivityFeedView: View {
         )
     }
 
-    /// Composer visibility policy. Chat-mode tasks keep the composer alive
-    /// until the engine is genuinely failed or the task is closed — advisory
-    /// roles never self-terminate, and engine state may transiently sit at
-    /// `.done` after restart while the task is still meant to accept input.
-    /// Non-chat tasks gate on engine state (`.done`/`.failed`/`nil` → hide).
+    /// Composer visibility policy. The composer stays available on any live task
+    /// (not read-only, not closed) so the Supervisor can always send a message —
+    /// **including a `.failed` task**, where sending resumes/retries the run (see
+    /// `QuickCaptureController.tryFlushQueuedMessages` → `resumeRun`). Chat-mode
+    /// tasks keep it alive across every engine state (advisory roles never
+    /// self-terminate; state may transiently sit at `.done` after restart while
+    /// the task still accepts input). Non-chat tasks hide it only on `.done`/`nil`
+    /// (no live run to message).
     static func shouldShowComposer(
         isReadOnly: Bool,
         activeTaskID: Int?,
@@ -217,11 +251,10 @@ struct TeamActivityFeedView: View {
         if isReadOnly { return false }
         guard activeTaskID != nil else { return false }
         guard closedAt == nil else { return false }
-        if engineState == .failed { return false }
         if isChatMode { return true }
         switch engineState {
         case .done, nil: return false
-        default:         return true
+        default:         return true   // .failed falls through → sending resumes the run
         }
     }
 
@@ -301,8 +334,17 @@ struct TeamActivityFeedView: View {
                     .frame(height: Spacing.l)
                     .allowsHitTesting(false)
                 }
+
+                if hasContent && !viewModel.isNearBottom {
+                    scrollToBottomButton
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.trailing, Spacing.m)
+                        .padding(.bottom, Spacing.m)
+                        .transition(.opacity)
+                }
             }
             .frame(maxHeight: .infinity)
+            .animationWithReduceMotion(Animations.quick, value: viewModel.isNearBottom)
 
             if shouldShowComposer, let taskID = store.activeTaskID {
                 // Single unified input card. The "To:" menu lets the Supervisor choose
@@ -313,6 +355,8 @@ struct TeamActivityFeedView: View {
                     isChatMode: isChatMode,
                     taskID: taskID,
                     workingRoleIDs: workingRoleIDs,
+                    failedRoleIDs: failedRoleIDs,
+                    allowsRoleFallback: allowsRoleFallback,
                     activeQuestions: activeQuestionsForComposer,
                     maxHeight: paneHeight * 2 / 3
                 )
@@ -392,6 +436,7 @@ struct TeamActivityFeedView: View {
     // MARK: - Timeline Scroll
 
     @State private var scrollPosition = ScrollPosition(edge: .bottom)
+    @ScaledMetric(relativeTo: .body) private var scrollButtonSize: CGFloat = 26
 
     private var timelineScrollView: some View {
         ScrollView {
@@ -414,36 +459,71 @@ struct TeamActivityFeedView: View {
                             .padding(.top, tagged.boundary == nil ? topPadding : 0)
                     }
                 }
-                Color.clear.frame(height: 1).id("bottom")
-                    .onAppear { viewModel.isNearBottom = true }
-                    .onDisappear { viewModel.isNearBottom = false }
             }
             .padding()
             .padding(.bottom, Spacing.l)
         }
         .scrollPosition($scrollPosition)
+        // Geometry-based at-bottom detection. The transform runs per scroll tick
+        // (cheap arithmetic); `action` fires only when the Bool flips — no
+        // per-tick observation churn. Replaces the old LazyVStack sentinel,
+        // whose onAppear/onDisappear fired at the lazy render-window boundary
+        // (well past the viewport), leaving `isNearBottom` stale-true while
+        // the user had scrolled up.
+        .onScrollGeometryChange(for: Bool.self) { geo in
+            TeamActivityFeedViewModel.isNearBottom(
+                contentOffsetY: geo.contentOffset.y,
+                contentHeight: geo.contentSize.height,
+                containerHeight: geo.containerSize.height,
+                bottomInset: geo.contentInsets.bottom
+            )
+        } action: { _, nearBottom in
+            viewModel.isNearBottom = nearBottom
+        }
         .onChange(of: viewModel.timelineVersion) { _, _ in
-            if viewModel.needsScrollToBottom {
-                viewModel.needsScrollToBottom = false
-                scrollPosition.scrollTo(edge: .bottom)
-            } else if viewModel.isNearBottom {
-                withAnimation { scrollPosition.scrollTo(edge: .bottom) }
+            switch viewModel.consumeScrollAction() {
+            case .jump: scrollPosition.scrollTo(edge: .bottom)
+            case .animate: scrollToBottomAnimated()
+            case nil: break
             }
         }
+        // The rebuild bumps `timelineVersion`, so the onChange above is the
+        // single scroll site — no completion-scroll here (it would double-fire).
         .onChange(of: streamingManager.structuralVersion) { _, _ in
-            viewModel.scheduleStructuralRebuild(context: buildContext()) {
-                if viewModel.isNearBottom {
-                    scrollPosition.scrollTo(edge: .bottom)
-                }
-            }
+            viewModel.scheduleStructuralRebuild(context: buildContext())
         }
         .onChange(of: store.activeTaskID) { _, _ in
             viewModel.resetForTaskSwitch()
         }
         .onReceive(NotificationCenter.default.publisher(for: .scrollFeedToBottom)) { _ in
-            withAnimation { scrollPosition.scrollTo(edge: .bottom) }
+            scrollToBottomAnimated()
         }
         .onDisappear { viewModel.cancelStructuralRebuild() }
+    }
+
+    /// Smooth (non-bouncy) scroll to the bottom edge; also re-establishes the
+    /// `ScrollPosition` bottom-edge association so the feed resumes following
+    /// per-token content growth while streaming.
+    private func scrollToBottomAnimated() {
+        withAnimation(reduceMotion ? Animations.reducedMotion : Animations.smooth) {
+            scrollPosition.scrollTo(edge: .bottom)
+        }
+    }
+
+    private var scrollToBottomButton: some View {
+        Button {
+            scrollToBottomAnimated()
+        } label: {
+            Image(systemName: "chevron.down")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(Colors.textPrimary)
+                .frame(width: scrollButtonSize, height: scrollButtonSize)
+                .background(Circle().fill(Colors.surfaceElevated))
+                .overlay(Circle().strokeBorder(Colors.borderSubtle, lineWidth: 1))
+                .shadow(.card)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Scroll to bottom")
     }
 
     // MARK: - Header
@@ -478,34 +558,45 @@ struct TeamActivityFeedView: View {
 
     // MARK: - Team Header Menu
 
+    @ViewBuilder
     private var teamHeaderMenu: some View {
-        // Hide the Generated Team placeholder — users pick it via the
-        // dedicated "Generate Team..." entry in QuickCapture.
-        let teams = (store.snapshot?.workFolder.teams ?? []).filter { $0.templateID != "generated" }
+        // Hide infrastructure teams (Generated Team placeholder, Autovisor) —
+        // reached via their dedicated entry points, not the team-switch menu.
+        let teams = (store.snapshot?.workFolder.teams ?? []).filter { !$0.isHiddenFromPickers }
         let activeTeam = store.resolvedTeam(for: store.activeTask)
-        return Menu {
-            ForEach(teams) { team in
-                Button {
-                    Task { await store.switchTeam(to: team.id) }
-                } label: {
-                    HStack {
-                        if team.id == activeTeam.id {
-                            Image(systemName: "checkmark")
+        if activeTeam.isManagedSingleton {
+            // The Autovisor manager is permanently bound to its own team —
+            // no team switching, so render a static label instead of a menu.
+            teamHeaderLabel(activeTeam.name)
+        } else {
+            Menu {
+                ForEach(teams) { team in
+                    Button {
+                        Task { await store.switchTeam(to: team.id) }
+                    } label: {
+                        HStack {
+                            if team.id == activeTeam.id {
+                                Image(systemName: "checkmark")
+                            }
+                            Text(team.name)
+                            Text("(\(team.memberCount) members)")
+                                .foregroundStyle(.secondary)
                         }
-                        Text(team.name)
-                        Text("(\(team.memberCount) members)")
-                            .foregroundStyle(.secondary)
                     }
                 }
+            } label: {
+                teamHeaderLabel(activeTeam.name)
             }
-        } label: {
-            Text(activeTeam.name)
-                .font(Typography.subheadlineSemibold)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
+            .menuStyle(.borderlessButton)
         }
-        .menuStyle(.borderlessButton)
+    }
+
+    private func teamHeaderLabel(_ name: String) -> some View {
+        Text(name)
+            .font(Typography.subheadlineSemibold)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
     }
 
     // MARK: - Empty State
@@ -629,7 +720,10 @@ struct TeamActivityFeedView: View {
             stepID: stepID,
             messageID: msg.id,
             isPreviewTarget: scheduleIsStreaming,
-            allSteps: viewModel.cachedAllSteps
+            // The OWNING task's pool — stepID equals the role ID and is shared
+            // across same-team tasks, so a descendant bubble resolved against the
+            // active task's steps would match the WRONG task's step.
+            allSteps: viewModel.steps(forOriginTaskID: originTaskID)
         )
         // During NSWindow live-resize, stretch the streaming heartbeat to
         // effectively infinity so the TimelineView arm is preserved (per
@@ -654,12 +748,11 @@ struct TeamActivityFeedView: View {
         // remount `SelectableMessageText` on the streaming → committed flip
         // and defeat the append-only optimization.
         TimelineView(schedule) { _ in
-            let snapshot = StreamingSnapshot(
-                isStreaming: streamingManager.isStreaming(messageID: msg.id),
-                content: streamingManager.streamingContent(for: stepID),
-                thinking: streamingManager.streamingThinking(for: stepID),
-                processingProgress: streamingManager.processingProgress[stepID],
-                hasStreamActivity: streamingManager.hasReceivedStreamActivity(for: stepID)
+            let snapshot = Self.makeStreamingSnapshot(
+                manager: streamingManager,
+                messageID: msg.id,
+                stepID: stepID,
+                taskID: originTaskID
             )
             let inputs = Self.resolveBubbleInputs(msg: msg, streaming: snapshot)
             // `.equatable()` applied unconditionally rather than gated on
@@ -679,6 +772,7 @@ struct TeamActivityFeedView: View {
                 thinking: inputs.thinkingForBubble,
                 processingProgress: inputs.processingProgress,
                 hasStreamActivity: inputs.hasStreamActivity,
+                isStreamingToolCall: inputs.isStreamingToolCall,
                 isStreaming: inputs.isStreaming,
                 isImplicitStreamTarget: isImplicitStreamTarget,
                 showHeader: showHeader,
@@ -713,18 +807,22 @@ struct TeamActivityFeedView: View {
 
     /// Per-tick inputs for `MessageBubbleView`. The two cases mirror the
     /// two states the dispatcher resolves:
-    /// - `.streaming` carries content/thinking + progress indicators; never
-    ///   carries attachments (those belong to the committed turn only).
+    /// - `.streaming` carries content/thinking + progress/activity/tool-call
+    ///   indicators; never carries attachments (those belong to the
+    ///   committed turn only).
     /// - `.committed` carries content/thinking + attachments/clips; never
-    ///   carries `processingProgress` or `hasStreamActivity`.
+    ///   carries `processingProgress`, `hasStreamActivity`, or
+    ///   `isStreamingToolCall`.
     /// The discriminated union prevents illegal cross-mode field leakage
-    /// at compile time (no "streaming bubble with attachments").
+    /// at compile time (no "streaming bubble with attachments", no stale
+    /// "Generating" on a committed bubble).
     enum BubbleInputs: Equatable {
         case streaming(
             content: String,
             thinking: String?,
             processingProgress: Double?,
-            hasStreamActivity: Bool
+            hasStreamActivity: Bool,
+            isStreamingToolCall: Bool
         )
         case committed(
             content: String,
@@ -743,28 +841,35 @@ struct TeamActivityFeedView: View {
         // committed case is asked, and vice versa — never a sentinel.
         var contentForBubble: String {
             switch self {
-            case .streaming(let c, _, _, _): return c
+            case .streaming(let c, _, _, _, _): return c
             case .committed(let c, _, _, _): return c
             }
         }
 
         var thinkingForBubble: String? {
             switch self {
-            case .streaming(_, let t, _, _): return t
+            case .streaming(_, let t, _, _, _): return t
             case .committed(_, let t, _, _): return t
             }
         }
 
         var processingProgress: Double? {
             switch self {
-            case .streaming(_, _, let p, _): return p
+            case .streaming(_, _, let p, _, _): return p
             case .committed: return nil
             }
         }
 
         var hasStreamActivity: Bool {
             switch self {
-            case .streaming(_, _, _, let a): return a
+            case .streaming(_, _, _, let a, _): return a
+            case .committed: return false
+            }
+        }
+
+        var isStreamingToolCall: Bool {
+            switch self {
+            case .streaming(_, _, _, _, let t): return t
             case .committed: return false
             }
         }
@@ -784,6 +889,31 @@ struct TeamActivityFeedView: View {
         }
     }
 
+    /// Reads one bubble's streaming state out of the manager under the item's
+    /// OWNING task id. Static + extracted so the keying is unit-testable: in the
+    /// merged delegation timeline, a child task's bubble must read under the
+    /// child's `originTaskID` — substituting the active task's id here would
+    /// compile, pass the suite, and silently blank out (or cross-wire) child-team
+    /// streaming bubbles. Pinned by `StreamingSnapshotKeyingTests`.
+    static func makeStreamingSnapshot(
+        manager: StreamingPreviewManager,
+        messageID: UUID,
+        stepID: String,
+        taskID: Int
+    ) -> StreamingSnapshot {
+        StreamingSnapshot(
+            isStreaming: manager.isStreaming(messageID: messageID),
+            content: manager.streamingContent(stepID: stepID, taskID: taskID),
+            thinking: manager.streamingThinking(stepID: stepID, taskID: taskID),
+            processingProgress: manager.processingProgress[
+                TaskStepKey(taskID: taskID, stepID: stepID)],
+            hasStreamActivity: manager.hasReceivedStreamActivity(
+                stepID: stepID, taskID: taskID),
+            isStreamingToolCall: manager.isStreamingToolCall(
+                stepID: stepID, taskID: taskID)
+        )
+    }
+
     /// Pure snapshot of streaming state passed into the static resolver,
     /// so tests don't need to touch `StreamingPreviewManager`.
     struct StreamingSnapshot: Equatable {
@@ -792,6 +922,7 @@ struct TeamActivityFeedView: View {
         let thinking: String?
         let processingProgress: Double?
         let hasStreamActivity: Bool
+        let isStreamingToolCall: Bool
     }
 
     /// Adaptive `TimelineSchedule`:
@@ -841,17 +972,6 @@ struct TeamActivityFeedView: View {
         }
     }
 
-    /// Resolves a per-tick `BubbleInputs` from `(msg, streaming snapshot)`.
-    /// Static + injectable snapshot so it's callable from XCTest.
-    ///
-    /// For `.supervisorMessage` turns (queued chat delivery +
-    /// `forward_to_team` injections — both producers tag with the same
-    /// context), strips the embedded `## Attached Files` /
-    /// `## Clipped Text` markers and surfaces their payloads as
-    /// thumbnail cards via the same `ReadOnlyAttachmentGrid` used by
-    /// `SupervisorTaskItemView` and `SupervisorInputCard`. Order
-    /// matters: `displayContent` first strips the leading
-    /// `Supervisor:\n` attribution prefix, then `stripAttachedFiles`
     /// Streaming tick interval for `BubbleSchedule`. Three-way table:
     ///
     /// | isResizing | reduceMotion | interval                  | rationale |
@@ -870,6 +990,17 @@ struct TeamActivityFeedView: View {
         return reduceMotion ? 1.0 : 0.3
     }
 
+    /// Resolves a per-tick `BubbleInputs` from `(msg, streaming snapshot)`.
+    /// Static + injectable snapshot so it's callable from XCTest.
+    ///
+    /// For `.supervisorMessage` turns (queued chat delivery +
+    /// `forward_to_team` injections — both producers tag with the same
+    /// context), strips the embedded `## Attached Files` /
+    /// `## Clipped Text` markers and surfaces their payloads as
+    /// thumbnail cards via the same `ReadOnlyAttachmentGrid` used by
+    /// `SupervisorTaskItemView` and `SupervisorInputCard`. Order
+    /// matters: `displayContent` first strips the leading
+    /// `Supervisor:\n` attribution prefix, then `stripAttachedFiles`
     /// scans the remainder for marker sections.
     static func resolveBubbleInputs(msg: LLMMessage, streaming: StreamingSnapshot) -> BubbleInputs {
         if streaming.isStreaming {
@@ -877,7 +1008,8 @@ struct TeamActivityFeedView: View {
                 content: streaming.content ?? "",
                 thinking: streaming.thinking,
                 processingProgress: streaming.processingProgress,
-                hasStreamActivity: streaming.hasStreamActivity
+                hasStreamActivity: streaming.hasStreamActivity,
+                isStreamingToolCall: streaming.isStreamingToolCall
             )
         }
         let isSupervisorMsg = msg.sourceContext == .supervisorMessage

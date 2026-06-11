@@ -118,7 +118,7 @@ final class QuickCaptureFormViewLogicTests: XCTestCase {
     // MARK: - resolveStreamingLine: Optional("") fall-through
 
     func testResolveStreamingLine_emptyContentNilThinking_returnsNil() {
-        // `beginStreaming` installs an empty StepMessage so streamingContent(for:)
+        // `beginStreaming` installs an empty StepMessage so streamingContent(stepID:taskID:)
         // returns Optional("") before the first chunk arrives. With no thinking
         // to fall back to, the line should be nil — NOT the empty string that a
         // naive `?? thinking` fallback would have produced.
@@ -239,11 +239,11 @@ final class QuickCaptureFormViewLogicTests: XCTestCase {
         let messageID = UUID()
 
         // Before beginStreaming — nil.
-        XCTAssertNil(manager.streamingContent(for: stepID))
+        XCTAssertNil(manager.streamingContent(stepID: stepID, taskID: 0))
 
         // After beginStreaming, before any append — Optional("") not nil.
-        manager.beginStreaming(stepID: stepID, messageID: messageID, role: .softwareEngineer)
-        let content = manager.streamingContent(for: stepID)
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer)
+        let content = manager.streamingContent(stepID: stepID, taskID: 0)
         XCTAssertNotNil(content, "beginStreaming must install a preview before first chunk")
         XCTAssertEqual(content, "", "preview content must be empty string, not nil, before first append")
 
@@ -261,9 +261,9 @@ final class QuickCaptureFormViewLogicTests: XCTestCase {
         let manager = StreamingPreviewManager()
         let stepID = "test-step"
 
-        manager.appendThinking(stepID: stepID, content: "<|channel|>analysis<|message|>raw")
+        manager.appendThinking(stepID: stepID, taskID: 0, content: "<|channel|>analysis<|message|>raw")
 
-        let thinking = manager.streamingThinking(for: stepID)
+        let thinking = manager.streamingThinking(stepID: stepID, taskID: 0)
         XCTAssertNotNil(thinking)
         XCTAssertTrue(
             thinking!.contains("<|"),

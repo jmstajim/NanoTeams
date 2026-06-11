@@ -1,0 +1,160 @@
+import Foundation
+
+/// Configures WHEN the Autovisor wakes up to run a review pass.
+///
+/// The periodic *schedule* itself does NOT live here — it lives on the manager
+/// task's `recurrence` (so the existing automation scheduler picks it up via
+/// `recurringTaskIDsDue`). This struct carries the **event-driven** triggers plus
+/// a debounce, persisted inside `ProjectSettings` (`settings.json`).
+///
+/// `onTaskNeedsSupervisor` is special: besides waking the manager, it gates the
+/// auto-answer suppression. When it is `false`, the universal-supervisor behavior
+/// is OFF and tasks fall back to the normal auto-answer / human-wait path (so they
+/// never hang waiting for a manager that won't be woken).
+nonisolated struct AutovisorActivation: Codable, Hashable {
+    /// Wake when any top-level folder task enters `.needsSupervisorInput` so the
+    /// manager can answer it as the folder's Supervisor. Also the master gate for
+    /// auto-answer suppression (see type doc).
+    var onTaskNeedsSupervisor: Bool
+    /// Wake when a folder task fails (triage / restart).
+    var onTaskFailed: Bool
+    /// Wake when a folder task completes (review results / close / decide next).
+    var onTaskCompleted: Bool
+    /// Wake when a new (e.g. human-created) top-level task appears. Consumed by
+    /// `wakeAutovisorForEvents` against the orchestrator's seen-task set.
+    var onTaskCreated: Bool
+    /// Wake when a top-level task's role looks stuck — caught in a tool/output
+    /// loop or hung (token silence) on a `.running` role. Evaluated only by the
+    /// per-minute poll backstop (`computeStuckTaskIDs`), never on the hot
+    /// engine-state observer path.
+    var onTaskStuck: Bool
+    /// Minimum seconds between event-driven wakes (debounce) so a burst of events
+    /// doesn't spawn back-to-back review runs. Scheduled recurrence is unaffected.
+    /// Clamped to `>= minEventWakeDebounceSeconds` so a `0`/negative value can't
+    /// defeat the debounce (a wake-storm) via a hand-edited `settings.json`.
+    var minSecondsBetweenRuns: TimeInterval
+
+    /// Sleep timer master switch (ON by default): when on, the Autovisor turns
+    /// itself off `autoDisableAfterSeconds` after being enabled. Persisted as an
+    /// explicit Bool (not an optional duration) so a user's "off" choice survives
+    /// re-encode — `encodeIfPresent` would drop a nil and decode would resurrect
+    /// the on-by-default.
+    var autoDisableEnabled: Bool
+
+    /// Sleep-timer duration: seconds after enabling at which the Autovisor turns
+    /// itself off (when `autoDisableEnabled`). Only this DURATION persists — the
+    /// armed deadline is in-memory on the orchestrator (`autovisorAutoDisableAt`)
+    /// and re-arms fresh on every app launch / folder open with the feature on.
+    /// Floored at `minAutoDisableSeconds`.
+    var autoDisableAfterSeconds: TimeInterval
+
+    init(
+        onTaskNeedsSupervisor: Bool = true,
+        onTaskFailed: Bool = true,
+        onTaskCompleted: Bool = true,
+        onTaskCreated: Bool = false,
+        onTaskStuck: Bool = true,
+        minSecondsBetweenRuns: TimeInterval = 60,
+        autoDisableEnabled: Bool = true,
+        autoDisableAfterSeconds: TimeInterval = AutovisorConstants.defaultAutoDisableAfterSeconds
+    ) {
+        self.onTaskNeedsSupervisor = onTaskNeedsSupervisor
+        self.onTaskFailed = onTaskFailed
+        self.onTaskCompleted = onTaskCompleted
+        self.onTaskCreated = onTaskCreated
+        self.onTaskStuck = onTaskStuck
+        self.minSecondsBetweenRuns = Self.clampDebounce(minSecondsBetweenRuns)
+        self.autoDisableEnabled = autoDisableEnabled
+        self.autoDisableAfterSeconds = Self.clampAutoDisable(autoDisableAfterSeconds)
+    }
+
+    /// The sleep-timer duration when the timer is on, nil when off — the single
+    /// shape the orchestrator's re-arm guard and the persist-path change
+    /// detection both key on.
+    var effectiveAutoDisableAfterSeconds: TimeInterval? {
+        autoDisableEnabled ? autoDisableAfterSeconds : nil
+    }
+
+    // Forward-compatible decode: missing sub-fields fall back to defaults so adding
+    // a trigger in a future version doesn't reject existing settings.json. Delegates
+    // to `init(...)` so the clamps execute in exactly one place (the
+    // `AutovisorTuning` funnel pattern).
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            onTaskNeedsSupervisor: try c.decodeIfPresent(Bool.self, forKey: .onTaskNeedsSupervisor) ?? true,
+            onTaskFailed: try c.decodeIfPresent(Bool.self, forKey: .onTaskFailed) ?? true,
+            onTaskCompleted: try c.decodeIfPresent(Bool.self, forKey: .onTaskCompleted) ?? true,
+            onTaskCreated: try c.decodeIfPresent(Bool.self, forKey: .onTaskCreated) ?? false,
+            onTaskStuck: try c.decodeIfPresent(Bool.self, forKey: .onTaskStuck) ?? true,
+            minSecondsBetweenRuns: try c.decodeIfPresent(TimeInterval.self, forKey: .minSecondsBetweenRuns) ?? 60,
+            autoDisableEnabled: try c.decodeIfPresent(Bool.self, forKey: .autoDisableEnabled) ?? true,
+            autoDisableAfterSeconds: try c.decodeIfPresent(TimeInterval.self, forKey: .autoDisableAfterSeconds)
+                ?? AutovisorConstants.defaultAutoDisableAfterSeconds
+        )
+    }
+
+    /// Floors the debounce at the configured minimum so the invariant ("a burst of
+    /// events can't spawn back-to-back runs") holds for any constructed or decoded value.
+    static func clampDebounce(_ seconds: TimeInterval) -> TimeInterval {
+        max(AutovisorConstants.minEventWakeDebounceSeconds, seconds)
+    }
+
+    /// Bounds the sleep-timer duration: floored at the scheduler's once-a-minute
+    /// resolution (a sub-minute value could never be honored on time) and capped
+    /// at the Settings steppers' ceiling (a hand-edited huge Double would trap the
+    /// editor's `Int(_:)` seconds→h/m conversion).
+    static func clampAutoDisable(_ seconds: TimeInterval) -> TimeInterval {
+        min(max(AutovisorConstants.minAutoDisableSeconds, seconds),
+            AutovisorConstants.maxAutoDisableSeconds)
+    }
+
+    /// Returns a copy with `minSecondsBetweenRuns` and `autoDisableAfterSeconds`
+    /// re-floored. Mirrors `AutovisorTuning.clamped()`: the Settings editor's
+    /// bindings mutate the fields directly (bypassing the `init` clamps), so the
+    /// persist path (`updateAutovisorActivation`) re-applies the floors through
+    /// this. Delegates to `init(...)` so the floors execute in exactly one place.
+    func clamped() -> AutovisorActivation {
+        AutovisorActivation(
+            onTaskNeedsSupervisor: onTaskNeedsSupervisor,
+            onTaskFailed: onTaskFailed,
+            onTaskCompleted: onTaskCompleted,
+            onTaskCreated: onTaskCreated,
+            onTaskStuck: onTaskStuck,
+            minSecondsBetweenRuns: minSecondsBetweenRuns,
+            autoDisableEnabled: autoDisableEnabled,
+            autoDisableAfterSeconds: autoDisableAfterSeconds
+        )
+    }
+
+    static let `default` = AutovisorActivation()
+}
+
+/// Pure decision rules for the Autovisor's universal-supervisor behavior.
+nonisolated enum AutovisorPolicy {
+    /// Whether the Autovisor manager acts as this task's Supervisor — the
+    /// auto-answer suppression gate in `handleSupervisorAutoAnswer`. When true,
+    /// the task's `ask_supervisor` questions are NOT auto-answered; the step
+    /// parks at `.needsSupervisorInput`, the engine pauses, and the manager is
+    /// woken to answer.
+    ///
+    /// The manager is the task's Supervisor iff the feature + needs-supervisor
+    /// trigger are on, the task is top-level (delegation children route
+    /// `ask_supervisor` back to their delegating role), and the task isn't the
+    /// manager itself — the manager carries no `ask_supervisor` at all
+    /// (`resolveToolSchemas` excludes it for the autovisor template), and
+    /// excluding it here keeps the generic auto-answer fallback live for its
+    /// task instead of creating a self-supervision deadlock.
+    static func supervisesTask(
+        taskID: Int,
+        parentTaskID: Int?,
+        autovisorEnabled: Bool,
+        activation: AutovisorActivation,
+        autovisorTaskID: Int?
+    ) -> Bool {
+        autovisorEnabled
+            && activation.onTaskNeedsSupervisor
+            && parentTaskID == nil
+            && autovisorTaskID != taskID
+    }
+}

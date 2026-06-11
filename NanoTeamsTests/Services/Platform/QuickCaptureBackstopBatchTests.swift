@@ -60,11 +60,12 @@ final class QuickCaptureBackstopBatchTests: NTMSOrchestratorTestBase {
     private func msg(
         _ text: String,
         target: String? = nil,
+        auto: Bool = false,
         id: UUID = UUID()
     ) -> QuickCaptureFormState.QueuedChatMessage {
         QuickCaptureFormState.QueuedChatMessage(
             text: text, attachments: [], clippedTexts: [],
-            targetRoleID: target, id: id
+            targetRoleID: target, isFromAutomatedSupervisor: auto, id: id
         )!
     }
 
@@ -127,6 +128,60 @@ final class QuickCaptureBackstopBatchTests: NTMSOrchestratorTestBase {
                        "Step must transition to .pending after answer (engine resumes)")
         XCTAssertFalse(step?.needsSupervisorInput ?? true,
                        "needsSupervisorInput flag cleared on answer")
+    }
+
+    // MARK: - Answer attribution (isFromAutomatedSupervisor → supervisorAnswerWasAuto)
+
+    /// The Autovisor's `message_task` payload delivered via the backstop must mark
+    /// the answer as automated — otherwise the child task's feed shows the human
+    /// checkmark for an LLM-authored answer (the exact mislabel class the
+    /// `supervisorAnswerWasAuto` flag exists to eliminate).
+    func testBackstop_automatedSupervisorMessage_marksAnswerAsAuto() async {
+        let roleID = "worker"
+        let taskID = await setUpTaskWaitingForSupervisor(
+            roleIDs: [roleID], waitingRoleIDs: [roleID]
+        )
+        let controller = QuickCaptureController(formState: QuickCaptureFormState())
+        controller.store = sut
+        controller.formState.appendQueuedMessage(
+            msg("manager guidance", target: roleID, auto: true), for: taskID
+        )
+
+        controller.tryFlushQueuedMessages()
+        await waitFor {
+            sut.loadedTask(taskID)?.runs.last?.steps.first?.supervisorAnswer != nil
+        }
+
+        let step = sut.loadedTask(taskID)?.runs.last?.steps.first
+        XCTAssertEqual(step?.supervisorAnswer, "manager guidance")
+        XCTAssertEqual(step?.supervisorAnswerWasAuto, true,
+                       "Autovisor-authored answer must carry the auto attribution")
+    }
+
+    /// A mixed batch (automated + human content) is attributed to the human —
+    /// any human involvement makes it a human answer.
+    func testBackstop_mixedBatch_humanContentWins_marksAnswerAsHuman() async {
+        let roleID = "worker"
+        let taskID = await setUpTaskWaitingForSupervisor(
+            roleIDs: [roleID], waitingRoleIDs: [roleID]
+        )
+        let controller = QuickCaptureController(formState: QuickCaptureFormState())
+        controller.store = sut
+        controller.formState.appendQueuedMessage(
+            msg("manager guidance", target: roleID, auto: true), for: taskID
+        )
+        controller.formState.appendQueuedMessage(
+            msg("human addendum", target: roleID), for: taskID
+        )
+
+        controller.tryFlushQueuedMessages()
+        await waitFor {
+            sut.loadedTask(taskID)?.runs.last?.steps.first?.supervisorAnswer != nil
+        }
+
+        let step = sut.loadedTask(taskID)?.runs.last?.steps.first
+        XCTAssertEqual(step?.supervisorAnswerWasAuto, false,
+                       "Any human content in the drained batch makes it a human answer")
     }
 
     // MARK: - Mixed targeting (the user's other reproducer)

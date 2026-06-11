@@ -9,7 +9,8 @@ nonisolated extension NTMSRepository {
         preferredTeamID: NTMSID? = nil,
         parentTaskID: Int? = nil,
         parentRoleID: String? = nil,
-        delegationDepth: Int = 0
+        delegationDepth: Int = 0,
+        makeActive: Bool = true
     ) throws -> (snapshot: WorkFolderContext, taskID: Int) {
         let paths = try preparePaths(at: workFolderRoot)
 
@@ -80,8 +81,12 @@ nonisolated extension NTMSRepository {
         try store.write(index, to: paths.tasksIndexJSON)
 
         // Top-level tasks become active; child tasks do NOT change the active selection
-        // (the supervisor is still focused on the parent task in the UI).
-        if parentTaskID == nil {
+        // (the supervisor is still focused on the parent task in the UI). `makeActive: false`
+        // also opts a top-level task out of becoming active — used for the hidden Folder
+        // Manager task and for the manager's fire-and-forget `create_managed_task` so a
+        // background-created task never steals the user's UI focus.
+        let becomesActive = parentTaskID == nil && makeActive
+        if becomesActive {
             state.activeTaskID = task.id
             state.updatedAt = MonotonicClock.shared.now()
             try store.write(state, to: paths.workFolderJSON)
@@ -92,8 +97,8 @@ nonisolated extension NTMSRepository {
             workFolderState: state,
             teamsFile: teamsFile,
             tasksIndex: index,
-            activeTask: parentTaskID == nil ? task : nil,
-            activeTaskProvided: parentTaskID == nil
+            activeTask: becomesActive ? task : nil,
+            activeTaskProvided: becomesActive
         )
         return (snapshot, task.id)
     }
@@ -158,7 +163,7 @@ nonisolated extension NTMSRepository {
         }
 
         if state.activeTaskID == taskID {
-            let nextActive = pickFallbackActiveTaskID(from: tasksIndex)
+            let nextActive = pickFallbackActiveTaskID(from: tasksIndex, excluding: state.autovisorTaskID)
             state.activeTaskID = nextActive
             state.updatedAt = MonotonicClock.shared.now()
             try store.write(state, to: paths.workFolderJSON)

@@ -73,6 +73,8 @@ final class CollaborationToolCallErrorRenderingTests: XCTestCase {
         let updatedCall = mockDelegate.taskToMutate?.runs[0].steps[0].toolCalls.first { $0.id == toolCallID }
         XCTAssertEqual(updatedCall?.isError, false,
             "Success envelope must leave the placeholder isError=false untouched.")
+        XCTAssertEqual(updatedCall?.resultJSON, #"{"ok":true,"data":{"status":"pending"}}"#,
+            "A non-Autovisor (rich-UI) success must leave the placeholder resultJSON untouched — its real output renders in a dedicated UI surface. Reflecting here would clobber that card. Guards the isAutovisorSignal scoping of the success-reflect path.")
     }
 
     // MARK: - Failure-path: ok:false envelope flips isError + outputJSON
@@ -122,6 +124,53 @@ final class CollaborationToolCallErrorRenderingTests: XCTestCase {
             "Persisted resultJSON must be the actual error envelope, not the original 'pending' placeholder.")
         XCTAssertTrue(updatedCall?.resultJSON?.contains("INVALID_ARGS") ?? false,
             "Persisted resultJSON must surface the handler's error message for diagnostics.")
+    }
+
+    // MARK: - wait_for_events dispatch (GAP2 — the shipped-bug class)
+
+    /// A `.waitForEvents` result dispatched through `appendCollaborationResult` must
+    /// reach `handleWaitForEvents`, which arms `parkForEventsRequested`. The shipped
+    /// bug was the signal NOT being routed to this deferred path (it fell through to
+    /// the regular handler), so the flag was never set and the manager looped on
+    /// `wait_for_events`. Paired with `AdvisoryAutoFinishTests.testWaitForEvents_isCollaborationDeferred`
+    /// (the routing predicate), this pins the full chain: predicate routes it here →
+    /// dispatcher case handles it → flag is armed.
+    func testAppendCollaborationResult_waitForEvents_armsParkRequested() async {
+        let toolCallID = UUID()
+        let stepID = "autovisor"
+        let task = makeTaskWithStepAndToolCall(toolCallID: toolCallID, stepID: stepID)
+        mockDelegate.taskToMutate = task
+        service._testRegisterStepTask(stepID: stepID, taskID: task.id)
+        XCTAssertEqual(service.executionStates[TaskStepKey(taskID: task.id, stepID: stepID)]?.parkForEventsRequested, false,
+                       "precondition: flag starts unset")
+
+        let result = ToolExecutionResult(
+            providerID: "tc_1",
+            toolName: ToolNames.waitForEvents,
+            argumentsJSON: "{}",
+            outputJSON: #"{"ok":true,"data":{"status":"pending"}}"#,
+            isError: false,
+            signal: .waitForEvents
+        )
+        var conversation: [ChatMessage] = []
+        await service.appendCollaborationResult(
+            result: result,
+            toolCallID: toolCallID,
+            roleForMessage: .codingAgent,
+            stepID: stepID,
+            task: task,
+            runIndex: 0,
+            stepIndex: 0,
+            client: StubLLMClient(),
+            config: LLMConfig(),
+            networkLogger: nil,
+            conversationMessages: &conversation
+        )
+
+        XCTAssertEqual(service.executionStates[TaskStepKey(taskID: task.id, stepID: stepID)]?.parkForEventsRequested, true,
+            "wait_for_events dispatched via appendCollaborationResult must arm parkForEventsRequested (parks the review pass)")
+        XCTAssertEqual(service.executionStates[TaskStepKey(taskID: task.id, stepID: stepID)]?.finishRequested, false,
+            "wait_for_events must park, not complete — finishRequested stays unset")
     }
 
     // MARK: - Helpers

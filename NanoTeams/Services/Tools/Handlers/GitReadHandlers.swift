@@ -192,17 +192,17 @@ nonisolated struct GitLogTool: ToolHandler {
     static let blockedInDefaultStorage = true
 
     let workFolderRoot: URL
+    let resolver: SandboxPathResolver
 
-    
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self {
-        Self(workFolderRoot: dependencies.workFolderRoot)
+        Self(workFolderRoot: dependencies.workFolderRoot, resolver: dependencies.resolver)
     }
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let maxCount = optionalInt(args, "max") ?? 20
             let oneline = optionalBool(args, "oneline", default: true)
-            let paths = optionalStringArray(args, "paths")
+            let paths = optionalStringArray(args, "paths")?.map { resolver.relativizePathspec($0) }
 
             var gitArgs = ["log", "-\(maxCount)"]
 
@@ -286,16 +286,16 @@ nonisolated struct GitDiffTool: ToolHandler {
     static let blockedInDefaultStorage = true
 
     let workFolderRoot: URL
+    let resolver: SandboxPathResolver
 
-    
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self {
-        Self(workFolderRoot: dependencies.workFolderRoot)
+        Self(workFolderRoot: dependencies.workFolderRoot, resolver: dependencies.resolver)
     }
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let cached = optionalBool(args, "cached", default: false)
-            let paths = optionalStringArray(args, "paths")
+            let paths = optionalStringArray(args, "paths")?.map { resolver.relativizePathspec($0) }
             let maxLines = optionalInt(args, "max_lines") ?? 400
 
             var gitArgs = ["diff"]

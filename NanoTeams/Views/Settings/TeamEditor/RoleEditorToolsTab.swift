@@ -5,6 +5,14 @@ import SwiftUI
 struct RoleEditorToolsTab: View {
     @Binding var editorState: RoleEditorState
     let isMeetingCoordinator: Bool
+    /// Mandatory tools shown as locked/Required (Autovisor manager). Default empty.
+    var lockedTools: [String] = []
+    /// When non-nil, only these tools are offered as toggles (Autovisor manager).
+    var restrictToTools: Set<String>? = nil
+    /// Whether `ask_supervisor` is actually auto-injected for this role at runtime.
+    /// False for the Autovisor manager (it IS the top Supervisor — see
+    /// `LLMExecutionService+ToolResolution` step 4), so the editor must not claim it.
+    var injectsAskSupervisor: Bool = true
     @Environment(StoreConfiguration.self) private var config
 
     private var isNonProducingNonObserver: Bool {
@@ -39,12 +47,19 @@ struct RoleEditorToolsTab: View {
         ToolSelectionView(
             selectedTools: $editorState.selectedTools,
             producedArtifacts: editorState.producedArtifacts,
-            isNonProducingNonObserver: isNonProducingNonObserver,
+            isNonProducingNonObserver: injectsAskSupervisor && isNonProducingNonObserver,
             isMeetingCoordinator: isMeetingCoordinator,
             isVisionConfigured: config.isVisionConfigured,
             canDelegate: canDelegate,
-            delegationHint: delegationHint
+            delegationHint: delegationHint,
+            lockedTools: lockedTools,
+            restrictToTools: restrictToTools
         )
+        .onAppear {
+            // Safety: ensure the mandatory tools are always selected (persisted to
+            // toolIDs) even if a stale team somehow lacked one — they're locked in the UI.
+            editorState.selectedTools.formUnion(lockedTools)
+        }
     }
 }
 

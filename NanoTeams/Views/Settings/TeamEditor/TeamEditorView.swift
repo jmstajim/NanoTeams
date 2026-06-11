@@ -58,6 +58,10 @@ struct TeamEditorView: View {
     @State private var showingImportTeam = false
     @State var importError: ImportExportError? = nil
     @State private var selectedRoleID: String? = nil
+    // The team currently *edited* — decoupled from the global `activeTeamID` so
+    // selecting the managed singleton (Autovisor) here never becomes the work
+    // folder's default team for new tasks. nil → follow the global `activeTeamID`.
+    @State var editorSelectedTeamID: NTMSID? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -80,7 +84,7 @@ struct TeamEditorView: View {
                     // Right: segmented tabs + tab content
                     VStack(spacing: 0) {
                         HStack(spacing: Spacing.xs) {
-                            ForEach(EditorTab.allCases) { tab in
+                            ForEach(availableTabs) { tab in
                                 Button { selectedTab = tab } label: {
                                     Label(tab.label, systemImage: tab.icon)
                                         .labelStyle(.titleOnly)
@@ -110,14 +114,21 @@ struct TeamEditorView: View {
         .toolbar {
             ToolbarItemGroup(placement: .principal) {
                 if let snapshot = store.snapshot {
-                    // Hide the Generated Team placeholder — it's reachable only via
-                    // the "Generate Team..." entry and has no meaningful content on its own.
-                    let selectableTeams = snapshot.workFolder.teams.filter { $0.templateID != "generated" }
+                    // Hide only the Generated Team placeholder from the config list.
+                    // The Autovisor team IS shown here (protected: non-deletable,
+                    // non-duplicable) so it can be inspected/configured.
+                    let selectableTeams = snapshot.workFolder.teams.filter { !$0.isHiddenFromTeamEditor }
                     if !selectableTeams.isEmpty {
-                        let activeID = snapshot.workFolder.activeTeamID ?? selectableTeams[0].id
+                        let activeID = activeTeam?.id ?? selectableTeams[0].id
+                        let canDuplicate = activeTeam.map { !$0.isManagedSingleton } ?? false
+                        let canDelete = activeTeam.map {
+                            TeamManagementService.canDeleteTeam(in: snapshot.workFolder, teamID: $0.id)
+                        } ?? false
                         TeamSelectorView(
                             teams: selectableTeams,
                             activeTeamID: activeID,
+                            canDelete: canDelete,
+                            canDuplicate: canDuplicate,
                             onSelect: handleSelectTeam,
                             onAdd: { showingNewTeamSheet = true },
                             onGenerate: { showingGenerateTeamSheet = true },
@@ -202,6 +213,9 @@ struct TeamEditorView: View {
             }
         }
         .onChange(of: activeTeam?.id) { _, _ in
+            // Switching to a team that hides the current tab (e.g. Autovisor hides
+            // Artifacts) would otherwise strand the user on an empty pane.
+            selectedTab = TeamEditorTabPolicy.clamp(selectedTab, available: availableTabs)
             validateCurrentTeam()
         }
         // `updatedAt` bumps on every role/delegation edit (CLAUDE.md #42), so
@@ -273,12 +287,24 @@ struct TeamEditorView: View {
 
     // MARK: - Helpers
 
+    /// Tabs available for the edited team. The managed singleton (Autovisor) keeps the
+    /// Roles tab (read-only — see `RoleListView`) and the Prompts tab (System prompt only —
+    /// see `TeamPromptsDetailView`), but hides Artifacts: its single artifact dependency is
+    /// structural and editing it would break the manager.
+    var availableTabs: [EditorTab] {
+        TeamEditorTabPolicy.availableTabs(isManagedSingleton: activeTeam?.isManagedSingleton ?? false)
+    }
+
     var activeTeam: Team? {
         guard let snapshot = store.snapshot else { return nil }
-        // Skip the Generated Team placeholder — it's hidden from the selector, and
-        // rendering its (empty) detail tabs here would strand users on an
-        // unselectable team with no escape path.
-        let selectable = snapshot.workFolder.teams.filter { $0.templateID != "generated" }
+        // Editor-visible teams: only the Generated Team placeholder is hidden.
+        // Autovisor shows as a protected entry.
+        let selectable = snapshot.workFolder.teams.filter { !$0.isHiddenFromTeamEditor }
+        // A local editor selection wins (so picking Autovisor edits it here without
+        // touching the global default team); otherwise follow the global activeTeamID.
+        if let editorID = editorSelectedTeamID, let team = selectable.first(where: { $0.id == editorID }) {
+            return team
+        }
         let preferredID = snapshot.workFolder.activeTeamID ?? selectable.first?.id
         return selectable.first { $0.id == preferredID } ?? selectable.first
     }
@@ -310,26 +336,6 @@ struct TeamEditorView: View {
         )
     }
 
-    // MARK: - Supporting Types
-
-    enum EditorTab: String, CaseIterable, Identifiable, Hashable {
-        case team
-        case prompts
-        case roles
-        case artifacts
-
-        var id: String { rawValue }
-
-        private static let metadata: [EditorTab: (label: String, icon: String)] = [
-            .team:      ("Settings",  "gearshape"),
-            .prompts:   ("Prompts",   "text.bubble"),
-            .roles:     ("Roles",     "person.text.rectangle"),
-            .artifacts: ("Artifacts", "doc.text"),
-        ]
-
-        var label: String { Self.metadata[self]!.label }
-        var icon: String { Self.metadata[self]!.icon }
-    }
 }
 
 #Preview {

@@ -83,12 +83,24 @@ extension TeamEngine {
                 }
             }
 
-            // Check for roles needing Supervisor input
+            // Check for roles needing Supervisor input — in EVERY supervisor mode.
+            // A step status of `.needsSupervisorInput` is only ever written at
+            // stop time (`setNeedsSupervisorInput`, which also nils the step's
+            // runningTask) or by `resumeRun`'s question-restore branch; the
+            // autonomous in-loop auto-answer leaves the step `.running` for its
+            // whole duration. So a parked step is ALWAYS a real wait with no
+            // answer in flight, regardless of mode, and the right move is to
+            // pause and surface it: to the human (manual teams), the Autovisor
+            // (its suppression parks supervised tasks here — the wake trigger
+            // reads this live engine state), or the parent delegation awaiter
+            // (`WaitOutcome.needsSupervisorInput`). The pre-fix manual-only gate
+            // left autonomous tasks busy-burning the iteration limit on the
+            // 250 ms waiting-on-working cadence (4 Hz) toward a misleading
+            // "iteration limit reached" pause, with answers silently ignored
+            // (`notifyExternalEvent` is a no-op for `.running`).
             if currentRun.steps.contains(where: { $0.status == .needsSupervisorInput }) {
-                if team.settings.supervisorMode == .manual {
-                    transition(to: .needsSupervisorInput)
-                    return
-                }
+                transition(to: .needsSupervisorInput)
+                return
             }
 
             // Check if all roles are done (chat-mode teams never auto-complete)
@@ -118,8 +130,23 @@ extension TeamEngine {
                     transition(to: .needsAcceptance)
                     return
                 } else if roleStatuses.values.contains(.revisionRequested) {
-                    // Roles in revision - start them
-                    await startRevisionRoles(roleStatuses: roleStatuses)
+                    // Roles in revision — start only those whose upstream dependencies
+                    // are clear, so the cascade serializes (upstream finishes before a
+                    // downstream role re-runs against its fresh artifacts).
+                    let startedCount = await startRevisionRoles(roleStatuses: roleStatuses)
+                    if startedCount == 0 {
+                        // No revision role is startable yet there are no .working roles to
+                        // wait on — the remaining revision roles form a dependency cycle.
+                        // Fail loudly rather than busy-loop to the iteration cap.
+                        let blocked = roleStatuses
+                            .filter { $0.value == .revisionRequested }
+                            .keys.sorted().joined(separator: ", ")
+                        transition(to: .failed)
+                        store.setLastErrorMessageForUI(
+                            "Revision stalled: roles [\(blocked)] form a dependency cycle. Check artifact dependencies in Team Editor."
+                        )
+                        return
+                    }
                     continue
                 } else if isChatMode && allRolesComplete(roleStatuses: roleStatuses, roles: teamRoles, isChatMode: false) {
                     // Chat-mode auto-complete arm: every non-supervisor non-observer role

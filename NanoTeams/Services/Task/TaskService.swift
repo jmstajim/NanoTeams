@@ -16,7 +16,8 @@ final class TaskService {
         preferredTeamID: NTMSID? = nil,
         parentTaskID: Int? = nil,
         parentRoleID: String? = nil,
-        delegationDepth: Int = 0
+        delegationDepth: Int = 0,
+        makeActive: Bool = true
     ) throws -> (snapshot: WorkFolderContext, taskID: Int) {
         try repository.createTask(
             at: url,
@@ -25,7 +26,8 @@ final class TaskService {
             preferredTeamID: preferredTeamID,
             parentTaskID: parentTaskID,
             parentRoleID: parentRoleID,
-            delegationDepth: delegationDepth
+            delegationDepth: delegationDepth,
+            makeActive: makeActive
         )
     }
 
@@ -45,7 +47,11 @@ final class TaskService {
     /// supervisor-facing list.
     func taskSummaries(from snapshot: WorkFolderContext?, filter: TaskFilter) -> [TaskSummary] {
         guard let tasks = snapshot?.tasksIndex.tasks else { return [] }
-        let topLevelOnly = tasks.filter { $0.parentTaskID == nil }
+        // Hide the Autovisor singleton — it's reached via its own nav entry /
+        // Watchtower card, never the regular task list (single source of truth:
+        // `WorkFolderState.autovisorTaskID`).
+        let managerID = snapshot?.workFolder.state.autovisorTaskID
+        let topLevelOnly = tasks.filter { $0.parentTaskID == nil && $0.id != managerID }
 
         let filtered: [TaskSummary]
         switch filter {

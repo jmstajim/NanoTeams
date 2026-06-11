@@ -13,12 +13,14 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             exploratorySearchEnabled: true,
             visionConfigured: true,
             dictationLocalesEmpty: false,
+            autovisorEnabled: true,
+            hasWorkFolder: true,
             dismissed: []
         )
         XCTAssertTrue(visible.isEmpty)
     }
 
-    // MARK: - Nothing configured → all four in shelf order
+    // MARK: - Nothing configured → all five in shelf order
 
     func testVisible_noneConfigured_returnsAllInShelfOrder() {
         let visible = WatchtowerSetupSection.visibleTips(
@@ -26,12 +28,16 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             exploratorySearchEnabled: false,
             visionConfigured: false,
             dictationLocalesEmpty: true,
+            autovisorEnabled: false,
+            hasWorkFolder: true,
             dismissed: []
         )
-        XCTAssertEqual(visible, [.llm, .exploratorySearch, .vision, .dictation])
+        XCTAssertEqual(visible, [.llm, .exploratorySearch, .vision, .dictation, .autovisor])
     }
 
     // MARK: - Per-tip predicates
+    // (Autovisor held hidden — autovisorEnabled: true, hasWorkFolder: false —
+    //  so each case isolates the tip under test.)
 
     func testVisible_llmReachable_hidesLLMCardOnly() {
         let visible = WatchtowerSetupSection.visibleTips(
@@ -39,6 +45,8 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             exploratorySearchEnabled: false,
             visionConfigured: false,
             dictationLocalesEmpty: true,
+            autovisorEnabled: true,
+            hasWorkFolder: false,
             dismissed: []
         )
         XCTAssertEqual(visible, [.exploratorySearch, .vision, .dictation])
@@ -50,6 +58,8 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             exploratorySearchEnabled: true,
             visionConfigured: false,
             dictationLocalesEmpty: true,
+            autovisorEnabled: true,
+            hasWorkFolder: false,
             dismissed: []
         )
         XCTAssertEqual(visible, [.llm, .vision, .dictation])
@@ -61,6 +71,8 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             exploratorySearchEnabled: false,
             visionConfigured: true,
             dictationLocalesEmpty: true,
+            autovisorEnabled: true,
+            hasWorkFolder: false,
             dismissed: []
         )
         XCTAssertEqual(visible, [.llm, .exploratorySearch, .dictation])
@@ -73,9 +85,68 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             exploratorySearchEnabled: false,
             visionConfigured: false,
             dictationLocalesEmpty: false,
+            autovisorEnabled: true,
+            hasWorkFolder: false,
             dismissed: []
         )
         XCTAssertEqual(visible, [.llm, .exploratorySearch, .vision])
+    }
+
+    // MARK: - Autovisor predicate
+
+    func testVisible_autovisorNeedsSetup_appendsCardLast() {
+        // Everything else configured; FM off with a real work folder → only FM shows.
+        let visible = WatchtowerSetupSection.visibleTips(
+            llmReachable: true,
+            exploratorySearchEnabled: true,
+            visionConfigured: true,
+            dictationLocalesEmpty: false,
+            autovisorEnabled: false,
+            hasWorkFolder: true,
+            dismissed: []
+        )
+        XCTAssertEqual(visible, [.autovisor])
+    }
+
+    func testVisible_autovisor_hiddenWhenNoWorkFolder() {
+        // Default storage / no real folder → FM card never shows even when off.
+        let visible = WatchtowerSetupSection.visibleTips(
+            llmReachable: true,
+            exploratorySearchEnabled: true,
+            visionConfigured: true,
+            dictationLocalesEmpty: false,
+            autovisorEnabled: false,
+            hasWorkFolder: false,
+            dismissed: []
+        )
+        XCTAssertTrue(visible.isEmpty)
+    }
+
+    func testVisible_autovisor_hiddenWhenEnabled() {
+        // Once FM is on it's "set up" → card disappears.
+        let visible = WatchtowerSetupSection.visibleTips(
+            llmReachable: true,
+            exploratorySearchEnabled: true,
+            visionConfigured: true,
+            dictationLocalesEmpty: false,
+            autovisorEnabled: true,
+            hasWorkFolder: true,
+            dismissed: []
+        )
+        XCTAssertTrue(visible.isEmpty)
+    }
+
+    func testVisible_autovisorDismissed_isHidden() {
+        let visible = WatchtowerSetupSection.visibleTips(
+            llmReachable: true,
+            exploratorySearchEnabled: true,
+            visionConfigured: true,
+            dictationLocalesEmpty: false,
+            autovisorEnabled: false,
+            hasWorkFolder: true,
+            dismissed: ["autovisor"]
+        )
+        XCTAssertTrue(visible.isEmpty)
     }
 
     // MARK: - Dismiss interactions
@@ -86,6 +157,8 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             exploratorySearchEnabled: false,
             visionConfigured: false,
             dictationLocalesEmpty: true,
+            autovisorEnabled: true,
+            hasWorkFolder: false,
             dismissed: ["llm"]
         )
         XCTAssertEqual(visible, [.exploratorySearch, .vision, .dictation])
@@ -98,6 +171,8 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             exploratorySearchEnabled: false,
             visionConfigured: false,
             dictationLocalesEmpty: false,
+            autovisorEnabled: true,
+            hasWorkFolder: false,
             dismissed: ["exploratorySearch", "vision"]
         )
         XCTAssertTrue(visible.isEmpty)
@@ -111,6 +186,8 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             exploratorySearchEnabled: true,
             visionConfigured: true,
             dictationLocalesEmpty: false,
+            autovisorEnabled: true,
+            hasWorkFolder: false,
             dismissed: ["unknown_future_tip"]
         )
         XCTAssertEqual(visible, [.llm])
@@ -132,5 +209,6 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
         XCTAssertEqual(WatchtowerSetupSection.copy(for: .exploratorySearch).tab, .exploratorySearch)
         XCTAssertEqual(WatchtowerSetupSection.copy(for: .vision).tab, .vision)
         XCTAssertEqual(WatchtowerSetupSection.copy(for: .dictation).tab, .dictation)
+        XCTAssertEqual(WatchtowerSetupSection.copy(for: .autovisor).tab, .autovisor)
     }
 }

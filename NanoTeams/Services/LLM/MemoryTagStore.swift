@@ -42,12 +42,24 @@ nonisolated final class MemoryTagStore {
 
     let processors: [ToolResultProcessor]
 
+    /// Work folder root used to canonicalize tool-arg paths into one repo-relative spelling
+    /// so the same file reached via `src/x`, `Foo/src/x`, `./src/x`, or an absolute path
+    /// shares a single tag / baseline / MEMORIES row. `nil` disables canonicalization (raw
+    /// path as-is) — for stores built without a work-folder context (path-agnostic memory
+    /// tests). The sole production constructor (LLMExecutionService+StepLifecycle) always
+    /// supplies a root, so canonicalization is effectively always-on in production.
+    let workFolderRoot: URL?
+
     nonisolated(unsafe) static let defaultProcessors: [any ToolResultProcessor] = [
         FileToolProcessor(),
         BuildGitToolProcessor(),
     ]
 
-    init(processors: [ToolResultProcessor] = MemoryTagStore.defaultProcessors) {
+    init(
+        workFolderRoot: URL? = nil,
+        processors: [ToolResultProcessor] = MemoryTagStore.defaultProcessors
+    ) {
+        self.workFolderRoot = workFolderRoot
         self.processors = processors
     }
 

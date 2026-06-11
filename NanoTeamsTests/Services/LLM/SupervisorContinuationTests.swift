@@ -65,6 +65,7 @@ final class SupervisorContinuationTests: XCTestCase {
         // applyPlanningPhase should NOT replace the conversation because hasPriorConversation = true
         _ = await service.applyPlanningPhase(
             stepID: stepID,
+            taskID: task.id,
             roleForMessage: .questMaster,
             tools: [],
             step: step,
@@ -99,6 +100,7 @@ final class SupervisorContinuationTests: XCTestCase {
 
         _ = await service.applyPlanningPhase(
             stepID: stepID,
+            taskID: task.id,
             roleForMessage: .questMaster,
             tools: [],
             step: step,
@@ -128,7 +130,7 @@ final class SupervisorContinuationTests: XCTestCase {
 
         // Append a supervisor answer message
         await service.appendLLMMessage(
-            stepID: stepID, role: .user,
+            stepID: stepID, taskID: task.id, role: .user,
             content: "Supervisor answer: Yes, proceed",
             sourceRole: .supervisor,
             sourceContext: .supervisorAnswer)

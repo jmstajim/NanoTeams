@@ -44,7 +44,13 @@ enum ChangeRequestService {
         run: Run
     ) -> (error: String?, targetRoleDef: TeamRoleDefinition?) {
         guard let targetRoleDef = team?.findRole(byIdentifier: targetRoleID) else {
-            return ("Target role '\(targetRoleID)' not found in the team.", nil)
+            let available = (team?.roles ?? [])
+                .filter { !$0.isSupervisor }
+                .map(\.name)
+                .sorted()
+                .joined(separator: ", ")
+            let suffix = available.isEmpty ? "" : " Available roles: \(available)."
+            return ("Target role '\(targetRoleID)' not found in the team.\(suffix)", nil)
         }
         guard !targetRoleDef.isSupervisor else {
             return ("Cannot request changes to Supervisor's work.", nil)

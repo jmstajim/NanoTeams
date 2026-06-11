@@ -14,7 +14,7 @@ struct UpdatesSettingsView: View {
 
         ScrollView {
             VStack(spacing: Spacing.xl) {
-                StarOnGitHubBanner(size: .regular)
+                StarOnGitHubBanner()
 
                 versionStatusCard
 

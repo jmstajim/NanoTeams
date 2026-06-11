@@ -60,7 +60,7 @@ final class LLMExecutionServiceParseFailureCapTests: XCTestCase {
     // MARK: - Below threshold: continueLoop with retry nudge
 
     func testFirstMalformedJSONFailure_continuesLoopAndIncrementsCounter() async {
-        XCTAssertEqual(service._testHarmonyParseFailureCounter(stepID: stepID), 0)
+        XCTAssertEqual(service._testHarmonyParseFailureCounter(stepID: stepID, taskID: task.id), 0)
         var messages: [ChatMessage] = []
         let stop = await service._testHandleNoToolCalls(
             stepID: stepID,
@@ -79,7 +79,7 @@ final class LLMExecutionServiceParseFailureCapTests: XCTestCase {
             (messages[0].content ?? "").contains("malformed JSON"),
             "Below threshold should still send the existing retry nudge"
         )
-        XCTAssertEqual(service._testHarmonyParseFailureCounter(stepID: stepID), 1)
+        XCTAssertEqual(service._testHarmonyParseFailureCounter(stepID: stepID, taskID: task.id), 1)
     }
 
     func testSecondMalformedJSONFailure_continuesLoopAndCounterReachesTwo() async {
@@ -92,7 +92,7 @@ final class LLMExecutionServiceParseFailureCapTests: XCTestCase {
             roleDefinition: nil,
             conversationMessages: &messages
         )
-        XCTAssertEqual(service._testHarmonyParseFailureCounter(stepID: stepID), 1)
+        XCTAssertEqual(service._testHarmonyParseFailureCounter(stepID: stepID, taskID: task.id), 1)
 
         var messages2: [ChatMessage] = []
         let stop = await service._testHandleNoToolCalls(
@@ -107,7 +107,7 @@ final class LLMExecutionServiceParseFailureCapTests: XCTestCase {
             XCTFail("Second parse failure should still continueLoop, got \(stop)")
             return
         }
-        XCTAssertEqual(service._testHarmonyParseFailureCounter(stepID: stepID), 2)
+        XCTAssertEqual(service._testHarmonyParseFailureCounter(stepID: stepID, taskID: task.id), 2)
     }
 
     // MARK: - At threshold: escalate to Supervisor
@@ -125,7 +125,7 @@ final class LLMExecutionServiceParseFailureCapTests: XCTestCase {
                 conversationMessages: &msgs
             )
         }
-        XCTAssertEqual(service._testHarmonyParseFailureCounter(stepID: stepID), 2)
+        XCTAssertEqual(service._testHarmonyParseFailureCounter(stepID: stepID, taskID: task.id), 2)
 
         // Third failure must escalate.
         var messages: [ChatMessage] = []
@@ -152,7 +152,7 @@ final class LLMExecutionServiceParseFailureCapTests: XCTestCase {
             "Escalation should give actionable options, got: \(question)"
         )
         // Counter reset so a post-supervisor restart starts clean (matches drift pattern).
-        XCTAssertEqual(service._testHarmonyParseFailureCounter(stepID: stepID), 0)
+        XCTAssertEqual(service._testHarmonyParseFailureCounter(stepID: stepID, taskID: task.id), 0)
         // No retry nudge appended on escalation — only setNeedsSupervisorInput fires.
         XCTAssertTrue(
             messages.isEmpty,
@@ -196,20 +196,20 @@ final class LLMExecutionServiceParseFailureCapTests: XCTestCase {
                 conversationMessages: &msgs
             )
         }
-        XCTAssertEqual(service._testHarmonyParseFailureCounter(stepID: stepID), 2)
+        XCTAssertEqual(service._testHarmonyParseFailureCounter(stepID: stepID, taskID: task.id), 2)
 
         // Hit the production reset path directly (the same method
         // `runOneLLMToolIteration` calls before executing tool calls).
-        service._testResetCountersOnParseableToolCall(stepID: stepID)
+        service._testResetCountersOnParseableToolCall(stepID: stepID, taskID: task.id)
 
         XCTAssertEqual(
-            service._testHarmonyParseFailureCounter(stepID: stepID), 0,
+            service._testHarmonyParseFailureCounter(stepID: stepID, taskID: task.id), 0,
             "Production reset method must zero the malformed-JSON counter"
         )
         // Drift counter is also part of the reset cluster — verify it stays
         // at the same code path so a future split doesn't silently regress.
         XCTAssertEqual(
-            service._testDriftCounter(stepID: stepID), 0,
+            service._testDriftCounter(stepID: stepID, taskID: task.id), 0,
             "Production reset method must zero the drift counter (same cluster)"
         )
     }
@@ -229,12 +229,12 @@ final class LLMExecutionServiceParseFailureCapTests: XCTestCase {
                 conversationMessages: &msgs
             )
         }
-        XCTAssertEqual(service._testHarmonyParseFailureCounter(stepID: stepID), 2)
+        XCTAssertEqual(service._testHarmonyParseFailureCounter(stepID: stepID, taskID: task.id), 2)
 
         // Simulate a successful tool call landing between failures (production reset
         // happens immediately before `executeToolCalls` in `runOneLLMToolIteration`).
-        service._testResetHarmonyParseFailureCounter(stepID: stepID)
-        XCTAssertEqual(service._testHarmonyParseFailureCounter(stepID: stepID), 0)
+        service._testResetHarmonyParseFailureCounter(stepID: stepID, taskID: task.id)
+        XCTAssertEqual(service._testHarmonyParseFailureCounter(stepID: stepID, taskID: task.id), 0)
 
         // Two more failures → counter back at 2, NOT escalation.
         for _ in 0..<2 {
@@ -252,7 +252,7 @@ final class LLMExecutionServiceParseFailureCapTests: XCTestCase {
                 return
             }
         }
-        XCTAssertEqual(service._testHarmonyParseFailureCounter(stepID: stepID), 2)
+        XCTAssertEqual(service._testHarmonyParseFailureCounter(stepID: stepID, taskID: task.id), 2)
     }
 
     // MARK: - missingToolName does NOT increment
@@ -283,7 +283,7 @@ final class LLMExecutionServiceParseFailureCapTests: XCTestCase {
         )
         // Counter stays at 0 — only .malformedJSON increments it.
         XCTAssertEqual(
-            service._testHarmonyParseFailureCounter(stepID: stepID), 0,
+            service._testHarmonyParseFailureCounter(stepID: stepID, taskID: task.id), 0,
             "missingToolName must NOT count against the malformed-JSON cap"
         )
     }
@@ -309,7 +309,7 @@ final class LLMExecutionServiceParseFailureCapTests: XCTestCase {
                 conversationMessages: &msgs
             )
         }
-        XCTAssertEqual(service._testHarmonyParseFailureCounter(stepID: stepID), 2)
+        XCTAssertEqual(service._testHarmonyParseFailureCounter(stepID: stepID, taskID: task.id), 2)
 
         // Activate revision on the step.
         mockDelegate.taskToMutate?.runs[0].steps[0].revisionComment = "Please redo X"
@@ -330,7 +330,7 @@ final class LLMExecutionServiceParseFailureCapTests: XCTestCase {
         }
         // Counter RESET on entry to revision branch (mirrors drift-counter pattern).
         XCTAssertEqual(
-            service._testHarmonyParseFailureCounter(stepID: stepID), 0,
+            service._testHarmonyParseFailureCounter(stepID: stepID, taskID: task.id), 0,
             "Counter must reset on revision-mode entry so a pre-revision streak doesn't pre-trigger post-revision escalation"
         )
         XCTAssertTrue(
@@ -356,7 +356,7 @@ final class LLMExecutionServiceParseFailureCapTests: XCTestCase {
                 conversationMessages: &msgs
             )
         }
-        XCTAssertEqual(service._testHarmonyParseFailureCounter(stepID: stepID), 2)
+        XCTAssertEqual(service._testHarmonyParseFailureCounter(stepID: stepID, taskID: task.id), 2)
 
         // Now feed a `.missingToolName` shape — valid JSON, no top-level `name`.
         let missingNamePayload = "[reasoning]\nCreating PRD.\n[/reasoning]\n\n<|call|>{\"arguments\":{\"content\":\"PRD\",\"format\":\"markdown\",\"name\":\"Product Requirements\"}}<|end|>"
@@ -370,7 +370,7 @@ final class LLMExecutionServiceParseFailureCapTests: XCTestCase {
             conversationMessages: &messages
         )
         XCTAssertEqual(
-            service._testHarmonyParseFailureCounter(stepID: stepID), 0,
+            service._testHarmonyParseFailureCounter(stepID: stepID, taskID: task.id), 0,
             "missingToolName recovery must reset the malformed-JSON counter"
         )
     }

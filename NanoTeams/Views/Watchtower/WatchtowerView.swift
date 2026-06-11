@@ -22,9 +22,6 @@ struct WatchtowerView: View {
                 // Keyboard shortcut hints
                 shortcutHints
 
-                // Quick actions section
-                quickActionsSection
-
                 if let release = appUpdateState.availableRelease {
                     WatchtowerAppUpdateCard(
                         release: release,
@@ -38,8 +35,22 @@ struct WatchtowerView: View {
                     .transition(.scale(scale: 0.95, anchor: .center).combined(with: .opacity))
                 }
 
-                // Setup tips for unconfigured advanced features (own subview so its
-                // LLMStatusMonitor observation doesn't churn the rest of Watchtower).
+                // Quick actions row — its own subview so its snapshot-derived
+                // Autovisor reads stay off this body. The manager reassigns the
+                // snapshot on every memory write / background mutation while reviewing;
+                // reading them here would re-evaluate the whole body and hitch
+                // scrolling (CLAUDE.md #11).
+                WatchtowerQuickActionsBar(
+                    navigationSelection: $navigationSelection,
+                    onShowFinalReview: { isShowingFinalReviewSheet = true }
+                )
+
+                // Autovisor goal + live memory + chat box. Self-gating (renders
+                // only while the manager is on); the on/off toggle is in Quick Actions.
+                WatchtowerAutovisorCard()
+
+                // Setup tips for unconfigured advanced features (own subview; reads its
+                // own state so its updates don't churn the rest of Watchtower).
                 WatchtowerSetupSection()
 
                 // Notification banners (from all loaded tasks)
@@ -187,45 +198,6 @@ struct WatchtowerView: View {
                 RoundedRectangle(cornerRadius: CornerRadius.micro, style: .continuous)
                     .fill(Colors.surfaceElevated)
             )
-    }
-
-    // MARK: - Quick Actions
-
-    private var quickActionsSection: some View {
-        VStack(alignment: .leading, spacing: Spacing.m) {
-            NTMSSectionHeader(title: "Quick Actions", systemImage: "bolt.fill")
-
-            HStack(spacing: Spacing.m) {
-                ForEach(Array(availableQuickActions.enumerated()), id: \.element.id) { index, action in
-                    WatchtowerQuickActionButton(
-                        title: action.title,
-                        subtitle: action.subtitle,
-                        icon: action.icon,
-                        color: action.color,
-                        isPrimary: action.icon == "play.fill" || action.icon == "arrow.clockwise",
-                        action: action.action
-                    )
-                }
-                Spacer()
-            }
-        }
-    }
-
-    private var availableQuickActions: [QuickAction] {
-        let activeTask = store.activeTask
-        let engineStatus = activeTask.flatMap { engineState.taskEngineStates[$0.id] }
-        let requiresFinalReview = activeTask.map { store.resolvedTeam(for: $0).requiresSupervisorFinalReview } ?? false
-
-        return QuickAction.makeActions(
-            activeTask: activeTask,
-            engineStatus: engineStatus,
-            requiresFinalReview: requiresFinalReview,
-            onNewTask: { QuickCaptureController.shared.showNewTask() },
-            onNavigateToTask: { taskID in navigationSelection = .task(taskID) },
-            onPauseRun: { taskID in Task { await store.pauseRun(taskID: taskID) } },
-            onShowFinalReview: { isShowingFinalReviewSheet = true },
-            onCloseTask: { taskID in Task { _ = await store.closeTask(taskID: taskID) } }
-        )
     }
 
     // MARK: - Activity Timeline

@@ -3,13 +3,25 @@ import SwiftUI
 /// Renders a single LLM message bubble with optional thinking section.
 /// Handles both streaming and committed messages — the parent resolves content before passing.
 ///
-/// Composition:
+/// Composition (top to bottom — chronological within a turn):
 /// - `ActivityFeedRoleAvatar` — leading avatar (or clear spacer when header is hidden).
 /// - `MessageBubbleHeader` — role name, source label, timestamp.
-/// - `MessageBubbleStreamingIndicator` — status row: Processing X% / Generating /
-///   Waiting (or hidden once content / thinking arrives).
-/// - `MessageThinkingSection` — compact "Thinking" row that opens a window.
+/// - `MessageThinkingSection` (top) — compact "Thinking" row that opens a
+///   window. Animates only while reasoning is the live tail (no content yet);
+///   goes static once prose starts.
 /// - Content bubble — the message text.
+/// - `MessageThinkingSection` (trailing) — a second, animated "Thinking…"
+///   row BELOW the content while a tool-call envelope streams into the
+///   thinking preview after prose froze at the marker. The live activity is
+///   chronologically after the content, so the indicator sits under it.
+/// - `MessageBubbleStreamingIndicator` — status row: Processing X% /
+///   Generating / Waiting (hidden once visible thinking/content is the live
+///   indicator; the tool-call fallback keeps "Generating" up while prose is
+///   frozen and the thinking preview is empty). Placed after the content for
+///   the same chronology reason — every text-returning state with visible
+///   content describes activity that happens after that content.
+/// - `ReadOnlyAttachmentGrid` — attachment/clip cards for `.supervisorMessage`
+///   turns.
 struct MessageBubbleView: View {
     let message: LLMMessage
     let role: Role
@@ -23,6 +35,14 @@ struct MessageBubbleView: View {
     /// `MessageBubbleStreamingIndicator` for the case where tokens are
     /// flowing into invisible buffers (e.g. tool-call argument JSON).
     var hasStreamActivity: Bool = false
+    /// True once the live stream has committed to tool-call emission
+    /// (harmony envelope marker / OpenAI tool-call deltas). The envelope
+    /// text is piped into the thinking preview, so this keeps the
+    /// "Thinking…" loader animating even though visible prose froze at
+    /// the marker (`isThinkingStreaming` includes it), and serves as the
+    /// indicator's "Generating" fallback when the thinking preview is
+    /// still empty.
+    var isStreamingToolCall: Bool = false
     let isStreaming: Bool
     var isImplicitStreamTarget: Bool = false
     let showHeader: Bool
@@ -52,6 +72,64 @@ struct MessageBubbleView: View {
 
     private var roleName: String { roleLabelOverride ?? roleDefinition?.name ?? role.displayName }
     private var tintColor: Color { roleDefinition?.resolvedTintColor ?? role.tintColor }
+
+    /// Whether the "Thinking…" loader animates: while reasoning streams (no
+    /// content yet) OR while a tool-call envelope is being assembled — the
+    /// envelope text is piped into the thinking preview, so the thinking row
+    /// stays the live indicator even though the visible prose froze at the
+    /// marker. `nonisolated static` (pure math) so the truth table is pinned
+    /// against the PRODUCTION symbol by `TeamActivityFeedLogicTests`, not a
+    /// test-local copy — same pattern as
+    /// `MessageBubbleStreamingIndicator.resolveStatusText`.
+    nonisolated static func isThinkingStreaming(
+        isStreaming: Bool,
+        hasMessageContent: Bool,
+        isStreamingToolCall: Bool
+    ) -> Bool {
+        isStreaming && (!hasMessageContent || isStreamingToolCall)
+    }
+
+    /// Whether the trailing (below-content) animated "Thinking…" row shows:
+    /// content already streamed, the thinking preview is non-empty, and the
+    /// thinking is the live tail of the stream (tool-call envelope assembly —
+    /// the pipeline's only deliberate post-prose thinking pipe; raw
+    /// `thinkingDelta`s are appended ungated, but reasoning precedes content
+    /// in practice). The top section goes static in this state so there is
+    /// exactly one live indicator, placed in chronological order. Pinned by
+    /// `TeamActivityFeedLogicTests`.
+    nonisolated static func showsTrailingThinkingRow(
+        isStreaming: Bool,
+        hasMessageContent: Bool,
+        isStreamingToolCall: Bool,
+        hasThinkingContent: Bool
+    ) -> Bool {
+        hasThinkingContent && hasMessageContent
+            && isThinkingStreaming(
+                isStreaming: isStreaming,
+                hasMessageContent: hasMessageContent,
+                isStreamingToolCall: isStreamingToolCall
+            )
+    }
+
+    /// Whether the TOP thinking section's loader animates: reasoning is the
+    /// live tail of the stream — no content yet. Once prose exists, any
+    /// further live thinking belongs to the trailing row below the content
+    /// (`showsTrailingThinkingRow`) and the top section goes static. Do NOT
+    /// "simplify" the body back to plain `isThinkingStreaming` — that
+    /// resurrects the double-animated-row state during tool-call assembly.
+    /// Mutual exclusivity with the trailing row is pinned by
+    /// `TeamActivityFeedLogicTests.testThinkingRows_neverBothAnimate`.
+    nonisolated static func topThinkingRowAnimates(
+        isStreaming: Bool,
+        hasMessageContent: Bool,
+        isStreamingToolCall: Bool
+    ) -> Bool {
+        isThinkingStreaming(
+            isStreaming: isStreaming,
+            hasMessageContent: hasMessageContent,
+            isStreamingToolCall: isStreamingToolCall
+        ) && !hasMessageContent
+    }
 
     // MARK: - Body
 
@@ -86,27 +164,21 @@ struct MessageBubbleView: View {
                     )
                 }
 
-                MessageBubbleStreamingIndicator(
-                    isStreaming: isStreaming,
-                    isImplicitStreamTarget: isImplicitStreamTarget,
-                    hasMessageContent: hasMessageContent,
-                    hasThinkingContent: hasThinkingContent,
-                    processingProgress: processingProgress,
-                    hasStreamActivity: hasStreamActivity
-                )
-                // Load-bearing: skips this subtree on streaming ticks when
-                // the 5 inputs are unchanged (Waiting/Generating/Processing
-                // steady state). Drift-guarded by
-                // `MessageBubbleStreamingIndicatorEquatableTests`.
-                .equatable()
-
                 if hasThinkingContent, let thinking {
-                    let isThinkingStreaming = isStreaming && !hasMessageContent
+                    // Top section animates only while reasoning is the live
+                    // tail (no content yet). Once prose exists, any further
+                    // live thinking (tool-call envelope assembly) is
+                    // chronologically AFTER the content — the trailing row
+                    // below carries the animation instead.
                     MessageThinkingSection(
                         thinking: thinking,
                         messageID: message.id,
                         roleName: roleName,
-                        isStreaming: isThinkingStreaming
+                        isStreaming: Self.topThinkingRowAnimates(
+                            isStreaming: isStreaming,
+                            hasMessageContent: hasMessageContent,
+                            isStreamingToolCall: isStreamingToolCall
+                        )
                     )
                 }
 
@@ -132,6 +204,40 @@ struct MessageBubbleView: View {
                         contentText
                     }
                 }
+
+                if Self.showsTrailingThinkingRow(
+                    isStreaming: isStreaming,
+                    hasMessageContent: hasMessageContent,
+                    isStreamingToolCall: isStreamingToolCall,
+                    hasThinkingContent: hasThinkingContent
+                ), let thinking {
+                    // Trailing live row: the tool-call envelope is being typed
+                    // into the thinking preview after the prose froze at the
+                    // marker. Same tap target as the top section (opens the
+                    // identical `ActivityDetailWindow.thinking` — dedupKey
+                    // focuses one window, never two).
+                    MessageThinkingSection(
+                        thinking: thinking,
+                        messageID: message.id,
+                        roleName: roleName,
+                        isStreaming: true
+                    )
+                }
+
+                MessageBubbleStreamingIndicator(
+                    isStreaming: isStreaming,
+                    isImplicitStreamTarget: isImplicitStreamTarget,
+                    hasMessageContent: hasMessageContent,
+                    hasThinkingContent: hasThinkingContent,
+                    processingProgress: processingProgress,
+                    hasStreamActivity: hasStreamActivity,
+                    isStreamingToolCall: isStreamingToolCall
+                )
+                // Load-bearing: skips this subtree on streaming ticks when
+                // its stored inputs are unchanged (Waiting/Generating/
+                // Processing steady state). Drift-guarded by
+                // `MessageBubbleStreamingIndicatorEquatableTests`.
+                .equatable()
 
                 if !attachmentPaths.isEmpty || !clippedTexts.isEmpty {
                     ReadOnlyAttachmentGrid(
@@ -179,6 +285,7 @@ extension MessageBubbleView: Equatable {
             && lhs.thinking == rhs.thinking
             && lhs.processingProgress == rhs.processingProgress
             && lhs.hasStreamActivity == rhs.hasStreamActivity
+            && lhs.isStreamingToolCall == rhs.isStreamingToolCall
             && lhs.isStreaming == rhs.isStreaming
             && lhs.isImplicitStreamTarget == rhs.isImplicitStreamTarget
             && lhs.showHeader == rhs.showHeader
@@ -273,6 +380,38 @@ extension MessageBubbleView: Equatable {
                 content: "I'll start by creating the Sorting.swift file with",
                 thinking: "Need to implement both algorithms.",
                 processingProgress: nil,
+                isStreaming: true,
+                showHeader: true
+            )
+
+            Divider()
+
+            messageBubblePreviewSectionLabel("6b. Streaming — assembling tool call (static Thinking, frozen prose, trailing Thinking… below)")
+            MessageBubbleView(
+                message: LLMMessage(role: .assistant, content: ""),
+                role: .softwareEngineer,
+                roleDefinition: nil,
+                content: "The file `src/main.js` already contains the integration. I will now implement the Save/Load system.",
+                thinking: "The previous edit failed because the state was different...\n<|call|>{\"name\":\"edit_file\",\"arguments\":{\"path\":\"src/engine/Game.js\"",
+                processingProgress: nil,
+                hasStreamActivity: true,
+                isStreamingToolCall: true,
+                isStreaming: true,
+                showHeader: true
+            )
+
+            Divider()
+
+            messageBubblePreviewSectionLabel("6c. Streaming — tool call, thinking preview still empty (Generating fallback below prose)")
+            MessageBubbleView(
+                message: LLMMessage(role: .assistant, content: ""),
+                role: .softwareEngineer,
+                roleDefinition: nil,
+                content: "Applying the change now.",
+                thinking: nil,
+                processingProgress: nil,
+                hasStreamActivity: true,
+                isStreamingToolCall: true,
                 isStreaming: true,
                 showHeader: true
             )

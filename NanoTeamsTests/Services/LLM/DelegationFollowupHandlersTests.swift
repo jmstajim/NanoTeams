@@ -41,6 +41,7 @@ final class DelegationFollowupHandlersTests: XCTestCase {
         // LLM passes a different (hallucinated) child id
         let envelope = await service.handleCancelDelegation(
             stepID: "coding_agent",
+            taskID: 1,
             childTaskID: 999,
             reason: "stop"
         )
@@ -57,6 +58,7 @@ final class DelegationFollowupHandlersTests: XCTestCase {
 
         let envelope = await service.handleCancelDelegation(
             stepID: "coding_agent",
+            taskID: 1,
             childTaskID: 7,
             reason: "looping"
         )
@@ -70,14 +72,19 @@ final class DelegationFollowupHandlersTests: XCTestCase {
     }
 
     func testHandleCancelDelegation_noStepRegistered_rejects() async {
-        // Step → task mapping not registered: handler can't find parentTID.
+        // No execution state exists for this (taskID, stepID): the `isExecutionLive`
+        // barrier rejects with the "no task context" envelope before any delegation
+        // validation runs — an orphaned/hallucinated cancel must never stop an engine.
         let envelope = await service.handleCancelDelegation(
             stepID: "ghost_step",
+            taskID: 1,
             childTaskID: 7,
             reason: nil
         )
-        XCTAssertTrue(envelope.contains("COMMAND_FAILED") || envelope.contains("no task context"),
-                      "Unknown stepID must surface as command_failed, not silently no-op; got envelope: \(envelope)")
+        XCTAssertTrue(envelope.contains("no task context"),
+                      "Unregistered (taskID, stepID) must be rejected by the liveness barrier; got envelope: \(envelope)")
+        XCTAssertTrue(delegate.stopEngineCalls.isEmpty,
+                      "Unknown step/task context must NOT stop any engine")
     }
 
     func testHandleCancelDelegation_noActiveDelegation_rejects() async {
@@ -85,6 +92,7 @@ final class DelegationFollowupHandlersTests: XCTestCase {
         // No `activeDelegationChildStub` entry — role has no in-flight delegation
         let envelope = await service.handleCancelDelegation(
             stepID: "coding_agent",
+            taskID: 1,
             childTaskID: 7,
             reason: nil
         )

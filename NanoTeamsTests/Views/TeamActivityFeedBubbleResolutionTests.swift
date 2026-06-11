@@ -31,16 +31,18 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
             content: "live tokens…",
             thinking: "internal monologue",
             processingProgress: 0.42,
-            hasStreamActivity: true
+            hasStreamActivity: true,
+            isStreamingToolCall: false
         )
         let inputs = TeamActivityFeedView.resolveBubbleInputs(msg: msg, streaming: snap)
-        guard case .streaming(let content, let thinking, let progress, let hasActivity) = inputs else {
+        guard case .streaming(let content, let thinking, let progress, let hasActivity, let toolCall) = inputs else {
             return XCTFail("Expected .streaming case, got \(inputs)")
         }
         XCTAssertEqual(content, "live tokens…")
         XCTAssertEqual(thinking, "internal monologue")
         XCTAssertEqual(progress, 0.42)
         XCTAssertTrue(hasActivity)
+        XCTAssertFalse(toolCall)
     }
 
     /// Streaming branch must NOT inherit attachments from the message body
@@ -64,7 +66,8 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
             content: "still streaming…",
             thinking: nil,
             processingProgress: nil,
-            hasStreamActivity: true
+            hasStreamActivity: true,
+            isStreamingToolCall: false
         )
         let inputs = TeamActivityFeedView.resolveBubbleInputs(msg: msg, streaming: snap)
         // The discriminated union enforces this at compile time: a
@@ -77,7 +80,7 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
     }
 
     /// Streaming with nil content snapshot → committed-fallback to empty
-    /// string. Important because `streamingContent(for:)` returns
+    /// string. Important because `streamingContent(stepID:taskID:)` returns
     /// `Optional` from the manager.
     func testResolveBubbleInputs_streaming_nilContent_isEmptyString() async {
         let msg = LLMMessage(role: .assistant, content: "")
@@ -86,13 +89,55 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
             content: nil,
             thinking: nil,
             processingProgress: nil,
-            hasStreamActivity: false
+            hasStreamActivity: false,
+            isStreamingToolCall: false
         )
         let inputs = TeamActivityFeedView.resolveBubbleInputs(msg: msg, streaming: snap)
-        guard case .streaming(let content, _, _, _) = inputs else {
+        guard case .streaming(let content, _, _, _, _) = inputs else {
             return XCTFail("Expected .streaming")
         }
         XCTAssertEqual(content, "", "nil streaming content must resolve to empty string.")
+    }
+
+    /// The tool-call flag must carry through the streaming branch — it
+    /// keeps the Thinking loader animating during envelope assembly (the
+    /// envelope text streams into the thinking preview) and backs the
+    /// indicator's "Generating" fallback while that preview is empty.
+    func testResolveBubbleInputs_streaming_carriesStreamingToolCall() async {
+        let msg = LLMMessage(role: .assistant, content: "")
+        let snap = StreamingSnapshot(
+            isStreaming: true,
+            content: "I will now implement the fix.",
+            thinking: "reasoning…",
+            processingProgress: nil,
+            hasStreamActivity: true,
+            isStreamingToolCall: true
+        )
+        let inputs = TeamActivityFeedView.resolveBubbleInputs(msg: msg, streaming: snap)
+        guard case .streaming(_, _, _, _, let toolCall) = inputs else {
+            return XCTFail("Expected .streaming case")
+        }
+        XCTAssertTrue(toolCall)
+        XCTAssertTrue(inputs.isStreamingToolCall, "Accessor must surface the flag for the streaming case")
+    }
+
+    /// Committed bubbles structurally cannot show a stale "Generating":
+    /// the `.committed` case has no tool-call slot and the accessor
+    /// hard-returns false, regardless of what the manager's dictionaries
+    /// hold at poll time.
+    func testBubbleInputs_committed_isStreamingToolCallIsFalse() async {
+        let msg = LLMMessage(role: .assistant, content: "done")
+        let snap = StreamingSnapshot(
+            isStreaming: false, content: nil, thinking: nil,
+            processingProgress: nil, hasStreamActivity: false,
+            isStreamingToolCall: true  // stale manager state must be discarded
+        )
+        let inputs = TeamActivityFeedView.resolveBubbleInputs(msg: msg, streaming: snap)
+        guard case .committed = inputs else {
+            return XCTFail("Expected .committed case")
+        }
+        XCTAssertFalse(inputs.isStreamingToolCall,
+                       "Committed accessor must hard-return false — no stale 'Generating' on committed bubbles")
     }
 
     // MARK: - Committed branch
@@ -125,7 +170,8 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
         )
         let snap = StreamingSnapshot(
             isStreaming: false, content: nil, thinking: nil,
-            processingProgress: nil, hasStreamActivity: false
+            processingProgress: nil, hasStreamActivity: false,
+            isStreamingToolCall: false
         )
         let inputs = TeamActivityFeedView.resolveBubbleInputs(msg: msg, streaming: snap)
         guard case .committed(let content, _, let paths, let clips) = inputs else {
@@ -149,7 +195,8 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
         let msg = LLMMessage(role: .assistant, content: raw, sourceContext: nil)
         let snap = StreamingSnapshot(
             isStreaming: false, content: nil, thinking: nil,
-            processingProgress: nil, hasStreamActivity: false
+            processingProgress: nil, hasStreamActivity: false,
+            isStreamingToolCall: false
         )
         let inputs = TeamActivityFeedView.resolveBubbleInputs(msg: msg, streaming: snap)
         guard case .committed(let content, _, let paths, let clips) = inputs else {
@@ -167,7 +214,8 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
         let msg = LLMMessage(role: .assistant, content: "x", thinking: nil)
         let snap = StreamingSnapshot(
             isStreaming: false, content: nil, thinking: nil,
-            processingProgress: nil, hasStreamActivity: false
+            processingProgress: nil, hasStreamActivity: false,
+            isStreamingToolCall: false
         )
         let inputs = TeamActivityFeedView.resolveBubbleInputs(msg: msg, streaming: snap)
         guard case .committed(_, let thinking, _, _) = inputs else {

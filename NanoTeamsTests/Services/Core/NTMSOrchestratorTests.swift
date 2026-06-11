@@ -357,6 +357,137 @@ final class NTMSOrchestratorTests: NTMSOrchestratorTestBase {
         XCTAssertNil(sut.selectedRunID)
     }
 
+    func testSelectedRunID_resetsToLatestRunOnTaskSwitch_evenWhenOldIDCollides() async {
+        // Run IDs are sequential ints PER TASK (0, 1, 2…), so a historical run
+        // selected in task A collides with a real run id in task B. The preserve
+        // logic in syncSelectedRunID must not carry it across the switch —
+        // otherwise the feed pins to a stale run of the new task (seen as
+        // "Autovisor woke but its chat shows nothing new").
+        await sut.openWorkFolder(tempDir)
+
+        let idB = await sut.createTask(title: "Task B", supervisorTask: "B")!
+        await sut.mutateTask(taskID: idB) { task in
+            task.runs = [Run(id: 0), Run(id: 1), Run(id: 2)]
+        }
+
+        let idA = await sut.createTask(title: "Task A", supervisorTask: "A")!
+        await sut.mutateTask(taskID: idA) { task in
+            task.runs = [Run(id: 0), Run(id: 1)]
+        }
+        // User picks a historical run in task A.
+        sut.selectedRunID = 0
+
+        await sut.switchTask(to: idB)
+
+        XCTAssertEqual(sut.selectedRunID, 2, "Switching tasks must select the new task's latest run")
+    }
+
+    func testSelectedRunID_historicalSelectionPreservedOnSameTaskApply() async {
+        // The task-switch reset in apply(_:) must NOT fire for same-task
+        // applies: a Supervisor reviewing a historical run keeps that selection
+        // across unrelated work-folder mutations (mutateWorkFolder → apply).
+        await sut.openWorkFolder(tempDir)
+
+        let taskID = await sut.createTask(title: "Task", supervisorTask: "Goal")!
+        await sut.mutateTask(taskID: taskID) { task in
+            task.runs = [Run(id: 0), Run(id: 1)]
+        }
+        sut.selectedRunID = 0
+
+        await sut.mutateWorkFolder { projection in
+            projection.settings.context = "touched"
+        }
+
+        XCTAssertEqual(sut.selectedRunID, 0, "Same-task apply must preserve a historical run selection")
+    }
+
+    func testSelectedRunID_resetsAcrossFolderSwitch_whenTaskAndRunIDsCollide() async {
+        // Task IDs are sequential per FOLDER and run IDs sequential per TASK,
+        // so two folders' first tasks share id 0 AND their run ids overlap. A
+        // folder switch where previousTaskID == newActiveTaskID must still
+        // reset the selection — otherwise a historical run selected in folder A
+        // pins folder B's feed to an unrelated old run.
+        let secondDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try? FileManager.default.createDirectory(at: secondDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: secondDir) }
+
+        // Folder B: task id 0 with runs [0, 1, 2] (persisted as its active task).
+        await sut.openWorkFolder(secondDir)
+        let idB = await sut.createTask(title: "B", supervisorTask: "B")!
+        await sut.mutateTask(taskID: idB) { task in
+            task.runs = [Run(id: 0), Run(id: 1), Run(id: 2)]
+        }
+
+        // Folder A: task id 0 with runs [0, 1]; user selects historical run 0.
+        await sut.openWorkFolder(tempDir)
+        let idA = await sut.createTask(title: "A", supervisorTask: "A")!
+        XCTAssertEqual(idA, idB, "Seeding sanity: both folders' first task must share an id")
+        await sut.mutateTask(taskID: idA) { task in
+            task.runs = [Run(id: 0), Run(id: 1)]
+        }
+        sut.selectedRunID = 0
+
+        // Back to folder B — same activeTaskID, different folder.
+        await sut.openWorkFolder(secondDir)
+
+        XCTAssertEqual(sut.activeTaskID, idB)
+        XCTAssertEqual(sut.selectedRunID, 2, "Folder switch must select the new folder's latest run")
+    }
+
+    func testSelectedRunID_autoAdvancesToNewRunWhenViewingLatest() async {
+        // Live-watch corner (the Autovisor chat scenario): the user is viewing
+        // the latest run when a wake appends a fresh one — the selection must
+        // follow to the new run, or the feed silently shows the stale pass.
+        await sut.openWorkFolder(tempDir)
+
+        let taskID = await sut.createTask(title: "Task", supervisorTask: "Goal")!
+        await sut.mutateTask(taskID: taskID) { task in
+            task.runs = [Run(id: 0)]
+        }
+        XCTAssertEqual(sut.selectedRunID, 0)
+
+        await sut.mutateTask(taskID: taskID) { task in
+            task.runs.append(Run(id: 1))
+        }
+
+        XCTAssertEqual(sut.selectedRunID, 1, "Viewing the latest run must auto-advance to a new run")
+    }
+
+    func testSelectedRunID_historicalSelectionSurvivesNewRunAppend() async {
+        // Counterpart to auto-advance: a deliberately-selected HISTORICAL run
+        // must NOT be yanked to the new run when the task runs again.
+        await sut.openWorkFolder(tempDir)
+
+        let taskID = await sut.createTask(title: "Task", supervisorTask: "Goal")!
+        await sut.mutateTask(taskID: taskID) { task in
+            task.runs = [Run(id: 0), Run(id: 1)]
+        }
+        sut.selectedRunID = 0
+
+        await sut.mutateTask(taskID: taskID) { task in
+            task.runs.append(Run(id: 2))
+        }
+
+        XCTAssertEqual(sut.selectedRunID, 0, "Historical selection must survive a new run being appended")
+    }
+
+    func testSelectedRunID_switchToTaskWithNoRuns_isNil() async {
+        // Switching to a never-started task must clear the selection (nil), not
+        // carry the previous task's run id into a task that has no runs at all.
+        await sut.openWorkFolder(tempDir)
+
+        let idB = await sut.createTask(title: "B", supervisorTask: "B")!  // no runs
+        let idA = await sut.createTask(title: "A", supervisorTask: "A")!  // active
+        await sut.mutateTask(taskID: idA) { task in
+            task.runs = [Run(id: 0)]
+        }
+
+        await sut.switchTask(to: idB)
+
+        XCTAssertNil(sut.selectedRunID, "A task with no runs has nothing to select")
+    }
+
     // MARK: - Start/Pause Run Guards
 
     func testStartRun_doubleStart_isIgnored() async {
@@ -864,9 +995,9 @@ final class NTMSOrchestratorTests: NTMSOrchestratorTestBase {
         let stepID = "test_step"
         let messageID = UUID()
 
-        sut.appendStreamingPreview(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "Hello")
+        sut.appendStreamingPreview(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "Hello")
 
-        let preview = sut.streamingPreviewManager.preview(for: stepID)
+        let preview = sut.streamingPreviewManager.preview(stepID: stepID, taskID: 0)
         XCTAssertNotNil(preview, "Streaming preview should be appended")
     }
 
@@ -874,10 +1005,10 @@ final class NTMSOrchestratorTests: NTMSOrchestratorTestBase {
         let stepID = "test_step"
         let messageID = UUID()
 
-        sut.appendStreamingPreview(stepID: stepID, messageID: messageID, role: .softwareEngineer, content: "test")
-        sut.clearStreamingPreview(stepID: stepID)
+        sut.appendStreamingPreview(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "test")
+        sut.clearStreamingPreview(stepID: stepID, taskID: 0)
 
-        let preview = sut.streamingPreviewManager.preview(for: stepID)
+        let preview = sut.streamingPreviewManager.preview(stepID: stepID, taskID: 0)
         XCTAssertNil(preview)
     }
 

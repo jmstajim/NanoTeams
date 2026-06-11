@@ -10,6 +10,13 @@ enum ToolErrorCode: String, Codable {
     case permissionDenied = "PERMISSION_DENIED"
     case rangeOutOfBounds = "RANGE_OUT_OF_BOUNDS"
     case anchorNotFound = "ANCHOR_NOT_FOUND"
+    /// `edit_file`'s whitespace-tolerant fallback found `old_text` in several
+    /// places once trailing whitespace is ignored, so a single replace would be
+    /// a guess. Distinct from `ANCHOR_NOT_FOUND` because the recovery differs:
+    /// the anchor is essentially right and needs MORE context lines, not a
+    /// character-level correction — the generic anchor guidance would actively
+    /// mislead.
+    case anchorAmbiguous = "ANCHOR_AMBIGUOUS"
     case patchApplyFailed = "PATCH_APPLY_FAILED"
     case conflict = "CONFLICT"
     case commandFailed = "COMMAND_FAILED"

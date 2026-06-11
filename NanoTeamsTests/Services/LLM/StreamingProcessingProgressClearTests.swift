@@ -56,6 +56,7 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
 
         _ = try await service.performStreamingCall(
             stepID: "step1",
+            taskID: 1,
             roleForMessage: .softwareEngineer,
             client: client,
             config: stubConfig(),
@@ -98,6 +99,7 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
 
         _ = try await service.performStreamingCall(
             stepID: "step1",
+            taskID: 1,
             roleForMessage: .softwareEngineer,
             client: client,
             config: stubConfig(),
@@ -130,6 +132,7 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
 
         _ = try await service.performStreamingCall(
             stepID: "step1",
+            taskID: 1,
             roleForMessage: .softwareEngineer,
             client: client,
             config: stubConfig(),
@@ -166,6 +169,7 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
 
         _ = try await service.performStreamingCall(
             stepID: "step1",
+            taskID: 1,
             roleForMessage: .softwareEngineer,
             client: client,
             config: stubConfig(),
@@ -196,6 +200,7 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
 
         _ = try await service.performStreamingCall(
             stepID: "step1",
+            taskID: 1,
             roleForMessage: .softwareEngineer,
             client: client,
             config: stubConfig(),
@@ -209,6 +214,173 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
                                      "Tool-call delta must mark activity even though no content/thinking is visible")
         XCTAssertGreaterThanOrEqual(delegate.clearProcessingProgressCalls.count, 1,
                                      "Tool-call delta must also clear processingProgress — same flow as content/thinking")
+    }
+
+    // MARK: - markStreamingToolCall (envelope-as-thinking pipe + Generating fallback)
+
+    /// Pin: detecting a Harmony marker mid-content fires
+    /// `markStreamingToolCall`. The flag keeps the Thinking loader
+    /// animating while the envelope streams into the thinking preview,
+    /// and backs the indicator's "Generating" fallback while that preview
+    /// is still empty — pre-fix (no pipe, no flag) the frozen pre-marker
+    /// prose suppressed everything and the bubble showed zero animation
+    /// for the entire argument assembly (the user-reported 37s freeze).
+    func testMarkStreamingToolCall_firesOnHarmonyMarkerDetection() async throws {
+        let events: [StreamEvent] = [
+            StreamEvent(contentDelta: "I will now implement the fix."),
+            StreamEvent(contentDelta: "<|call|>{\"name\":\"edit_file\",\"arguments\":{\"path\""),
+            StreamEvent(contentDelta: ":\"x.swift\",\"old_text\":\"a\",\"new_text\":\"b\"}}<|end|>"),
+        ]
+        let client = ScriptedLLMClient(events: events)
+
+        _ = try await service.performStreamingCall(
+            stepID: "step1",
+            taskID: 1,
+            roleForMessage: .softwareEngineer,
+            client: client,
+            config: stubConfig(),
+            tools: [],
+            conversationMessages: [],
+            session: nil,
+            networkLogger: nil
+        )
+
+        XCTAssertGreaterThanOrEqual(delegate.markStreamingToolCallCalls.count, 1,
+                                     "Harmony-marker detection must fire markStreamingToolCall — the indicator needs it to override the frozen-prose suppression")
+
+        // The envelope text must surface AS THINKING (preview-only) so the
+        // user watches the call being typed under the animated "Thinking…"
+        // row instead of staring at a frozen bubble: both the post-marker
+        // slice from the flip iteration and subsequent envelope deltas.
+        let thinkingFed = delegate.appendStreamingThinkingCalls.map(\.1).joined()
+        XCTAssertTrue(thinkingFed.contains("<|call|>{\"name\":\"edit_file\""),
+                      "Post-marker slice must be piped into the thinking preview — got: \(thinkingFed)")
+        XCTAssertTrue(thinkingFed.contains("<|end|>"),
+                      "Subsequent envelope deltas must keep streaming into the thinking preview")
+    }
+
+    /// The envelope must NOT leak into the PERSISTED thinking — only the
+    /// UI preview. `commitStreaming` receives reasoning-only thinking
+    /// (here: nil, since the scripted stream has no reasoning channel).
+    func testHarmonyEnvelope_isNotPersistedAsThinking() async throws {
+        let events: [StreamEvent] = [
+            StreamEvent(contentDelta: "Prose."),
+            StreamEvent(contentDelta: "<|call|>{\"name\":\"read_file\",\"arguments\":{}}<|end|>"),
+        ]
+        let client = ScriptedLLMClient(events: events)
+
+        _ = try await service.performStreamingCall(
+            stepID: "step1",
+            taskID: 1,
+            roleForMessage: .softwareEngineer,
+            client: client,
+            config: stubConfig(),
+            tools: [],
+            conversationMessages: [],
+            session: nil,
+            networkLogger: nil
+        )
+
+        XCTAssertEqual(delegate.commitStreamingCalls.count, 1)
+        XCTAssertNil(delegate.commitStreamingCalls[0].3,
+                     "Envelope text is preview-only — committed thinking must stay reasoning-only (nil here)")
+    }
+
+    /// Pin: OpenAI-style tool-call deltas fire `markStreamingToolCall` —
+    /// same suppression hole as the Harmony path whenever prose or
+    /// thinking already rendered before the tool-call deltas started.
+    /// Wire-realistic shape: `name` arrives in the FIRST delta only; the
+    /// args stream as name-less fragments afterward. A "helpful"
+    /// `guard let name` cleanup would drop every args fragment — thinking
+    /// preview freezes at the bare tool name for the whole assembly.
+    func testMarkStreamingToolCall_firesOnOpenAIToolCallDeltas() async throws {
+        let nameDelta = StreamEvent.ToolCallDelta(index: 0, id: "tc1", name: "edit_file", argumentsDelta: nil)
+        let argsDelta = StreamEvent.ToolCallDelta(index: 0, id: nil, name: nil, argumentsDelta: #"{"path":"x"}"#)
+        let events: [StreamEvent] = [
+            StreamEvent(contentDelta: "Applying the change now."),
+            StreamEvent(toolCallDeltas: [nameDelta]),
+            StreamEvent(toolCallDeltas: [argsDelta]),
+        ]
+        let client = ScriptedLLMClient(events: events)
+
+        _ = try await service.performStreamingCall(
+            stepID: "step1",
+            taskID: 1,
+            roleForMessage: .softwareEngineer,
+            client: client,
+            config: stubConfig(),
+            tools: [],
+            conversationMessages: [],
+            session: nil,
+            networkLogger: nil
+        )
+
+        XCTAssertGreaterThanOrEqual(delegate.markStreamingToolCallCalls.count, 1,
+                                     "OpenAI tool-call deltas must fire markStreamingToolCall")
+
+        // Args fragments surface as thinking too — same "show it as if it
+        // were thinking" presentation as the harmony envelope.
+        let thinkingFed = delegate.appendStreamingThinkingCalls.map(\.1).joined()
+        XCTAssertTrue(thinkingFed.contains("edit_file"),
+                      "Tool name fragment must be piped into the thinking preview")
+        XCTAssertTrue(thinkingFed.contains(#"{"path":"x"}"#),
+                      "Args fragments must be piped into the thinking preview")
+    }
+
+    /// Corner: degenerate OpenAI fragments (nil name AND nil args) must not
+    /// reach the thinking preview — the service-side `!fragment.isEmpty`
+    /// guard, not just the manager's empty-append guard, keeps the pipe
+    /// clean. Only the real fragments land, in arrival order.
+    func testOpenAIEmptyFragments_doNotReachThinkingPreview() async throws {
+        let emptyDelta = StreamEvent.ToolCallDelta(index: 0, id: "tc1", name: nil, argumentsDelta: nil)
+        let nameDelta = StreamEvent.ToolCallDelta(index: 0, id: nil, name: "edit_file", argumentsDelta: nil)
+        let events: [StreamEvent] = [
+            StreamEvent(toolCallDeltas: [emptyDelta]),
+            StreamEvent(toolCallDeltas: [nameDelta]),
+        ]
+        let client = ScriptedLLMClient(events: events)
+
+        _ = try await service.performStreamingCall(
+            stepID: "step1",
+            taskID: 1,
+            roleForMessage: .softwareEngineer,
+            client: client,
+            config: stubConfig(),
+            tools: [],
+            conversationMessages: [],
+            session: nil,
+            networkLogger: nil
+        )
+
+        XCTAssertEqual(delegate.appendStreamingThinkingCalls.map(\.1), ["edit_file"],
+                       "Empty fragments must be filtered service-side; only real fragments reach the pipe")
+    }
+
+    /// Pin: plain prose/thinking streams must NOT fire the tool-call flag
+    /// — the "growing text is the indicator" suppression stays correct for
+    /// ordinary responses.
+    func testMarkStreamingToolCall_doesNotFireOnPlainContentOrThinking() async throws {
+        let events: [StreamEvent] = [
+            StreamEvent(thinkingDelta: "let me think..."),
+            StreamEvent(contentDelta: "Here is my answer."),
+            StreamEvent(contentDelta: " It has two sentences."),
+        ]
+        let client = ScriptedLLMClient(events: events)
+
+        _ = try await service.performStreamingCall(
+            stepID: "step1",
+            taskID: 1,
+            roleForMessage: .softwareEngineer,
+            client: client,
+            config: stubConfig(),
+            tools: [],
+            conversationMessages: [],
+            session: nil,
+            networkLogger: nil
+        )
+
+        XCTAssertTrue(delegate.markStreamingToolCallCalls.isEmpty,
+                      "Plain content/thinking must not flip the tool-call flag — got \(delegate.markStreamingToolCallCalls.count) calls")
     }
 
     // MARK: - No progress, no thinking, only content (sanity)
@@ -226,6 +398,7 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
 
         _ = try await service.performStreamingCall(
             stepID: "step1",
+            taskID: 1,
             roleForMessage: .softwareEngineer,
             client: client,
             config: stubConfig(),

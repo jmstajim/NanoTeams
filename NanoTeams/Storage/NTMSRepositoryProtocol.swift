@@ -33,7 +33,8 @@ nonisolated protocol TaskRepository: Sendable {
         preferredTeamID: NTMSID?,
         parentTaskID: Int?,
         parentRoleID: String?,
-        delegationDepth: Int
+        delegationDepth: Int,
+        makeActive: Bool
     ) throws -> (snapshot: WorkFolderContext, taskID: Int)
     func setActiveTask(at workFolderRoot: URL, taskID: Int?) throws -> WorkFolderContext
     /// Persists `activeTaskID` to `workfolder.json` without rebuilding the full

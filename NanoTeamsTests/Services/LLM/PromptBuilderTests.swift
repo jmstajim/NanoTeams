@@ -70,6 +70,74 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertNil(result)
     }
 
+    // MARK: - Supervisor Goal header (Autovisor) — GAP3
+
+    func testBuildSupervisorTaskSection_customHeader_rendersIt() {
+        let result = PromptBuilder.buildSupervisorTaskSection(
+            supervisorTask: "Advance the parser", header: "Supervisor Goal")
+        XCTAssertEqual(result, "## Supervisor Goal\n\nAdvance the parser")
+    }
+
+    func testBuildChatMessages_autovisorTeam_usesSupervisorGoalHeader() {
+        let team = TeamTemplateFactory.autovisor()
+        let task = NTMSTask(id: 0, title: "FM", supervisorTask: "Keep the folder healthy", runs: [Run(id: 0, steps: [])])
+        let context = makeContext(task: task, activeTeam: team)
+
+        let messages = PromptBuilder.buildChatMessages(context: context, tools: [])
+        let joined = messages.compactMap(\.content).joined(separator: "\n")
+
+        XCTAssertTrue(joined.contains("## Supervisor Goal"),
+                      "Autovisor renders its brief as '## Supervisor Goal'")
+        XCTAssertFalse(joined.contains("## Supervisor Task"),
+                       "Autovisor must NOT show the generic '## Supervisor Task' header")
+    }
+
+    func testBuildChatMessages_nonManagerTeam_keepsSupervisorTaskHeader() {
+        let context = makeContext(activeTeam: defaultTeam)  // not Autovisor
+
+        let messages = PromptBuilder.buildChatMessages(context: context, tools: [])
+        let joined = messages.compactMap(\.content).joined(separator: "\n")
+
+        XCTAssertTrue(joined.contains("## Supervisor Task"),
+                      "non-manager teams keep the default '## Supervisor Task' header")
+        XCTAssertFalse(joined.contains("## Supervisor Goal"))
+    }
+
+    // MARK: - Revision feedback in stateless rebuild
+
+    /// The stateless conversation rebuild relays revision feedback from the single
+    /// prefixed `StepMessage` in `step.messages` — `revisionComment` (now reliably
+    /// populated for the whole revision lifetime) must NOT be independently injected,
+    /// or every stateless rebuild would carry the feedback twice.
+    func testBuildChatMessages_revisionStep_feedbackAppearsExactlyOnce() {
+        let rawComment = "Fix the restart bug in section 3."
+        var step = StepExecution(
+            id: "swe_revision", role: .softwareEngineer, title: "SWE",
+            status: .running
+        )
+        step.messages = [
+            StepMessage(role: .softwareEngineer, content: "Earlier work output"),
+            StepMessage(
+                role: .supervisor,
+                content: MessageSourceContext.supervisorFeedbackPrefix + rawComment
+            ),
+        ]
+        step.revisionComment = rawComment
+        let run = Run(id: 0, steps: [step])
+        let task = NTMSTask(id: 0, title: "T", supervisorTask: "Goal", runs: [run])
+        let context = makeContext(task: task, step: step, run: run, activeTeam: defaultTeam)
+
+        let messages = PromptBuilder.buildChatMessages(context: context, tools: [])
+        let joined = messages.compactMap(\.content).joined(separator: "\n")
+
+        XCTAssertEqual(
+            joined.components(separatedBy: rawComment).count, 2,
+            "Feedback text must appear exactly once in the stateless rebuild")
+        XCTAssertEqual(
+            joined.components(separatedBy: "Supervisor Feedback:").count, 2,
+            "Exactly one attribution prefix in the stateless rebuild")
+    }
+
     // MARK: - buildWorkFolderContextMessage
 
     func testBuildWorkFolderContextMessage_withProject_includesNameAndContext() {

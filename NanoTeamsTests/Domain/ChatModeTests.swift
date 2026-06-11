@@ -148,6 +148,21 @@ final class ChatModeTests: XCTestCase {
         XCTAssertEqual(task.derivedStatusFromActiveRun(), .paused)
     }
 
+    /// Corner: closed + chat-mode + a still-`.running` step. `hasRunning` bypasses the
+    /// closed-guard, so the live run surfaces `.running` (not a false `.done`) even in
+    /// chat mode — defense against a resume-after-close that left a running step.
+    func testDerivedStatus_chatMode_closedWithRunningStep_returnsRunning() {
+        var task = NTMSTask(id: 0, title: "Chat", supervisorTask: "Help", isChatMode: true)
+        task.closedAt = MonotonicClock.shared.now()
+        task.runs = [
+            Run(id: 0, steps: [
+                StepExecution(id: "test_step", role: .custom(id: "assistant"), title: "Chat", status: .running),
+            ])
+        ]
+
+        XCTAssertEqual(task.derivedStatusFromActiveRun(), .running)
+    }
+
     // MARK: - NTMSTask.isReadyForFinalAcceptance
 
     func testIsReadyForFinalAcceptance_chatMode_alwaysFalse() {

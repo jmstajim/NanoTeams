@@ -15,6 +15,13 @@ struct RoleListView: View {
     @State var importError: ImportExportError? = nil
     @State private var searchText: String = ""
 
+    /// The managed singleton (Autovisor) is inspect-only: its roles are template-owned
+    /// (toolset/icon revert on open) and structural, so adding / deleting / editing them
+    /// is useless or breaks the manager. The list still shows the roles; only mutation is removed.
+    private var isReadOnly: Bool {
+        team.isManagedSingleton
+    }
+
     private var filteredRoles: [TeamRoleDefinition] {
         if searchText.isEmpty {
             return team.roles
@@ -33,44 +40,46 @@ struct RoleListView: View {
             HStack(spacing: Spacing.s) {
                 SearchFieldView(placeholder: "Filter roles...", text: $searchText)
 
-                // Add role button
-                Button {
-                    showingAddRole = true
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.subheadline.weight(.bold))
-                        .foregroundStyle(Colors.accent)
-                        .frame(width: 28, height: 28)
-                        .background(Colors.accentTint, in: Circle())
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .help("Add role")
-                .accessibilityLabel("Add role")
-
-                // More actions menu
-                Menu {
+                if !isReadOnly {
+                    // Add role button
                     Button {
                         showingAddRole = true
                     } label: {
-                        Label("New Role", systemImage: "plus")
+                        Image(systemName: "plus")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(Colors.accent)
+                            .frame(width: 28, height: 28)
+                            .background(Colors.accentTint, in: Circle())
+                            .contentShape(Circle())
                     }
+                    .buttonStyle(.plain)
+                    .help("Add role")
+                    .accessibilityLabel("Add role")
 
-                    Button {
-                        handleImportRole()
+                    // More actions menu
+                    Menu {
+                        Button {
+                            showingAddRole = true
+                        } label: {
+                            Label("New Role", systemImage: "plus")
+                        }
+
+                        Button {
+                            handleImportRole()
+                        } label: {
+                            Label("Import Role...", systemImage: "square.and.arrow.down")
+                        }
                     } label: {
-                        Label("Import Role...", systemImage: "square.and.arrow.down")
+                        Image(systemName: "ellipsis")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(Colors.textSecondary)
+                            .frame(width: 28, height: 28)
+                            .contentShape(Rectangle())
                     }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(Colors.textSecondary)
-                        .frame(width: 28, height: 28)
-                        .contentShape(Rectangle())
+                    .menuStyle(.button)
+                    .buttonStyle(.plain)
+                    .fixedSize()
                 }
-                .menuStyle(.button)
-                .buttonStyle(.plain)
-                .fixedSize()
             }
             .padding(.horizontal, Spacing.m)
             .padding(.vertical, Spacing.s)
@@ -185,7 +194,7 @@ struct RoleListView: View {
         HStack(spacing: 0) {
             RoleListItemView(role: role)
 
-            if showAddToGraph {
+            if showAddToGraph && !isReadOnly {
                 Button {
                     handleAddToGraph(role)
                 } label: {
@@ -207,18 +216,22 @@ struct RoleListView: View {
             showingEditRole = role
         }
         .contextMenu {
+            // Editing is always allowed (read-only Autovisor opens a restricted editor —
+            // Prompt + Tools only). Structural actions (Duplicate / Delete) are hidden.
             Button {
                 showingEditRole = role
             } label: {
                 Label("Edit...", systemImage: "pencil")
             }
 
-            Button {
-                handleDuplicateRole(role)
-            } label: {
-                Label("Duplicate", systemImage: "doc.on.doc")
+            if !isReadOnly {
+                Button {
+                    handleDuplicateRole(role)
+                } label: {
+                    Label("Duplicate", systemImage: "doc.on.doc")
+                }
+                .disabled(role.isSupervisor)
             }
-            .disabled(role.isSupervisor)
 
             Divider()
 
@@ -228,14 +241,16 @@ struct RoleListView: View {
                 Label("Export Role...", systemImage: "square.and.arrow.up")
             }
 
-            Divider()
+            if !isReadOnly {
+                Divider()
 
-            Button(role: .destructive) {
-                showingDeleteConfirmation = role
-            } label: {
-                Label("Delete", systemImage: "trash")
+                Button(role: .destructive) {
+                    showingDeleteConfirmation = role
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+                .disabled(team.roles.count <= 1 || role.isSupervisor)
             }
-            .disabled(team.roles.count <= 1 || role.isSupervisor)
         }
     }
 

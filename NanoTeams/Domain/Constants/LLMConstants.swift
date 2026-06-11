@@ -6,6 +6,18 @@ nonisolated enum LLMConstants {
     /// Producing roles terminate via artifact completion; open-ended roles via Supervisor.
     static let maxToolIterations = 0
 
+    /// Max consecutive in-stream thinking-loop breaks for a TOP-LEVEL step before
+    /// the recovery escalates from stateless-replay to a terminal action
+    /// (`LoopRecoveryPolicy`). 2 ⇒ one stateless replay, then terminal on the
+    /// next break — mirrors the 2-strike drift pattern in `handleNoToolCalls`.
+    static let maxThinkingLoopBreaks = 2
+
+    /// Combined thinking+content buffer growth (in characters) between in-stream
+    /// loop scans inside `performStreamingCall`. Throttles the tail-anchored
+    /// `detectTailLoop` scan — replaces the watcher's per-step 3s timestamp
+    /// throttle now that streaming-loop detection lives in the stream consumer.
+    static let streamLoopScanCadenceChars = 400
+
     /// Default max consecutive LLM server error retries (0 = unlimited).
     static let defaultMaxLLMRetries = 0
 

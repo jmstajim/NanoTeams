@@ -76,13 +76,28 @@ nonisolated extension NTMSRepository {
         for t in Team.defaultTeams {
             if let tid = t.templateID { bundledByTemplateID[tid] = t }
         }
+        // The Autovisor team is bundled but hidden (not in `Team.defaultTeams`) —
+        // index it explicitly so its manager role's prompt reconciles on version
+        // bumps like every other system role. Without this, prompt improvements
+        // never reach work folders whose Autovisor team was seeded by an older build.
+        bundledByTemplateID[AutovisorConstants.teamTemplateID] = TeamTemplateFactory.autovisor()
 
         for i in teams.indices {
             guard let tid = teams[i].templateID, tid != "generated" else { continue }
 
             if runningByTeam.contains(teams[i].id) {
-                deferred.append(teams[i].id)
-                continue
+                // The Autovisor manager parks at `.needsSupervisorInput` at the
+                // end of every review pass while its role status stays `.working`,
+                // so an enabled Autovisor would defer reconcile — and hold the
+                // watermark — on EVERY open, and bundled updates would never land.
+                // Deferral exists to protect `role.toolIDs` under a live tool
+                // loop, and the autovisor branch below never rewrites toolIDs, so
+                // reconciling this team is safe: the refreshed prompt/template
+                // are only read at the next pass start.
+                if tid != AutovisorConstants.teamTemplateID {
+                    deferred.append(teams[i].id)
+                    continue
+                }
             }
 
             var teamChanged = false
@@ -105,7 +120,12 @@ nonisolated extension NTMSRepository {
 
                 let role = teams[i].roles[r]
                 let nextPrompt = bundled.prompt
-                let nextToolIDs = bundled.toolIDs
+                // The Autovisor manager's tool policy is additive by design —
+                // `syncAutovisorTeamToTemplate` union-enforces mandatory tools on
+                // every open and never removes user-toggled optional tools. Keep
+                // the stored toolIDs instead of the bundled overwrite.
+                let nextToolIDs = tid == AutovisorConstants.teamTemplateID
+                    ? role.toolIDs : bundled.toolIDs
                 let nextDeps = bundled.dependencies
                 let nextIcon = bundled.icon
                 let nextIconColor = bundled.iconColor

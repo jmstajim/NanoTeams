@@ -48,7 +48,6 @@ final class LLMExecutionService {
     /// Per-step execution context. Consolidates all ephemeral per-step state into one struct,
     /// eliminating the need for 7 parallel dictionaries. Entry exists iff step is executing.
     struct StepExecutionState {
-        var taskID: Int
         var runningTask: Task<Void, Never>?
         /// Index of the plan message in conversationMessages (for in-place update).
         var planMessageIndex: Int?
@@ -67,6 +66,14 @@ final class LLMExecutionService {
         var planningTransitionDone: Bool = false
         /// Whether Supervisor requested graceful finish (advisory roles).
         var finishRequested: Bool = false
+        /// Whether the Autovisor manager requested an idle park (`wait_for_events`):
+        /// the tool loop ends the pass by parking the step at `.needsSupervisorInput`
+        /// with the session preserved, so a human message continues the SAME
+        /// conversation via stateful continuation. Distinct from `finishRequested`
+        /// (which completes the step) — and deliberately NOT routed through the
+        /// `.supervisorQuestion` signal, whose autonomous-mode in-loop auto-answer
+        /// would answer the park itself and defeat the wait.
+        var parkForEventsRequested: Bool = false
         /// Count of consecutive "thinking drift" no-tool-call turns. A drift turn is one
         /// where the model emitted a long `thinking` trace (reasoning about the task)
         /// but no `content` and no tool calls. First drift → targeted nudge; second
@@ -80,6 +87,14 @@ final class LLMExecutionService {
         /// 3. After supervisor escalation — fresh start once the supervisor responds.
         /// Also cleared on `cleanup()`.
         var consecutiveDriftTurnCount: Int = 0
+
+        /// Count of consecutive in-stream thinking-loop breaks for a TOP-LEVEL step.
+        /// Drives `LoopRecoveryPolicy` (stateless replay until `maxThinkingLoopBreaks`,
+        /// then a mode-aware terminal). Reset on ANY clean stream completion (the
+        /// `thinkingLoopSignal == nil` path in `runOneLLMToolIteration`) — NOT via
+        /// `resetCountersOnParseableToolCall`, which would miss clean no-tool turns —
+        /// and on `cleanup()`.
+        var consecutiveThinkingLoopBreaks: Int = 0
 
         /// Count of consecutive turns by an advisory role (under autonomous supervisor
         /// mode) that produced no productive activity. A turn is "non-productive" when
@@ -144,7 +159,9 @@ final class LLMExecutionService {
             originalSystemPrompt = nil
             planningTransitionDone = false
             finishRequested = false
+            parkForEventsRequested = false
             consecutiveDriftTurnCount = 0
+            consecutiveThinkingLoopBreaks = 0
             consecutiveAdvisoryNoToolTurns = 0
             consecutiveHarmonyParseFailureCount = 0
         }
@@ -153,8 +170,11 @@ final class LLMExecutionService {
     // MARK: - Properties
 
     weak var delegate: LLMExecutionDelegate?
-    /// All per-step execution state. Keyed by stepID. Entry present iff step is executing.
-    var executionStates: [String: StepExecutionState] = [:]
+    /// All per-step execution state. Keyed by (taskID, stepID) — stepID alone is NOT
+    /// unique across tasks (it equals the team role ID), so two concurrent tasks on the
+    /// same team would otherwise evict/cross-write each other's entries (see TaskStepKey).
+    /// Entry present iff step is executing.
+    var executionStates: [TaskStepKey: StepExecutionState] = [:]
     /// Team IDs for which we have already surfaced the "designated coordinator
     /// no longer exists" info message. Throttles
     /// `reportOrphanCoordinatorIfNeeded` to one notification per team per
@@ -164,10 +184,27 @@ final class LLMExecutionService {
     let artifactService: ArtifactService
     let harmonyParser: HarmonyToolCallParser
 
+    /// True while the (taskID, stepID) execution is still registered.
+    ///
+    /// This is the post-teardown WRITE BARRIER that the deleted `taskIDForStep`
+    /// guard used to provide implicitly: once a teardown path removes the
+    /// executionStates entry (`cancelExecutions(forTaskID:)`, `cancelAllExecutions`,
+    /// or `cancelStepExecution`'s bounded-timeout escape), any late write from the
+    /// cooperatively-cancelled task's catch handlers must be DROPPED — otherwise
+    /// orphaned mutations land on whatever currently answers to the captured
+    /// taskID (a fresh run after a recurrence supersede, or even a same-numbered
+    /// task in a newly opened work folder). `cancelStepExecution`'s normal path
+    /// removes the entry only AFTER awaiting the catch handler, so legitimate
+    /// partial-content commits pass this gate.
+    func isExecutionLive(stepID: String, taskID: Int) -> Bool {
+        executionStates[TaskStepKey(taskID: taskID, stepID: stepID)] != nil
+    }
+
     /// Clears the running task entry for a step.
-    func clearRunningTask(stepID: String) {
-        executionStates[stepID]?.cleanup()
-        executionStates[stepID] = nil
+    func clearRunningTask(stepID: String, taskID: Int) {
+        let key = TaskStepKey(taskID: taskID, stepID: stepID)
+        executionStates[key]?.cleanup()
+        executionStates[key] = nil
     }
 
     /// Centralized reset for retry-cap counters that fire when the model produced a
@@ -175,14 +212,21 @@ final class LLMExecutionService {
     /// Called from `runOneLLMToolIteration` immediately before `executeToolCalls`.
     /// Centralized so a refactor that accidentally drops one of the resets in the
     /// inline path is caught by tests targeting this function.
-    func resetCountersOnParseableToolCall(stepID: String) {
-        executionStates[stepID]?.consecutiveDriftTurnCount = 0
-        executionStates[stepID]?.consecutiveHarmonyParseFailureCount = 0
+    func resetCountersOnParseableToolCall(stepID: String, taskID: Int) {
+        let key = TaskStepKey(taskID: taskID, stepID: stepID)
+        executionStates[key]?.consecutiveDriftTurnCount = 0
+        executionStates[key]?.consecutiveHarmonyParseFailureCount = 0
     }
 
-    /// Returns the taskID associated with a running step.
-    func taskIDForStep(_ stepID: String) -> Int? {
-        executionStates[stepID]?.taskID
+    /// Resets the consecutive thinking-loop-break counter. Called from
+    /// `runOneLLMToolIteration` on any clean stream completion (no
+    /// `thinkingLoopSignal`) — the budget counts *consecutive* breaks, so a
+    /// healthy turn between two breaks must clear it. Deliberately separate from
+    /// `resetCountersOnParseableToolCall`: a clean *no-tool* turn (which never
+    /// reaches that reset) must still clear the loop counter. Named so a refactor
+    /// dropping the reset is caught by the helper that delegates here.
+    func resetThinkingLoopBreakCount(stepID: String, taskID: Int) {
+        executionStates[TaskStepKey(taskID: taskID, stepID: stepID)]?.consecutiveThinkingLoopBreaks = 0
     }
 
     // MARK: - Initialization
@@ -209,20 +253,20 @@ final class LLMExecutionService {
 
     // MARK: - Public API
 
-    /// Cancels execution for a specific step. Async because we wait for the cancelled
-    /// task's catch handler to run — that's where partial streaming content is committed
-    /// (via `commitStreamingContent` → `delegate.commitStreaming`) and token usage is
-    /// persisted (via `persistTokenUsage`). Both lookups go through `taskIDForStep`,
-    /// which reads `executionStates[stepID]?.taskID`, so we must NOT clear the entry
-    /// before the catch handler completes.
+    /// Cancels execution for a specific step of a specific task. Async because we wait
+    /// for the cancelled task's catch handler to run — that's where partial streaming
+    /// content is committed (via `commitStreamingContent` → `delegate.commitStreaming`)
+    /// and token usage is persisted (via `persistTokenUsage`).
     ///
     /// The wait is bounded by `LLMConstants.cancelHandlerTimeoutSeconds`. If the catch
     /// handler stalls (e.g. blocked disk I/O during `persistTokenUsage`), we surface a
     /// banner and proceed to teardown so the user isn't permanently frozen on Pause —
-    /// the orphan task continues running but its mutations land on the (possibly
-    /// already-replaced) in-memory snapshot, which is harmless.
-    func cancelStepExecution(stepID: String) async {
-        let runningTask = executionStates[stepID]?.runningTask
+    /// the orphan task keeps running, but every late write it attempts is dropped by
+    /// the `isExecutionLive` barrier (its executionStates entry is gone), so partial
+    /// content from a timed-out cancel is lost rather than mis-targeted.
+    func cancelStepExecution(stepID: String, taskID: Int) async {
+        let key = TaskStepKey(taskID: taskID, stepID: stepID)
+        let runningTask = executionStates[key]?.runningTask
         runningTask?.cancel()
         if let runningTask {
             let finished = await Self.awaitTaskWithTimeout(
@@ -233,8 +277,8 @@ final class LLMExecutionService {
                 )
             }
         }
-        executionStates[stepID] = nil
-        delegate?.clearStreamingPreview(stepID: stepID)
+        executionStates[key] = nil
+        delegate?.clearStreamingPreview(stepID: stepID, taskID: taskID)
     }
 
     /// Races `task.value` against a sleep timeout, returning `true` if the task finished
@@ -264,33 +308,34 @@ final class LLMExecutionService {
 
     /// Cancels all running step executions.
     func cancelAllExecutions() {
-        for (stepID, state) in executionStates {
+        for (key, state) in executionStates {
             state.runningTask?.cancel()
             state.currentToolBatchTask?.cancel()
-            delegate?.clearStreamingPreview(stepID: stepID)
+            delegate?.clearStreamingPreview(stepID: key.stepID, taskID: key.taskID)
         }
         executionStates.removeAll()
     }
 
-    /// Request graceful finish for an advisory role's step.
-    /// The step will complete as `.needsAcceptance` at the next iteration boundary.
-    func requestFinish(stepID: String) {
-        executionStates[stepID]?.finishRequested = true
+    /// Request graceful finish for an advisory role's step. At the next iteration
+    /// boundary the step completes via `finishStepGraceful`: chat-mode teams finish
+    /// directly as `.done`; other teams complete as `.needsAcceptance`.
+    func requestFinish(stepID: String, taskID: Int) {
+        executionStates[TaskStepKey(taskID: taskID, stepID: stepID)]?.finishRequested = true
     }
 
     /// Cancels all running step executions for a specific task.
     func cancelExecutions(forTaskID taskID: Int) {
-        let stepsToCancel = executionStates.filter { $0.value.taskID == taskID }.keys
-        for stepID in stepsToCancel {
-            executionStates[stepID]?.cleanup()
-            executionStates[stepID] = nil
-            delegate?.clearStreamingPreview(stepID: stepID)
+        let keysToCancel = executionStates.keys.filter { $0.taskID == taskID }
+        for key in keysToCancel {
+            executionStates[key]?.cleanup()
+            executionStates[key] = nil
+            delegate?.clearStreamingPreview(stepID: key.stepID, taskID: key.taskID)
         }
     }
 
     /// Checks if a step is currently running.
-    func isStepRunning(stepID: String) -> Bool {
-        executionStates[stepID]?.runningTask != nil
+    func isStepRunning(stepID: String, taskID: Int) -> Bool {
+        executionStates[TaskStepKey(taskID: taskID, stepID: stepID)]?.runningTask != nil
     }
 
     // MARK: - Stateful continuation slice
@@ -375,6 +420,7 @@ final class LLMExecutionService {
         // 2. Apply planning phase (first iteration only)
         let (toolsForIteration, resetSession) = await applyPlanningPhase(
             stepID: stepID,
+            taskID: task.id,
             roleForMessage: roleForMessage,
             tools: tools,
             step: step,
@@ -391,10 +437,10 @@ final class LLMExecutionService {
         // untargeted Team queue). Appends a user turn to `conversationMessages`
         // for this iteration's request. Skipped on iteration-1 continuation paths
         // (see `injectQueuedSupervisorMessage` for the stateful-chain rationale).
-        if let taskID = taskIDForStep(stepID) {
+        if isExecutionLive(stepID: stepID, taskID: task.id) {
             await injectQueuedSupervisorMessage(
                 stepID: stepID,
-                taskID: taskID,
+                taskID: task.id,
                 roleID: step.effectiveRoleID,
                 iterationNumber: iterationNumber,
                 session: session,
@@ -412,6 +458,7 @@ final class LLMExecutionService {
         // 2b. Stream LLM response
         let streamResult = try await performStreamingCall(
             stepID: stepID,
+            taskID: task.id,
             roleForMessage: roleForMessage,
             client: client,
             config: config,
@@ -428,9 +475,23 @@ final class LLMExecutionService {
         }
         if let usage = streamResult.tokenUsage { cumulativeUsage.accumulate(usage) }
 
+        // 2c. Top-level thinking-loop break: the stream was aborted + the looping
+        // generation discarded (no anchor in `conversationMessages`, nothing in
+        // `step.messages`). Recover via `LoopRecoveryPolicy` — clean retry or a
+        // mode-aware terminal — BEFORE `processStreamingResult`. Any clean stream
+        // completion (no signal) resets the consecutive-break counter.
+        if let loopSignal = streamResult.thinkingLoopSignal {
+            return await handleStreamLoopBreak(
+                stepID: stepID, signal: loopSignal, task: task,
+                roleForMessage: roleForMessage, supervisorMode: supervisorMode,
+                session: &session)
+        }
+        resetThinkingLoopBreakCount(stepID: stepID, taskID: task.id)
+
         // 3. Process streaming result (append messages, check completion signals)
         if let completionStop = await processStreamingResult(
-            streamResult, stepID: stepID, conversationMessages: &conversationMessages)
+            streamResult, stepID: stepID, taskID: task.id,
+            conversationMessages: &conversationMessages)
         {
             return completionStop
         }
@@ -455,7 +516,7 @@ final class LLMExecutionService {
         // produced a parseable tool call. Centralized so a refactor that drops
         // the call here is also detected by `LLMExecutionServiceParseFailureCapTests`
         // (regression: T1 — the helper-only reset was not exercising this prod path).
-        resetCountersOnParseableToolCall(stepID: stepID)
+        resetCountersOnParseableToolCall(stepID: stepID, taskID: task.id)
         // Reset advisory no-tool-call counter only when at least one tool call is
         // *productive*. `ask_supervisor` doesn't qualify under autonomous supervisor
         // mode — it gets auto-answered, and the model can ping itself in a loop with
@@ -468,11 +529,14 @@ final class LLMExecutionService {
             // Non-productive turn: ask_supervisor gets auto-answered in autonomous mode,
             // so the model can ping itself in a loop with it forever. Treat it as a
             // no-tool-call turn for the advisory auto-finish counter.
-            if let stop = await attemptAdvisoryAutoFinish(stepID: stepID, roleDefinition: roleDefinition) {
+            if let stop = await attemptAdvisoryAutoFinish(
+                stepID: stepID, taskID: task.id, roleDefinition: roleDefinition)
+            {
                 return stop
             }
         } else {
-            executionStates[stepID]?.consecutiveAdvisoryNoToolTurns = 0
+            executionStates[TaskStepKey(taskID: task.id, stepID: stepID)]?
+                .consecutiveAdvisoryNoToolTurns = 0
         }
         let allowedToolNames = Set(toolsForIteration.map(\.name))
         let toolResults = await executeToolCalls(
@@ -528,13 +592,14 @@ final class LLMExecutionService {
         }
 
         // 7. Check if all expected artifacts have been created → auto-complete
-        if let artifactStop = checkArtifactCompleteness(stepID: stepID) {
+        if let artifactStop = checkArtifactCompleteness(stepID: stepID, taskID: task.id) {
             return artifactStop
         }
 
         // 8. Inject Memories (tag index + plan summary)
         await injectMemories(
             stepID: stepID,
+            taskID: task.id,
             memoryStore: memoryStore,
             session: session,
             conversationMessages: &conversationMessages
@@ -543,6 +608,7 @@ final class LLMExecutionService {
         // 9. Check for looping patterns
         await checkAndInjectLoopWarning(
             stepID: stepID,
+            taskID: task.id,
             tracker: tracker,
             conversationMessages: &conversationMessages
         )

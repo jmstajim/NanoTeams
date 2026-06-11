@@ -3,16 +3,17 @@ import Foundation
 /// Artifact-related prompt building: Supervisor task, required artifacts, artifact sections.
 nonisolated extension PromptBuilder {
 
-    /// Builds the Supervisor Task section.
-    static func buildSupervisorTaskSection(supervisorTask: String) -> String? {
+    /// Builds the Supervisor Task section. `header` lets the Autovisor render
+    /// it as "Supervisor Goal" (its brief IS its goal) instead of "Supervisor Task".
+    static func buildSupervisorTaskSection(supervisorTask: String, header: String = "Supervisor Task") -> String? {
         let trimmed = supervisorTask.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
-        return "## Supervisor Task\n\n\(trimmed)"
+        return "## \(header)\n\n\(trimmed)"
     }
 
-    static func buildSupervisorTaskSection(task: NTMSTask) -> String? {
-        buildSupervisorTaskSection(supervisorTask: task.effectiveSupervisorBrief)
+    static func buildSupervisorTaskSection(task: NTMSTask, header: String = "Supervisor Task") -> String? {
+        buildSupervisorTaskSection(supervisorTask: task.effectiveSupervisorBrief, header: header)
     }
 
     /// Gets the required artifact names for the current step's role.

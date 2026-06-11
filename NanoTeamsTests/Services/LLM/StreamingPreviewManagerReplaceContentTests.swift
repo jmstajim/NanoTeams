@@ -43,14 +43,14 @@ final class StreamingPreviewManagerReplaceContentTests: XCTestCase {
     func testReplaceContent_rewindsFromStreamedPrefix_toEmpty() {
         let stepID = "pm"
         let messageID = UUID()
-        manager.beginStreaming(stepID: stepID, messageID: messageID, role: .productManager)
-        manager.append(stepID: stepID, messageID: messageID,
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .productManager)
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID,
                        role: .productManager, content: "<|")
 
-        manager.replaceContent(stepID: stepID, messageID: messageID,
+        manager.replaceContent(stepID: stepID, taskID: 0, messageID: messageID,
                                role: .productManager, content: "")
 
-        XCTAssertEqual(manager.streamingContent(for: stepID), "",
+        XCTAssertEqual(manager.streamingContent(stepID: stepID, taskID: 0), "",
                        "Partial marker prefix `<|` must not linger")
         XCTAssertTrue(manager.isStreaming(messageID: messageID),
                       "Streaming state should be preserved — only content rewound")
@@ -59,31 +59,31 @@ final class StreamingPreviewManagerReplaceContentTests: XCTestCase {
     func testReplaceContent_rewindsFromStreamedPrefix_toPreMarkerText() {
         let stepID = "pm"
         let messageID = UUID()
-        manager.beginStreaming(stepID: stepID, messageID: messageID, role: .productManager)
-        manager.append(stepID: stepID, messageID: messageID,
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .productManager)
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID,
                        role: .productManager, content: "Plan overview. <|")
 
         // Service rewinds to the text that was emitted BEFORE the marker.
-        manager.replaceContent(stepID: stepID, messageID: messageID,
+        manager.replaceContent(stepID: stepID, taskID: 0, messageID: messageID,
                                role: .productManager, content: "Plan overview. ")
 
-        XCTAssertEqual(manager.streamingContent(for: stepID), "Plan overview. ",
+        XCTAssertEqual(manager.streamingContent(stepID: stepID, taskID: 0), "Plan overview. ",
                        "Only the marker prefix should be trimmed")
     }
 
     func testReplaceContent_preservesMessageID_andRole() {
         let stepID = "pm"
         let messageID = UUID()
-        manager.beginStreaming(stepID: stepID, messageID: messageID, role: .productManager)
-        manager.append(stepID: stepID, messageID: messageID,
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .productManager)
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID,
                        role: .productManager, content: "Initial <")
 
-        manager.replaceContent(stepID: stepID, messageID: messageID,
+        manager.replaceContent(stepID: stepID, taskID: 0, messageID: messageID,
                                role: .productManager, content: "Initial ")
 
-        XCTAssertEqual(manager.preview(for: stepID)?.id, messageID,
+        XCTAssertEqual(manager.preview(stepID: stepID, taskID: 0)?.id, messageID,
                        "replaceContent must preserve the original messageID")
-        XCTAssertEqual(manager.preview(for: stepID)?.role, .productManager)
+        XCTAssertEqual(manager.preview(stepID: stepID, taskID: 0)?.role, .productManager)
     }
 
     func testReplaceContent_doesNotBumpStructuralVersion_onExistingPreview() {
@@ -92,12 +92,12 @@ final class StreamingPreviewManagerReplaceContentTests: XCTestCase {
         // rebuilds of the entire timeline on every partial-marker pause.
         let stepID = "pm"
         let messageID = UUID()
-        manager.beginStreaming(stepID: stepID, messageID: messageID, role: .productManager)
-        manager.append(stepID: stepID, messageID: messageID,
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .productManager)
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID,
                        role: .productManager, content: "abc<|")
 
         let versionBefore = manager.structuralVersion
-        manager.replaceContent(stepID: stepID, messageID: messageID,
+        manager.replaceContent(stepID: stepID, taskID: 0, messageID: messageID,
                                role: .productManager, content: "abc")
 
         XCTAssertEqual(manager.structuralVersion, versionBefore,
@@ -107,30 +107,30 @@ final class StreamingPreviewManagerReplaceContentTests: XCTestCase {
     func testReplaceContent_doesNotAffectThinkingPreview() {
         let stepID = "pm"
         let messageID = UUID()
-        manager.beginStreaming(stepID: stepID, messageID: messageID, role: .productManager)
-        manager.appendThinking(stepID: stepID, content: "Reasoning about the plan...")
-        manager.append(stepID: stepID, messageID: messageID,
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .productManager)
+        manager.appendThinking(stepID: stepID, taskID: 0, content: "Reasoning about the plan...")
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID,
                        role: .productManager, content: "Plan <|")
 
-        manager.replaceContent(stepID: stepID, messageID: messageID,
+        manager.replaceContent(stepID: stepID, taskID: 0, messageID: messageID,
                                role: .productManager, content: "Plan ")
 
-        XCTAssertEqual(manager.streamingThinking(for: stepID), "Reasoning about the plan...",
+        XCTAssertEqual(manager.streamingThinking(stepID: stepID, taskID: 0), "Reasoning about the plan...",
                        "Thinking buffer is independent of the rewind")
     }
 
     func testReplaceContent_doesNotAffectProcessingProgress() {
         let stepID = "pm"
         let messageID = UUID()
-        manager.beginStreaming(stepID: stepID, messageID: messageID, role: .productManager)
-        manager.updateProcessingProgress(stepID: stepID, progress: 0.4)
-        manager.append(stepID: stepID, messageID: messageID,
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .productManager)
+        manager.updateProcessingProgress(stepID: stepID, taskID: 0, progress: 0.4)
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID,
                        role: .productManager, content: "Intro <|")
 
-        manager.replaceContent(stepID: stepID, messageID: messageID,
+        manager.replaceContent(stepID: stepID, taskID: 0, messageID: messageID,
                                role: .productManager, content: "Intro ")
 
-        XCTAssertEqual(manager.processingProgress[stepID], 0.4)
+        XCTAssertEqual(manager.processingProgress[TaskStepKey(taskID: 0, stepID: stepID)], 0.4)
     }
 
     // MARK: - Rewind with no existing preview
@@ -143,19 +143,19 @@ final class StreamingPreviewManagerReplaceContentTests: XCTestCase {
         let stepID = "pm"
         let messageID = UUID()
 
-        manager.replaceContent(stepID: stepID, messageID: messageID,
+        manager.replaceContent(stepID: stepID, taskID: 0, messageID: messageID,
                                role: .productManager, content: "")
 
-        XCTAssertNil(manager.preview(for: stepID),
+        XCTAssertNil(manager.preview(stepID: stepID, taskID: 0),
                      "An empty rewind on a non-existent preview must not create one")
-        XCTAssertFalse(manager.hasPreview(for: stepID))
+        XCTAssertFalse(manager.hasPreview(stepID: stepID, taskID: 0))
     }
 
     func testReplaceContent_noPreview_emptyContent_doesNotBumpStructuralVersion() {
         let stepID = "pm"
         let versionBefore = manager.structuralVersion
 
-        manager.replaceContent(stepID: stepID, messageID: UUID(),
+        manager.replaceContent(stepID: stepID, taskID: 0, messageID: UUID(),
                                role: .productManager, content: "")
 
         XCTAssertEqual(manager.structuralVersion, versionBefore,
@@ -169,19 +169,19 @@ final class StreamingPreviewManagerReplaceContentTests: XCTestCase {
         let stepID = "pm"
         let messageID = UUID()
 
-        manager.replaceContent(stepID: stepID, messageID: messageID,
+        manager.replaceContent(stepID: stepID, taskID: 0, messageID: messageID,
                                role: .productManager, content: "Preamble.")
 
-        XCTAssertEqual(manager.preview(for: stepID)?.content, "Preamble.")
-        XCTAssertEqual(manager.preview(for: stepID)?.id, messageID)
-        XCTAssertEqual(manager.preview(for: stepID)?.role, .productManager)
+        XCTAssertEqual(manager.preview(stepID: stepID, taskID: 0)?.content, "Preamble.")
+        XCTAssertEqual(manager.preview(stepID: stepID, taskID: 0)?.id, messageID)
+        XCTAssertEqual(manager.preview(stepID: stepID, taskID: 0)?.role, .productManager)
     }
 
     func testReplaceContent_noPreview_nonEmptyContent_bumpsStructuralVersion() {
         let stepID = "pm"
         let versionBefore = manager.structuralVersion
 
-        manager.replaceContent(stepID: stepID, messageID: UUID(),
+        manager.replaceContent(stepID: stepID, taskID: 0, messageID: UUID(),
                                role: .productManager, content: "Preamble.")
 
         XCTAssertEqual(manager.structuralVersion, versionBefore &+ 1,
@@ -193,18 +193,18 @@ final class StreamingPreviewManagerReplaceContentTests: XCTestCase {
     func testReplaceContent_calledTwiceWithSameContent_isIdempotent() {
         let stepID = "pm"
         let messageID = UUID()
-        manager.beginStreaming(stepID: stepID, messageID: messageID, role: .productManager)
-        manager.append(stepID: stepID, messageID: messageID,
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .productManager)
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID,
                        role: .productManager, content: "abc<|")
 
-        manager.replaceContent(stepID: stepID, messageID: messageID,
+        manager.replaceContent(stepID: stepID, taskID: 0, messageID: messageID,
                                role: .productManager, content: "abc")
         let versionAfterFirst = manager.structuralVersion
 
-        manager.replaceContent(stepID: stepID, messageID: messageID,
+        manager.replaceContent(stepID: stepID, taskID: 0, messageID: messageID,
                                role: .productManager, content: "abc")
 
-        XCTAssertEqual(manager.streamingContent(for: stepID), "abc")
+        XCTAssertEqual(manager.streamingContent(stepID: stepID, taskID: 0), "abc")
         XCTAssertEqual(manager.structuralVersion, versionAfterFirst,
                        "Second identical rewind must be a no-op for structural version")
     }
@@ -214,18 +214,18 @@ final class StreamingPreviewManagerReplaceContentTests: XCTestCase {
         let stepB = "tech_lead"
         let messageA = UUID()
         let messageB = UUID()
-        manager.beginStreaming(stepID: stepA, messageID: messageA, role: .productManager)
-        manager.beginStreaming(stepID: stepB, messageID: messageB, role: .techLead)
-        manager.append(stepID: stepA, messageID: messageA,
+        manager.beginStreaming(stepID: stepA, taskID: 0, messageID: messageA, role: .productManager)
+        manager.beginStreaming(stepID: stepB, taskID: 0, messageID: messageB, role: .techLead)
+        manager.append(stepID: stepA, taskID: 0, messageID: messageA,
                        role: .productManager, content: "PM text <|")
-        manager.append(stepID: stepB, messageID: messageB,
+        manager.append(stepID: stepB, taskID: 0, messageID: messageB,
                        role: .techLead, content: "TL unaffected")
 
-        manager.replaceContent(stepID: stepA, messageID: messageA,
+        manager.replaceContent(stepID: stepA, taskID: 0, messageID: messageA,
                                role: .productManager, content: "PM text ")
 
-        XCTAssertEqual(manager.streamingContent(for: stepA), "PM text ")
-        XCTAssertEqual(manager.streamingContent(for: stepB), "TL unaffected",
+        XCTAssertEqual(manager.streamingContent(stepID: stepA, taskID: 0), "PM text ")
+        XCTAssertEqual(manager.streamingContent(stepID: stepB, taskID: 0), "TL unaffected",
                        "Rewind on one step must not touch another step")
     }
 
@@ -237,14 +237,14 @@ final class StreamingPreviewManagerReplaceContentTests: XCTestCase {
     func testReplaceContent_toEmpty_thenCommit_returnsNil() {
         let stepID = "pm"
         let messageID = UUID()
-        manager.beginStreaming(stepID: stepID, messageID: messageID, role: .productManager)
-        manager.append(stepID: stepID, messageID: messageID,
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .productManager)
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID,
                        role: .productManager, content: "<")
 
-        manager.replaceContent(stepID: stepID, messageID: messageID,
+        manager.replaceContent(stepID: stepID, taskID: 0, messageID: messageID,
                                role: .productManager, content: "")
 
-        let committed = manager.commit(stepID: stepID)
+        let committed = manager.commit(stepID: stepID, taskID: 0)
         XCTAssertNil(committed,
                      "An empty preview (post-rewind) must not materialize a bubble on commit")
     }
@@ -254,14 +254,14 @@ final class StreamingPreviewManagerReplaceContentTests: XCTestCase {
     func testReplaceContent_toNonEmpty_thenCommit_returnsRewoundValue() {
         let stepID = "pm"
         let messageID = UUID()
-        manager.beginStreaming(stepID: stepID, messageID: messageID, role: .productManager)
-        manager.append(stepID: stepID, messageID: messageID,
+        manager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .productManager)
+        manager.append(stepID: stepID, taskID: 0, messageID: messageID,
                        role: .productManager, content: "Answer: 42. <|")
 
-        manager.replaceContent(stepID: stepID, messageID: messageID,
+        manager.replaceContent(stepID: stepID, taskID: 0, messageID: messageID,
                                role: .productManager, content: "Answer: 42. ")
 
-        let committed = manager.commit(stepID: stepID)
+        let committed = manager.commit(stepID: stepID, taskID: 0)
         XCTAssertEqual(committed?.content, "Answer: 42. ",
                        "Commit must reflect the post-rewind content, not the marker-polluted prefix")
     }

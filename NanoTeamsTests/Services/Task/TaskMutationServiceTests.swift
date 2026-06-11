@@ -413,6 +413,34 @@ final class TaskMutationServiceTests: XCTestCase {
         XCTAssertEqual(step?.llmConversation.count, 3)
     }
 
+    // MARK: - removeLLMMessage Tests
+
+    func testRemoveLLMMessage_removesOnlyTargetedById() throws {
+        var (task, stepID) = try createTaskWithStep()
+        let keep = LLMMessage(role: .user, content: "keep")
+        let drop = LLMMessage(role: .assistant, content: "")  // the pre-created empty turn shape
+        TaskMutationService.appendLLMMessage(keep, to: stepID, in: &task)
+        TaskMutationService.appendLLMMessage(drop, to: stepID, in: &task)
+
+        TaskMutationService.removeLLMMessage(id: drop.id, from: stepID, in: &task)
+
+        let step = task.runs.last?.steps.first { $0.id == stepID }
+        XCTAssertEqual(step?.llmConversation.count, 1)
+        XCTAssertEqual(step?.llmConversation.first?.id, keep.id, "Only the targeted message is removed")
+    }
+
+    func testRemoveLLMMessage_missingStep_isSafeNoOp() throws {
+        var (task, stepID) = try createTaskWithStep()
+        let msg = LLMMessage(role: .user, content: "x")
+        TaskMutationService.appendLLMMessage(msg, to: stepID, in: &task)
+
+        // Unknown step id → locate fails → no-op (no crash, conversation intact).
+        TaskMutationService.removeLLMMessage(id: msg.id, from: "no_such_step", in: &task)
+
+        let step = task.runs.last?.steps.first { $0.id == stepID }
+        XCTAssertEqual(step?.llmConversation.count, 1, "Removing from a missing step must be a safe no-op")
+    }
+
     // MARK: - commitStreamingContent Tests
 
     func testCommitStreamingContent_updatesLLMMessageAndCreatesStepMessage() throws {

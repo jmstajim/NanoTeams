@@ -97,14 +97,50 @@ extension TeamEngine {
         }
     }
 
-    func startRevisionRoles(roleStatuses: [String: RoleExecutionStatus]) async {
-        guard let store else { return }
-
+    /// From the roles currently in `.revisionRequested`, returns those whose upstream
+    /// dependency roles are NOT themselves blocking (`.revisionRequested` or `.working`).
+    ///
+    /// Serializes a revision cascade: a downstream role (e.g. Code Reviewer) only starts
+    /// after the upstream role it depends on (e.g. Software Engineer) finishes its
+    /// revision, so it re-runs against the FRESH artifacts rather than the stale ones
+    /// left over from the prior run. Independent revision roles still start together.
+    /// A fully-blocked set (dependency cycle) returns empty so the run loop can fail
+    /// loudly instead of spinning. The change-request target is always the chain root
+    /// (its upstream is never revised), so a valid acyclic team always has a startable role.
+    nonisolated static func startableRevisionRoleIDs(
+        roleStatuses: [String: RoleExecutionStatus],
+        roles: [TeamRoleDefinition]
+    ) -> [String] {
         let revisionRoleIDs = roleStatuses.compactMap { (roleID, status) -> String? in
             status == .revisionRequested ? roleID : nil
         }
+        guard !revisionRoleIDs.isEmpty else { return [] }
 
-        for roleID in revisionRoleIDs {
+        let resolver = ArtifactDependencyResolver(roles: roles)
+        let blockingStatuses: [RoleExecutionStatus] = [.revisionRequested, .working]
+
+        return revisionRoleIDs.filter { roleID in
+            let upstream = resolver.dependencyRoleIDs(of: roleID)
+            return !upstream.contains { blockingStatuses.contains(roleStatuses[$0] ?? .idle) }
+        }
+    }
+
+    /// Starts the revision-requested roles whose upstream dependencies are clear
+    /// (see `startableRevisionRoleIDs`). Returns the number of startable roles
+    /// scheduled this pass so the run loop can distinguish "made progress" from
+    /// "everything is blocked" (a dependency cycle) and fail loudly instead of
+    /// busy-looping. (A scheduled role may still flip to `.failed` in its task if its
+    /// step can't be created — the run loop catches that on the next iteration.)
+    @discardableResult
+    func startRevisionRoles(roleStatuses: [String: RoleExecutionStatus]) async -> Int {
+        guard let store else { return 0 }
+
+        let startableRoleIDs = Self.startableRevisionRoleIDs(
+            roleStatuses: roleStatuses,
+            roles: store.activeTeam?.roles ?? []
+        )
+
+        for roleID in startableRoleIDs {
             await store.updateRoleStatus(roleID: roleID, status: .working)
             onRoleStatusChanged?(roleID, .working)
 
@@ -127,6 +163,8 @@ extension TeamEngine {
                 await self.waitForStepCompletion(stepID: stepID, roleID: roleID)
             }
         }
+
+        return startableRoleIDs.count
     }
 
     // MARK: - Step Completion

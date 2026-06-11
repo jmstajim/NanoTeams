@@ -7,8 +7,9 @@ import XCTest
 /// Before the fix, `cancelStepExecution` was synchronous and tore down `executionStates`
 /// + the streaming preview manager *before* the cancelled task's `catch is CancellationError`
 /// handler had a chance to run. The handler calls `commitStreamingContent()` →
-/// `delegate.commitStreaming(...)` whose `taskIDForStep(stepID)` then returned `nil`,
-/// silently dropping `assistantCollected` / `thinkingCollected`.
+/// `delegate.commitStreaming(...)`, whose liveness barrier (then `taskIDForStep`,
+/// now `isExecutionLive`) saw a torn-down entry and silently dropped
+/// `assistantCollected` / `thinkingCollected`.
 ///
 /// The fix awaits `runningTask.value` between cancellation and teardown. These tests
 /// pin that contract by injecting a stub running task that mimics the streaming
@@ -63,24 +64,24 @@ final class PausePreservesStreamingContentTests: XCTestCase, @unchecked Sendable
         }
 
         service._testInjectRunningTask(stepID: stepID, taskID: taskID, runningTask: runningTask)
-        XCTAssertTrue(service._testHasExecutionState(stepID: stepID))
+        XCTAssertTrue(service._testHasExecutionState(stepID: stepID, taskID: taskID))
 
         // BEFORE the fix this returned synchronously — flag would still be false.
-        await service.cancelStepExecution(stepID: stepID)
+        await service.cancelStepExecution(stepID: stepID, taskID: taskID)
 
         XCTAssertTrue(
             flag.value,
             "cancelStepExecution must not return until the cancelled task's catch handler runs"
         )
         XCTAssertFalse(
-            service._testHasExecutionState(stepID: stepID),
+            service._testHasExecutionState(stepID: stepID, taskID: taskID),
             "executionStates entry must be cleared after cancellation completes"
         )
     }
 
-    // MARK: - Contract: taskIDForStep stays valid through the catch handler
+    // MARK: - Contract: the (taskID, stepID) execution state stays alive through the catch handler
 
-    func testCancelStepExecution_keepsTaskIDForStepValidUntilCatchHandlerCompletes() async {
+    func testCancelStepExecution_keepsExecutionStateAliveUntilCatchHandlerCompletes() async {
         let stepID = "step-task-id-lookup"
         let taskID = 7
 
@@ -95,7 +96,11 @@ final class PausePreservesStreamingContentTests: XCTestCase, @unchecked Sendable
             do {
                 try await Task.sleep(for: .seconds(30))
             } catch is CancellationError {
-                observed.value = weakService?.taskIDForStep(stepID)
+                // `taskIDForStep` no longer exists (executionStates is keyed by
+                // TaskStepKey); the equivalent liveness probe is whether the
+                // (stepID, taskID) execution state still exists mid-handler.
+                observed.value = weakService?._testHasExecutionState(stepID: stepID, taskID: taskID) == true
+                    ? taskID : nil
             } catch {
                 // ignore
             }
@@ -103,11 +108,11 @@ final class PausePreservesStreamingContentTests: XCTestCase, @unchecked Sendable
 
         service._testInjectRunningTask(stepID: stepID, taskID: taskID, runningTask: runningTask)
 
-        await service.cancelStepExecution(stepID: stepID)
+        await service.cancelStepExecution(stepID: stepID, taskID: taskID)
 
         XCTAssertEqual(
             observed.value, taskID,
-            "Catch handler must see live executionStates so taskIDForStep returns the real taskID — this is what unblocks commitStreamingContent and persistTokenUsage on cancellation"
+            "Catch handler must see live executionStates for its (taskID, stepID) key — this is what unblocks commitStreamingContent and persistTokenUsage on cancellation"
         )
     }
 
@@ -125,7 +130,7 @@ final class PausePreservesStreamingContentTests: XCTestCase, @unchecked Sendable
         service._testInjectRunningTask(stepID: stepID, taskID: taskID, runningTask: runningTask)
 
         XCTAssertFalse(mockDelegate.clearStreamingPreviewCalls.contains(stepID))
-        await service.cancelStepExecution(stepID: stepID)
+        await service.cancelStepExecution(stepID: stepID, taskID: taskID)
         XCTAssertTrue(mockDelegate.clearStreamingPreviewCalls.contains(stepID))
     }
 
@@ -136,12 +141,12 @@ final class PausePreservesStreamingContentTests: XCTestCase, @unchecked Sendable
     /// steps and may legitimately invoke `cancelStepExecution` on an already-finished
     /// or never-started step.
     func testCancelStepExecution_unknownStepID_doesNotCrashOrSetError() async {
-        await service.cancelStepExecution(stepID: "never-existed")
+        await service.cancelStepExecution(stepID: "never-existed", taskID: 0)
         XCTAssertTrue(
             mockDelegate.lastErrorMessages.isEmpty,
             "Cancelling unknown stepID must not surface an error banner — got: \(mockDelegate.lastErrorMessages)"
         )
-        XCTAssertFalse(service._testHasExecutionState(stepID: "never-existed"))
+        XCTAssertFalse(service._testHasExecutionState(stepID: "never-existed", taskID: 0))
     }
 
     /// LLM completes naturally just before user clicks Pause: the `runningTask` is
@@ -157,7 +162,7 @@ final class PausePreservesStreamingContentTests: XCTestCase, @unchecked Sendable
         service._testInjectRunningTask(stepID: stepID, taskID: taskID, runningTask: runningTask)
 
         let start = Date()
-        await service.cancelStepExecution(stepID: stepID)
+        await service.cancelStepExecution(stepID: stepID, taskID: taskID)
         let elapsed = Date().timeIntervalSince(start)
 
         XCTAssertLessThan(
@@ -192,13 +197,13 @@ final class PausePreservesStreamingContentTests: XCTestCase, @unchecked Sendable
         service._testInjectRunningTask(stepID: stepID, taskID: taskID, runningTask: runningTask)
 
         // Two concurrent cancels.
-        async let a: Void = service.cancelStepExecution(stepID: stepID)
-        async let b: Void = service.cancelStepExecution(stepID: stepID)
+        async let a: Void = service.cancelStepExecution(stepID: stepID, taskID: taskID)
+        async let b: Void = service.cancelStepExecution(stepID: stepID, taskID: taskID)
         _ = await (a, b)
 
         XCTAssertTrue(signal.fired, "Catch handler must have run at least once")
         XCTAssertFalse(
-            service._testHasExecutionState(stepID: stepID),
+            service._testHasExecutionState(stepID: stepID, taskID: taskID),
             "executionStates must be cleared after concurrent cancels"
         )
         // `clearStreamingPreview` is called by both cancels — idempotent. Verify
@@ -304,7 +309,7 @@ final class PausePreservesStreamingContentTests: XCTestCase, @unchecked Sendable
         }
 
         // User clicks Pause.
-        await service.cancelStepExecution(stepID: stepID)
+        await service.cancelStepExecution(stepID: stepID, taskID: taskID)
 
         // What the user would see in the activity feed: a regular assistant bubble
         // containing the partial content the model emitted before pause.
@@ -373,7 +378,7 @@ final class PausePreservesStreamingContentTests: XCTestCase, @unchecked Sendable
             !mock.appendStreamingThinkingCalls.isEmpty
         }
 
-        await service.cancelStepExecution(stepID: stepID)
+        await service.cancelStepExecution(stepID: stepID, taskID: taskID)
 
         guard let run = mock.taskToMutate?.runs.last,
               let step = run.steps.first(where: { $0.id == stepID }),
@@ -425,6 +430,7 @@ final class PausePreservesStreamingContentTests: XCTestCase, @unchecked Sendable
             } catch is CancellationError {
                 await fxService?.persistTokenUsage(
                     stepID: stepID,
+                    taskID: taskID,
                     usage: TokenUsage(inputTokens: 250, outputTokens: 80)
                 )
             } catch { /* ignore */ }
@@ -432,7 +438,7 @@ final class PausePreservesStreamingContentTests: XCTestCase, @unchecked Sendable
 
         fxService._testInjectRunningTask(stepID: stepID, taskID: taskID, runningTask: runningTask)
 
-        await fxService.cancelStepExecution(stepID: stepID)
+        await fxService.cancelStepExecution(stepID: stepID, taskID: taskID)
 
         let step = mock.taskToMutate?.runs.last?.steps.first(where: { $0.id == stepID })
         XCTAssertEqual(
@@ -471,7 +477,7 @@ final class PausePreservesStreamingContentTests: XCTestCase, @unchecked Sendable
         service._testInjectRunningTask(stepID: stepID, taskID: taskID, runningTask: runningTask)
 
         let start = Date()
-        await service.cancelStepExecution(stepID: stepID)
+        await service.cancelStepExecution(stepID: stepID, taskID: taskID)
         let elapsed = Date().timeIntervalSince(start)
 
         XCTAssertLessThan(
@@ -487,7 +493,7 @@ final class PausePreservesStreamingContentTests: XCTestCase, @unchecked Sendable
             "Timeout must surface an explanatory banner — got messages: \(mockDelegate.lastErrorMessages)"
         )
         XCTAssertFalse(
-            service._testHasExecutionState(stepID: stepID),
+            service._testHasExecutionState(stepID: stepID, taskID: taskID),
             "executionStates entry must still be cleared even after timeout — caller proceeds with teardown"
         )
     }
@@ -528,7 +534,7 @@ final class PausePreservesStreamingContentTests: XCTestCase, @unchecked Sendable
             !mock.beginStreamingCalls.isEmpty
         }
 
-        await fxService.cancelStepExecution(stepID: stepID)
+        await fxService.cancelStepExecution(stepID: stepID, taskID: taskID)
 
         guard let step = mock.taskToMutate?.runs.last?.steps.first(where: { $0.id == stepID }) else {
             XCTFail("Mock task lost the step")
@@ -585,7 +591,7 @@ final class PausePreservesStreamingContentTests: XCTestCase, @unchecked Sendable
             stepID: stepID, taskID: taskID,
             task: initialTask, runIndex: 0, stepIndex: 0)
         try await waitUntil { !mock.markStreamActivityCalls.isEmpty }
-        await firstService.cancelStepExecution(stepID: stepID)
+        await firstService.cancelStepExecution(stepID: stepID, taskID: taskID)
 
         // Snapshot state after first pause: should have one assistant message with
         // the first stream's partial content.
@@ -623,7 +629,7 @@ final class PausePreservesStreamingContentTests: XCTestCase, @unchecked Sendable
             stepID: stepID, taskID: taskID,
             task: resumedTask, runIndex: 0, stepIndex: 0)
         try await waitUntil { !mock.markStreamActivityCalls.isEmpty }
-        await secondService.cancelStepExecution(stepID: stepID)
+        await secondService.cancelStepExecution(stepID: stepID, taskID: taskID)
 
         // Final assertion: TWO assistant LLMMessages exist — the pre-resume partial
         // is preserved, and the post-resume partial is added separately. Neither
@@ -648,6 +654,47 @@ final class PausePreservesStreamingContentTests: XCTestCase, @unchecked Sendable
             "Second iteration content.".hasPrefix(secondContent),
             "Second partial '\(secondContent)' should be a prefix of the second stream"
         )
+    }
+
+    // MARK: - Top-level thinking-loop discard (faithful orphan removal)
+
+    /// Faithful orphan-removal pin. `PerformStreamingCallLoopBreakTests` uses the
+    /// recording `MockLLMExecutionDelegate` whose `beginStreaming` plants nothing, so
+    /// its `llmConversation.isEmpty` check is tautological. Here the mock plants the
+    /// empty assistant `LLMMessage` exactly as `NTMSOrchestrator.beginStreaming` does,
+    /// so the round-trip is real: a top-level thinking-loop break must DISCARD that
+    /// planted message (`discardStreaming` → `removeLLMMessage`) — leaving no orphan —
+    /// and must NOT commit the looping turn.
+    func testTopLevelThinkingLoop_discardRemovesPlantedOrphan_doesNotCommit() async throws {
+        let stepID = "orphan_discard_step"
+        let taskID = 11
+        let task = makeTaskWithRunningStep(taskID: taskID, stepID: stepID)  // top-level (parentTaskID nil)
+        let mock = StreamPersistingMockDelegate()
+        mock.workFolderURL = tempDir
+        mock.taskToMutate = task
+
+        let service = LLMExecutionService(repository: NTMSRepository())
+        service.attach(delegate: mock)
+        service._testRegisterStepTask(stepID: stepID, taskID: taskID)
+
+        // 600-char thinking buffer: a 24-char phrase repeated 25× → fires the
+        // within-message detector and crosses the 400-char scan cadence in one delta.
+        let loopThinking = String(repeating: "Wait, let me reconsider.", count: 25)
+        let result = try await service.performStreamingCall(
+            stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
+            client: StreamingStubLLMClient(thinkingChunks: [loopThinking], contentChunks: []),
+            config: LLMConfig(), tools: [], conversationMessages: [],
+            session: nil, networkLogger: nil)
+
+        XCTAssertNotNil(result.thinkingLoopSignal, "Top-level thinking loop must set the signal")
+        XCTAssertEqual(mock.discardStreamingCalls.count, 1, "The planted message must be discarded once")
+        XCTAssertTrue(mock.commitStreamingCalls.isEmpty, "The looping turn must NOT be committed")
+
+        guard let step = mock.taskToMutate?.runs.last?.steps.first(where: { $0.id == stepID }) else {
+            return XCTFail("Step lost after discard")
+        }
+        XCTAssertTrue(step.llmConversation.isEmpty,
+                      "beginStreaming planted an empty assistant message; discard must remove it (no orphan)")
     }
 
     // MARK: - Helpers
@@ -819,7 +866,9 @@ private final class StreamPersistingMockDelegate: LLMExecutionDelegate {
     var updateProcessingProgressCalls: [(String, Double)] = []
     var clearProcessingProgressCalls: [String] = []
     var markStreamActivityCalls: [String] = []
-    func markStreamActivity(stepID: String) { markStreamActivityCalls.append(stepID) }
+    func markStreamActivity(stepID: String, taskID _: Int) { markStreamActivityCalls.append(stepID) }
+    var markStreamingToolCallCalls: [String] = []
+    func markStreamingToolCall(stepID: String, taskID _: Int) { markStreamingToolCallCalls.append(stepID) }
     func notifyQueuedMessageBackstop(taskID _: Int) {}
 
     var taskToMutate: NTMSTask?
@@ -845,7 +894,7 @@ private final class StreamPersistingMockDelegate: LLMExecutionDelegate {
 
     /// Mirrors `NTMSOrchestrator.beginStreaming`: pre-creates an empty LLMMessage in
     /// the step's conversation so the activity feed picks up the streaming bubble.
-    func beginStreaming(stepID: String, messageID: UUID, role: Role, taskID: Int) async {
+    func beginStreaming(stepID: String, taskID: Int, messageID: UUID, role: Role) async {
         beginStreamingCalls.append((stepID, messageID, role, taskID))
         streamingMessageIDs[stepID] = messageID
         streamingRoles[stepID] = role
@@ -856,15 +905,15 @@ private final class StreamPersistingMockDelegate: LLMExecutionDelegate {
         }
     }
 
-    func appendStreamingPreview(stepID: String, messageID: UUID, role: Role, content: String) {
+    func appendStreamingPreview(stepID: String, taskID _: Int, messageID: UUID, role: Role, content: String) {
         appendStreamingPreviewCalls.append((stepID, messageID, role, content))
     }
 
-    func replaceStreamingPreview(stepID: String, messageID: UUID, role: Role, content: String) {
+    func replaceStreamingPreview(stepID: String, taskID _: Int, messageID: UUID, role: Role, content: String) {
         replaceStreamingPreviewCalls.append((stepID, messageID, role, content))
     }
 
-    func appendStreamingThinking(stepID: String, content: String) {
+    func appendStreamingThinking(stepID: String, taskID _: Int, content: String) {
         appendStreamingThinkingCalls.append((stepID, content))
     }
 
@@ -892,17 +941,29 @@ private final class StreamPersistingMockDelegate: LLMExecutionDelegate {
         streamingRoles[stepID] = nil
     }
 
-    func clearStreamingPreview(stepID: String) {
+    var discardStreamingCalls: [(String, UUID, Int)] = []
+    func discardStreaming(stepID: String, messageID: UUID, taskID: Int) async {
+        discardStreamingCalls.append((stepID, messageID, taskID))
+        await mutateTask(taskID: taskID) { task in
+            TaskMutationService.removeLLMMessage(id: messageID, from: stepID, in: &task)
+        }
+        streamingMessageIDs[stepID] = nil
+        streamingRoles[stepID] = nil
+    }
+
+    func noteStreamLoop(taskID _: Int, stepID _: String, signal _: LoopSignal) -> Bool { true }
+
+    func clearStreamingPreview(stepID: String, taskID _: Int) {
         clearStreamingPreviewCalls.append(stepID)
         streamingMessageIDs[stepID] = nil
         streamingRoles[stepID] = nil
     }
 
-    func updateStreamingProcessingProgress(stepID: String, progress: Double) {
+    func updateStreamingProcessingProgress(stepID: String, taskID _: Int, progress: Double) {
         updateProcessingProgressCalls.append((stepID, progress))
     }
 
-    func clearStreamingProcessingProgress(stepID: String) {
+    func clearStreamingProcessingProgress(stepID: String, taskID _: Int) {
         clearProcessingProgressCalls.append(stepID)
     }
 
@@ -961,6 +1022,9 @@ private final class StreamPersistingMockDelegate: LLMExecutionDelegate {
     var lastErrorPerTaskStub: [Int: String] = [:]
     func lastErrorMessageForTask(_ taskID: Int) -> String? { lastErrorPerTaskStub[taskID] }
 
+    func streamLastActivityAt(stepID: String, taskID: Int) -> Date? { nil }
+    func streamLiveText(stepID: String, taskID: Int) -> String? { nil }
+
     var stopEngineCalls: [Int] = []
     func stopEngineForTask(_ taskID: Int) { stopEngineCalls.append(taskID) }
 
@@ -980,4 +1044,7 @@ private final class StreamPersistingMockDelegate: LLMExecutionDelegate {
         answerSupervisorCalls.append((taskID, stepID, answer))
         return true
     }
+    func performAutovisorAction(_ action: AutovisorAction) async -> AutovisorActionResult { .success("ok") }
+    func persistAutovisorMemory(_ text: String) async -> Bool { true }
+    func autovisorLoadTask(_ taskID: Int) async -> NTMSTask? { loadedTask(taskID) }
 }

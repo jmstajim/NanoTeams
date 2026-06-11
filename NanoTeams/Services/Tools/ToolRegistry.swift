@@ -42,6 +42,29 @@ nonisolated enum ToolSignal: Hashable {
     /// the child team's Supervisor-input flow (e.g. as guidance / corrections),
     /// un-pauses, and re-enters the awaiter loop.
     case forwardToTeam(childTaskID: Int, message: String)
+
+    // MARK: - Autovisor (10)
+    // Management tools for the per-folder automated Supervisor. All route through
+    // the collaboration deferred-handler path (sandbox handlers can't reach the
+    // orchestrator). Reads carry only their args; writes are translated to a
+    // `AutovisorAction` by their async handler and applied via the single
+    // `performAutovisorAction` delegate hook.
+    case listTasks
+    case taskStatus(taskID: Int)
+    case createManagedTask(title: String, brief: String, teamID: String?)
+    case controlTask(taskID: Int, verb: ControlVerb)
+    case manageRole(taskID: Int, roleID: String, verb: RoleVerb)
+    case answerTaskQuestion(taskID: Int, answer: String)
+    case messageTask(taskID: Int, text: String, roleID: String?)
+    case scheduleTask(taskID: Int, intervalMinutes: Int)
+    case setWorkFolderContext(content: String)
+    /// `wait_for_events` — the manager declares it has nothing left to do this
+    /// pass. Routes to a handler that flips the step's `parkForEventsRequested`
+    /// flag so the tool loop parks the step at `.needsSupervisorInput` (session
+    /// preserved — a human message continues the conversation) at the next
+    /// iteration boundary.
+    /// Not a `AutovisorAction` — it mutates execution state, not task state.
+    case waitForEvents
 }
 
 /// Payload for a `exploratory: true` call on `SearchTool`. Threaded through

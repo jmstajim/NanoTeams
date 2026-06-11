@@ -199,11 +199,15 @@ nonisolated struct NTMSRepository: WorkFolderRepository, TaskRepository, ToolRep
         )
     }
 
-    func pickFallbackActiveTaskID(from index: TasksIndex) -> Int? {
-        if let inProgress = index.tasks.first(where: { $0.status != .done }) {
+    /// Picks the next active task after the current one is deleted. `excluding`
+    /// (the Autovisor task ID) is never chosen — the manager is hidden from
+    /// the task list, so landing the user on it would strand them on an invisible task.
+    func pickFallbackActiveTaskID(from index: TasksIndex, excluding: Int? = nil) -> Int? {
+        let candidates = index.tasks.filter { $0.parentTaskID == nil && $0.id != excluding }
+        if let inProgress = candidates.first(where: { $0.status != .done }) {
             return inProgress.id
         }
-        return index.tasks.first?.id
+        return candidates.first?.id
     }
 
     /// Loads tool definitions from `tools.json`. Does NOT merge with bundled

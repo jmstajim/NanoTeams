@@ -48,14 +48,16 @@ extension LLMExecutionService {
     /// bloats the conversation with N stale copies on long steps.
     func injectMemories(
         stepID: String,
+        taskID: Int,
         memoryStore: MemoryTagStore,
         session: LLMSession?,
         conversationMessages: inout [ChatMessage]
     ) async {
         guard Self.isMemoriesInjectionEnabled else { return }
 
-        let nextVersion = (executionStates[stepID]?.memoriesVersion ?? 0) + 1
-        executionStates[stepID]?.memoriesVersion = nextVersion
+        let stepKey = TaskStepKey(taskID: taskID, stepID: stepID)
+        let nextVersion = (executionStates[stepKey]?.memoriesVersion ?? 0) + 1
+        executionStates[stepKey]?.memoriesVersion = nextVersion
 
         guard let memories = memoryStore.generateMemories(version: nextVersion) else { return }
 
@@ -64,20 +66,20 @@ extension LLMExecutionService {
             // Fingerprint skips the version header so bumping `v1`→`v2` alone
             // doesn't count as a change; only real entry changes trigger an append.
             let fingerprint = memories.split(separator: "\n").dropFirst().joined(separator: "\n")
-            if executionStates[stepID]?.lastMemoriesFingerprint == fingerprint { return }
-            executionStates[stepID]?.lastMemoriesFingerprint = fingerprint
+            if executionStates[stepKey]?.lastMemoriesFingerprint == fingerprint { return }
+            executionStates[stepKey]?.lastMemoriesFingerprint = fingerprint
             conversationMessages.append(ChatMessage(role: .user, content: memories))
-            await appendLLMMessage(stepID: stepID, role: .user, content: memories)
+            await appendLLMMessage(stepID: stepID, taskID: taskID, role: .user, content: memories)
         } else {
             // Stateless: rebuild in-place so there's only ever one block.
-            if let existingIndex = executionStates[stepID]?.memoriesMessageIndex,
+            if let existingIndex = executionStates[stepKey]?.memoriesMessageIndex,
                existingIndex < conversationMessages.count {
                 conversationMessages[existingIndex] = ChatMessage(role: .user, content: memories)
-                await appendLLMMessage(stepID: stepID, role: .user, content: "[MEMORIES]\n\(memories)")
+                await appendLLMMessage(stepID: stepID, taskID: taskID, role: .user, content: "[MEMORIES]\n\(memories)")
             } else {
-                executionStates[stepID]?.memoriesMessageIndex = conversationMessages.count
+                executionStates[stepKey]?.memoriesMessageIndex = conversationMessages.count
                 conversationMessages.append(ChatMessage(role: .user, content: memories))
-                await appendLLMMessage(stepID: stepID, role: .user, content: memories)
+                await appendLLMMessage(stepID: stepID, taskID: taskID, role: .user, content: memories)
             }
         }
     }
@@ -119,6 +121,7 @@ extension LLMExecutionService {
     /// Checks for looping patterns and injects a warning message if detected.
     func checkAndInjectLoopWarning(
         stepID: String,
+        taskID: Int,
         tracker: ToolCallTracker,
         conversationMessages: inout [ChatMessage]
     ) async {
@@ -150,7 +153,7 @@ extension LLMExecutionService {
         conversationMessages.append(
             ChatMessage(role: .user, content: warningMessage)
         )
-        await appendLLMMessage(stepID: stepID, role: .system, content: warningMessage)
+        await appendLLMMessage(stepID: stepID, taskID: taskID, role: .system, content: warningMessage)
     }
 
     // MARK: - Supervisor Auto-Answer in Tool Loop
@@ -168,6 +171,20 @@ extension LLMExecutionService {
         config: LLMConfig,
         conversationMessages: inout [ChatMessage]
     ) async -> LLMStepStop? {
+        // Autovisor as the folder's Supervisor: suppress the generic auto-answer
+        // so the step parks at `.needsSupervisorInput`. The engine pauses on any
+        // parked step (TeamEngine+RunLoop — mode-independent), which is what the
+        // manager's needs-supervisor wake trigger observes via live engine state.
+        if let settings = delegate?.snapshot?.workFolder.settings,
+           AutovisorPolicy.supervisesTask(
+               taskID: task.id,
+               parentTaskID: task.parentTaskID,
+               autovisorEnabled: settings.autovisorEnabled,
+               activation: settings.autovisorActivation,
+               autovisorTaskID: delegate?.snapshot?.workFolder.state.autovisorTaskID
+           ) {
+            return nil
+        }
         guard let q = outcome.supervisorQuestion, supervisorMode == .autonomous else { return nil }
 
         let answer = await generateAutoSupervisorAnswer(
@@ -178,7 +195,7 @@ extension LLMExecutionService {
             client: client,
             config: config
         )
-        await recordAutoSupervisorAnswer(stepID: stepID, question: q, answer: answer)
+        await recordAutoSupervisorAnswer(stepID: stepID, taskID: task.id, question: q, answer: answer)
 
         // Replace the pending tool result with the actual answer
         let answerContent = buildCollaborationToolResult(toolName: ToolNames.askSupervisor, response: answer)
@@ -195,7 +212,7 @@ extension LLMExecutionService {
             )
         }
         await appendLLMMessage(
-            stepID: stepID, role: .user,
+            stepID: stepID, taskID: task.id, role: .user,
             content: "Supervisor answer: \(answer)",
             sourceRole: .supervisor,
             sourceContext: .supervisorAnswer)

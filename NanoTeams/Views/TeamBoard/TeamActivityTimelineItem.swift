@@ -11,7 +11,15 @@ nonisolated enum ActivityNotificationType: Hashable {
     /// - answerClippedTexts: Clipped text snippets extracted from the answer (for card display)
     /// - toolCallID: The originating StepToolCall.id for unique identification
     /// - thinking: The LLM's reasoning that led to this question (nil if none)
-    case supervisorInput(question: String, answer: String?, answerAttachmentPaths: [String], answerClippedTexts: [String], toolCallID: UUID, thinking: String?)
+    /// - wasAutoAnswered: Whether `answer` came from an automated path (auto-answer
+    ///   service / delegating parent role / Autovisor) — from
+    ///   `StepExecution.supervisorAnswerWasAuto`, NOT inferred from the team's
+    ///   supervisor mode (a human answer in an autonomous team must show the
+    ///   checkmark, not the "Auto-answered" badge). Step-latest flag — the builder
+    ///   stamps it onto every resolved Q&A card on the step, so a step whose
+    ///   history mixes auto and human answers shows the latest attribution on all
+    ///   of them (per-question fidelity is not stored)
+    case supervisorInput(question: String, answer: String?, answerAttachmentPaths: [String], answerClippedTexts: [String], toolCallID: UUID, thinking: String?, wasAutoAnswered: Bool)
     case failed(errorMessage: String?)
 
     func icon(isChatMode: Bool) -> String {
@@ -30,7 +38,7 @@ nonisolated enum ActivityNotificationType: Hashable {
 
     func title(for role: Role, isChatMode: Bool = false) -> String {
         switch self {
-        case .supervisorInput(_, let answer, _, _, _, _):
+        case .supervisorInput(_, let answer, _, _, _, _, _):
             if answer != nil {
                 return "\(role.displayName) asked"
             }
@@ -95,7 +103,7 @@ nonisolated enum TeamActivityTimelineItem: Identifiable {
         case .notification(let stepID, _, let type, _, let taskID):
             let typeKey: String
             switch type {
-            case .supervisorInput(_, _, _, _, let tcID, _): typeKey = "input-\(tcID.uuidString)"
+            case .supervisorInput(_, _, _, _, let tcID, _, _): typeKey = "input-\(tcID.uuidString)"
             case .failed: typeKey = "fail"
             }
             return "notif-\(taskID)-\(stepID)-\(typeKey)"

@@ -1,17 +1,17 @@
 import Foundation
 
-/// Stateless detector for pathologically repetitive LLM output. Used by
-/// `DelegationLoopWatcher` to auto-trigger Pause-and-Decide on a delegated
-/// child team that's stuck in a loop ("Oh wait Oh wait Oh wait...", same
-/// strategic message regenerated each iteration, same tool spammed every
-/// turn, etc.).
+/// Stateless detector for pathologically repetitive LLM output. Consumed via
+/// `LoopScanner` (which `DelegationLoopWatcher`, `AutovisorStuckEvaluator`, and the
+/// in-stream top-level scan all route through) to auto-trigger Pause-and-Decide /
+/// stuck-role recovery on a team stuck in a loop ("Oh wait Oh wait Oh wait...", same
+/// strategic message regenerated each iteration, same tool spammed every turn, etc.).
 ///
-/// Four detection modes:
-///  - `detectWithinMessage(_:)` — finds the longest substring that repeats
-///    `minRepeats+` times consecutively in the message content. Catches
-///    single-message loops both in finalized content and in mid-stream
-///    thinking buffers (since reasoning models can loop in their thinking
-///    phase without ever committing to disk).
+/// Three detection modes:
+///  - `detectTailLoop(_:)` — finds the longest period for which the END of the
+///    text is periodic for `required` reps (tail-anchored). Catches single-message
+///    loops both in finalized content and in mid-stream thinking buffers (reasoning
+///    models can loop in their thinking phase without ever committing to disk), at
+///    any period up to `maxSubstringChars`, and tolerates a partial final rep.
 ///  - `detectAcrossMessages(_:)` — finds high pairwise substring overlap
 ///    across the last N child-role outputs. Catches strategic looping where
 ///    the role keeps regenerating similar content without progress.
@@ -40,55 +40,95 @@ nonisolated enum MessageRepetitionDetector {
         let diagnostic: String
     }
 
-    // MARK: - Within-message
+    // MARK: - Within-message (tail-anchored)
 
-    /// Scans the tail of `text` for any non-trivial substring that repeats
-    /// `minRepeats+` times consecutively. Returns the longest such substring's
-    /// match (longer matches are higher-signal — a 30-char block repeated
-    /// 5× is a much stronger loop indicator than a 5-char run).
+    /// Tail-anchored loop detector. Finds the longest period `P` (in
+    /// `[minSubstringChars, maxSubstringChars]`) for which the END of the (trimmed,
+    /// tail-windowed) text is `P`-periodic for at least the required number of reps —
+    /// i.e. an *active* loop ending at the live tail, tolerating a partial final rep.
     ///
-    /// Performance: O(tailLen² / minRepeats) per call. Throttle this from
-    /// `DelegationLoopWatcher` to once every few seconds during streaming.
-    static func detectWithinMessage(
+    /// Checks the periodicity *relation* `chars[i] == chars[i-P]` walking back from
+    /// the tail — ONE pass per `P`, no per-start sweep. That makes it O(maxLen²)
+    /// worst-case but ~O(maxLen · repsOfTruePeriod) in practice (non-divisor periods
+    /// bail on the first comparison), uniformly cheap regardless of buffer length or
+    /// loop period and with no per-pair prefix-comparison blow-up (so no comparison
+    /// budget is needed). It is also semantically tighter: it fires only
+    /// when the loop is *current* (reaches the tail), not on a loop the model already
+    /// escaped. Used for the live streaming / committed scans via `LoopScanner`.
+    /// Large periods need `largeBlockMinRepeats` (scaffolding stamps a big block a few
+    /// times; a loop re-emits it indefinitely).
+    static func detectTailLoop(
         _ text: String,
-        minSubstringChars: Int = 8,
-        maxSubstringChars: Int = 200,
-        minRepeats: Int = 5,
-        tailWindowChars: Int = 2_000
+        minSubstringChars: Int,
+        maxSubstringChars: Int,
+        minRepeats: Int,
+        tailWindowChars: Int,
+        largeSubstringChars: Int,
+        largeBlockMinRepeats: Int,
+        veryLargeSubstringChars: Int = .max,
+        veryLargeBlockMinRepeats: Int = 5
     ) -> Match? {
-        // Trim leading/trailing whitespace so the window analysis isn't
-        // dominated by padding. Operate on a tail window because loops grow
-        // from the end — the head is usually fine prefix content.
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count >= minSubstringChars * minRepeats else { return nil }
-
         let chars = Array(trimmed.suffix(tailWindowChars))
         let n = chars.count
-        let upperLen = min(maxSubstringChars, n / minRepeats)
+        // Divide by the SMALLEST per-tier rep requirement so a very-large block (which
+        // needs only `veryLargeBlockMinRepeats`) can still be tested at its true period;
+        // the per-P run check below enforces the actual tier requirement.
+        let minTierReps = max(1, min(minRepeats, min(largeBlockMinRepeats, veryLargeBlockMinRepeats)))
+        let upperLen = min(maxSubstringChars, n / minTierReps)
         guard upperLen >= minSubstringChars else { return nil }
 
-        // Try lengths from longest to shortest — first match wins, biased
-        // toward higher-signal detections.
-        for L in stride(from: upperLen, through: minSubstringChars, by: -1) {
-            // The candidate window must end at or before n - L*minRepeats.
-            // We sweep starting offsets right-to-left so we land on the
-            // most recent loop (the "live" tail), which is what surfaced
-            // the issue to the user.
-            let lastStart = n - L * minRepeats
-            guard lastStart >= 0 else { continue }
-            for start in stride(from: lastStart, through: 0, by: -1) {
-                if matchesSubstantive(chars: chars, start: start, length: L, repeats: minRepeats) {
-                    let substring = String(chars[start..<(start + L)])
-                    let count = countConsecutiveRepeats(chars: chars, start: start, length: L)
-                    return Match(
-                        substring: substring,
-                        repeatCount: count,
-                        diagnostic: makeDiagnostic(substring: substring, repeats: count)
-                    )
-                }
+        // Required reps scale UP with block size (a big block stamped a few times is
+        // scaffolding) but back DOWN for very-large multi-paragraph cycles (4 verbatim
+        // reps of a 500+ char block is unambiguously a loop, and demanding 8 would need
+        // an impractical window).
+        func requiredReps(forPeriod P: Int) -> Int {
+            if P > veryLargeSubstringChars { return veryLargeBlockMinRepeats }
+            if P > largeSubstringChars { return largeBlockMinRepeats }
+            return minRepeats
+        }
+
+        // Longest period first — higher signal. A non-divisor P bails after one
+        // comparison (chars[n-1] != chars[n-1-P]); only true-period multiples extend.
+        for P in stride(from: upperLen, through: minSubstringChars, by: -1) {
+            let required = requiredReps(forPeriod: P)
+            // Maximal tail run satisfying chars[i] == chars[i-P]. A run of `r` means
+            // the trailing `r + P` chars form `(r + P) / P` consecutive reps of a
+            // P-block (the +P accounts for the block the run points back into).
+            var run = 0
+            var i = n - 1
+            while i - P >= 0 && chars[i] == chars[i - P] {
+                run += 1
+                i -= 1
             }
+            // Need `required` reps → run ≥ (required - 1) · P.
+            guard run >= (required - 1) * P else { continue }
+            guard isSubstantiveBlock(chars: chars, start: n - P, length: P) else { continue }
+            let substring = String(chars[(n - P)..<n])
+            let reps = run / P + 1
+            return Match(
+                substring: substring,
+                repeatCount: reps,
+                diagnostic: makeDiagnostic(substring: substring, repeats: reps)
+            )
         }
         return nil
+    }
+
+    /// True unless the block is substantively empty — all the same character, or
+    /// fewer than two non-whitespace, non-punctuation chars (a run of `-----` or
+    /// `". "` is not a useful loop signal). Shared by the tail-anchored detector.
+    private static func isSubstantiveBlock(chars: [Character], start: Int, length L: Int) -> Bool {
+        var substantive = 0
+        var firstChar: Character? = nil
+        var allSame = true
+        for offset in 0..<L {
+            let c = chars[start + offset]
+            if !c.isWhitespace && !c.isPunctuation { substantive += 1 }
+            if firstChar == nil { firstChar = c } else if c != firstChar { allSame = false }
+        }
+        return !allSame && substantive >= 2
     }
 
     // MARK: - Across-messages
@@ -142,10 +182,10 @@ nonisolated enum MessageRepetitionDetector {
 
     /// Returns a `Match` if the **last `minRepeats`** entries in `calls` are
     /// all the same `(name, argsJSON)` pair, otherwise `nil`. Stateless —
-    /// the caller (typically `DelegationLoopWatcher.considerToolCallSequence`)
-    /// is responsible for filtering out tool calls already accounted for by
-    /// a prior fire (`createdAt` cutoff against the watcher's last-trigger
-    /// timestamp), so the same persisted history doesn't re-fire after
+    /// the caller (`LoopScanner.scanCommitted`) is responsible for filtering out
+    /// tool calls already accounted for by a prior fire (`createdAt` cutoff
+    /// against the watcher's last-trigger timestamp), so the same persisted
+    /// history doesn't re-fire after
     /// `resetStepForRevision` (which intentionally retains `step.toolCalls`
     /// for audit, see TaskEngineStoreAdapter.resetStepForRevision).
     ///
@@ -170,50 +210,6 @@ nonisolated enum MessageRepetitionDetector {
     }
 
     // MARK: - Within-message helpers
-
-    /// Verifies that the substring [start, start+L) repeats exactly the
-    /// next (repeats-1) blocks consecutively. Also rejects substrings that
-    /// are entirely whitespace / punctuation / single-char (those generate
-    /// noise — e.g. a long run of `"-"` or `". "` is not a useful loop signal).
-    private static func matchesSubstantive(
-        chars: [Character],
-        start: Int,
-        length L: Int,
-        repeats: Int
-    ) -> Bool {
-        for r in 1..<repeats {
-            for offset in 0..<L {
-                let a = chars[start + offset]
-                let b = chars[start + r * L + offset]
-                if a != b { return false }
-            }
-        }
-        // Reject substantively empty (all same char or all whitespace).
-        var seenDistinctNonWhitespace = 0
-        var firstChar: Character? = nil
-        var allSame = true
-        for offset in 0..<L {
-            let c = chars[start + offset]
-            if !c.isWhitespace && !c.isPunctuation { seenDistinctNonWhitespace += 1 }
-            if firstChar == nil { firstChar = c } else if c != firstChar { allSame = false }
-        }
-        if allSame { return false }
-        if seenDistinctNonWhitespace < 2 { return false }
-        return true
-    }
-
-    private static func countConsecutiveRepeats(chars: [Character], start: Int, length L: Int) -> Int {
-        var count = 1
-        var idx = start + L
-        while idx + L <= chars.count {
-            for offset in 0..<L {
-                if chars[start + offset] != chars[idx + offset] { return count }
-            }
-            count += 1
-            idx += L
-        }
-        return count
-    }
 
     private static func makeDiagnostic(substring: String, repeats: Int) -> String {
         let truncated = truncate(substring, max: 80)

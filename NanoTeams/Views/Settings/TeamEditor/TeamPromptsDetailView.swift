@@ -18,7 +18,7 @@ struct TeamPromptsDetailView: View {
         VStack(spacing: 0) {
             // Underline tab bar
             HStack(spacing: Spacing.standard) {
-                ForEach(PromptTemplate.allCases) { template in
+                ForEach(availablePromptTemplates) { template in
                     Button {
                         selectedTemplate = template
                     } label: {
@@ -96,6 +96,12 @@ struct TeamPromptsDetailView: View {
     }
 
     // MARK: - Helpers
+
+    /// The managed singleton (Autovisor) is a single-role chat-mode team, so the
+    /// Consultation and Meeting templates never apply — only the System prompt is shown.
+    private var availablePromptTemplates: [PromptTemplate] {
+        team.isManagedSingleton ? [.system] : PromptTemplate.allCases
+    }
 
     private var templateBinding: Binding<String> {
         Binding(

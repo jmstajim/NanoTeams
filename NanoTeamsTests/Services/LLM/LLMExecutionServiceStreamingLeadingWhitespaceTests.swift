@@ -64,8 +64,9 @@ final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
         service.attach(delegate: mockDelegate)
-        // Register step → task mapping so `taskIDForStep` resolves.
-        service.executionStates[stepID] = LLMExecutionService.StepExecutionState(taskID: taskID)
+        // Register the (taskID, stepID) execution state so streaming resolves it.
+        service.executionStates[TaskStepKey(taskID: taskID, stepID: stepID)] =
+            LLMExecutionService.StepExecutionState()
     }
 
     override func tearDown() {
@@ -149,7 +150,7 @@ final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
         ]
 
         _ = try await service.performStreamingCall(
-            stepID: stepID, roleForMessage: .codingAgent,
+            stepID: stepID, taskID: taskID, roleForMessage: .codingAgent,
             client: mockClient, config: LLMConfig(),
             tools: [], conversationMessages: [], session: nil,
             networkLogger: nil
@@ -194,7 +195,7 @@ final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
         ]
 
         _ = try await service.performStreamingCall(
-            stepID: stepID, roleForMessage: .codingAgent,
+            stepID: stepID, taskID: taskID, roleForMessage: .codingAgent,
             client: mockClient, config: LLMConfig(),
             tools: [], conversationMessages: [], session: nil,
             networkLogger: nil
@@ -248,7 +249,7 @@ final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
         ]
 
         _ = try await service.performStreamingCall(
-            stepID: stepID, roleForMessage: .codingAgent,
+            stepID: stepID, taskID: taskID, roleForMessage: .codingAgent,
             client: mockClient, config: LLMConfig(),
             tools: [], conversationMessages: [], session: nil,
             networkLogger: nil
@@ -274,7 +275,7 @@ final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
         ]
 
         _ = try await service.performStreamingCall(
-            stepID: stepID, roleForMessage: .codingAgent,
+            stepID: stepID, taskID: taskID, roleForMessage: .codingAgent,
             client: mockClient, config: LLMConfig(),
             tools: [], conversationMessages: [], session: nil,
             networkLogger: nil
@@ -298,7 +299,7 @@ final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
         ]
 
         _ = try await service.performStreamingCall(
-            stepID: stepID, roleForMessage: .codingAgent,
+            stepID: stepID, taskID: taskID, roleForMessage: .codingAgent,
             client: mockClient, config: LLMConfig(),
             tools: [], conversationMessages: [], session: nil,
             networkLogger: nil
@@ -332,7 +333,7 @@ final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
 
         do {
             _ = try await service.performStreamingCall(
-                stepID: stepID, roleForMessage: .codingAgent,
+                stepID: stepID, taskID: taskID, roleForMessage: .codingAgent,
                 client: mockClient, config: LLMConfig(),
                 tools: [], conversationMessages: [], session: nil,
                 networkLogger: nil
@@ -361,7 +362,7 @@ final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
 
         do {
             _ = try await service.performStreamingCall(
-                stepID: stepID, roleForMessage: .codingAgent,
+                stepID: stepID, taskID: taskID, roleForMessage: .codingAgent,
                 client: mockClient, config: LLMConfig(),
                 tools: [], conversationMessages: [], session: nil,
                 networkLogger: nil
@@ -389,7 +390,7 @@ final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
         ]
 
         _ = try await service.performStreamingCall(
-            stepID: stepID, roleForMessage: .codingAgent,
+            stepID: stepID, taskID: taskID, roleForMessage: .codingAgent,
             client: mockClient, config: LLMConfig(),
             tools: [], conversationMessages: [], session: nil,
             networkLogger: nil

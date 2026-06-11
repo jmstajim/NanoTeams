@@ -229,6 +229,35 @@ nonisolated enum TeamTemplateFactory {
         )
     }
 
+    /// "Autovisor" — the per-folder automated Supervisor. A hidden singleton
+    /// chat-mode team with one advisory `Manager` role, instantiated lazily by
+    /// `ensureAutovisorTask` when the user enables the feature. NOT part of
+    /// `allTemplates` / `templateMetadata` — it is infrastructure, not a user-pickable
+    /// template, and is filtered out of every team picker (same as `"generated"`).
+    ///
+    /// MUST be `supervisorMode: .autonomous` + chat-mode (empty `supervisorRequires`)
+    /// + advisory (role requires the Supervisor Task artifact) so the engine runs it
+    /// and `attemptAdvisoryAutoFinish` can end each review pass.
+    static func autovisor() -> Team {
+        buildTeam(
+            name: "Autovisor",
+            description: "Autonomous per-folder Supervisor: watches all tasks, creates/runs/stops them, answers their questions, and maintains the folder's goal, memory, and shared context.",
+            templateID: AutovisorConstants.teamTemplateID,
+            roleIDs: ["autovisor"],
+            artifactNames: [SystemTemplates.supervisorTaskArtifactName],
+            // Auto coordinator (nil): the lone Manager role would be the only
+            // possible coordinator anyway, and Auto reads correctly in the UI.
+            coordinatorIndex: nil,
+            supervisorRequires: [],
+            supervisorCanBeInvited: true,
+            supervisorMode: .autonomous
+        ) { roles in
+            // Advisory (not observer) so the engine executes the step; this is the
+            // single line that makes the Manager run (see CLAUDE.md role completion types).
+            roles[1].dependencies.requiredArtifacts = [SystemTemplates.supervisorTaskArtifactName]
+        }
+    }
+
     // MARK: - Shared Builder
 
     private static func buildTeam(
@@ -237,7 +266,7 @@ nonisolated enum TeamTemplateFactory {
         templateID: String,
         roleIDs: [String],
         artifactNames: [String],
-        coordinatorIndex: Int,
+        coordinatorIndex: Int?,
         supervisorRequires: [String],
         supervisorCanBeInvited: Bool = false,
         limits: TeamLimits = .default,
@@ -285,7 +314,7 @@ nonisolated enum TeamTemplateFactory {
     /// Builds TeamSettings from a role array, wiring up hierarchy and invitable roles.
     private static func buildSettings(
         roles: [TeamRoleDefinition],
-        coordinatorIndex: Int,
+        coordinatorIndex: Int?,
         supervisorCanBeInvited: Bool = false,
         limits: TeamLimits = .default,
         acceptanceMode: AcceptanceMode = .finalOnly,
@@ -309,7 +338,8 @@ nonisolated enum TeamTemplateFactory {
 
         return TeamSettings(
             hierarchy: TeamHierarchy(reportsTo: reportsTo),
-            meetingCoordinatorRoleID: roles[coordinatorIndex].id,
+            // nil coordinatorIndex → Auto mode (the meeting initiator coordinates).
+            meetingCoordinatorRoleID: coordinatorIndex.map { roles[$0].id },
             invitableRoles: invitableRoles,
             supervisorCanBeInvited: supervisorCanBeInvited,
             limits: limits,

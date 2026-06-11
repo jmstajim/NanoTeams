@@ -115,6 +115,35 @@ final class ChangeRequestIntegrationTests: XCTestCase {
         XCTAssertTrue(lastMessage.content.contains("Add error handling"))
     }
 
+    /// Regression: `executeAmendment` stores the raw amendment block in `revisionComment`
+    /// so `resetStepForRevision` doesn't depend on the amendment block still being the
+    /// last `.supervisor` entry in `step.messages` (`injectSupervisorCommentIfNeeded`
+    /// appends "Supervisor Comment:" entries there). The block carries no
+    /// "Supervisor Feedback:" prefix — that attribution is applied once at send time.
+    func testExecuteAmendment_setsRawRevisionComment() async {
+        let (task, team) = makeTaskWithDoneStep()
+        let targetRoleID = "engineer"
+        mockDelegate.taskToMutate = task
+        service._testRegisterStepTask(stepID: task.runs[0].steps[0].id, taskID: task.id)
+
+        _ = await service._testExecuteAmendment(
+            taskID: task.id,
+            targetRoleID: targetRoleID,
+            changes: "Add error handling",
+            reasoning: "Missing null checks",
+            requestingRoleID: "code_reviewer",
+            meetingID: nil,
+            team: team
+        )
+
+        let step = mockDelegate.taskToMutate!.runs[0].steps[0]
+        XCTAssertNotNil(step.revisionComment, "Amendment must set revisionComment explicitly")
+        XCTAssertEqual(step.revisionComment, step.messages.last?.content,
+                       "revisionComment carries the same amendment block as the injected message")
+        XCTAssertFalse(step.revisionComment?.contains("Supervisor Feedback:") ?? true,
+                       "revisionComment must stay raw — the prefix is applied once at send time")
+    }
+
     func testExecuteAmendment_snapshotsArtifacts() async {
         let (task, team) = makeTaskWithDoneStep()
         let targetRoleID = "engineer"
@@ -181,6 +210,14 @@ final class ChangeRequestIntegrationTests: XCTestCase {
         XCTAssertEqual(updated.runs[0].roleStatuses["code_reviewer"], .revisionRequested,
                        "Done downstream role should be set to revisionRequested")
         XCTAssertTrue(result.contains("Downstream amendments triggered"))
+
+        // Same raw-revisionComment invariant as executeAmendment: the upstream-notice
+        // block is stored explicitly so resetStepForRevision doesn't re-derive it.
+        let crStep = updated.runs[0].steps.first(where: { $0.effectiveRoleID == "code_reviewer" })!
+        XCTAssertEqual(crStep.revisionComment, crStep.messages.last?.content,
+                       "Downstream amendment must set revisionComment to the notice block")
+        XCTAssertFalse(crStep.revisionComment?.contains("Supervisor Feedback:") ?? true,
+                       "revisionComment must stay raw")
     }
 
     func testPropagateDownstream_injectsContextForWorkingRoles() async {
@@ -201,6 +238,8 @@ final class ChangeRequestIntegrationTests: XCTestCase {
         XCTAssertTrue(crStep.messages.last!.content.contains("Upstream role"))
         XCTAssertTrue(crStep.messages.last!.content.contains("Updated implementation"))
         XCTAssertTrue(result.contains("Context injected"))
+        XCTAssertNil(crStep.revisionComment,
+                     "Working roles get context injection only — no revision reset, so no revisionComment (would gate artifact auto-completion)")
     }
 
     func testPropagateDownstream_noActionForIdleRoles() async {

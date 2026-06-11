@@ -535,20 +535,41 @@ nonisolated extension NTMSTask {
 
     /// Derived status from the active run's step summary, with task-level overrides.
     func derivedStatusFromActiveRun() -> TaskStatus {
-        guard let run = runs.last else { return status }
+        // A task closed before it ever created a run is still terminal — closing is
+        // the Supervisor's explicit "done", regardless of the stored `status`.
+        guard let run = runs.last else { return closedAt != nil ? .done : status }
         guard !run.steps.isEmpty else {
-            return .running
+            // A Supervisor-closed run that never created steps is still terminal.
+            // Safe: createNewRun clears closedAt before a fresh (empty) run exists.
+            return closedAt != nil ? .done : .running
         }
 
         let s = run.stepStatusSummary()
+
+        // A Supervisor-closed task is terminal once nothing is actively executing.
+        // `closedAt` is set only by closeTask (which also stops the engine) and is
+        // cleared by createNewRun / restartRole *before* a run can become active,
+        // so under normal flow a closed task never has a running step. Gating on
+        // `!hasRunning` is defense-in-depth: resumeRun has no closedAt guard, so
+        // even if some path resumed a closed task, a live run still surfaces its
+        // true status instead of a false "Done". This covers every leftover shape
+        // closeTask doesn't normalize — pending / needsApproval steps, idle / ready
+        // downstream roles that never ran — which would otherwise read as .running.
+        if closedAt != nil && !s.hasRunning {
+            return s.hasFailed ? .failed : .done
+        }
+
         let base = s.derivedTaskStatus()
 
-        // Task-level overrides on top of base priority
+        // Task-level overrides on top of base priority. Past the guard above,
+        // `base == .done` implies `allDone ⇒ !hasRunning`, so `closedAt` is provably
+        // nil in every `.done` branch below — the closed-task cases collapse to the
+        // open-task result.
         switch base {
         case .running where status == .paused && !s.hasRunning:
             return .paused
         case .done where isChatMode:
-            return closedAt != nil ? .done : .running
+            return .running
         case .done:
             if !run.roleStatuses.isEmpty {
                 let allRolesComplete = run.roleStatuses.values.allSatisfy { $0.isComplete }
@@ -558,12 +579,12 @@ nonisolated extension NTMSTask {
                         $0.isComplete || $0 == .needsAcceptance
                     }
                     if onlyAcceptanceOrComplete {
-                        return closedAt != nil ? .done : .needsSupervisorAcceptance
+                        return .needsSupervisorAcceptance
                     }
                     return .running
                 }
             }
-            return closedAt != nil ? .done : .needsSupervisorAcceptance
+            return .needsSupervisorAcceptance
         default:
             return base
         }

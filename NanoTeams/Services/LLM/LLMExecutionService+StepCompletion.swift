@@ -5,31 +5,31 @@ extension LLMExecutionService {
 
     // MARK: - Step Completion
 
-    func completeStepSuccess(stepID: String) async {
-        await completeStep(stepID: stepID, status: .done)
+    func completeStepSuccess(stepID: String, taskID: Int) async {
+        await completeStep(stepID: stepID, taskID: taskID, status: .done)
     }
 
-    func completeStepWithWarning(stepID: String, warning: String) async {
-        await completeStep(stepID: stepID, status: .done, notes: warning, notePrefix: "LLM warning")
+    func completeStepWithWarning(stepID: String, taskID: Int, warning: String) async {
+        await completeStep(stepID: stepID, taskID: taskID, status: .done, notes: warning, notePrefix: "LLM warning")
     }
 
-    func completeStepFailure(stepID: String, errorMessage: String) async {
-        await completeStep(stepID: stepID, status: .failed, notes: errorMessage, notePrefix: "LLM error")
+    func completeStepFailure(stepID: String, taskID: Int, errorMessage: String) async {
+        await completeStep(stepID: stepID, taskID: taskID, status: .failed, notes: errorMessage, notePrefix: "LLM error")
     }
 
-    func completeStepNeedsAcceptance(stepID: String) async {
-        await completeStep(stepID: stepID, status: .needsApproval)
+    func completeStepNeedsAcceptance(stepID: String, taskID: Int) async {
+        await completeStep(stepID: stepID, taskID: taskID, status: .needsApproval)
     }
 
     /// Unified step completion: record optional notes, finalize status, cleanup.
-    private func completeStep(stepID: String, status: StepStatus, notes: String? = nil, notePrefix: String = "") async {
-        guard let delegate else { return }
-        delegate.clearStreamingPreview(stepID: stepID)
+    private func completeStep(stepID: String, taskID: Int, status: StepStatus, notes: String? = nil, notePrefix: String = "") async {
+        guard let delegate, isExecutionLive(stepID: stepID, taskID: taskID) else { return }
+        delegate.clearStreamingPreview(stepID: stepID, taskID: taskID)
 
-        if let notes, let tid = taskIDForStep(stepID) {
+        if let notes {
             let clean = notes.trimmingCharacters(in: .whitespacesAndNewlines)
             if !clean.isEmpty {
-                await delegate.mutateTask(taskID: tid) { task in
+                await delegate.mutateTask(taskID: taskID) { task in
                     guard let runIndex = task.runs.indices.last else { return }
                     guard let stepIndex = task.runs[runIndex].steps.firstIndex(where: { $0.id == stepID })
                     else { return }
@@ -43,8 +43,8 @@ extension LLMExecutionService {
             }
         }
 
-        await finalizeStepCompletion(stepID: stepID, status: status)
-        clearRunningTask(stepID: stepID)
+        await finalizeStepCompletion(stepID: stepID, taskID: taskID, status: status)
+        clearRunningTask(stepID: stepID, taskID: taskID)
     }
 
     // MARK: - Step Finalization
@@ -52,13 +52,13 @@ extension LLMExecutionService {
     /// Combines build diagnostics attachment and final status update into a single mutation.
     /// This ensures `completedAt` is set atomically with the terminal status, minimizing
     /// the window between step completion and next step creation.
-    private func finalizeStepCompletion(stepID: String, status: StepStatus) async {
-        guard let delegate, let tid = taskIDForStep(stepID) else { return }
+    private func finalizeStepCompletion(stepID: String, taskID: Int, status: StepStatus) async {
+        guard let delegate else { return }
 
         // Build Diagnostics only if role has "Build Diagnostics" in producesArtifacts
         var diagPath: String?
         if let workFolderRoot = delegate.workFolderURL,
-           let task = delegate.loadedTask(tid),
+           let task = delegate.loadedTask(taskID),
            let run = task.runs.last,
            let step = run.steps.first(where: { $0.id == stepID }),
            let projectContext = delegate.snapshot,
@@ -79,7 +79,7 @@ extension LLMExecutionService {
             }
         }
 
-        await delegate.mutateTask(taskID: tid) { task in
+        await delegate.mutateTask(taskID: taskID) { task in
             if let rel = diagPath {
                 TaskMutationService.attachBuildDiagnosticsArtifact(
                     relativePath: rel, stepID: stepID, in: &task
@@ -94,9 +94,9 @@ extension LLMExecutionService {
     /// Checks whether all expected artifacts have been created for a step.
     /// Returns `.completed` when all expected artifacts are present, `nil` otherwise.
     /// Returns `nil` for roles with no expected artifacts (they don't auto-complete this way).
-    func checkArtifactCompleteness(stepID: String) -> LLMStepStop? {
-        guard let delegate, let tid = taskIDForStep(stepID) else { return nil }
-        guard let task = delegate.loadedTask(tid) else { return nil }
+    func checkArtifactCompleteness(stepID: String, taskID: Int) -> LLMStepStop? {
+        guard let delegate, isExecutionLive(stepID: stepID, taskID: taskID) else { return nil }
+        guard let task = delegate.loadedTask(taskID) else { return nil }
         guard let runIndex = task.runs.indices.last else { return nil }
         guard let step = task.runs[runIndex].steps.first(where: { $0.id == stepID })
         else { return nil }

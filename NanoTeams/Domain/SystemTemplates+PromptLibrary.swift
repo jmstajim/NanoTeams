@@ -324,6 +324,36 @@ nonisolated extension SystemTemplates {
         Reply by calling `ask_supervisor` with your full response in its `question` field — plain text outside tool calls is invisible. Cite `path:line` for every code reference; show diffs when reporting changes. Stay on the Supervisor's last message — don't drift.
         """
 
+    // MARK: - Autovisor (single-role manager)
+
+    // The Autovisor is a one-role team — the autonomous Supervisor has no peers and
+    // produces no artifacts, so this template drops the team-shaped sections the
+    // generic template carries (`## Team`, `## Deliverables`, step/position context).
+    // Its boundaries and per-pass workflow live in the role guidance ({roleGuidance});
+    // the template stays minimal so the two don't duplicate each other.
+    static let autovisorTemplate = """
+        ## Role
+        {roleName} — the autonomous Supervisor for this work folder; you oversee and steer every task here.
+
+        ## Conversation mechanics
+        {conversationMechanics}
+
+        ## Work folder
+        {workFolderContext}
+
+        ## Guidance
+        {roleGuidance}
+
+        ## Global guidance
+        {globalContext}
+
+        ## Tool Calling
+        {toolCalling}
+
+        ## Final reminder
+        A review pass ends only when you call `wait_for_events` — handle everything actionable this pass (including the Work Folder Context check before any new task), record your memory, then call it to go idle. Don't loop re-checking the same tasks; a human message continues this conversation, while task events and the schedule start a fresh pass.
+        """
+
     // MARK: - Generic (custom teams)
 
     static let genericTemplate = """

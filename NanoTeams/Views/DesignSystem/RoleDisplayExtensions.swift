@@ -29,6 +29,7 @@ extension Role {
         .assistant: Colors.teal,
         .codingAssistant: Colors.purple,
         .codingAgent: Colors.purple,
+        .autovisor: Colors.cyan,
     ]
 
     var tintColor: Color {

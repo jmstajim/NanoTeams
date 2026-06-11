@@ -822,10 +822,10 @@ final class ExploratorySearchUserScenarioTests: NTMSOrchestratorTestBase {
         //   Turns 1, 2: counter advances, no completion.
         //   Turn 3: threshold trips, step + role both .done.
         for i in 1...2 {
-            let stop = await svc.attemptAdvisoryAutoFinish(stepID: step.id, roleDefinition: role)
+            let stop = await svc.attemptAdvisoryAutoFinish(stepID: step.id, taskID: task.id, roleDefinition: role)
             XCTAssertNil(stop, "Turn \(i) below threshold — expected nil, got \(String(describing: stop))")
         }
-        let finalStop = await svc.attemptAdvisoryAutoFinish(stepID: step.id, roleDefinition: role)
+        let finalStop = await svc.attemptAdvisoryAutoFinish(stepID: step.id, taskID: task.id, roleDefinition: role)
         if case .completed? = finalStop { /* ok */ } else {
             XCTFail("3rd turn should auto-finish chat-mode advisory role, got \(String(describing: finalStop))")
         }

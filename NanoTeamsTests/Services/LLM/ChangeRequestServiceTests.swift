@@ -173,6 +173,61 @@ final class ChangeRequestServiceTests: XCTestCase {
         XCTAssertTrue(error!.contains("Amendment limit"))
     }
 
+    func testValidateChangeRequest_targetNotFound_listsAvailableRoles() {
+        let team = makeTeam()
+        let run = makeRun(steps: [])
+        let (error, roleDef) = ChangeRequestService.validateChangeRequest(
+            targetRoleID: "totally_unknown_role_xyz",
+            requestingRole: .codeReviewer,
+            team: team,
+            teamSettings: team.settings,
+            run: run
+        )
+        XCTAssertNil(roleDef)
+        XCTAssertNotNil(error)
+        XCTAssertTrue(error!.contains("Available roles:"),
+                      "Not-found error should list valid roles so the LLM can self-correct")
+        XCTAssertTrue(error!.contains("Software Engineer"),
+                      "Available-roles list should include the team's real role names")
+    }
+
+    /// Regression: an LLM emitting snake_case `software_engineer` must resolve through the
+    /// normalized `findRole(byIdentifier:)` instead of failing with "not found".
+    func testValidateChangeRequest_snakeCaseTarget_resolvesViaNormalizedFindRole() {
+        let team = makeTeam()
+        let engineerRole = team.roles.first { $0.systemRoleID == "softwareEngineer" }!
+        var step = StepExecution.make(for: engineerRole)
+        step.status = .done
+        let run = makeRun(steps: [step])
+        let (error, roleDef) = ChangeRequestService.validateChangeRequest(
+            targetRoleID: "software_engineer",
+            requestingRole: .tpm,
+            team: team,
+            teamSettings: team.settings,
+            run: run
+        )
+        XCTAssertNil(error, "snake_case target should resolve, not error")
+        XCTAssertEqual(roleDef?.id, engineerRole.id)
+    }
+
+    /// The available-roles hint lists real targets but excludes the Supervisor
+    /// (user-controlled — never a valid change-request target).
+    func testValidateChangeRequest_availableRolesExcludeSupervisor() {
+        let team = makeTeam()
+        let run = makeRun(steps: [])
+        let (error, _) = ChangeRequestService.validateChangeRequest(
+            targetRoleID: "totally_unknown_role_xyz",
+            requestingRole: .codeReviewer,
+            team: team,
+            teamSettings: team.settings,
+            run: run
+        )
+        XCTAssertNotNil(error)
+        XCTAssertTrue(error!.contains("Available roles:"))
+        XCTAssertFalse(error!.contains("Supervisor"),
+                       "Available-roles list must exclude the Supervisor")
+    }
+
     // MARK: - buildVotingContext
 
     func testBuildVotingContext_formatsCorrectly() {

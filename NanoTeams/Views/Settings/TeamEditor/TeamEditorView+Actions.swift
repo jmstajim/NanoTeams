@@ -7,6 +7,14 @@ import UniformTypeIdentifiers
 extension TeamEditorView {
 
     func handleSelectTeam(_ teamID: NTMSID) {
+        // The managed singleton (Autovisor) must never become the work folder's
+        // default team for new tasks — track it as a local editor selection only.
+        if store.snapshot?.workFolder.teams.first(where: { $0.id == teamID })?.isManagedSingleton == true {
+            editorSelectedTeamID = teamID
+            return
+        }
+        // Normal teams update the global default (preserves prior behavior).
+        editorSelectedTeamID = nil
         Task {
             await store.mutateWorkFolder { project in
                 project.activeTeamID = teamID
@@ -15,6 +23,7 @@ extension TeamEditorView {
     }
 
     func handleCreateTeam(name: String, templateID: String?) {
+        editorSelectedTeamID = nil
         Task {
             await store.mutateWorkFolder { project in
                 let newTeam: Team
@@ -77,8 +86,10 @@ extension TeamEditorView {
     }
 
     func handleDuplicateTeam() {
-        guard let team = activeTeam else { return }
+        // The managed singleton (Autovisor) is not duplicable.
+        guard let team = activeTeam, !team.isManagedSingleton else { return }
 
+        editorSelectedTeamID = nil
         Task {
             await store.mutateWorkFolder { project in
                 let duplicated = TeamManagementService.duplicateTeam(team, newName: "\(team.name) Copy")
@@ -95,6 +106,7 @@ extension TeamEditorView {
             return
         }
 
+        editorSelectedTeamID = nil
         Task {
             await store.mutateWorkFolder { project in
                 // Routing through `removeTeam` records the template tombstone so
@@ -161,6 +173,7 @@ extension TeamEditorView {
         guard let data = ImportExportPanelHelper.presentImportPanel(message: "Import Team") else { return }
         do {
             let importedTeam = try TeamImportExportService.importTeam(from: data)
+            editorSelectedTeamID = nil
             Task {
                 await store.mutateWorkFolder { project in
                     project.teams.append(importedTeam)

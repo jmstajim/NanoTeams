@@ -19,6 +19,7 @@ nonisolated enum StepMessagingService {
         stepID: String,
         answer: String,
         attachmentPaths: [String] = [],
+        isAutoAnswer: Bool = false,
         in task: inout NTMSTask
     ) -> Bool {
         guard let location = task.locateStepInLatestRun(stepID: stepID) else { return false }
@@ -26,6 +27,9 @@ nonisolated enum StepMessagingService {
         let clean = answer.trimmingCharacters(in: .whitespacesAndNewlines)
         task.runs[location.runIndex].steps[location.stepIndex].supervisorAnswer = clean.isEmpty ? nil : clean
         task.runs[location.runIndex].steps[location.stepIndex].supervisorAnswerAttachmentPaths = attachmentPaths
+        // `isAutoAnswer` marks answers produced by an automated path (delegating
+        // parent role, Autovisor) — drives the feed's "Auto-answered" badge.
+        task.runs[location.runIndex].steps[location.stepIndex].supervisorAnswerWasAuto = isAutoAnswer
         task.runs[location.runIndex].steps[location.stepIndex].needsSupervisorInput = false
 
         // Append the supervisor answer to llmConversation in the SAME mutation

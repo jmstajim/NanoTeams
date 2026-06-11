@@ -55,6 +55,15 @@ final class TeamActivityFeedViewModel {
     /// Steps for the active team, filtered by `filterRoleID` when set. Rebuilt via `recomputeSteps`.
     private(set) var cachedAllSteps: [StepExecution] = []
 
+    /// Per-ORIGIN-task step pools for the merged delegation timeline, rebuilt via
+    /// `recomputeSteps`: active task → `cachedAllSteps`, each loaded descendant →
+    /// its run's steps. `StepExecution.id` is the role ID, shared across tasks on
+    /// the same team — so a bubble's implicit-stream-target resolution must search
+    /// the pool of the bubble's OWNING task, not the active task's (otherwise a
+    /// descendant message is matched against the parent's same-named step).
+    private(set) var cachedStepsByTaskID: [Int: [StepExecution]] = [:]
+    private var cachedActiveTaskID: Int?
+
     /// Active supervisor questions extracted from cached steps. Rebuilt via `recomputeSteps`.
     private(set) var cachedSupervisorQuestions: [ActivityFeedBuilder.ActiveSupervisorQuestion] = []
 
@@ -256,13 +265,48 @@ final class TeamActivityFeedViewModel {
     // MARK: - Scroll Position Tracking
 
     /// Whether the user is near the bottom of the scroll view. Used to decide whether to auto-scroll on new items.
+    /// Updated from the view's `onScrollGeometryChange` via `isNearBottom(contentOffsetY:...)`.
     var isNearBottom: Bool = true
+
+    /// Pixel slack within which (≤) the scroll position still counts as "at bottom".
+    nonisolated static let nearBottomThreshold: CGFloat = 60
+
+    /// Distance from the bottom edge ≤ threshold counts as "at bottom".
+    /// Content shorter than the container is always at bottom (distance ≤ 0).
+    nonisolated static func isNearBottom(
+        contentOffsetY: CGFloat,
+        contentHeight: CGFloat,
+        containerHeight: CGFloat,
+        bottomInset: CGFloat,
+        threshold: CGFloat = nearBottomThreshold
+    ) -> Bool {
+        (contentHeight + bottomInset - containerHeight - contentOffsetY) <= threshold
+    }
 
     /// Set when task switches — consumed after timeline rebuild to scroll to bottom.
     var needsScrollToBottom: Bool = false
 
     /// Incremented on every `rebuildTimeline` call. Used to trigger scroll after rebuild.
     private(set) var timelineVersion: Int = 0
+
+    /// How the view should scroll after a timeline rebuild.
+    nonisolated enum ScrollToBottomAction {
+        /// Instant jump (task switch — animation would replay the whole feed travel).
+        case jump
+        /// Smooth animated scroll (new items while the user is at the bottom).
+        case animate
+    }
+
+    /// Scroll decision for one timeline rebuild. Task-switch `needsScrollToBottom`
+    /// outranks the at-bottom gate and is consumed exactly once; otherwise scroll
+    /// only when the user is at the bottom (never yank them up from history).
+    func consumeScrollAction() -> ScrollToBottomAction? {
+        if needsScrollToBottom {
+            needsScrollToBottom = false
+            return .jump
+        }
+        return isNearBottom ? .animate : nil
+    }
 
     // MARK: - Task Switch
 
@@ -274,11 +318,16 @@ final class TeamActivityFeedViewModel {
         hasEverHadContent = false
         cachedTimelineItems.removeAll()
         cachedAllSteps = []
+        cachedStepsByTaskID = [:]
+        cachedActiveTaskID = nil
         cachedSupervisorQuestions = []
         lastFingerprint = nil
         cacheGeneration += 1  // invalidate in-flight async cache loads
         stepArtifactContentCache.removeAll()
         needsScrollToBottom = true
+        // Reset before the new task's geometry lands — a stale `false` carried
+        // across the switch would flash the scroll-to-bottom button.
+        isNearBottom = true
     }
 
     /// Cancels any pending debounced structural rebuild. Call from the view's `onDisappear`.
@@ -301,6 +350,24 @@ final class TeamActivityFeedViewModel {
             filterRoleID: context.filterRoleID
         )
         cachedSupervisorQuestions = ActivityFeedBuilder.activeSupervisorQuestions(steps: cachedAllSteps)
+
+        cachedActiveTaskID = context.activeTaskID
+        var byTask: [Int: [StepExecution]] = [:]
+        if let activeID = context.activeTaskID { byTask[activeID] = cachedAllSteps }
+        for descendant in context.descendantTasks {
+            byTask[descendant.task.id] = descendant.run.steps
+        }
+        cachedStepsByTaskID = byTask
+    }
+
+    /// The step pool for a timeline item's owning task. Active task → the
+    /// (role-filtered) `cachedAllSteps`; loaded descendant → its run's steps;
+    /// unknown origin (stale item during a transition) → empty, so the
+    /// implicit-stream-target resolver answers `false` instead of matching a
+    /// same-named step of a DIFFERENT task.
+    func steps(forOriginTaskID originTaskID: Int) -> [StepExecution] {
+        if let pool = cachedStepsByTaskID[originTaskID] { return pool }
+        return originTaskID == cachedActiveTaskID ? cachedAllSteps : []
     }
 
     /// Recompute steps, check fingerprint, refresh artifact cache if artifact count changed,
@@ -339,18 +406,17 @@ final class TeamActivityFeedViewModel {
 
     /// Debounced structural rebuild triggered by streaming activity.
     /// Cancels any previous in-flight task, sleeps for `delayMilliseconds`, then rebuilds.
-    /// `onComplete` runs on the main actor after rebuild (used by the view for scroll adjustment).
+    /// The rebuild bumps `timelineVersion`, the view's sole rebuild-driven scroll
+    /// trigger — callers must not add a completion-scroll here (it would double-fire).
     func scheduleStructuralRebuild(
         context: BuildContext,
-        delayMilliseconds: UInt64 = 50,
-        onComplete: (@MainActor () -> Void)? = nil
+        delayMilliseconds: UInt64 = 50
     ) {
         structuralRebuildTask?.cancel()
         structuralRebuildTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(delayMilliseconds))
             guard !Task.isCancelled, let self else { return }
             self.rebuildTimeline(context: context)
-            onComplete?()
         }
     }
 

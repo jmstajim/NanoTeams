@@ -14,6 +14,11 @@ extension LLMExecutionService {
         var harmonyBuffer: String
         var session: LLMSession?
         var tokenUsage: TokenUsage?
+        /// Non-nil iff the stream was broken by an in-stream thinking loop on a
+        /// TOP-LEVEL task. Drives `handleStreamLoopBreak` (clean-retry / terminal).
+        /// The looping generation is discarded — `assistantContent`/`thinkingContent`/
+        /// `resolvedToolCalls` are empty when this is set.
+        var thinkingLoopSignal: LoopSignal?
     }
 
     // MARK: - Stream-content helpers
@@ -35,6 +40,7 @@ extension LLMExecutionService {
     /// and commits final content on completion (or partial content on cancellation).
     func performStreamingCall(
         stepID: String,
+        taskID: Int,
         roleForMessage: Role,
         client: any LLMClient,
         config: LLMConfig,
@@ -55,10 +61,10 @@ extension LLMExecutionService {
         var thinkingCollected = ""
 
         // Pre-create empty LLMMessage for inline streaming (no visual jump on commit)
-        if let tid = taskIDForStep(stepID) {
+        if isExecutionLive(stepID: stepID, taskID: taskID) {
             await delegate.beginStreaming(
-                stepID: stepID, messageID: streamingMessageID,
-                role: roleForMessage, taskID: tid)
+                stepID: stepID, taskID: taskID,
+                messageID: streamingMessageID, role: roleForMessage)
         }
 
         func appendAssistant(_ text: String) {
@@ -71,7 +77,8 @@ extension LLMExecutionService {
             guard !delta.isEmpty else { return }
             assistantCollected += delta
             delegate.appendStreamingPreview(
-                stepID: stepID, messageID: streamingMessageID, role: roleForMessage, content: delta)
+                stepID: stepID, taskID: taskID,
+                messageID: streamingMessageID, role: roleForMessage, content: delta)
         }
 
         let uiFlushInterval: TimeInterval = 0.2
@@ -101,7 +108,11 @@ extension LLMExecutionService {
         /// Commits streaming content (final or partial on cancellation).
         func commitStreamingContent() async {
             flushPendingUI(force: true)
-            if let tid = taskIDForStep(stepID) {
+            // `isExecutionLive` is the post-teardown barrier: this runs from the
+            // cancellation catch path too, and an orphan whose executionStates
+            // entry was already removed (bulk cancel / timed-out cancel) must NOT
+            // commit into whatever now answers to the captured taskID.
+            if isExecutionLive(stepID: stepID, taskID: taskID) {
                 let cleanedContent = ModelTokenCleaner.clean(assistantCollected)
                 // Strip `<|...|>` markers from persisted thinking too — some
                 // models (qwen-style) emit `<|call|>{...}<|end|>` inside the
@@ -121,7 +132,7 @@ extension LLMExecutionService {
                     strippedThinking.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     ? nil : strippedThinking
                 await delegate.commitStreaming(
-                    stepID: stepID, taskID: tid,
+                    stepID: stepID, taskID: taskID,
                     content: cleanedContent, thinking: thinkingToCommit)
             }
         }
@@ -145,6 +156,44 @@ extension LLMExecutionService {
         // never reach here), forcing the next iteration onto the existing
         // stateless fallback path — same code path HTTP 400 already exercises.
         var loopDetected = false
+
+        // In-stream loop detection — the single point that replaces both the old
+        // `DelegationLoopWatcher.considerStreamingBuffer` AND the orchestrator's
+        // `considerStreamingForLoopDetection` dispatcher. Routed by task kind:
+        //   - top-level → set `thinkingLoopSignal` + break; recovery in `runOneLLMToolIteration`.
+        //   - child     → `noteStreamLoop` (parent interrupt, no break).
+        // Resolved once (`parentTaskID` is step-invariant). `performStreamingCall` is
+        // `@MainActor`, so the `delegate` calls below are synchronous on the actor —
+        // that's what lets `noteStreamLoop` return the I4 throttle decision in-line.
+        let loopScanTask = delegate.loadedTask(taskID)
+        let loopScanEnabled = loopScanTask != nil
+        let loopScanIsTopLevel = loopScanTask?.parentTaskID == nil
+        var thinkingLoopSignal: LoopSignal?
+        var lastLoopScanLen = 0
+        /// Returns `true` when the caller should break the stream (top-level loop).
+        func scanForStreamLoop() -> Bool {
+            guard loopScanEnabled else { return false }
+            let combinedLen = thinkingCollected.count + assistantCollected.count
+            guard combinedLen - lastLoopScanLen >= LLMConstants.streamLoopScanCadenceChars else { return false }
+            if loopScanIsTopLevel {
+                guard let signal = LoopScanner.scanStreaming(
+                    thinking: thinkingCollected, content: "", scope: .thinkingOnly
+                ) else { lastLoopScanLen = combinedLen; return false }
+                thinkingLoopSignal = signal
+                return true
+            }
+            guard let signal = LoopScanner.scanStreaming(
+                thinking: thinkingCollected, content: assistantCollected, scope: .thinkingAndContent
+            ) else { lastLoopScanLen = combinedLen; return false }
+            // Advance the throttle baseline only when the watcher says so (fired or
+            // in cooldown). On the no-waiter race it returns false → hold so the next
+            // growth window re-scans until the parent awaiter registers (I4).
+            if delegate.noteStreamLoop(taskID: taskID, stepID: stepID, signal: signal) {
+                lastLoopScanLen = combinedLen
+            }
+            return false
+        }
+
         // Number of Harmony tool-call close markers seen in the buffer so far.
         // Gates the (relatively expensive) `harmonyParser.extractAllToolCalls(...)`
         // re-parse of the whole buffer to fire only once 2+ tool calls could
@@ -159,10 +208,10 @@ extension LLMExecutionService {
 
                 if !event.thinkingDelta.isEmpty {
                     thinkingCollected += event.thinkingDelta
-                    delegate.appendStreamingThinking(stepID: stepID, content: event.thinkingDelta)
-                    delegate.markStreamActivity(stepID: stepID)
+                    delegate.appendStreamingThinking(stepID: stepID, taskID: taskID, content: event.thinkingDelta)
+                    delegate.markStreamActivity(stepID: stepID, taskID: taskID)
                     if !processingProgressCleared {
-                        delegate.clearStreamingProcessingProgress(stepID: stepID)
+                        delegate.clearStreamingProcessingProgress(stepID: stepID, taskID: taskID)
                         processingProgressCleared = true
                     }
                 }
@@ -176,22 +225,29 @@ extension LLMExecutionService {
                 // want a stale event to revive the "Processing X%" status
                 // after the user is already seeing tokens.
                 if !processingProgressCleared, let progress = event.processingProgress {
-                    delegate.updateStreamingProcessingProgress(stepID: stepID, progress: progress)
+                    delegate.updateStreamingProcessingProgress(stepID: stepID, taskID: taskID, progress: progress)
                 }
 
                 if !event.contentDelta.isEmpty {
                     if !processingProgressCleared {
-                        delegate.clearStreamingProcessingProgress(stepID: stepID)
+                        delegate.clearStreamingProcessingProgress(stepID: stepID, taskID: taskID)
                         processingProgressCleared = true
                     }
                     // Mark stream activity even when content lands in
                     // `harmonyBuffer` (invisible to the UI's content preview).
                     // Without this the bubble shows "Waiting" while the
                     // model is actively emitting a long tool-call argument.
-                    delegate.markStreamActivity(stepID: stepID)
+                    delegate.markStreamActivity(stepID: stepID, taskID: taskID)
                     let delta = event.contentDelta
                     if sawHarmonyMarker {
                         harmonyBuffer += delta
+                        // Surface the envelope text AS THINKING — UI preview
+                        // only: this pipe never touches `thinkingCollected`,
+                        // and commit persists its token-stripped form. The
+                        // user watches the tool call being typed in the live
+                        // Thinking section instead of staring at a frozen
+                        // bubble.
+                        delegate.appendStreamingThinking(stepID: stepID, taskID: taskID, content: delta)
                         // Cheap counter increment — only re-extract & dedup once at
                         // least 2 close markers have appeared in the stream (single
                         // tool call has nothing to dedup against).
@@ -211,6 +267,17 @@ extension LLMExecutionService {
                         let harmonyMarkers = HarmonyToolCallParser.harmonyMarkers
                         if harmonyMarkers.contains(where: { uiBuffer.contains($0) }) {
                             sawHarmonyMarker = true
+                            // The stream just committed to an envelope:
+                            // visible PROSE freezes here and raw tokens flow
+                            // into `harmonyBuffer`; the deltas re-surface in
+                            // the THINKING preview (pipe below + the
+                            // sawHarmonyMarker branch above), whose animated
+                            // row becomes the live indicator. Flag the
+                            // tool-call state so (a) the Thinking loader
+                            // keeps animating despite frozen prose and
+                            // (b) the indicator can fall back to "Generating"
+                            // while the thinking preview is still empty.
+                            delegate.markStreamingToolCall(stepID: stepID, taskID: taskID)
                             harmonyBuffer = uiBuffer
                             // Truncate to content before the earliest marker.
                             // uiBuffer is the complete record of all deltas — use it as
@@ -238,10 +305,17 @@ extension LLMExecutionService {
                                 // strips once both `<|` and `|>` are present.
                                 delegate.replaceStreamingPreview(
                                     stepID: stepID,
+                                    taskID: taskID,
                                     messageID: streamingMessageID,
                                     role: roleForMessage,
                                     content: preMarker
                                 )
+                                // The post-marker slice the rewind just removed
+                                // from the content preview re-surfaces as live
+                                // THINKING (preview-only, not persisted) so no
+                                // streamed text ever just vanishes from screen.
+                                delegate.appendStreamingThinking(
+                                    stepID: stepID, taskID: taskID, content: String(uiBuffer[lower...]))
                             }
                             pendingUI = ""
                             continue
@@ -252,15 +326,24 @@ extension LLMExecutionService {
 
                 if !event.toolCallDeltas.isEmpty {
                     toolAccumulator.absorb(event.toolCallDeltas)
-                    // OpenAI-style tool-call deltas don't go through any
-                    // visible preview — the UI only renders the call after
-                    // the stream ends. Mark activity so "Waiting" flips to
-                    // "Generating" while the model emits the JSON args.
+                    // OpenAI-style tool-call deltas don't materialize in the
+                    // content preview — the UI only renders the call card
+                    // after the stream ends. Mark activity, flag tool-call
+                    // streaming, and surface the fragments AS THINKING
+                    // (preview-only) so the user watches the call being
+                    // typed instead of staring at a frozen bubble.
                     if !processingProgressCleared {
-                        delegate.clearStreamingProcessingProgress(stepID: stepID)
+                        delegate.clearStreamingProcessingProgress(stepID: stepID, taskID: taskID)
                         processingProgressCleared = true
                     }
-                    delegate.markStreamActivity(stepID: stepID)
+                    delegate.markStreamActivity(stepID: stepID, taskID: taskID)
+                    delegate.markStreamingToolCall(stepID: stepID, taskID: taskID)
+                    for toolDelta in event.toolCallDeltas {
+                        let fragment = (toolDelta.name ?? "") + (toolDelta.argumentsDelta ?? "")
+                        if !fragment.isEmpty {
+                            delegate.appendStreamingThinking(stepID: stepID, taskID: taskID, content: fragment)
+                        }
+                    }
 
                     if Self.containsDuplicateToolCalls(toolAccumulator.finalize()) {
                         loopDetected = true
@@ -270,6 +353,11 @@ extension LLMExecutionService {
 
                 if let s = event.session { capturedSession = s }
                 if let u = event.tokenUsage { capturedUsage = u }
+
+                // In-stream loop scan (cadence-throttled). For child tasks this fires
+                // the parent interrupt and returns false (no break). For top-level it
+                // sets `thinkingLoopSignal` and returns true → break + discard + retry.
+                if scanForStreamLoop() { loopDetected = true; break }
             }
 
             if Task.isCancelled { throw CancellationError() }
@@ -277,14 +365,23 @@ extension LLMExecutionService {
             // Clear processing progress (stream completed successfully OR was
             // broken early by loop detection — either way, generation is done
             // from this iteration's perspective).
-            delegate.clearStreamingProcessingProgress(stepID: stepID)
+            delegate.clearStreamingProcessingProgress(stepID: stepID, taskID: taskID)
 
-            // Commit content streamed so far (full on normal end; partial when
-            // we broke out due to `loopDetected`).
-            await commitStreamingContent()
+            if thinkingLoopSignal != nil {
+                // Top-level thinking-loop break: DISCARD the looping generation —
+                // do NOT commit it as a turn. Removes the pre-created empty assistant
+                // message (no orphan bubble) and clears the preview. The recovery in
+                // `runOneLLMToolIteration` retries the same request statelessly.
+                await delegate.discardStreaming(
+                    stepID: stepID, messageID: streamingMessageID, taskID: taskID)
+            } else {
+                // Commit content streamed so far (full on normal end; partial when
+                // we broke out due to a duplicate-tool-call `loopDetected`).
+                await commitStreamingContent()
+            }
         } catch is CancellationError {
             // Commit partial content on cancellation
-            delegate.clearStreamingProcessingProgress(stepID: stepID)
+            delegate.clearStreamingProcessingProgress(stepID: stepID, taskID: taskID)
             await commitStreamingContent()
             throw CancellationError()
         }
@@ -329,7 +426,8 @@ extension LLMExecutionService {
             sawHarmonyMarker: sawHarmonyMarker,
             harmonyBuffer: harmonyBuffer,
             session: capturedSession,
-            tokenUsage: capturedUsage
+            tokenUsage: capturedUsage,
+            thinkingLoopSignal: thinkingLoopSignal
         )
     }
 
@@ -400,6 +498,7 @@ extension LLMExecutionService {
     func processStreamingResult(
         _ result: StreamingResult,
         stepID: String,
+        taskID: Int,
         conversationMessages: inout [ChatMessage]
     ) async -> LLMStepStop? {
         let hasContent = !result.assistantContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -454,7 +553,7 @@ extension LLMExecutionService {
                 c.createdAt = MonotonicClock.shared.now()
                 return c
             }
-            await appendToolCalls(stepID: stepID, toolCalls: restamped)
+            await appendToolCalls(stepID: stepID, taskID: taskID, toolCalls: restamped)
         }
 
         return nil

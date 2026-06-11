@@ -105,6 +105,13 @@ final class QuickCaptureControllerStateTests: XCTestCase {
         sut.formState.answerClippedTexts = []
         sut.isTaskSelected = false
         sut._testForceNewTaskMode = false
+        // The controller is a process-wide singleton: an earlier test class in the
+        // same runner process can leave the panel-visible flag set via an ASYNC
+        // show that lands after that class's own tearDown reset (e.g.
+        // `QuickCaptureControllerWiringTests.testShowNewTask_whenHidden_…` defers
+        // the present to a queued @MainActor task). Reset here so this class's
+        // initial-state assertions don't depend on cross-class scheduling.
+        sut._testIsPanelVisible = false
     }
 
     override func tearDown() {
@@ -117,6 +124,7 @@ final class QuickCaptureControllerStateTests: XCTestCase {
         sut.formState.answerClippedTexts = []
         sut.isTaskSelected = false
         sut._testForceNewTaskMode = false
+        sut._testIsPanelVisible = false
         UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.quickCaptureKeepOpenInChat)
         sut = nil
         super.tearDown()

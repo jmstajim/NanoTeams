@@ -24,7 +24,8 @@ extension LLMExecutionService {
         guard let delegate else {
             return makeErrorEnvelope(code: .commandFailed, message: "delegate unavailable")
         }
-        guard let parentTID = taskIDForStep(stepID) else {
+        let parentTID = task.id
+        guard isExecutionLive(stepID: stepID, taskID: parentTID) else {
             return makeErrorEnvelope(code: .commandFailed, message: "no task context for step \(stepID)")
         }
 
@@ -90,7 +91,7 @@ extension LLMExecutionService {
                 resultJSON: TeamGenerationEnvelopes.makeGeneratingEnvelope(),
                 isError: false
             )
-            await appendToolCalls(stepID: stepID, toolCalls: [placeholder])
+            await appendToolCalls(stepID: stepID, taskID: parentTID, toolCalls: [placeholder])
             do {
                 let buildResult = try await TeamGenerationService.generate(
                     taskDescription: taskBrief,
@@ -109,6 +110,16 @@ extension LLMExecutionService {
                 // terminal: it does the work it was given and returns artifacts.
                 // Existing-team delegations (the `else` branch below) are
                 // unaffected — those teams' toolsets are user-curated.
+                // Re-check liveness AFTER the long generation await: if the parent
+                // was torn down mid-generation (pause/cancel/remove), creating and
+                // starting a child task now would spawn an orphan engine for a dead
+                // parent, and the placeholder flip below would be an orphan write.
+                guard isExecutionLive(stepID: stepID, taskID: parentTID) else {
+                    return makeErrorEnvelope(
+                        code: .commandFailed,
+                        message: "Parent task was torn down during team generation; delegation aborted."
+                    )
+                }
                 targetTeam = stripDelegationTools(from: buildResult.team)
                 preferredTeamIDForChild = targetTeam.id
                 isGeneratedFlow = true
@@ -142,14 +153,19 @@ extension LLMExecutionService {
                 let errorEnvelope = TeamGenerationEnvelopes.makeErrorEnvelope(
                     message: error.localizedDescription
                 )
-                await delegate.mutateTask(taskID: parentTID) { task in
-                    guard let runIdx = task.runs.indices.last,
-                          let stepIdx = task.runs[runIdx].steps.firstIndex(where: { $0.id == stepID }),
-                          let tcIdx = task.runs[runIdx].steps[stepIdx].toolCalls
-                              .firstIndex(where: { $0.id == placeholderToolCallID })
-                    else { return }
-                    task.runs[runIdx].steps[stepIdx].toolCalls[tcIdx].resultJSON = errorEnvelope
-                    task.runs[runIdx].steps[stepIdx].toolCalls[tcIdx].isError = true
+                // Liveness barrier: a generation failing BECAUSE the parent was
+                // cancelled mid-await must not flip a tool call on whatever now
+                // answers to the captured parentTID.
+                if isExecutionLive(stepID: stepID, taskID: parentTID) {
+                    await delegate.mutateTask(taskID: parentTID) { task in
+                        guard let runIdx = task.runs.indices.last,
+                              let stepIdx = task.runs[runIdx].steps.firstIndex(where: { $0.id == stepID }),
+                              let tcIdx = task.runs[runIdx].steps[stepIdx].toolCalls
+                                  .firstIndex(where: { $0.id == placeholderToolCallID })
+                        else { return }
+                        task.runs[runIdx].steps[stepIdx].toolCalls[tcIdx].resultJSON = errorEnvelope
+                        task.runs[runIdx].steps[stepIdx].toolCalls[tcIdx].isError = true
+                    }
                 }
                 // Surface to the user banner, not just the LLM envelope —
                 // generation failures are real (LLM unreachable, model
@@ -479,13 +495,15 @@ extension LLMExecutionService {
     /// fields, returns a confirmation envelope for the parent's tool loop.
     func handleCancelDelegation(
         stepID: String,
+        taskID: Int,
         childTaskID: Int,
         reason: String?
     ) async -> String {
         guard let delegate else {
             return makeErrorEnvelope(code: .commandFailed, message: "delegate unavailable")
         }
-        guard let parentTID = taskIDForStep(stepID) else {
+        let parentTID = taskID
+        guard isExecutionLive(stepID: stepID, taskID: parentTID) else {
             return makeErrorEnvelope(code: .commandFailed, message: "no task context for step \(stepID)")
         }
         guard let activeChildID = delegate.activeDelegationChildID(taskID: parentTID, roleID: stepID),
@@ -526,7 +544,8 @@ extension LLMExecutionService {
         guard let delegate else {
             return makeErrorEnvelope(code: .commandFailed, message: "delegate unavailable")
         }
-        guard let parentTID = taskIDForStep(stepID) else {
+        let parentTID = task.id
+        guard isExecutionLive(stepID: stepID, taskID: parentTID) else {
             return makeErrorEnvelope(code: .commandFailed, message: "no task context for step \(stepID)")
         }
         guard let activeChildID = delegate.activeDelegationChildID(taskID: parentTID, roleID: stepID),
@@ -583,7 +602,8 @@ extension LLMExecutionService {
         guard let delegate else {
             return makeErrorEnvelope(code: .commandFailed, message: "delegate unavailable")
         }
-        guard let parentTID = taskIDForStep(stepID) else {
+        let parentTID = task.id
+        guard isExecutionLive(stepID: stepID, taskID: parentTID) else {
             return makeErrorEnvelope(code: .commandFailed, message: "no task context for step \(stepID)")
         }
         guard let activeChildID = delegate.activeDelegationChildID(taskID: parentTID, roleID: stepID),

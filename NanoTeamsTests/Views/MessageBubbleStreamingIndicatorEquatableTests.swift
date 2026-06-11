@@ -27,7 +27,8 @@ final class MessageBubbleStreamingIndicatorEquatableTests: XCTestCase {
         hasMessageContent: Bool = false,
         hasThinkingContent: Bool = false,
         processingProgress: Double? = nil,
-        hasStreamActivity: Bool = false
+        hasStreamActivity: Bool = false,
+        isStreamingToolCall: Bool = false
     ) -> MessageBubbleStreamingIndicator {
         MessageBubbleStreamingIndicator(
             isStreaming: isStreaming,
@@ -35,7 +36,8 @@ final class MessageBubbleStreamingIndicatorEquatableTests: XCTestCase {
             hasMessageContent: hasMessageContent,
             hasThinkingContent: hasThinkingContent,
             processingProgress: processingProgress,
-            hasStreamActivity: hasStreamActivity
+            hasStreamActivity: hasStreamActivity,
+            isStreamingToolCall: isStreamingToolCall
         )
     }
 
@@ -69,6 +71,10 @@ final class MessageBubbleStreamingIndicatorEquatableTests: XCTestCase {
 
     func testNotEqual_whenIsImplicitStreamTargetDiffers() async {
         XCTAssertNotEqual(Self.makeIndicator(), Self.makeIndicator(isImplicitStreamTarget: true))
+    }
+
+    func testNotEqual_whenIsStreamingToolCallDiffers() async {
+        XCTAssertNotEqual(Self.makeIndicator(), Self.makeIndicator(isStreamingToolCall: true))
     }
 
     // MARK: - Steady-state equality (the hot path this optimization targets)

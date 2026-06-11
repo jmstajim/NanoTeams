@@ -1,27 +1,23 @@
 import Foundation
 
 /// Watches delegated child tasks for pathologically repetitive output and
-/// auto-triggers the Pause-and-Decide flow on detection. Runs the
-/// `MessageRepetitionDetector` in four places:
+/// auto-triggers the Pause-and-Decide flow on detection. Detection itself is
+/// shared (`LoopScanner` → `MessageRepetitionDetector`); this class owns the
+/// child-task cooldown and the fire (`notifyDelegationInterrupt`) at two entry
+/// points:
 ///
-///  - Streaming buffer (throttled to once every
-///    `DelegationConstants.repetitionStreamingThrottleSeconds`) — catches
-///    mid-stream loops in thinking AND content. Critical for reasoning
+///  - `noteStreamLoop(taskID:stepID:signal:)` — reactive, in-stream. The scan
+///    runs inside `performStreamingCall` (the stream consumer, where the
+///    buffers live); this just applies the per-task cooldown and fires. Returns
+///    whether the in-stream scanner should advance its throttle baseline (the
+///    relocated I4 invariant — see the method doc). Critical for reasoning
 ///    models that loop in `thinking` and never commit a finalized message.
-///  - On `commitStreaming` of a finalized child message — single-pass scan,
-///    cheap.
-///  - On append to child step's `llmConversation` — across-messages overlap
-///    check (catches strategic loops where each iteration regenerates
-///    similar content). Caller feeds `thinking + content` joined per
-///    message so tool-only assistant turns (empty `content`) still
-///    contribute their reasoning text to the LCS comparison.
-///  - On the same commit boundary, `considerToolCallSequence` scans the
-///    step's recent `toolCalls` for N consecutive identical
-///    `(name, argsJSON)` pairs — the most precise signal for tool-spam
-///    loops where the model just keeps re-calling the same tool. This is
-///    the only mode that catches loops where every assistant turn has
-///    empty `content` and the entire signal lives in the structurally
-///    identical tool-call payload.
+///  - `considerCommitted(taskID:recentAssistant:toolCalls:)` — post-commit. One
+///    `LoopScanner.scanCommitted` pass over the finalized conversation +
+///    tool-call history (tool-call sequence → within-message → across-messages,
+///    first signal wins; the per-task `lastTrigger` is the `createdAt` cutoff that
+///    defends against revision-retained history). Replaces the prior three separate
+///    hooks.
 ///
 /// On detection, calls `orchestrator.notifyDelegationInterrupt(...)` with
 /// an auto-generated diagnostic — the parent role's awaiter wakes up the
@@ -42,11 +38,6 @@ final class DelegationLoopWatcher {
     /// Per-child-task last-fire timestamp. Used for cooldown.
     private var lastTriggerByChildTask: [Int: Date] = [:]
 
-    /// Per-child-step last-streaming-scan timestamp. Used for throttling
-    /// — `considerStreamingBuffer` runs at most once every
-    /// `repetitionStreamingThrottleSeconds` per step.
-    private var lastStreamingScanByStep: [String: Date] = [:]
-
     init(orchestrator: NTMSOrchestrator? = nil) {
         self.orchestrator = orchestrator
     }
@@ -57,157 +48,70 @@ final class DelegationLoopWatcher {
 
     // MARK: - Streaming-time detection
 
-    /// Throttled hook — call from the streaming pipeline for child tasks
-    /// after each significant buffer growth. Combines content + thinking
-    /// into a single haystack (a loop in either should fire).
-    func considerStreamingBuffer(
-        taskID: Int,
-        stepID: String,
-        content: String,
-        thinking: String
-    ) {
-        guard let orchestrator else { return }
-        guard isChildTask(taskID, in: orchestrator) else { return }
+    /// Reactive in-stream entry for a CHILD task's streaming loop. Detection
+    /// (`LoopScanner.scanStreaming`) now runs inside `performStreamingCall` (the
+    /// stream consumer, where the buffers live); this applies the per-task
+    /// cooldown and fires the parent interrupt.
+    ///
+    /// Returns whether the in-stream scanner should ADVANCE its throttle baseline:
+    ///  - `true`  — cooldown active (no point re-scanning) OR a fire succeeded.
+    ///  - `false` — the no-waiter race (`fireInterrupt` returned false). Hold the
+    ///    throttle so the next legitimate signal isn't swallowed once the parent
+    ///    awaiter registers. This is the I4 invariant, relocated from the old
+    ///    `lastStreamingScanByStep` stamp logic into the scanner's growth counter.
+    @discardableResult
+    func noteStreamLoop(taskID: Int, stepID _: String, signal: LoopSignal) -> Bool {
+        guard let orchestrator else { return true }
+        guard isChildTask(taskID, in: orchestrator) else { return true }
         let now = MonotonicClock.shared.now()
-        if let last = lastStreamingScanByStep[stepID],
-           now.timeIntervalSince(last) < DelegationConstants.repetitionStreamingThrottleSeconds {
-            return
-        }
-        // NOTE: throttle stamp is moved BELOW the cooldown / detection /
-        // fire path. Setting it eagerly here was a bug — when
-        // `notifyDelegationInterrupt` returns false (no waiter; race window
-        // with `startRunForTask`), the cooldown is correctly not set
-        // (`fireInterrupt` is conservative there), but the throttle would
-        // already be burned, swallowing the next legitimate signal for
-        // `repetitionStreamingThrottleSeconds`. Stamp only after we've
-        // either decided "no signal worth processing" (no match) or
-        // successfully fired.
-        if isInCooldown(taskID: taskID, now: now) {
-            // We already fired recently; throttle the next scan to keep the
-            // cooldown well-defined. Otherwise back-to-back token deltas
-            // would each pay the substring-search cost only to find the
-            // cooldown.
-            lastStreamingScanByStep[stepID] = now
-            return
-        }
-        let combined = thinking + "\n" + content
-        guard let match = MessageRepetitionDetector.detectWithinMessage(
-            combined,
-            minSubstringChars: DelegationConstants.repetitionMinSubstringChars,
-            minRepeats: DelegationConstants.repetitionMinRepeats
-        ) else {
-            // No signal — throttle so we don't redo the search next token.
-            lastStreamingScanByStep[stepID] = now
-            return
-        }
-        let fired = fireInterrupt(
+        if isInCooldown(taskID: taskID, now: now) { return true }
+        return fireInterrupt(
             childTaskID: taskID,
-            scope: "streaming",
-            diagnostic: match.diagnostic,
+            scope: signal.scope,
+            diagnostic: signal.diagnostic,
             now: now,
             orchestrator: orchestrator
         )
-        if fired {
-            lastStreamingScanByStep[stepID] = now
-        }
-        // If we DIDN'T fire (no waiter — extremely transient race),
-        // intentionally leave the throttle alone so the very next scan can
-        // try again. The cost is one extra detector pass per token; the
-        // benefit is that a 3s window of detector silence doesn't develop
-        // when the parent role hasn't quite registered yet.
     }
 
     // MARK: - Post-commit detection
 
-    /// Runs once per finalized message on a child task. Cheap — single
-    /// detector pass.
-    func considerCommittedMessage(
-        taskID: Int,
-        stepID _: String,
-        content: String,
-        thinking: String?
-    ) {
-        guard let orchestrator else { return }
-        guard isChildTask(taskID, in: orchestrator) else { return }
-        let now = MonotonicClock.shared.now()
-        if isInCooldown(taskID: taskID, now: now) { return }
-        let combined = (thinking ?? "") + "\n" + content
-        guard let match = MessageRepetitionDetector.detectWithinMessage(
-            combined,
-            minSubstringChars: DelegationConstants.repetitionMinSubstringChars,
-            minRepeats: DelegationConstants.repetitionMinRepeats
-        ) else { return }
-        fireInterrupt(
-            childTaskID: taskID,
-            scope: "committed message",
-            diagnostic: match.diagnostic,
-            now: now,
-            orchestrator: orchestrator
-        )
-    }
-
-    // MARK: - Across-messages detection
-
-    /// Compares the last N messages of the child step's role for
-    /// strategic-loop overlap. Call after each new assistant message lands
-    /// on `step.llmConversation`.
-    func considerConversation(taskID: Int, recentRoleMessages: [String]) {
-        guard let orchestrator else { return }
-        guard isChildTask(taskID, in: orchestrator) else { return }
-        let now = MonotonicClock.shared.now()
-        if isInCooldown(taskID: taskID, now: now) { return }
-        guard let match = MessageRepetitionDetector.detectAcrossMessages(recentRoleMessages) else { return }
-        fireInterrupt(
-            childTaskID: taskID,
-            scope: "across messages",
-            diagnostic: match.diagnostic,
-            now: now,
-            orchestrator: orchestrator
-        )
-    }
-
-    // MARK: - Tool-call sequence detection
-
-    /// Fires when the child step's recent tool-call history ends in
-    /// `DelegationConstants.repetitionMinIdenticalToolCalls` consecutive
-    /// identical `(name, argsJSON)` pairs. The strongest deterministic
-    /// signal for tool-spam loops — works even when every assistant turn
-    /// has empty `content` (the across-messages mode goes blind in that
-    /// case because the LCS denominator collapses).
+    /// Runs once per `commitStreaming` boundary on a child task. Scans the
+    /// finalized conversation + tool-call history via `LoopScanner.scanCommitted`
+    /// (tool-call sequence → within-message → across-messages, first signal wins)
+    /// and fires the parent interrupt. Replaces the prior three separate hooks
+    /// (`considerCommittedMessage` / `considerConversation` /
+    /// `considerToolCallSequence`).
     ///
-    /// **`createdAt` filter (defends against revision-history false
-    /// positive).** `resetStepForRevision` retains `step.toolCalls` for
-    /// audit, so the persisted suffix can include calls from a previous
-    /// round that already triggered a fire. Without filtering, the cooldown
-    /// would expire (30s, often less than a revision round), then the very
-    /// first new call of the next round would land on a suffix where most
-    /// entries are old-and-already-counted, causing instant re-fire on
-    /// behavior the user already saw and acted on. We filter
-    /// `recentCalls` to those strictly newer than the last successful
-    /// trigger before handing them to the (stateless) detector — pre-fire
-    /// history doesn't count against us twice. Caller passes
-    /// `(name, argsJSON, createdAt)` triples; tuple ordering matches
-    /// `StepToolCall` field names so the call site is grep-able.
-    func considerToolCallSequence(
+    /// **`createdAt` cutoff (revision-retained-history guard).**
+    /// `resetStepForRevision` retains `step.toolCalls`/`llmConversation` for
+    /// audit, so the persisted suffix can include entries from a previous round
+    /// that already triggered a fire. The cutoff = this child's last successful
+    /// trigger; `scanCommitted` drops everything `createdAt <= cutoff` before
+    /// running the detectors, so pre-fire history doesn't re-fire after the 30s
+    /// cooldown expires (often shorter than a revision round). Before any fire the
+    /// cutoff is `.distantPast` → nothing filtered (identical to the legacy
+    /// pre-fire behavior).
+    func considerCommitted(
         taskID: Int,
-        recentCalls: [(name: String, argsJSON: String, createdAt: Date)]
+        recentAssistant: [(thinking: String?, content: String, createdAt: Date)],
+        toolCalls: [(name: String, argsJSON: String, createdAt: Date)]
     ) {
         guard let orchestrator else { return }
         guard isChildTask(taskID, in: orchestrator) else { return }
         let now = MonotonicClock.shared.now()
         if isInCooldown(taskID: taskID, now: now) { return }
         let cutoff = lastTriggerByChildTask[taskID] ?? .distantPast
-        let filtered = recentCalls
-            .filter { $0.createdAt > cutoff }
-            .map { (name: $0.name, argsJSON: $0.argsJSON) }
-        guard let match = MessageRepetitionDetector.detectIdenticalToolCallSequence(
-            filtered,
-            minRepeats: DelegationConstants.repetitionMinIdenticalToolCalls
+        guard let signal = LoopScanner.scanCommitted(
+            recentAssistant: recentAssistant,
+            toolCalls: toolCalls,
+            cutoffDate: cutoff,
+            scope: .thinkingAndContent
         ) else { return }
         fireInterrupt(
             childTaskID: taskID,
-            scope: "tool-call repetition",
-            diagnostic: match.diagnostic,
+            scope: signal.scope,
+            diagnostic: signal.diagnostic,
             now: now,
             orchestrator: orchestrator
         )
@@ -276,20 +180,12 @@ final class DelegationLoopWatcher {
     }
     /// Inject-only test seam — plant a `lastTrigger` timestamp without
     /// running the real `fireInterrupt` path. Required by the
-    /// `considerToolCallSequence` cutoff-filter regression: we need to
+    /// `considerCommitted` cutoff-filter regression: we need to
     /// simulate "the watcher already fired N seconds ago, cooldown has
     /// expired" without standing up a full awaiter + child engine + waiter
     /// resolution dance just to plant one timestamp.
     func _testForceTrigger(forTaskID taskID: Int, at when: Date) {
         lastTriggerByChildTask[taskID] = when
-    }
-    /// Inspect-only — exposes the per-step throttle stamp so the I4 fix
-    /// (don't burn throttle when `notifyDelegationInterrupt` returns false
-    /// during the no-waiter race) is regression-testable. Without this
-    /// seam, reverting the I4 stamp-only-on-fire branch would silently
-    /// swallow the next legitimate signal — no test failure.
-    func _testLastStreamingScan(forStepID stepID: String) -> Date? {
-        lastStreamingScanByStep[stepID]
     }
     #endif
 }

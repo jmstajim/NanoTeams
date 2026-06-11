@@ -16,6 +16,7 @@ extension LLMExecutionService {
         result: ToolExecutionResult,
         toolCallID: UUID,
         stepID: String,
+        taskID: Int,
         conversationMessages: inout [ChatMessage],
         tracker: ToolCallTracker? = nil
     ) async {
@@ -36,6 +37,7 @@ extension LLMExecutionService {
                 result: result,
                 toolCallID: toolCallID,
                 stepID: stepID,
+                taskID: taskID,
                 conversationMessages: &conversationMessages,
                 tracker: tracker
             )
@@ -68,6 +70,7 @@ extension LLMExecutionService {
                 result: result,
                 toolCallID: toolCallID,
                 stepID: stepID,
+                taskID: taskID,
                 conversationMessages: &conversationMessages,
                 tracker: tracker
             )
@@ -103,6 +106,7 @@ extension LLMExecutionService {
                 result: result,
                 toolCallID: toolCallID,
                 stepID: stepID,
+                taskID: taskID,
                 conversationMessages: &conversationMessages,
                 tracker: tracker
             )
@@ -189,6 +193,7 @@ extension LLMExecutionService {
                 result: result,
                 toolCallID: toolCallID,
                 stepID: stepID,
+                taskID: taskID,
                 conversationMessages: &conversationMessages,
                 tracker: tracker
             )
@@ -227,6 +232,7 @@ extension LLMExecutionService {
             result: result,
             toolCallID: toolCallID,
             stepID: stepID,
+            taskID: taskID,
             conversationMessages: &conversationMessages,
             tracker: tracker
         )
@@ -309,13 +315,14 @@ extension LLMExecutionService {
         result: ToolExecutionResult,
         toolCallID: UUID,
         stepID: String,
+        taskID: Int,
         conversationMessages: inout [ChatMessage],
         tracker: ToolCallTracker? = nil
     ) async {
         conversationMessages.append(ChatMessage(
             role: .tool, content: envelope, toolCallID: result.providerID
         ))
-        await appendLLMMessage(stepID: stepID, role: .tool, content: """
+        await appendLLMMessage(stepID: stepID, taskID: taskID, role: .tool, content: """
             [CALL] \(result.toolName)
             Arguments: \(result.argumentsJSON)
 
@@ -330,7 +337,7 @@ extension LLMExecutionService {
             outputJSON: envelope,
             isError: false
         )
-        await updateToolCallResult(stepID: stepID, toolCallID: toolCallID, result: finalResult)
+        await updateToolCallResult(stepID: stepID, taskID: taskID, toolCallID: toolCallID, result: finalResult)
 
         // Record the FINALIZED envelope in the tool-call tracker. The upstream
         // `processToolResults` skipped this call for `.exploratorySearch` signals

@@ -156,9 +156,9 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
         XCTAssertEqual(result, "Processing")
     }
 
-    /// Both content AND thinking visible — content wins (returns nil
+    /// Both content AND thinking visible — thinking wins (returns nil
     /// either way; redundant case but the early-return order matters
-    /// elsewhere).
+    /// for the tool-call fallback, which thinking outranks).
     func testBothContentAndThinking_visible_returnsNil() {
         let result = MessageBubbleStreamingIndicator.resolveStatusText(
             isStreaming: true,
@@ -167,6 +167,134 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             hasThinkingContent: true,
             processingProgress: 0.5,
             hasStreamActivity: true
+        )
+        XCTAssertNil(result)
+    }
+
+    // MARK: - Streaming tool call (harmony envelope / OpenAI tool-call deltas mid-stream)
+    //
+    // The user-reported scenario this flag exists for: reasoning → short
+    // prose → large Harmony `<|call|>{…}` envelope. The prose froze the
+    // moment the marker was detected and the bubble showed ZERO animation
+    // for the entire assembly. Design: the envelope text streams into the
+    // THINKING preview (shown "as if it were thinking" — animated
+    // "Thinking…" row, watchable live), so `hasThinkingContent` suppression
+    // handles the normal case; `isStreamingToolCall` is the FALLBACK that
+    // overrides the frozen-prose suppression when the thinking preview is
+    // still empty.
+
+    /// Fallback regression: visible (frozen) prose + tool call assembling
+    /// + nothing in the thinking preview yet → must show "Generating",
+    /// not nil.
+    func testStreamingToolCall_withVisibleContent_returnsGenerating() {
+        let result = MessageBubbleStreamingIndicator.resolveStatusText(
+            isStreaming: true,
+            isImplicitStreamTarget: false,
+            hasMessageContent: true,
+            hasThinkingContent: false,
+            processingProgress: nil,
+            hasStreamActivity: true,
+            isStreamingToolCall: true
+        )
+        XCTAssertEqual(result, "Generating",
+                       "Pre-marker prose is frozen once the tool-call envelope starts — it is no longer 'the indicator'. With an empty thinking preview the status row must surface Generating.")
+    }
+
+    /// Normal envelope case: the envelope text has landed in the thinking
+    /// preview → the (animated) Thinking row is the indicator; no status
+    /// row. (`MessageBubbleView.isThinkingStreaming` includes
+    /// `isStreamingToolCall`, so the loader keeps spinning.)
+    func testStreamingToolCall_withVisibleThinking_returnsNil() {
+        let result = MessageBubbleStreamingIndicator.resolveStatusText(
+            isStreaming: true,
+            isImplicitStreamTarget: false,
+            hasMessageContent: false,
+            hasThinkingContent: true,
+            processingProgress: nil,
+            hasStreamActivity: true,
+            isStreamingToolCall: true
+        )
+        XCTAssertNil(result,
+                     "Envelope text streams into the thinking preview — the animated Thinking row is the indicator, a Generating pill would be redundant.")
+    }
+
+    func testStreamingToolCall_withBothContentAndThinking_returnsNil() {
+        let result = MessageBubbleStreamingIndicator.resolveStatusText(
+            isStreaming: true,
+            isImplicitStreamTarget: false,
+            hasMessageContent: true,
+            hasThinkingContent: true,
+            processingProgress: nil,
+            hasStreamActivity: true,
+            isStreamingToolCall: true
+        )
+        XCTAssertNil(result,
+                     "Thinking-as-indicator wins over the fallback even with frozen prose present.")
+    }
+
+    /// Defensive priority pin: if a stale `processingProgress` coexists
+    /// with the tool-call flag (shouldn't happen — progress clears on the
+    /// first delta, and the marker arrives via content deltas), the flag
+    /// wins: tokens ARE flowing, "Processing" would be a lie.
+    func testStreamingToolCall_winsOverProcessingProgress() {
+        let result = MessageBubbleStreamingIndicator.resolveStatusText(
+            isStreaming: true,
+            isImplicitStreamTarget: false,
+            hasMessageContent: false,
+            hasThinkingContent: false,
+            processingProgress: 0.99,
+            hasStreamActivity: true,
+            isStreamingToolCall: true
+        )
+        XCTAssertEqual(result, "Generating")
+    }
+
+    /// Worst-case pile-up: thinking visible + stale progress + activity +
+    /// tool-call flag all at once → thinking still wins (nil). Pins that the
+    /// thinking suppression sits ABOVE every other signal, so no status row
+    /// can ever double up with the animated Thinking row.
+    func testStreamingToolCall_thinkingWins_evenWithProgressAndActivity() {
+        let result = MessageBubbleStreamingIndicator.resolveStatusText(
+            isStreaming: true,
+            isImplicitStreamTarget: false,
+            hasMessageContent: true,
+            hasThinkingContent: true,
+            processingProgress: 0.99,
+            hasStreamActivity: true,
+            isStreamingToolCall: true
+        )
+        XCTAssertNil(result)
+    }
+
+    /// The implicit-target branch (committed bubble of a still-running step)
+    /// does NOT consult the tool-call flag — a stale flag must not animate a
+    /// committed bubble. (Also structurally unreachable: `BubbleInputs.committed`
+    /// zeroes the flag — this is the resolver-level defense.)
+    func testImplicitTarget_ignoresStreamingToolCall() {
+        let result = MessageBubbleStreamingIndicator.resolveStatusText(
+            isStreaming: false,
+            isImplicitStreamTarget: true,
+            hasMessageContent: true,
+            hasThinkingContent: false,
+            processingProgress: nil,
+            hasStreamActivity: false,
+            isStreamingToolCall: true
+        )
+        XCTAssertNil(result)
+    }
+
+    /// The `isStreaming` gate still rules: a stale flag on a non-streaming
+    /// bubble must not surface a status row. (Structurally unreachable —
+    /// `BubbleInputs.committed` zeroes streaming fields — defense in depth.)
+    func testNotStreaming_withStreamingToolCall_returnsNil() {
+        let result = MessageBubbleStreamingIndicator.resolveStatusText(
+            isStreaming: false,
+            isImplicitStreamTarget: false,
+            hasMessageContent: true,
+            hasThinkingContent: false,
+            processingProgress: nil,
+            hasStreamActivity: false,
+            isStreamingToolCall: true
         )
         XCTAssertNil(result)
     }

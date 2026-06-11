@@ -29,9 +29,14 @@ nonisolated struct WorkFolderState: Codable, Hashable {
     /// re-adding these on next open and prevents version-bump reconcile from
     /// resurrecting them. Cleared by "Restore Default Teams".
     var deletedTeamTemplateIDs: [String]
+    /// Task ID of the hidden Autovisor singleton task for this folder, once
+    /// created (lazily, when the manager is enabled). Single source of truth for
+    /// "which task is the manager" — consumed by sidebar/fallback exclusions and
+    /// the supervisor-routing / event-wake self-guards. `nil` = not yet created.
+    var autovisorTaskID: Int?
 
     init(
-        schemaVersion: Int = 6,
+        schemaVersion: Int = 7,
         id: UUID = UUID(),
         name: String,
         createdAt: Date = MonotonicClock.shared.now(),
@@ -39,7 +44,8 @@ nonisolated struct WorkFolderState: Codable, Hashable {
         activeTeamID: NTMSID? = nil,
         activeTaskID: Int? = nil,
         lastAppliedAppVersion: String = "",
-        deletedTeamTemplateIDs: [String] = []
+        deletedTeamTemplateIDs: [String] = [],
+        autovisorTaskID: Int? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.id = id
@@ -50,6 +56,7 @@ nonisolated struct WorkFolderState: Codable, Hashable {
         self.activeTaskID = activeTaskID
         self.lastAppliedAppVersion = lastAppliedAppVersion
         self.deletedTeamTemplateIDs = deletedTeamTemplateIDs
+        self.autovisorTaskID = autovisorTaskID
     }
 
     // Forward-compatible decoding: any missing field falls back to a sensible
@@ -57,7 +64,11 @@ nonisolated struct WorkFolderState: Codable, Hashable {
     // user data (see CLAUDE.md Model Conventions #4).
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 5
+        // Migrate the version in-memory so a successful legacy decode doesn't
+        // re-encode under a stale `schemaVersion` (CLAUDE.md #48). A file written by
+        // a newer build (version > 7) keeps its higher version on save.
+        let storedVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 5
+        self.schemaVersion = max(storedVersion, 7)
         self.id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         self.name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
         self.createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? MonotonicClock.shared.now()
@@ -66,6 +77,7 @@ nonisolated struct WorkFolderState: Codable, Hashable {
         self.activeTaskID = try c.decodeIfPresent(Int.self, forKey: .activeTaskID)
         self.lastAppliedAppVersion = try c.decodeIfPresent(String.self, forKey: .lastAppliedAppVersion) ?? ""
         self.deletedTeamTemplateIDs = try c.decodeIfPresent([String].self, forKey: .deletedTeamTemplateIDs) ?? []
+        self.autovisorTaskID = try c.decodeIfPresent(Int.self, forKey: .autovisorTaskID)
     }
 }
 
@@ -81,17 +93,38 @@ nonisolated struct ProjectSettings: Codable, Hashable {
     var context: String
     var contextPrompt: String
     var selectedScheme: String?
+    // Autovisor (schemaVersion 3). Goal + standing memory + enable flag +
+    // activation config for the per-folder automated Supervisor agent. Goal/memory
+    // are editable in Settings and written by the manager via `update_scratchpad`
+    // (memory write-through). The manager's *schedule* lives on its task's
+    // `recurrence`; `activation` carries the event-driven triggers + debounce;
+    // `tuning` carries the numeric behaviour caps (throughput + stuck detection).
+    var autovisorGoal: String
+    var autovisorMemory: String
+    var autovisorEnabled: Bool
+    var autovisorActivation: AutovisorActivation
+    var autovisorTuning: AutovisorTuning
 
     init(
-        schemaVersion: Int = 2,
+        schemaVersion: Int = 3,
         context: String = "",
         contextPrompt: String = AppDefaults.workFolderContextPrompt,
-        selectedScheme: String? = nil
+        selectedScheme: String? = nil,
+        autovisorGoal: String = "",
+        autovisorMemory: String = "",
+        autovisorEnabled: Bool = false,
+        autovisorActivation: AutovisorActivation = .default,
+        autovisorTuning: AutovisorTuning = .default
     ) {
         self.schemaVersion = schemaVersion
         self.context = context
         self.contextPrompt = contextPrompt
         self.selectedScheme = selectedScheme
+        self.autovisorGoal = autovisorGoal
+        self.autovisorMemory = autovisorMemory
+        self.autovisorEnabled = autovisorEnabled
+        self.autovisorActivation = autovisorActivation
+        self.autovisorTuning = autovisorTuning
     }
 
     enum CodingKeys: String, CodingKey {
@@ -99,6 +132,11 @@ nonisolated struct ProjectSettings: Codable, Hashable {
         case context
         case contextPrompt
         case selectedScheme
+        case autovisorGoal
+        case autovisorMemory
+        case autovisorEnabled
+        case autovisorActivation
+        case autovisorTuning
         // Legacy keys (schemaVersion 1). Read-only fallback so existing
         // settings.json files continue to load after the rename.
         case legacyDescription = "description"
@@ -109,9 +147,10 @@ nonisolated struct ProjectSettings: Codable, Hashable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let storedVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
         // Migrate to current shape in-memory so the next encode never writes new
-        // keys under a stale `schemaVersion`. Files at v3+ keep their version so
-        // a forward-rolled binary doesn't silently downgrade on save.
-        self.schemaVersion = max(storedVersion, 2)
+        // keys under a stale `schemaVersion`. A file written by a newer build
+        // (version > 3) keeps its higher version so a forward-rolled binary doesn't
+        // silently downgrade on save (CLAUDE.md #48).
+        self.schemaVersion = max(storedVersion, 3)
         self.context = try c.decodeIfPresent(String.self, forKey: .context)
             ?? c.decodeIfPresent(String.self, forKey: .legacyDescription)
             ?? ""
@@ -119,6 +158,11 @@ nonisolated struct ProjectSettings: Codable, Hashable {
             ?? c.decodeIfPresent(String.self, forKey: .legacyDescriptionPrompt)
             ?? AppDefaults.workFolderContextPrompt
         self.selectedScheme = try c.decodeIfPresent(String.self, forKey: .selectedScheme)
+        self.autovisorGoal = try c.decodeIfPresent(String.self, forKey: .autovisorGoal) ?? ""
+        self.autovisorMemory = try c.decodeIfPresent(String.self, forKey: .autovisorMemory) ?? ""
+        self.autovisorEnabled = try c.decodeIfPresent(Bool.self, forKey: .autovisorEnabled) ?? false
+        self.autovisorActivation = try c.decodeIfPresent(AutovisorActivation.self, forKey: .autovisorActivation) ?? .default
+        self.autovisorTuning = try c.decodeIfPresent(AutovisorTuning.self, forKey: .autovisorTuning) ?? .default
     }
 
     func encode(to encoder: Encoder) throws {
@@ -127,6 +171,11 @@ nonisolated struct ProjectSettings: Codable, Hashable {
         try c.encode(context, forKey: .context)
         try c.encode(contextPrompt, forKey: .contextPrompt)
         try c.encodeIfPresent(selectedScheme, forKey: .selectedScheme)
+        try c.encode(autovisorGoal, forKey: .autovisorGoal)
+        try c.encode(autovisorMemory, forKey: .autovisorMemory)
+        try c.encode(autovisorEnabled, forKey: .autovisorEnabled)
+        try c.encode(autovisorActivation, forKey: .autovisorActivation)
+        try c.encode(autovisorTuning, forKey: .autovisorTuning)
     }
 
     static let defaults = ProjectSettings()
