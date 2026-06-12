@@ -1,6 +1,6 @@
 # NanoTeams
 
-### Open-source AI coding assistant and multi-agent teams for macOS that develop your project on their own — powered by local LLMs
+### Open-source AI coding assistant and multi-agent AI teams for macOS. Put your project on autopilot — an automated Supervisor creates, runs, and reviews tasks on its own. Powered by local LLMs via LM Studio.
 
 [![Build&Test](https://github.com/jmstajim/NanoTeams/actions/workflows/ios.yml/badge.svg)](https://github.com/jmstajim/NanoTeams/actions/workflows/ios.yml)
 [![Version](https://img.shields.io/github/v/release/jmstajim/NanoTeams?sort=semver&display_name=tag&label=version&color=5F87D9&style=flat-square)](https://github.com/jmstajim/NanoTeams/releases/latest)
