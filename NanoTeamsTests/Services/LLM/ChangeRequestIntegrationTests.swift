@@ -209,7 +209,7 @@ final class ChangeRequestIntegrationTests: XCTestCase {
         // code_reviewer depends on engineer's artifacts → should be set to revisionRequested
         XCTAssertEqual(updated.runs[0].roleStatuses["code_reviewer"], .revisionRequested,
                        "Done downstream role should be set to revisionRequested")
-        XCTAssertTrue(result.contains("Downstream amendments triggered"))
+        XCTAssertTrue(result.summary.contains("Downstream amendments triggered"))
 
         // Same raw-revisionComment invariant as executeAmendment: the upstream-notice
         // block is stored explicitly so resetStepForRevision doesn't re-derive it.
@@ -220,7 +220,10 @@ final class ChangeRequestIntegrationTests: XCTestCase {
                        "revisionComment must stay raw")
     }
 
-    func testPropagateDownstream_injectsContextForWorkingRoles() async {
+    func testPropagateDownstream_holdsRunningDownstreamRolesForRevision() async {
+        // STRICT pipeline (Fix B): a downstream role caught RUNNING is now queued for
+        // revision (notice + raw revisionComment + collected into runningRoleIDs for the
+        // hold hook) — NOT left running with a soft context note.
         let (task, team) = makeTaskWithDownstreamRoles(codeReviewerStatus: .running, codeReviewerRoleStatus: .working)
         mockDelegate.taskToMutate = task
 
@@ -233,13 +236,22 @@ final class ChangeRequestIntegrationTests: XCTestCase {
 
         let updated = mockDelegate.taskToMutate!
         let crStep = updated.runs[0].steps.first(where: { $0.effectiveRoleID == "code_reviewer" })!
-        XCTAssertFalse(crStep.messages.isEmpty, "Working role should get context message injected")
-        // Working roles get a "NOTE:" context injection (not "UPSTREAM AMENDMENT NOTICE" which is for done roles)
-        XCTAssertTrue(crStep.messages.last!.content.contains("Upstream role"))
+        XCTAssertFalse(crStep.messages.isEmpty, "Running role should get the amendment notice injected")
+        XCTAssertTrue(crStep.messages.last!.content.contains("UPSTREAM AMENDMENT NOTICE"))
         XCTAssertTrue(crStep.messages.last!.content.contains("Updated implementation"))
-        XCTAssertTrue(result.contains("Context injected"))
-        XCTAssertNil(crStep.revisionComment,
-                     "Working roles get context injection only — no revision reset, so no revisionComment (would gate artifact auto-completion)")
+        // The running role is reported back so the caller (executeAmendment) can hold it.
+        XCTAssertTrue(result.runningRoleIDs.contains("code_reviewer"),
+                      "Running downstream role must be reported for the hold hook")
+        XCTAssertTrue(result.summary.contains("held for revision"))
+        // Raw revision payload IS set now (strict pipeline re-runs the role), matching the done branch.
+        XCTAssertEqual(crStep.revisionComment, crStep.messages.last?.content,
+                       "Running role queued for revision must set revisionComment to the notice block")
+        XCTAssertFalse(crStep.revisionComment?.contains("Supervisor Feedback:") ?? true,
+                       "revisionComment must stay raw")
+        // propagate does NOT flip the running role's status — the hold hook does that
+        // (after forcing the step terminal), so the run loop can't re-run a .running step.
+        XCTAssertEqual(updated.runs[0].roleStatuses["code_reviewer"], .working,
+                       "propagate leaves the running role's status to the hold hook")
     }
 
     func testPropagateDownstream_noActionForIdleRoles() async {
@@ -256,7 +268,7 @@ final class ChangeRequestIntegrationTests: XCTestCase {
         let updated = mockDelegate.taskToMutate!
         // Idle role should not be touched
         XCTAssertEqual(updated.runs[0].roleStatuses["code_reviewer"], .idle)
-        XCTAssertTrue(result.contains("No downstream roles needed updates"))
+        XCTAssertTrue(result.summary.contains("No downstream roles needed updates"))
     }
 
     func testPropagateDownstream_noDownstreamRoles() async {
@@ -279,7 +291,7 @@ final class ChangeRequestIntegrationTests: XCTestCase {
             team: team
         )
 
-        XCTAssertTrue(result.contains("No downstream roles affected"))
+        XCTAssertTrue(result.summary.contains("No downstream roles affected"))
     }
 
     // MARK: - recordChangeRequest Tests

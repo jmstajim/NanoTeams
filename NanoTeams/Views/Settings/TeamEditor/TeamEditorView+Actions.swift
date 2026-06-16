@@ -106,6 +106,15 @@ extension TeamEditorView {
             return
         }
 
+        // Block deletion of a team that backs a live run — removing it mid-run
+        // would strand the run (the team can no longer resolve) and previously
+        // caused a silent fallback that commingled a second roster into the run.
+        // The user must pause/close the task first.
+        if store.teamIsInUseByActiveRun(team.id) {
+            store.lastErrorMessage = "Can't delete \"\(team.name)\" — a task is currently running on it. Pause or close that task first."
+            return
+        }
+
         editorSelectedTeamID = nil
         Task {
             await store.mutateWorkFolder { project in

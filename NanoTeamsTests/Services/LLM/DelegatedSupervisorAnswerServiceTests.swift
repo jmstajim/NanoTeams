@@ -74,6 +74,7 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
         func setLastInfoMessageForUI(_ message: String) { lastInfoMessages.append(message) }
         var lastErrorMessages: [String] = []
         func setLastErrorMessageForUI(_ message: String) { lastErrorMessages.append(message) }
+        func holdDownstreamForRevision(taskID _: Int, runningRoleIDs _: [String], requesterRoleID _: String) async {}
         func notifyQueuedMessageBackstop(taskID _: Int) {}
 
         // Delegation hooks

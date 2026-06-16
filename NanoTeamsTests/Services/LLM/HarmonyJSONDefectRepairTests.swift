@@ -932,4 +932,51 @@ final class HarmonyJSONDefectRepairTests: XCTestCase {
             ToolCallParsingHelpers.extractJSONBracedValue(in: sub, from: sub.startIndex),
             "Stray backslash before a structural close must fail closed (nil), not return a broken span")
     }
+
+    // MARK: - spurious-escaped angle bracket: full edit_file recovery (end-to-end)
+
+    func testEditFile_strayBackslashBeforeAngleBracketClose_recoversAllThreeArgs() {
+        // Verbatim shape from network_log.json response 403E50AE (model gemma-4-26b-a4b):
+        // an edit_file whose `old_text` value ends with the HTML close tag `</div\>` — a
+        // spurious backslash before `>`. Before the sanitizer fix, strict parse failed and
+        // `parseAfterContentReescape` absorbed `old_text` into `new_text`, dispatching a
+        // corrupted call with only {new_text, path} → "Missing required argument: old_text".
+        // After the fix the sanitizer drops the stray backslash, strict parse succeeds, and
+        // ALL THREE args survive intact (reescape is never reached).
+        let envelope = #"{"name":"edit_file","arguments":{"new_text":"<div id=\"result-display\" class=\"output-container\">new</div>","old_text":"<div id=\"result-display\" class=\"placeholder\">old</div\>","path":"index.html"}}"#
+        // Pre-condition: the raw arguments object is strict-broken on the stray \>.
+        XCTAssertNil(JSONUtilities.parseJSONDictionary(envelope),
+                     "Pre-condition: stray \\> makes the envelope strict-broken")
+
+        let call = ToolCallParsingHelpers.parseToolCallFromJSON(envelope)
+        XCTAssertEqual(call?.name, "edit_file")
+        let args = try? JSONSerialization.jsonObject(
+            with: (call?.argumentsJSON ?? "").data(using: .utf8)!) as? [String: Any]
+        XCTAssertEqual(args?.count, 3, "All three args must survive — no silent drop")
+        XCTAssertEqual(args?["path"] as? String, "index.html")
+        XCTAssertEqual(args?["new_text"] as? String,
+                       #"<div id="result-display" class="output-container">new</div>"#)
+        XCTAssertEqual(args?["old_text"] as? String,
+                       #"<div id="result-display" class="placeholder">old</div>"#,
+                       "old_text recovered intact with the stray backslash dropped (not absorbed)")
+    }
+
+    func testEditFile_strayBackslashBeforeAngleBracketOpen_recoversAllThreeArgs() {
+        // Symmetric to the close-bracket case, end-to-end through `parseToolCallFromJSON`:
+        // a spurious `\<` (gemma over-escaping a literal `<` in code). The unit-level
+        // sanitizer test covers the byte transform; this proves the full dispatch path
+        // (sanitize → strict parse → tool call) survives the open bracket too.
+        let envelope = #"{"name":"edit_file","arguments":{"old_text":"if (x \< y) {","new_text":"if (x < y) {","path":"app.js"}}"#
+        XCTAssertNil(JSONUtilities.parseJSONDictionary(envelope),
+                     "Pre-condition: stray \\< makes the envelope strict-broken")
+        let call = ToolCallParsingHelpers.parseToolCallFromJSON(envelope)
+        XCTAssertEqual(call?.name, "edit_file")
+        let args = try? JSONSerialization.jsonObject(
+            with: (call?.argumentsJSON ?? "").data(using: .utf8)!) as? [String: Any]
+        XCTAssertEqual(args?.count, 3, "All three args survive")
+        XCTAssertEqual(args?["old_text"] as? String, "if (x < y) {",
+                       "Stray \\< recovered to a literal `<`")
+        XCTAssertEqual(args?["new_text"] as? String, "if (x < y) {")
+        XCTAssertEqual(args?["path"] as? String, "app.js")
+    }
 }

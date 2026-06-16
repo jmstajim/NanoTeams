@@ -1,6 +1,13 @@
 import Foundation
 
 nonisolated struct StepExecution: Codable, Identifiable, Hashable {
+    /// Prefix used when a failure note is recorded into `messages` (see
+    /// `LLMExecutionService.completeStepFailure`). The full line is
+    /// `"\(llmErrorNotePrefix): <reason>"`. Single source of truth so the
+    /// activity feed can reverse-extract the reason for the failed-step bubble
+    /// without a drifting literal.
+    static let llmErrorNotePrefix = "LLM error"
+
     /// The role ID that owns this step (e.g., "faang_team_software_engineer").
     var id: String
     var role: Role

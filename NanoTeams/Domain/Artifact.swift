@@ -42,6 +42,27 @@ nonisolated struct Artifact: Codable, Identifiable, Hashable {
         Artifact.slugify(name)
     }
 
+    /// Project-root-relative path the file tools (`read_file`/`read_lines`) accept for this
+    /// artifact's persisted payload — i.e. `relativePath` *with* the `.nanoteams/` prefix the
+    /// sandbox resolves against (`relativePath` is stored relative to `.nanoteams/`, so the file
+    /// tools — which resolve against the project root — can't read it verbatim).
+    ///
+    /// A non-nil return is a PROMISE of readability, so it returns nil whenever the file tools
+    /// can't serve the payload:
+    ///   • no persisted file (`relativePath` nil, empty, or whitespace-only);
+    ///   • an internal artifact such as Build Diagnostics, persisted under
+    ///     `.nanoteams/internal/…` — the sandbox blocks `internal/`; or
+    ///   • a non-nested path (no `/`) — every persisted artifact lives nested under
+    ///     `tasks/…/roles/…`, so a bare name is malformed and `.nanoteams/<bare>` wouldn't exist.
+    /// Such artifacts are still listed by name; they just have no readable reference.
+    var llmReadablePath: String? {
+        guard let rel = relativePath?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !rel.isEmpty else { return nil }
+        guard !rel.hasPrefix("internal/") else { return nil }
+        guard rel.contains("/") else { return nil }
+        return ".nanoteams/" + rel
+    }
+
     // MARK: - Initialization
 
     init(

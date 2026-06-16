@@ -427,4 +427,52 @@ final class LLMMessageSourceContextTests: XCTestCase {
 
         XCTAssertNil(decoded.teamID)
     }
+
+    // MARK: - .serverError context (red retry-status bubble)
+
+    func testMessageSourceContext_ServerError_RawValueIsStable() {
+        // The rawValue is the persisted/wire form — pinned so it can't silently
+        // drift and orphan messages saved by earlier builds.
+        XCTAssertEqual(MessageSourceContext.serverError.rawValue, "serverError")
+    }
+
+    func testMessageSourceContext_ServerError_CodableRoundTrip() throws {
+        let encoded = try JSONEncoder().encode(MessageSourceContext.serverError)
+        let decoded = try JSONDecoder().decode(MessageSourceContext.self, from: encoded)
+        XCTAssertEqual(decoded, .serverError)
+    }
+
+    func testSourceContextDisplayLabel_serverError_isNil() {
+        // The red bubble + self-describing text convey "server error" — no label.
+        let msg = LLMMessage(role: .assistant, content: "LLM server error (attempt 3)…",
+                             sourceContext: .serverError)
+        XCTAssertNil(msg.sourceContextDisplayLabel)
+    }
+
+    func testServerError_displayLabel_fallsBackToRawValue() {
+        // `.serverError` is intentionally NOT in displayLabelMap (the nil bubble
+        // label comes from the sourceContextDisplayLabel early-return, not the map).
+        XCTAssertEqual(MessageSourceContext.serverError.displayLabel, "serverError")
+    }
+
+    func testLLMMessage_WithServerErrorContext_CodableRoundTrip() throws {
+        let original = LLMMessage(role: .assistant, content: "LLM server error (attempt 1)…",
+                                  sourceContext: .serverError)
+        let encoded = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(LLMMessage.self, from: encoded)
+        XCTAssertEqual(decoded.sourceContext, .serverError)
+        XCTAssertEqual(decoded.content, "LLM server error (attempt 1)…")
+    }
+
+    func testLLMMessage_unknownSourceContextRawValue_decodesAsNil() throws {
+        // Forward-compat: a context case added by a NEWER build, read after a
+        // downgrade, must degrade to nil — not throw and fail the whole message
+        // (and its step / task) to decode. Mirrors the tolerant `role` decode.
+        let json = """
+        {"id":"550e8400-e29b-41d4-a716-446655440099","role":"assistant","content":"x","sourceContext":"futureUnknownCase"}
+        """.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(LLMMessage.self, from: json)
+        XCTAssertNil(decoded.sourceContext, "Unknown sourceContext raw must decode to nil, not throw")
+        XCTAssertEqual(decoded.content, "x")
+    }
 }

@@ -259,8 +259,14 @@ struct TeamActivityComposer: View {
         // Without this the placeholder/avatar/submit reflect a stale selection.
         .onChange(of: chipOptionsComputed.map(\.recipient)) { _, recipients in
             let prior = selectedRecipient
-            let sanitized = Self.sanitizeSelection(
-                selected: prior, availableRecipients: recipients
+            // Retarget to the SAME role's other chip shape (`.role` ↔ `.answer`)
+            // before treating the selection as lost. The Autovisor (and any
+            // single-role chat task) flips working↔asking constantly — its idle
+            // `wait_for_events` park swaps the working-role chip for an Answer chip
+            // mid-compose — and a bare `sanitizeSelection` would drop the explicit
+            // lock and wipe the half-typed draft on every such transition.
+            let sanitized = Self.remapEquivalentRecipient(
+                prior: prior, availableRecipients: recipients
             )
             let hasContent = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 || !attachments.isEmpty
@@ -795,6 +801,34 @@ extension TeamActivityComposer {
     ) -> Recipient? {
         guard let sel = selected else { return nil }
         return availableRecipients.contains(sel) ? sel : nil
+    }
+
+    /// Retargets a lost selection to the SAME underlying role under its other chip
+    /// shape before the draft is discarded. For team tasks `StepExecution.id == roleID`,
+    /// so `.role(id: X)` and `.answer(stepID: X)` address the same role/conversation —
+    /// a role flipping working↔asking (the Autovisor's frequent running↔parked idle
+    /// cycle) swaps one chip shape for the other, which would otherwise invalidate the
+    /// explicit selection and wipe the in-progress draft (the "my message disappears"
+    /// bug). Returns the still-present `prior`, else the same role's counterpart-shape
+    /// recipient if present, else `nil` (genuinely gone — `shouldClearDraftAfterSelectionLoss`
+    /// then decides). Superset of `sanitizeSelection`: identical when no counterpart exists.
+    static func remapEquivalentRecipient(
+        prior: Recipient?,
+        availableRecipients: [Recipient]
+    ) -> Recipient? {
+        guard let prior else { return nil }
+        if availableRecipients.contains(prior) { return prior }
+        let roleID: String
+        switch prior {
+        case .role(let id): roleID = id
+        case .answer(let stepID): roleID = stepID
+        }
+        return availableRecipients.first { candidate in
+            switch candidate {
+            case .role(let id): return id == roleID
+            case .answer(let stepID): return stepID == roleID
+            }
+        }
     }
 
     /// Whether to discard the draft (text + attachments + clips) after the user's

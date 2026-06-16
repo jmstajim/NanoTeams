@@ -25,18 +25,22 @@ nonisolated enum AutovisorConstants {
         ToolNames.waitForEvents,
     ]
 
-    /// Tools the manager MAY use — file work (read + write) and full git, plus image
-    /// inspection and memory. These are the tools offered for toggling in the role
-    /// editor; everything outside (mandatory ∪ optional) is hidden (can't be added —
-    /// xcode/delegation/meetings/team-creation don't apply to the manager).
+    /// Tools the manager MAY use — file + git READ-only, plus image inspection and memory.
+    /// The manager is a pure supervisor: it INSPECTS the repo to triage/steer and DELEGATES
+    /// all work via `create_managed_task`; it has NO repo-mutation tools (no write_file /
+    /// edit_file / delete_file, no git-write). These are the tools offered for toggling in
+    /// the role editor; everything outside (mandatory ∪ optional) is hidden (can't be added —
+    /// write/xcode/delegation/meetings/team-creation don't apply to the manager) AND is
+    /// stripped from a stored manager on open by `syncAutovisorTeamToTemplate`.
+    /// (`update_scratchpad` writes the manager's MEMORY and `set_work_folder_context` the
+    /// shared context — neither touches repo files, so both stay.)
     static let managerOptionalToolIDs: [String] = [
-        // File work
+        // File work — READ-ONLY. write_file / edit_file / delete_file are deliberately
+        // excluded; the manager reads to investigate, then delegates any change.
         ToolNames.readFile, ToolNames.readLines, ToolNames.listFiles, ToolNames.search,
-        ToolNames.writeFile, ToolNames.editFile, ToolNames.deleteFile,
-        // Git
-        ToolNames.gitStatus, ToolNames.gitAdd, ToolNames.gitCommit, ToolNames.gitPull,
-        ToolNames.gitBranchList, ToolNames.gitCheckout, ToolNames.gitMerge,
-        ToolNames.gitLog, ToolNames.gitDiff, ToolNames.gitStash, ToolNames.gitBranch,
+        // Git — READ-ONLY (same rationale): inspect history, never mutate the repo. git-WRITE
+        // (add/commit/pull/checkout/merge/stash/branch) is excluded.
+        ToolNames.gitStatus, ToolNames.gitBranchList, ToolNames.gitLog, ToolNames.gitDiff,
         // Inspection + memory. analyze_image is optional (toggleable) but on by
         // default via `managerDefaultToolIDs` — the user can switch it off and that
         // choice persists (it is NOT union-enforced on open).

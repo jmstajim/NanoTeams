@@ -235,6 +235,11 @@ final class LLMExecutionService {
     /// Inject a custom factory for testing.
     let clientFactory: @Sendable () -> any LLMClient
 
+    /// Seconds to wait between retries of a recoverable LLM error. Defaults to the
+    /// product value (`LLMConstants.llmRetryDelaySeconds`); retry-loop tests set a
+    /// small value so they don't pay the real backoff.
+    var retryDelaySeconds: UInt64 = LLMConstants.llmRetryDelaySeconds
+
     init(
         repository: any NTMSRepositoryProtocol,
         artifactService: ArtifactService? = nil,
@@ -507,6 +512,7 @@ final class LLMExecutionService {
                 stepIndex: stepIndex,
                 tracker: tracker,
                 roleDefinition: roleDefinition,
+                runtime: runtime,
                 conversationMessages: &conversationMessages
             )
         }
@@ -625,17 +631,24 @@ final class LLMExecutionService {
         delegate.loadedTask(task.id) ?? task
     }
 
-    /// Resolves the team for a task (prefers preferredTeamID, falls back to activeTeam).
+    /// Resolves the team for a task. Pins a started run to its `Run.teamID`
+    /// (see `TeamResolution.resolve`) — a deleted-mid-run team yields `nil`, never
+    /// a silent swap to `activeTeam`.
     func resolveTeam(task: NTMSTask) -> Team? {
-        if let generated = task.generatedTeam {
-            return generated
-        }
-        if let preferredTeamID = task.preferredTeamID,
-           let team = delegate?.snapshot?.workFolder.team(withID: preferredTeamID)
-        {
+        let snapshot = delegate?.snapshot
+        switch TeamResolution.resolve(
+            task: task,
+            teamProvider: { snapshot?.workFolder.team(withID: $0) },
+            activeTeam: snapshot?.workFolder.activeTeam
+        ) {
+        case .resolved(let team):
             return team
+        case .failed(let reason):
+            delegate?.setLastErrorMessageForUI(reason)
+            return nil
+        case .noTeam:
+            return nil
         }
-        return delegate?.snapshot?.workFolder.activeTeam
     }
 
     /// Builds a JSON tool result containing the actual collaboration response.
@@ -647,6 +660,20 @@ final class LLMExecutionService {
             return json
         }
         return #"{"ok":true,"tool":"\#(toolName)","response":"(response available)"}"#
+    }
+
+    /// Builds a JSON `{"ok":false,…}` envelope for a failed attribution-bearing
+    /// collaboration tool (consultation / meeting / change request). The card
+    /// renders red and the LLM gets an honest failure signal — consistent with
+    /// every other tool's error envelope. `envelopeStatus` reads the top-level `ok`.
+    func buildCollaborationErrorResult(toolName: String, message: String) -> String {
+        let dict: [String: Any] = ["ok": false, "tool": toolName, "error": ["message": message]]
+        if let data = try? JSONSerialization.data(withJSONObject: dict),
+           let json = String(data: data, encoding: .utf8)
+        {
+            return json
+        }
+        return #"{"ok":false,"tool":"\#(toolName)","error":{"message":"(error)"}}"#
     }
 
     /// Parses the top-level `ok` field of a tool envelope JSON string into a
@@ -685,5 +712,29 @@ enum EnvelopeStatus: Hashable {
     case success
     case failure
     case indeterminate
+}
+
+/// Outcome of an attribution-bearing collaboration handler (ask_teammate,
+/// request_team_meeting, request_changes): the human-readable `text` rendered in
+/// the consulted/initiating role's attribution bubble, tagged by outcome. The
+/// dispatcher turns this into a single `{"ok":…}` envelope (green answer / red
+/// failure) for both the LLM and the tool card. Modeled as an enum so the
+/// success/failure states are mutually exclusive and unrepresentable-when-wrong
+/// (no leaked memberwise init, no meaningless `(text, succeeded)` quadrants).
+nonisolated enum CollaborationReply {
+    case ok(String)
+    case failed(String)
+
+    /// Prose for the attribution bubble — the answer on success, the reason on failure.
+    var text: String {
+        switch self {
+        case .ok(let t), .failed(let t): return t
+        }
+    }
+
+    var succeeded: Bool {
+        if case .ok = self { return true }
+        return false
+    }
 }
 

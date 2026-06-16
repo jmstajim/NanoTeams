@@ -137,10 +137,11 @@ final class TeammateConsultationTests: XCTestCase {
             question: "What colors?"
         )
 
-        consultation.fail()
+        consultation.fail(with: "Connection lost")
 
         XCTAssertEqual(consultation.status, .failed)
-        XCTAssertNil(consultation.response)
+        XCTAssertEqual(consultation.response, "Connection lost",
+                       "fail(with:) stores the reason in response so the panel shows it.")
     }
 
     // MARK: - cancel() Tests

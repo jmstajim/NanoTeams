@@ -9,8 +9,7 @@ final class AcceptanceServiceTests: XCTestCase {
         let result = AcceptanceService.shouldRequestAcceptance(
             roleID: Role.builtInID(.softwareEngineer),
             mode: .afterEachArtifact,
-            checkpoints: [],
-            isLastRole: false
+            checkpoints: []
         )
 
         XCTAssertTrue(result)
@@ -20,8 +19,7 @@ final class AcceptanceServiceTests: XCTestCase {
         let result = AcceptanceService.shouldRequestAcceptance(
             roleID: Role.builtInID(.uxDesigner),
             mode: .afterEachRole,
-            checkpoints: [],
-            isLastRole: false
+            checkpoints: []
         )
 
         XCTAssertTrue(result)
@@ -31,22 +29,22 @@ final class AcceptanceServiceTests: XCTestCase {
         let result = AcceptanceService.shouldRequestAcceptance(
             roleID: Role.builtInID(.productManager),
             mode: .finalOnly,
-            checkpoints: [],
-            isLastRole: false
+            checkpoints: []
         )
 
         XCTAssertFalse(result)
     }
 
-    func testShouldRequestAcceptance_FinalOnly_TrueWhenLast() {
+    func testShouldRequestAcceptance_FinalOnly_FalseWhenLast() {
+        // finalOnly never gates a per-role acceptance — the terminal role is covered by the
+        // task-level final review, so even the last role returns false.
         let result = AcceptanceService.shouldRequestAcceptance(
             roleID: Role.builtInID(.sre),
             mode: .finalOnly,
-            checkpoints: [],
-            isLastRole: true
+            checkpoints: []
         )
 
-        XCTAssertTrue(result)
+        XCTAssertFalse(result)
     }
 
     func testShouldRequestAcceptance_CustomCheckpoints_TrueWhenInCheckpoints() {
@@ -58,8 +56,7 @@ final class AcceptanceServiceTests: XCTestCase {
         let result = AcceptanceService.shouldRequestAcceptance(
             roleID: Role.builtInID(.softwareEngineer),
             mode: .customCheckpoints,
-            checkpoints: checkpoints,
-            isLastRole: false
+            checkpoints: checkpoints
         )
 
         XCTAssertTrue(result)
@@ -73,25 +70,80 @@ final class AcceptanceServiceTests: XCTestCase {
         let result = AcceptanceService.shouldRequestAcceptance(
             roleID: Role.builtInID(.uxDesigner),
             mode: .customCheckpoints,
-            checkpoints: checkpoints,
-            isLastRole: false
+            checkpoints: checkpoints
         )
 
         XCTAssertFalse(result)
     }
 
-    func testShouldRequestAcceptance_CustomCheckpoints_TrueWhenLastRole() {
-        // Even if not in checkpoints, last role always requires acceptance
+    func testShouldRequestAcceptance_CustomCheckpoints_FalseWhenLastRoleNotInCheckpoints() {
+        // The last role is NOT auto-gated — only Supervisor-selected checkpoints gate;
+        // the final deliverable is covered by the task-level final review.
         let checkpoints: Set<String> = [Role.builtInID(.tpm)]
 
         let result = AcceptanceService.shouldRequestAcceptance(
             roleID: Role.builtInID(.sre),
             mode: .customCheckpoints,
-            checkpoints: checkpoints,
-            isLastRole: true
+            checkpoints: checkpoints
         )
 
-        XCTAssertTrue(result)
+        XCTAssertFalse(result)
+    }
+
+    /// Corner case (regression guard for the fix): finalOnly must NOT consult `checkpoints`.
+    /// A per-task `acceptanceMode` override can carry a stale `acceptanceCheckpoints` set; even
+    /// if the role IS in it, finalOnly returns false (only the task-level final review gates).
+    func testShouldRequestAcceptance_FinalOnly_IgnoresNonEmptyCheckpoints() {
+        let checkpoints: Set<String> = [Role.builtInID(.sre), Role.builtInID(.tpm)]
+
+        let result = AcceptanceService.shouldRequestAcceptance(
+            roleID: Role.builtInID(.sre),   // IS in the checkpoint set
+            mode: .finalOnly,
+            checkpoints: checkpoints
+        )
+
+        XCTAssertFalse(result, "finalOnly must ignore checkpoints — never a per-role gate")
+    }
+
+    /// Corner case: afterEachRole ignores checkpoint membership entirely — a role NOT in a
+    /// non-empty checkpoint set still gets gated (the `checkpoints` param is mode-irrelevant here).
+    func testShouldRequestAcceptance_AfterEachRole_IgnoresCheckpointMembership() {
+        let checkpoints: Set<String> = [Role.builtInID(.tpm)]
+
+        let result = AcceptanceService.shouldRequestAcceptance(
+            roleID: Role.builtInID(.softwareEngineer),  // NOT in checkpoints
+            mode: .afterEachRole,
+            checkpoints: checkpoints
+        )
+
+        XCTAssertTrue(result, "afterEachRole gates every role regardless of checkpoints")
+    }
+
+    /// Corner case: afterEachArtifact likewise ignores checkpoint membership.
+    func testShouldRequestAcceptance_AfterEachArtifact_IgnoresCheckpointMembership() {
+        let checkpoints: Set<String> = [Role.builtInID(.tpm)]
+
+        let result = AcceptanceService.shouldRequestAcceptance(
+            roleID: Role.builtInID(.softwareEngineer),  // NOT in checkpoints
+            mode: .afterEachArtifact,
+            checkpoints: checkpoints
+        )
+
+        XCTAssertTrue(result, "afterEachArtifact gates every role regardless of checkpoints")
+    }
+
+    /// Corner case (degenerate): customCheckpoints where EVERY queried role is a checkpoint —
+    /// behaves like afterEachRole (each returns true).
+    func testShouldRequestAcceptance_CustomCheckpoints_AllRolesAreCheckpoints() {
+        let checkpoints: Set<String> = [
+            Role.builtInID(.softwareEngineer),
+            Role.builtInID(.sre),
+        ]
+
+        XCTAssertTrue(AcceptanceService.shouldRequestAcceptance(
+            roleID: Role.builtInID(.softwareEngineer), mode: .customCheckpoints, checkpoints: checkpoints))
+        XCTAssertTrue(AcceptanceService.shouldRequestAcceptance(
+            roleID: Role.builtInID(.sre), mode: .customCheckpoints, checkpoints: checkpoints))
     }
 
     // MARK: - shouldRequestAcceptanceForArtifact Tests
@@ -592,8 +644,7 @@ final class AcceptanceServiceTests: XCTestCase {
         XCTAssertTrue(AcceptanceService.shouldRequestAcceptance(
             roleID: Role.builtInID(.productManager),
             mode: .afterEachRole,
-            checkpoints: [],
-            isLastRole: false
+            checkpoints: []
         ))
 
         // Step 2: Supervisor accepts PO
@@ -604,8 +655,7 @@ final class AcceptanceServiceTests: XCTestCase {
         XCTAssertTrue(AcceptanceService.shouldRequestAcceptance(
             roleID: Role.builtInID(.tpm),
             mode: .afterEachRole,
-            checkpoints: [],
-            isLastRole: false
+            checkpoints: []
         ))
 
         // Step 4: Supervisor requests revision
@@ -614,29 +664,25 @@ final class AcceptanceServiceTests: XCTestCase {
     }
 
     func testScenario_FinalOnlyWorkflow() {
-        // Only last role should need acceptance
-
-        // Early roles should not need acceptance
+        // No per-role acceptance in finalOnly — every role (including the last) returns false.
+        // The task-level final review is the sole approval gate.
         XCTAssertFalse(AcceptanceService.shouldRequestAcceptance(
             roleID: Role.builtInID(.productManager),
             mode: .finalOnly,
-            checkpoints: [],
-            isLastRole: false
+            checkpoints: []
         ))
 
         XCTAssertFalse(AcceptanceService.shouldRequestAcceptance(
             roleID: Role.builtInID(.softwareEngineer),
             mode: .finalOnly,
-            checkpoints: [],
-            isLastRole: false
+            checkpoints: []
         ))
 
-        // Last role (QA) should need acceptance
-        XCTAssertTrue(AcceptanceService.shouldRequestAcceptance(
+        // Last role is NOT gated either — covered by the task-level final review.
+        XCTAssertFalse(AcceptanceService.shouldRequestAcceptance(
             roleID: Role.builtInID(.sre),
             mode: .finalOnly,
-            checkpoints: [],
-            isLastRole: true
+            checkpoints: []
         ))
     }
 
@@ -646,44 +692,40 @@ final class AcceptanceServiceTests: XCTestCase {
             Role.builtInID(.softwareEngineer)
         ]
 
-        // PO not in checkpoints, not last
+        // PO not in checkpoints
         XCTAssertFalse(AcceptanceService.shouldRequestAcceptance(
             roleID: Role.builtInID(.productManager),
             mode: .customCheckpoints,
-            checkpoints: checkpoints,
-            isLastRole: false
+            checkpoints: checkpoints
         ))
 
         // PM in checkpoints
         XCTAssertTrue(AcceptanceService.shouldRequestAcceptance(
             roleID: Role.builtInID(.tpm),
             mode: .customCheckpoints,
-            checkpoints: checkpoints,
-            isLastRole: false
+            checkpoints: checkpoints
         ))
 
         // Designer not in checkpoints
         XCTAssertFalse(AcceptanceService.shouldRequestAcceptance(
             roleID: Role.builtInID(.uxDesigner),
             mode: .customCheckpoints,
-            checkpoints: checkpoints,
-            isLastRole: false
+            checkpoints: checkpoints
         ))
 
         // Engineer in checkpoints
         XCTAssertTrue(AcceptanceService.shouldRequestAcceptance(
             roleID: Role.builtInID(.softwareEngineer),
             mode: .customCheckpoints,
-            checkpoints: checkpoints,
-            isLastRole: false
+            checkpoints: checkpoints
         ))
 
-        // QA not in checkpoints but is last role
-        XCTAssertTrue(AcceptanceService.shouldRequestAcceptance(
+        // QA not in checkpoints and last role — NOT gated (only selected checkpoints gate;
+        // the final deliverable is covered by the task-level final review).
+        XCTAssertFalse(AcceptanceService.shouldRequestAcceptance(
             roleID: Role.builtInID(.sre),
             mode: .customCheckpoints,
-            checkpoints: checkpoints,
-            isLastRole: true
+            checkpoints: checkpoints
         ))
     }
 }

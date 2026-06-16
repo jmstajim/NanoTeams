@@ -120,9 +120,14 @@ nonisolated extension TeammateConsultation {
         self.responseTimeMs = responseTimeMs
     }
 
-    /// Mark consultation as failed
-    mutating func fail() {
+    /// Mark consultation as failed, storing `message` (transport error or
+    /// empty-answer sentinel) in `response` so the reason surfaces in the
+    /// structured consultations panel (red body) instead of an empty failed card.
+    /// The reason is required — a reason-less failure is exactly the "red card with
+    /// no diagnostics" state this is meant to avoid.
+    mutating func fail(with message: String) {
         self.status = .failed
+        self.response = message
     }
 
     /// Mark consultation as cancelled

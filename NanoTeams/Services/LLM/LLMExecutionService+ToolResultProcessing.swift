@@ -55,9 +55,10 @@ extension LLMExecutionService {
     ///
     /// Invariant every listed handler MUST uphold: return a well-formed
     /// `makeSuccessEnvelope` / `makeErrorEnvelope` (always carries an `ok` field).
-    /// A raw / non-envelope string parses as `EnvelopeStatus.indeterminate`, and the
-    /// reflect's `isError: status == .failure` would then render a broken result
-    /// falsely green — so a non-envelope manager handler must never be added.
+    /// A raw / non-envelope string parses as `EnvelopeStatus.indeterminate`, and
+    /// `reflectEnvelope`'s `cardIsError = (envelopeStatus(env) == .failure)` would
+    /// then render a broken result falsely green — so a non-envelope manager
+    /// handler must never be added.
     nonisolated static func isAutovisorSignal(_ signal: ToolSignal?) -> Bool {
         switch signal {
         case .listTasks, .taskStatus, .createManagedTask, .controlTask, .manageRole,

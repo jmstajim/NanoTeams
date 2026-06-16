@@ -976,19 +976,22 @@ final class PostTeardownWriteBarrierCornerTests: XCTestCase, @unchecked Sendable
             stepID: stepID, consultedRoleID: "tech_lead", question: "q", context: nil,
             requestingRole: .softwareEngineer, task: task, runIndex: 0, stepIndex: 0,
             client: SilentClient(), config: stubConfig())
-        XCTAssertTrue(consult.contains("no task context"), "got: \(consult)")
+        XCTAssertTrue(consult.text.contains("no task context"), "got: \(consult.text)")
+        XCTAssertFalse(consult.succeeded, "rejected consultation must report failure")
 
         let meeting = await service.handleTeamMeeting(
             stepID: stepID, topic: "t", participantIDs: [], context: nil,
             initiatingRole: .softwareEngineer, task: task, runIndex: 0, stepIndex: 0,
             client: SilentClient(), config: stubConfig())
-        XCTAssertTrue(meeting.contains("no task context"), "got: \(meeting)")
+        XCTAssertTrue(meeting.text.contains("no task context"), "got: \(meeting.text)")
+        XCTAssertFalse(meeting.succeeded, "rejected meeting must report failure")
 
         let change = await service.handleChangeRequest(
             stepID: stepID, targetRoleID: "tech_lead", changes: "c", reasoning: "r",
             requestingRole: .softwareEngineer, task: task, runIndex: 0, stepIndex: 0,
             client: SilentClient(), config: stubConfig())
-        XCTAssertTrue(change.contains("no task context"), "got: \(change)")
+        XCTAssertTrue(change.text.contains("no task context"), "got: \(change.text)")
+        XCTAssertFalse(change.succeeded, "rejected change request must report failure")
 
         XCTAssertTrue(mockDelegate.eventLog.isEmpty,
                       "Rejected collaboration handlers must not have mutated anything")

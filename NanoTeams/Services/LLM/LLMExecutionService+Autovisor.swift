@@ -106,6 +106,10 @@ extension LLMExecutionService {
             var artifacts: [ArtifactRow]
             var pending_question: String?
             var last_error: String?
+            /// Role ids genuinely awaiting acceptance (`.needsAcceptance`). Omitted when none —
+            /// a finished task whose roles are all `.done` needs `control_task close` (which
+            /// accepts everything), NOT a per-role `manage_role accept`. Ids match `steps[].role_id`.
+            var roles_needing_acceptance: [String]?
             /// Task-level verdict — the first looping/hung running role, if any.
             var stuck: StuckRow?
         }
@@ -149,9 +153,27 @@ extension LLMExecutionService {
                     pendingQuestion = q
                 }
                 for art in step.artifacts {
-                    artifacts.append(ArtifactRow(name: art.name, path: artifactReadPath(art)))
+                    // `task_status` hands back a `read_file`-able path (not inlined content)
+                    // so the manager pulls the FULL artifact on demand — no snippet cap, no
+                    // re-read that can fail with `[unreadable]`. nil → row omits `path`.
+                    artifacts.append(ArtifactRow(name: art.name, path: art.llmReadablePath))
                 }
             }
+        }
+
+        // Surface which roles actually await acceptance — RoleExecutionStatus is otherwise
+        // invisible to the manager (steps only expose StepStatus). Sorted for a deterministic
+        // wire payload; omitted entirely when none. Intersected with the step ids so every
+        // listed id is actionable via `manage_role accept` (which resolves a step) — an orphan
+        // `.needsAcceptance` status with no step row would be un-actionable and would break the
+        // "ids match steps[].role_id" contract this field promises.
+        var rolesNeedingAcceptance: [String]?
+        if let run {
+            let stepRoleIDs = Set(run.steps.map(\.effectiveRoleID))
+            let ids = AcceptanceService.getPendingAcceptances(roleStatuses: run.roleStatuses)
+                .filter { stepRoleIDs.contains($0) }
+                .sorted()
+            if !ids.isEmpty { rolesNeedingAcceptance = ids }
         }
 
         let data = StatusData(
@@ -165,6 +187,7 @@ extension LLMExecutionService {
             artifacts: artifacts,
             pending_question: pendingQuestion,
             last_error: delegate.lastErrorMessageForTask(taskID),
+            roles_needing_acceptance: rolesNeedingAcceptance,
             stuck: taskStuck
         )
         return makeSuccessEnvelope(data: data)
@@ -262,23 +285,4 @@ extension LLMExecutionService {
         return makeErrorEnvelope(code: .commandFailed, message: result.message)
     }
 
-    /// The work-folder-relative path of a persisted artifact, in the form
-    /// `read_file` accepts (e.g. `.nanoteams/tasks/7/runs/0/roles/…/artifact_x.md`).
-    /// `task_status` hands back this path instead of inlining content, so the manager
-    /// pulls the FULL artifact on demand via `read_file` — no snippet cap, no re-read
-    /// that can fail with `[unreadable]`. `artifact.relativePath` is stored relative to
-    /// `.nanoteams/`, so the readable path is `.nanoteams/` + that.
-    ///
-    /// A non-nil return is a PROMISE of readability, so we return nil (the row omits
-    /// `path`) in the two cases `read_file` can't serve:
-    ///   • no persisted file (`relativePath` nil/empty), and
-    ///   • an internal artifact such as Build Diagnostics, persisted under
-    ///     `.nanoteams/internal/…` — the sandbox blocks `internal/`, so `read_file`
-    ///     would reject the path. The artifact is still listed by name; it just has
-    ///     no readable reference.
-    private func artifactReadPath(_ artifact: Artifact) -> String? {
-        guard let rel = artifact.relativePath, !rel.isEmpty else { return nil }
-        guard !rel.hasPrefix("internal/") else { return nil }
-        return ".nanoteams/" + rel
-    }
 }

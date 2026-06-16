@@ -659,11 +659,11 @@ final class ToolCallTrackerTests: XCTestCase {
         XCTAssertTrue(context?.contains("+3 more") ?? false)
     }
 
-    // MARK: - State Context Format Compatibility Tests (for [STATE] label in ConversationLog)
+    // MARK: - State Context Format Tests ("Current state:" prefix)
 
     func testGenerateStateContextStartsWithCurrentState() {
-        // This test verifies the format that ConversationLogRenderer uses to detect STATE messages
-        // The renderer checks: content.hasPrefix("Current state:")
+        // The state context is injected into the LLM conversation so the model can
+        // track resource freshness; it must start with the "Current state:" prefix.
         tracker.record(
             toolName: "git_status",
             argumentsJSON: "{}",
@@ -676,13 +676,12 @@ final class ToolCallTrackerTests: XCTestCase {
         XCTAssertNotNil(context)
         XCTAssertTrue(
             context?.hasPrefix("Current state:") ?? false,
-            "State context must start with 'Current state:' for ConversationLogRenderer to label it as [STATE]"
+            "State context must start with 'Current state:' (the prefix the LLM keys on)"
         )
     }
 
     func testGenerateStateContextFormatMatchesRendererExpectation() {
-        // Integration test: verifies that state context generated here
-        // will be properly detected by ConversationLogRenderer.llmRoleLabel()
+        // Integration test: verifies the state context format the LLM keys on.
         // Note: edit_code_in_file invalidates git cache, so git_status must be recorded AFTER
         tracker.record(
             toolName: "edit_file",
@@ -700,7 +699,7 @@ final class ToolCallTrackerTests: XCTestCase {
         let context = ToolCallContextualizer.generateStateContext(from: tracker.snapshot())
 
         XCTAssertNotNil(context)
-        // Must start with exact prefix for [STATE] detection
+        // Must start with the exact "Current state:" prefix
         XCTAssertTrue(context?.hasPrefix("Current state:") ?? false)
         // Should contain meaningful state information
         XCTAssertTrue(context?.contains("Git branch:") ?? false)

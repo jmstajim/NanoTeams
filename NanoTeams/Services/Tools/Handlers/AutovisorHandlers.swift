@@ -47,7 +47,7 @@ nonisolated struct TaskStatusTool: ToolHandler {
         name: TN.taskStatus,
         description: "Inspect one task in detail: its roles and their statuses, the artifacts it has produced (each a name + path; read_file the path for full content), any question it is waiting on, and its last error. Use before deciding to answer, close, restart, or stop a task.",
         parameters: JS.object(
-            properties: ["task_id": JS.integer("The task id from list_tasks.")],
+            properties: ["task_id": JS.integer("The task's id.")],
             required: ["task_id"]
         )
     )
@@ -60,7 +60,7 @@ nonisolated struct TaskStatusTool: ToolHandler {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             guard let taskID = optionalInt(args, "task_id") else {
                 return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs,
-                                       message: "task_id is required (integer from list_tasks).")
+                                       message: "task_id is required (integer).")
             }
             return ToolExecutionResult(
                 toolName: Self.name,
@@ -88,7 +88,7 @@ nonisolated struct CreateManagedTaskTool: ToolHandler {
     private static let baseDescription = """
         Create and start a new top-level task in this folder. It runs independently \
         and shows in the sidebar like any task — you do NOT block waiting for it; \
-        check back via list_tasks / task_status later. The team has no other context, \
+        check back on its status later. The team has no other context, \
         so put everything they need into `brief`.
         """
 
@@ -120,12 +120,23 @@ nonisolated struct CreateManagedTaskTool: ToolHandler {
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            let title = try requiredString(args, "title").trimmingCharacters(in: .whitespacesAndNewlines)
             let brief = try requiredString(args, "brief").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !title.isEmpty, !brief.isEmpty else {
+            guard !brief.isEmpty else {
                 return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs,
-                                       message: "title and brief are both required and must be non-empty.")
+                                       message: "brief is required and must be non-empty.")
             }
+            // Missing/empty/non-string title is a known small-model emission quirk —
+            // recover by deriving one from the brief instead of failing the whole
+            // creation. Strict String read: `extractString`'s String(describing:)
+            // coercion would turn JSON `null` into a literal "<null>" task title.
+            let title: String = {
+                if let explicit = (args["title"] as? String)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                    !explicit.isEmpty { return explicit }
+                let firstLine = brief.components(separatedBy: .newlines).first ?? brief
+                let truncated = firstLine.prefix(30)
+                return truncated.count < firstLine.count ? String(truncated) + "…" : String(truncated)
+            }()
             let teamID = extractString(args, "team_id")
             return ToolExecutionResult(
                 toolName: Self.name,
@@ -148,7 +159,7 @@ nonisolated struct ControlTaskTool: ToolHandler {
             Control a task's lifecycle. `action`:
             - start / pause / resume — run control
             - stop — hard-stop the engine (cascades to any delegated subtasks)
-            - close — accept its work and close it
+            - close — accept all the task's roles and close it
             - delete — permanently remove it (irreversible; prefer stop/close)
             - rename — set a new title (pass it in `arg`)
             - set_timeout — set per-run timeout in seconds (pass seconds in `arg`; 0 clears)
@@ -156,7 +167,7 @@ nonisolated struct ControlTaskTool: ToolHandler {
             """,
         parameters: JS.object(
             properties: [
-                "task_id": JS.integer("The task id from list_tasks."),
+                "task_id": JS.integer("The task's id."),
                 "action": JS.string("One of: start, pause, resume, stop, close, delete, rename, set_timeout.", enumValues: verbs),
                 "arg": JS.string("New title (rename) or seconds (set_timeout). Ignored otherwise."),
             ],
@@ -200,16 +211,15 @@ nonisolated struct ManageRoleTool: ToolHandler {
         description: """
             Act on a specific role within a task. `action`:
             - restart — re-run the role (and downstream dependents); `comment` = guidance
-            - accept — accept the role's output (for tasks needing acceptance)
+            - accept — accept a role that is awaiting acceptance
             - request_changes — send a role that finished its work back for revision; `comment` = what to change
             - correct — feed mid-run correction to a paused role; `comment` = the correction
             - finish_advisory — finish an advisory (chat) role
-            Use task_status first to find the role_id and its status.
             """,
         parameters: JS.object(
             properties: [
-                "task_id": JS.integer("The task id from list_tasks."),
-                "role_id": JS.string("The role id from task_status."),
+                "task_id": JS.integer("The task's id."),
+                "role_id": JS.string("The role's id."),
                 "action": JS.string("One of: restart, accept, request_changes, correct, finish_advisory.", enumValues: verbs),
                 "comment": JS.string("Guidance / feedback for restart, request_changes, or correct."),
             ],
@@ -230,7 +240,7 @@ nonisolated struct ManageRoleTool: ToolHandler {
             let roleID = try requiredString(args, "role_id").trimmingCharacters(in: .whitespacesAndNewlines)
             guard !roleID.isEmpty else {
                 return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs,
-                                       message: "role_id is required (from task_status).")
+                                       message: "role_id is required.")
             }
             // Single decode boundary: string `action` (+ `comment`) → typed `RoleVerb`.
             switch RoleVerb.parse(action: extractString(args, "action") ?? "", comment: extractString(args, "comment")) {
@@ -254,7 +264,7 @@ nonisolated struct AnswerTaskQuestionTool: ToolHandler {
     static let name = TN.answerTaskQuestion
     static let schema = ToolSchema(
         name: TN.answerTaskQuestion,
-        description: "Answer a task that is waiting on supervisor input (status `needsSupervisorInput`). You are the folder's Supervisor — read its question via task_status, then answer using the goal, memory, and what you can read in the work folder. This unblocks and resumes the task.",
+        description: "Answer a task that is waiting on supervisor input (status `needsSupervisorInput`). You are the folder's Supervisor — answer using the goal, memory, and what you can read in the work folder. This unblocks and resumes the task.",
         parameters: JS.object(
             properties: [
                 "task_id": JS.integer("The waiting task's id."),
@@ -298,7 +308,7 @@ nonisolated struct MessageTaskTool: ToolHandler {
         description: "Send a steering message to a running task (delivered on its next iteration). Optionally target a specific role. Use to nudge or redirect work in progress without stopping it.",
         parameters: JS.object(
             properties: [
-                "task_id": JS.integer("The task id from list_tasks."),
+                "task_id": JS.integer("The task's id."),
                 "message": JS.string("The steering message."),
                 "role_id": JS.string("Optional role id to target; omit to address the whole team."),
             ],
@@ -340,7 +350,7 @@ nonisolated struct ScheduleTaskTool: ToolHandler {
         description: "Make a task recur on a fixed interval (e.g. run it every N minutes). Set `interval_minutes` to 0 to clear an existing schedule. Minimum 1 minute.",
         parameters: JS.object(
             properties: [
-                "task_id": JS.integer("The task id from list_tasks."),
+                "task_id": JS.integer("The task's id."),
                 "interval_minutes": JS.integer("Interval in minutes between runs; 0 clears the schedule."),
             ],
             required: ["task_id", "interval_minutes"]
@@ -403,13 +413,13 @@ nonisolated struct SetWorkFolderContextTool: ToolHandler {
 }
 
 /// `wait_for_events` — end the current review pass and go idle (parked, session
-/// preserved). A human message continues this same conversation; task events and
+/// preserved). A Supervisor message continues this same conversation; task events and
 /// the schedule start a fresh pass instead.
 nonisolated struct WaitForEventsTool: ToolHandler {
     static let name = TN.waitForEvents
     static let schema = ToolSchema(
         name: TN.waitForEvents,
-        description: "End this review pass and go idle. A message from the human continues this conversation; task events and the schedule start a fresh pass.",
+        description: "End this review pass and go idle. A message from your Supervisor continues this conversation; task events and the schedule start a fresh pass.",
         parameters: JS.object(properties: [:], required: [])
     )
     static let category: ToolCategory = .collaboration

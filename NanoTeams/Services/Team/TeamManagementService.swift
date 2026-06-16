@@ -202,12 +202,15 @@ nonisolated enum TeamManagementService {
     }
 
     /// Keeps the hidden Autovisor team in sync with template invariants the user
-    /// never customizes — the "Manager" role icon, the **mandatory** management tools,
-    /// and the Auto (nil) meeting coordinator. Icon + coordinator are overwritten; the
-    /// mandatory tools are **union-enforced** (additive) so they can never be lost, while
-    /// the user's optional-tool choices (toggled in the role editor) are preserved.
-    /// Pure + idempotent: returns true only when something actually changed, so a
-    /// caller running it inside `mutateWorkFolder` persists nothing on a no-op.
+    /// never customizes — the "Manager" role icon, the management toolset policy, and the
+    /// Auto (nil) meeting coordinator. Icon + coordinator are overwritten; the **mandatory**
+    /// tools are **union-enforced** (additive) so they can never be lost; and tools OUTSIDE
+    /// the allowed set (`mandatory ∪ optional`) are **stripped** — so a manager seeded by an
+    /// older build that carried now-disallowed tools (e.g. git-write) is brought in line on
+    /// open. The user's choices among the *allowed optional* tools are preserved (the strip
+    /// only removes tools that aren't in the set at all). Pure + idempotent: returns true
+    /// only when something actually changed, so a caller running it inside `mutateWorkFolder`
+    /// persists nothing on a no-op.
     @discardableResult
     nonisolated static func syncAutovisorTeamToTemplate(teams: inout [Team]) -> Bool {
         guard let teamIndex = teams.firstIndex(where: { $0.templateID == AutovisorConstants.teamTemplateID })
@@ -232,6 +235,20 @@ nonisolated enum TeamManagementService {
             }
             if !missingMandatory.isEmpty {
                 teams[teamIndex].roles[roleIndex].toolIDs.append(contentsOf: missingMandatory)
+                teams[teamIndex].roles[roleIndex].updatedAt = MonotonicClock.shared.now()
+                changed = true
+            }
+            // Strip tools outside the allowed set (mandatory ∪ optional). Makes the set
+            // authoritative so a manager seeded by an older build keeps only allowed tools —
+            // this is what demotes git to read-only on an existing manager (the version-bump
+            // reconcile deliberately preserves the manager's stored toolIDs, so the prune
+            // must live here, where it runs on every open). Order-safe: the union-enforce
+            // above only adds mandatory tools, which are in the allowed set.
+            let allowed = Set(AutovisorConstants.managerMandatoryToolIDs)
+                .union(AutovisorConstants.managerOptionalToolIDs)
+            let pruned = teams[teamIndex].roles[roleIndex].toolIDs.filter { allowed.contains($0) }
+            if pruned != teams[teamIndex].roles[roleIndex].toolIDs {
+                teams[teamIndex].roles[roleIndex].toolIDs = pruned
                 teams[teamIndex].roles[roleIndex].updatedAt = MonotonicClock.shared.now()
                 changed = true
             }

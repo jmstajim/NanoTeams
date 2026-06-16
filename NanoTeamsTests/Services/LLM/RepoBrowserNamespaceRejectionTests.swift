@@ -15,8 +15,9 @@ import XCTest
 ///    the canonical name.
 /// 3. `LLMExecutionService.makeToolNotAuthorizedResult` keeps the as-emitted
 ///    name in the human-readable message (so the LLM can correlate with what
-///    it just emitted) AND puts the canonical name in the structured `tool`
-///    field of the error envelope.
+///    it just emitted) and omits the structured `tool` field — echoing the
+///    name back as `"tool":"X"` framed an invented name as a real tool and
+///    confused weaker models.
 final class RepoBrowserNamespaceRejectionTests: XCTestCase {
 
     // MARK: - Test A — parser preserves namespace on real captured input
@@ -121,12 +122,13 @@ final class RepoBrowserNamespaceRejectionTests: XCTestCase {
         // matches what the LLM actually said. UI normalises at render time
         // (see `ToolCallItemView.canonicalName`).
         XCTAssertEqual(result.toolName, "repo_browser.list_files")
-        // The structured `tool` field in the envelope is the canonical
-        // (post-strip) name — this is what the auth layer matched against
-        // and what downstream tooling can search for.
-        XCTAssertTrue(
-            result.outputJSON.contains("\"tool\":\"list_files\""),
-            "expected canonical name in error envelope, got: \(result.outputJSON)"
+        // The `tool_not_authorized` (hallucination) envelope deliberately omits
+        // the structured `tool` field — echoing the model's invented name back
+        // as `"tool":"X"` framed it as a real-but-unauthorized tool and confused
+        // weaker models (the name is often an artifact name, not a tool).
+        XCTAssertFalse(
+            result.outputJSON.contains("\"tool\":"),
+            "tool_not_authorized envelope must not carry a 'tool' field, got: \(result.outputJSON)"
         )
         // The human-readable message echoes the as-emitted name so the LLM
         // can correlate with what it just emitted.

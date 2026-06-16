@@ -350,4 +350,92 @@ final class AutovisorWakeDecisionTests: XCTestCase {
         )
         XCTAssertTrue(notice.contains("Task #12"))
     }
+
+    // MARK: - taskHasPendingHumanAnswer (Part A race-fix predicate)
+    //
+    // Guards the supersede paths: a parked manager whose latest step already
+    // carries an unprocessed HUMAN answer must NOT be superseded (it would
+    // `createNewRun` and orphan the answer). The idle park clears
+    // `supervisorAnswer`, so a non-nil non-auto answer is unambiguous.
+
+    private func taskWithLatestStep(_ step: StepExecution, priorRuns: [Run] = []) -> NTMSTask {
+        NTMSTask(
+            id: 1, title: "Manager", supervisorTask: "oversee",
+            runs: priorRuns + [Run(id: priorRuns.count, steps: [step])]
+        )
+    }
+
+    func testPendingHumanAnswer_humanAnswerOnLatestStep_true() {
+        let step = StepExecution(id: "r", role: .softwareEngineer, title: "Mgr", status: .pending,
+                                 supervisorAnswer: "qwen3.5 default", supervisorAnswerWasAuto: false)
+        XCTAssertTrue(NTMSOrchestrator.taskHasPendingHumanAnswer(taskWithLatestStep(step)))
+    }
+
+    func testPendingHumanAnswer_noAnswer_false() {
+        let step = StepExecution(id: "r", role: .softwareEngineer, title: "Mgr",
+                                 status: .needsSupervisorInput, needsSupervisorInput: true,
+                                 supervisorQuestion: AutovisorConstants.idleParkQuestion)
+        XCTAssertFalse(NTMSOrchestrator.taskHasPendingHumanAnswer(taskWithLatestStep(step)))
+    }
+
+    func testPendingHumanAnswer_autoAnswer_false() {
+        // An automated answer (the Autovisor / a delegating parent) must not block a
+        // supersede — only genuine human input does.
+        let step = StepExecution(id: "r", role: .softwareEngineer, title: "Mgr", status: .pending,
+                                 supervisorAnswer: "auto", supervisorAnswerWasAuto: true)
+        XCTAssertFalse(NTMSOrchestrator.taskHasPendingHumanAnswer(taskWithLatestStep(step)))
+    }
+
+    func testPendingHumanAnswer_answerOnlyOnPriorRun_false() {
+        // Only the LATEST run is state; a prior run's answer is history.
+        let prior = StepExecution(id: "r", role: .softwareEngineer, title: "Mgr", status: .pending,
+                                  supervisorAnswer: "old human", supervisorAnswerWasAuto: false)
+        let latest = StepExecution(id: "r", role: .softwareEngineer, title: "Mgr",
+                                   status: .needsSupervisorInput, needsSupervisorInput: true,
+                                   supervisorQuestion: AutovisorConstants.idleParkQuestion)
+        let task = taskWithLatestStep(latest, priorRuns: [Run(id: 0, steps: [prior])])
+        XCTAssertFalse(NTMSOrchestrator.taskHasPendingHumanAnswer(task))
+    }
+
+    func testPendingHumanAnswer_nilTask_false() {
+        XCTAssertFalse(NTMSOrchestrator.taskHasPendingHumanAnswer(nil))
+    }
+
+    func testPendingHumanAnswer_attachmentOnlyAnswer_true() {
+        // Empty text + attachments: raw `supervisorAnswer` is nil but
+        // `effectiveSupervisorAnswer` is non-nil. The predicate must use the latter
+        // (matching the `resumeRun` branch that consumes it) so an attachment-only
+        // human answer is still protected from a racing supersede.
+        let step = StepExecution(id: "r", role: .softwareEngineer, title: "Mgr", status: .pending,
+                                 supervisorAnswer: nil,
+                                 supervisorAnswerAttachmentPaths: ["a.pdf"],
+                                 supervisorAnswerWasAuto: false)
+        XCTAssertTrue(NTMSOrchestrator.taskHasPendingHumanAnswer(taskWithLatestStep(step)))
+    }
+
+    // MARK: - taskHasPendingHumanAnswer corner cases
+
+    func testPendingHumanAnswer_noRuns_false() {
+        // A task with no runs yet (`runs.last` is nil) must not crash and returns false.
+        let task = NTMSTask(id: 1, title: "Manager", supervisorTask: "oversee", runs: [])
+        XCTAssertFalse(NTMSOrchestrator.taskHasPendingHumanAnswer(task))
+    }
+
+    func testPendingHumanAnswer_latestRunHasNoSteps_false() {
+        // `runs.last` exists but is empty — `.contains` over an empty step list is false.
+        let task = NTMSTask(id: 1, title: "Manager", supervisorTask: "oversee",
+                            runs: [Run(id: 0, steps: [])])
+        XCTAssertFalse(NTMSOrchestrator.taskHasPendingHumanAnswer(task))
+    }
+
+    func testPendingHumanAnswer_answerOnNonFirstStepOfLatestRun_true() {
+        // The predicate scans ALL steps of the latest run (`.contains`), not just the
+        // first — a human answer on any step counts.
+        let plain = StepExecution(id: "a", role: .softwareEngineer, title: "A", status: .done)
+        let answered = StepExecution(id: "b", role: .codeReviewer, title: "B", status: .pending,
+                                     supervisorAnswer: "human reply", supervisorAnswerWasAuto: false)
+        let task = NTMSTask(id: 1, title: "Manager", supervisorTask: "oversee",
+                            runs: [Run(id: 0, steps: [plain, answered])])
+        XCTAssertTrue(NTMSOrchestrator.taskHasPendingHumanAnswer(task))
+    }
 }

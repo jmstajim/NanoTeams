@@ -17,11 +17,11 @@ extension LLMExecutionService {
         client: any LLMClient,
         config: LLMConfig,
         networkLogger: NetworkLogger? = nil
-    ) async -> String {
-        guard let delegate else { return "Unable to consult teammate — delegate not available." }
+    ) async -> CollaborationReply {
+        guard let delegate else { return .failed("Unable to consult teammate — delegate not available.") }
         let tid = task.id
         guard isExecutionLive(stepID: stepID, taskID: tid) else {
-            return "Unable to consult teammate — no task context."
+            return .failed("Unable to consult teammate — no task context.")
         }
 
         // Resolve team
@@ -35,7 +35,7 @@ extension LLMExecutionService {
         } else if let teamRole = team?.findRole(byIdentifier: consultedRoleID) {
             consultedRole = Role.fromDefinition(teamRole)
         } else {
-            return "Unknown teammate role: \(consultedRoleID). Available teammates: \(MeetingParticipantResolver.availableTeammatesList(team: team, teamSettings: teamSettings, excludeRoleID: requestingRole.baseID))"
+            return .failed("Unknown teammate role: \(consultedRoleID). Available teammates: \(MeetingParticipantResolver.availableTeammatesList(team: team, teamSettings: teamSettings, excludeRoleID: requestingRole.baseID))")
         }
 
         if let validationError = consultationValidationError(
@@ -45,7 +45,7 @@ extension LLMExecutionService {
             team: team,
             teamSettings: teamSettings
         ) {
-            return validationError
+            return .failed(validationError)
         }
 
         // Re-read fresh task to get current consultation state (the `task` parameter
@@ -63,7 +63,7 @@ extension LLMExecutionService {
             consultations: step.consultations,
             limits: teamSettings.limits
         ) {
-            return "Consultation limit reached. Cannot ask more questions in this step."
+            return .failed("Consultation limit reached. Cannot ask more questions in this step.")
         }
 
         if TeammateConsultationService.wouldExceedSameTeammateLimit(
@@ -71,7 +71,7 @@ extension LLMExecutionService {
             targetTeammate: consultedRole,
             limits: teamSettings.limits
         ) {
-            return "You've already asked \(consultedRole.displayName) multiple times. Consider asking a different teammate or making a decision based on available information."
+            return .failed("You've already asked \(consultedRole.displayName) multiple times. Consider asking a different teammate or making a decision based on available information.")
         }
 
         if TeammateConsultationService.isDuplicateQuestion(
@@ -84,7 +84,7 @@ extension LLMExecutionService {
                     && $0.question.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
                         == question.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
             })?.response {
-                return "(Previously answered) \(previousAnswer)"
+                return .ok("(Previously answered) \(previousAnswer)")
             }
         }
 
@@ -129,6 +129,7 @@ extension LLMExecutionService {
         let startTime = Date()
         do {
             var fullResponse = ""
+            var fullThinking = ""
             var newSession: LLMSession?
             let stream = client.streamChat(
                 config: consultedConfig,
@@ -141,15 +142,32 @@ extension LLMExecutionService {
 
             for try await event in stream {
                 fullResponse += event.contentDelta
+                fullThinking += event.thinkingDelta
                 if let s = event.session { newSession = s }
             }
 
-            let response = ModelTokenCleaner.clean(
+            // Prefer the visible content. When a reasoning model emits its whole
+            // answer in the reasoning channel (empty content), fall back to the
+            // cleaned thinking so the answer isn't silently dropped; only when
+            // BOTH are empty do we treat the consultation as failed.
+            let content = ModelTokenCleaner.clean(
                 fullResponse.trimmingCharacters(in: .whitespacesAndNewlines)
             )
+            let thinking = ModelTokenCleaner.clean(
+                fullThinking.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+            let answer = content.isEmpty ? thinking : content
+            let responseTimeMs = Int(Date().timeIntervalSince(startTime) * 1000)
+
+            guard !answer.isEmpty else {
+                let message = "(\(consultedRole.displayName) returned an empty response.)"
+                consultation.fail(with: message)
+                await recordConsultation(stepID: stepID, taskID: tid, consultation: consultation)
+                return .failed(message)
+            }
 
             // 6. Save response to consultation chat
-            chat.messages.append(LLMMessage(role: .assistant, content: response))
+            chat.messages.append(LLMMessage(role: .assistant, content: answer))
             if let s = newSession { chat.sessionID = s.responseID }
             chat.updatedAt = MonotonicClock.shared.now()
             await saveConsultationChat(
@@ -157,15 +175,15 @@ extension LLMExecutionService {
             )
 
             // 7. Record consultation
-            let responseTimeMs = Int(Date().timeIntervalSince(startTime) * 1000)
-            consultation.complete(with: response, responseTimeMs: responseTimeMs)
+            consultation.complete(with: answer, responseTimeMs: responseTimeMs)
             await recordConsultation(stepID: stepID, taskID: tid, consultation: consultation)
 
-            return response
+            return .ok(answer)
         } catch {
-            consultation.fail()
+            let message = "Unable to get response from \(consultedRole.displayName): \(error.localizedDescription)"
+            consultation.fail(with: message)
             await recordConsultation(stepID: stepID, taskID: tid, consultation: consultation)
-            return "Unable to get response from \(consultedRole.displayName): \(error.localizedDescription)"
+            return .failed(message)
         }
     }
 

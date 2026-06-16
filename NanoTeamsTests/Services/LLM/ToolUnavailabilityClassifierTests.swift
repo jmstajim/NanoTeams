@@ -175,6 +175,15 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
             envelope.outputJSON.contains("not available for this role"),
             "must NOT use the misleading role-config message — the role HAS git_add, the work folder lacks .git/. Got: \(envelope.outputJSON)"
         )
+        // Precondition envelopes KEEP the structured `tool` field — it names a
+        // real blocked tool (canonical name) that downstream tooling relies on.
+        // Pins the scoping: only `.notInRoleConfig` drops it (see
+        // `testEnvelope_notInRoleConfig_omitsToolField`). A future "drop it
+        // everywhere" must be a conscious change, not an accident.
+        XCTAssertTrue(
+            envelope.outputJSON.contains("\"tool\":\"git_add\""),
+            "precondition envelope must keep the 'tool' field, got: \(envelope.outputJSON)"
+        )
     }
 
     func testEnvelope_notInRoleConfig_keepsLegacyToolNotAuthorizedCode() {
@@ -191,6 +200,45 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
         )
         XCTAssertTrue(envelope.outputJSON.contains("\"error\":\"tool_not_authorized\""))
         XCTAssertTrue(envelope.outputJSON.contains("not available for this role"))
+    }
+
+    func testEnvelope_notInRoleConfig_omitsToolField() {
+        // The hallucination envelope drops the `tool` field: echoing the
+        // model's invented name back as `"tool":"X"` frames it as a real tool
+        // and confuses weaker models (the name is often an artifact name).
+        // Code + message still name it; only the structured field is gone.
+        let call = StepToolCall(name: "Engineering Notes", argumentsJSON: "{}")
+        let envelope = LLMExecutionService.makeUnavailableToolResult(
+            call: call,
+            canonicalName: "Engineering Notes",
+            scope: "for this role",
+            reason: .notInRoleConfig
+        )
+        XCTAssertFalse(
+            envelope.outputJSON.contains("\"tool\":"),
+            "tool_not_authorized envelope must not carry a 'tool' field, got: \(envelope.outputJSON)"
+        )
+        XCTAssertTrue(envelope.outputJSON.contains("\"error\":\"tool_not_authorized\""))
+        XCTAssertTrue(envelope.outputJSON.contains("Tool 'Engineering Notes' is not available"))
+    }
+
+    func testEnvelope_notInRoleConfig_differingCanonicalName_leaksNeither() {
+        // Namespaced emission: call.name "repo_browser.list_files" strips to
+        // canonical "list_files". The hallucination branch must surface NEITHER
+        // name in a structured `tool` field; the message keeps the as-emitted
+        // name so the LLM can correlate with what it just typed.
+        let call = StepToolCall(name: "repo_browser.list_files", argumentsJSON: "{}")
+        let envelope = LLMExecutionService.makeUnavailableToolResult(
+            call: call,
+            canonicalName: "list_files",
+            scope: "for this role",
+            reason: .notInRoleConfig
+        )
+        XCTAssertFalse(
+            envelope.outputJSON.contains("\"tool\":"),
+            "must not surface a 'tool' field even when canonical ≠ as-emitted, got: \(envelope.outputJSON)"
+        )
+        XCTAssertTrue(envelope.outputJSON.contains("Tool 'repo_browser.list_files' is not available"))
     }
 
     func testEnvelope_workFolderClosed_namesDefaultStorage() {

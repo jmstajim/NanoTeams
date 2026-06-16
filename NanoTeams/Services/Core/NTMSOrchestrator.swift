@@ -348,16 +348,44 @@ final class NTMSOrchestrator {
         RunService.selectedRunSnapshot(from: activeTask, selectedRunID: selectedRunID)
     }
 
-    /// Resolves the effective team for a task: task.preferredTeamID → workFolder.activeTeam → Team.default
+    /// Resolves the effective team for a task. Pins a started run to its
+    /// `Run.teamID` (see `TeamResolution.resolve`). Non-optional convenience /
+    /// display resolver: a pin-failure coalesces to `Team.default` and does NOT
+    /// surface a diagnostic — this method is called from SwiftUI `body` (7 view
+    /// sites), so it MUST NOT mutate observable state (`lastErrorMessage`) during
+    /// view evaluation. The LOUD diagnostic is owned by the engine paths that
+    /// actually fail the run: `TaskEngineStoreAdapter.resolvedTeam` and
+    /// `findOrCreateStep`'s roster-swap guard.
     func resolvedTeam(for task: NTMSTask?) -> Team {
-        if let generated = task?.generatedTeam {
-            return generated
-        }
-        if let preferredTeamID = task?.preferredTeamID,
-           let team = workFolder?.team(withID: preferredTeamID) {
+        guard let task else { return workFolder?.activeTeam ?? Team.default }
+        switch TeamResolution.resolve(
+            task: task,
+            teamProvider: { workFolder?.team(withID: $0) },
+            activeTeam: workFolder?.activeTeam
+        ) {
+        case .resolved(let team):
             return team
+        case .failed, .noTeam:
+            return workFolder?.activeTeam ?? Team.default
         }
-        return workFolder?.activeTeam ?? Team.default
+    }
+
+    /// True when the team is the pinned team (`runs.last?.teamID`) of any
+    /// non-closed task — i.e. deleting it would strand that task's run on a team
+    /// that no longer exists. Used to block team deletion.
+    ///
+    /// Scans the in-memory `tasksIndex` (every task's `TaskSummary`, including
+    /// paused/evicted/never-loaded tasks and children), NOT just `loadedTasks` —
+    /// `evictIfReclaimable` can drop a paused non-closed task from memory, so a
+    /// loaded-only scan would miss it and silently allow the destructive delete.
+    /// A summary `status == .done` means closed (a non-chat task only derives
+    /// `.done` once `closedAt` is set), so non-`.done` is the "still needs its
+    /// team" proxy. No per-task disk I/O.
+    func teamIsInUseByActiveRun(_ teamID: NTMSID) -> Bool {
+        guard let summaries = snapshot?.tasksIndex.tasks else { return false }
+        return summaries.contains { summary in
+            summary.pinnedTeamID == teamID && summary.status != .done
+        }
     }
 
     // MARK: - Multi-Engine Management

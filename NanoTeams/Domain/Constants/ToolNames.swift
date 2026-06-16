@@ -1,6 +1,6 @@
 import Foundation
 
-/// Compile-time string constants for all 42 tool names.
+/// Compile-time string constants for all 43 tool names.
 /// Use these instead of string literals to get compile-time checking on tool identifiers.
 nonisolated enum ToolNames {
     // File System (7)
@@ -58,4 +58,26 @@ nonisolated enum ToolNames {
     static let scheduleTask = "schedule_task"
     static let setWorkFolderContext = "set_work_folder_context"
     static let waitForEvents = "wait_for_events"
+
+    /// Every canonical tool name. Used where code must answer "is this string a
+    /// known tool?" without reaching into the (`@MainActor`) handler registry —
+    /// e.g. the pure Harmony parser distinguishing a flat `create_artifact`
+    /// payload (top-level `name` = an unknown ARTIFACT name) from a legitimate
+    /// flat call whose top-level `name` IS a tool (e.g. `update_scratchpad`).
+    /// Pinned to the constant count by `ToolNamesAllNamesTests`.
+    static let allNames: Set<String> = [
+        listFiles, readFile, readLines, writeFile, editFile, deleteFile, search,
+        gitStatus, gitAdd, gitCommit, gitPull, gitBranchList, gitCheckout, gitMerge,
+        gitLog, gitDiff, gitStash, gitBranch,
+        runXcodebuild, runXcodetests,
+        askSupervisor,
+        updateScratchpad,
+        askTeammate, requestTeamMeeting, concludeMeeting, requestChanges,
+        createArtifact,
+        analyzeImage,
+        createTeam,
+        delegateToTeam, cancelDelegation, resumeDelegation, forwardToTeam,
+        listTasks, taskStatus, createManagedTask, controlTask, manageRole,
+        answerTaskQuestion, messageTask, scheduleTask, setWorkFolderContext, waitForEvents,
+    ]
 }

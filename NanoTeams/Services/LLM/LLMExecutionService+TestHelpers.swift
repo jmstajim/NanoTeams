@@ -122,6 +122,7 @@ extension LLMExecutionService {
         changes: String,
         reasoning: String,
         requestingRoleID: String,
+        requesterStepID: String = "",
         meetingID: UUID?,
         team: Team?
     ) async -> String {
@@ -131,6 +132,7 @@ extension LLMExecutionService {
             changes: changes,
             reasoning: reasoning,
             requestingRoleID: requestingRoleID,
+            requesterStepID: requesterStepID,
             meetingID: meetingID,
             team: team
         )
@@ -175,14 +177,16 @@ extension LLMExecutionService {
         task: NTMSTask,
         roleDefinition: TeamRoleDefinition?,
         conversationMessages: inout [ChatMessage],
-        thinkingContent: String = ""
+        thinkingContent: String = "",
+        harmonyBuffer: String = "",
+        runtime: ToolRuntime? = nil
     ) async -> LLMStepStop {
         let streamResult = StreamingResult(
             assistantContent: assistantContent,
             thinkingContent: thinkingContent,
             resolvedToolCalls: [],
             sawHarmonyMarker: sawHarmonyMarker,
-            harmonyBuffer: ""
+            harmonyBuffer: harmonyBuffer
         )
         return await handleNoToolCalls(
             stepID: stepID,
@@ -193,6 +197,7 @@ extension LLMExecutionService {
             stepIndex: 0,
             tracker: ToolCallTracker(),
             roleDefinition: roleDefinition,
+            runtime: runtime,
             conversationMessages: &conversationMessages
         )
     }
@@ -298,7 +303,7 @@ extension LLMExecutionService {
         sourceRoleID: String,
         changes: String,
         team: Team?
-    ) async -> String {
+    ) async -> PropagationResult {
         await propagateAmendmentDownstream(
             taskID: taskID,
             sourceRoleID: sourceRoleID,

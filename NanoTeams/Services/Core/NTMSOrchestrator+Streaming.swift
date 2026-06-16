@@ -151,6 +151,9 @@ extension NTMSOrchestrator {
                 toolCalls: Array(recentCalls)
             )
         }
+
+        // Re-render the displayed-side audit log for this turn (best-effort, gated on `loggingEnabled`).
+        renderConversationLog(taskID: taskID)
     }
 
     func clearStreamingPreview(stepID: String, taskID: Int) {

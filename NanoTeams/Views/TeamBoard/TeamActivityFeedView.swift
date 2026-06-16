@@ -44,7 +44,10 @@ struct TeamActivityFeedView: View {
     /// parent feed wouldn't react to a child's mid-flight messages — the
     /// interleaved timeline would freeze until the user manually scrolled.
     private var runDataVersion: Int {
-        Self.computeRunDataVersion(run: run, descendants: resolvedDescendantTasks())
+        Self.computeRunDataVersion(
+            run: run,
+            descendants: resolvedDescendantTasks()
+        )
     }
 
     /// Pure implementation of `runDataVersion` — extracted so it's testable
@@ -65,6 +68,10 @@ struct TeamActivityFeedView: View {
             hasher.combine(run.steps.count)
             for step in run.steps {
                 hasher.combine(step.llmConversation.count)
+                // Catches in-place updates to the last message (e.g. a collapsing
+                // retry note) that leave `count` unchanged — same reason
+                // `needsSupervisorInput` is folded into this hash.
+                hasher.combine(step.llmConversation.last?.createdAt)
                 hasher.combine(step.toolCalls.count)
                 hasher.combine(step.artifacts.count)
                 hasher.combine(step.needsSupervisorInput)
@@ -79,6 +86,10 @@ struct TeamActivityFeedView: View {
             hasher.combine(descendant.run.steps.count)
             for step in descendant.run.steps {
                 hasher.combine(step.llmConversation.count)
+                // Catches in-place updates to the last message (e.g. a collapsing
+                // retry note) that leave `count` unchanged — same reason
+                // `needsSupervisorInput` is folded into this hash.
+                hasher.combine(step.llmConversation.last?.createdAt)
                 hasher.combine(step.toolCalls.count)
                 hasher.combine(step.artifacts.count)
                 hasher.combine(step.needsSupervisorInput)

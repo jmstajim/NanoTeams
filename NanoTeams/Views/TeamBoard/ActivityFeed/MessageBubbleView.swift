@@ -200,6 +200,30 @@ struct MessageBubbleView: View {
                                 )
                                 .fill(Colors.surfaceElevated)
                             )
+                    } else if message.sourceContext == .serverError {
+                        // Transient retry-status note → red error bubble so a
+                        // failing/reconnecting LLM call is unmistakable.
+                        Text(content)
+                            .font(.callout)
+                            .foregroundStyle(Colors.error)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(ActivityCardTokens.cardPadding)
+                            .background(
+                                RoundedRectangle(
+                                    cornerRadius: ActivityCardTokens.cornerRadius,
+                                    style: .continuous
+                                )
+                                .fill(Colors.errorTint)
+                            )
+                            .overlay(
+                                RoundedRectangle(
+                                    cornerRadius: ActivityCardTokens.cornerRadius,
+                                    style: .continuous
+                                )
+                                .strokeBorder(Colors.errorBorder, lineWidth: 1)
+                            )
                     } else {
                         contentText
                     }

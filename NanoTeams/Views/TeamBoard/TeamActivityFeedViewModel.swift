@@ -349,6 +349,9 @@ final class TeamActivityFeedViewModel {
             roleDefinitions: context.roleDefinitions,
             filterRoleID: context.filterRoleID
         )
+        // Active supervisor questions drive the composer chip + paired-message
+        // suppression. `cachedAllSteps` is the displayed run's steps, so a
+        // `needsSupervisorInput` flag on one of them is always the live question.
         cachedSupervisorQuestions = ActivityFeedBuilder.activeSupervisorQuestions(steps: cachedAllSteps)
 
         cachedActiveTaskID = context.activeTaskID
@@ -518,7 +521,7 @@ final class TeamActivityFeedViewModel {
         let newCache = await Task.detached {
             var cache: [String: Set<String>] = [:]
             for step in stepsWithArtifacts {
-                cache[step.id] = Self.loadArtifactContentsForStepSync(step, workFolderURL: url)
+                cache[step.id] = ActivityFeedBuilder.loadArtifactContentsForStepSync(step, workFolderURL: url)
             }
             return cache
         }.value
@@ -526,28 +529,5 @@ final class TeamActivityFeedViewModel {
         stepArtifactContentCache = newCache
     }
 
-    // MARK: - Private Helpers
-
-    private nonisolated static func loadArtifactContentsForStepSync(
-        _ step: StepExecution,
-        workFolderURL: URL?
-    ) -> Set<String> {
-        guard let projectURL = workFolderURL else { return [] }
-        var contents: Set<String> = []
-        for artifact in step.artifacts {
-            guard let relativePath = artifact.relativePath else { continue }
-            let fileURL = projectURL
-                .appendingPathComponent(".nanoteams")
-                .appendingPathComponent(relativePath)
-            if let content = try? String(contentsOf: fileURL, encoding: .utf8) {
-                contents.insert(content)
-            } else {
-                #if DEBUG
-                print("[ActivityFeed] Failed to load artifact content at \(fileURL.path)")
-                #endif
-            }
-        }
-        return contents
-    }
     nonisolated deinit {}
 }

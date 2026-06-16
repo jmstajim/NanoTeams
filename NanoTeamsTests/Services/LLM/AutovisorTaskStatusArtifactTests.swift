@@ -174,7 +174,151 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
             "the step-level verdict must use the configured threshold too")
     }
 
+    // MARK: - roles_needing_acceptance contract
+
+    /// `RoleExecutionStatus` is otherwise invisible to the manager, so `task_status`
+    /// surfaces exactly which roles await acceptance — the manager accepts only those
+    /// and `control_task close`s the rest. The listed ids correlate with `steps[].role_id`.
+    func testHandleTaskStatus_exposesRolesNeedingAcceptance() async throws {
+        let status = try await decodedStatus(
+            steps: [
+                StepExecution(id: "pm", role: .productManager, title: "PM", status: .needsApproval),
+                StepExecution(id: "tl", role: .techLead, title: "TL", status: .done),
+            ],
+            roleStatuses: ["pm": .needsAcceptance, "tl": .done])
+        XCTAssertEqual(status.roles_needing_acceptance, ["pm"],
+            "only the .needsAcceptance role is listed; the .done role is not")
+    }
+
+    /// All roles complete (`.done`) → the field is omitted entirely (lean payload,
+    /// the common finished-task case). This is the reported FAANG/finalOnly shape.
+    func testHandleTaskStatus_allRolesDone_omitsRolesNeedingAcceptance() async throws {
+        let status = try await decodedStatus(
+            steps: [StepExecution(id: "pm", role: .productManager, title: "PM", status: .done)],
+            roleStatuses: ["pm": .done])
+        XCTAssertNil(status.roles_needing_acceptance,
+            "no roles awaiting acceptance → field omitted from the wire payload")
+    }
+
+    /// Cardinality > 1: every `.needsAcceptance` role is listed, SORTED for a deterministic
+    /// wire payload, and the `.done` role is excluded. Also pins correlation — each listed id
+    /// is a real `steps[].role_id` the manager can act on.
+    ///
+    /// Five roles inserted in deliberately non-alphabetical order so ONLY an explicit `.sorted()`
+    /// lands the result alphabetically — `Dictionary` key order is non-deterministic per process,
+    /// so a 2-element list would coincidentally pass ~half the time even if the sort were removed.
+    /// This reliably fails if `getPendingAcceptances(...).sorted()` loses its `.sorted()`.
+    func testHandleTaskStatus_multipleRolesNeedingAcceptance_sortedAndCorrelated() async throws {
+        let awaitingIDs = ["z_role", "a_role", "m_role", "t_role", "g_role"]
+        var steps = awaitingIDs.map {
+            StepExecution(id: $0, role: .softwareEngineer, title: $0, status: .needsApproval)
+        }
+        steps.append(StepExecution(id: "done_role", role: .softwareEngineer, title: "done", status: .done))
+        var roleStatuses: [String: RoleExecutionStatus] = ["done_role": .done]
+        for id in awaitingIDs { roleStatuses[id] = .needsAcceptance }
+
+        let status = try await decodedStatus(steps: steps, roleStatuses: roleStatuses)
+        XCTAssertEqual(status.roles_needing_acceptance,
+                       ["a_role", "g_role", "m_role", "t_role", "z_role"],
+            "all awaiting roles listed in sorted order; the .done role excluded")
+        let stepIDs = Set(status.steps.map(\.role_id))
+        for id in status.roles_needing_acceptance ?? [] {
+            XCTAssertTrue(stepIDs.contains(id), "\(id) must appear in steps[].role_id")
+        }
+    }
+
+    /// Degenerate: a task with no runs yields a valid envelope and simply omits the field
+    /// (no crash, no spurious value).
+    func testHandleTaskStatus_noRuns_omitsRolesNeedingAcceptance() async throws {
+        let task = NTMSTask(id: 15, title: "T", supervisorTask: "...", runs: [])
+        mockDelegate.taskToMutate = task
+
+        let status = try Self.decodeStatus(from: await service.handleTaskStatus(taskID: 15))
+        XCTAssertNil(status.roles_needing_acceptance)
+        XCTAssertTrue(status.steps.isEmpty)
+    }
+
+    /// Corner: an orphan `.needsAcceptance` status with NO matching step is excluded. Every
+    /// listed id must be actionable via `manage_role accept` (which resolves a STEP), so a
+    /// status-only entry the manager couldn't act on must not be surfaced.
+    func testHandleTaskStatus_orphanNeedsAcceptanceWithoutStep_excluded() async throws {
+        let status = try await decodedStatus(
+            steps: [StepExecution(id: "pm", role: .productManager, title: "PM", status: .done)],
+            roleStatuses: ["pm": .done, "ghost": .needsAcceptance])
+        XCTAssertNil(status.roles_needing_acceptance,
+            "a .needsAcceptance status with no step row is un-actionable and must not be surfaced")
+    }
+
+    /// Corner: the field is strictly `.needsAcceptance`, NOT any incomplete status — a sibling
+    /// at `.accepted` / `.failed` / `.revisionRequested` must be excluded.
+    func testHandleTaskStatus_onlyNeedsAcceptance_excludesOtherIncompleteStatuses() async throws {
+        let status = try await decodedStatus(
+            steps: [
+                StepExecution(id: "pm", role: .productManager, title: "PM", status: .needsApproval),
+                StepExecution(id: "tl", role: .techLead, title: "TL", status: .done),
+                StepExecution(id: "swe", role: .softwareEngineer, title: "SWE", status: .failed),
+                StepExecution(id: "cr", role: .softwareEngineer, title: "CR", status: .done),
+            ],
+            roleStatuses: ["pm": .needsAcceptance, "tl": .accepted,
+                           "swe": .failed, "cr": .revisionRequested])
+        XCTAssertEqual(status.roles_needing_acceptance, ["pm"],
+            "only .needsAcceptance is surfaced; .accepted/.failed/.revisionRequested are not")
+    }
+
+    /// Corner: the field is independent of task-level status — a gated `.needsAcceptance` role
+    /// is surfaced even while a sibling is still running (the mid-pipeline acceptance-gate case
+    /// the manager prompt relies on, where the task derives to .paused rather than Review).
+    func testHandleTaskStatus_needsAcceptanceWhileSiblingRunning_stillListed() async throws {
+        let status = try await decodedStatus(
+            steps: [
+                StepExecution(id: "pm", role: .productManager, title: "PM", status: .needsApproval),
+                StepExecution(id: "tl", role: .techLead, title: "TL", status: .running),
+            ],
+            roleStatuses: ["pm": .needsAcceptance, "tl": .working])
+        XCTAssertEqual(status.roles_needing_acceptance, ["pm"],
+            "a gated role is surfaced regardless of task-level status (mid-pipeline gate)")
+    }
+
+    /// Corner: the field reads RoleExecutionStatus, NOT StepStatus — a `.needsAcceptance` role
+    /// whose STEP is `.done` is still listed. This is the exact distinction the bug was about
+    /// (a `.done` step does not mean "no acceptance needed").
+    func testHandleTaskStatus_roleStatusDriven_notStepStatus() async throws {
+        let status = try await decodedStatus(
+            steps: [StepExecution(id: "pm", role: .productManager, title: "PM", status: .done)],
+            roleStatuses: ["pm": .needsAcceptance])
+        XCTAssertEqual(status.roles_needing_acceptance, ["pm"],
+            "a .needsAcceptance role with a .done step must still be surfaced (role status drives it)")
+    }
+
+    /// Corner: the field is scoped to the CURRENT run (`runs.last`) — a `.needsAcceptance`
+    /// role in an OLD run does not leak in once a fresh run has all roles `.done`.
+    func testHandleTaskStatus_currentRunScoped_oldRunDoesNotLeak() async throws {
+        let oldStep = StepExecution(id: "pm", role: .productManager, title: "PM", status: .needsApproval)
+        let newStep = StepExecution(id: "pm", role: .productManager, title: "PM", status: .done)
+        let task = NTMSTask(id: 20, title: "T", supervisorTask: "...", runs: [
+            Run(id: 0, steps: [oldStep], roleStatuses: ["pm": .needsAcceptance]),  // historical
+            Run(id: 1, steps: [newStep], roleStatuses: ["pm": .done]),             // current
+        ])
+        mockDelegate.taskToMutate = task
+
+        let status = try Self.decodeStatus(from: await service.handleTaskStatus(taskID: 20))
+        XCTAssertNil(status.roles_needing_acceptance,
+            "only the latest run is reflected; the old run's .needsAcceptance must not leak")
+    }
+
     // MARK: - Helpers
+
+    /// Builds a single-run task from `steps`/`roleStatuses`, wires it into the mock, and returns
+    /// the decoded `task_status` envelope — collapses the build/assign/decode boilerplate the
+    /// `roles_needing_acceptance` corner tests share. (The no-runs and multi-run corners build
+    /// their task inline, since their run shape differs.)
+    private func decodedStatus(steps: [StepExecution],
+                               roleStatuses: [String: RoleExecutionStatus]) async throws -> StatusDTO {
+        let task = NTMSTask(id: 1, title: "T", supervisorTask: "...",
+                            runs: [Run(id: 0, steps: steps, roleStatuses: roleStatuses)])
+        mockDelegate.taskToMutate = task
+        return try Self.decodeStatus(from: await service.handleTaskStatus(taskID: 1))
+    }
 
     /// A snapshot whose only meaningful field is a custom Autovisor hang threshold,
     /// so `handleTaskStatus`'s `delegate.snapshot?...autovisorTuning` read is exercised.
@@ -200,6 +344,7 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
         let steps: [StepRowDTO]
         let stuck: StuckDTO?
         let timed_out: Bool
+        let roles_needing_acceptance: [String]?
     }
 
     private static func decodeStatus(from json: String) throws -> StatusDTO {

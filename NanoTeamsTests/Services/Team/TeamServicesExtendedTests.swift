@@ -76,37 +76,35 @@ final class AcceptanceServiceExtendedTests: XCTestCase {
             AcceptanceService.shouldRequestAcceptance(
                 roleID: Role.builtInID(.productManager),
                 mode: .afterEachRole,
-                checkpoints: [],
-                isLastRole: false
+                checkpoints: []
             ))
 
-        // Then with finalOnly - same role should not require acceptance if not last
+        // Then with finalOnly - the same role does not require per-role acceptance (finalOnly
+        // never gates a per-role acceptance; the task-level final review is the sole approval)
         XCTAssertFalse(
             AcceptanceService.shouldRequestAcceptance(
                 roleID: Role.builtInID(.productManager),
                 mode: .finalOnly,
-                checkpoints: [],
-                isLastRole: false
+                checkpoints: []
             ))
     }
 
     func testModeTransition_CustomCheckpointsEmpty() {
-        // Empty checkpoints, not last role
+        // Empty checkpoints — role not gated
         XCTAssertFalse(
             AcceptanceService.shouldRequestAcceptance(
                 roleID: Role.builtInID(.uxDesigner),
                 mode: .customCheckpoints,
-                checkpoints: [],
-                isLastRole: false
+                checkpoints: []
             ))
 
-        // Empty checkpoints, last role - should still require
-        XCTAssertTrue(
+        // Empty checkpoints, last role - NOT gated (only selected checkpoints gate; the
+        // final deliverable is covered by the task-level final review)
+        XCTAssertFalse(
             AcceptanceService.shouldRequestAcceptance(
                 roleID: Role.builtInID(.sre),
                 mode: .customCheckpoints,
-                checkpoints: [],
-                isLastRole: true
+                checkpoints: []
             ))
     }
 

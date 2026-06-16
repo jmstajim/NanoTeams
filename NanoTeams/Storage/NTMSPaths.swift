@@ -154,23 +154,32 @@ nonisolated struct NTMSPaths: Hashable {
 
     /// Returns a path relative to the .nanoteams directory for persistence references.
     func relativePathWithinNanoteams(for absoluteURL: URL) -> String {
-        let base = nanoteamsDir.path.hasSuffix("/") ? nanoteamsDir.path : (nanoteamsDir.path + "/")
-        let full = absoluteURL.path
-        if full.hasPrefix(base) {
-            return String(full.dropFirst(base.count))
-        }
-        // Fallback: last path component
-        return absoluteURL.lastPathComponent
+        Self.relativePath(of: absoluteURL, under: nanoteamsDir)
     }
 
     /// Returns a path relative to the project root for use with sandboxed tools.
     func relativePathFromProjectRoot(for absoluteURL: URL) -> String {
-        let base = workFolderRoot.path.hasSuffix("/") ? workFolderRoot.path : (workFolderRoot.path + "/")
-        let full = absoluteURL.path
-        if full.hasPrefix(base) {
-            return String(full.dropFirst(base.count))
+        Self.relativePath(of: absoluteURL, under: workFolderRoot)
+    }
+
+    /// `absoluteURL` relative to `base`, compared by symlink-resolved + standardized path
+    /// COMPONENTS — not raw string prefixing, which silently missed `/var`↔`/private/var`
+    /// symlink divergence and any `..`/trailing-slash normalization, falling back to the bare
+    /// last component (a plausible-but-wrong `.nanoteams/<file>` that `read_file` then 404s on).
+    ///
+    /// Returns "" when `absoluteURL` is not actually under `base`. Every consumer treats an
+    /// empty `relativePath` as "no readable reference" (`Artifact.llmReadablePath`,
+    /// `ArtifactService.readContent`), so a wrong path is never fabricated. All persisted
+    /// artifact/attachment URLs are built under these dirs, so "" signals a programmer error,
+    /// not a normal outcome.
+    private static func relativePath(of absoluteURL: URL, under base: URL) -> String {
+        let baseComponents = base.resolvingSymlinksInPath().standardizedFileURL.pathComponents
+        let urlComponents = absoluteURL.resolvingSymlinksInPath().standardizedFileURL.pathComponents
+        guard urlComponents.count >= baseComponents.count,
+              Array(urlComponents.prefix(baseComponents.count)) == baseComponents else {
+            return ""
         }
-        return absoluteURL.lastPathComponent
+        return urlComponents.dropFirst(baseComponents.count).joined(separator: "/")
     }
 
     /// Checks whether a URL points inside the internal directory.

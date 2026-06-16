@@ -159,7 +159,18 @@ extension NTMSOrchestrator {
         // paused, done, failed — is superseded by the schedule: restart a fresh
         // run. (Per product decision: "restart on the timer without restrictions,
         // unless it's still running.")
-        if state == .running || isGeneratingTeam(taskID: taskID) {
+        //
+        // EXCEPTION for the Autovisor: defer (don't supersede) when its parked step
+        // has a pending HUMAN continuation — superseding would `createNewRun` and
+        // orphan the human's answer on the old run (data loss). The resume the human
+        // path triggers continues the SAME conversation; this slot just waits one
+        // interval. Defense-in-depth alongside the event-wake guard (this race window
+        // is sub-second on a minute boundary). The queue itself already survives a
+        // supersede (preserved below + drained on the fresh run), so this is purely to
+        // protect an already-written answer and to keep session continuity.
+        if state == .running || isGeneratingTeam(taskID: taskID)
+            || (taskID == autovisorTaskID && state == .needsSupervisorInput
+                && autovisorHasPendingHumanContinuation(taskID)) {
             await mutateTask(taskID: taskID) { $0.recurrence?.reschedule(after: now) }
             evictIfReclaimable(taskID)
             return

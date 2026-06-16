@@ -3,6 +3,12 @@ import Foundation
 enum NetworkDirection: String, Codable {
     case request
     case response
+    /// A tool call — NOT wire traffic. A discrete audit record for every tool
+    /// call the run made: executed (success + handler error), and the
+    /// pre-runtime non-dispatched cases (malformed / missing-name / unauthorized
+    /// / duplicate-write) that never become an HTTP request. `.request`/`.response`
+    /// consumers (e.g. `FirstPromptFromLogsExtractor`) skip these by direction.
+    case toolCall
 }
 
 nonisolated struct NetworkLogRecord: Codable, Hashable {
@@ -24,7 +30,6 @@ nonisolated struct NetworkLogRecord: Codable, Hashable {
 
 nonisolated final class NetworkLogger: @unchecked Sendable {
     let logURL: URL
-    let conversationLogURL: URL
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     private let fileManager: FileManager
@@ -32,8 +37,6 @@ nonisolated final class NetworkLogger: @unchecked Sendable {
 
     init(logURL: URL, fileManager: FileManager = .default) {
         self.logURL = logURL
-        self.conversationLogURL = logURL.deletingLastPathComponent()
-            .appendingPathComponent("conversation_log.md", isDirectory: false)
         self.fileManager = fileManager
 
         self.encoder = JSONCoderFactory.makePersistenceEncoder()
@@ -60,14 +63,12 @@ nonisolated final class NetworkLogger: @unchecked Sendable {
                                                      attributes: NTMSRepository.internalDirAttributes)
                 }
 
-                // Write back as JSON array
+                // Write back as JSON array. The human-readable `conversation_log.md`
+                // is NO LONGER produced here — it now renders what the user actually
+                // SEES (the activity feed), owned by `NTMSOrchestrator+ConversationLog`,
+                // so it can be diffed against this wire log.
                 let data = try encoder.encode(records)
                 try data.write(to: logURL, options: .atomic)
-
-                // Generate and write markdown conversation log
-                let renderer = ConversationLogRenderer()
-                let markdown = renderer.render(records: records)
-                try markdown.write(to: conversationLogURL, atomically: true, encoding: .utf8)
             } catch {
                 // Best-effort logging; never fail operations due to logging issues
                 #if DEBUG
@@ -102,6 +103,44 @@ nonisolated final class NetworkLogger: @unchecked Sendable {
             body: bodyString,
             durationMs: nil,
             errorMessage: nil,
+            correlationID: UUID(),
+            stepID: stepID,
+            roleName: roleName
+        )
+    }
+
+    /// Creates a `.toolCall` audit record for a single tool call. Used for both
+    /// executed calls (from `ToolRuntime`) and pre-runtime non-dispatched ones
+    /// (unauthorized / duplicate-write / malformed / missing-name). Not HTTP
+    /// traffic: `httpMethod`/`url` are empty and `correlationID` is fresh
+    /// (unpaired). `errorMessage` is nil for a clean success. `arguments` and
+    /// `result` are embedded as escaped JSON *string* values so a malformed
+    /// payload can't corrupt the surrounding `[NetworkLogRecord]` array, and
+    /// `body` itself stays valid JSON for downstream parsing.
+    static func createToolCallRecord(
+        toolName: String,
+        argumentsJSON: String,
+        resultJSON: String?,
+        errorMessage: String?,
+        stepID: String?,
+        roleName: String? = nil
+    ) -> NetworkLogRecord {
+        let body = JSONUtilities.jsonStringForToolArgs([
+            "event": "tool_call",
+            "tool": toolName,
+            "arguments": argumentsJSON,
+            "result": resultJSON ?? "",
+        ])
+        return NetworkLogRecord(
+            id: UUID(),
+            createdAt: MonotonicClock.shared.now(),
+            direction: .toolCall,
+            httpMethod: "",
+            url: "",
+            statusCode: nil,
+            body: body,
+            durationMs: nil,
+            errorMessage: errorMessage,
             correlationID: UUID(),
             stepID: stepID,
             roleName: roleName

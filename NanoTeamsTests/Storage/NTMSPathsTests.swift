@@ -176,10 +176,24 @@ final class NTMSPathsTests: XCTestCase {
         XCTAssertEqual(relative, "internal/runs/abc/network_log.json")
     }
 
-    func testRelativePathWithinNanoteams_pathOutsideNanoteams_returnsLastComponent() {
+    func testRelativePathWithinNanoteams_pathOutsideNanoteams_returnsEmpty() {
+        // An out-of-base URL has no within-.nanoteams path. Returning the bare last
+        // component (the old behavior) fabricated a plausible-but-wrong ".nanoteams/<file>"
+        // reference that read_file then 404s on. Empty is the honest answer; every consumer
+        // treats an empty relativePath as "no readable reference".
         let outsideURL = URL(fileURLWithPath: "/tmp/random/file.json")
         let relative = paths.relativePathWithinNanoteams(for: outsideURL)
-        XCTAssertEqual(relative, "file.json")
+        XCTAssertEqual(relative, "")
+    }
+
+    func testRelativePathWithinNanoteams_unstandardizedURL_resolvesNotBareFilename() {
+        // A URL carrying a `..` segment (the deterministic stand-in for the real
+        // /var ↔ /private/var symlink divergence) must still resolve relative to
+        // nanoteamsDir. Raw string prefixing missed this and silently fell back to the
+        // bare filename — yielding an unreadable ".nanoteams/<bare>" path downstream.
+        let url = URL(fileURLWithPath: "/Users/test/Other/../MyProject/.nanoteams/tasks/abc/artifact.md")
+        let relative = paths.relativePathWithinNanoteams(for: url)
+        XCTAssertEqual(relative, "tasks/abc/artifact.md")
     }
 
     func testStagedAttachmentDir() {
@@ -194,6 +208,24 @@ final class NTMSPathsTests: XCTestCase {
         let relative = paths.relativePathFromProjectRoot(for: absoluteURL)
 
         XCTAssertEqual(relative, ".nanoteams/tasks/abc/attachments/file.txt")
+    }
+
+    func testRelativePathFromProjectRoot_pathOutsideProject_returnsEmpty() {
+        // Twin of the within-.nanoteams contract: an out-of-project URL has no
+        // project-relative path. Return "" (consumers treat it as "no reference") rather
+        // than the old bare-last-component fallback that fabricated a wrong path.
+        let outsideURL = URL(fileURLWithPath: "/tmp/random/file.txt")
+        let relative = paths.relativePathFromProjectRoot(for: outsideURL)
+        XCTAssertEqual(relative, "")
+    }
+
+    func testRelativePathFromProjectRoot_unstandardizedURL_resolvesNotBareFilename() {
+        // `..` segment (deterministic stand-in for /var ↔ /private/var symlink divergence)
+        // must still resolve project-relative — this is the exact failure the old raw-`.path`
+        // comparison hit when finalizing attachments (see ConsumeQueuedSupervisorMessageTests).
+        let url = URL(fileURLWithPath: "/Users/test/Other/../MyProject/.nanoteams/tasks/abc/file.txt")
+        let relative = paths.relativePathFromProjectRoot(for: url)
+        XCTAssertEqual(relative, ".nanoteams/tasks/abc/file.txt")
     }
 
     // MARK: - isInternalURL

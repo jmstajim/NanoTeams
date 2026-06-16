@@ -989,6 +989,7 @@ private final class StreamPersistingMockDelegate: LLMExecutionDelegate {
 
     var lastErrorMessages: [String] = []
     func setLastErrorMessageForUI(_ message: String) { lastErrorMessages.append(message) }
+    func holdDownstreamForRevision(taskID _: Int, runningRoleIDs _: [String], requesterRoleID _: String) async {}
 
     var scriptedAwaitOutcomes: [TaskCompletionAwaiter.WaitOutcome] = []
     var awaitedTaskIDs: [Int] = []

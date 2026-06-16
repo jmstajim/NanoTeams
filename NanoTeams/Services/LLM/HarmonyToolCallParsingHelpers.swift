@@ -213,6 +213,39 @@ nonisolated enum ToolCallParsingHelpers {
             reservedChannelNames.contains(name.lowercased()) ? nil : name
         }
 
+        // Flat create_artifact emission: `{"content":…,"format":…,"name":"<Artifact>"}`
+        // with NO `arguments` wrapper. Here the top-level `name` is the ARTIFACT
+        // name (a create_artifact parameter), NOT the tool name — some models
+        // collapse the canonical
+        // `{"name":"create_artifact","arguments":{"name":"<Artifact>",…}}` into this
+        // shape, putting the artifact name on the top-level `name` key. Without this
+        // the artifact name mis-binds as the tool name (observed with `gemma-4-e4b`:
+        // `<|call|>{…,"name":"Production Readiness"}` resolving to a tool literally
+        // named "Production Readiness"). Gated on three conditions so it never
+        // over-reaches:
+        //   1. no `arguments`/`args`/… wrapper (it's a flat payload);
+        //   2. the top-level `name` value is NOT itself a known tool — a legitimate
+        //      flat call whose `name` IS a tool that also takes `content`
+        //      (e.g. `update_scratchpad`) must stay that tool, not become
+        //      create_artifact;
+        //   3. the payload matches create_artifact's exact signature
+        //      (`recognizeToolFromArguments`: `name`+`content`, no keys exclusive to
+        //      other tools).
+        // The whole flat dict becomes the args so the artifact `name`/`content`/
+        // `format` survive. Checked BEFORE the generic top-level-`name` path so the
+        // artifact name doesn't win as the tool name.
+        let hasArgsWrapper = dict["arguments"] != nil || dict["args"] != nil
+            || dict["parameters"] != nil || dict["params"] != nil
+        if !hasArgsWrapper,
+           let topLevelName = stringValue(dict["name"]),
+           !ToolNames.allNames.contains(topLevelName),
+           recognizeToolFromArguments(dict) == ToolNames.createArtifact {
+            return StepToolCall(
+                providerID: providerID,
+                name: ToolNames.createArtifact,
+                argumentsJSON: normalizeArgumentsJSON(dict))
+        }
+
         if let name = stringValue(dict["name"]).flatMap(acceptingName) {
             let args = dict["arguments"] ?? dict["args"] ?? dict["parameters"] ?? dict["params"]
                 ?? synthesizeArgumentsFromTopLevel(dict)

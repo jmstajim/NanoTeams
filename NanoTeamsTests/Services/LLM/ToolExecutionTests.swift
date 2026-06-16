@@ -98,6 +98,190 @@ final class ToolExecutionTests: XCTestCase {
         XCTAssertTrue(batch[0].outputJSON.contains("tool_not_authorized"))
     }
 
+    // MARK: - executeToolCalls: pre-runtime rejections mirror into BOTH audit logs
+
+    /// A runtime owning both per-run logger instances pointed at the given URLs.
+    private func makeRuntimeWithBothLogs(jsonlURL: URL, netURL: URL) -> ToolRuntime {
+        let (_, rt) = ToolRegistry.defaultRegistry(
+            workFolderRoot: tempDir,
+            toolCallsLogURL: jsonlURL,
+            networkLogger: NetworkLogger(logURL: netURL)
+        )
+        return rt
+    }
+
+    private func networkToolCallRecords(at url: URL) throws -> [NetworkLogRecord] {
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        let data = try Data(contentsOf: url)
+        let all = try JSONCoderFactory.makeDateDecoder().decode([NetworkLogRecord].self, from: data)
+        return all.filter { $0.direction == .toolCall }
+    }
+
+    private func jsonlLines(at url: URL) -> [String] {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        return text.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+    }
+
+    func testExecuteToolCalls_unauthorized_logsBothLogs() async throws {
+        let task = makeTask()
+        let jsonlURL = tempDir.appendingPathComponent("rej_unauth.jsonl")
+        let netURL = tempDir.appendingPathComponent("rej_unauth.json")
+        let rt = makeRuntimeWithBothLogs(jsonlURL: jsonlURL, netURL: netURL)
+        let call = makeToolCall(name: "write_file", args: #"{"path":"/test.txt","content":"hi"}"#)
+
+        _ = await service.executeToolCalls(
+            resolvedToolCalls: [call],
+            allowedToolNames: ["read_file", "list_files"],
+            runtime: rt,
+            tracker: tracker,
+            task: task,
+            runIndex: 0,
+            roleID: "test_role"
+        )
+
+        let netRecords = try networkToolCallRecords(at: netURL)
+        XCTAssertEqual(netRecords.count, 1)
+        XCTAssertTrue(netRecords[0].body?.contains("tool_not_authorized") == true)
+        XCTAssertNotNil(netRecords[0].errorMessage)
+
+        let lines = jsonlLines(at: jsonlURL)
+        XCTAssertEqual(lines.count, 1)
+        XCTAssertTrue(lines[0].contains("write_file"))
+        XCTAssertTrue(lines[0].contains("tool_not_authorized"))
+    }
+
+    func testExecuteToolCalls_identicalWrite_logsBothLogs() async throws {
+        let task = makeTask()
+        let jsonlURL = tempDir.appendingPathComponent("rej_dup.jsonl")
+        let netURL = tempDir.appendingPathComponent("rej_dup.json")
+        let rt = makeRuntimeWithBothLogs(jsonlURL: jsonlURL, netURL: netURL)
+        let args = #"{"path":"dup.txt","content":"same"}"#
+        let first = makeToolCall(name: "write_file", args: args)
+        let second = makeToolCall(name: "write_file", args: args)
+
+        // First write executes (also logged, since this runtime has both loggers),
+        // second is the identical-write rejection.
+        _ = await service.executeToolCalls(
+            resolvedToolCalls: [first, second],
+            allowedToolNames: ["write_file"],
+            runtime: rt,
+            tracker: tracker,
+            task: task,
+            runIndex: 0,
+            roleID: "test_role"
+        )
+
+        let netRecords = try networkToolCallRecords(at: netURL)
+        XCTAssertTrue(netRecords.contains { $0.body?.contains("identical_write_loop") == true })
+
+        let lines = jsonlLines(at: jsonlURL)
+        XCTAssertTrue(lines.contains { $0.contains("identical_write_loop") })
+    }
+
+    func testExecuteToolCalls_mixedBatch_everyCallLoggedToBoth() async throws {
+        let task = makeTask()
+        let jsonlURL = tempDir.appendingPathComponent("mixed.jsonl")
+        let netURL = tempDir.appendingPathComponent("mixed.json")
+        let rt = makeRuntimeWithBothLogs(jsonlURL: jsonlURL, netURL: netURL)
+        let executed = makeToolCall(name: "list_files", args: #"{"path":"."}"#)
+        let rejected = makeToolCall(name: "write_file", args: #"{"path":"/x.txt","content":"hi"}"#)
+
+        _ = await service.executeToolCalls(
+            resolvedToolCalls: [executed, rejected],
+            allowedToolNames: ["list_files"],
+            runtime: rt,
+            tracker: tracker,
+            task: task,
+            runIndex: 0,
+            roleID: "test_role"
+        )
+
+        // The user-facing promise: EVERY call (executed + rejected) appears in BOTH
+        // logs — record count equals call count.
+        let netRecords = try networkToolCallRecords(at: netURL)
+        XCTAssertEqual(netRecords.count, 2)
+        let netBodies = netRecords.compactMap(\.body).joined()
+        XCTAssertTrue(netBodies.contains("list_files"))
+        XCTAssertTrue(netBodies.contains("write_file"))
+
+        let lines = jsonlLines(at: jsonlURL)
+        XCTAssertEqual(lines.count, 2)
+    }
+
+    func testExecuteToolCalls_emptyBatch_noLogsNoCrash() async {
+        let task = makeTask()
+        let jsonlURL = tempDir.appendingPathComponent("empty.jsonl")
+        let netURL = tempDir.appendingPathComponent("empty.json")
+        let rt = makeRuntimeWithBothLogs(jsonlURL: jsonlURL, netURL: netURL)
+
+        let batch = await service.executeToolCalls(
+            resolvedToolCalls: [],
+            allowedToolNames: ["list_files"],
+            runtime: rt,
+            tracker: tracker,
+            task: task,
+            runIndex: 0,
+            roleID: "test_role"
+        )
+        XCTAssertTrue(batch.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: jsonlURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: netURL.path))
+    }
+
+    /// Pins the documented ordering: rejections are grouped and logged BEFORE the
+    /// executed batch, so a rejected call emitted AFTER an executed one still lands
+    /// first in the log (not interleaved into emission position).
+    func testExecuteToolCalls_rejectionLoggedBeforeExecuted() async throws {
+        let task = makeTask()
+        let jsonlURL = tempDir.appendingPathComponent("order.jsonl")
+        let netURL = tempDir.appendingPathComponent("order.json")
+        let rt = makeRuntimeWithBothLogs(jsonlURL: jsonlURL, netURL: netURL)
+        let executed = makeToolCall(name: "list_files", args: #"{"path":"."}"#)        // idx 0
+        let rejected = makeToolCall(name: "write_file", args: #"{"path":"/x.txt","content":"hi"}"#)  // idx 1
+
+        _ = await service.executeToolCalls(
+            resolvedToolCalls: [executed, rejected],
+            allowedToolNames: ["list_files"],
+            runtime: rt,
+            tracker: tracker,
+            task: task,
+            runIndex: 0,
+            roleID: "test_role"
+        )
+
+        let lines = jsonlLines(at: jsonlURL)
+        XCTAssertEqual(lines.count, 2)
+        let writeIdx = lines.firstIndex { $0.contains("write_file") }
+        let listIdx = lines.firstIndex { $0.contains("\"list_files\"") }
+        XCTAssertNotNil(writeIdx)
+        XCTAssertNotNil(listIdx)
+        XCTAssertLessThan(writeIdx!, listIdx!,
+                          "Rejected call (emitted 2nd) is logged before the executed call (emitted 1st)")
+    }
+
+    func testExecuteToolCalls_loggingDisabled_doesNotCrash() async {
+        let task = makeTask()
+        let jsonlURL = tempDir.appendingPathComponent("none.jsonl")
+        let netURL = tempDir.appendingPathComponent("none.json")
+        // Runtime with NO loggers.
+        let (_, rt) = ToolRegistry.defaultRegistry(workFolderRoot: tempDir, toolCallsLogURL: nil)
+        let call = makeToolCall(name: "write_file", args: #"{"path":"/x.txt","content":"hi"}"#)
+
+        let batch = await service.executeToolCalls(
+            resolvedToolCalls: [call],
+            allowedToolNames: ["read_file"],
+            runtime: rt,
+            tracker: tracker,
+            task: task,
+            runIndex: 0,
+            roleID: "test_role"
+        )
+        XCTAssertEqual(batch.count, 1)
+        XCTAssertTrue(batch[0].isError)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: jsonlURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: netURL.path))
+    }
+
     func testExecuteToolCalls_authorizedTool_executes() async {
         let task = makeTask()
 

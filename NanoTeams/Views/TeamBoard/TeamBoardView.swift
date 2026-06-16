@@ -59,6 +59,19 @@ struct TeamBoardView: View {
         store.resolvedTeam(for: task)
     }
 
+    /// True when this board is showing the hidden Autovisor manager task.
+    /// Drives the Autovisor-only "Run now" toolbar button and hides "New Run".
+    var isAutovisorBoard: Bool {
+        Self.isAutovisorBoard(taskID: task?.id, autovisorTaskID: store.autovisorTaskID)
+    }
+
+    /// Pure predicate behind `isAutovisorBoard` — `WorkFolderState.autovisorTaskID`
+    /// is the single source of truth for "which task is the manager".
+    nonisolated static func isAutovisorBoard(taskID: Int?, autovisorTaskID: Int?) -> Bool {
+        guard let taskID, let autovisorTaskID else { return false }
+        return taskID == autovisorTaskID
+    }
+
     /// Whether the task is ready for final acceptance (all roles individually accepted).
     var isFinalReviewStage: Bool {
         guard let task, !isHistoricalRun else { return false }
@@ -119,6 +132,7 @@ struct TeamBoardView: View {
 
             // Right side actions
             ToolbarItemGroup(placement: .primaryAction) {
+                autovisorRunNowButton
                 acceptTaskButton
                 automationButton
                 moreActionsMenu

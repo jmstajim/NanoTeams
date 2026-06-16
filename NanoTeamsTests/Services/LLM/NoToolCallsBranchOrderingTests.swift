@@ -357,6 +357,189 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
         )
     }
 
+    // MARK: - Failed Tool-Call Card Surfacing
+    //
+    // Symptom report: «были ошибки в tool call, но в Team Activity они не показываются»
+    // ("there were errors in the tool call, but they don't show in Team Activity"). When a
+    // Harmony tool-call envelope can't be parsed into a dispatched call, no StepToolCall was
+    // ever created — so the feed had nothing to render and the error was invisible. These
+    // pin that an unparseable / name-missing attempt now leaves a visible, errored card.
+    //
+    // Real-flow shape: once a Harmony marker is seen mid-stream the envelope is routed to
+    // `harmonyBuffer` (not `assistantContent`), so the card source reads harmonyBuffer.
+
+    private func latestToolCalls() -> [StepToolCall] {
+        mockDelegate.taskToMutate?.runs.last?.steps.first?.toolCalls ?? []
+    }
+
+    func testMalformedHarmonyCall_recordsErroredToolCallCard() async {
+        // gemma-4-26b-a4b shape: a create_artifact envelope with a dropped comma after the
+        // tool name — robustly unrecoverable (no repair targets it, no content re-escape can
+        // bridge a missing structural comma). assistantContent is whitespace (the reasoning
+        // tail), the envelope lives in harmonyBuffer — exactly the real streaming shape.
+        let envelope = "<|call|>{\"name\":\"create_artifact\" \"arguments\":{\"name\":\"Engineering Notes\",\"content\":\"notes\"}}<|end|>"
+        var messages: [ChatMessage] = []
+        let stop = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "\n\n",
+            sawHarmonyMarker: true,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            harmonyBuffer: envelope
+        )
+        guard case .continueLoop = stop else {
+            XCTFail("Expected .continueLoop, got \(stop)")
+            return
+        }
+        // The existing malformed-JSON retry nudge is still sent (card is additive).
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertTrue(messages[0].content?.contains("malformed JSON") == true)
+        // The new visible card:
+        let cards = latestToolCalls()
+        XCTAssertEqual(cards.count, 1, "Exactly one failed-attempt card recorded")
+        XCTAssertEqual(cards.first?.name, "malformed_tool_call")
+        XCTAssertEqual(cards.first?.isError, true)
+        // Structured result envelope (not just a substring): ok:false + the parse-failure code.
+        let result = JSONUtilities.parseJSONDictionary(cards.first?.resultJSON ?? "")
+        XCTAssertEqual(result?["ok"] as? Bool, false)
+        XCTAssertEqual((result?["error"] as? [String: Any])?["code"] as? String, "MALFORMED_TOOL_CALL")
+        // The extracted `{…}` call body is stored verbatim (the braced span, markers stripped) —
+        // asserting the exact string distinguishes the extract path from the raw-buffer fallback.
+        XCTAssertEqual(cards.first?.argumentsJSON,
+                       #"{"name":"create_artifact" "arguments":{"name":"Engineering Notes","content":"notes"}}"#,
+                       "argumentsJSON must be the exact extracted call envelope, not the raw <|call|>…<|end|> buffer")
+    }
+
+    func testMissingToolNameHarmonyCall_recordsCardNamedAfterInferredTool() async {
+        // Valid JSON, no top-level `name` (the qwen `{"arguments":{…}}` shape) → inferred as
+        // create_artifact. The card names the inferred tool so the user sees what was attempted.
+        let envelope = "<|call|>{\"arguments\":{\"content\":\"PRD\",\"format\":\"markdown\",\"name\":\"Product Requirements\"}}<|end|>"
+        var messages: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "",
+            sawHarmonyMarker: true,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            harmonyBuffer: envelope
+        )
+        let cards = latestToolCalls()
+        XCTAssertEqual(cards.count, 1)
+        XCTAssertEqual(cards.first?.name, "create_artifact",
+                       "Card names the inferred tool for a name-missing attempt")
+        XCTAssertEqual(cards.first?.isError, true)
+        XCTAssertTrue(cards.first?.resultJSON?.contains("MISSING_TOOL_NAME") == true)
+    }
+
+    func testChannelOnlyResponse_recordsNoCard() async {
+        // gemma sometimes emits a `<|channel|>` with no `<|call|>` block — a formatting
+        // hiccup, NOT a tool-call attempt. Must not spawn a noise card.
+        let buffer = "<|channel|>commentary<|message|>Let me consider the next step."
+        var messages: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "",
+            sawHarmonyMarker: true,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            harmonyBuffer: buffer
+        )
+        XCTAssertTrue(latestToolCalls().isEmpty,
+                      "A channel-only response is not a tool-call attempt → no card")
+    }
+
+    func testInlinedRoleTurn_recordsNoCard() async {
+        // `.noEnvelopeAttempt`: the model emitted an inlined role turn, not a tool call.
+        let buffer = "<|start|>userPlease continue<|end|>"
+        var messages: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "",
+            sawHarmonyMarker: true,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            harmonyBuffer: buffer
+        )
+        XCTAssertTrue(latestToolCalls().isEmpty,
+                      "An inlined role turn is not a tool-call attempt → no card")
+    }
+
+    func testMalformedCall_noBracedBody_storesRawBufferVerbatim() async {
+        // `<|call|>` present but no `{` follows (truncated / garbled body) → extractCallEnvelope
+        // returns nil and the card falls back to storing the RAW buffer verbatim. Pins the
+        // `?? envelope` fallback contract (the riskiest single line: a regression in
+        // extractCallEnvelope would silently change what's stored).
+        let buffer = "<|call|>\n\nnot json at all<|end|>"
+        var messages: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "\n\n",
+            sawHarmonyMarker: true,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            harmonyBuffer: buffer
+        )
+        let cards = latestToolCalls()
+        XCTAssertEqual(cards.count, 1)
+        XCTAssertEqual(cards.first?.name, "malformed_tool_call")
+        XCTAssertEqual(cards.first?.isError, true)
+        XCTAssertEqual(cards.first?.argumentsJSON, buffer,
+                       "No braced body → the whole raw buffer is stored verbatim (fallback path)")
+    }
+
+    func testMissingToolName_envelopeOnlyInThinking_recordsCardFromThinkingSource() async {
+        // Reasoning-channel fallback: the envelope lands in `thinkingContent`, not
+        // `harmonyBuffer`. Pins the second `envelopeSource` branch (`thinkingContent.contains("<|")`)
+        // routes to the card — not just to the retry nudge.
+        let thinking = "<|call|>{\"arguments\":{\"content\":\"X\",\"name\":\"Design Spec\"}}<|end|>"
+        var messages: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "",
+            sawHarmonyMarker: true,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            thinkingContent: thinking,
+            harmonyBuffer: ""
+        )
+        let cards = latestToolCalls()
+        XCTAssertEqual(cards.count, 1, "Card must be sourced from thinkingContent when harmonyBuffer is empty")
+        XCTAssertEqual(cards.first?.name, "create_artifact")
+        XCTAssertEqual(cards.first?.isError, true)
+        XCTAssertTrue(cards.first?.resultJSON?.contains("MISSING_TOOL_NAME") == true)
+        XCTAssertTrue(cards.first?.argumentsJSON.contains("Design Spec") == true,
+                      "Arguments must be extracted from the thinking-channel envelope")
+    }
+
+    func testMissingToolName_unrecognizableShape_recordsUnknownToolCard() async {
+        // Valid JSON, no top-level `name`, and a shape `inferToolNameFromShape` cannot
+        // recognize → `.missingToolName(nil)` → the `"unknown_tool"` fallback literal that
+        // ships to the UI card. Pins the `inferred ?? "unknown_tool"` coalescing.
+        let buffer = "<|call|>{\"arguments\":{\"unrecognized\":\"x\"}}<|end|>"
+        var messages: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "",
+            sawHarmonyMarker: true,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            harmonyBuffer: buffer
+        )
+        let cards = latestToolCalls()
+        XCTAssertEqual(cards.count, 1)
+        XCTAssertEqual(cards.first?.name, "unknown_tool",
+                       "An unrecognizable name-missing shape falls back to the unknown_tool literal")
+        XCTAssertEqual(cards.first?.isError, true)
+        XCTAssertTrue(cards.first?.resultJSON?.contains("MISSING_TOOL_NAME") == true)
+    }
+
     // MARK: - Thinking-Drift Escalation (Run 13 regression)
 
     /// Run 13 symptom: qwen3.5-35b-a3b SWE emitted a 61,630-char `thinking`

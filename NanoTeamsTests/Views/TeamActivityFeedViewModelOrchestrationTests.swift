@@ -342,6 +342,58 @@ final class TeamActivityFeedViewModelOrchestrationTests: XCTestCase {
                        "filterRoleID fallback via systemRoleID must match the step")
     }
 
+    // MARK: - Single-run rendering (Autovisor passes are isolated per run)
+
+    /// The displayed run's parked step surfaces as the live composer question.
+    func testRecomputeSteps_latestRunPark_surfacedAsActiveQuestion() {
+        let role = makeRole(id: "r1")
+        let parked = StepExecution(id: "r1", role: .custom(id: "r1"), title: "latest",
+                                   status: .needsSupervisorInput, needsSupervisorInput: true,
+                                   supervisorQuestion: AutovisorConstants.idleParkQuestion)
+        let ctx = makeContext(run: Run(id: 1, steps: [parked]), roles: [role])
+
+        viewModel.recomputeSteps(context: ctx)
+
+        XCTAssertEqual(viewModel.cachedSupervisorQuestions.count, 1,
+                       "the displayed run's park is the live question")
+    }
+
+    /// A freshly-appended Autovisor pass (a new run) renders ONLY the displayed
+    /// (latest) run's steps — prior passes are not merged into the live feed; they
+    /// remain reachable via the run-history picker. The displayed run is `runs.last`.
+    func testRecomputeSteps_freshPass_rendersOnlyLatestRunSteps() {
+        let role = makeRole(id: "r1")
+        let priorRun = Run(id: 0, steps: [makeStep(roleDefinitionID: "r1")])
+        let latestRun = Run(id: 1, steps: [makeStep(roleDefinitionID: "r1"),
+                                           makeStep(roleDefinitionID: "r1")])
+        let runs = [priorRun, latestRun]
+        let ctx = makeContext(run: runs.last, roles: [role])
+
+        viewModel.recomputeSteps(context: ctx)
+
+        XCTAssertEqual(viewModel.cachedAllSteps.count, latestRun.steps.count,
+                       "only the latest run's steps render; the prior pass is not merged")
+    }
+
+    /// Mirror image: selecting a PRIOR Autovisor run via the run-history picker
+    /// renders THAT run's steps, not the latest. Pins the read-only/history path —
+    /// the behavioral contract the continuous-merge removal actually changed (the
+    /// merge used to be suppressed for historical runs; now it's simply absent, so
+    /// the displayed run is rendered verbatim regardless of which run is selected).
+    func testRecomputeSteps_historicalRunSelected_rendersThatRunsSteps() {
+        let role = makeRole(id: "r1")
+        let priorRun = Run(id: 0, steps: [makeStep(roleDefinitionID: "r1")])
+        let latestRun = Run(id: 1, steps: [makeStep(roleDefinitionID: "r1"),
+                                           makeStep(roleDefinitionID: "r1")])
+        _ = latestRun  // exists in task.runs but is NOT the displayed run
+        let ctx = makeContext(run: priorRun, roles: [role])  // history picker chose run 0
+
+        viewModel.recomputeSteps(context: ctx)
+
+        XCTAssertEqual(viewModel.cachedAllSteps.count, priorRun.steps.count,
+                       "the selected historical run's steps render, not the latest run's")
+    }
+
     // MARK: - Fingerprint Sensitivity
 
     /// Each tracked field in `TimelineFingerprint` must actually flip the fingerprint when changed.

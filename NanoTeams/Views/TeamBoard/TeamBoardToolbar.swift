@@ -47,6 +47,24 @@ extension TeamBoardView {
         }
     }
 
+    /// "Run now" — Autovisor board only. Native toolbar button (icon + label) that
+    /// starts a fresh manager review pass via `startAutovisorPass`, which supersedes a
+    /// parked (`wait_for_events`) engine that plain `startRun` no-ops on. Sits in the
+    /// right toolbar cluster, just right of the "Autovisor / Next run" title.
+    @ViewBuilder
+    var autovisorRunNowButton: some View {
+        if isAutovisorBoard, !isHistoricalRun, let task {
+            Button {
+                Task { await store.startAutovisorPass(taskID: task.id) }
+            } label: {
+                Label("Run now", systemImage: "play.fill")
+                    .foregroundStyle(.secondary)
+            }
+            .labelStyle(.titleAndIcon)
+            .help("Start a fresh Autovisor review pass now")
+        }
+    }
+
     @ViewBuilder
     var acceptTaskButton: some View {
         if !isHistoricalRun,
@@ -101,8 +119,10 @@ extension TeamBoardView {
 
     var moreActionsMenu: some View {
         Menu {
-            // New Run — always available, pauses current run first
-            if let task {
+            // New Run — always available, pauses current run first.
+            // Hidden on the Autovisor board: its "Run now" toolbar button replaces
+            // it (plain startRun no-ops on a parked manager).
+            if let task, !isAutovisorBoard {
                 Button {
                     Task {
                         let taskState = engineState.taskEngineStates[task.id]

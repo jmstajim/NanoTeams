@@ -24,10 +24,11 @@ extension LLMExecutionService {
         result: StreamingResult,
         roleForMessage: Role,
         task: NTMSTask,
-        runIndex _: Int,
+        runIndex: Int,
         stepIndex _: Int,
         tracker _: ToolCallTracker,
         roleDefinition: TeamRoleDefinition?,
+        runtime: ToolRuntime? = nil,
         conversationMessages: inout [ChatMessage]
     ) async -> LLMStepStop {
         // Thinking-drift detection: the model produced a long reasoning trace with
@@ -129,7 +130,23 @@ extension LLMExecutionService {
         // usually whitespace that would otherwise match tokens-only and send an
         // unrelated retry.
         if result.sawHarmonyMarker {
-            let issue = ToolCallParsingHelpers.classifyHarmonyCallIssue(in: result.assistantContent)
+            // The raw envelope is in `harmonyBuffer` once a Harmony marker was seen mid-stream
+            // (or `thinkingContent` for the reasoning-channel fallback) — NOT `assistantContent`,
+            // which holds only the pre-marker prose. Classify and surface from there.
+            let envelopeSource: String = {
+                if !result.harmonyBuffer.isEmpty { return result.harmonyBuffer }
+                if result.thinkingContent.contains("<|") { return result.thinkingContent }
+                return result.assistantContent
+            }()
+            let issue = ToolCallParsingHelpers.classifyHarmonyCallIssue(in: envelopeSource)
+            // Surface the failed attempt as a visible, errored feed card. Without this the
+            // model's malformed / name-missing tool call never becomes a `StepToolCall` and is
+            // invisible in Team Activity (only a retry nudge appears in the conversation).
+            let runID = task.runs.indices.contains(runIndex)
+                ? task.runs[runIndex].id : (task.runs.last?.id ?? 0)
+            await recordFailedToolCallAttemptIfNeeded(
+                stepID: stepID, taskID: task.id, runID: runID, issue: issue, envelope: envelopeSource,
+                runtime: runtime)
             let retryMessage: String?
             switch issue {
             case .missingToolName(let inferredToolName):
@@ -283,6 +300,81 @@ extension LLMExecutionService {
         conversationMessages.append(ChatMessage(role: .user, content: retryMessage))
         await appendLLMMessage(stepID: stepID, taskID: task.id, role: .user, content: retryMessage)
         return .continueLoop
+    }
+
+    // MARK: - Failed Tool-Call Surfacing
+
+    /// Surfaces a tool-call attempt the parser could not dispatch (`.malformedJSON` with an
+    /// actual `<|call|>` block, or `.missingToolName`) as a visible, errored `StepToolCall`
+    /// card. Without it the failed attempt is invisible in Team Activity — only a retry nudge
+    /// appears in the conversation. UI/audit-only: the card lives in `step.toolCalls` (which
+    /// the feed renders one card per entry) and never reaches the LLM wire conversation, which
+    /// is built from `step.llmConversation`. A `<|channel|>`-only buffer or an inlined role
+    /// turn (`.noEnvelopeAttempt`) is NOT a tool-call attempt → no card (avoids noise).
+    private func recordFailedToolCallAttemptIfNeeded(
+        stepID: String,
+        taskID: Int,
+        runID: Int,
+        issue: ToolCallParsingHelpers.HarmonyCallIssue,
+        envelope: String,
+        runtime: ToolRuntime? = nil
+    ) async {
+        let name: String
+        let code: String
+        let message: String
+        switch issue {
+        case .missingToolName(let inferred):
+            name = inferred ?? "unknown_tool"
+            code = "MISSING_TOOL_NAME"
+            message = "Tool-call JSON parsed but had no top-level `name` field; not dispatched."
+        case .malformedJSON:
+            // Only surface when an actual call block was attempted — a channel-only or
+            // token-only buffer is a formatting hiccup, not a tool-call attempt.
+            guard envelope.contains(CallMarkerStrategy.callMarker) else { return }
+            name = "malformed_tool_call"
+            code = "MALFORMED_TOOL_CALL"
+            message = "Tool-call JSON could not be parsed; not dispatched."
+        case .noEnvelopeAttempt:
+            return
+        }
+        let rawEnvelope = Self.extractCallEnvelope(from: envelope) ?? envelope
+        let resultJSON = JSONUtilities.jsonStringForToolArgs([
+            "ok": false,
+            "error": ["code": code, "message": message],
+        ])
+        let card = StepToolCall(
+            name: name, argumentsJSON: rawEnvelope, resultJSON: resultJSON, isError: true)
+        await appendToolCalls(stepID: stepID, taskID: taskID, toolCalls: [card])
+
+        // Mirror into BOTH per-run logs (tool_calls.jsonl + network_log.json) with the
+        // SAME name/envelope as the card, so both audits match the feed. Off the main
+        // actor (the loggers do synchronous file I/O). Gated to the same cases that
+        // produced a card — channel-only / `.noEnvelopeAttempt` returned above, so no
+        // record here either.
+        if let runtime {
+            Task.detached { [runtime] in
+                runtime.logNonExecutedCall(
+                    taskID: taskID,
+                    runID: runID,
+                    roleID: stepID,
+                    toolName: name,
+                    argumentsJSON: rawEnvelope,
+                    resultJSON: resultJSON,
+                    errorMessage: message
+                )
+            }
+        }
+    }
+
+    /// Extracts the `{…}` JSON body of the first `<|call|>` block for the failed card's
+    /// arguments. Returns nil when no call envelope is present (caller stores the buffer
+    /// verbatim — `StepToolCall.argumentsJSON` may hold partial/invalid JSON by contract).
+    private static func extractCallEnvelope(from text: String) -> String? {
+        guard let callRange = text.range(of: CallMarkerStrategy.callMarker) else { return nil }
+        let tail = text[callRange.upperBound...]
+        let start = ToolCallParsingHelpers.skipWhitespace(in: tail, from: tail.startIndex)
+        guard start < tail.endIndex, tail[start] == "{" else { return nil }
+        return ToolCallParsingHelpers.extractJSONBracedValue(in: tail, from: start)?.0
     }
 
     // MARK: - Stream Loop Break (top-level)

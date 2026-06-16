@@ -48,6 +48,23 @@ final class EndToEndRoleAcceptanceReviewTests: NTMSOrchestratorTestBase {
         return id
     }
 
+    /// Seeds a single-step task whose role sits at an arbitrary `roleStatus`,
+    /// for exercising `acceptRole`'s status guard.
+    private func seedTask(roleStatus: RoleExecutionStatus) async -> Int {
+        await sut.openWorkFolder(tempDir)
+        let id = await sut.createTask(title: "T", supervisorTask: "x")!
+        await sut.mutateTask(taskID: id) { task in
+            let step = StepExecution(
+                id: "pm", role: .productManager, title: "PM",
+                status: .done, completedAt: MonotonicClock.shared.now()
+            )
+            var run = Run(id: 0, steps: [step], roleStatuses: ["pm": roleStatus])
+            run.updatedAt = MonotonicClock.shared.now()
+            task.runs = [run]
+        }
+        return id
+    }
+
     // MARK: - Scenario 1: acceptRole flips status
 
     func testAcceptRole_flipsStatusToAccepted() async {
@@ -231,5 +248,103 @@ final class EndToEndRoleAcceptanceReviewTests: NTMSOrchestratorTestBase {
         XCTAssertEqual(statuses["pm"], .accepted)
         XCTAssertEqual(statuses["tech_lead"], .accepted)
         XCTAssertEqual(statuses["software_engineer"], .accepted)
+    }
+
+    // MARK: - Scenario 9: acceptRole status guard (honest rejection, no spurious transition)
+
+    /// The Autovisor "accepts every done role" bug at its root: accepting a role that is
+    /// already `.done` (no acceptance gate) must be REJECTED, not silently overwrite
+    /// `.done` → `.accepted` and report success.
+    func testAcceptRole_onDoneRole_rejectedAndUnchanged() async {
+        let id = await seedTask(roleStatus: .done)
+        let ok = await sut.acceptRole(taskID: id, roleID: "pm")
+        XCTAssertFalse(ok, "accepting an already-done role must fail")
+        XCTAssertEqual(sut.loadedTask(id)?.runs.last?.roleStatuses["pm"], .done,
+                       "a rejected accept must NOT mutate the role status")
+        XCTAssertEqual(sut.lastErrorMessage, "Role already completed")
+    }
+
+    func testAcceptRole_onAcceptedRole_rejected() async {
+        let id = await seedTask(roleStatus: .accepted)
+        let ok = await sut.acceptRole(taskID: id, roleID: "pm")
+        XCTAssertFalse(ok)
+        XCTAssertEqual(sut.loadedTask(id)?.runs.last?.roleStatuses["pm"], .accepted)
+        XCTAssertEqual(sut.lastErrorMessage, "Role already accepted")
+    }
+
+    /// Future-proofing meta-guard: iterate EVERY `RoleExecutionStatus` (CaseIterable) and assert
+    /// ONLY `.needsAcceptance` is acceptable. A status added later is auto-covered — the
+    /// hand-enumerated tests above would otherwise silently leave a new case untested.
+    func testAcceptRole_onlyNeedsAcceptanceIsAccepted_acrossAllStatuses() async {
+        await sut.openWorkFolder(tempDir)
+        for status in RoleExecutionStatus.allCases {
+            let id = await sut.createTask(title: "T", supervisorTask: "x")!
+            await sut.mutateTask(taskID: id) { task in
+                let step = StepExecution(id: "pm", role: .productManager, title: "PM", status: .done)
+                task.runs = [Run(id: 0, steps: [step], roleStatuses: ["pm": status])]
+            }
+            let ok = await sut.acceptRole(taskID: id, roleID: "pm")
+            if status == .needsAcceptance {
+                XCTAssertTrue(ok, "\(status) must be acceptable")
+                XCTAssertEqual(sut.loadedTask(id)?.runs.last?.roleStatuses["pm"], .accepted)
+            } else {
+                XCTAssertFalse(ok, "\(status) must NOT be acceptable")
+                XCTAssertEqual(sut.loadedTask(id)?.runs.last?.roleStatuses["pm"], status,
+                               "\(status) must be left unchanged on rejection")
+            }
+        }
+    }
+
+    // MARK: - Scenario 10: degenerate / no-side-effect guard paths
+
+    /// Degenerate guard: the step exists but has NO `roleStatuses` entry (e.g. before the
+    /// engine seeds statuses). `acceptRole` must reject ("Role not found") and must NOT
+    /// fabricate an `.accepted` entry from nothing — which the pre-fix unconditional write did.
+    func testAcceptRole_roleHasNoStatusEntry_rejectedWithoutCreatingOne() async {
+        await sut.openWorkFolder(tempDir)
+        let id = await sut.createTask(title: "T", supervisorTask: "x")!
+        await sut.mutateTask(taskID: id) { task in
+            let step = StepExecution(id: "pm", role: .productManager, title: "PM", status: .done)
+            task.runs = [Run(id: 0, steps: [step], roleStatuses: [:])]  // no entry for "pm"
+        }
+        let ok = await sut.acceptRole(taskID: id, roleID: "pm")
+        XCTAssertFalse(ok)
+        XCTAssertEqual(sut.lastErrorMessage, "Role not found: pm")
+        XCTAssertNil(sut.loadedTask(id)?.runs.last?.roleStatuses["pm"],
+                     "rejecting must NOT fabricate an .accepted entry from a missing key")
+    }
+
+    /// A rejected accept performs no write — the guard returns before `mutateTask`, so
+    /// `run.updatedAt` is untouched (no spurious persistence on the reject path).
+    func testAcceptRole_rejection_doesNotBumpRunUpdatedAt() async {
+        let id = await seedTask(roleStatus: .done)
+        let before = sut.loadedTask(id)?.runs.last?.updatedAt
+        XCTAssertNotNil(before)
+        _ = await sut.acceptRole(taskID: id, roleID: "pm")
+        XCTAssertEqual(sut.loadedTask(id)?.runs.last?.updatedAt, before,
+                       "a rejected accept must not persist any mutation")
+    }
+
+    /// Corner: `acceptRole` is scoped to the LATEST run. A role that was `.needsAcceptance` in
+    /// an OLD run but `.done` in the current run is rejected (it reads `runs.last`), and neither
+    /// run is mutated.
+    func testAcceptRole_scopedToLatestRun_oldRunNeedsAcceptanceIgnored() async {
+        await sut.openWorkFolder(tempDir)
+        let id = await sut.createTask(title: "T", supervisorTask: "x")!
+        await sut.mutateTask(taskID: id) { task in
+            let oldStep = StepExecution(id: "pm", role: .productManager, title: "PM", status: .done)
+            let newStep = StepExecution(id: "pm", role: .productManager, title: "PM", status: .done)
+            task.runs = [
+                Run(id: 0, steps: [oldStep], roleStatuses: ["pm": .needsAcceptance]),  // historical
+                Run(id: 1, steps: [newStep], roleStatuses: ["pm": .done]),             // current
+            ]
+        }
+        let ok = await sut.acceptRole(taskID: id, roleID: "pm")
+        XCTAssertFalse(ok, "the latest run's .done status governs, not the old run's .needsAcceptance")
+        XCTAssertEqual(sut.lastErrorMessage, "Role already completed")
+        XCTAssertEqual(sut.loadedTask(id)?.runs.last?.roleStatuses["pm"], .done,
+                       "the current run is untouched")
+        XCTAssertEqual(sut.loadedTask(id)?.runs.first?.roleStatuses["pm"], .needsAcceptance,
+                       "the historical run is never touched by acceptRole")
     }
 }

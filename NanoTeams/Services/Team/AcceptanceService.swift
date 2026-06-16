@@ -53,18 +53,21 @@ extension AcceptanceService {
 
     // MARK: - Should Request Acceptance
 
-    /// Determines whether Supervisor acceptance should be requested for a role.
+    /// Determines whether per-role Supervisor acceptance should be requested when a role
+    /// completes. This is the *intermediate* per-role gate only — the final deliverable is
+    /// always approved by the task-level review (`derivedStatusFromActiveRun` →
+    /// `.needsSupervisorAcceptance` once all steps are `.done` and all roles `.isComplete`).
+    /// So no mode needs to gate the terminal role here: doing so would hold the terminal role
+    /// at `.needsAcceptance` (not `.isComplete`), which suppresses the real final-review window.
     /// - Parameters:
     ///   - roleID: The role that completed work
     ///   - mode: The acceptance mode in effect
     ///   - checkpoints: Custom checkpoints (for customCheckpoints mode)
-    ///   - isLastRole: Whether this is the final role in the execution
-    /// - Returns: True if acceptance should be requested
+    /// - Returns: True if a per-role acceptance gate should be requested
     static func shouldRequestAcceptance(
         roleID: String,
         mode: AcceptanceMode,
-        checkpoints: Set<String>,
-        isLastRole: Bool
+        checkpoints: Set<String>
     ) -> Bool {
         switch mode {
         case .afterEachArtifact:
@@ -76,12 +79,13 @@ extension AcceptanceService {
             return true
 
         case .finalOnly:
-            // Only request after the final role
-            return isLastRole
+            // No per-role gate — the task-level final review IS the "final only" approval.
+            return false
 
         case .customCheckpoints:
-            // Request if this role is in the checkpoint list, or if it's the last role
-            return checkpoints.contains(roleID) || isLastRole
+            // Gate only Supervisor-selected checkpoints; the last role is covered by the
+            // task-level final review.
+            return checkpoints.contains(roleID)
         }
     }
 

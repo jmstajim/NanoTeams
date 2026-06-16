@@ -133,6 +133,30 @@ extension NTMSOrchestrator {
             return step.id
         }
 
+        // Roster-swap guard (defense-in-depth). This is the chokepoint where a
+        // deleted-team fallback previously commingled a SECOND roster into one run
+        // (e.g. two "Tech Lead" steps from two teams). A nil return marks the role
+        // `.failed` in the engine.
+        let run = task.runs[runIndex]
+        if let pinned = run.teamID {
+            // Pinned run: the role MUST belong to the pinned team, which must exist.
+            guard let pinnedTeam = workFolder?.team(withID: pinned) else {
+                lastErrorMessage = "Refusing to seed role '\(roleID)' into run \(run.id): pinned team '\(pinned)' no longer exists."
+                return nil
+            }
+            guard pinnedTeam.findRole(byIdentifier: roleID) != nil else {
+                lastErrorMessage = "Refusing to seed role '\(roleID)' into run \(run.id): it is not a member of pinned team '\(pinned)'. Roster swap blocked."
+                return nil
+            }
+        } else if let anchorRoleID = run.steps.first?.effectiveRoleID,
+                  let rosterTeam = workFolder?.teams.first(where: { $0.findRole(byIdentifier: anchorRoleID) != nil }),
+                  rosterTeam.findRole(byIdentifier: roleID) == nil {
+            // Legacy run without a pinned teamID: infer the roster from an existing
+            // step and refuse any role outside it.
+            lastErrorMessage = "Refusing to seed role '\(roleID)' into run \(run.id): it is not a member of the run's team '\(rosterTeam.name)'. Roster swap blocked."
+            return nil
+        }
+
         let taskTeam = resolvedTeam(for: task)
         guard let step = taskTeam.makeStep(forRoleID: roleID) else { return nil }
 

@@ -216,15 +216,12 @@ extension TeamEngine {
             teamSettings: store.teamSettings
         )
 
-        // Determine if this is the last role
-        let isLastRole = isLastRoleToComplete(roleID: roleID)
-
-        // Check if acceptance is needed
+        // Check if a per-role acceptance gate is needed. The terminal role is NOT gated
+        // here — it's covered by the task-level final review (see shouldRequestAcceptance).
         let needsAcceptance = AcceptanceService.shouldRequestAcceptance(
             roleID: roleID,
             mode: acceptanceMode,
-            checkpoints: checkpoints,
-            isLastRole: isLastRole
+            checkpoints: checkpoints
         )
 
         if needsAcceptance {
@@ -236,24 +233,4 @@ extension TeamEngine {
         }
     }
 
-    func isLastRoleToComplete(roleID: String) -> Bool {
-        guard let store else { return true }
-        guard let run = store.activeTask?.runs.last else { return true }
-
-        let roleStatuses = run.roleStatuses
-        let roles = store.activeTeam?.roles ?? []
-
-        for role in roles {
-            guard !role.isSupervisor else { continue }
-            guard !role.isObserver else { continue }
-            guard role.id != roleID else { continue }  // Skip the completing role
-
-            let status = roleStatuses[role.id] ?? .idle
-            if !status.isComplete {
-                return false
-            }
-        }
-
-        return true
-    }
 }

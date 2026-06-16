@@ -120,10 +120,12 @@ nonisolated extension NTMSRepository {
 
                 let role = teams[i].roles[r]
                 let nextPrompt = bundled.prompt
-                // The Autovisor manager's tool policy is additive by design —
-                // `syncAutovisorTeamToTemplate` union-enforces mandatory tools on
-                // every open and never removes user-toggled optional tools. Keep
-                // the stored toolIDs instead of the bundled overwrite.
+                // The Autovisor manager's tool policy is owned by
+                // `syncAutovisorTeamToTemplate` (runs on every open): it union-enforces the
+                // mandatory tools, preserves the user's choices among the allowed-optional
+                // tools, and strips any tool outside the allowed set (mandatory ∪ optional).
+                // Keep the stored toolIDs here instead of the bundled overwrite so that
+                // policy isn't fought by the reconcile.
                 let nextToolIDs = tid == AutovisorConstants.teamTemplateID
                     ? role.toolIDs : bundled.toolIDs
                 let nextDeps = bundled.dependencies

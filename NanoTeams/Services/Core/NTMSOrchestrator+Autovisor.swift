@@ -318,6 +318,44 @@ extension NTMSOrchestrator {
         }
     }
 
+    /// True when the manager's latest-run step already carries an unprocessed HUMAN
+    /// answer — text and/or attachments. Uses `effectiveSupervisorAnswer` (the same
+    /// signal `resumeRun` consumes) so an attachment-only answer (empty text, files
+    /// attached → `supervisorAnswer == nil` but `effectiveSupervisorAnswer != nil`)
+    /// is still covered; keying on raw `supervisorAnswer` would leave that case
+    /// unprotected (CLAUDE.md: always read `effectiveSupervisorAnswer`). The idle
+    /// park clears the answer (`setNeedsSupervisorInput`), so a non-nil, non-auto
+    /// answer is unambiguous "answered, awaiting resume" — an event/recurrence
+    /// supersede in that window would `createNewRun` and orphan it on the old run
+    /// (data loss). Pure/static for unit testing. Latest run only.
+    nonisolated static func taskHasPendingHumanAnswer(_ task: NTMSTask?) -> Bool {
+        task?.runs.last?.steps.contains {
+            $0.effectiveSupervisorAnswer != nil && !$0.supervisorAnswerWasAuto
+        } ?? false
+    }
+
+    /// Whether the manager has any pending HUMAN continuation — either a queued human
+    /// message not yet flushed, OR an answer already written to the parked step. The
+    /// supersede paths defer to the human-driven resume instead, which continues the
+    /// SAME run. Why BOTH arms: a supersede while an answer is already written would
+    /// `createNewRun` and orphan it on the old run (DATA LOSS); a still-queued message
+    /// would itself survive a supersede (it re-drains on the fresh run — see
+    /// `fireRecurrence`'s queue-preservation), but deferring keeps session continuity
+    /// and avoids a needless reset. Checking both also closes the race fully:
+    /// `flushQueuedChatMessage` pops synchronously and flows synchronously into
+    /// `answerSupervisorQuestion` → `mutateTask`, whose in-memory answer write runs in
+    /// `mutateTask`'s prologue BEFORE its first actor-yielding suspension (the detached
+    /// disk write). So between "popped" and "written" there is no main-actor yield —
+    /// the guard always observes the queued message (before pop) or the written answer
+    /// (after), never the gap. (A future edit that inserts a yielding `await` before
+    /// that write would reopen the window.) Automated queue entries (event notices, the
+    /// Autovisor's own `message_task`) are excluded — they must NOT block a supersede.
+    func autovisorHasPendingHumanContinuation(_ managerID: Int) -> Bool {
+        if Self.taskHasPendingHumanAnswer(loadedTask(managerID)) { return true }
+        return (quickCaptureFormState?.queuedMessages(for: managerID) ?? [])
+            .contains { !$0.isFromAutomatedSupervisor }
+    }
+
     /// UI affordance gate: skip attention treatments (sidebar icon pulse) while the
     /// manager is idle-parked. Falls back to `false` (= keep the attention treatment)
     /// when the task isn't loaded. No flicker race with the engine state — the
@@ -426,6 +464,17 @@ extension NTMSOrchestrator {
             // `created` has no state transition that clears its level — mark the
             // notified tasks seen so the condition goes quiet once delivered.
             autovisorSeenTaskIDs.formUnion(fresh.filter { $0.trigger == .created }.map(\.taskID))
+            return
+        }
+
+        // A human message/answer is pending to the parked step (queued or already
+        // written; resume is imminent). Superseding now would `createNewRun` and
+        // orphan it on the old run (data loss). Defer to the resume — it continues
+        // the SAME run; the event stays live (level-triggered) and injects once the
+        // manager hits `.running` (the observer re-fires on that transition). No
+        // debounce stamp / no seen update here so the event remains deliverable.
+        if taskEngineStates[managerID] == .needsSupervisorInput,
+           autovisorHasPendingHumanContinuation(managerID) {
             return
         }
 
@@ -804,8 +853,9 @@ extension NTMSOrchestrator {
     private func applyManageRole(taskID: Int, roleID: String, verb: RoleVerb) async -> AutovisorActionResult {
         // Every role verb needs a real role in the task's latest run. A hallucinated
         // role_id would otherwise set a status for a nonexistent role (a §7 no-op)
-        // and report success. `accept` is the one verb whose own Bool already covers
-        // this, but validating up front gives a clearer message for all verbs.
+        // and report success. `accept`'s own Bool already covers this AND rejects a role
+        // that isn't `.needsAcceptance` (via `acceptRole`'s status guard), but validating
+        // existence up front gives a clearer message for all verbs.
         guard resolveManagedRoleStep(taskID: taskID, roleID: roleID) != nil else {
             return .failure("Task #\(taskID) has no role '\(roleID)' — call task_status for valid role_ids.")
         }

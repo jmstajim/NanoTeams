@@ -98,6 +98,71 @@ final class NetworkLoggerTests: XCTestCase {
         XCTAssertEqual(decoded.count, 1)
     }
 
+    // MARK: - Tool-call audit records (.toolCall)
+
+    func testCreateToolCallRecord_setsDirectionAndFields() throws {
+        let record = NetworkLogger.createToolCallRecord(
+            toolName: "read_file",
+            argumentsJSON: #"{"path":"a.swift"}"#,
+            resultJSON: #"{"ok":true}"#,
+            errorMessage: nil,
+            stepID: "eng_step"
+        )
+
+        XCTAssertEqual(record.direction, .toolCall)
+        XCTAssertEqual(record.stepID, "eng_step")
+        XCTAssertNil(record.errorMessage)
+        XCTAssertNil(record.statusCode)
+        // Body is itself valid JSON carrying the tool name + result.
+        let body = try XCTUnwrap(record.body)
+        let obj = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any])
+        XCTAssertEqual(obj["event"] as? String, "tool_call")
+        XCTAssertEqual(obj["tool"] as? String, "read_file")
+        XCTAssertEqual(obj["arguments"] as? String, #"{"path":"a.swift"}"#)
+        XCTAssertEqual(obj["result"] as? String, #"{"ok":true}"#)
+    }
+
+    func testCreateToolCallRecord_carriesRoleName() {
+        let record = NetworkLogger.createToolCallRecord(
+            toolName: "read_file", argumentsJSON: "{}", resultJSON: nil,
+            errorMessage: nil, stepID: "eng", roleName: "Software Engineer")
+        XCTAssertEqual(record.roleName, "Software Engineer")
+        XCTAssertEqual(record.direction, .toolCall)
+    }
+
+    func testCreateToolCallRecord_carriesErrorMessage() {
+        let record = NetworkLogger.createToolCallRecord(
+            toolName: "malformed_tool_call",
+            argumentsJSON: "{ broken",
+            resultJSON: #"{"ok":false,"error":{"code":"MALFORMED_TOOL_CALL"}}"#,
+            errorMessage: "Tool-call JSON could not be parsed; not dispatched.",
+            stepID: "tpm_step"
+        )
+        XCTAssertEqual(record.errorMessage, "Tool-call JSON could not be parsed; not dispatched.")
+        XCTAssertTrue(record.body?.contains("MALFORMED_TOOL_CALL") == true)
+    }
+
+    /// A malformed `argumentsJSON` payload must NOT corrupt the surrounding
+    /// `[NetworkLogRecord]` array — it's embedded as an escaped string value.
+    func testToolCallRecord_malformedArguments_arrayStaysDecodable() throws {
+        let record = NetworkLogger.createToolCallRecord(
+            toolName: "malformed_tool_call",
+            argumentsJSON: #"{"name":"write_file","arguments":{"content":"<div class="x">"#,
+            resultJSON: nil,
+            errorMessage: "bad",
+            stepID: "s"
+        )
+        logger.append(record)
+
+        let data = try Data(contentsOf: logURL)
+        let decoder = JSONCoderFactory.makeDateDecoder()
+        let decoded = try decoder.decode([NetworkLogRecord].self, from: data)
+        XCTAssertEqual(decoded.count, 1)
+        XCTAssertEqual(decoded[0].direction, .toolCall)
+        XCTAssertEqual(decoded[0].errorMessage, "bad")
+    }
+
     func testMultipleAppendsCreateArray() throws {
         let correlationID = UUID()
 
@@ -282,144 +347,4 @@ final class NetworkLoggerTests: XCTestCase {
         XCTAssertEqual(response.stepID, stepID)
     }
 
-    // MARK: - Markdown Generation Tests
-
-    func testAppendCreatesConversationLogMarkdown() throws {
-        let record = NetworkLogRecord(
-            id: UUID(),
-            createdAt: Date(),
-            direction: .request,
-            httpMethod: "POST",
-            url: "http://localhost/test",
-            statusCode: nil,
-            body: nil,
-            durationMs: nil,
-            errorMessage: nil,
-            correlationID: UUID(),
-            stepID: nil
-        )
-
-        logger.append(record)
-
-        XCTAssertTrue(fileManager.fileExists(atPath: logger.conversationLogURL.path))
-    }
-
-    func testConversationLogStartsWithHeader() throws {
-        let record = NetworkLogRecord(
-            id: UUID(),
-            createdAt: Date(),
-            direction: .request,
-            httpMethod: "POST",
-            url: "http://localhost/test",
-            statusCode: nil,
-            body: nil,
-            durationMs: nil,
-            errorMessage: nil,
-            correlationID: UUID(),
-            stepID: nil
-        )
-
-        logger.append(record)
-
-        let markdown = try String(contentsOf: logger.conversationLogURL, encoding: .utf8)
-        XCTAssertTrue(markdown.hasPrefix("# Conversation Log"))
-    }
-
-    func testConversationLogPreservesRecordOrder() throws {
-        let correlationID = UUID()
-
-        let request = NetworkLogRecord(
-            id: UUID(),
-            createdAt: Date(),
-            direction: .request,
-            httpMethod: "POST",
-            url: "http://localhost/test",
-            statusCode: nil,
-            body: nil,
-            durationMs: nil,
-            errorMessage: nil,
-            correlationID: correlationID,
-            stepID: nil
-        )
-
-        let response = NetworkLogRecord(
-            id: UUID(),
-            createdAt: Date().addingTimeInterval(1),
-            direction: .response,
-            httpMethod: "POST",
-            url: "http://localhost/test",
-            statusCode: 200,
-            body: "response body",
-            durationMs: 150.5,
-            errorMessage: nil,
-            correlationID: correlationID,
-            stepID: nil
-        )
-
-        logger.append(request)
-        logger.append(response)
-
-        let markdown = try String(contentsOf: logger.conversationLogURL, encoding: .utf8)
-
-        // Check that request comes before response in markdown
-        let requestPos = markdown.range(of: "<summary>1. → Request")?.lowerBound
-        let responsePos = markdown.range(of: "<summary>2. ← Response")?.lowerBound
-
-        XCTAssertNotNil(requestPos)
-        XCTAssertNotNil(responsePos)
-        XCTAssertTrue(requestPos! < responsePos!)
-    }
-
-    func testConversationLogContainsMetadata() throws {
-        let stepID = "test_step"
-        let correlationID = UUID()
-
-        let record = NetworkLogRecord(
-            id: UUID(),
-            createdAt: Date(),
-            direction: .response,
-            httpMethod: "POST",
-            url: "http://localhost/test",
-            statusCode: 200,
-            body: nil,
-            durationMs: 150.5,
-            errorMessage: nil,
-            correlationID: correlationID,
-            stepID: stepID
-        )
-
-        logger.append(record)
-
-        let markdown = try String(contentsOf: logger.conversationLogURL, encoding: .utf8)
-
-        XCTAssertTrue(markdown.contains("Status: 200"))
-        XCTAssertTrue(markdown.contains("Duration: 150.5ms"))
-        XCTAssertTrue(markdown.contains("Step: \(stepID.prefix(8))"))
-        XCTAssertTrue(markdown.contains("Correlation: \(correlationID.uuidString.prefix(8))"))
-    }
-
-    func testConversationLogRendersStructuredResponse() throws {
-        let record = NetworkLogRecord(
-            id: UUID(),
-            createdAt: Date(),
-            direction: .response,
-            httpMethod: "POST",
-            url: "http://localhost/test",
-            statusCode: 200,
-            body: "[reasoning]thinking...[/reasoning]\n\ncontent here\n\n[tool_calls][{\"name\":\"test\"}][/tool_calls]",
-            durationMs: 100.0,
-            errorMessage: nil,
-            correlationID: UUID(),
-            stepID: nil
-        )
-
-        logger.append(record)
-
-        let markdown = try String(contentsOf: logger.conversationLogURL, encoding: .utf8)
-
-        XCTAssertTrue(markdown.contains("**Thinking:**"))
-        XCTAssertTrue(markdown.contains("thinking..."))
-        XCTAssertTrue(markdown.contains("**Tool Calls:**"))
-        XCTAssertTrue(markdown.contains("[{\"name\":\"test\"}]"))
-    }
 }

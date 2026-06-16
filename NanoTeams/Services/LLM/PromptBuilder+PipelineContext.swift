@@ -93,8 +93,12 @@ nonisolated extension PromptBuilder {
                         }
                     } else {
                         var meta = "- \(artifact.name)"
-                        if let rel = artifact.relativePath, !rel.isEmpty {
-                            meta += " (path: \(rel))"
+                        // Show the path the file tools accept (project-root-relative, with the
+                        // `.nanoteams/` prefix the sandbox resolves against) — NOT the bare
+                        // stored `relativePath`, which `read_file` would fail to resolve.
+                        // nil for internal/non-persisted artifacts (no readable reference).
+                        if let readable = artifact.llmReadablePath {
+                            meta += " (path: \(readable))"
                         }
                         lines.append(meta)
                     }

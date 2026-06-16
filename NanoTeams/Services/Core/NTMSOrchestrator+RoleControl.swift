@@ -9,9 +9,17 @@ extension NTMSOrchestrator {
     func restartRole(taskID: Int, roleID: String, comment: String?) async {
         await ensureTaskLoaded(taskID)
 
-        let task = loadedTask(taskID)
+        // A restart with no active run can't reset anything. Surface it instead of
+        // silently no-op'ing: the reset closure's `guard ... runs.indices.last` would
+        // otherwise return quietly while `mutateTask` still reports success (CLAUDE.md §7),
+        // and the woken engine would just transition to `.failed` with no banner.
+        guard let task = loadedTask(taskID), task.runs.last != nil else {
+            lastErrorMessage = "Couldn't restart the role — the task has no active run."
+            return
+        }
         let team = resolvedTeam(for: task)
         let roles = team.roles
+        let roleName = roles.first(where: { $0.id == roleID })?.name ?? roleID
 
         let downstreamRoles = ArtifactDependencyResolver.getDownstreamRoles(
             of: roleID,
@@ -20,10 +28,25 @@ extension NTMSOrchestrator {
         var rolesToReset = Set([roleID])
         rolesToReset.formUnion(downstreamRoles)
 
-        // Cancel LLM for steps being reset
-        if let task = loadedTask(taskID), let run = task.runs.last {
+        // Tear down the engine's stale per-role tasks for the roles we're resetting so the
+        // run loop re-spawns them. A normally-returned Task is NOT `.isCancelled`, so a
+        // lingering entry (a prior completion, or a `.working` role whose LLM we cancel
+        // below) makes `startRoles`' skip-guard skip the role forever and the restart
+        // silently does nothing. Done before the reset so the still-running loop (`.running`
+        // state) can't waste an iteration on the stale entry.
+        let engine = engineForTask(taskID)
+        engine.cancelRoleTasks(for: rolesToReset)
+
+        // Cancel LLM for steps being reset. `cancelRoleTasks` above only cancels the
+        // engine's role-wrapper task (unblocking `waitForStepCompletion`); the in-flight
+        // LLM stream and its execution state are torn down here — both are required, don't
+        // collapse them. `clearStreamingPreview` is explicit (not relied on transitively
+        // through `cancelStepExecution`) so a stale "Thinking…" bubble can't linger, matching
+        // the advisory-finish path.
+        if let run = loadedTask(taskID)?.runs.last {
             for step in run.steps where rolesToReset.contains(step.effectiveRoleID) {
                 await llmExecutionService.cancelStepExecution(stepID: step.id, taskID: taskID)
+                clearStreamingPreview(stepID: step.id, taskID: taskID)
             }
         }
 
@@ -52,11 +75,105 @@ extension NTMSOrchestrator {
             task.runs[runIndex].updatedAt = now
         }
 
-        // Ensure engine exists and is running — creates if missing (e.g. after app restart)
-        let engine = engineForTask(taskID)
+        // Verify the reset actually landed before waking the engine. `mutateTask`
+        // returning true means "persisted", not "the closure mutated anything"
+        // (CLAUDE.md §7) — a missing primary step or a concurrent state change would
+        // otherwise leave the role un-reset and the restart silently ineffective.
+        guard let resetRun = loadedTask(taskID)?.runs.last,
+              resetRun.roleStatuses[roleID] == .idle,
+              resetRun.steps.first(where: { $0.effectiveRoleID == roleID })?.status == .pending
+        else {
+            lastErrorMessage = "Couldn't restart '\(roleName)' — its task state changed during the reset. Please try again."
+            return
+        }
+
+        // Wake the engine (its stale per-role tasks are now gone). The engine was created
+        // above if missing (e.g. after app restart).
         if engine.state == .pending {
             engine.start()
         } else {
+            engine.notifyExternalEvent()
+        }
+    }
+
+    /// Strict-pipeline hold for an approved change-request revision (see the
+    /// `LLMStateDelegate` declaration). Every transitive downstream role still
+    /// RUNNING on the revised role's now-stale output is cancelled and queued for
+    /// revision so it cannot keep working in parallel with the upstream; the
+    /// existing `startableRevisionRoleIDs` gating serializes the re-runs after the
+    /// upstream produces a fresh artifact.
+    ///
+    /// The requester (`requesterRoleID`) is special: it triggered the change from
+    /// inside its own running tool loop and is `await`-blocked in
+    /// `handleChangeRequest`. Task-cancelling it would tear down its own context and
+    /// leave its step `.running` forever — breaking `resetStepForRevision`, which
+    /// acts only on `.done`/`.failed`. So the requester is NOT cancelled: only
+    /// flagged `.revisionRequested`. Its loop finishes naturally to `.done` (the
+    /// `handleRoleCompleted` `.working` guard stops that completion from clobbering
+    /// the flag), and it is gated behind the revised target so it re-runs last.
+    ///
+    /// `requesterRoleID` is a role id (== `StepExecution.id` == `effectiveRoleID`),
+    /// the SAME namespace as `runningRoleIDs`, so the `roleID != requesterRoleID`
+    /// comparison is sound. A `requesterRoleID` absent from `runningRoleIDs` (the
+    /// requester wasn't a downstream consumer of the target — so it correctly should
+    /// NOT re-run) just means every entry is treated as a peer.
+    func holdDownstreamForRevision(taskID: Int, runningRoleIDs: [String], requesterRoleID: String) async {
+        guard !runningRoleIDs.isEmpty else { return }
+        let engine = engineForTask(taskID)
+        let peers = runningRoleIDs.filter { $0 != requesterRoleID }
+
+        // PEER running downstream roles: cancel the engine role-wrapper task +
+        // in-flight LLM stream so the run loop re-spawns them after the upstream
+        // revision. (Not the requester — see the doc comment.)
+        if !peers.isEmpty {
+            engine.cancelRoleTasks(for: Set(peers))
+            if let run = loadedTask(taskID)?.runs.last {
+                for step in run.steps where peers.contains(step.effectiveRoleID) {
+                    await llmExecutionService.cancelStepExecution(stepID: step.id, taskID: taskID)
+                    clearStreamingPreview(stepID: step.id, taskID: taskID)
+                }
+            }
+        }
+
+        await mutateTask(taskID: taskID) { task in
+            guard let runIndex = task.runs.indices.last else { return }
+            let now = MonotonicClock.shared.now()
+            for roleID in runningRoleIDs {
+                guard let stepIndex = task.runs[runIndex].steps.firstIndex(
+                    where: { $0.effectiveRoleID == roleID }
+                ) else { continue }
+                if roleID != requesterRoleID {
+                    // Peer: force the step terminal so `resetStepForRevision` resets it
+                    // (preserving conversation/artifacts — NOT a full `step.reset()`).
+                    task.runs[runIndex].steps[stepIndex].status = .done
+                    task.runs[runIndex].steps[stepIndex].completedAt = now
+                }
+                // Both peers and the requester get queued for revision. The requester's
+                // step is left `.running`; it completes naturally (the `.working`
+                // completion guard protects this flag) and is gated behind the target.
+                task.runs[runIndex].roleStatuses[roleID] = .revisionRequested
+                task.runs[runIndex].steps[stepIndex].updatedAt = now
+            }
+            task.runs[runIndex].updatedAt = now
+        }
+
+        // §7 (CLAUDE.md): `mutateTask == true` means "persisted", not "the closure
+        // mutated". A peer that was cancelled above but (on a run-shape race) not
+        // flipped would be stranded non-terminal with no signal — it would never
+        // re-run and never error. Verify every cancelled peer that still has a step
+        // reached `.revisionRequested`; surface any miss loudly. (Phantom peers with
+        // no step are intentionally skipped above and are not strandings.)
+        if let run = loadedTask(taskID)?.runs.last {
+            let stranded = peers.filter { peer in
+                run.steps.contains(where: { $0.effectiveRoleID == peer })
+                    && run.roleStatuses[peer] != .revisionRequested
+            }
+            if !stranded.isEmpty {
+                lastErrorMessage = "Revision hold incomplete — downstream role(s) \(stranded.joined(separator: ", ")) were cancelled but not queued for revision. Please restart the affected role(s)."
+            }
+        }
+
+        if engine.state != .running && engine.state != .pending {
             engine.notifyExternalEvent()
         }
     }
@@ -104,8 +221,18 @@ extension NTMSOrchestrator {
     /// Supervisor accepts a role's work, advancing it to `.accepted`.
     /// Returns `true` if the role was accepted and persisted successfully.
     func acceptRole(taskID: Int, roleID: String) async -> Bool {
-        guard let task = loadedTask(taskID), task.runs.last != nil else {
+        guard let task = loadedTask(taskID), let run = task.runs.last else {
             lastErrorMessage = "Cannot accept role: task \(taskID) has no active run."
+            return false
+        }
+        // Only a role genuinely awaiting acceptance (`.needsAcceptance`) can be accepted.
+        // Pre-check (NOT inside the closure): `mutateTask == true` means "persisted", not
+        // "mutated" (CLAUDE.md §7), so validating inside and skipping the write would still
+        // return true. Both UI accept paths already gate on `.needsAcceptance`, so this only
+        // makes the Autovisor's `manage_role accept` honest — accepting an already-`.done`
+        // role no longer overwrites `.done` → `.accepted` and falsely reports success.
+        if let reason = AcceptanceService.validateAcceptance(roleID: roleID, roleStatuses: run.roleStatuses) {
+            lastErrorMessage = reason
             return false
         }
         let success = await mutateTask(taskID: taskID) { task in

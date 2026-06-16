@@ -106,8 +106,9 @@ final class TeamEngineScenarioTests: XCTestCase {
 
     // MARK: - Scenario 2: customCheckpoints acceptance
 
-    /// In customCheckpoints mode, only checkpoint roles and the last role get .needsAcceptance.
-    /// Non-checkpoint intermediate roles get .done.
+    /// In customCheckpoints mode, only Supervisor-selected checkpoint roles get .needsAcceptance.
+    /// Non-checkpoint roles (including the terminal role) get .done — the final deliverable is
+    /// covered by the task-level final review, not a per-role gate.
     func testCustomCheckpoints_onlyCheckpointRolesGetNeedsAcceptance() async {
         let supervisorRole = makeSupervisorRole()
         let roleA = makeWorkerRole(id: "a", name: "A", requiredArtifacts: ["Supervisor Task"], producesArtifacts: ["Art A"])
@@ -121,7 +122,7 @@ final class TeamEngineScenarioTests: XCTestCase {
         mockStore.activeTeam = team
         mockStore.teamSettings = settings
 
-        // A is done and working — engine should reconcile A to .done (NOT checkpoint, NOT last)
+        // A is done and working — engine should reconcile A to .done (NOT a checkpoint)
         let stepAID = "a"
         let stepA = StepExecution(
             id: stepAID, role: .softwareEngineer,
@@ -149,14 +150,14 @@ final class TeamEngineScenarioTests: XCTestCase {
         sut.start()
         await fulfillment(of: [expectation], timeout: 2.0)
 
-        // A should be .done (not checkpoint, not last)
+        // A should be .done (not a checkpoint)
         let aCalls = mockStore.updateRoleStatusCalls.filter { $0.roleID == "a" }
         XCTAssertTrue(aCalls.contains(where: { $0.status == .done }),
                        "Non-checkpoint role A should get .done")
         XCTAssertFalse(aCalls.contains(where: { $0.status == .needsAcceptance }),
                         "Non-checkpoint role A should NOT get .needsAcceptance")
 
-        // B should be .needsAcceptance (checkpoint OR last)
+        // B should be .needsAcceptance (it is a checkpoint)
         let bCalls = mockStore.updateRoleStatusCalls.filter { $0.roleID == "b" }
         XCTAssertTrue(bCalls.contains(where: { $0.status == .needsAcceptance }),
                        "Checkpoint role B should get .needsAcceptance")
@@ -382,6 +383,153 @@ final class TeamEngineScenarioTests: XCTestCase {
                        "Should surface the revision dependency-cycle error rather than spin")
         XCTAssertTrue(mockStore.setLastErrorMessageCalls.contains(where: { $0.contains("[a, b]") }),
                        "Error should name the blocked roles so the Supervisor knows what to fix")
+    }
+
+    /// Regression (request_changes deadlock): when the role that requested a change is
+    /// still .working, the engine must start the (upstream) target's revision in parallel
+    /// rather than waiting forever on the still-working requester.
+    ///
+    /// Mirrors production: the TPM calls request_changes against the Software Engineer
+    /// from inside its own still-.working tool loop; SWE flips to .revisionRequested while
+    /// TPM stays .working. TPM is DOWNSTREAM of SWE, so it must not gate SWE's revision.
+    func testRevision_startsWhileDownstreamRequesterStillWorking() async {
+        let supervisorRole = makeSupervisorRole()
+        let target = makeWorkerRole(id: "swe", name: "SWE", requiredArtifacts: ["Supervisor Task"], producesArtifacts: ["Art SWE"])
+        let requester = makeWorkerRole(id: "req", name: "REQ", requiredArtifacts: ["Art SWE"], producesArtifacts: ["Release"])
+
+        let (team, settings) = makeTeamWith(roles: [supervisorRole, target, requester])
+        mockStore.activeTeam = team
+        mockStore.teamSettings = settings
+
+        let sweStep = StepExecution(id: "swe", role: .softwareEngineer, title: "SWE", status: .done, artifacts: [Artifact(name: "Art SWE")])
+        let reqStep = StepExecution(id: "req", role: .tpm, title: "REQ", status: .running, artifacts: [])
+
+        // SWE just had a change request approved → .revisionRequested. REQ (the downstream
+        // requester) is still .working executing its own step (held .running below).
+        let run = Run(id: 0, steps: [sweStep, reqStep], roleStatuses: ["swe": .revisionRequested, "req": .working])
+        mockStore.activeTask = NTMSTask(id: 0, title: "T", supervisorTask: "G", runs: [run])
+        mockStore.producedArtifactNamesResult = ["Supervisor Task", "Art SWE"]
+        mockStore.stepStatusResults["swe"] = .done    // after reset+runStep, the revision completes
+        mockStore.stepStatusResults["req"] = .running  // held — requester never finishes
+        mockStore.findOrCreateStepResults = ["swe": "swe", "req": "req"]
+
+        sut.start()
+        try? await Task.sleep(for: .milliseconds(700))
+
+        XCTAssertTrue(mockStore.resetStepForRevisionCalls.contains("swe"),
+                       "Target revision must start even though the (downstream) requesting role is still .working")
+    }
+
+    /// Re-gating pin: when a revision role is gated (its upstream is still revising) and the
+    /// ONLY other working role is INDEPENDENT of it, the engine must keep waiting — NOT
+    /// false-fail as a dependency cycle. Guards the `!roleStatuses.contains(.working)` cycle
+    /// guard against a future refactor that narrows "working" to only revision-related roles.
+    func testRevision_gatedRoleWaits_whenOnlyIndependentRoleIsWorking() async {
+        let supervisorRole = makeSupervisorRole()
+        let up = makeWorkerRole(id: "up", name: "UP", requiredArtifacts: ["Supervisor Task"], producesArtifacts: ["Art Up"])
+        let down = makeWorkerRole(id: "down", name: "DOWN", requiredArtifacts: ["Art Up"], producesArtifacts: ["Art Down"])
+        let indep = makeWorkerRole(id: "indep", name: "INDEP", requiredArtifacts: ["Supervisor Task"], producesArtifacts: ["Art Indep"])
+
+        let (team, settings) = makeTeamWith(roles: [supervisorRole, up, down, indep])
+        mockStore.activeTeam = team
+        mockStore.teamSettings = settings
+
+        // up: revision in progress (step held .running so it keeps gating down).
+        // down: gated behind up. indep: an unrelated role still working.
+        let upStep = StepExecution(id: "up", role: .softwareEngineer, title: "UP", status: .running, artifacts: [Artifact(name: "Art Up")])
+        let downStep = StepExecution(id: "down", role: .codeReviewer, title: "DOWN", status: .done, artifacts: [Artifact(name: "Art Down")])
+        let indepStep = StepExecution(id: "indep", role: .tpm, title: "INDEP", status: .running, artifacts: [])
+
+        let run = Run(id: 0, steps: [upStep, downStep, indepStep],
+                      roleStatuses: ["up": .revisionRequested, "down": .revisionRequested, "indep": .working])
+        mockStore.activeTask = NTMSTask(id: 0, title: "T", supervisorTask: "G", runs: [run])
+        mockStore.producedArtifactNamesResult = ["Supervisor Task", "Art Up", "Art Down", "Art Indep"]
+        mockStore.stepStatusResults["up"] = .running    // held — up stays .working, gating down
+        mockStore.findOrCreateStepResults = ["up": "up", "down": "down"]
+
+        sut.start()
+        try? await Task.sleep(for: .milliseconds(700))
+
+        XCTAssertTrue(mockStore.resetStepForRevisionCalls.contains("up"),
+                       "Upstream revision should start")
+        XCTAssertFalse(mockStore.findOrCreateStepCalls.contains("down"),
+                        "Downstream revision must stay gated behind the still-revising upstream")
+        XCTAssertNotEqual(sut.state, .failed,
+                          "Must NOT false-fail as a cycle while a role is still working")
+        XCTAssertFalse(mockStore.setLastErrorMessageCalls.contains(where: { $0.lowercased().contains("dependency cycle") }),
+                        "No dependency-cycle error should be surfaced while work is in flight")
+    }
+
+    /// Mixed iteration: a startable revision role and an independent idle/ready role both
+    /// exist. The ready role starts first (the empty-ready revision branch is skipped while
+    /// readyRoleIDs is non-empty), then the revision role starts on the next iteration —
+    /// neither is starved.
+    func testRevision_andIndependentReadyRole_bothEventuallyStart() async {
+        let supervisorRole = makeSupervisorRole()
+        let swe = makeWorkerRole(id: "swe", name: "SWE", requiredArtifacts: ["Supervisor Task"], producesArtifacts: ["Art SWE"])
+        let other = makeWorkerRole(id: "other", name: "OTHER", requiredArtifacts: ["Supervisor Task"], producesArtifacts: ["Art Other"])
+
+        let (team, settings) = makeTeamWith(roles: [supervisorRole, swe, other])
+        mockStore.activeTeam = team
+        mockStore.teamSettings = settings
+
+        let sweStep = StepExecution(id: "swe", role: .softwareEngineer, title: "SWE", status: .done, artifacts: [Artifact(name: "Art SWE")])
+
+        // swe: .revisionRequested (startable). other: .idle with satisfied deps (ready).
+        let run = Run(id: 0, steps: [sweStep], roleStatuses: ["swe": .revisionRequested, "other": .idle])
+        mockStore.activeTask = NTMSTask(id: 0, title: "T", supervisorTask: "G", runs: [run])
+        mockStore.producedArtifactNamesResult = ["Supervisor Task", "Art SWE", "Art Other"]
+        mockStore.stepStatusResults["swe"] = .done       // revision completes after reset+runStep
+        mockStore.stepStatusResults["other"] = .running   // held — keeps the engine alive
+        mockStore.findOrCreateStepResults = ["swe": "swe", "other": "other"]
+
+        sut.start()
+        try? await Task.sleep(for: .milliseconds(700))
+
+        XCTAssertTrue(mockStore.resetStepForRevisionCalls.contains("swe"),
+                       "The startable revision role must eventually start")
+        XCTAssertTrue(mockStore.findOrCreateStepCalls.contains("other"),
+                       "The independent ready role must also start — neither is starved")
+    }
+
+    /// Un-gating handoff: a downstream revision role gated behind a revising upstream must
+    /// START once the upstream's revision COMPLETES — the gate releases, it doesn't just
+    /// hold. Complements `testRevision_gatedRoleWaits_...` and `testRevisionCascade_downstream...`
+    /// which hold the upstream `.running` forever and so only pin the gate HOLDING.
+    func testRevision_downstreamStartsAfterUpstreamRevisionCompletes() async {
+        let supervisorRole = makeSupervisorRole()
+        let up = makeWorkerRole(id: "up", name: "UP", requiredArtifacts: ["Supervisor Task"], producesArtifacts: ["Art Up"])
+        let down = makeWorkerRole(id: "down", name: "DOWN", requiredArtifacts: ["Art Up"], producesArtifacts: ["Art Down"])
+
+        let (team, settings) = makeTeamWith(roles: [supervisorRole, up, down])
+        mockStore.activeTeam = team
+        mockStore.teamSettings = settings
+
+        let upStep = StepExecution(id: "up", role: .softwareEngineer, title: "UP", status: .done, artifacts: [Artifact(name: "Art Up")])
+        let downStep = StepExecution(id: "down", role: .codeReviewer, title: "DOWN", status: .done, artifacts: [Artifact(name: "Art Down")])
+
+        // Both .revisionRequested; down gated behind up. up's revision COMPLETES (step → .done),
+        // which must release the gate so down's revision then starts.
+        let run = Run(id: 0, steps: [upStep, downStep], roleStatuses: ["up": .revisionRequested, "down": .revisionRequested])
+        mockStore.activeTask = NTMSTask(id: 0, title: "T", supervisorTask: "G", runs: [run])
+        mockStore.producedArtifactNamesResult = ["Supervisor Task", "Art Up", "Art Down"]
+        mockStore.stepStatusResults["up"] = .done    // up's revision completes → gate releases
+        mockStore.stepStatusResults["down"] = .done
+        mockStore.findOrCreateStepResults = ["up": "up", "down": "down"]
+
+        let expectation = XCTestExpectation(description: "Engine reaches a terminal state")
+        sut.onStateChanged = { state in
+            if state == .done || state == .needsAcceptance || state == .failed { expectation.fulfill() }
+        }
+
+        sut.start()
+        await fulfillment(of: [expectation], timeout: 3.0)
+
+        XCTAssertTrue(mockStore.resetStepForRevisionCalls.contains("up"),
+                       "Upstream revision should start")
+        XCTAssertTrue(mockStore.resetStepForRevisionCalls.contains("down"),
+                       "Downstream revision must start once the upstream revision completes (gate releases)")
+        XCTAssertNotEqual(sut.state, .failed, "A valid acyclic revision cascade should complete, not fail")
     }
 
     // MARK: - Scenario 6: deadlock detection

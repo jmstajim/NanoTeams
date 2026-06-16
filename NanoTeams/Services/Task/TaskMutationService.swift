@@ -231,6 +231,45 @@ nonisolated enum TaskMutationService {
         task.runs[location.runIndex].steps[location.stepIndex].updatedAt = MonotonicClock.shared.now()
     }
 
+    /// Append a transient retry-status note (tagged `sourceContext: .serverError`
+    /// so the feed renders it as a red bubble), OR replace the previous one in place
+    /// when the last note is already a server-error note. A burst of recoverable
+    /// retries (e.g. server unreachable) then collapses into a single live-updating
+    /// bubble — `llmConversation` stays bounded and the `createdAt` bump lets the
+    /// feed's version hash detect the in-place change. Keeping the same message `id`
+    /// means the existing bubble updates in place (no remove/insert flicker).
+    ///
+    /// Before matching, drop a trailing EMPTY `.assistant` message: `beginStreaming`
+    /// pre-creates one such placeholder before every attempt, and on a stream error
+    /// it's never committed, so it sits at the tail. Left in place it would both
+    /// leak and separate consecutive retry notes — defeating the collapse (each
+    /// retry would see the empty placeholder, fail the match, and append a fresh
+    /// note). Dropping it also reuses the dead slot cleanly.
+    static func appendOrReplaceRetryNotice(
+        _ content: String, to stepID: String, in task: inout NTMSTask
+    ) {
+        guard let location = task.locateStepInLatestRun(stepID: stepID) else { return }
+        let now = MonotonicClock.shared.now()
+        var conv = task.runs[location.runIndex].steps[location.stepIndex].llmConversation
+
+        if let last = conv.indices.last,
+           conv[last].role == .assistant,
+           conv[last].content.isEmpty,
+           conv[last].thinking?.isEmpty ?? true {
+            conv.remove(at: last)
+        }
+
+        if let last = conv.indices.last, conv[last].sourceContext == .serverError {
+            conv[last].content = content
+            conv[last].createdAt = now
+        } else {
+            conv.append(LLMMessage(role: .assistant, content: content, sourceContext: .serverError))
+        }
+
+        task.runs[location.runIndex].steps[location.stepIndex].llmConversation = conv
+        task.runs[location.runIndex].steps[location.stepIndex].updatedAt = now
+    }
+
     /// Removes an LLM message by id from a step's conversation. Used to drop the
     /// pre-created empty assistant turn when a top-level thinking loop discards
     /// its generation (`NTMSOrchestrator.discardStreaming`).
@@ -268,6 +307,18 @@ nonisolated enum TaskMutationService {
             if let thinking, !thinking.isEmpty {
                 task.runs[ri].steps[si].llmConversation[idx].thinking = thinking
             }
+            // Re-stamp to commit time so the committed turn sorts at turn-END (where
+            // the user watched it stream — pinned to the feed bottom) — adjacent to
+            // the tool call / artifact it produced — instead of snapping back to the
+            // turn-START timestamp planted by `beginStreaming`. Without this, a long
+            // turn is split across the chronological feed when other roles run
+            // concurrently (CLAUDE.md #45): the assistant "Thinking" bubble orphans
+            // at turn-start while its tool-call card lands seconds later, so the role
+            // reads as "stuck thinking" even though it called a tool successfully.
+            // `commitStreaming` runs BEFORE this iteration's `appendToolCalls`, so the
+            // monotonic clock keeps this `createdAt` < the tool call's — preserving
+            // `emitItems`' `assistant.createdAt <= call.createdAt` thinking lookups.
+            task.runs[ri].steps[si].llmConversation[idx].createdAt = now
         }
 
         // Update or create StepMessage in step.messages (used by PromptBuilder and extractLatestStepOutput)

@@ -23,13 +23,19 @@ nonisolated enum ToolRuntimeError: LocalizedError {
 nonisolated final class ToolRuntime: @unchecked Sendable {
     private let registry: ToolRegistry
     private let logger: ToolCallLogger?
+    /// The per-run `network_log.json` writer, SHARED with the streaming client so
+    /// every tool call lands in the same audit file (one instance = one serial
+    /// queue = no read-rewrite race). Nil when logging is disabled.
+    private let networkLogger: NetworkLogger?
 
     init(
         registry: ToolRegistry,
-        logger: ToolCallLogger?
+        logger: ToolCallLogger?,
+        networkLogger: NetworkLogger? = nil
     ) {
         self.registry = registry
         self.logger = logger
+        self.networkLogger = networkLogger
     }
 
     func executeAll(context: ToolExecutionContext, toolCalls: [StepToolCall])
@@ -88,6 +94,7 @@ nonisolated final class ToolRuntime: @unchecked Sendable {
                 isError: true
             )
             logger?.append(baseRecord.withResult(result: result))
+            appendNetworkRecord(context: context, call: call, result: result, errorMessage: hint)
             return result
         }
 
@@ -97,6 +104,7 @@ nonisolated final class ToolRuntime: @unchecked Sendable {
             var result = try handler(context, args)
             result.providerID = providerID
             logger?.append(baseRecord.withResult(result: result))
+            appendNetworkRecord(context: context, call: call, result: result, errorMessage: nil)
             return result
         } catch {
             let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
@@ -108,8 +116,63 @@ nonisolated final class ToolRuntime: @unchecked Sendable {
                 isError: true
             )
             logger?.append(baseRecord.withResult(result: result, errorMessage: message))
+            appendNetworkRecord(context: context, call: call, result: result, errorMessage: message)
             return result
         }
+    }
+
+    /// Mirrors an executed tool call into the shared `network_log.json` as a
+    /// `.toolCall` record (no-op when network logging is disabled). Cancellation
+    /// envelopes (built in `executeAll`, never through `executeOne`) are NOT
+    /// logged — parity with `tool_calls.jsonl`.
+    private func appendNetworkRecord(
+        context: ToolExecutionContext,
+        call: StepToolCall,
+        result: ToolExecutionResult,
+        errorMessage: String?
+    ) {
+        guard let networkLogger else { return }
+        networkLogger.append(NetworkLogger.createToolCallRecord(
+            toolName: call.name,
+            argumentsJSON: call.argumentsJSON,
+            resultJSON: result.outputJSON,
+            errorMessage: errorMessage,
+            stepID: context.roleID
+        ))
+    }
+
+    /// Records a tool call that did NOT go through `executeOne` — pre-runtime
+    /// rejections (unauthorized / duplicate-write) and parse failures (malformed /
+    /// missing-name). Writes to BOTH per-run sinks the runtime owns:
+    /// `tool_calls.jsonl` and `network_log.json`. Each is a single shared instance
+    /// (one serial queue), so this is the race-free home for "log a non-executed
+    /// call". No-ops for whichever sink has logging disabled.
+    func logNonExecutedCall(
+        taskID: Int,
+        runID: Int,
+        roleID: String,
+        toolName: String,
+        argumentsJSON: String,
+        resultJSON: String?,
+        errorMessage: String?
+    ) {
+        logger?.append(ToolCallLogRecord(
+            createdAt: MonotonicClock.shared.now(),
+            taskID: taskID,
+            runID: runID,
+            roleID: roleID,
+            toolName: toolName,
+            argumentsJSON: argumentsJSON,
+            resultJSON: resultJSON,
+            errorMessage: errorMessage
+        ))
+        networkLogger?.append(NetworkLogger.createToolCallRecord(
+            toolName: toolName,
+            argumentsJSON: argumentsJSON,
+            resultJSON: resultJSON,
+            errorMessage: errorMessage,
+            stepID: roleID
+        ))
     }
 
     /// Parses raw JSON arguments string into a normalized [String: Any] dictionary.

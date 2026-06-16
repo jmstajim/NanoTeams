@@ -1465,6 +1465,79 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         )
     }
 
+    func testComputeRunDataVersion_changesWhenLastMessageUpdatedInPlace() {
+        // The retry-note collapse mutates the last message's content + createdAt
+        // WITHOUT changing the count. The version must still change so the feed
+        // rebuilds and the bubble doesn't show a stale attempt counter.
+        let attempt1 = LLMMessage(
+            createdAt: Date(timeIntervalSinceReferenceDate: 100),
+            role: .assistant,
+            content: "\(LLMConstants.llmServerErrorRetryNotePrefix) 1): retrying")
+        let attempt2 = LLMMessage(
+            id: attempt1.id,
+            createdAt: Date(timeIntervalSinceReferenceDate: 200),
+            role: .assistant,
+            content: "\(LLMConstants.llmServerErrorRetryNotePrefix) 2): retrying")
+        let runBefore = Run(id: 0, steps: [makeStep(llmConversation: [attempt1])])
+        let runAfter = Run(id: 0, steps: [makeStep(llmConversation: [attempt2])])
+
+        XCTAssertEqual(
+            runBefore.steps[0].llmConversation.count,
+            runAfter.steps[0].llmConversation.count,
+            "Precondition: collapse keeps the message count constant")
+        XCTAssertNotEqual(
+            TeamActivityFeedView.computeRunDataVersion(run: runBefore, descendants: []),
+            TeamActivityFeedView.computeRunDataVersion(run: runAfter, descendants: []),
+            "In-place update of the last message (collapsing retry note) must change runDataVersion"
+        )
+    }
+
+    func testComputeRunDataVersion_descendantInPlaceLastMessageUpdate_changesVersion() {
+        // The descendant loop also folds in last?.createdAt — a delegated child's
+        // in-place retry-note update (same count) must still trigger a rebuild.
+        func descendant(lastCreatedAt: Date) -> ActivityFeedBuilder.DescendantTask {
+            let msg = LLMMessage(createdAt: lastCreatedAt, role: .assistant,
+                                 content: "\(LLMConstants.llmServerErrorRetryNotePrefix) 1)…")
+            let step = makeStep(llmConversation: [msg])
+            let childTask = NTMSTask(id: 99, title: "Child", supervisorTask: "g",
+                                     runs: [Run(id: 0, steps: [step])])
+            return ActivityFeedBuilder.DescendantTask(
+                task: childTask, run: Run(id: 0, steps: [step]),
+                teamRoles: [], teamName: "Child Team", delegationDepth: 1,
+                delegatedFromRoleName: "Coding Agent")
+        }
+        XCTAssertNotEqual(
+            TeamActivityFeedView.computeRunDataVersion(
+                run: nil, descendants: [descendant(lastCreatedAt: Date(timeIntervalSinceReferenceDate: 100))]),
+            TeamActivityFeedView.computeRunDataVersion(
+                run: nil, descendants: [descendant(lastCreatedAt: Date(timeIntervalSinceReferenceDate: 200))]),
+            "A descendant's in-place last-message update must change the version")
+    }
+
+    func testComputeRunDataVersion_runStepInPlaceLastMessageUpdate_changesVersion() {
+        // The single-run `run` path folds in last?.createdAt, so an in-place update
+        // to the last message (count unchanged) still flips the hash.
+        func makeRun(lastCreatedAt: Date) -> Run {
+            Run(id: 0, steps: [makeStep(llmConversation: [
+                LLMMessage(createdAt: lastCreatedAt, role: .assistant, content: "note")
+            ])])
+        }
+        XCTAssertNotEqual(
+            TeamActivityFeedView.computeRunDataVersion(
+                run: makeRun(lastCreatedAt: Date(timeIntervalSinceReferenceDate: 100)), descendants: []),
+            TeamActivityFeedView.computeRunDataVersion(
+                run: makeRun(lastCreatedAt: Date(timeIntervalSinceReferenceDate: 200)), descendants: []),
+            "A run-step in-place last-message update must change the version")
+    }
+
+    func testComputeRunDataVersion_allEmpty_isDeterministic() {
+        // No run, no descendants → a stable hash (the last?.createdAt fold must not
+        // introduce timestamp-based churn).
+        XCTAssertEqual(
+            TeamActivityFeedView.computeRunDataVersion(run: nil, descendants: []),
+            TeamActivityFeedView.computeRunDataVersion(run: nil, descendants: []))
+    }
+
     /// Stability check: hash must NOT change when nothing relevant did. Without
     /// this, future field additions could accidentally make runDataVersion
     /// non-deterministic (e.g. timestamp-based hashing), spamming

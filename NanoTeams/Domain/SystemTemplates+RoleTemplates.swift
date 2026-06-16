@@ -140,7 +140,10 @@ nonisolated extension SystemTemplates {
         // source of truth in `AutovisorConstants` (also drives the role-editor's
         // locked/hidden tool policy + the union-enforce on folder open).
         // `requires: supervisorTaskArtifactName` makes it ADVISORY (not observer → engine
-        // runs it). NOT delegate_to_team / write / git / xcode.
+        // runs it). Toolset = `managerDefaultToolIDs` (management + file READ + git READ +
+        // analyze_image + update_scratchpad); NO repo-mutation tools (no write_file/edit_file/
+        // delete_file, no git-write), NOT delegate_to_team / xcode. The manager inspects the
+        // repo and delegates every change via `create_managed_task` — it cannot edit anything.
         role("autovisor", name: "Autovisor", icon: "folder.badge.person.crop",
              toolIDs: AutovisorConstants.managerDefaultToolIDs,
              requires: [supervisorTaskArtifactName]),

@@ -28,8 +28,15 @@ nonisolated enum LLMConstants {
     /// restore unlimited waiting.
     static let defaultLLMRequestTimeoutSeconds = 600
 
-    /// Delay between LLM retry attempts in seconds.
-    static let llmRetryDelaySeconds: UInt64 = 2
+    /// Default delay between LLM retry attempts in seconds. Injectable per
+    /// `LLMExecutionService.retryDelaySeconds` (tests use a small value).
+    static let llmRetryDelaySeconds: UInt64 = 10
+
+    /// Stable prefix used to BUILD the transient retry-status note written to the
+    /// step's conversation while a recoverable LLM error keeps retrying. (Collapse
+    /// of consecutive notes is keyed on the message's `sourceContext == .serverError`
+    /// tag, not on this prefix — see `appendOrReplaceRetryNotice`.)
+    static let llmServerErrorRetryNotePrefix = "LLM server error (attempt"
 
     /// Character threshold for batching UI flushes during streaming.
     static let uiFlushCharThreshold = 200

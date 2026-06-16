@@ -18,11 +18,11 @@ extension LLMExecutionService {
         client: any LLMClient,
         config: LLMConfig,
         networkLogger: NetworkLogger? = nil
-    ) async -> String {
-        guard let delegate else { return "Unable to process change request — delegate not available." }
+    ) async -> CollaborationReply {
+        guard let delegate else { return .failed("Unable to process change request — delegate not available.") }
         let tid = task.id
         guard isExecutionLive(stepID: stepID, taskID: tid) else {
-            return "Unable to process change request — no task context."
+            return .failed("Unable to process change request — no task context.")
         }
 
         let team = resolveTeam(task: task)
@@ -46,8 +46,8 @@ extension LLMExecutionService {
             teamSettings: teamSettings,
             run: run
         )
-        if let error = validation.error { return error }
-        guard let targetRoleDef = validation.targetRoleDef else { return "Validation failed." }
+        if let error = validation.error { return .failed(error) }
+        guard let targetRoleDef = validation.targetRoleDef else { return .failed("Validation failed.") }
 
         // Create ChangeRequest record (use resolved role def ID, not raw LLM string)
         var changeRequest = ChangeRequest(
@@ -86,7 +86,13 @@ extension LLMExecutionService {
             reasoning: reasoning
         )
 
-        _ = await handleTeamMeeting(
+        // If the voting meeting cannot run (no participants, meeting-limit reached,
+        // cancellation, no work folder), DO NOT fall through to the tally: an empty
+        // `meetingMessages` makes `tallyVotes([])` return `.tied`, which would
+        // auto-approve and amend the target's work with zero real votes. Reject
+        // honestly instead. (Also avoids tallying a stale prior `meetings.last`,
+        // which a non-persisted voting meeting would leave pointing at.)
+        let meetingReply = await handleTeamMeeting(
             stepID: stepID,
             topic: voting.topic,
             participantIDs: participantIDs,
@@ -99,6 +105,11 @@ extension LLMExecutionService {
             config: config,
             networkLogger: networkLogger
         )
+        guard meetingReply.succeeded else {
+            changeRequest.status = .rejected
+            await recordChangeRequest(taskID: tid, changeRequest: changeRequest)
+            return .failed("Change request could not be voted on — the voting meeting did not run: \(meetingReply.text)")
+        }
 
         // Read back meeting messages from persisted state
         let updatedTask = delegate.loadedTask(tid)
@@ -123,16 +134,17 @@ extension LLMExecutionService {
                 changes: changes,
                 reasoning: reasoning,
                 requestingRoleID: requestingRole.baseID,
+                requesterStepID: stepID,
                 meetingID: meeting?.id,
                 team: team
             )
 
-            return "Change request APPROVED by team vote. \(amendmentResult)"
+            return .ok("Change request APPROVED by team vote. \(amendmentResult)")
 
         case .rejected:
             changeRequest.status = .rejected
             await recordChangeRequest(taskID: tid, changeRequest: changeRequest)
-            return "Change request REJECTED by team vote. The existing work stands."
+            return .ok("Change request REJECTED by team vote. The existing work stands.")
 
         case .tied:
             // V1: auto-approve on tie (Supervisor escalation in V2)
@@ -145,11 +157,12 @@ extension LLMExecutionService {
                 changes: changes,
                 reasoning: reasoning,
                 requestingRoleID: requestingRole.baseID,
+                requesterStepID: stepID,
                 meetingID: meeting?.id,
                 team: team
             )
 
-            return "Change request had a TIED VOTE — auto-approved. \(amendmentResult)"
+            return .ok("Change request had a TIED VOTE — auto-approved. \(amendmentResult)")
         }
     }
 
@@ -159,6 +172,7 @@ extension LLMExecutionService {
         changes: String,
         reasoning: String,
         requestingRoleID: String,
+        requesterStepID: String,
         meetingID: UUID?,
         team: Team?
     ) async -> String {
@@ -220,15 +234,34 @@ extension LLMExecutionService {
             task.runs[runIndex].roleStatuses[targetRoleID] = .revisionRequested
         }
 
-        // Propagate to downstream done roles
-        let propagationResult = await propagateAmendmentDownstream(
+        // Propagate to downstream roles (done AND running). Running roles are then
+        // held (cancelled + queued for revision) so they don't keep working on the
+        // now-stale upstream output. The requester (`requesterStepID`) is held WITHOUT
+        // task-cancellation — see `holdDownstreamForRevision`.
+        let propagation = await propagateAmendmentDownstream(
             taskID: taskID,
             sourceRoleID: targetRoleID,
             changes: changes,
             team: team
         )
+        if !propagation.runningRoleIDs.isEmpty {
+            await delegate.holdDownstreamForRevision(
+                taskID: taskID,
+                runningRoleIDs: propagation.runningRoleIDs,
+                requesterRoleID: requesterStepID
+            )
+        }
 
-        return "Amendment initiated for \(targetRoleID). \(propagationResult)"
+        return "Amendment initiated for \(targetRoleID). \(propagation.summary)"
+    }
+
+    /// Result of fanning an amendment out to downstream roles.
+    /// `runningRoleIDs` are downstream roles caught mid-execution — the caller hands
+    /// them to `holdDownstreamForRevision` so they stop (strict pipeline) instead of
+    /// finishing on the upstream's now-stale output.
+    nonisolated struct PropagationResult {
+        var summary: String
+        var runningRoleIDs: [String]
     }
 
     func propagateAmendmentDownstream(
@@ -236,8 +269,8 @@ extension LLMExecutionService {
         sourceRoleID: String,
         changes: String,
         team: Team?
-    ) async -> String {
-        guard let delegate else { return "" }
+    ) async -> PropagationResult {
+        guard let delegate else { return PropagationResult(summary: "", runningRoleIDs: []) }
         let roles = team?.roles ?? []
 
         let downstreamRoleIDs = ArtifactDependencyResolver.getDownstreamRoles(
@@ -245,52 +278,53 @@ extension LLMExecutionService {
             roles: roles
         )
 
-        guard !downstreamRoleIDs.isEmpty else { return "No downstream roles affected." }
+        guard !downstreamRoleIDs.isEmpty else {
+            return PropagationResult(summary: "No downstream roles affected.", runningRoleIDs: [])
+        }
 
         var amendedRoles: [String] = []
-        var contextInjectedRoles: [String] = []
+        var runningRoleIDs: [String] = []
 
         await delegate.mutateTask(taskID: taskID) { task in
             guard let runIndex = task.runs.indices.last else { return }
 
+            // Strict pipeline: a downstream role is re-run whether it had finished
+            // (`.done`) OR was caught mid-execution (`.running`). Both get the
+            // amendment notice + raw `revisionComment`; only the engine-side teardown
+            // differs (the running set is handled by `holdDownstreamForRevision`).
             for roleID in downstreamRoleIDs {
                 guard let stepIndex = task.runs[runIndex].steps.firstIndex(where: { $0.effectiveRoleID == roleID }) else { continue }
 
                 let stepStatus = task.runs[runIndex].steps[stepIndex].status
                 let roleStatus = task.runs[runIndex].roleStatuses[roleID] ?? .idle
+                let isDone = stepStatus == .done && (roleStatus == .done || roleStatus == .accepted || roleStatus == .needsAcceptance)
+                let isRunning = stepStatus == .running
+                guard isDone || isRunning else { continue }  // idle / not started: no action
 
-                if stepStatus == .done && (roleStatus == .done || roleStatus == .accepted || roleStatus == .needsAcceptance) {
-                    // Done role: trigger amendment via revisionRequested
-                    let contextMsg = """
-                        ## UPSTREAM AMENDMENT NOTICE
-                        Role '\(sourceRoleID)' is amending their work.
-                        Changes: \(changes)
+                let contextMsg = """
+                    ## UPSTREAM AMENDMENT NOTICE
+                    Role '\(sourceRoleID)' is amending their work.
+                    Changes: \(changes)
 
-                        Review and update your work if affected by these upstream changes.
-                        """
-                    task.runs[runIndex].steps[stepIndex].messages.append(
-                        StepMessage(role: .supervisor, content: contextMsg)
-                    )
-                    // Raw revision payload — same invariant as executeAmendment above.
-                    task.runs[runIndex].steps[stepIndex].revisionComment = contextMsg
+                    Review and update your work if affected by these upstream changes.
+                    """
+                task.runs[runIndex].steps[stepIndex].messages.append(
+                    StepMessage(role: .supervisor, content: contextMsg)
+                )
+                // Raw revision payload — same invariant as executeAmendment above.
+                task.runs[runIndex].steps[stepIndex].revisionComment = contextMsg
+                task.runs[runIndex].steps[stepIndex].updatedAt = MonotonicClock.shared.now()
+
+                if isDone {
+                    // Already terminal — queue the revision directly. (Running roles are
+                    // NOT flipped here: their status is set by `holdDownstreamForRevision`
+                    // after the step is forced terminal, so the run loop can't try to
+                    // re-run a still-`.running` step.)
                     task.runs[runIndex].roleStatuses[roleID] = .revisionRequested
-                    task.runs[runIndex].steps[stepIndex].updatedAt = MonotonicClock.shared.now()
                     amendedRoles.append(roleID)
-
-                } else if stepStatus == .running {
-                    // Working role: inject context message only (visible on re-execution)
-                    let contextMsg = """
-                        NOTE: Upstream role '\(sourceRoleID)' is making changes to their work.
-                        Changes: \(changes)
-                        Take this into account as you continue.
-                        """
-                    task.runs[runIndex].steps[stepIndex].messages.append(
-                        StepMessage(role: .supervisor, content: contextMsg)
-                    )
-                    task.runs[runIndex].steps[stepIndex].updatedAt = MonotonicClock.shared.now()
-                    contextInjectedRoles.append(roleID)
+                } else {
+                    runningRoleIDs.append(roleID)
                 }
-                // Not started / idle: no action needed
             }
         }
 
@@ -298,13 +332,13 @@ extension LLMExecutionService {
         if !amendedRoles.isEmpty {
             result += "Downstream amendments triggered: \(amendedRoles.joined(separator: ", ")). "
         }
-        if !contextInjectedRoles.isEmpty {
-            result += "Context injected to working roles: \(contextInjectedRoles.joined(separator: ", "))."
+        if !runningRoleIDs.isEmpty {
+            result += "Running downstream roles held for revision: \(runningRoleIDs.joined(separator: ", "))."
         }
-        if amendedRoles.isEmpty && contextInjectedRoles.isEmpty {
+        if amendedRoles.isEmpty && runningRoleIDs.isEmpty {
             result = "No downstream roles needed updates."
         }
-        return result
+        return PropagationResult(summary: result, runningRoleIDs: runningRoleIDs)
     }
 
     func recordChangeRequest(taskID: Int, changeRequest: ChangeRequest) async {

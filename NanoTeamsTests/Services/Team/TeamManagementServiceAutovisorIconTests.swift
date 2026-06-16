@@ -48,6 +48,14 @@ final class TeamManagementServiceAutovisorIconTests: XCTestCase {
 
         XCTAssertFalse(changed, "no change → no write (idempotent)")
         XCTAssertEqual(managerRoleIcon(in: teams[0]), before)
+        // Explicit strip-idempotency: the factory toolset is fully inside the allowed set,
+        // so the out-of-set prune must touch nothing. Pins the intent directly (rather than
+        // leaving it implied by the icon-only `changed == false`), so a factory default that
+        // ever drifts outside `mandatory ∪ optional` fails HERE with a toolset message.
+        XCTAssertEqual(
+            Set(teams[0].roles.first { $0.systemRoleID == AutovisorConstants.managerRoleSystemID }?.toolIDs ?? []),
+            Set(AutovisorConstants.managerDefaultToolIDs),
+            "fresh factory toolset is entirely allowed → the strip must not remove anything")
     }
 
     func testFactory_managerToolset_includesAnalyzeImage() {
@@ -86,6 +94,100 @@ final class TeamManagementServiceAutovisorIconTests: XCTestCase {
         let mgr = teams[0].roles.first { $0.systemRoleID == AutovisorConstants.managerRoleSystemID }
         XCTAssertFalse(mgr?.toolIDs.contains(ToolNames.analyzeImage) ?? true,
                        "optional tools the user switched off are preserved (additive sync is mandatory-only)")
+    }
+
+    /// The manager is read-only: a team seeded by an older build that carried repo-mutation
+    /// tools — file-write (write_file/edit_file/delete_file) AND git-write
+    /// (add/commit/pull/checkout/merge/stash/branch) — must have them stripped on open
+    /// (they're outside the allowed set, `mandatory ∪ optional`), while read + management
+    /// tools survive. This is how the existing manager is demoted to read-only (the
+    /// version-bump reconcile deliberately preserves stored toolIDs, so the prune lives in sync).
+    func testSync_stripsWriteTools_keepsReadAndManagement() {
+        var team = TeamTemplateFactory.autovisor()
+        let writeTools = [ToolNames.writeFile, ToolNames.editFile, ToolNames.deleteFile,
+                          ToolNames.gitAdd, ToolNames.gitCommit, ToolNames.gitPull,
+                          ToolNames.gitCheckout, ToolNames.gitMerge, ToolNames.gitStash, ToolNames.gitBranch]
+        if let idx = team.roles.firstIndex(where: { $0.systemRoleID == AutovisorConstants.managerRoleSystemID }) {
+            team.roles[idx].toolIDs.append(contentsOf: writeTools)
+        }
+        var teams = [team]
+
+        let changed = TeamManagementService.syncAutovisorTeamToTemplate(teams: &teams)
+
+        XCTAssertTrue(changed, "stripping disallowed write tools must report a change so the persist fires")
+        let ids = Set(teams[0].roles.first { $0.systemRoleID == AutovisorConstants.managerRoleSystemID }?.toolIDs ?? [])
+        for t in writeTools {
+            XCTAssertFalse(ids.contains(t), "write tool \(t) must be stripped (manager is read-only)")
+        }
+        for t in [ToolNames.readFile, ToolNames.listFiles, ToolNames.search,
+                  ToolNames.gitStatus, ToolNames.gitLog, ToolNames.gitDiff, ToolNames.gitBranchList,
+                  ToolNames.listTasks, ToolNames.createManagedTask, ToolNames.waitForEvents] {
+            XCTAssertTrue(ids.contains(t), "allowed read/management tool \(t) must survive the strip")
+        }
+    }
+
+    /// Order-safety: when a single sync must BOTH re-add a missing mandatory tool AND strip a
+    /// disallowed write tool, the two operations must not fight. The mandatory union-enforce
+    /// runs first (adding tools that are all in the allowed set), then the out-of-set prune —
+    /// so the re-added mandatory tool survives while the disallowed tool is removed. Pins the
+    /// `Order-safe` comment on the strip block so a future reorder can't silently break it.
+    func testSync_stripsDisallowed_andUnionEnforcesMissing_inOneCall() {
+        var team = TeamTemplateFactory.autovisor()
+        if let idx = team.roles.firstIndex(where: { $0.systemRoleID == AutovisorConstants.managerRoleSystemID }) {
+            team.roles[idx].toolIDs.removeAll { $0 == ToolNames.listTasks }   // missing mandatory
+            team.roles[idx].toolIDs.append(ToolNames.gitCommit)               // disallowed write
+        }
+        var teams = [team]
+
+        XCTAssertTrue(TeamManagementService.syncAutovisorTeamToTemplate(teams: &teams))
+
+        let ids = Set(teams[0].roles.first { $0.systemRoleID == AutovisorConstants.managerRoleSystemID }?.toolIDs ?? [])
+        XCTAssertTrue(ids.contains(ToolNames.listTasks),
+                      "union-enforce re-adds the mandatory tool, and the strip must NOT remove it")
+        XCTAssertFalse(ids.contains(ToolNames.gitCommit),
+                       "the disallowed git-write tool is stripped in the same pass")
+    }
+
+    /// The strip is GENERAL — it removes any tool outside the allowed set, not only file/git
+    /// write. delegate_to_team and run_xcodebuild don't apply to the manager (it IS the top
+    /// Supervisor and has no build step), so a manager that somehow carried them must be pruned.
+    func testSync_stripsDisallowedNonWriteTools_delegationAndXcode() {
+        var team = TeamTemplateFactory.autovisor()
+        let disallowed = [ToolNames.delegateToTeam, ToolNames.runXcodebuild]
+        if let idx = team.roles.firstIndex(where: { $0.systemRoleID == AutovisorConstants.managerRoleSystemID }) {
+            team.roles[idx].toolIDs.append(contentsOf: disallowed)
+        }
+        var teams = [team]
+
+        XCTAssertTrue(TeamManagementService.syncAutovisorTeamToTemplate(teams: &teams))
+
+        let ids = Set(teams[0].roles.first { $0.systemRoleID == AutovisorConstants.managerRoleSystemID }?.toolIDs ?? [])
+        for t in disallowed {
+            XCTAssertFalse(ids.contains(t), "out-of-set tool \(t) must be stripped (strip is not git/file-specific)")
+        }
+        XCTAssertTrue(ids.contains(ToolNames.createManagedTask), "allowed management tool survives the strip")
+    }
+
+    /// Degenerate input: a manager seeded with an EMPTY toolset (corrupted / hand-edited json).
+    /// The union-enforce restores every mandatory tool and the strip leaves nothing out-of-set,
+    /// so the manager recovers to exactly the allowed set (optional tools are NOT resurrected —
+    /// the union is mandatory-only).
+    func testSync_emptyToolset_recoversMandatory_andStaysInSet() {
+        var team = TeamTemplateFactory.autovisor()
+        if let idx = team.roles.firstIndex(where: { $0.systemRoleID == AutovisorConstants.managerRoleSystemID }) {
+            team.roles[idx].toolIDs = []
+        }
+        var teams = [team]
+
+        XCTAssertTrue(TeamManagementService.syncAutovisorTeamToTemplate(teams: &teams))
+
+        let ids = Set(teams[0].roles.first { $0.systemRoleID == AutovisorConstants.managerRoleSystemID }?.toolIDs ?? [])
+        for t in AutovisorConstants.managerMandatoryToolIDs {
+            XCTAssertTrue(ids.contains(t), "mandatory tool \(t) must be union-enforced onto an empty toolset")
+        }
+        let allowed = Set(AutovisorConstants.managerMandatoryToolIDs)
+            .union(AutovisorConstants.managerOptionalToolIDs)
+        XCTAssertTrue(ids.isSubset(of: allowed), "no out-of-set tool may be present after sync")
     }
 
     func testFactory_coordinatorIsAuto() {

@@ -117,4 +117,60 @@ final class ArtifactModelTests: XCTestCase {
         XCTAssertNil(artifact.relativePath)
         XCTAssertFalse(artifact.isSystem)
     }
+
+    // MARK: - llmReadablePath
+
+    func testLLMReadablePath_normalPath_prependsNanoteamsPrefix() {
+        let artifact = Artifact(
+            name: "Design Spec",
+            relativePath: "tasks/1/runs/0/roles/x/artifact_y.md"
+        )
+        XCTAssertEqual(
+            artifact.llmReadablePath,
+            ".nanoteams/tasks/1/runs/0/roles/x/artifact_y.md",
+            "A persisted artifact's read path must carry the .nanoteams/ prefix the file tools resolve against."
+        )
+    }
+
+    func testLLMReadablePath_nilRelativePath_returnsNil() {
+        let artifact = Artifact(name: "Draft", relativePath: nil)
+        XCTAssertNil(artifact.llmReadablePath, "No persisted file → no readable path.")
+    }
+
+    func testLLMReadablePath_emptyRelativePath_returnsNil() {
+        let artifact = Artifact(name: "Draft", relativePath: "")
+        XCTAssertNil(artifact.llmReadablePath, "Empty relativePath → no readable path.")
+    }
+
+    func testLLMReadablePath_internalPath_returnsNil() {
+        // Build Diagnostics et al. persist under .nanoteams/internal/, which the sandbox
+        // blocks. A non-nil return is a promise of readability, so internal paths must be nil.
+        let artifact = Artifact(
+            name: "Build Diagnostics",
+            relativePath: "internal/tasks/7/runs/0/roles/x/build_diagnostics.json"
+        )
+        XCTAssertNil(
+            artifact.llmReadablePath,
+            "Internal artifacts are sandbox-blocked — read path must be nil, not an unreadable reference."
+        )
+    }
+
+    func testLLMReadablePath_whitespaceOnlyRelativePath_returnsNil() {
+        let artifact = Artifact(name: "Draft", relativePath: "   \n")
+        XCTAssertNil(
+            artifact.llmReadablePath,
+            "Whitespace-only relativePath is not a persisted file — must not become .nanoteams/<spaces>."
+        )
+    }
+
+    func testLLMReadablePath_bareFilename_returnsNil() {
+        // A persisted artifact always lives nested (tasks/…/roles/…/artifact_*.md). A bare
+        // filename (no "/") can only come from a malformed relativePath; ".nanoteams/<bare>"
+        // does not exist on disk, so honoring the readability promise means returning nil.
+        let artifact = Artifact(name: "Stray", relativePath: "artifact_stray.md")
+        XCTAssertNil(
+            artifact.llmReadablePath,
+            "A non-nested relativePath is not a real artifact location — must not be advertised."
+        )
+    }
 }

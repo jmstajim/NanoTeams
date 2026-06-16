@@ -446,4 +446,85 @@ final class JSONUtilitiesTests: XCTestCase {
             JSONUtilities.sanitizeJSONControlCharacters(broken))
         XCTAssertEqual(parsed?["text"] as? String, "line1\nline2")
     }
+
+    // MARK: - sanitizeJSONControlCharacters: spurious-escaped angle brackets (HTML defect)
+    //
+    // Verbatim defect from a Startup-team run (network_log.json response 403E50AE, model
+    // google/gemma-4-26b-a4b): an edit_file `old_text` value ended with the HTML close tag
+    // `</div\>` — a spurious backslash before `>`. `\>` is an invalid JSON escape, so
+    // JSONSerialization rejected the whole envelope; the downstream re-escape salvage then
+    // silently absorbed `old_text` into `new_text`, dispatching a corrupted call that failed
+    // with the misleading "Missing required argument: old_text". `>`/`<` are never legal JSON
+    // escapes and never start a path/regex token, so dropping the stray backslash is the only
+    // sensible reading (unlike `\U`/`\d`, which stay fail-closed).
+
+    func testSanitize_recoversStrayBackslashBeforeAngleBracketClose() {
+        // The exact `</div\>` shape from response 403E50AE, with the surrounding escaped
+        // attribute quotes the real payload carried.
+        let broken = #"{"old_text":"<div id=\"result-display\" class=\"placeholder\"></div\>"}"#
+        XCTAssertNil(JSONUtilities.parseJSONDictionary(broken),
+                     "Pre-condition: stray \\> is an invalid escape → strict-broken")
+        let parsed = JSONUtilities.parseJSONDictionary(
+            JSONUtilities.sanitizeJSONControlCharacters(broken))
+        XCTAssertEqual(parsed?["old_text"] as? String,
+                       #"<div id="result-display" class="placeholder"></div>"#,
+                       "Stray backslash before `>` must be dropped, recovering the literal `>`")
+    }
+
+    func testSanitize_recoversStrayBackslashBeforeAngleBracketOpen() {
+        // Symmetric defect: `\<` (spurious backslash before an opening angle bracket).
+        let broken = #"{"x":"a\<b"}"#
+        XCTAssertNil(JSONUtilities.parseJSONDictionary(broken), "Pre-condition: \\< → strict-broken")
+        let parsed = JSONUtilities.parseJSONDictionary(
+            JSONUtilities.sanitizeJSONControlCharacters(broken))
+        XCTAssertEqual(parsed?["x"] as? String, "a<b")
+    }
+
+    func testSanitize_doublyEscapedBackslashBeforeAngleBracket_unchanged() {
+        // Parity guard: a LEGITIMATELY-escaped backslash followed by `>` (`\\>` in JSON
+        // source = literal `\` + `>`) must NOT be touched. A naive `\>`→`>` string/regex
+        // replace would corrupt this — the substring `\>` sits at offset 1 of `\\>`. The
+        // sanitizer's escape-parity tracking must leave it byte-identical AND value-faithful.
+        let valid = #"{"x":"a\\>b"}"#
+        XCTAssertNotNil(JSONUtilities.parseJSONDictionary(valid), "Control: \\\\> is valid JSON")
+        let sanitized = JSONUtilities.sanitizeJSONControlCharacters(valid)
+        XCTAssertEqual(sanitized, valid,
+                       "Doubly-escaped backslash before `>` must be left byte-identical")
+        XCTAssertEqual(JSONUtilities.parseJSONDictionary(sanitized)?["x"] as? String, #"a\>b"#,
+                       "Value must remain the literal backslash + `>`")
+    }
+
+    func testSanitize_strayBackslashBeforeAngleBracket_amongValidEscapes() {
+        // Realistic mixed value: valid escapes (`\"`, `\n`) AND the spurious `\>` in one
+        // string — only the `\>` is repaired, the valid escapes round-trip unchanged.
+        let broken = #"{"new_text":"<a href=\"x\">link</a\>"# + "\\n" + #"next"}"#
+        XCTAssertNil(JSONUtilities.parseJSONDictionary(broken), "Pre-condition: \\> → strict-broken")
+        let parsed = JSONUtilities.parseJSONDictionary(
+            JSONUtilities.sanitizeJSONControlCharacters(broken))
+        XCTAssertEqual(parsed?["new_text"] as? String, "<a href=\"x\">link</a>\nnext",
+                       "Only the stray \\> is dropped; \\\" and \\n round-trip intact")
+    }
+
+    func testSanitize_tripleBackslashBeforeAngleBracket_dropsOnlyTheStrayOne() {
+        // Parity boundary one step past `\\>`: `\\\>` in JSON source = a real escaped
+        // backslash (`\\` → literal `\`) immediately followed by a stray `\>`. The
+        // `removeLast()` must drop ONLY the third (stray) backslash, leaving a literal
+        // backslash + `>`. This pins the exact off-by-one the design claims is safe.
+        let broken = #"{"x":"a\\\>b"}"#
+        XCTAssertNil(JSONUtilities.parseJSONDictionary(broken),
+                     "Pre-condition: the trailing \\> after a valid \\\\ is strict-broken")
+        let parsed = JSONUtilities.parseJSONDictionary(
+            JSONUtilities.sanitizeJSONControlCharacters(broken))
+        XCTAssertEqual(parsed?["x"] as? String, #"a\>b"#,
+                       "Only the stray third backslash is dropped → literal `\\` + `>` survive")
+    }
+
+    func testSanitize_angleBracketOutsideString_leftUntouched() {
+        // The angle-bracket drop lives inside the `inString` guard, so a `\>` in structural
+        // position (outside any string) must be byte-identical — sanitize never rewrites
+        // structure. Contrived input, but pins the "never structural punctuation" property.
+        let input = #"{"a":"x"}\>"#
+        XCTAssertEqual(JSONUtilities.sanitizeJSONControlCharacters(input), input,
+                       "A `\\>` outside a JSON string must be left byte-identical")
+    }
 }

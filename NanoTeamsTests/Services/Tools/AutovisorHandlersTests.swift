@@ -24,6 +24,13 @@ final class AutovisorHandlersTests: XCTestCase {
 
     private func invoke(_ runtime: ToolRuntime, _ name: String, _ args: [String: Any]) throws -> ToolExecutionResult {
         let argsJSON = String(data: try JSONSerialization.data(withJSONObject: args), encoding: .utf8) ?? "{}"
+        return try invokeRaw(runtime, name, argsJSON)
+    }
+
+    /// Drives a verbatim arguments string through `ToolRuntime` — exercises the
+    /// real `parseAndNormalizeArguments` path (JSON `null` → NSNull, non-JSON
+    /// plain text → `__raw_input__` wrap) instead of a pre-built dictionary.
+    private func invokeRaw(_ runtime: ToolRuntime, _ name: String, _ argsJSON: String) throws -> ToolExecutionResult {
         let call = StepToolCall(name: name, argumentsJSON: argsJSON)
         let results = runtime.executeAll(
             context: ToolExecutionContext(
@@ -135,9 +142,118 @@ final class AutovisorHandlersTests: XCTestCase {
         XCTAssertTrue(r.outputJSON.contains("INVALID_ARGS"))
     }
 
-    func testCreateManagedTask_emptyTitle_errors() async throws {
+    func testCreateManagedTask_emptyTitle_derivesFromShortBrief() async throws {
         let r = try invoke(makeRuntime(), ToolNames.createManagedTask, ["title": "  ", "brief": "B"])
+        XCTAssertFalse(r.isError)
+        guard case .createManagedTask(let t, let b, _)? = r.signal else { return XCTFail() }
+        XCTAssertEqual(t, "B"); XCTAssertEqual(b, "B")
+    }
+
+    func testCreateManagedTask_missingTitle_derivesFromBrief() async throws {
+        let brief = "**Goal**: Add an onboarding tour with tooltips and a help overlay\nSecond line with details."
+        let r = try invoke(makeRuntime(), ToolNames.createManagedTask, ["brief": brief])
+        XCTAssertFalse(r.isError)
+        guard case .createManagedTask(let t, _, _)? = r.signal else { return XCTFail() }
+        XCTAssertEqual(t, "**Goal**: Add an onboarding to…")
+    }
+
+    func testCreateManagedTask_emptyBrief_errors() async throws {
+        let r = try invoke(makeRuntime(), ToolNames.createManagedTask, ["title": "T", "brief": "   "])
         XCTAssertTrue(r.isError)
+        XCTAssertTrue(r.outputJSON.contains("INVALID_ARGS"))
+    }
+
+    // MARK: - create_managed_task title-derivation corners
+
+    /// JSON `null` title — the most common shape of the emission quirk. Must
+    /// derive from brief, NOT coerce NSNull into a literal "<null>" task title.
+    func testCreateManagedTask_nullTitle_derivesFromBrief() async throws {
+        let r = try invokeRaw(makeRuntime(), ToolNames.createManagedTask,
+                              #"{"title": null, "brief": "Fix the login bug"}"#)
+        XCTAssertFalse(r.isError)
+        guard case .createManagedTask(let t, _, _)? = r.signal else {
+            return XCTFail("got \(String(describing: r.signal))")
+        }
+        XCTAssertEqual(t, "Fix the login bug")
+    }
+
+    /// Non-string title (number) falls to derivation rather than stringifying "42".
+    func testCreateManagedTask_numericTitle_derivesFromBrief() async throws {
+        let r = try invokeRaw(makeRuntime(), ToolNames.createManagedTask,
+                              #"{"title": 42, "brief": "B"}"#)
+        XCTAssertFalse(r.isError)
+        guard case .createManagedTask(let t, _, _)? = r.signal else {
+            return XCTFail("got \(String(describing: r.signal))")
+        }
+        XCTAssertEqual(t, "B")
+    }
+
+    /// Multi-line brief with a SHORT first line — pins the first-line split
+    /// independently of prefix(30): no embedded newline, no ellipsis.
+    func testCreateManagedTask_multiLineBrief_shortFirstLine_usesFirstLineOnly() async throws {
+        let r = try invoke(makeRuntime(), ToolNames.createManagedTask,
+                           ["brief": "Fix login\nThe OAuth flow breaks on refresh tokens."])
+        XCTAssertFalse(r.isError)
+        guard case .createManagedTask(let t, _, _)? = r.signal else {
+            return XCTFail("got \(String(describing: r.signal))")
+        }
+        XCTAssertEqual(t, "Fix login")
+    }
+
+    /// Exactly-30-char first line is used verbatim — no spurious ellipsis.
+    func testCreateManagedTask_exactly30CharBrief_noEllipsis() async throws {
+        let line30 = "123456789012345678901234567890"
+        let r = try invoke(makeRuntime(), ToolNames.createManagedTask, ["brief": line30])
+        XCTAssertFalse(r.isError)
+        guard case .createManagedTask(let t, _, _)? = r.signal else {
+            return XCTFail("got \(String(describing: r.signal))")
+        }
+        XCTAssertEqual(t, line30)
+    }
+
+    /// 31-char first line truncates to 30 + ellipsis — the other side of the boundary.
+    func testCreateManagedTask_31CharBrief_truncatesWithEllipsis() async throws {
+        let line31 = "123456789012345678901234567890X"
+        let r = try invoke(makeRuntime(), ToolNames.createManagedTask, ["brief": line31])
+        XCTAssertFalse(r.isError)
+        guard case .createManagedTask(let t, _, _)? = r.signal else {
+            return XCTFail("got \(String(describing: r.signal))")
+        }
+        XCTAssertEqual(t, "123456789012345678901234567890…")
+    }
+
+    /// prefix(30) counts grapheme clusters — multi-scalar emoji are never split.
+    func testCreateManagedTask_emojiBrief_truncatesOnGraphemeBoundary() async throws {
+        let brief = String(repeating: "👨‍👩‍👧‍👦", count: 31)
+        let r = try invoke(makeRuntime(), ToolNames.createManagedTask, ["brief": brief])
+        XCTAssertFalse(r.isError)
+        guard case .createManagedTask(let t, _, _)? = r.signal else {
+            return XCTFail("got \(String(describing: r.signal))")
+        }
+        XCTAssertEqual(t, String(repeating: "👨‍👩‍👧‍👦", count: 30) + "…")
+    }
+
+    /// Explicit title with surrounding whitespace is trimmed, not derived.
+    func testCreateManagedTask_paddedTitle_isTrimmedAndUsed() async throws {
+        let r = try invoke(makeRuntime(), ToolNames.createManagedTask,
+                           ["title": "  Fix bug  ", "brief": "Long brief about the login flow"])
+        XCTAssertFalse(r.isError)
+        guard case .createManagedTask(let t, _, _)? = r.signal else {
+            return XCTFail("got \(String(describing: r.signal))")
+        }
+        XCTAssertEqual(t, "Fix bug")
+    }
+
+    /// Model emits a plain non-JSON string as args → ToolRuntime wraps it in
+    /// `__raw_input__`, `requiredString` recovers it as the brief, title derives.
+    func testCreateManagedTask_rawPlainStringArgs_briefIsRawTextTitleDerived() async throws {
+        let r = try invokeRaw(makeRuntime(), ToolNames.createManagedTask, "Fix the login bug")
+        XCTAssertFalse(r.isError)
+        guard case .createManagedTask(let t, let b, _)? = r.signal else {
+            return XCTFail("got \(String(describing: r.signal))")
+        }
+        XCTAssertEqual(b, "Fix the login bug")
+        XCTAssertEqual(t, "Fix the login bug")
     }
 
     func testControlTask_unknownVerb_errors() async throws {

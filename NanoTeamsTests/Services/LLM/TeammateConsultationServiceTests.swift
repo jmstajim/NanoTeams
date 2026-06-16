@@ -273,10 +273,10 @@ final class TeammateConsultationServiceTests: XCTestCase {
     func testTeammateConsultation_Fail_SetsStatus() {
         var consultation = createConsultation(consultedRole: .softwareEngineer)
 
-        consultation.fail()
+        consultation.fail(with: "Connection lost")
 
         XCTAssertEqual(consultation.status, .failed)
-        XCTAssertNil(consultation.response)
+        XCTAssertEqual(consultation.response, "Connection lost")
     }
 
     func testTeammateConsultation_Cancel_SetsStatus() {

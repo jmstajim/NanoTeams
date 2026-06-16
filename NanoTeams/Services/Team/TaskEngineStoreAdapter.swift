@@ -99,6 +99,18 @@ final class TaskEngineStoreAdapter: TeamEngineStore {
     /// No-ops for any status other than `.done`/`.failed` (benign: a `.pending` step was
     /// already reset by a prior pass).
     func resetStepForRevision(stepID: String) async {
+        // Clear any stale streaming state ONLY when the step is actually being reset
+        // (i.e. it is `.done`/`.failed` — the same gate the mutation below uses). The
+        // reset returns the step to `.pending`; a leftover `activeMessageIDs` entry
+        // would otherwise keep the activity-feed bubble animating "Thinking…" for a
+        // step that is no longer running (the symptom on revised/held roles). Gating
+        // the clear on terminal status means a `.pending`/`.running` no-op reset can't
+        // wipe a genuinely live indicator.
+        let currentStatus = orchestrator?.loadedTask(taskID)?.runs.last?.steps
+            .first(where: { $0.id == stepID })?.status
+        if currentStatus == .done || currentStatus == .failed {
+            orchestrator?.clearStreamingPreview(stepID: stepID, taskID: taskID)
+        }
         await orchestrator?.mutateTask(taskID: taskID) { task in
             guard let location = task.locateStepInLatestRun(stepID: stepID) else { return }
             let step = task.runs[location.runIndex].steps[location.stepIndex]
@@ -132,46 +144,28 @@ final class TaskEngineStoreAdapter: TeamEngineStore {
 
     // MARK: - Private
 
-    /// Resolve the team for this task.
-    ///
-    /// Resolution order:
-    ///  1. `task.generatedTeam` — child tasks delegated with `team_id: "generated"`
-    ///     own their team in this slot, set via `adoptGeneratedTeam`.
-    ///  2. `workFolder.teams[preferredTeamID]` — existing-team delegations and
-    ///     normal user-created tasks.
-    ///  3. `workFolder.activeTeam` — the user's currently selected team for
-    ///     **top-level** tasks only.
-    ///
-    /// **Critical: child tasks MUST NOT fall through to step 3.** When a child
-    /// task is created via `delegate_to_team`, its `preferredTeamID` is either
-    /// the generated team's ephemeral id (not in `workFolder.teams`) or an
-    /// existing team's id (in `workFolder.teams`). If `generatedTeam` is nil
-    /// AND the preferredTeamID lookup misses, falling through to `activeTeam`
-    /// hands the child the PARENT's currently-selected team — which still has
-    /// `delegate_to_team` and the parent's tools intact. The child then
-    /// recursively re-delegates, producing the `Coding Agent.Coding Agent…`
-    /// infinite chain documented in `docs/delegation-feature.md` spec #91.
-    /// Returning `nil` here makes `TeamEngine+RunLoop.swift:71` transition the
-    /// child engine to `.failed`, which the parent's `delegate_to_team`
-    /// awaiter surfaces as a `.commandFailed` envelope — visible failure beats
-    /// silent recursion every time.
+    /// Resolve the team for this task — see `TeamResolution.resolve` for the full
+    /// order. The critical property for the engine: a STARTED run is pinned to
+    /// its `Run.teamID`, so a team deleted mid-run produces a loud `nil` (→
+    /// engine `.failed`) rather than silently swapping in `activeTeam` and
+    /// commingling a second roster into the live run. Child tasks still fail-fast
+    /// (no parent `activeTeam` inheritance — spec #91 Coding Agent self-recursion).
     private var resolvedTeam: Team? {
-        let task = activeTask
-        if let generated = task?.generatedTeam {
-            return generated
-        }
-        if let preferredTeamID = task?.preferredTeamID,
-           let team = orchestrator?.workFolder?.team(withID: preferredTeamID) {
+        guard let task = activeTask else { return nil }
+        switch TeamResolution.resolve(
+            task: task,
+            teamProvider: { orchestrator?.workFolder?.team(withID: $0) },
+            activeTeam: orchestrator?.workFolder?.activeTeam
+        ) {
+        case .resolved(let team):
             return team
-        }
-        // Child task lost its team reference — refuse to inherit the parent's
-        // active team. Surface a diagnostic so the parent's awaiter has
-        // something to report via `lastErrorMessageForTask(_:)`.
-        if let task, task.parentTaskID != nil {
-            orchestrator?.lastErrorMessage = "Child task \(task.id) has no resolvable team (generatedTeam=nil, preferredTeamID=\(task.preferredTeamID?.description ?? "nil") not in workFolder). Refusing to fall back to parent's active team to avoid Coding Agent self-recursion."
+        case .failed(let reason):
+            // Engine path: surface the diagnostic loudly; nil → engine `.failed`.
+            orchestrator?.lastErrorMessage = reason
+            return nil
+        case .noTeam:
             return nil
         }
-        return orchestrator?.workFolder?.activeTeam
     }
     nonisolated deinit {}
 }

@@ -100,11 +100,17 @@ nonisolated enum TeamActivityTimelineItem: Identifiable {
             return "meeting-\(taskID)-\(msg.id)"
         case .changeRequest(let request, _, let taskID):
             return "cr-\(taskID)-\(request.id)"
-        case .notification(let stepID, _, let type, _, let taskID):
+        case .notification(let stepID, _, let type, let createdAt, let taskID):
             let typeKey: String
             switch type {
             case .supervisorInput(_, _, _, _, let tcID, _, _): typeKey = "input-\(tcID.uuidString)"
-            case .failed: typeKey = "fail"
+            // Fold the failure timestamp into the id so it stays stable-unique if the
+            // same task ever renders multiple runs' `.failed` steps together (they
+            // share `stepID` = roleID). A bare "fail" key would collide and trip
+            // ForEach's stable-id rule (#22). `createdAt` here is `step.completedAt`
+            // (set atomically on failure; falls back to `updatedAt` only if unset), so
+            // it's stable per failed-step instance.
+            case .failed: typeKey = "fail-\(createdAt.timeIntervalSinceReferenceDate)"
             }
             return "notif-\(taskID)-\(stepID)-\(typeKey)"
         case .supervisorTask(_, _, _, _, _, _, let taskID):

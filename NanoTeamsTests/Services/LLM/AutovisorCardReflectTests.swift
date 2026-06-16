@@ -131,11 +131,13 @@ final class AutovisorCardReflectTests: XCTestCase {
 
     // MARK: - Classification guard
 
-    /// Pins which signals get success-reflection. The 10 manager signals must
-    /// classify `true`; the rich-UI collaboration signals must classify `false`
-    /// (so their success placeholder is left for their dedicated UI to fill).
-    /// Guards against a new manager signal silently shipping with a stuck-on-
-    /// "pending" card.
+    /// Pins which signals take the manager reflect path. The 10 manager signals
+    /// must classify `true`; the rich-UI collaboration signals must classify
+    /// `false`. (`isAutovisorSignal` only gates the manager-only reflect branch;
+    /// attribution tools — consultation/meeting/change-request — reflect onto the
+    /// card via the separate `reflectAttribution` path, and delegation reflects
+    /// only on failure.) Guards against a new manager signal silently shipping
+    /// with a stuck-on-"pending" card.
     func testIsAutovisorSignal_classifiesManagerTrue_collaborationFalse() {
         for signal: ToolSignal in [
             .listTasks,
@@ -163,7 +165,7 @@ final class AutovisorCardReflectTests: XCTestCase {
             .forwardToTeam(childTaskID: 1, message: "m")
         ] {
             XCTAssertFalse(LLMExecutionService.isAutovisorSignal(signal),
-                "\(signal) renders in its own UI — its success placeholder must be left untouched.")
+                "\(signal) is not a manager signal — its card reflect (if any) is owned by reflectAttribution / delegation-on-failure, not the manager branch.")
         }
 
         XCTAssertFalse(LLMExecutionService.isAutovisorSignal(nil))

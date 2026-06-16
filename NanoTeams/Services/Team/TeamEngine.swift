@@ -132,6 +132,18 @@ final class TeamEngine {
     }
 
 
+    /// Cancels and removes the per-role execution tasks for the given roles so the run
+    /// loop will re-spawn them. Used by `restartRole`: a finished role's Task lingers in
+    /// `roleTasks` (a normally-returned Task is NOT `.isCancelled`), and `startRoles`'
+    /// skip-guard would otherwise skip the role forever — so the restart silently does
+    /// nothing. Mirrors what `stop()`/`pause()` do for all roles, scoped to the reset set.
+    func cancelRoleTasks(for roleIDs: Set<String>) {
+        for roleID in roleIDs {
+            roleTasks[roleID]?.cancel()
+            roleTasks.removeValue(forKey: roleID)
+        }
+    }
+
     /// Called when external event occurs (Supervisor input answered, role restarted, etc.)
     func notifyExternalEvent() {
         if state == .paused || state == .needsAcceptance || state == .needsSupervisorInput

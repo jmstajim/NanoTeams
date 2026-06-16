@@ -8,23 +8,30 @@ extension LLMExecutionService {
     // MARK: - Collaboration Signal Dispatch
 
     /// Handles a collaboration tool result (ask_teammate, request_team_meeting, request_changes,
-    /// delegate_to_team, cancel/resume/forward delegation).
+    /// delegate_to_team, cancel/resume/forward delegation, Autovisor management tools).
     ///
-    /// `toolCallID` identifies the persisted `StepToolCall` row written by
-    /// `processToolResults` from the placeholder envelope (`isError: false`,
-    /// `pending` status). After the deferred handler returns the real response,
-    /// we re-update that row only when `envelopeStatus(response) == .failure` —
-    /// i.e. the envelope explicitly carries `{"ok": false, ...}`. Malformed
-    /// JSON, missing `ok` field, or non-Bool `ok` (`.indeterminate`) are
-    /// treated as success and leave the placeholder green; this is intentional
-    /// because every collaboration handler in this dispatch goes through
-    /// `Tools+Envelope.makeSuccessResult` / `makeErrorResult`, so a non-failure
-    /// envelope means the parser couldn't read it — never that the operation
-    /// actually failed. Without this re-update, failed delegations /
-    /// consultations / meetings render as success because the placeholder is
-    /// the only thing ever persisted. `toolCallID` is `result.providerID`-
-    /// independent: `providerID: String?` is the OpenAI tool_call_id used for
-    /// chat correlation, NOT the row id.
+    /// Every signal resolves to a single `{"ok":…}` envelope, via one of two
+    /// handler shapes: attribution handlers (consultation / meeting / change
+    /// request) return a `CollaborationReply` (prose + outcome) that
+    /// `reflectAttribution` wraps into the envelope; delegation / Autovisor
+    /// handlers already return the envelope `String` directly (`reflectEnvelope`).
+    /// We then reflect the real result onto the persisted `StepToolCall` card
+    /// (written as a `pending` placeholder by `processToolResults`) so it stops lying:
+    ///   • Attribution-bearing tools (consultation / meeting / change request)
+    ///     reflect ALWAYS — green with the answer on success, red `{"ok":false}`
+    ///     on failure. The answer ALSO renders as a role-attributed feed bubble,
+    ///     but that bubble can be missed (or dropped when empty), so the card
+    ///     must be a self-contained record.
+    ///   • Delegation reflects only on FAILURE (success renders in the stacked
+    ///     graph delegation layers; there is no single role's voice to attribute).
+    ///   • Autovisor reflects ALWAYS (the manager's feed is its only surface).
+    /// The LLM tool message is the same single envelope (no double-wrapping).
+    ///
+    /// Durability: the card reflect, the persisted tool message, and the
+    /// attribution bubble are committed in ONE atomic `mutateTask`
+    /// (`commitCollaborationOutcome`) gated by a single `isExecutionLive` check,
+    /// so a teardown can't leave the answer half-written. `toolCallID` is the
+    /// persisted row id (NOT `result.providerID`, the OpenAI tool_call_id).
     func appendCollaborationResult(
         result: ToolExecutionResult,
         toolCallID: UUID,
@@ -38,13 +45,49 @@ extension LLMExecutionService {
         networkLogger: NetworkLogger?,
         conversationMessages: inout [ChatMessage]
     ) async {
-        var response = ""
+        // The single `{"ok":…}` envelope shown to the LLM and (when reflected)
+        // the card. `cardJSON == nil` leaves the `pending` placeholder untouched
+        // (delegation success → graph layers). Attribution-bearing tools also
+        // carry `bubbleText` + `attributionRole`/`attributionContext` for the feed bubble.
+        var llmEnvelope = ""
+        var cardJSON: String?
+        var cardIsError = false
         var attributionRole: Role?
         var attributionContext: MessageSourceContext?
+        var bubbleText: String?
+
+        // Attribution-bearing handlers return prose + success flag; wrap into a
+        // single success/failure envelope used for BOTH the card and the LLM.
+        func reflectAttribution(_ reply: CollaborationReply, role: Role, context: MessageSourceContext) {
+            let env = reply.succeeded
+                ? buildCollaborationToolResult(toolName: result.toolName, response: reply.text)
+                : buildCollaborationErrorResult(toolName: result.toolName, message: reply.text)
+            llmEnvelope = env
+            cardJSON = env
+            cardIsError = !reply.succeeded
+            bubbleText = reply.text
+            attributionRole = role
+            attributionContext = context
+        }
+
+        // Delegation / Autovisor handlers already return a `{"ok":…}` envelope —
+        // use it directly (no double-wrap). Autovisor reflects always (its only
+        // surface); delegation reflects only on failure (success → graph layers).
+        func reflectEnvelope(_ env: String) {
+            llmEnvelope = env
+            let isFailure = envelopeStatus(env) == .failure
+            if Self.isAutovisorSignal(result.signal) {
+                cardJSON = env
+                cardIsError = isFailure
+            } else if isFailure {
+                cardJSON = env
+                cardIsError = true
+            }
+        }
 
         switch result.signal {
         case .teammateConsultation(let id, let question, let context):
-            response = await handleTeammateConsultation(
+            let reply = await handleTeammateConsultation(
                 stepID: stepID,
                 consultedRoleID: id,
                 question: question,
@@ -57,11 +100,10 @@ extension LLMExecutionService {
                 config: config,
                 networkLogger: networkLogger
             )
-            attributionRole = Role.builtInRole(for: id) ?? .custom(id: id)
-            attributionContext = .consultation
+            reflectAttribution(reply, role: Role.builtInRole(for: id) ?? .custom(id: id), context: .consultation)
 
         case .teamMeeting(let topic, let participants, let context):
-            response = await handleTeamMeeting(
+            let reply = await handleTeamMeeting(
                 stepID: stepID,
                 topic: topic,
                 participantIDs: participants,
@@ -74,17 +116,14 @@ extension LLMExecutionService {
                 config: config,
                 networkLogger: networkLogger
             )
-            let team = resolveTeam(task: task)
             // Auto mode = initiator-as-coordinator. The meeting result is
             // attributed to the same effective coordinator the runtime used
             // for the meeting itself (designated coordinator if set,
-            // otherwise the initiating role). Replaces the previous silent
-            // `?? .tpm` fallback that masked misconfiguration.
-            attributionRole = effectiveCoordinator(team: team, initiator: roleForMessage)
-            attributionContext = .meeting
+            // otherwise the initiating role).
+            reflectAttribution(reply, role: effectiveCoordinator(team: resolveTeam(task: task), initiator: roleForMessage), context: .meeting)
 
         case .changeRequest(let targetRoleID, let changes, let reasoning):
-            response = await handleChangeRequest(
+            let reply = await handleChangeRequest(
                 stepID: stepID,
                 targetRoleID: targetRoleID,
                 changes: changes,
@@ -97,11 +136,10 @@ extension LLMExecutionService {
                 config: config,
                 networkLogger: networkLogger
             )
-            attributionRole = roleForMessage
-            attributionContext = .changeRequest
+            reflectAttribution(reply, role: roleForMessage, context: .changeRequest)
 
         case .delegateToTeam(let teamID, let taskBrief):
-            response = await handleDelegateToTeam(
+            reflectEnvelope(await handleDelegateToTeam(
                 stepID: stepID,
                 teamIDRaw: teamID,
                 taskBrief: taskBrief,
@@ -112,31 +150,28 @@ extension LLMExecutionService {
                 client: client,
                 config: config,
                 networkLogger: networkLogger
-            )
-            // No attribution turn — delegation result is the team's collective output,
-            // not a single role's voice. The activity feed renders the tool call card
-            // with the artifact summary; the parent's main loop sees the JSON envelope.
+            ))
 
         case .cancelDelegation(let childTaskID, let reason):
-            response = await handleCancelDelegation(
+            reflectEnvelope(await handleCancelDelegation(
                 stepID: stepID,
                 taskID: task.id,
                 childTaskID: childTaskID,
                 reason: reason
-            )
+            ))
 
         case .resumeDelegation(let childTaskID):
-            response = await handleResumeDelegation(
+            reflectEnvelope(await handleResumeDelegation(
                 stepID: stepID,
                 childTaskID: childTaskID,
                 initiatingRole: roleForMessage,
                 task: task,
                 client: client,
                 config: config
-            )
+            ))
 
         case .forwardToTeam(let childTaskID, let message):
-            response = await handleForwardToTeam(
+            reflectEnvelope(await handleForwardToTeam(
                 stepID: stepID,
                 childTaskID: childTaskID,
                 message: message,
@@ -144,86 +179,124 @@ extension LLMExecutionService {
                 task: task,
                 client: client,
                 config: config
-            )
+            ))
 
         // MARK: Autovisor management tools (no attribution turn — the manager's
         // own activity feed renders these; the result is a plain JSON envelope).
         case .listTasks:
-            response = await handleListTasks()
+            reflectEnvelope(await handleListTasks())
         case .taskStatus(let taskID):
-            response = await handleTaskStatus(taskID: taskID)
+            reflectEnvelope(await handleTaskStatus(taskID: taskID))
         case .createManagedTask(let title, let brief, let teamID):
-            response = await handleCreateManagedTask(title: title, brief: brief, teamID: teamID)
+            reflectEnvelope(await handleCreateManagedTask(title: title, brief: brief, teamID: teamID))
         case .controlTask(let taskID, let verb):
-            response = await handleControlTask(taskID: taskID, verb: verb)
+            reflectEnvelope(await handleControlTask(taskID: taskID, verb: verb))
         case .manageRole(let taskID, let roleID, let verb):
-            response = await handleManageRole(taskID: taskID, roleID: roleID, verb: verb)
+            reflectEnvelope(await handleManageRole(taskID: taskID, roleID: roleID, verb: verb))
         case .answerTaskQuestion(let taskID, let answer):
-            response = await handleAnswerTaskQuestion(taskID: taskID, answer: answer)
+            reflectEnvelope(await handleAnswerTaskQuestion(taskID: taskID, answer: answer))
         case .messageTask(let taskID, let text, let roleID):
-            response = await handleMessageTask(taskID: taskID, text: text, roleID: roleID)
+            reflectEnvelope(await handleMessageTask(taskID: taskID, text: text, roleID: roleID))
         case .scheduleTask(let taskID, let intervalMinutes):
-            response = await handleScheduleTask(taskID: taskID, intervalMinutes: intervalMinutes)
+            reflectEnvelope(await handleScheduleTask(taskID: taskID, intervalMinutes: intervalMinutes))
         case .setWorkFolderContext(let content):
-            response = await handleSetWorkFolderContext(content: content)
+            reflectEnvelope(await handleSetWorkFolderContext(content: content))
         case .waitForEvents:
-            response = await handleWaitForEvents(stepID: stepID, taskID: task.id)
+            reflectEnvelope(await handleWaitForEvents(stepID: stepID, taskID: task.id))
 
         default:
             // Unhandled collaboration signal — `processToolResults` routed it
-            // here but no `case` matched. The empty `response` would silently
-            // pass `envelopeStatus("") == .indeterminate` (no isError flip)
-            // AND ship as the tool result content to the LLM. Crash in DEBUG
-            // so the missing case is loud during development; ship-build still
-            // falls through.
+            // here but no `case` matched (the routing predicate drifted from this
+            // switch). Crash in DEBUG so the missing case is loud during
+            // development; in release, fail loudly with an honest `{ok:false}`
+            // envelope (red card + clear LLM signal) instead of shipping a blank
+            // tool result.
             assertionFailure("appendCollaborationResult missing case for \(String(describing: result.signal))")
+            reflectEnvelope(buildCollaborationErrorResult(
+                toolName: result.toolName, message: "Unhandled collaboration signal."))
         }
 
-        // Reflect the deferred handler's outcome onto the persisted `StepToolCall`.
-        // The placeholder written in `processToolResults` had `isError: false`
-        // (scheduling envelope, status `pending`); only the deferred response
-        // knows the real result. Two reflect cases:
-        //   • FAILURE (any signal) — flip the card green ✓ → red and surface the
-        //     real error envelope, so failed delegations / consultations /
-        //     meetings don't render as success.
-        //   • Autovisor signals (success OR failure) — these have no other UI
-        //     surface, so the card must show the real result (task list, status,
-        //     etc.) instead of the `{"status":"pending"}` placeholder. Rich-UI
-        //     collaboration tools (delegation / consultation / meeting) render their
-        //     content in dedicated surfaces (graph delegation layers, attribution
-        //     bubbles, meeting messages), so on success we intentionally leave their
-        //     placeholder card untouched.
-        let status = envelopeStatus(response)
-        if status == .failure || Self.isAutovisorSignal(result.signal) {
-            let updated = ToolExecutionResult(
-                providerID: result.providerID,
-                toolName: result.toolName,
-                argumentsJSON: result.argumentsJSON,
-                outputJSON: response,
-                isError: status == .failure,
-                signal: result.signal
-            )
-            await updateToolCallResult(stepID: stepID, taskID: task.id, toolCallID: toolCallID, result: updated)
-        }
-
-        let toolContent = buildCollaborationToolResult(toolName: result.toolName, response: response)
+        // In-memory tool result for THIS live iteration — unconditional so the
+        // assistant tool_call always has a matching tool result (chain protocol).
         conversationMessages.append(ChatMessage(
-            role: .tool, content: toolContent, toolCallID: result.providerID
+            role: .tool, content: llmEnvelope, toolCallID: result.providerID
         ))
-        let toolCallContent = """
-            [CALL] \(result.toolName)
-            Arguments: \(result.argumentsJSON)
+
+        // Durable persistence: card reflect + persisted tool message + attribution
+        // bubble in one atomic mutateTask, gated by a single isExecutionLive check.
+        await commitCollaborationOutcome(
+            stepID: stepID,
+            taskID: task.id,
+            toolCallID: toolCallID,
+            toolName: result.toolName,
+            argumentsJSON: result.argumentsJSON,
+            llmEnvelope: llmEnvelope,
+            cardJSON: cardJSON,
+            cardIsError: cardIsError,
+            attributionRole: attributionRole,
+            attributionContext: attributionContext,
+            bubbleText: bubbleText
+        )
+    }
+
+    /// Commits a collaboration outcome's three feed surfaces — the reflected card
+    /// (`StepToolCall.resultJSON`/`isError`), the persisted `[CALL]…[RESULT]` tool
+    /// message, and the optional role-attributed bubble — in ONE atomic
+    /// `mutateTask`, gated by a single `isExecutionLive` check. Coalescing avoids a
+    /// partial-persist window where a teardown lands between separate writes (the
+    /// answer half-shown). It does NOT change the `isExecutionLive` barrier itself.
+    private func commitCollaborationOutcome(
+        stepID: String,
+        taskID: Int,
+        toolCallID: UUID,
+        toolName: String,
+        argumentsJSON: String,
+        llmEnvelope: String,
+        cardJSON: String?,
+        cardIsError: Bool,
+        attributionRole: Role?,
+        attributionContext: MessageSourceContext?,
+        bubbleText: String?
+    ) async {
+        guard let delegate, isExecutionLive(stepID: stepID, taskID: taskID) else { return }
+
+        // Build cleaned/guarded messages outside the closure (same Harmony-token
+        // cleaning + non-empty guard as `appendLLMMessage`).
+        let toolCallContent = ConversationRepairService.cleanHarmonyTokens("""
+            [CALL] \(toolName)
+            Arguments: \(argumentsJSON)
 
             [RESULT]
-            \(toolContent)
-            """
-        await appendLLMMessage(stepID: stepID, taskID: task.id, role: .tool, content: toolCallContent)
+            \(llmEnvelope)
+            """)
+        let toolMsg = toolCallContent.isEmpty
+            ? nil
+            : LLMMessage(role: .tool, content: toolCallContent)
 
-        if let attrRole = attributionRole, let attrContext = attributionContext {
-            await appendLLMMessage(
-                stepID: stepID, taskID: task.id, role: .user, content: response,
-                sourceRole: attrRole, sourceContext: attrContext
-            )
+        var bubbleMsg: LLMMessage?
+        if let attributionRole, let attributionContext, let bubbleText {
+            let cleaned = ConversationRepairService.cleanHarmonyTokens(bubbleText)
+            if !cleaned.isEmpty {
+                bubbleMsg = LLMMessage(
+                    role: .user, content: cleaned,
+                    sourceRole: attributionRole, sourceContext: attributionContext
+                )
+            }
+        }
+
+        await delegate.mutateTask(taskID: taskID) { task in
+            if let cardJSON {
+                TaskMutationService.updateToolCallResult(
+                    toolCallID: toolCallID,
+                    resultJSON: cardJSON,
+                    isError: cardIsError,
+                    stepID: stepID,
+                    argumentsJSON: argumentsJSON,
+                    in: &task
+                )
+            }
+            if let toolMsg { TaskMutationService.appendLLMMessage(toolMsg, to: stepID, in: &task) }
+            if let bubbleMsg { TaskMutationService.appendLLMMessage(bubbleMsg, to: stepID, in: &task) }
         }
     }
 

@@ -360,17 +360,22 @@ enum DelegatedSupervisorAnswerService {
         return q
     }
 
-    /// Resolves the team for a task using the same priority as
-    /// `TaskEngineStoreAdapter.resolvedTeam` / `LLMExecutionService.resolveTeam`:
-    /// `generatedTeam` slot first, then `preferredTeamID` lookup against the
-    /// project's stored teams. Returns `nil` only when neither resolves.
+    /// Resolves the team for a task using the shared `TeamResolution.resolve`
+    /// order (generated → pinned `run.teamID` → preferredTeamID → child fail-fast
+    /// → activeTeam). A team deleted mid-run yields `nil`, never a silent swap.
     private static func resolveTeam(task: NTMSTask, delegate: any LLMStateDelegate) -> Team? {
-        if let generated = task.generatedTeam { return generated }
-        if let preferredID = task.preferredTeamID,
-           let team = delegate.snapshot?.workFolder.team(withID: preferredID)
-        {
+        switch TeamResolution.resolve(
+            task: task,
+            teamProvider: { delegate.snapshot?.workFolder.team(withID: $0) },
+            activeTeam: delegate.snapshot?.workFolder.activeTeam
+        ) {
+        case .resolved(let team):
             return team
+        case .failed(let reason):
+            delegate.setLastErrorMessageForUI(reason)
+            return nil
+        case .noTeam:
+            return nil
         }
-        return delegate.snapshot?.workFolder.activeTeam
     }
 }

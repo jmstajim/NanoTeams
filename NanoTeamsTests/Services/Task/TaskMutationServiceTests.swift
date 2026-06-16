@@ -413,6 +413,146 @@ final class TaskMutationServiceTests: XCTestCase {
         XCTAssertEqual(step?.llmConversation.count, 3)
     }
 
+    // MARK: - appendOrReplaceRetryNotice Tests
+
+    func testAppendOrReplaceRetryNotice_firstAppends_secondReplacesInPlace() throws {
+        var (task, stepID) = try createTaskWithStep()
+        let prefix = LLMConstants.llmServerErrorRetryNotePrefix
+
+        TaskMutationService.appendOrReplaceRetryNotice(
+            "\(prefix) 1): Could not connect. Retrying…", to: stepID, in: &task)
+        var step = task.runs.last?.steps.first { $0.id == stepID }
+        XCTAssertEqual(step?.llmConversation.count, 1)
+        XCTAssertEqual(step?.llmConversation.first?.sourceContext, .serverError,
+                       "Retry note must be tagged .serverError so the feed renders a red bubble")
+        let firstID = step?.llmConversation.first?.id
+
+        TaskMutationService.appendOrReplaceRetryNotice(
+            "\(prefix) 2): Could not connect. Retrying…", to: stepID, in: &task)
+        step = task.runs.last?.steps.first { $0.id == stepID }
+        XCTAssertEqual(step?.llmConversation.count, 1,
+                       "Consecutive retry notes must collapse into a single bubble")
+        XCTAssertEqual(step?.llmConversation.first?.id, firstID,
+                       "Same message id → the existing bubble updates in place (no flicker)")
+        XCTAssertTrue(step?.llmConversation.first?.content.contains("attempt 2") ?? false,
+                      "The single bubble shows the latest attempt count")
+    }
+
+    func testAppendOrReplaceRetryNotice_nonRetryMessageBetween_appendsFresh() throws {
+        var (task, stepID) = try createTaskWithStep()
+        let prefix = LLMConstants.llmServerErrorRetryNotePrefix
+
+        TaskMutationService.appendOrReplaceRetryNotice(
+            "\(prefix) 1): boom", to: stepID, in: &task)
+        // A real assistant turn lands after the retry note (e.g. a reconnect succeeded).
+        TaskMutationService.appendLLMMessage(
+            LLMMessage(role: .assistant, content: "Recovered output"), to: stepID, in: &task)
+        TaskMutationService.appendOrReplaceRetryNotice(
+            "\(prefix) 1): boom again", to: stepID, in: &task)
+
+        let conv = task.runs.last?.steps.first { $0.id == stepID }?.llmConversation
+        XCTAssertEqual(conv?.count, 3,
+                       "A non-retry message breaks the burst → the next retry appends a fresh note")
+        XCTAssertEqual(conv?[1].content, "Recovered output")
+        XCTAssertTrue(conv?[2].content.contains("boom again") ?? false)
+    }
+
+    /// Production sequence: `beginStreaming` plants an empty `.assistant` placeholder
+    /// before EACH attempt, so when the retry note is recorded the placeholder is
+    /// `conv.last`. The helper must drop that dead placeholder so consecutive notes
+    /// still collapse (this is the case the original collapse missed).
+    func testAppendOrReplaceRetryNotice_dropsEmptyPlaceholder_andCollapsesAcrossAttempts() throws {
+        var (task, stepID) = try createTaskWithStep()
+        let prefix = LLMConstants.llmServerErrorRetryNotePrefix
+
+        // Attempt 1: empty placeholder planted, then the stream errors → record note.
+        TaskMutationService.appendLLMMessage(
+            LLMMessage(role: .assistant, content: ""), to: stepID, in: &task)
+        TaskMutationService.appendOrReplaceRetryNotice(
+            "\(prefix) 1): boom", to: stepID, in: &task)
+
+        // Attempt 2: a NEW empty placeholder lands after the note, then errors.
+        TaskMutationService.appendLLMMessage(
+            LLMMessage(role: .assistant, content: ""), to: stepID, in: &task)
+        TaskMutationService.appendOrReplaceRetryNotice(
+            "\(prefix) 2): boom", to: stepID, in: &task)
+
+        let conv = task.runs.last?.steps.first { $0.id == stepID }?.llmConversation
+        XCTAssertEqual(conv?.count, 1,
+                       "The empty placeholder must be dropped so the two notes collapse into one")
+        XCTAssertTrue(conv?.first?.content.contains("attempt 2") ?? false,
+                      "The single surviving bubble shows the latest attempt")
+        XCTAssertFalse(conv?.contains { $0.content.isEmpty } ?? true,
+                       "No empty placeholder should leak into the conversation")
+    }
+
+    func testAppendOrReplaceRetryNotice_emptyPlaceholderWithThinking_isNotDropped() throws {
+        var (task, stepID) = try createTaskWithStep()
+        let prefix = LLMConstants.llmServerErrorRetryNotePrefix
+
+        // A reasoning-only assistant turn (empty content but real thinking) is a
+        // genuine message, not a discardable streaming placeholder — keep it.
+        TaskMutationService.appendLLMMessage(
+            LLMMessage(role: .assistant, content: "", thinking: "let me think"),
+            to: stepID, in: &task)
+        TaskMutationService.appendOrReplaceRetryNotice(
+            "\(prefix) 1): boom", to: stepID, in: &task)
+
+        let conv = task.runs.last?.steps.first { $0.id == stepID }?.llmConversation
+        XCTAssertEqual(conv?.count, 2, "A reasoning-only turn must be preserved, not dropped")
+        XCTAssertEqual(conv?.first?.thinking, "let me think")
+    }
+
+    func testAppendOrReplaceRetryNotice_unknownStepID_isNoOp() throws {
+        var (task, stepID) = try createTaskWithStep()
+        let beforeCount = task.runs.last?.steps.first { $0.id == stepID }?.llmConversation.count
+
+        TaskMutationService.appendOrReplaceRetryNotice("note", to: "no-such-step", in: &task)
+
+        XCTAssertEqual(
+            task.runs.last?.steps.first { $0.id == stepID }?.llmConversation.count, beforeCount,
+            "An unknown stepID must be a no-op — no step mutated")
+    }
+
+    func testAppendOrReplaceRetryNotice_placeholderOnlyConversation_dropsAndAppends() throws {
+        var (task, stepID) = try createTaskWithStep()
+        TaskMutationService.appendLLMMessage(
+            LLMMessage(role: .assistant, content: ""), to: stepID, in: &task)
+        TaskMutationService.appendOrReplaceRetryNotice("note", to: stepID, in: &task)
+
+        let conv = task.runs.last?.steps.first { $0.id == stepID }?.llmConversation
+        XCTAssertEqual(conv?.count, 1, "The lone empty placeholder is dropped; only the note remains")
+        XCTAssertEqual(conv?.first?.content, "note")
+        XCTAssertEqual(conv?.first?.sourceContext, .serverError)
+    }
+
+    func testAppendOrReplaceRetryNotice_trailingEmptyUserMessage_notDropped() throws {
+        var (task, stepID) = try createTaskWithStep()
+        // Only an empty ASSISTANT turn is the discardable beginStreaming placeholder;
+        // an empty user message is left alone.
+        TaskMutationService.appendLLMMessage(
+            LLMMessage(role: .user, content: ""), to: stepID, in: &task)
+        TaskMutationService.appendOrReplaceRetryNotice("note", to: stepID, in: &task)
+
+        let conv = task.runs.last?.steps.first { $0.id == stepID }?.llmConversation
+        XCTAssertEqual(conv?.count, 2, "An empty USER message is not a streaming placeholder — keep it")
+        XCTAssertEqual(conv?.first?.role, .user)
+        XCTAssertEqual(conv?.last?.content, "note")
+    }
+
+    func testAppendOrReplaceRetryNotice_realResponseLast_appendsFreshNote() throws {
+        var (task, stepID) = try createTaskWithStep()
+        // A committed assistant response (non-empty, no .serverError tag) ends a burst.
+        TaskMutationService.appendLLMMessage(
+            LLMMessage(role: .assistant, content: "Recovered output"), to: stepID, in: &task)
+        TaskMutationService.appendOrReplaceRetryNotice("note", to: stepID, in: &task)
+
+        let conv = task.runs.last?.steps.first { $0.id == stepID }?.llmConversation
+        XCTAssertEqual(conv?.count, 2, "A real response is not replaced — the note appends after it")
+        XCTAssertEqual(conv?.first?.content, "Recovered output")
+        XCTAssertEqual(conv?.last?.sourceContext, .serverError)
+    }
+
     // MARK: - removeLLMMessage Tests
 
     func testRemoveLLMMessage_removesOnlyTargetedById() throws {
@@ -507,6 +647,252 @@ final class TaskMutationServiceTests: XCTestCase {
 
         let step = task.runs.last?.steps.first { $0.id == stepID }
         XCTAssertEqual(step?.messages.count, 0)
+    }
+
+    /// `beginStreaming` plants the empty assistant turn at stream START; the
+    /// committed turn must be re-stamped to commit time (turn END) so the feed
+    /// sorts its bubble adjacent to the tool call / artifact it produced instead
+    /// of snapping back to the turn-start position (where a concurrent role's
+    /// items would split it across the timeline).
+    func testCommitStreamingContent_restampsLLMMessageCreatedAtToCommitTime() throws {
+        var (task, stepID) = try createTaskWithStep()
+
+        let messageID = UUID()
+        let emptyMsg = LLMMessage(id: messageID, role: .assistant, content: "")
+        TaskMutationService.appendLLMMessage(emptyMsg, to: stepID, in: &task)
+        let startCreatedAt = task.runs.last!.steps[0]
+            .llmConversation.first { $0.id == messageID }!.createdAt
+
+        // Commit at a later monotonic tick (turn END).
+        TaskMutationService.commitStreamingContent(
+            stepID: stepID, messageID: messageID,
+            content: "Final answer", thinking: nil,
+            role: .softwareEngineer, in: &task
+        )
+
+        let committed = task.runs.last?.steps.first { $0.id == stepID }?
+            .llmConversation.first { $0.id == messageID }
+        XCTAssertEqual(committed?.content, "Final answer")
+        XCTAssertGreaterThan(
+            committed!.createdAt, startCreatedAt,
+            "Committed turn must be re-stamped to commit time so it sorts adjacent to its tool call, not back at turn-start")
+    }
+
+    /// The reported case: a reasoning model writes all prose into the reasoning
+    /// channel and the deliverable into the tool call, so the committed content is
+    /// empty but thinking is substantial. The turn must STILL be re-stamped so its
+    /// content-less "Thinking" bubble groups with its create_artifact card.
+    func testCommitStreamingContent_emptyContentWithThinking_restampsCreatedAt() throws {
+        var (task, stepID) = try createTaskWithStep()
+
+        let messageID = UUID()
+        let emptyMsg = LLMMessage(id: messageID, role: .assistant, content: "")
+        TaskMutationService.appendLLMMessage(emptyMsg, to: stepID, in: &task)
+        let startCreatedAt = task.runs.last!.steps[0]
+            .llmConversation.first { $0.id == messageID }!.createdAt
+
+        TaskMutationService.commitStreamingContent(
+            stepID: stepID, messageID: messageID,
+            content: "", thinking: "All the reasoning lives here.",
+            role: .softwareEngineer, in: &task
+        )
+
+        let committed = task.runs.last?.steps.first { $0.id == stepID }?
+            .llmConversation.first { $0.id == messageID }
+        XCTAssertEqual(committed?.content, "")
+        XCTAssertEqual(committed?.thinking, "All the reasoning lives here.")
+        XCTAssertGreaterThan(
+            committed!.createdAt, startCreatedAt,
+            "A content-empty reasoning+tool-call turn must re-stamp so its Thinking bubble groups with its tool call")
+    }
+
+    /// Corner case: committing against a `messageID` that isn't in the conversation
+    /// must not re-stamp (or otherwise touch) an unrelated message. Empty content
+    /// avoids creating a stray StepMessage, so the conversation is untouched (only
+    /// `step.updatedAt` is bumped — not asserted here).
+    func testCommitStreamingContent_unknownMessageID_doesNotRestampExistingMessage() throws {
+        var (task, stepID) = try createTaskWithStep()
+
+        let realID = UUID()
+        TaskMutationService.appendLLMMessage(
+            LLMMessage(id: realID, role: .assistant, content: ""), to: stepID, in: &task)
+        let originalCreatedAt = task.runs.last!.steps[0]
+            .llmConversation.first { $0.id == realID }!.createdAt
+
+        TaskMutationService.commitStreamingContent(
+            stepID: stepID, messageID: UUID(),
+            content: "", thinking: nil,
+            role: .softwareEngineer, in: &task
+        )
+
+        let msg = task.runs.last?.steps.first { $0.id == stepID }?
+            .llmConversation.first { $0.id == realID }
+        XCTAssertEqual(
+            msg?.createdAt, originalCreatedAt,
+            "A commit for a different messageID must not re-stamp an unrelated message")
+    }
+
+    /// The load-bearing invariant the re-stamp depends on: `commitStreaming` runs
+    /// BEFORE the iteration's `appendToolCalls`, so the re-stamped assistant turn's
+    /// `createdAt` stays strictly less than the tool call it produces. This keeps
+    /// the feed ordering (bubble → tool call) AND `emitItems`' thinking lookups
+    /// (`assistant.createdAt <= call.createdAt`) correct.
+    ///
+    /// This test uses the singular `appendToolCall` helper as a stand-in for the
+    /// production `appendToolCalls` flow: in both, the `StepToolCall` is constructed
+    /// AFTER the commit, so it draws a strictly-later monotonic `createdAt`.
+    func testCommitStreamingContent_thenAppendToolCall_messageSortsBeforeToolCall() throws {
+        var (task, stepID) = try createTaskWithStep()
+
+        let messageID = UUID()
+        TaskMutationService.appendLLMMessage(
+            LLMMessage(id: messageID, role: .assistant, content: ""), to: stepID, in: &task)
+        TaskMutationService.commitStreamingContent(
+            stepID: stepID, messageID: messageID,
+            content: "", thinking: "reasoning, then a tool call",
+            role: .softwareEngineer, in: &task)
+        let toolCall = StepToolCall(
+            name: ToolNames.createArtifact, argumentsJSON: #"{"name":"Research Report"}"#)
+        TaskMutationService.appendToolCall(toolCall, to: stepID, in: &task)
+
+        let step = task.runs.last?.steps.first { $0.id == stepID }
+        let msg = step?.llmConversation.first { $0.id == messageID }
+        let call = step?.toolCalls.first { $0.id == toolCall.id }
+        XCTAssertNotNil(msg)
+        XCTAssertNotNil(call)
+        XCTAssertLessThan(
+            msg!.createdAt, call!.createdAt,
+            "Re-stamped assistant turn must sort before the tool call it produced (commit precedes appendToolCalls)")
+    }
+
+    /// Multi-iteration step: each turn re-stamps at its own commit, so later turns
+    /// keep later timestamps — per-turn grouping/order is preserved, not collapsed.
+    func testCommitStreamingContent_multipleIterations_preservePerTurnOrdering() throws {
+        var (task, stepID) = try createTaskWithStep()
+
+        let id1 = UUID()
+        TaskMutationService.appendLLMMessage(
+            LLMMessage(id: id1, role: .assistant, content: ""), to: stepID, in: &task)
+        TaskMutationService.commitStreamingContent(
+            stepID: stepID, messageID: id1, content: "turn 1", thinking: nil,
+            role: .softwareEngineer, in: &task)
+
+        let id2 = UUID()
+        TaskMutationService.appendLLMMessage(
+            LLMMessage(id: id2, role: .assistant, content: ""), to: stepID, in: &task)
+        TaskMutationService.commitStreamingContent(
+            stepID: stepID, messageID: id2, content: "turn 2", thinking: nil,
+            role: .softwareEngineer, in: &task)
+
+        let step = task.runs.last?.steps.first { $0.id == stepID }
+        let c1 = step?.llmConversation.first { $0.id == id1 }?.createdAt
+        let c2 = step?.llmConversation.first { $0.id == id2 }?.createdAt
+        XCTAssertNotNil(c1)
+        XCTAssertNotNil(c2)
+        XCTAssertLessThan(
+            c1!, c2!,
+            "Later iterations must keep later commit timestamps so a multi-turn step stays ordered")
+    }
+
+    /// Unknown stepID → `locateStepInLatestRun` fails → no-op (no crash, no re-stamp).
+    func testCommitStreamingContent_unknownStepID_isSafeNoOp() throws {
+        var (task, stepID) = try createTaskWithStep()
+        let messageID = UUID()
+        TaskMutationService.appendLLMMessage(
+            LLMMessage(id: messageID, role: .assistant, content: "original"), to: stepID, in: &task)
+        let before = task.runs.last!.steps[0]
+            .llmConversation.first { $0.id == messageID }!.createdAt
+
+        TaskMutationService.commitStreamingContent(
+            stepID: "no_such_step", messageID: messageID,
+            content: "should not apply", thinking: nil, role: .softwareEngineer, in: &task)
+
+        let msg = task.runs.last?.steps.first { $0.id == stepID }?
+            .llmConversation.first { $0.id == messageID }
+        XCTAssertEqual(msg?.content, "original", "Unknown stepID must be a no-op — no message mutated")
+        XCTAssertEqual(msg?.createdAt, before, "Unknown stepID must not re-stamp")
+    }
+
+    /// Degenerate commit (cancelled before any tokens): empty content + nil thinking.
+    /// The re-stamp is unconditional once the message is found, and no StepMessage is
+    /// created for empty content (the existing rule). No crash.
+    func testCommitStreamingContent_emptyContentNilThinking_restampsButCreatesNoStepMessage() throws {
+        var (task, stepID) = try createTaskWithStep()
+        let messageID = UUID()
+        TaskMutationService.appendLLMMessage(
+            LLMMessage(id: messageID, role: .assistant, content: ""), to: stepID, in: &task)
+        let before = task.runs.last!.steps[0]
+            .llmConversation.first { $0.id == messageID }!.createdAt
+
+        TaskMutationService.commitStreamingContent(
+            stepID: stepID, messageID: messageID,
+            content: "", thinking: nil, role: .softwareEngineer, in: &task)
+
+        let step = task.runs.last?.steps.first { $0.id == stepID }
+        let msg = step?.llmConversation.first { $0.id == messageID }
+        XCTAssertEqual(msg?.content, "")
+        XCTAssertNil(msg?.thinking)
+        XCTAssertGreaterThan(msg!.createdAt, before, "Re-stamp is unconditional once the message is found")
+        XCTAssertEqual(step?.messages.count, 0, "Empty content must not create a StepMessage")
+    }
+
+    /// Deliberate asymmetry: commit re-stamps the `llmConversation` message's
+    /// `createdAt` (the feed sort key) but must NOT re-stamp an existing
+    /// `StepMessage`'s `createdAt`. `step.messages` ordering feeds PromptBuilder, not
+    /// the activity feed — pinned so a future "consistency" refactor that re-stamps
+    /// both doesn't silently reorder prompt history.
+    func testCommitStreamingContent_existingStepMessage_createdAtNotRestamped() throws {
+        var (task, stepID) = try createTaskWithStep()
+
+        let messageID = UUID()
+        TaskMutationService.appendLLMMessage(
+            LLMMessage(id: messageID, role: .assistant, content: ""), to: stepID, in: &task)
+        TaskMutationService.appendMessage(
+            StepMessage(id: messageID, role: .softwareEngineer, content: "partial"),
+            to: stepID, in: &task)
+        let stepMsgBefore = task.runs.last!.steps[0].messages.first { $0.id == messageID }!.createdAt
+        let llmMsgBefore = task.runs.last!.steps[0].llmConversation.first { $0.id == messageID }!.createdAt
+
+        TaskMutationService.commitStreamingContent(
+            stepID: stepID, messageID: messageID,
+            content: "final", thinking: nil, role: .softwareEngineer, in: &task)
+
+        let step = task.runs.last?.steps.first { $0.id == stepID }
+        let stepMsg = step?.messages.first { $0.id == messageID }
+        let llmMsg = step?.llmConversation.first { $0.id == messageID }
+        XCTAssertEqual(stepMsg?.content, "final", "StepMessage content is updated")
+        XCTAssertEqual(
+            stepMsg?.createdAt, stepMsgBefore,
+            "Existing StepMessage.createdAt must NOT be re-stamped — it feeds PromptBuilder ordering, not the feed")
+        XCTAssertGreaterThan(
+            llmMsg!.createdAt, llmMsgBefore,
+            "But the llmConversation message (the feed sort key) IS re-stamped")
+    }
+
+    /// `thinking` is only written when non-empty (`if let thinking, !thinking.isEmpty`),
+    /// but the createdAt re-stamp lives OUTSIDE that guard. So an empty-string `thinking`
+    /// commit must preserve any prior thinking yet still re-stamp (exercises the
+    /// `!isEmpty` half of the guard — the `nil` half is covered by the empty/nil test).
+    func testCommitStreamingContent_emptyStringThinking_preservesPriorThinking_butStillRestamps() throws {
+        var (task, stepID) = try createTaskWithStep()
+        let messageID = UUID()
+        TaskMutationService.appendLLMMessage(
+            LLMMessage(id: messageID, role: .assistant, content: "", thinking: "prior reasoning"),
+            to: stepID, in: &task)
+        let before = task.runs.last!.steps[0]
+            .llmConversation.first { $0.id == messageID }!.createdAt
+
+        TaskMutationService.commitStreamingContent(
+            stepID: stepID, messageID: messageID,
+            content: "answer", thinking: "",   // empty string → must NOT overwrite
+            role: .softwareEngineer, in: &task)
+
+        let msg = task.runs.last?.steps.first { $0.id == stepID }?
+            .llmConversation.first { $0.id == messageID }
+        XCTAssertEqual(msg?.content, "answer")
+        XCTAssertEqual(msg?.thinking, "prior reasoning",
+                       "Empty-string thinking must not overwrite existing thinking")
+        XCTAssertGreaterThan(msg!.createdAt, before, "Re-stamp happens regardless of the thinking guard")
     }
 
     // MARK: - Edge Cases

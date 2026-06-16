@@ -312,6 +312,63 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase {
         return taskID
     }
 
+    // MARK: - manage_role accept honesty
+
+    /// `manage_role accept` on a role genuinely awaiting acceptance succeeds.
+    func testManageRoleAccept_onNeedsAcceptanceRole_succeeds() async {
+        _ = await pinManager()
+        guard let taskID = await makeReviewStartupTask() else { return }
+        let r = await sut.performAutovisorAction(.manageRole(taskID: taskID, roleID: "r", verb: .accept))
+        XCTAssertTrue(r.ok, "a role at .needsAcceptance must accept cleanly")
+        XCTAssertTrue(r.message.contains("Accepted role"),
+                      "the success result must confirm the acceptance, not return an empty message")
+        XCTAssertEqual(sut.loadedTask(taskID)?.runs.last?.roleStatuses["r"], .accepted)
+    }
+
+    /// The reported bug: `manage_role accept` on an already-`.done` role must FAIL honestly
+    /// (no false "Accepted role …" success). The manager should `control_task close` to
+    /// finalize a finished task instead — accepting a done role is a no-op it shouldn't attempt.
+    func testManageRoleAccept_onDoneRole_failsHonestly() async {
+        _ = await pinManager()
+        guard let taskID = await makeReviewStartupTask() else { return }
+        await sut.mutateTask(taskID: taskID) { task in
+            task.runs[task.runs.count - 1].roleStatuses["r"] = .done
+        }
+        let r = await sut.performAutovisorAction(.manageRole(taskID: taskID, roleID: "r", verb: .accept))
+        XCTAssertFalse(r.ok, "accepting an already-done role must be reported as failure, not success")
+        XCTAssertEqual(sut.loadedTask(taskID)?.runs.last?.roleStatuses["r"], .done,
+                       "a rejected accept must leave the role status untouched")
+    }
+
+    /// Corner: accepting an already-`.accepted` role fails with the SPECIFIC reason surfaced
+    /// (not the generic "Could not accept" fallback) — confirms the arm relays `acceptRole`'s
+    /// `lastErrorMessage` rather than masking it.
+    func testManageRoleAccept_onAlreadyAcceptedRole_failsWithSpecificReason() async {
+        _ = await pinManager()
+        guard let taskID = await makeReviewStartupTask() else { return }
+        await sut.mutateTask(taskID: taskID) { task in
+            task.runs[task.runs.count - 1].roleStatuses["r"] = .accepted
+        }
+        let r = await sut.performAutovisorAction(.manageRole(taskID: taskID, roleID: "r", verb: .accept))
+        XCTAssertFalse(r.ok)
+        XCTAssertTrue(r.message.contains("already accepted"),
+                      "the arm must surface acceptRole's specific reason, not a generic fallback")
+        XCTAssertEqual(sut.loadedTask(taskID)?.runs.last?.roleStatuses["r"], .accepted)
+    }
+
+    /// Corner: `accept` on a hallucinated role id hits the EXISTENCE guard (before `acceptRole`'s
+    /// status guard) and fails loudly, naming the bad id — confirms the accept verb is covered by
+    /// the up-front role-resolution check, not only the status check.
+    func testManageRoleAccept_unknownRole_failsWithExistenceGuard() async {
+        _ = await pinManager()
+        guard let taskID = await makeReviewStartupTask() else { return }
+        let r = await sut.performAutovisorAction(.manageRole(taskID: taskID, roleID: "ghost", verb: .accept))
+        XCTAssertFalse(r.ok, "a hallucinated role id must be rejected by the existence guard")
+        XCTAssertTrue(r.message.contains("ghost"), "the failure must name the bad role id")
+        XCTAssertEqual(sut.loadedTask(taskID)?.runs.last?.roleStatuses["r"], .needsAcceptance,
+                       "the real role's status must be untouched")
+    }
+
     func testWake_disabled_doesNotStamp() async {
         _ = await pinManager()  // feature stays disabled (we never call setAutovisorEnabled)
         XCTAssertNil(sut.autovisorLastWakeAt)

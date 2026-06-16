@@ -86,13 +86,20 @@ nonisolated enum JSONUtilities {
     ///    (`...range(n):` + `\` + <newline>). This is *unambiguously* broken (valid JSON
     ///    never contains a raw control char), so the stray `\` is turned into a literal
     ///    `\\` and the control char escaped — always recovering to parseable JSON.
+    /// 3. **A backslash directly before an HTML angle bracket** (`\>` / `\<`) — gemma-4-26b-a4b
+    ///    over-escaping markup, e.g. an edit_file `old_text` ending `</div\>`. `>`/`<` are
+    ///    never valid JSON escapes and never start a path/regex token, so the only sensible
+    ///    reading is a literal `>`/`<` the model spuriously escaped — the stray `\` is dropped.
+    ///    Parity-safe (only a *single* stray backslash is touched; a real `\\>` is consumed by
+    ///    the valid-escape branch and left intact).
     ///
-    /// Deliberately NOT repaired: a backslash before an ordinary non-escape char (`\U`,
+    /// Deliberately NOT repaired: a backslash before any OTHER ordinary non-escape char (`\U`,
     /// `\d`, …). That is ambiguous (literal `\` vs the model's intent) and "fixing" it can
     /// silently corrupt an *adjacent* valid escape — e.g. `C:\Users\foo`, where doubling
     /// `\U` makes the whole value parse and leaves `\f` decoding to a form-feed. Those are
     /// left for strict parse to reject so the model retries (fail closed) rather than
-    /// dispatching a corrupted argument.
+    /// dispatching a corrupted argument. The `>`/`<` exception is safe precisely because
+    /// neither can ever be the start of a path/regex token where a literal `\` was intended.
     ///
     /// Both repaired defects are unreachable for well-formed JSON (valid JSON has no raw
     /// control chars inside strings), so this is a pure superset of passing valid input
@@ -118,10 +125,19 @@ nonisolated enum JSONUtilities {
                         // make a literal escaped backslash `\\`, then escape the control char.
                         result.append("\\")
                         Self.appendEscapingControlCharacter(ch, into: &result)
+                    } else if ch == ">" || ch == "<" {
+                        // `\` directly before an HTML angle bracket (`\>` / `\<`) — the
+                        // gemma-4-26b-a4b markup over-escape defect (e.g. `</div\>`). Drop the
+                        // stray `\` (appended on the prior `ch == "\\"` iteration) and keep the
+                        // literal bracket. Parity-safe: a real `\\>` consumes its second `\` via
+                        // the valid-escape branch above with `escape` reset to false, so this
+                        // branch only ever sees a single stray backslash.
+                        result.removeLast()
+                        result.append(ch)
                     } else {
-                        // `\` before an ordinary non-escape char (e.g. `\U`, `\d`). Ambiguous
-                        // and corruption-prone (see doc) — leave it for strict parse to
-                        // reject so the model retries. Fail closed.
+                        // `\` before any other ordinary non-escape char (e.g. `\U`, `\d`).
+                        // Ambiguous and corruption-prone (see doc) — leave it for strict parse
+                        // to reject so the model retries. Fail closed.
                         result.append(ch)
                     }
                 } else if ch == "\\" {

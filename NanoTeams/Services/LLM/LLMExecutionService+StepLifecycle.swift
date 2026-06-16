@@ -64,6 +64,7 @@ extension LLMExecutionService {
             : nil
         let (_, runtime) = ToolRegistry.defaultRegistry(
             workFolderRoot: workFolderRoot, toolCallsLogURL: toolCallsLogURL,
+            networkLogger: networkLogger,
             isDefaultStorage: isDefaultStorage,
             searchExploratoryByDefault: delegate.searchExploratoryByDefault,
             readFileMaxLines: delegate.readFileMaxLines,
@@ -227,6 +228,12 @@ extension LLMExecutionService {
                     } catch is CancellationError {
                         throw CancellationError()
                     } catch {
+                        // Permanent error (wrong model / 404, auth 401/403, bad URL)
+                        // → fail the step now instead of looping forever. Throwing
+                        // propagates to the outer catch → `completeStepFailure`, which
+                        // produces the error bubble. No "attempt N" retry note is
+                        // appended for these. Transient errors fall through to retry.
+                        if !LLMRetryPolicy.isRetryable(error) { throw error }
                         // LLM server error — retry instead of killing the step.
                         // Clear session to avoid stale previous_response_id on retry.
                         // Any error (400, 429, network timeout, etc.) can leave the session invalid.
@@ -241,11 +248,14 @@ extension LLMExecutionService {
                         if maxRetries > 0, llmErrorCount > maxRetries { throw error }
                         let msg = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                         let limitLabel = maxRetries > 0 ? "/\(maxRetries)" : ""
-                        let retryNote = "LLM server error (attempt \(llmErrorCount)\(limitLabel)): \(msg). Retrying in \(LLMConstants.llmRetryDelaySeconds)s…"
-                        await appendLLMMessage(stepID: stepID, taskID: taskID, role: .assistant, content: retryNote)
+                        let retryDelay = retryDelaySeconds
+                        let retryNote = "\(LLMConstants.llmServerErrorRetryNotePrefix) \(llmErrorCount)\(limitLabel)): \(msg). Retrying in \(retryDelay)s…"
+                        // Collapse a burst of retries into ONE live-updating bubble
+                        // instead of appending a fresh message per attempt.
+                        await appendOrReplaceRetryNotice(stepID: stepID, taskID: taskID, content: retryNote)
                         ConversationRepairService.repairConversationIfNeeded(&conversation)
                         ConversationRepairService.collapseRedundantAssistantTextRuns(&conversation)
-                        try await Task.sleep(for: .seconds(LLMConstants.llmRetryDelaySeconds))
+                        try await Task.sleep(for: .seconds(retryDelay))
                         continue
                     }
                     llmErrorCount = 0
@@ -297,6 +307,10 @@ extension LLMExecutionService {
                 await self.persistTokenUsage(stepID: stepID, taskID: taskID, usage: cumulativeUsage)
                 delegate.clearStreamingPreview(stepID: stepID, taskID: taskID)
             } catch {
+                // Persist accumulated usage before failing — a permanent error can
+                // arrive after earlier iterations already spent tokens. Mirrors every
+                // other terminal arm (success / acceptance / toolFailure / warning).
+                await self.persistTokenUsage(stepID: stepID, taskID: taskID, usage: cumulativeUsage)
                 let message =
                     (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                 await self.completeStepFailure(stepID: stepID, taskID: taskID, errorMessage: message)

@@ -261,6 +261,153 @@ final class RestartRoleTests: NTMSOrchestratorTestBase {
         // The key assertion is that it was created (not nil).
     }
 
+    // MARK: - Stale Engine Task Teardown
+
+    /// Regression for "after restarting a role, nothing happens": `restartRole` must
+    /// tear down the engine's lingering per-role task for the reset role. A
+    /// normally-completed Task is NOT `.isCancelled`, so without the teardown
+    /// `startRoles`' skip-guard skips the role forever and the restart does nothing.
+    ///
+    /// The engine is forced to `.done` so `restartRole` takes the
+    /// `notifyExternalEvent`/`resume` wake path (which does NOT clear `roleTasks`) —
+    /// the `.pending`→`start()` path calls `stop()` → `roleTasks.removeAll()` and would
+    /// pass even without the fix. `roleID` is absent from the team, so the woken run
+    /// loop can't re-add it, making the assertion deterministic.
+    func testRestartRole_tearsDownStaleEngineRoleTask() async {
+        let roleID = "pm-stale-task"
+        let step = StepExecution(
+            id: roleID,
+            role: .productManager,
+            title: "PM Step",
+            status: .done
+        )
+        let taskID = await createTaskWithRun(
+            steps: [step],
+            roleStatuses: [roleID: .done]
+        )
+
+        // Seed a finished, non-cancelled task on the task's engine (simulates the
+        // lingering entry left after the role's prior completion).
+        let engine = sut.engineForTask(taskID)
+        let finished = Task<Void, Never> {}
+        _ = await finished.value
+        XCTAssertFalse(finished.isCancelled, "precondition: a returned Task is not cancelled")
+        engine.roleTasks[roleID] = finished
+        engine.transition(to: .done)  // force the resume (non-clearing) wake path
+
+        await sut.restartRole(taskID: taskID, roleID: roleID, comment: nil)
+
+        XCTAssertNil(engine.roleTasks[roleID],
+                     "restartRole must cancel + remove the stale per-role task so the role can re-spawn")
+    }
+
+    /// Cascade restart must clear the DOWNSTREAM role's stale engine task too — the reason
+    /// `restartRole` passes `rolesToReset` (not just `[roleID]`) to `cancelRoleTasks`. Pins
+    /// that decision: a regression to `cancelRoleTasks(for: [roleID])` would still pass every
+    /// other test yet silently leave the downstream role un-runnable.
+    ///
+    /// Both roles are given an absent required artifact so the woken run loop can't re-add
+    /// them (keeps the `roleTasks == nil` assertion deterministic regardless of loop timing).
+    func testRestartRole_tearsDownStaleEngineRoleTask_forDownstreamRoleToo() async {
+        let pmRoleID = "pm-cascade-task"
+        let sweRoleID = "swe-cascade-task"
+
+        let pmStep = StepExecution(
+            id: pmRoleID, role: .productManager, title: "PM Step", status: .done,
+            artifacts: [Artifact(name: "Product Requirements")]
+        )
+        let sweStep = StepExecution(
+            id: sweRoleID, role: .softwareEngineer, title: "SWE Step", status: .done
+        )
+        let taskID = await createTaskWithRun(
+            steps: [pmStep, sweStep],
+            roleStatuses: [pmRoleID: .done, sweRoleID: .done]
+        )
+
+        // SWE depends on PM's artifact → SWE is downstream of PM. PM requires an artifact
+        // that is never produced, so neither role is ready after the reset (no re-spawn).
+        await sut.mutateWorkFolder { wf in
+            guard let teamIdx = wf.teams.indices.first else { return }
+            wf.teams[teamIdx].roles.append(TeamRoleDefinition(
+                id: pmRoleID, name: "PM", prompt: "", toolIDs: [], usePlanningPhase: false,
+                dependencies: RoleDependencies(requiredArtifacts: ["Upstream Doc"], producesArtifacts: ["Product Requirements"])))
+            wf.teams[teamIdx].roles.append(TeamRoleDefinition(
+                id: sweRoleID, name: "SWE", prompt: "", toolIDs: [], usePlanningPhase: false,
+                dependencies: RoleDependencies(requiredArtifacts: ["Product Requirements"], producesArtifacts: [])))
+        }
+
+        let engine = sut.engineForTask(taskID)
+        let pmStale = Task<Void, Never> {}; _ = await pmStale.value
+        let sweStale = Task<Void, Never> {}; _ = await sweStale.value
+        engine.roleTasks[pmRoleID] = pmStale
+        engine.roleTasks[sweRoleID] = sweStale
+        engine.transition(to: .done)
+
+        await sut.restartRole(taskID: taskID, roleID: pmRoleID, comment: nil)
+
+        XCTAssertNil(engine.roleTasks[pmRoleID], "primary role's stale task must be cleared")
+        XCTAssertNil(engine.roleTasks[sweRoleID],
+                     "cascade restart must clear the downstream role's stale task too")
+    }
+
+    /// Restart of a `.working` role (engine `.running`) — the common real-world trigger.
+    /// `notifyExternalEvent()` is a no-op for `.running`, so `cancelRoleTasks` clearing the
+    /// stale entry is the ONLY thing that lets the live loop re-spawn the role. `roleID` is
+    /// absent from the team so nothing re-adds it, keeping the assertion deterministic.
+    func testRestartRole_clearsStaleTask_whenEngineRunning() async {
+        let roleID = "pm-running"
+        let step = StepExecution(
+            id: roleID, role: .productManager, title: "PM Step", status: .done
+        )
+        let taskID = await createTaskWithRun(
+            steps: [step],
+            roleStatuses: [roleID: .done]
+        )
+
+        let engine = sut.engineForTask(taskID)
+        let stale = Task<Void, Never> {}
+        _ = await stale.value
+        engine.roleTasks[roleID] = stale
+        engine.transition(to: .running)  // simulate a live run (notifyExternalEvent is a no-op here)
+
+        await sut.restartRole(taskID: taskID, roleID: roleID, comment: nil)
+
+        XCTAssertNil(engine.roleTasks[roleID],
+                     "even in .running state (no-op notifyExternalEvent), the stale task must be torn down")
+    }
+
+    // MARK: - Guard corner cases (silent-failure hardening)
+
+    /// No active run → restart must surface an error instead of silently no-op'ing
+    /// (the reset closure's `guard ... runs.indices.last` would otherwise return quietly).
+    func testRestartRole_noActiveRun_surfacesErrorAndDoesNotStartEngine() async {
+        await sut.openWorkFolder(tempDir)
+        let taskID = await sut.createTask(title: "T", supervisorTask: "G")!
+        await sut.mutateTask(taskID: taskID) { $0.runs = [] }
+        sut.lastErrorMessage = nil
+
+        await sut.restartRole(taskID: taskID, roleID: "any-role", comment: nil)
+
+        XCTAssertNotNil(sut.lastErrorMessage, "restart with no active run must surface an error")
+        XCTAssertNil(sut.taskEngineStates[taskID], "no engine should be woken for a runless restart")
+    }
+
+    /// Primary role has a status but no matching step in the run → the reset can't land,
+    /// so restart must surface an error and NOT wake the engine. Pins the post-mutation
+    /// verification (`mutateTask` "persisted" ≠ "reset something", CLAUDE.md §7).
+    func testRestartRole_primaryRoleHasNoStep_surfacesErrorAndDoesNotWakeEngine() async {
+        let roleID = "ghost-role"
+        let taskID = await createTaskWithRun(steps: [], roleStatuses: [roleID: .done])
+        sut.lastErrorMessage = nil
+
+        await sut.restartRole(taskID: taskID, roleID: roleID, comment: nil)
+
+        XCTAssertNotNil(sut.lastErrorMessage,
+                        "restart must surface an error when the primary role has no step to reset")
+        XCTAssertEqual(sut.engineForTask(taskID).state, .pending,
+                       "engine must not be woken when the reset didn't land")
+    }
+
     // MARK: - Comment Only On Primary Role
 
     func testRestartRole_commentOnlyOnPrimaryRole() async {

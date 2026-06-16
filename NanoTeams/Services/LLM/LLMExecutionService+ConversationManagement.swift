@@ -120,4 +120,14 @@ extension LLMExecutionService {
         }
     }
 
+    /// Surface the transient retry-status note, collapsing a burst of recoverable
+    /// retries into a single live-updating bubble (replaces the previous note in
+    /// place rather than appending a new one each attempt).
+    func appendOrReplaceRetryNotice(stepID: String, taskID: Int, content: String) async {
+        guard let delegate, isExecutionLive(stepID: stepID, taskID: taskID) else { return }
+        await delegate.mutateTask(taskID: taskID) { task in
+            TaskMutationService.appendOrReplaceRetryNotice(content, to: stepID, in: &task)
+        }
+    }
+
 }

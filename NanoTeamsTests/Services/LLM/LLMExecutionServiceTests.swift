@@ -97,9 +97,20 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
         return false
     }
 
+    /// When true, replicate production `NTMSOrchestrator.beginStreaming`, which
+    /// pre-creates an empty `.assistant` placeholder in `step.llmConversation`
+    /// before every attempt. Off by default so existing tests that count
+    /// conversation entries are unaffected; retry-collapse tests turn it on so the
+    /// harness faithfully reproduces the production sequence.
+    var plantsEmptyAssistantMessage = false
     func beginStreaming(stepID: String, taskID: Int, messageID: UUID, role: Role) async {
         beginStreamingCalls.append((stepID, messageID, role, taskID))
         streamingTaskIDTrace.append(("beginStreaming", stepID, taskID))
+        if plantsEmptyAssistantMessage, var task = taskToMutate, task.id == taskID {
+            TaskMutationService.appendLLMMessage(
+                LLMMessage(id: messageID, role: .assistant, content: ""), to: stepID, in: &task)
+            taskToMutate = task
+        }
     }
 
     func appendStreamingPreview(stepID: String, taskID: Int, messageID: UUID, role: Role, content: String) {
@@ -201,6 +212,13 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     var lastErrorMessages: [String] = []
     func setLastErrorMessageForUI(_ message: String) {
         lastErrorMessages.append(message)
+    }
+
+    /// Records `holdDownstreamForRevision` invocations (engine-side teardown is not
+    /// modelled by the mock — the orchestrator integration tests exercise the real path).
+    var heldDownstreamCalls: [(taskID: Int, runningRoleIDs: [String], requesterRoleID: String)] = []
+    func holdDownstreamForRevision(taskID: Int, runningRoleIDs: [String], requesterRoleID: String) async {
+        heldDownstreamCalls.append((taskID, runningRoleIDs, requesterRoleID))
     }
 
     // MARK: - Delegation (LLMStateDelegate stubs)

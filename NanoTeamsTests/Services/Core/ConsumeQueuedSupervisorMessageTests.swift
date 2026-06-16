@@ -21,9 +21,9 @@ final class ConsumeQueuedSupervisorMessageTests: NTMSOrchestratorTestBase {
     override func setUp() {
         super.setUp()
         // Resolve symlinks on tempDir (`/var/folders/...` → `/private/var/folders/...`)
-        // so `NTMSPaths.relativePathFromProjectRoot` (which compares raw `.path`
-        // strings, not `standardizedFileURL`) doesn't fall back to `lastPathComponent`
-        // when we assert that finalized attachment paths are project-relative.
+        // so `SandboxPathResolver.isWithin` (which standardizes but does NOT resolve
+        // symlinks) treats the finalized attachment URL as in-project; otherwise the
+        // attachment takes the copy branch instead of the project-reference branch.
         tempDir = tempDir.resolvingSymlinksInPath()
         formState = QuickCaptureFormState()
         sut.quickCaptureFormState = formState

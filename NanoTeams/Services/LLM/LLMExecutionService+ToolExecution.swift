@@ -38,6 +38,10 @@ extension LLMExecutionService {
         var results: [ToolExecutionResult] = []
         var toolsToExecute: [StepToolCall] = []
         var rejectedResults: [Int: ToolExecutionResult] = [:]
+        // Pre-runtime rejections to mirror into BOTH per-run logs (tool_calls.jsonl +
+        // network_log.json): these never reach ToolRuntime, so they'd otherwise be
+        // invisible in both audits. (call, result, concise reason for `errorMessage`.)
+        var rejectedToLog: [(call: StepToolCall, result: ToolExecutionResult, message: String)] = []
 
         for (idx, call) in resolvedToolCalls.enumerated() {
             // Normalize before authorization; call.name stays as-emitted for display / history.
@@ -75,9 +79,11 @@ extension LLMExecutionService {
                     selectedScheme: scheme,
                     xcodeSchemeKnown: snapshot != nil
                 )
-                rejectedResults[idx] = Self.makeUnavailableToolResult(
+                let rejected = Self.makeUnavailableToolResult(
                     call: call, canonicalName: name, scope: "for this role", reason: reason
                 )
+                rejectedResults[idx] = rejected
+                rejectedToLog.append((call, rejected, "tool not authorized / precondition not met"))
                 continue
             }
 
@@ -89,7 +95,9 @@ extension LLMExecutionService {
             // the tracker so two identical writes in the same batch are guaranteed to trip on
             // the second pass regardless of where the call site puts the `append` below.
             if tracker.checkAndRecordWrite(toolName: call.name, argumentsJSON: call.argumentsJSON) {
-                rejectedResults[idx] = Self.makeIdenticalWriteLoopResult(call: call)
+                let rejected = Self.makeIdenticalWriteLoopResult(call: call)
+                rejectedResults[idx] = rejected
+                rejectedToLog.append((call, rejected, "identical write loop"))
                 continue
             }
 
@@ -100,8 +108,25 @@ extension LLMExecutionService {
         // (`@unchecked Sendable`), `ToolExecutionContext` (value type),
         // `[StepToolCall]` (Codable values).
         let batchTask = Task.detached(priority: .userInitiated) {
-            [runtime, context, toolsToExecute] in
-            runtime.executeAll(context: context, toolCalls: toolsToExecute)
+            [runtime, context, toolsToExecute, rejectedToLog] in
+            // Mirror the pre-runtime rejections into both per-run logs BEFORE the
+            // executed batch (which logs its own calls inside `executeOne`). All
+            // rejections are grouped first, then executed calls — relative order
+            // within each group is preserved, but a rejected call is NOT interleaved
+            // back into the model's exact emission position. The runtime owns both
+            // shared logger instances → one serial queue each, no race.
+            for item in rejectedToLog {
+                runtime.logNonExecutedCall(
+                    taskID: context.taskID,
+                    runID: context.runID,
+                    roleID: context.roleID,
+                    toolName: item.call.name,
+                    argumentsJSON: item.call.argumentsJSON,
+                    resultJSON: item.result.outputJSON,
+                    errorMessage: item.message
+                )
+            }
+            return runtime.executeAll(context: context, toolCalls: toolsToExecute)
         }
         // Two failure modes guarded against:
         // (a) state entry removed BETWEEN write and check — concurrent cancel
@@ -199,6 +224,8 @@ extension LLMExecutionService {
     /// `ToolErrorGuidanceTests`); precondition cases use `precondition_failed`
     /// with a message that names the missing prerequisite so the LLM stops
     /// retrying instead of looping on "use only tools listed in your prompt".
+    /// The envelope shape also bifurcates: `notInRoleConfig` omits the structured
+    /// `tool` field (see the body for why); precondition cases keep it.
     nonisolated static func makeUnavailableToolResult(
         call: StepToolCall,
         canonicalName: String,
@@ -226,18 +253,35 @@ extension LLMExecutionService {
         }
         let escapedMsg = msg.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
+        // Omit the structured `tool` field for the genuine-hallucination case:
+        // the rejected name is frequently an artifact name (or other non-tool
+        // string the model invented, e.g. "Engineering Notes"), and echoing it
+        // back as `"tool":"X"` reinforces the wrong premise that X is a callable
+        // tool. The precondition reasons keep it — there it names a real blocked
+        // tool (the canonical, namespace-stripped name) that downstream tooling
+        // relies on (retention pinned by `ToolUnavailabilityClassifierTests`'s
+        // `testEnvelope_gitRepoMissing…` `"tool":"git_add"` assertion).
+        let outputJSON: String
+        if case .notInRoleConfig = reason {
+            outputJSON = #"{"error":""# + errorCode + #"","message":""# + escapedMsg + #""}"#
+        } else {
+            outputJSON = #"{"error":""# + errorCode + #"","tool":""# + canonicalName + #"","message":""# + escapedMsg + #""}"#
+        }
         return ToolExecutionResult(
             providerID: call.providerID ?? UUID().uuidString,
             toolName: call.name,
             argumentsJSON: call.argumentsJSON,
-            outputJSON: #"{"error":""# + errorCode + #"","tool":""# + canonicalName + #"","message":""# + escapedMsg + #""}"#,
+            outputJSON: outputJSON,
             isError: true
         )
     }
 
-    /// Builds a `tool_not_authorized` error result. `call.name` is preserved as-emitted
-    /// for display; `canonicalName` goes into the error envelope's `tool` field. `scope`
-    /// disambiguates executor ("for this role") vs meeting ("in this meeting").
+    /// Builds a `tool_not_authorized` error result (delegates to
+    /// `makeUnavailableToolResult` with `.notInRoleConfig`). `call.name` is
+    /// preserved as-emitted in the message for display; that branch omits the
+    /// structured `tool` field, so `canonicalName` is not surfaced in the
+    /// envelope here. `scope` disambiguates executor ("for this role") vs
+    /// meeting ("in this meeting").
     /// Kept as a thin wrapper for callers that don't need to distinguish
     /// preconditions (notably `MeetingToolExecutor`, which has its own
     /// scope-bound allowedToolNames invariant). New code should prefer

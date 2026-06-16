@@ -512,12 +512,28 @@ nonisolated enum ActivityFeedBuilder {
                 items.append(.notification(
                     stepID: step.id,
                     role: step.role,
-                    type: .failed(errorMessage: nil),
+                    type: .failed(errorMessage: failureMessage(for: step)),
                     createdAt: step.completedAt ?? step.updatedAt,
                     originTaskID: originTaskID
                 ))
             }
         }
+    }
+
+    /// Reverse-extracts the failure reason for a `.failed` step's bubble.
+    /// `completeStepFailure` records the reason into `step.messages` as
+    /// `"\(StepExecution.llmErrorNotePrefix): <reason>"` (covers the LLM-error,
+    /// tool-failure, and supervisor-persist-failure paths — all share this
+    /// prefix). Returns the reason with the prefix stripped, or `nil` when no
+    /// such note exists (the card then falls back to its generic hint).
+    static func failureMessage(for step: StepExecution) -> String? {
+        let prefix = "\(StepExecution.llmErrorNotePrefix): "
+        guard let note = step.messages.last(where: { $0.content.hasPrefix(prefix) }) else {
+            return nil
+        }
+        let reason = String(note.content.dropFirst(prefix.count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return reason.isEmpty ? nil : reason
     }
 
     /// Shared notification-emission for both the per-`ask_supervisor` inner loop
@@ -896,6 +912,35 @@ nonisolated enum ActivityFeedBuilder {
 
         let trimmed = remaining.trimmingCharacters(in: .whitespacesAndNewlines)
         return (trimmed.isEmpty ? nil : trimmed, paths, clippedTexts)
+    }
+
+    /// Reads a step's persisted artifact file contents into a set (untruncated, raw
+    /// `String(contentsOf:)`). Shared by the live feed's
+    /// `TeamActivityFeedViewModel.refreshStepArtifactContentCacheAsync` and the
+    /// conversation-log render path (`NTMSOrchestrator+ConversationLog`) so the
+    /// message↔artifact dedup matches in both. NOT `ArtifactService.readContent` (it
+    /// truncates at 50 KB, which would break content-equality dedup). `nonisolated` so
+    /// it runs off the main actor.
+    static func loadArtifactContentsForStepSync(
+        _ step: StepExecution,
+        workFolderURL: URL?
+    ) -> Set<String> {
+        guard let projectURL = workFolderURL else { return [] }
+        var contents: Set<String> = []
+        for artifact in step.artifacts {
+            guard let relativePath = artifact.relativePath else { continue }
+            let fileURL = projectURL
+                .appendingPathComponent(".nanoteams")
+                .appendingPathComponent(relativePath)
+            if let content = try? String(contentsOf: fileURL, encoding: .utf8) {
+                contents.insert(content)
+            } else {
+                #if DEBUG
+                print("[ActivityFeed] Failed to load artifact content at \(fileURL.path)")
+                #endif
+            }
+        }
+        return contents
     }
 
     /// Resolves the bubble inputs for a message turn. For

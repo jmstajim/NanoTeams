@@ -33,7 +33,7 @@ struct RoleConsultationsPanel: View {
                     .font(Typography.caption.bold())
                 Spacer()
                 Image(systemName: consultation.status.icon)
-                    .foregroundStyle(consultation.status == .completed ? Colors.success : Colors.warning)
+                    .foregroundStyle(Self.iconTint(for: consultation.status))
                     .font(.caption)
             }
             Text(consultation.question)
@@ -47,7 +47,7 @@ struct RoleConsultationsPanel: View {
                     .padding(6)
                     .background(
                         RoundedRectangle(cornerRadius: CornerRadius.micro, style: .continuous)
-                            .fill(Colors.successTint)
+                            .fill(Self.responseTint(for: consultation.status))
                     )
             }
         }
@@ -56,5 +56,27 @@ struct RoleConsultationsPanel: View {
             RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous)
                 .fill(Colors.surfaceCard)
         )
+    }
+
+    /// Tint for the answer body keyed on outcome: green for a completed answer,
+    /// red for a failed/empty consultation (whose `response` carries the reason),
+    /// neutral otherwise. Static + pure so it's unit-testable without a view.
+    static func responseTint(for status: ConsultationStatus) -> Color {
+        switch status {
+        case .completed: return Colors.successTint
+        case .failed: return Colors.errorTint
+        default: return Colors.neutralTint
+        }
+    }
+
+    /// Status-glyph foreground, symmetric with `responseTint` so a failed
+    /// consultation's icon reads red — not warning-orange over a red body.
+    /// Static + pure for unit testing.
+    static func iconTint(for status: ConsultationStatus) -> Color {
+        switch status {
+        case .completed: return Colors.success
+        case .failed: return Colors.error
+        default: return Colors.warning
+        }
     }
 }

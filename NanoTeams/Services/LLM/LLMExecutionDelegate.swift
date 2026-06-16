@@ -117,6 +117,16 @@ protocol LLMStateDelegate: TaskMutationDelegate {
     /// the same signal in the UI banner channel.
     func setLastErrorMessageForUI(_ message: String)
 
+    /// Strict-pipeline hold for an approved change-request revision. Cancels and
+    /// queues for revision every transitive downstream role still RUNNING on the
+    /// revised role's now-stale output, so none keep working in parallel with the
+    /// upstream revision (they re-run after it via `startableRevisionRoleIDs`
+    /// gating). `requesterRoleID` — the change-requesting role (== its step id /
+    /// `effectiveRoleID`, same namespace as `runningRoleIDs`) — is NOT task-cancelled
+    /// (it is mid tool-loop and must finish committing its tool result); it is only
+    /// flagged `.revisionRequested`.
+    func holdDownstreamForRevision(taskID: Int, runningRoleIDs: [String], requesterRoleID: String) async
+
     /// Trigger the queued-Supervisor-message backstop drain for `taskID`. Called
     /// from `setNeedsSupervisorInput` after the step mutation persists,
     /// regardless of whether the engine state transition fires.
@@ -239,6 +249,17 @@ protocol LLMStateDelegate: TaskMutationDelegate {
     /// inspection. Background folder tasks aren't necessarily in `loadedTasks`, so
     /// the plain `loadedTask(_:)` read isn't enough for the manager to inspect them.
     func autovisorLoadTask(_ taskID: Int) async -> NTMSTask?
+
+    /// Re-renders the task's `conversation_log.md` (the "what the user sees" side of
+    /// the audit pair vs `network_log.json`) for the task's current run. Fire-and-forget,
+    /// best-effort, gated on `loggingEnabled` inside the implementation. Called per
+    /// committed assistant turn and at step completion. Default is a no-op so non-orchestrator
+    /// conformers (tests) need not implement it.
+    func renderConversationLog(taskID: Int)
+}
+
+extension LLMStateDelegate {
+    func renderConversationLog(taskID: Int) {}
 }
 
 // MARK: - LLMStreamingDelegate

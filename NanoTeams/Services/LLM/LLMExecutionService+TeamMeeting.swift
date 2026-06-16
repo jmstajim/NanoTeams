@@ -17,13 +17,13 @@ extension LLMExecutionService {
         client: any LLMClient,
         config: LLMConfig,
         networkLogger: NetworkLogger? = nil
-    ) async -> String {
-        guard let delegate else { return "Unable to conduct meeting — delegate not available." }
+    ) async -> CollaborationReply {
+        guard let delegate else { return .failed("Unable to conduct meeting — delegate not available.") }
         let tid = task.id
         guard isExecutionLive(stepID: stepID, taskID: tid) else {
-            return "Unable to conduct meeting — no task context."
+            return .failed("Unable to conduct meeting — no task context.")
         }
-        guard let workFolderRoot = delegate.workFolderURL else { return "Unable to conduct meeting — no work folder." }
+        guard let workFolderRoot = delegate.workFolderURL else { return .failed("Unable to conduct meeting — no work folder.") }
 
         // Resolve team
         let team = resolveTeam(task: task)
@@ -42,7 +42,7 @@ extension LLMExecutionService {
         if participants.isEmpty {
             let available = MeetingParticipantResolver.availableTeammatesList(team: team, teamSettings: teamSettings, excludeRoleID: initiatingRole.baseID)
             let rejected = rejectedReasons.isEmpty ? "" : " Rejected: \(rejectedReasons.joined(separator: ", "))."
-            return "No valid participants for this meeting.\(rejected) Available teammates: \(available)"
+            return .failed("No valid participants for this meeting.\(rejected) Available teammates: \(available)")
         }
 
         // Re-read fresh task to get current meeting count (the `task` parameter
@@ -58,7 +58,7 @@ extension LLMExecutionService {
         if TeamMeetingService.hasReachedMeetingLimit(
             meetings: freshMeetings, limits: teamSettings.limits
         ) {
-            return "Meeting limit reached for this run (\(teamSettings.limits.maxMeetingsPerRun)). Cannot conduct another meeting."
+            return .failed("Meeting limit reached for this run (\(teamSettings.limits.maxMeetingsPerRun)). Cannot conduct another meeting.")
         }
 
         // Create meeting
@@ -134,6 +134,7 @@ extension LLMExecutionService {
             : nil
         let (_, runtime) = ToolRegistry.defaultRegistry(
             workFolderRoot: workFolderRoot, toolCallsLogURL: meetingToolCallsLogURL,
+            networkLogger: networkLogger,
             isDefaultStorage: isDefaultStorage,
             searchExploratoryByDefault: delegate.searchExploratoryByDefault,
             readFileMaxLines: delegate.readFileMaxLines,
@@ -275,16 +276,16 @@ extension LLMExecutionService {
             }
 
             await recordMeeting(stepID: stepID, taskID: tid, meeting: meeting)
-            return TeamMeetingService.generateMeetingResultForConversation(meeting: meeting)
+            return .ok(TeamMeetingService.generateMeetingResultForConversation(meeting: meeting))
 
         } catch is CancellationError {
             meeting.cancel()
             await recordMeeting(stepID: stepID, taskID: tid, meeting: meeting)
-            return "Meeting cancelled."
+            return .failed("Meeting cancelled.")
         } catch {
             meeting.cancel()
             await recordMeeting(stepID: stepID, taskID: tid, meeting: meeting)
-            return "Meeting failed: \(error.localizedDescription)"
+            return .failed("Meeting failed: \(error.localizedDescription)")
         }
     }
 

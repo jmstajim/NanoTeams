@@ -120,24 +120,29 @@ extension TeamEngine {
             )
 
             if readyRoleIDs.isEmpty {
-                // No ready roles - wait for working roles to complete or external event
-                if roleStatuses.values.contains(.working) {
-                    // Wait a bit and check again
-                    try? await Task.sleep(for: .milliseconds(250))
-                    continue
-                } else if !isChatMode && roleStatuses.values.contains(.needsAcceptance) {
-                    // Waiting for Supervisor
-                    transition(to: .needsAcceptance)
-                    return
-                } else if roleStatuses.values.contains(.revisionRequested) {
-                    // Roles in revision — start only those whose upstream dependencies
-                    // are clear, so the cascade serializes (upstream finishes before a
-                    // downstream role re-runs against its fresh artifacts).
+                // Start any revision-requested roles whose upstream dependencies are clear
+                // FIRST — before deciding to wait on a .working role. A revision role can
+                // run in parallel with an unrelated still-.working role; e.g. the requesting
+                // role (whose request_changes just got approved) is still finishing its own
+                // tool loop and remains .working, but it is DOWNSTREAM of the revision target,
+                // so it must not gate it. startableRevisionRoleIDs gates each revision role
+                // behind its own UPSTREAM, so the cascade still serializes (a downstream
+                // revision role waits for the upstream it depends on to finish revising).
+                // Without starting here, a still-.working requester pins the loop in the wait
+                // branch below and the target's revision never starts (deadlock).
+                if roleStatuses.values.contains(.revisionRequested) {
                     let startedCount = await startRevisionRoles(roleStatuses: roleStatuses)
-                    if startedCount == 0 {
-                        // No revision role is startable yet there are no .working roles to
-                        // wait on — the remaining revision roles form a dependency cycle.
-                        // Fail loudly rather than busy-loop to the iteration cap.
+                    if startedCount > 0 {
+                        try? await Task.sleep(for: .milliseconds(100))
+                        continue
+                    }
+                    // No revision role is startable this pass. If anything is still .working,
+                    // defer the cycle verdict and fall through to the working-wait below (the
+                    // working role is, or gates, an upstream — or is simply unrelated; either
+                    // way waiting is safe). Only when nothing is working AND nothing is
+                    // startable are the remaining revision roles a genuine dependency cycle;
+                    // fail loudly rather than busy-loop to the iteration cap.
+                    if !roleStatuses.values.contains(.working) {
                         let blocked = roleStatuses
                             .filter { $0.value == .revisionRequested }
                             .keys.sorted().joined(separator: ", ")
@@ -147,7 +152,17 @@ extension TeamEngine {
                         )
                         return
                     }
+                }
+
+                // No ready roles - wait for working roles to complete or external event
+                if roleStatuses.values.contains(.working) {
+                    // Wait a bit and check again
+                    try? await Task.sleep(for: .milliseconds(250))
                     continue
+                } else if !isChatMode && roleStatuses.values.contains(.needsAcceptance) {
+                    // Waiting for Supervisor
+                    transition(to: .needsAcceptance)
+                    return
                 } else if isChatMode && allRolesComplete(roleStatuses: roleStatuses, roles: teamRoles, isChatMode: false) {
                     // Chat-mode auto-complete arm: every non-supervisor non-observer role
                     // has reached a terminal status (advisory auto-finish in autonomous

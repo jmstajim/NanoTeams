@@ -327,6 +327,67 @@ final class PromptBuilderTests: XCTestCase {
         )
     }
 
+    // The handoff path shown for a non-supervisor artifact MUST be one the file tools
+    // accept — i.e. carry the .nanoteams/ prefix. The stored relativePath is prefix-less
+    // (relative to .nanoteams/), so emitting it verbatim made read_file fail with
+    // FILE_NOT_FOUND. Regression: the bare-path leak.
+    func testBuildPipelineContext_nonSupervisorArtifact_pathCarriesNanoteamsPrefix() {
+        let pmStep = StepExecution(
+            id: "pm_step",
+            role: .productManager,
+            title: "Product Requirements",
+            status: .done,
+            artifacts: [Artifact(
+                name: "Product Requirements",
+                relativePath: "tasks/1/runs/0/roles/pm/artifact_product_requirements.md"
+            )]
+        )
+        let uxrStep = StepExecution(id: "uxr_step", role: .uxResearcher, title: "UXR Step")
+        let run = Run(id: 0, steps: [pmStep, uxrStep])
+
+        let result = PromptBuilder.buildPipelineContext(
+            run: run,
+            upToStepIndex: 1,
+            artifactReader: { _ in nil }
+        )
+        XCTAssertTrue(
+            result.contains("(path: .nanoteams/tasks/1/runs/0/roles/pm/artifact_product_requirements.md)"),
+            "Handoff artifact path must carry the .nanoteams/ prefix the file tools resolve against. Got: \(result)"
+        )
+        XCTAssertFalse(
+            result.contains("(path: tasks/1/"),
+            "The prefix-less path must NOT be emitted (read_file would FILE_NOT_FOUND). Got: \(result)"
+        )
+    }
+
+    // An internal (.nanoteams/internal/…) artifact is sandbox-blocked, so the handoff
+    // must NOT advertise a path the model can't read.
+    func testBuildPipelineContext_internalArtifact_omitsPath() {
+        let step = StepExecution(
+            id: "swe_step",
+            role: .softwareEngineer,
+            title: "Engineering",
+            status: .done,
+            artifacts: [Artifact(
+                name: "Build Diagnostics",
+                relativePath: "internal/tasks/1/runs/0/roles/swe/build_diagnostics.json"
+            )]
+        )
+        let next = StepExecution(id: "cr_step", role: .codeReviewer, title: "Review Step")
+        let run = Run(id: 0, steps: [step, next])
+
+        let result = PromptBuilder.buildPipelineContext(
+            run: run,
+            upToStepIndex: 1,
+            artifactReader: { _ in nil }
+        )
+        XCTAssertTrue(result.contains("Build Diagnostics"), "Artifact is still listed by name. Got: \(result)")
+        XCTAssertFalse(
+            result.contains("(path:"),
+            "Internal artifacts are sandbox-blocked — no (path: …) reference. Got: \(result)"
+        )
+    }
+
     // Supervisor is always shown: its Supervisor Task is the universal entry-point
     // context. Filtering would strip the task brief — do not regress.
     func testBuildPipelineContext_filter_supervisorAlwaysShown() {

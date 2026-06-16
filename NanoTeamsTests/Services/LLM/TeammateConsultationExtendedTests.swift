@@ -154,8 +154,10 @@ final class TeammateConsultationExtendedTests: XCTestCase {
         consultation.complete(with: "Response", responseTimeMs: 100)
         XCTAssertEqual(consultation.status, .completed)
 
-        consultation.fail()
+        consultation.fail(with: "Failed after completing")
         XCTAssertEqual(consultation.status, .failed)
+        XCTAssertEqual(consultation.response, "Failed after completing",
+                       "A later failure overwrites the response with the failure reason.")
     }
 
     func testConsultation_CancelAfterComplete_ChangesStatus() {

@@ -14,9 +14,10 @@ import XCTest
 /// Fix: in `handleNoToolCalls`, after 3 consecutive no-tool-call turns by an advisory
 /// role under `supervisorMode == .autonomous`, write step.done + role.done atomically
 /// and return `.completed`. The atomic role.done write is essential — bypassing
-/// `handleRoleCompleted` avoids `acceptanceMode == .finalOnly` routing the role to
-/// `.needsAcceptance`, which would otherwise deadlock the engine into `.failed` in
-/// chat mode (the engine has no `.needsAcceptance` exit path for chat teams).
+/// `handleRoleCompleted` avoids a per-role gating mode (e.g. `.afterEachRole`, the
+/// `TeamSettings.default`) routing the role to `.needsAcceptance`, which would otherwise
+/// deadlock the engine into `.failed` in chat mode (the engine has no `.needsAcceptance`
+/// exit path for chat teams).
 /// Manual mode is untouched — the gate explicitly checks `team.settings.supervisorMode`.
 @MainActor
 final class AdvisoryAutoFinishTests: XCTestCase {
@@ -254,8 +255,8 @@ final class AdvisoryAutoFinishTests: XCTestCase {
     /// Critical regression: the auto-finish branch MUST set `roleStatuses[roleID] = .done`
     /// atomically with `step.status = .done`. If only step.done is written, the engine's
     /// `handleRoleCompleted` would route through `AcceptanceService.shouldRequestAcceptance`,
-    /// which (for default `.finalOnly` + `isLastRole == true`) routes the role to
-    /// `.needsAcceptance` — a state the engine's chat-mode `readyRoleIDs.isEmpty` arm
+    /// which (for a per-role gating mode such as the default `.afterEachRole`) routes the
+    /// role to `.needsAcceptance` — a state the engine's chat-mode `readyRoleIDs.isEmpty` arm
     /// doesn't exit cleanly, deadlocking into `.failed`. Setting role.done in the same
     /// `mutateTask` closure short-circuits `handleRoleCompleted`'s `roleStatuses[roleID]
     /// == .working` guard, leaving role.done as written.
@@ -279,7 +280,7 @@ final class AdvisoryAutoFinishTests: XCTestCase {
         // class doc-comment for why.
         let step = mockDelegate.taskToMutate?.runs[0].steps[0]
         XCTAssertEqual(step?.status, .done, "Step must be .done after auto-finish")
-        XCTAssertNotNil(step?.completedAt, "Step.completedAt must be set so isLastRoleToComplete works")
+        XCTAssertNotNil(step?.completedAt, "Step.completedAt must be set on completion")
         XCTAssertEqual(
             mockDelegate.taskToMutate?.runs[0].roleStatuses[role.id], .done,
             "Role must be .done — NOT .needsAcceptance (would deadlock chat-mode engine)"

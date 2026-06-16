@@ -14,7 +14,7 @@ extension LLMExecutionService {
     }
 
     func completeStepFailure(stepID: String, taskID: Int, errorMessage: String) async {
-        await completeStep(stepID: stepID, taskID: taskID, status: .failed, notes: errorMessage, notePrefix: "LLM error")
+        await completeStep(stepID: stepID, taskID: taskID, status: .failed, notes: errorMessage, notePrefix: StepExecution.llmErrorNotePrefix)
     }
 
     func completeStepNeedsAcceptance(stepID: String, taskID: Int) async {
@@ -45,6 +45,11 @@ extension LLMExecutionService {
 
         await finalizeStepCompletion(stepID: stepID, taskID: taskID, status: status)
         clearRunningTask(stepID: stepID, taskID: taskID)
+
+        // Capture the fully-committed step (final tool calls + terminal status) in the
+        // displayed-side audit log. The per-turn `commitStreaming` render runs BEFORE the
+        // turn's tool calls are appended, so the final turn's calls land only here.
+        delegate.renderConversationLog(taskID: taskID)
     }
 
     // MARK: - Step Finalization

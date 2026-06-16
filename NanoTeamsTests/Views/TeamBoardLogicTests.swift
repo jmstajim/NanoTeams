@@ -197,4 +197,38 @@ final class TeamBoardLogicTests: XCTestCase {
         let role = makeRole(isSupervisor: true)
         XCTAssertEqual(role.completionType, .producing)
     }
+
+    // MARK: - Autovisor Board Detection (Run now / hide New Run)
+
+    /// Both nil → not the Autovisor board.
+    func testIsAutovisorBoard_bothNil_false() {
+        XCTAssertFalse(TeamBoardView.isAutovisorBoard(taskID: nil, autovisorTaskID: nil))
+    }
+
+    /// Autovisor off (no manager task) → never the Autovisor board, so a normal
+    /// task keeps "New Run" and shows no "Run now".
+    func testIsAutovisorBoard_autovisorOff_false() {
+        XCTAssertFalse(TeamBoardView.isAutovisorBoard(taskID: 7, autovisorTaskID: nil))
+    }
+
+    /// No active task → not the Autovisor board.
+    func testIsAutovisorBoard_noActiveTask_false() {
+        XCTAssertFalse(TeamBoardView.isAutovisorBoard(taskID: nil, autovisorTaskID: 7))
+    }
+
+    /// Active task IS the manager → the Autovisor board ("Run now" shows, "New Run" hidden).
+    func testIsAutovisorBoard_matchingIDs_true() {
+        XCTAssertTrue(TeamBoardView.isAutovisorBoard(taskID: 7, autovisorTaskID: 7))
+    }
+
+    /// Task/run IDs are sequential from 0, so id `0` is a real first-task value —
+    /// a zero match must still resolve to the Autovisor board (not be mistaken for "absent").
+    func testIsAutovisorBoard_zeroIDsMatch_true() {
+        XCTAssertTrue(TeamBoardView.isAutovisorBoard(taskID: 0, autovisorTaskID: 0))
+    }
+
+    /// A different task while the manager exists → normal board (keeps "New Run").
+    func testIsAutovisorBoard_differentIDs_false() {
+        XCTAssertFalse(TeamBoardView.isAutovisorBoard(taskID: 3, autovisorTaskID: 7))
+    }
 }

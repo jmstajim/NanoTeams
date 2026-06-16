@@ -1747,6 +1747,122 @@ final class ActivityFeedBuilderTests: XCTestCase {
         XCTAssertEqual(notif?.item.createdAt, date(350))
     }
 
+    func testFailedNotification_carriesErrorReasonFromStepMessages() {
+        var step = makeStep(status: .failed, completedAt: date(400))
+        // completeStepFailure records the reason into `messages` (StepMessage),
+        // NOT `llmConversation` — populate it directly.
+        step.messages = [
+            StepMessage(
+                role: .softwareEngineer,
+                content: "\(StepExecution.llmErrorNotePrefix): LLM request failed with HTTP 404: model_not_found")
+        ]
+        let result = build(steps: [step])
+
+        var captured: String?
+        var found = false
+        for item in result {
+            if case .notification(_, _, .failed(let msg), _, _) = item.item {
+                captured = msg
+                found = true
+            }
+        }
+        XCTAssertTrue(found, "A .failed notification must be emitted")
+        XCTAssertEqual(
+            captured, "LLM request failed with HTTP 404: model_not_found",
+            "The failed bubble must carry the stored error reason with the prefix stripped")
+    }
+
+    func testFailedNotification_noErrorReason_whenNoLLMErrorNote() {
+        let step = makeStep(status: .failed, completedAt: date(400)) // no step.messages
+        let result = build(steps: [step])
+
+        var found = false
+        for item in result {
+            if case .notification(_, _, .failed(let msg), _, _) = item.item {
+                found = true
+                XCTAssertNil(msg, "No LLM-error note → errorMessage stays nil (card shows hint)")
+            }
+        }
+        XCTAssertTrue(found)
+    }
+
+    // MARK: - 7a. failureMessage(for:) extraction
+
+    func testFailureMessage_stripsPrefix() {
+        var step = makeStep(status: .failed)
+        step.messages = [StepMessage(role: .softwareEngineer,
+                                     content: "\(StepExecution.llmErrorNotePrefix): boom")]
+        XCTAssertEqual(ActivityFeedBuilder.failureMessage(for: step), "boom")
+    }
+
+    func testFailureMessage_picksLastErrorNote() {
+        var step = makeStep(status: .failed)
+        step.messages = [
+            StepMessage(role: .softwareEngineer, content: "\(StepExecution.llmErrorNotePrefix): first"),
+            StepMessage(role: .softwareEngineer, content: "Some unrelated note"),
+            StepMessage(role: .softwareEngineer, content: "\(StepExecution.llmErrorNotePrefix): second"),
+        ]
+        XCTAssertEqual(ActivityFeedBuilder.failureMessage(for: step), "second")
+    }
+
+    func testFailureMessage_nilWhenNoErrorNote() {
+        var step = makeStep(status: .failed)
+        // A warning note (different prefix) must not be mistaken for a failure.
+        step.messages = [StepMessage(role: .softwareEngineer, content: "LLM warning: heads up")]
+        XCTAssertNil(ActivityFeedBuilder.failureMessage(for: step))
+    }
+
+    func testFailureMessage_nilWhenReasonEmpty() {
+        var step = makeStep(status: .failed)
+        step.messages = [StepMessage(role: .softwareEngineer,
+                                     content: "\(StepExecution.llmErrorNotePrefix):    ")]
+        XCTAssertNil(ActivityFeedBuilder.failureMessage(for: step))
+    }
+
+    func testFailureMessage_readsStepMessagesNotLLMConversation() {
+        // failureMessage reads step.messages (StepMessage). Retry notes and other
+        // turns live in the SEPARATE step.llmConversation (LLMMessage). Even a red
+        // herring there with the exact failure prefix must be ignored.
+        // (makeStep's `messages:` param populates llmConversation; step.messages stays empty.)
+        let step = makeStep(
+            messages: [makeMessage(content: "\(StepExecution.llmErrorNotePrefix): red herring", at: date(1))],
+            status: .failed)
+        XCTAssertNil(ActivityFeedBuilder.failureMessage(for: step),
+                     "failureMessage must read step.messages, never llmConversation")
+    }
+
+    func testFailureMessage_errorNoteNotLast_stillExtracted() {
+        var step = makeStep(status: .failed)
+        step.messages = [
+            StepMessage(role: .softwareEngineer, content: "\(StepExecution.llmErrorNotePrefix): boom"),
+            StepMessage(role: .softwareEngineer, content: "a later unrelated note"),
+        ]
+        XCTAssertEqual(ActivityFeedBuilder.failureMessage(for: step), "boom",
+                       "The error note is found even when it isn't the last message")
+    }
+
+    func testFailureMessage_trimsSurroundingWhitespace() {
+        var step = makeStep(status: .failed)
+        step.messages = [StepMessage(role: .softwareEngineer,
+                                     content: "\(StepExecution.llmErrorNotePrefix):   real reason  ")]
+        XCTAssertEqual(ActivityFeedBuilder.failureMessage(for: step), "real reason")
+    }
+
+    func testFailureMessage_barePrefixNoReason_returnsNil() {
+        var step = makeStep(status: .failed)
+        step.messages = [StepMessage(role: .softwareEngineer,
+                                     content: "\(StepExecution.llmErrorNotePrefix): ")]
+        XCTAssertNil(ActivityFeedBuilder.failureMessage(for: step))
+    }
+
+    func testFailureMessage_prefixWithoutTrailingSpace_returnsNil() {
+        // The separator is "<prefix>: " — a note missing the space is not a match.
+        var step = makeStep(status: .failed)
+        step.messages = [StepMessage(role: .softwareEngineer,
+                                     content: "\(StepExecution.llmErrorNotePrefix):boom")]
+        XCTAssertNil(ActivityFeedBuilder.failureMessage(for: step))
+    }
+
     // MARK: - 8. Section Headers
 
     func testFirstItemAlwaysGetsHeader() {
@@ -2715,5 +2831,224 @@ final class ActivityFeedBuilderTests: XCTestCase {
                       "Older paired reply must remain visible as conversation history")
         XCTAssertFalse(bubbleMessageIDs.contains(newReply.id),
                        "Latest paired reply must be suppressed (lives in composer preview)")
+    }
+
+    // MARK: - Reasoning turn / tool-call grouping (createdAt re-stamp)
+
+    /// End-to-end pin of the user-visible outcome of the `commitStreamingContent`
+    /// re-stamp: a reasoning-only turn (empty content + thinking) whose committed
+    /// assistant message is stamped at turn-END sorts immediately before its own
+    /// `create_artifact` tool call, even when a second role runs concurrently and
+    /// emits an item DURING the turn. Guards both the createdAt-based sort and the
+    /// re-stamp's effect.
+    func testCommittedReasoningTurn_groupsWithItsToolCall_despiteConcurrentRole() {
+        // UX Researcher reasoning-only turn, committed at turn-END (date 100).
+        let uxMsg = makeMessage(content: "", at: date(100), thinking: "all the reasoning")
+        let uxCall = makeToolCall(name: TN.createArtifact, at: date(100.4),
+                                  argumentsJSON: #"{"name":"Research Report"}"#)
+        let uxArtifact = makeArtifact(name: "Research Report", at: date(100.8))
+        let uxStep = makeStep(role: .uxResearcher, messages: [uxMsg],
+                              toolCalls: [uxCall], artifacts: [uxArtifact])
+
+        // Product Manager runs concurrently; its tool call lands DURING the UX turn.
+        let pmCall = makeToolCall(name: TN.updateScratchpad, at: date(75))
+        let pmStep = makeStep(role: .productManager, toolCalls: [pmCall])
+
+        let items = build(steps: [uxStep, pmStep]).map(\.item)
+
+        guard let msgIdx = items.firstIndex(where: {
+            if case .llmMessage(let m, _, _, _) = $0 { return m.id == uxMsg.id }
+            return false
+        }) else { return XCTFail("UX assistant turn missing from feed") }
+        guard let callIdx = items.firstIndex(where: {
+            if case .toolCall(let c, _, _, _) = $0 { return c.id == uxCall.id }
+            return false
+        }) else { return XCTFail("UX create_artifact tool call missing from feed") }
+
+        XCTAssertEqual(callIdx, msgIdx + 1,
+            "The committed reasoning turn must sort immediately before its own create_artifact tool call — no concurrent role's item wedged between them")
+    }
+
+    /// Documents the pre-fix bug shape (and why the re-stamp matters): a turn-START
+    /// stamped bubble is split from its turn-END tool call when a concurrent role's
+    /// item lands between them. The `commitStreamingContent` re-stamp is what moves
+    /// the bubble to turn-END so this split cannot happen for committed turns.
+    ///
+    /// NOTE: this is a CHARACTERIZATION test — it hand-builds the broken (turn-START)
+    /// timestamp, so it passes independently of the production fix and is NOT a
+    /// regression guard. The guard for the fix is the `TaskMutationServiceTests`
+    /// re-stamp tests + `testCommittedReasoningTurn_*` above.
+    func testReasoningTurnStampedAtTurnStart_isSplitFromItsToolCall_byConcurrentRole() {
+        let uxMsg = makeMessage(content: "", at: date(20), thinking: "reasoning")  // turn START
+        let uxCall = makeToolCall(name: TN.createArtifact, at: date(100.4),         // turn END
+                                  argumentsJSON: #"{"name":"Research Report"}"#)
+        let uxStep = makeStep(role: .uxResearcher, messages: [uxMsg], toolCalls: [uxCall])
+        let pmCall = makeToolCall(name: TN.updateScratchpad, at: date(75))
+        let pmStep = makeStep(role: .productManager, toolCalls: [pmCall])
+
+        let items = build(steps: [uxStep, pmStep]).map(\.item)
+        let msgIdx = items.firstIndex {
+            if case .llmMessage(let m, _, _, _) = $0 { return m.id == uxMsg.id }; return false
+        }!
+        let callIdx = items.firstIndex {
+            if case .toolCall(let c, _, _, _) = $0 { return c.id == uxCall.id }; return false
+        }!
+        XCTAssertGreaterThan(callIdx - msgIdx, 1,
+            "With a turn-START timestamp the concurrent PM item wedges between the bubble and its tool call — the split the commit re-stamp fixes")
+    }
+
+    /// Full turn contiguity: with a turn-END timestamp the bubble, its tool call,
+    /// AND the resulting artifact render as three consecutive items, even with a
+    /// concurrent role emitting during the turn.
+    func testCommittedReasoningTurn_message_toolCall_artifact_areContiguous() {
+        let uxMsg = makeMessage(content: "", at: date(100), thinking: "reasoning")
+        let uxCall = makeToolCall(name: TN.createArtifact, at: date(100.4),
+                                  argumentsJSON: #"{"name":"Research Report"}"#)
+        let uxArtifact = makeArtifact(name: "Research Report", at: date(100.8))
+        let uxStep = makeStep(role: .uxResearcher, messages: [uxMsg],
+                              toolCalls: [uxCall], artifacts: [uxArtifact])
+        let pmCall = makeToolCall(name: TN.updateScratchpad, at: date(75))
+        let pmStep = makeStep(role: .productManager, toolCalls: [pmCall])
+
+        let items = build(steps: [uxStep, pmStep]).map(\.item)
+        let msgIdx = items.firstIndex {
+            if case .llmMessage(let m, _, _, _) = $0 { return m.id == uxMsg.id }; return false
+        }
+        let callIdx = items.firstIndex {
+            if case .toolCall(let c, _, _, _) = $0 { return c.id == uxCall.id }; return false
+        }
+        let artIdx = items.firstIndex {
+            if case .artifact(let a, _, _, _) = $0 { return a.id == uxArtifact.id }; return false
+        }
+        guard let msgIdx, let callIdx, let artIdx else { return XCTFail("UX turn items missing from feed") }
+        XCTAssertEqual(callIdx, msgIdx + 1, "tool call immediately follows the bubble")
+        XCTAssertEqual(artIdx, msgIdx + 2, "artifact immediately follows the tool call — whole turn contiguous")
+    }
+
+    /// A content-less, thinking-less turn (e.g. a cancelled/empty commit) must NOT
+    /// render as an orphan bubble even though the fix now stamps it at turn-END —
+    /// only the tool call it produced shows. Guards against the re-stamp surfacing
+    /// empty placeholders.
+    func testTrulyEmptyReasoningTurn_isSuppressed_notRenderedAsOrphanBubble() {
+        let emptyMsg = makeMessage(content: "", at: date(100), thinking: nil)
+        let call = makeToolCall(name: TN.createArtifact, at: date(100.4),
+                                argumentsJSON: #"{"name":"Research Report"}"#)
+        let step = makeStep(role: .uxResearcher, messages: [emptyMsg], toolCalls: [call])
+
+        let items = build(steps: [step]).map(\.item)
+        let hasEmptyBubble = items.contains {
+            if case .llmMessage(let m, _, _, _) = $0 { return m.id == emptyMsg.id }
+            return false
+        }
+        XCTAssertFalse(hasEmptyBubble, "A content-less, thinking-less turn must be suppressed (no orphan bubble)")
+        XCTAssertTrue(items.contains {
+            if case .toolCall(let c, _, _, _) = $0 { return c.id == call.id }
+            return false
+        }, "The tool call it produced must still render")
+    }
+
+    /// The turn stays grouped even when a concurrent role emits on BOTH sides of it
+    /// (before AND after) — guards that the fix isn't accidentally relying on the
+    /// concurrent item being earlier than the turn.
+    func testCommittedReasoningTurn_groupsWithItsToolCall_concurrentRoleBracketingBothSides() {
+        let uxMsg = makeMessage(content: "", at: date(100), thinking: "reasoning")
+        let uxCall = makeToolCall(name: TN.createArtifact, at: date(100.4),
+                                  argumentsJSON: #"{"name":"Research Report"}"#)
+        let uxStep = makeStep(role: .uxResearcher, messages: [uxMsg], toolCalls: [uxCall])
+
+        // Product Manager emits both BEFORE (75) and AFTER (150) the UX turn.
+        let pmBefore = makeToolCall(name: TN.updateScratchpad, at: date(75))
+        let pmAfter = makeToolCall(name: TN.readFile, at: date(150))
+        let pmStep = makeStep(role: .productManager, toolCalls: [pmBefore, pmAfter])
+
+        let items = build(steps: [uxStep, pmStep]).map(\.item)
+        let msgIdx = items.firstIndex {
+            if case .llmMessage(let m, _, _, _) = $0 { return m.id == uxMsg.id }; return false
+        }
+        let callIdx = items.firstIndex {
+            if case .toolCall(let c, _, _, _) = $0 { return c.id == uxCall.id }; return false
+        }
+        guard let msgIdx, let callIdx else { return XCTFail("UX turn items missing from feed") }
+        XCTAssertEqual(callIdx, msgIdx + 1,
+            "UX bubble and its tool call stay adjacent even with concurrent PM activity bracketing the turn on both sides")
+    }
+
+    /// Two roles each commit a reasoning turn at their own turn-END; each role's
+    /// bubble groups with ITS OWN tool call — the turns don't cross-contaminate
+    /// after interleave, and the earlier turn fully precedes the later one.
+    func testTwoConcurrentReasoningTurns_eachGroupsWithItsOwnToolCall() {
+        let tlMsg = makeMessage(content: "", at: date(90), thinking: "TL reasoning")
+        let tlCall = makeToolCall(name: TN.createArtifact, at: date(90.4),
+                                  argumentsJSON: #"{"name":"Implementation Plan"}"#)
+        let tlStep = makeStep(role: .techLead, messages: [tlMsg], toolCalls: [tlCall])
+
+        let uxMsg = makeMessage(content: "", at: date(100), thinking: "UX reasoning")
+        let uxCall = makeToolCall(name: TN.createArtifact, at: date(100.4),
+                                  argumentsJSON: #"{"name":"Research Report"}"#)
+        let uxStep = makeStep(role: .uxResearcher, messages: [uxMsg], toolCalls: [uxCall])
+
+        let items = build(steps: [tlStep, uxStep]).map(\.item)
+        func mIdx(_ id: UUID) -> Int? {
+            items.firstIndex { if case .llmMessage(let m, _, _, _) = $0 { return m.id == id }; return false }
+        }
+        func cIdx(_ id: UUID) -> Int? {
+            items.firstIndex { if case .toolCall(let c, _, _, _) = $0 { return c.id == id }; return false }
+        }
+        guard let tlM = mIdx(tlMsg.id), let tlC = cIdx(tlCall.id),
+              let uxM = mIdx(uxMsg.id), let uxC = cIdx(uxCall.id)
+        else { return XCTFail("turn items missing from feed") }
+        XCTAssertEqual(tlC, tlM + 1, "Tech Lead bubble adjacent to its own tool call")
+        XCTAssertEqual(uxC, uxM + 1, "UX bubble adjacent to its own tool call")
+        XCTAssertLessThan(tlC, uxM, "Earlier turn (TL @90) fully precedes the later turn (UX @100)")
+    }
+
+    /// Per-turn grouping within a SINGLE step at the feed level: two committed turns,
+    /// each re-stamped at its own turn-END, render as [msg1, call1, msg2, call2] —
+    /// each bubble adjacent to its own tool call, in turn order.
+    func testMultipleTurnsInOneStep_eachGroupsWithItsOwnToolCall() {
+        let msg1 = makeMessage(content: "", at: date(90), thinking: "turn 1")
+        let call1 = makeToolCall(name: TN.readFile, at: date(90.4))
+        let msg2 = makeMessage(content: "", at: date(100), thinking: "turn 2")
+        let call2 = makeToolCall(name: TN.createArtifact, at: date(100.4),
+                                 argumentsJSON: #"{"name":"Research Report"}"#)
+        let step = makeStep(role: .uxResearcher, messages: [msg1, msg2], toolCalls: [call1, call2])
+
+        let items = build(steps: [step]).map(\.item)
+        func mIdx(_ id: UUID) -> Int? {
+            items.firstIndex { if case .llmMessage(let m, _, _, _) = $0 { return m.id == id }; return false }
+        }
+        func cIdx(_ id: UUID) -> Int? {
+            items.firstIndex { if case .toolCall(let c, _, _, _) = $0 { return c.id == id }; return false }
+        }
+        guard let m1 = mIdx(msg1.id), let c1 = cIdx(call1.id),
+              let m2 = mIdx(msg2.id), let c2 = cIdx(call2.id)
+        else { return XCTFail("turn items missing from feed") }
+        XCTAssertEqual([m1, c1, m2, c2], [0, 1, 2, 3],
+            "Two turns in one step render as msg1, call1, msg2, call2 — each bubble adjacent to its own tool call")
+    }
+
+    /// LIMIT of the fix (characterization): the re-stamp co-locates a role's OWN turn;
+    /// it does NOT exclude a foreign item by time. A concurrent item whose `createdAt`
+    /// falls strictly between the bubble and its tool call DOES sort between them. The
+    /// fix narrows the split window to the turn's own commit→tool-call gap (sub-second
+    /// in practice) — it does not guarantee zero interleave.
+    func testForeignItemStrictlyInsideTurnGap_doesWedge_documentedLimit() {
+        let uxMsg = makeMessage(content: "", at: date(100), thinking: "reasoning")
+        let uxCall = makeToolCall(name: TN.createArtifact, at: date(100.4),
+                                  argumentsJSON: #"{"name":"Research Report"}"#)
+        let uxStep = makeStep(role: .uxResearcher, messages: [uxMsg], toolCalls: [uxCall])
+        // PM item lands STRICTLY between the bubble (100) and its tool call (100.4).
+        let pmCall = makeToolCall(name: TN.updateScratchpad, at: date(100.2))
+        let pmStep = makeStep(role: .productManager, toolCalls: [pmCall])
+
+        let items = build(steps: [uxStep, pmStep]).map(\.item)
+        let msgIdx = items.firstIndex {
+            if case .llmMessage(let m, _, _, _) = $0 { return m.id == uxMsg.id }; return false
+        }!
+        let callIdx = items.firstIndex {
+            if case .toolCall(let c, _, _, _) = $0 { return c.id == uxCall.id }; return false
+        }!
+        XCTAssertEqual(callIdx - msgIdx, 2,
+            "A foreign item inside the commit→tool-call gap still sorts between bubble and call — the fix narrows but does not eliminate interleave")
     }
 }

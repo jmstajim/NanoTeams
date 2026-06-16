@@ -468,7 +468,13 @@ nonisolated struct TaskSummary: Codable, Identifiable, Hashable {
     /// cheaply, and the sidebar shows a "recurring" badge when non-nil.
     var nextRecurrenceFireAt: Date?
 
-    init(id: Int, title: String, status: TaskStatus, updatedAt: Date = MonotonicClock.shared.now(), isChatMode: Bool = false, parentTaskID: Int? = nil, nextRecurrenceFireAt: Date? = nil) {
+    /// The team the task's active run is pinned to (`runs.last?.teamID`). Mirrored
+    /// into the index so `teamIsInUseByActiveRun` can authoritatively block deleting
+    /// a team that backs ANY non-closed task — including ones paused/evicted from
+    /// `loadedTasks` — without loading every task blob.
+    var pinnedTeamID: NTMSID?
+
+    init(id: Int, title: String, status: TaskStatus, updatedAt: Date = MonotonicClock.shared.now(), isChatMode: Bool = false, parentTaskID: Int? = nil, nextRecurrenceFireAt: Date? = nil, pinnedTeamID: NTMSID? = nil) {
         self.id = id
         self.title = title
         self.status = status
@@ -476,6 +482,7 @@ nonisolated struct TaskSummary: Codable, Identifiable, Hashable {
         self.isChatMode = isChatMode
         self.parentTaskID = parentTaskID
         self.nextRecurrenceFireAt = nextRecurrenceFireAt
+        self.pinnedTeamID = pinnedTeamID
     }
 
     init(from decoder: Decoder) throws {
@@ -487,6 +494,7 @@ nonisolated struct TaskSummary: Codable, Identifiable, Hashable {
         self.isChatMode = try container.decodeIfPresent(Bool.self, forKey: .isChatMode) ?? false
         self.parentTaskID = try container.decodeIfPresent(Int.self, forKey: .parentTaskID)
         self.nextRecurrenceFireAt = try container.decodeIfPresent(Date.self, forKey: .nextRecurrenceFireAt)
+        self.pinnedTeamID = try container.decodeIfPresent(String.self, forKey: .pinnedTeamID)
     }
 }
 
@@ -607,7 +615,8 @@ nonisolated extension NTMSTask {
             updatedAt: updatedAt,
             isChatMode: isChatMode,
             parentTaskID: parentTaskID,
-            nextRecurrenceFireAt: recurrence.flatMap { $0.isEnabled ? $0.nextFireAt : nil }
+            nextRecurrenceFireAt: recurrence.flatMap { $0.isEnabled ? $0.nextFireAt : nil },
+            pinnedTeamID: runs.last?.teamID
         )
     }
 }

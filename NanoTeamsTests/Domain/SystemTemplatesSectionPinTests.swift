@@ -98,6 +98,62 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
         XCTAssertFalse(t.hasPrefix("You are"), "autovisorTemplate must not open with 'You are X...'")
     }
 
+    /// §2.2 / §9.5 attention sinks: the "delegate, never implement" rule — the constraint
+    /// a weak local model ignores when it's buried mid-prompt — must sit in BOTH the opening
+    /// `## Role` slot and the closing `## Final reminder` slot, not only in `{roleGuidance}`'s
+    /// mid-prompt Boundaries. This is the structural fix for the manager self-fixing instead
+    /// of delegating.
+    func testAutovisorTemplate_neverImplementRule_atStartAndEnd() {
+        let t = SystemTemplates.autovisorTemplate
+        guard let mechanics = t.range(of: "## Conversation mechanics"),
+              let finalReminder = t.range(of: "## Final reminder") else {
+            return XCTFail("autovisorTemplate must have its section headers")
+        }
+        // Start slot — the `## Role` block (everything before the next header).
+        let roleBlock = String(t[t.startIndex..<mechanics.lowerBound])
+        XCTAssertTrue(roleBlock.contains("never implement"),
+                      "## Role (opening attention-sink) must state the delegate/never-implement rule")
+        // End slot — the Final reminder restates the never-implement / delegate rule.
+        let finalBlock = String(t[finalReminder.lowerBound...])
+        XCTAssertTrue(finalBlock.contains("never implement") && finalBlock.contains("managed task"),
+                      "## Final reminder (closing attention-sink) must restate the never-implement / delegate rule")
+        // The existing FR pins (wait_for_events + Work Folder Context) must survive the addition.
+        XCTAssertTrue(finalBlock.contains("wait_for_events") && finalBlock.contains("Work Folder Context"),
+                      "## Final reminder must keep the termination + context-refresh contract")
+    }
+
+    /// F2 (pass-2 review): the prohibition ("never implement") must NOT monopolise the two
+    /// attention-sink slots. The POSITIVE act/delegate directive must LEAD both the `## Role` and
+    /// the `## Final reminder` (positive before prohibition) so a weak quantized model isn't biased
+    /// toward passivity — the opposite failure of the bug this rewrite targets. F6: the Final
+    /// reminder must also restate the manager's only reply channel (one short line; no `ask_supervisor`).
+    func testAutovisorTemplate_positiveDirectiveLeadsBothSinks() {
+        let t = SystemTemplates.autovisorTemplate
+        guard let mechanics = t.range(of: "## Conversation mechanics"),
+              let fr = t.range(of: "## Final reminder") else {
+            return XCTFail("autovisorTemplate must have its section headers")
+        }
+        let roleBlock = String(t[t.startIndex..<mechanics.lowerBound])
+        let finalBlock = String(t[fr.lowerBound...])
+        // ## Role: the positive directive precedes the never-implement constraint.
+        guard let rolePos = roleBlock.range(of: "delegate"),
+              let roleNo = roleBlock.range(of: "never implement") else {
+            return XCTFail("## Role must carry both the positive directive and the constraint")
+        }
+        XCTAssertLessThan(rolePos.lowerBound, roleNo.lowerBound,
+                          "## Role must LEAD with the positive delegate/steer directive, then never-implement (F2)")
+        // ## Final reminder: the positive lead precedes the constraint.
+        guard let frPos = finalBlock.range(of: "Act on"),
+              let frNo = finalBlock.range(of: "never implement") else {
+            return XCTFail("## Final reminder must carry both the positive lead and the constraint")
+        }
+        XCTAssertLessThan(frPos.lowerBound, frNo.lowerBound,
+                          "## Final reminder must LEAD with the positive act/delegate directive (F2)")
+        // F6: reply-format restatement at the tail sink.
+        XCTAssertTrue(finalBlock.lowercased().contains("one short line"),
+                      "## Final reminder must restate the manager's reply format (one short line — its only channel)")
+    }
+
     // MARK: - Consultation templates (every variant carries `## Final reminder`)
 
     func testEveryConsultationTemplate_hasFinalReminder() {

@@ -4,15 +4,18 @@ import XCTest
 
 /// End-to-end leak guard. Fires a real LM Studio embedding request through
 /// `LMStudioEmbeddingClient` with a known token in the resolver and a real
-/// `NetworkLogger` writing to a temp directory. After the call, both
-/// `network_log.json` and `conversation_log.md` are read back and scanned for
-/// the token string.
+/// `NetworkLogger` writing to a temp directory. After the call, `network_log.json`
+/// is read back and scanned for the token string.
 ///
 /// If this test ever fails, a future change has started capturing HTTP
 /// headers and the LM Studio bearer token would land in
-/// `.nanoteams/internal/runs/*/network_log.json` / `conversation_log.md`.
+/// `.nanoteams/internal/runs/*/network_log.json`.
 /// The fix is NOT to change this test — it is to add explicit `Authorization`
 /// redaction at the new capture point.
+///
+/// Note: `conversation_log.md` is no longer produced by `NetworkLogger` — it now
+/// renders the activity feed (step/message data) via `ConversationTranscriptRenderer`,
+/// which never sees HTTP headers, so that leak vector is closed by construction.
 final class NetworkLogTokenLeakTests: XCTestCase {
 
     private static let canaryToken = "TOK-DO-NOT-LEAK-\(UUID().uuidString)"
@@ -104,42 +107,4 @@ final class NetworkLogTokenLeakTests: XCTestCase {
         )
     }
 
-    func testEmbed_withRealLogger_doesNotLeakTokenToConversationLog() async throws {
-        let logURL = tempDir.appendingPathComponent("network_log.json")
-        let logger = NetworkLogger(logURL: logURL)
-        let baseURL = "http://127.0.0.1:1234"
-
-        let session = CapturingNetworkSession(
-            responseBody: Data("{\"data\":[{\"embedding\":[0.1],\"index\":0}]}".utf8)
-        )
-        let client = LMStudioEmbeddingClient(
-            session: session,
-            tokenResolver: StubLLMTokenResolver([baseURL: Self.canaryToken])
-        )
-
-        _ = try await client.embed(
-            texts: ["any"],
-            config: EmbeddingConfig(
-                baseURLString: baseURL,
-                modelName: "m",
-                batchSize: 1,
-                requestTimeout: 5
-            ),
-            logger: logger,
-            stepID: "step"
-        )
-
-        // ConversationLogRenderer is invoked synchronously inside NetworkLogger.append.
-        let mdURL = tempDir.appendingPathComponent("conversation_log.md")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: mdURL.path))
-        let md = try String(contentsOf: mdURL, encoding: .utf8)
-        XCTAssertFalse(
-            md.contains(Self.canaryToken),
-            "Token leaked into conversation_log.md."
-        )
-        XCTAssertFalse(
-            md.lowercased().contains("authorization"),
-            "`Authorization` header name leaked into conversation_log.md."
-        )
-    }
 }

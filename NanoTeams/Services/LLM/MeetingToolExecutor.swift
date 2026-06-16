@@ -66,8 +66,24 @@ enum MeetingToolExecutor {
             // reaches in — otherwise pause-during-meeting can't stop the
             // detached batch.
             let batchTask = Task.detached(priority: .userInitiated) {
-                [runtime, toolContext, validCalls] in
-                runtime.executeAll(context: toolContext, toolCalls: validCalls)
+                [runtime, toolContext, validCalls, rejectedResults] in
+                // Mirror rejected meeting calls into both per-run logs — executed
+                // calls log inside `executeOne`, so without this the wire/jsonl
+                // audit would show meeting executions but silently drop meeting
+                // rejections (the same asymmetry the step path avoids via its own
+                // rejection mirror).
+                for r in rejectedResults {
+                    runtime.logNonExecutedCall(
+                        taskID: toolContext.taskID,
+                        runID: toolContext.runID,
+                        roleID: toolContext.roleID,
+                        toolName: r.toolName,
+                        argumentsJSON: r.argumentsJSON,
+                        resultJSON: r.outputJSON,
+                        errorMessage: "tool not authorized in this meeting"
+                    )
+                }
+                return runtime.executeAll(context: toolContext, toolCalls: validCalls)
             }
             cancellationRegistrar?(batchTask)
             let freshResults = await batchTask.value

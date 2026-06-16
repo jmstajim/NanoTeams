@@ -24,6 +24,12 @@ nonisolated enum MessageSourceContext: String, Codable {
     /// `ask_supervisor`, escalating to its own supervisor). Tagged so the activity
     /// feed of each ancestor can show the escalation chain.
     case delegationEscalation
+    /// Transient retry-status note written while a recoverable LLM error keeps
+    /// retrying (server unreachable, 5xx, …). Rendered as a red error bubble in the
+    /// activity feed and collapsed in place across attempts (see
+    /// `TaskMutationService.appendOrReplaceRetryNotice`). Display-only — never sent
+    /// to the model.
+    case serverError
 
     private static let displayLabelMap: [MessageSourceContext: String] = [
         .consultation: "consultation",
@@ -115,6 +121,9 @@ nonisolated struct LLMMessage: Codable, Identifiable, Hashable {
         // initial Supervisor task brief — the avatar + role name already convey
         // the context, so no secondary "(message)" label.
         if sourceContext == .supervisorMessage { return nil }
+        // The red bubble + self-describing content already convey "server error";
+        // a "(serverError)" label would be redundant noise.
+        if sourceContext == .serverError { return nil }
         if let ctx = sourceContext { return ctx.displayLabel }
         if role == .user && sourceRole == nil { return "input" }
         if sourceRole != nil { return "consultation" }
@@ -152,6 +161,11 @@ nonisolated struct LLMMessage: Codable, Identifiable, Hashable {
         self.content = try c.decode(String.self, forKey: .content)
         self.thinking = try c.decodeIfPresent(String.self, forKey: .thinking)
         self.sourceRole = try c.decodeIfPresent(Role.self, forKey: .sourceRole)
-        self.sourceContext = try c.decodeIfPresent(MessageSourceContext.self, forKey: .sourceContext)
+        // Decode tolerantly (string + rawValue lookup, same as `role` above): an
+        // unknown context raw — e.g. a case added by a newer build, read after a
+        // downgrade — degrades to `nil` instead of throwing and failing the whole
+        // message (and the step / task) to decode.
+        let sourceContextRaw = try c.decodeIfPresent(String.self, forKey: .sourceContext)
+        self.sourceContext = sourceContextRaw.flatMap(MessageSourceContext.init(rawValue:))
     }
 }

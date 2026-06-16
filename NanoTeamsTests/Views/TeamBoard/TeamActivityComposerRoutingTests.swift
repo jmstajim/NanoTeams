@@ -507,6 +507,137 @@ final class TeamActivityComposerRoutingTests: XCTestCase {
                        "Surviving Answer chips must keep their selection — don't auto-fall-through")
     }
 
+    // MARK: - remapEquivalentRecipient — draft-preserving role↔answer retarget
+
+    func testRemap_nilPrior_returnsNil() {
+        XCTAssertNil(TeamActivityComposer.remapEquivalentRecipient(
+            prior: nil, availableRecipients: [.role(id: "autovisor")]
+        ))
+    }
+
+    func testRemap_priorStillPresent_keepsSameShape() {
+        // Same shape still available → no change (matches sanitizeSelection's keep).
+        XCTAssertEqual(
+            TeamActivityComposer.remapEquivalentRecipient(
+                prior: .role(id: "autovisor"),
+                availableRecipients: [.role(id: "autovisor"), .answer(stepID: "autovisor")]
+            ),
+            .role(id: "autovisor"),
+            "When the exact prior recipient is still in the row, keep it (don't switch shapes)")
+    }
+
+    func testRemap_roleLost_answerForSameRolePresent_remapsToAnswer() {
+        // THE bug-1 case: the Autovisor was working (.role chip), then parked → the
+        // working chip is replaced by the Answer chip for the SAME role (stepID == roleID).
+        XCTAssertEqual(
+            TeamActivityComposer.remapEquivalentRecipient(
+                prior: .role(id: "autovisor"),
+                availableRecipients: [.answer(stepID: "autovisor")]
+            ),
+            .answer(stepID: "autovisor"),
+            "running→parked flip must retarget .role(X) → .answer(X), not discard")
+    }
+
+    func testRemap_answerLost_roleForSameRolePresent_remapsToRole() {
+        // The reverse flip: parked (.answer) → resumes to running (.role) for the same role.
+        XCTAssertEqual(
+            TeamActivityComposer.remapEquivalentRecipient(
+                prior: .answer(stepID: "autovisor"),
+                availableRecipients: [.role(id: "autovisor")]
+            ),
+            .role(id: "autovisor"),
+            "parked→running flip must retarget .answer(X) → .role(X)")
+    }
+
+    func testRemap_roleLost_onlyDifferentRoleAvailable_returnsNil() {
+        // The prior role is genuinely gone (a different role's chip is present) → nil,
+        // so shouldClearDraftAfterSelectionLoss can discard as before.
+        XCTAssertNil(
+            TeamActivityComposer.remapEquivalentRecipient(
+                prior: .role(id: "autovisor"),
+                availableRecipients: [.answer(stepID: "other"), .role(id: "other")]
+            ),
+            "No chip for the same role X remains → genuinely lost, return nil")
+    }
+
+    func testRemap_emptyAvailable_returnsNil() {
+        XCTAssertNil(TeamActivityComposer.remapEquivalentRecipient(
+            prior: .role(id: "autovisor"), availableRecipients: []
+        ))
+    }
+
+    func testRemap_answerLost_prefersSameRoleCounterpartOverUnrelatedAnswer() {
+        // Mixed row: an unrelated Answer chip AND the same role's .role chip. The remap
+        // must pick the same-role counterpart, never the unrelated answer.
+        XCTAssertEqual(
+            TeamActivityComposer.remapEquivalentRecipient(
+                prior: .answer(stepID: "autovisor"),
+                availableRecipients: [.answer(stepID: "other"), .role(id: "autovisor")]
+            ),
+            .role(id: "autovisor"),
+            "Remap targets the same role's counterpart, not an unrelated chip")
+    }
+
+    /// Integration: the running↔parked flip combined with the discard guard must NOT
+    /// discard the draft (the user-reported "message disappears"). With the remap in
+    /// place, `sanitized` is the counterpart recipient, so `shouldClearDraftAfterSelectionLoss`
+    /// returns false even though the original `.role` chip vanished.
+    func testRemap_runningToParkedFlip_doesNotTriggerDraftDiscard() {
+        let prior: TeamActivityComposer.Recipient = .role(id: "autovisor")
+        let recipients: [TeamActivityComposer.Recipient] = [.answer(stepID: "autovisor")]
+        let sanitized = TeamActivityComposer.remapEquivalentRecipient(
+            prior: prior, availableRecipients: recipients
+        )
+        XCTAssertEqual(sanitized, .answer(stepID: "autovisor"))
+        XCTAssertFalse(
+            TeamActivityComposer.shouldClearDraftAfterSelectionLoss(
+                prior: prior, sanitized: sanitized, hasContent: true
+            ),
+            "Remapped flip keeps the draft — discard must NOT fire when the same role is still reachable")
+    }
+
+    /// Integration: a genuine recipient loss (the role is gone, no counterpart) still
+    /// discards — the remap doesn't weaken the existing guard.
+    func testRemap_genuineLoss_stillTriggersDraftDiscard() {
+        let prior: TeamActivityComposer.Recipient = .role(id: "autovisor")
+        let recipients: [TeamActivityComposer.Recipient] = []   // role finished, nothing left
+        let sanitized = TeamActivityComposer.remapEquivalentRecipient(
+            prior: prior, availableRecipients: recipients
+        )
+        XCTAssertNil(sanitized)
+        XCTAssertTrue(
+            TeamActivityComposer.shouldClearDraftAfterSelectionLoss(
+                prior: prior, sanitized: sanitized, hasContent: true
+            ),
+            "A genuinely lost recipient with content still discards (guard unchanged)")
+    }
+
+    func testRemap_answerPriorStillPresent_keepsSameShape() {
+        // Symmetry with testRemap_priorStillPresent_keepsSameShape (which uses .role): an
+        // .answer prior that's still in the row is kept EXACTLY, even though its .role
+        // counterpart is also present — "prior present" wins over "find a counterpart".
+        XCTAssertEqual(
+            TeamActivityComposer.remapEquivalentRecipient(
+                prior: .answer(stepID: "autovisor"),
+                availableRecipients: [.answer(stepID: "autovisor"), .role(id: "autovisor")]
+            ),
+            .answer(stepID: "autovisor"),
+            "An .answer prior still present must be kept, not swapped to its .role counterpart")
+    }
+
+    func testRemap_roleLost_prefersSameRoleCounterpartOverUnrelatedChips() {
+        // Role-lost direction of testRemap_answerLost_prefersSameRoleCounterpartOverUnrelatedAnswer:
+        // a mixed row with an unrelated .role, the same role's .answer, and an unrelated .answer
+        // must resolve to the SAME role's .answer, never an unrelated chip.
+        XCTAssertEqual(
+            TeamActivityComposer.remapEquivalentRecipient(
+                prior: .role(id: "autovisor"),
+                availableRecipients: [.role(id: "other"), .answer(stepID: "autovisor"), .answer(stepID: "other")]
+            ),
+            .answer(stepID: "autovisor"),
+            "role-lost remap must pick the same role's .answer counterpart, ignoring unrelated chips")
+    }
+
     // MARK: - shouldClearDraftAfterSelectionLoss — mid-typing retarget guard
 
     /// Why this exists: with multiple parallel `ask_supervisor` chips, the user can be
