@@ -36,7 +36,7 @@ struct UpdatesSettingsView: View {
                     .foregroundStyle(Colors.textSecondary)
                 Spacer()
                 Text(AppVersion.current)
-                    .font(.callout.monospaced().weight(.medium))
+                    .font(Typography.termBase.weight(.medium))
                     .foregroundStyle(Colors.textPrimary)
             }
 
@@ -70,7 +70,7 @@ struct UpdatesSettingsView: View {
     private var latestVersionLabel: some View {
         if let latest = appUpdateState.latestRelease {
             Text(latest.tag)
-                .font(.callout.monospaced().weight(.medium))
+                .font(Typography.termBase.weight(.medium))
                 .foregroundStyle(appUpdateState.hasNewerRelease ? Colors.accent : Colors.textPrimary)
         } else if appUpdateState.lastCheckedAt == nil {
             Text("Not checked yet")
@@ -87,8 +87,7 @@ struct UpdatesSettingsView: View {
     private var statusLine: some View {
         if let failure = appUpdateState.lastCheckFailure {
             HStack(spacing: Spacing.s) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(Colors.error)
+                StatusGlyph(glyph: TerminalGlyph.failed, color: Colors.error)
                 Text(failure)
                     .font(Typography.caption)
                     .foregroundStyle(Colors.error)
@@ -102,10 +101,9 @@ struct UpdatesSettingsView: View {
         } else if appUpdateState.hasNewerRelease, let latest = appUpdateState.latestRelease {
             VStack(alignment: .leading, spacing: Spacing.xs) {
                 HStack(spacing: Spacing.s) {
-                    Image(systemName: "sparkles")
-                        .foregroundStyle(Colors.accent)
+                    StatusGlyph(glyph: TerminalGlyph.bullet, color: Colors.accent)
                     Text("New version \(latest.tag) is available")
-                        .font(.callout.weight(.medium))
+                        .font(Typography.subheadlineMedium)
                         .foregroundStyle(Colors.accent)
                 }
                 if appUpdateState.isLatestSkipped {
@@ -122,8 +120,7 @@ struct UpdatesSettingsView: View {
             )
         } else if appUpdateState.lastCheckedAt != nil, !appUpdateState.isChecking {
             HStack(spacing: Spacing.s) {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(Colors.success)
+                StatusGlyph(glyph: TerminalGlyph.done, color: Colors.success)
                 Text("You're on the latest version")
                     .font(Typography.subheadline)
                     .foregroundStyle(Colors.success)
@@ -145,14 +142,14 @@ struct UpdatesSettingsView: View {
                     URLOpener.open(latest.htmlURL) { store.lastErrorMessage = $0 }
                 } label: {
                     HStack(spacing: Spacing.xs) {
-                        Image(systemName: "arrow.down.circle.fill")
+                        Image(systemName: "arrow.down.circle")
                         Text("Update Now")
                     }
                     .font(Typography.captionSemibold)
                     .foregroundStyle(Colors.textOnAccent)
                     .padding(.horizontal, Spacing.m)
                     .padding(.vertical, Spacing.xs)
-                    .background(Capsule(style: .continuous).fill(Colors.accent))
+                    .background(RoundedRectangle.squircle(CornerRadius.small).fill(Colors.accent))
                 }
                 .buttonStyle(.plain)
 
@@ -183,12 +180,15 @@ struct UpdatesSettingsView: View {
             systemImage: "clock",
             footer: "The \"Check for Updates\" button always queries GitHub regardless of this setting."
         ) {
-            Picker("Check automatically", selection: interval) {
-                ForEach(AppUpdateCheckInterval.allCases) { option in
-                    Text(option.displayName).tag(option)
-                }
+            HStack {
+                Text("Check automatically")
+                    .font(Typography.subheadline)
+                Spacer()
+                TerminalPicker(
+                    selection: interval,
+                    options: AppUpdateCheckInterval.allCases.map { ($0, $0.displayName) }
+                )
             }
-            .pickerStyle(.menu)
         }
     }
 }

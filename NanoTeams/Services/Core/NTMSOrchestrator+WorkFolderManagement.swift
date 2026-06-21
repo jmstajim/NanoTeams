@@ -614,20 +614,17 @@ extension NTMSOrchestrator {
 
     /// Switches to a different team and syncs roleStatuses in the current run.
     func switchTeam(to teamID: NTMSID) async {
-        // The Autovisor manager is permanently bound to its own team — re-teaming
-        // it would drop its steps/role statuses and break the manager. The UI
-        // (TeamActivityFeedView.teamHeaderMenu) renders a static label there, so
-        // this guard is defense-in-depth. Careful: both ids are Int?, and a bare
-        // `==` is true when BOTH are nil (no active task + no manager pinned),
-        // which would wrongly block the switch — unwrap before comparing.
-        if let id = activeTaskID, id == autovisorTaskID { return }
-        guard let currentSnapshot = snapshot else { return }
-        // Symmetric protection: a normal task must never be re-teamed ONTO the
-        // Autovisor team either — it would acquire the manager's management tools
-        // and its scratchpad writes would overwrite the real manager's memory
-        // (isAutovisorStep keys on the team's templateID, not the pinned task id).
-        guard let team = currentSnapshot.workFolder.teams.first(where: { $0.id == teamID }),
-              !team.isManagedSingleton else { return }
+        // Both mis-teaming guards (re-teaming the Autovisor manager itself, and
+        // re-teaming a normal task ONTO the Autovisor team) are delegated to the pure
+        // `TeamSwitchPlanner.canSwitchTeam`, which unwraps `activeTaskID` before the id
+        // compare so two nil ids don't wrongly block the switch. The UI
+        // (TeamActivityFeedView.teamHeaderMenu) renders a static label for the manager,
+        // so this is defense-in-depth.
+        guard let currentSnapshot = snapshot,
+              let team = currentSnapshot.workFolder.teams.first(where: { $0.id == teamID }),
+              TeamSwitchPlanner.canSwitchTeam(
+                  activeTaskID: activeTaskID, autovisorTaskID: autovisorTaskID, target: team)
+        else { return }
 
         // Writes only workfolder.json (activeTeamID diff).
         await mutateWorkFolder { proj in
@@ -652,7 +649,7 @@ extension NTMSOrchestrator {
             let roleIDs = Set(team.roles.map(\.id))
 
             // Remove steps belonging to roles not in the new team
-            run.steps = run.steps.filter { roleIDs.contains($0.effectiveRoleID) }
+            run.steps = TeamSwitchPlanner.filteredSteps(run.steps, forTeamRoleIDs: roleIDs)
 
             run.roleStatuses = RunService.initialRoleStatuses(for: team.roles)
             run.teamID = teamID

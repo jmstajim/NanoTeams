@@ -10,17 +10,21 @@ struct RoleStatusPill: View {
     var body: some View {
         HStack(spacing: Spacing.xs) {
             if let def = roleDefinition, !def.isSupervisor {
-                Text(def.completionTypeDisplayLabel)
-                    .font(.system(size: 10, weight: .medium))
+                Text(def.completionTypeDisplayLabel.uppercased())
+                    .font(Typography.term2xs.weight(.medium))
+                    .tracking(Typography.labelTracking)
                     .foregroundStyle(def.completionTypeDisplayColor)
             }
 
-            Circle()
-                .fill(statusColor)
-                .frame(width: 5, height: 5)
+            StatusGlyph(
+                glyph: TerminalGlyph.bullet,
+                color: statusColor,
+                font: Typography.term2xs
+            )
 
-            Text(statusName)
-                .font(.system(size: 10, weight: .medium))
+            Text(statusName.uppercased())
+                .font(Typography.term2xs.weight(.medium))
+                .tracking(Typography.labelTracking)
                 .foregroundStyle(statusColor)
         }
     }

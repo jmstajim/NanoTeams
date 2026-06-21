@@ -20,7 +20,7 @@ struct NotificationItemView: View {
             VStack(alignment: .leading, spacing: ActivityCardTokens.contentSpacing) {
                 HStack(spacing: Spacing.s) {
                     Text(type.title(for: role, isChatMode: isChatMode))
-                        .font(.caption.weight(.semibold))
+                        .font(Typography.termXs.weight(.semibold))
                         .foregroundStyle(resolvedColor)
                     Spacer()
                 }
@@ -28,7 +28,7 @@ struct NotificationItemView: View {
                 notificationContent
                     .padding(ActivityCardTokens.cardPadding)
                     .background(
-                        RoundedRectangle(cornerRadius: ActivityCardTokens.cornerRadius, style: .continuous)
+                        RoundedRectangle.squircle(ActivityCardTokens.cornerRadius)
                             .fill(resolvedColor.opacity(ActivityCardTokens.backgroundOpacity))
                     )
             }

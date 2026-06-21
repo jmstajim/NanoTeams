@@ -168,30 +168,22 @@ struct RoleEditorSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
+            // Header (with Cancel/Save actions)
             headerBar
 
-            Divider()
+            TerminalDivider()
 
             // Section tabs
-            Picker("Section", selection: $editorState.activeSection) {
-                ForEach(availableSections) { section in
-                    Text(section.label).tag(section)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
+            TerminalSegmentedPicker(
+                selection: $editorState.activeSection,
+                options: availableSections.map { (value: $0, label: $0.label) }
+            )
             .padding(.horizontal, Spacing.standard)
             .padding(.vertical, Spacing.s)
 
             // Section content
             sectionContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            Divider()
-
-            // Footer
-            footerBar
         }
         .frame(minWidth: 720, idealWidth: 780, minHeight: 720, idealHeight: 800)
     }
@@ -199,12 +191,29 @@ struct RoleEditorSheet: View {
     // MARK: - Header
 
     private var headerBar: some View {
-        HStack {
-            Text(mode.isCreate ? "New Role" : "Edit Role")
-                .font(.title3)
-                .fontWeight(.semibold)
+        HStack(spacing: Spacing.s) {
+            MonoLabel(text: mode.isCreate ? "New Role" : "Edit Role", marker: true)
 
             Spacer()
+
+            if !isValid {
+                Text(isEditingSupervisor ? "Name is required" : "Name and prompt are required")
+                    .font(Typography.caption)
+                    .foregroundStyle(Colors.textSecondary)
+            }
+
+            Button("Cancel") {
+                dismiss()
+            }
+            .keyboardShortcut(.cancelAction)
+            .buttonStyle(.terminalSecondary)
+
+            Button("Save") {
+                if saveRole() { dismiss() }
+            }
+            .keyboardShortcut(.defaultAction)
+            .buttonStyle(.terminalPrimary)
+            .disabled(!isValid)
         }
         .padding(.horizontal, Spacing.standard)
         .padding(.vertical, Spacing.m)
@@ -251,34 +260,6 @@ struct RoleEditorSheet: View {
                 allTeams: store.workFolder?.teams ?? []
             )
         }
-    }
-
-    // MARK: - Footer
-
-    private var footerBar: some View {
-        HStack {
-            Button("Cancel") {
-                dismiss()
-            }
-            .keyboardShortcut(.cancelAction)
-
-            Spacer()
-
-            if !isValid {
-                Text(isEditingSupervisor ? "Name is required" : "Name and prompt are required")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Button("Save") {
-                if saveRole() { dismiss() }
-            }
-            .keyboardShortcut(.defaultAction)
-            .buttonStyle(.borderedProminent)
-            .disabled(!isValid)
-        }
-        .padding(.horizontal, Spacing.standard)
-        .padding(.vertical, Spacing.m)
     }
 
     // MARK: - Validation
@@ -329,9 +310,12 @@ struct RoleEditorSheet: View {
 }
 
 #Preview {
+    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     RoleEditorSheet(
         team: .constant(.default),
         mode: .create,
         onSave: {}
     )
+    .environment(store)
+    .environment(store.configuration)
 }

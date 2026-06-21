@@ -362,7 +362,7 @@ final class ErrorRecoveryServiceTests: XCTestCase {
     func testRoleErrorStrategy_Icon() {
         XCTAssertEqual(RoleErrorStrategy.retry.icon, "arrow.clockwise")
         XCTAssertEqual(RoleErrorStrategy.askSupervisor.icon, "person.fill.questionmark")
-        XCTAssertEqual(RoleErrorStrategy.skip.icon, "forward.fill")
+        XCTAssertEqual(RoleErrorStrategy.skip.icon, "forward")
         XCTAssertEqual(RoleErrorStrategy.failTask.icon, "xmark.octagon")
     }
 

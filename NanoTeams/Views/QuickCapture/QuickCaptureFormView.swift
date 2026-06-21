@@ -19,7 +19,7 @@ struct SupervisorAnswerPayload {
 // MARK: - Quick Capture Mode
 
 enum QuickCaptureMode {
-    /// Floating overlay panel (forced dark, compact)
+    /// Floating overlay panel (compact)
     case overlay
     /// Supervisor answer input — overlay shows LLM question + answer field
     case supervisorAnswer(payload: SupervisorAnswerPayload)
@@ -60,6 +60,16 @@ struct QuickCaptureFormView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isShowingFilePicker = false
 
+    /// Active theme observed directly — the panel hosts its own SwiftUI tree
+    /// inside an NSPanel, so the root `.preferredColorScheme(...)` on the main
+    /// `WindowGroup` doesn't reach this view. Reading `@AppStorage` here makes
+    /// the form recompute when the user changes theme in Settings.
+    @AppStorage(UserDefaultsKeys.activeTheme) private var activeThemeRaw: String = Theme.defaultTheme.rawValue
+
+    private var activeTheme: Theme {
+        Theme(rawValue: activeThemeRaw) ?? Theme.defaultTheme
+    }
+
     /// Measured panel content height — drives the dynamic line-limit upper bound so
     /// the input field can grow up to roughly half of whatever the user has resized
     /// the panel to. Starts at 0 (sentinel for "not yet measured"); falls back to the
@@ -68,7 +78,7 @@ struct QuickCaptureFormView: View {
 
     /// Fixed vertical slot reserved for the streaming preview line in `.taskWorking`.
     /// Scales with Dynamic Type at the `.caption` metric so the preview Text (also
-    /// `.font(.caption)`) never clips and the symmetric loader-centering reserve
+    /// `.font(Typography.caption)`) never clips and the symmetric loader-centering reserve
     /// grows in lockstep. Must be a stored property — `@ScaledMetric` only works
     /// as a property wrapper.
     @ScaledMetric(relativeTo: .caption) private var previewLineHeight: CGFloat = 18
@@ -151,8 +161,27 @@ struct QuickCaptureFormView: View {
         // the VStack now accepts the proposed fill height.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(Spacing.m)
-        .background(Colors.surfacePrimary)
-        .preferredColorScheme(.dark)
+        // Rounded surface fill (NOT a square `.background(Color)`): in the
+        // QuickCapture NSPanel the window background is clear and this rounded
+        // fill IS what paints the 4pt DS corners. A plain full-frame opaque
+        // `Color` background would paint the corner regions square and occlude
+        // the panel's intended rounding. `.fill` is non-clipping (#50-safe — it
+        // never masks the hosted composer NSScrollView). Harmless in `.sheet`
+        // mode (the 4pt curve sits inside the system sheet chrome).
+        .background(
+            RoundedRectangle.squircle(CornerRadius.large)
+                .fill(Colors.surfacePrimary)
+        )
+        .preferredColorScheme(activeTheme.preferredColorScheme)
+        .fontDesign(.monospaced)
+        // Recreate the form (incl. the AppKit-resident composer NSTextView) when
+        // the user switches themes. The QuickCapture panel hosts a standalone
+        // NSHostingView OUTSIDE the app root's `.id(activeTheme)` scene rebuild, so
+        // without this its AppKit text would keep the prior theme's colors until
+        // the panel's next mode change. `activeThemeRaw` is already observed above
+        // (drives `.preferredColorScheme`); the draft survives because it lives in
+        // the external `formState`, not in this view's `@State`.
+        .id(activeThemeRaw)
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.height
         } action: { newHeight in
@@ -287,15 +316,15 @@ struct QuickCaptureFormView: View {
     private var overlayHeader: some View {
         HStack(spacing: 3) {
             Text("New")
-                .font(.headline.weight(.medium))
-                .foregroundStyle(.secondary)
+                .font(Typography.termMd)
+                .foregroundStyle(Colors.textSecondary)
                 .lineLimit(1)
 
             overlayTeamMenu
 
             Text(teamModeLabel)
-                .font(.headline.weight(.medium))
-                .foregroundStyle(.secondary)
+                .font(Typography.termMd)
+                .foregroundStyle(Colors.textSecondary)
                 .lineLimit(1)
         }
     }
@@ -332,17 +361,23 @@ struct QuickCaptureFormView: View {
                         }
                         Text(team.name)
                         Text("(\(team.memberCount) members)")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Colors.textSecondary)
                     }
                 }
             }
         } label: {
+            // Match the DS `QuickCapture.jsx` team trigger: bold mono team
+            // name in `text` (`Colors.textPrimary`) with the lavender chevron
+            // as Menu's native indicator (so we don't double up). The system
+            // borderless-button indicator already sits to the right of the
+            // label, which is the spec's `▾` glyph position.
             Text(selectedTeam?.name ?? "Team")
-                .font(.headline.weight(.semibold))
+                .font(Typography.termMd)
                 .lineLimit(1)
-                .foregroundStyle(Colors.accent)
+                .foregroundStyle(Colors.textPrimary)
         }
         .menuStyle(.borderlessButton)
+        .tint(Colors.accent)
     }
 
     /// Selects the "Generated Team" template. On submit, the task runs this special
@@ -375,9 +410,9 @@ struct QuickCaptureFormView: View {
 
     private func workingHeader(roleName: String) -> some View {
         HStack(spacing: Spacing.s) {
-            Text(roleName.isEmpty ? "Thinking..." : "\(roleName) is thinking...")
-                .font(.headline.weight(.medium))
-                .foregroundStyle(.secondary)
+            Text(roleName.isEmpty ? "Thinking…" : "\(roleName) is thinking…")
+                .font(Typography.termMd)
+                .foregroundStyle(Colors.textSecondary)
                 .lineLimit(1)
         }
     }
@@ -453,19 +488,19 @@ struct QuickCaptureFormView: View {
     private func queuedBadge(taskID: Int) -> some View {
         HStack(spacing: Spacing.xs) {
             Image(systemName: "tray.and.arrow.up")
-                .font(.caption2)
+                .font(Typography.term2xs)
                 .foregroundStyle(Colors.accent)
             Text("Queued — will send when the team asks for input")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(Typography.caption)
+                .foregroundStyle(Colors.textSecondary)
                 .lineLimit(1)
             Spacer()
             Button {
                 QuickCaptureController.shared.discardQueuedChatMessage(taskID: taskID)
             } label: {
                 Image(systemName: "xmark")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.tertiary)
+                    .font(Typography.term2xs.weight(.semibold))
+                    .foregroundStyle(Colors.textTertiary)
             }
             .buttonStyle(.plain)
             .help("Discard the queued message")
@@ -485,8 +520,8 @@ struct QuickCaptureFormView: View {
     private var streamingPreviewLine: some View {
         TimelineView(.periodic(from: .now, by: reduceMotion ? 1.0 : 0.15)) { _ in
             Text(currentStreamingLine ?? "")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(Typography.caption)
+                .foregroundStyle(Colors.textSecondary)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(maxWidth: .infinity, alignment: .center)
@@ -589,8 +624,8 @@ struct QuickCaptureFormView: View {
         // whatever the VStack hands it.
         ScrollView {
             Text(text)
-                .font(.body)
-                .foregroundStyle(.primary)
+                .font(Typography.termBase)
+                .foregroundStyle(Colors.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -617,7 +652,7 @@ struct QuickCaptureFormView: View {
                 get: { controller.keepOpenInChat },
                 set: { controller.keepOpenInChat = $0 }
             ))
-            .toggleStyle(.checkbox)
+            .toggleStyle(.terminal)
         }
     }
 
@@ -664,178 +699,5 @@ extension QuickCaptureFormView {
         resolveStreamingLine(content: content, thinking: thinking)
     }
 }
-private enum QuickCaptureFormPreviewData {
-    static let team = Team.default
-    static let taskID = 42
 
-    static var workFolder: WorkFolderProjection {
-        WorkFolderProjection(
-            state: WorkFolderState(name: "Preview", activeTeamID: team.id),
-            settings: .defaults,
-            teams: [team]
-        )
-    }
-
-    static var roleDefinition: TeamRoleDefinition? {
-        team.roles.first { $0.systemRoleID == Role.techLead.baseID }
-    }
-
-    static var answerPayload: SupervisorAnswerPayload {
-        SupervisorAnswerPayload(
-            stepID: roleDefinition?.id ?? Role.techLead.baseID,
-            taskID: taskID,
-            role: .techLead,
-            roleDefinition: roleDefinition,
-            question: "Should we keep the first version focused on the menu bar capture flow, or include the full settings migration in the same task?",
-            messageContent: "I found two viable implementation paths and need a product call before continuing.",
-            thinking: "The smaller scope ships sooner, but settings migration reduces future churn.",
-            isChatMode: false
-        )
-    }
-
-    static func runningTask(isChatMode: Bool) -> NTMSTask {
-        let step = StepExecution(
-            id: roleDefinition?.id ?? Role.techLead.baseID,
-            role: .techLead,
-            title: "Implementation Plan",
-            expectedArtifacts: ["Implementation Plan"],
-            status: .running
-        )
-        let run = Run(
-            id: 0,
-            steps: [step],
-            roleStatuses: [step.id: .working],
-            teamID: team.id
-        )
-        return NTMSTask(
-            id: taskID,
-            title: "Preview Task",
-            supervisorTask: "Plan the quick capture improvements.",
-            status: .running,
-            runs: [run],
-            preferredTeamID: team.id,
-            isChatMode: isChatMode
-        )
-    }
-
-    @MainActor
-    static func configure(_ store: NTMSOrchestrator, activeTask: NTMSTask? = nil) {
-        store.snapshot = WorkFolderContext(
-            projection: workFolder,
-            tasksIndex: TasksIndex(),
-            toolDefinitions: [],
-            activeTaskID: activeTask?.id,
-            activeTask: activeTask
-        )
-        store.activeTask = activeTask
-        store._setActiveTaskID(activeTask?.id)
-    }
-}
-
-#Preview("Quick Capture - New Task") {
-    @Previewable @State var formState = QuickCaptureFormState()
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
-    @Previewable @State var config = StoreConfiguration()
-    @Previewable @State var streaming = StreamingPreviewManager()
-    @Previewable @State var dictation = DictationService()
-
-    let _ = QuickCaptureFormPreviewData.configure(store)
-    let _ = formState.supervisorTask = "Draft a launch checklist for the new macOS menu bar workflow."
-
-    QuickCaptureFormView(
-        mode: .overlay,
-        formState: formState,
-        onSubmit: {},
-        onCancel: {}
-    )
-    .environment(store)
-    .environment(config)
-    .environment(streaming)
-    .environment(dictation)
-    .frame(width: 300, height: 260)
-}
-
-#Preview("Quick Capture - Supervisor Answer") {
-    @Previewable @State var formState = QuickCaptureFormState()
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
-    @Previewable @State var config = StoreConfiguration()
-    @Previewable @State var streaming = StreamingPreviewManager()
-    @Previewable @State var dictation = DictationService()
-
-    let _ = QuickCaptureFormPreviewData.configure(store)
-    let _ = formState.supervisorTask = "Keep v1 focused on quick capture. Move settings migration into a follow-up task."
-
-    QuickCaptureFormView(
-        mode: .supervisorAnswer(payload: QuickCaptureFormPreviewData.answerPayload),
-        formState: formState,
-        onSubmit: {},
-        onCancel: {}
-    )
-    .environment(store)
-    .environment(config)
-    .environment(streaming)
-    .environment(dictation)
-    .frame(width: 300, height: 360)
-}
-
-#Preview("Quick Capture - Working") {
-    @Previewable @State var formState = QuickCaptureFormState()
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
-    @Previewable @State var config = StoreConfiguration()
-    @Previewable @State var streaming = StreamingPreviewManager()
-    @Previewable @State var dictation = DictationService()
-
-    let _ = QuickCaptureFormPreviewData.configure(
-        store,
-        activeTask: QuickCaptureFormPreviewData.runningTask(isChatMode: false)
-    )
-
-    QuickCaptureFormView(
-        mode: .taskWorking(roleName: "Tech Lead", isChatMode: false),
-        formState: formState,
-        onSubmit: {},
-        onCancel: {}
-    )
-    .environment(store)
-    .environment(config)
-    .environment(streaming)
-    .environment(dictation)
-    .frame(width: 300, height: 260)
-}
-
-#Preview("Quick Capture - Chat Working") {
-    @Previewable @State var formState = QuickCaptureFormState()
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
-    @Previewable @State var config = StoreConfiguration()
-    @Previewable @State var streaming = StreamingPreviewManager()
-    @Previewable @State var dictation = DictationService()
-
-    let _ = QuickCaptureFormPreviewData.configure(
-        store,
-        activeTask: QuickCaptureFormPreviewData.runningTask(isChatMode: true)
-    )
-    let _ = {
-        formState.supervisorTask = "Queue this note for the next supervisor check-in."
-        if let queued = QuickCaptureFormState.QueuedChatMessage(
-            text: "Ask whether the launch checklist should include QA sign-off.",
-            attachments: [],
-            clippedTexts: []
-        ) {
-            formState.appendQueuedMessage(queued, for: QuickCaptureFormPreviewData.taskID)
-        }
-    }()
-
-    QuickCaptureFormView(
-        mode: .taskWorking(roleName: "Tech Lead", isChatMode: true),
-        formState: formState,
-        onSubmit: {},
-        onCancel: {}
-    )
-    .environment(store)
-    .environment(config)
-    .environment(streaming)
-    .environment(dictation)
-    .frame(width: 300, height: 360)
-}
 #endif
-

@@ -8,14 +8,14 @@ final class TeamGenerationServiceTests: XCTestCase {
         // Process-global counter — every test starts from zero so counter
         // assertions are order-independent. Pinned by
         // `testEntryCounter_isZero_acrossTests_viaSetUp`.
-        TeamGenerationService._resetSiblingMergeFireCount()
+        TeamConfigParser._resetSiblingMergeFireCount()
     }
 
     // MARK: - extractJSONObject
 
     func testExtractJSON_rawObject() {
         let input = #"{"name": "Team", "roles": []}"#
-        XCTAssertEqual(TeamGenerationService.extractJSONObject(from: input), input)
+        XCTAssertEqual(TeamConfigParser.extractJSONObject(from: input), input)
     }
 
     func testExtractJSON_codeFencedJSON() {
@@ -26,7 +26,7 @@ final class TeamGenerationServiceTests: XCTestCase {
             ```
             That's it.
             """
-        let result = TeamGenerationService.extractJSONObject(from: input)
+        let result = TeamConfigParser.extractJSONObject(from: input)
         XCTAssertEqual(result?.trimmingCharacters(in: .whitespacesAndNewlines), #"{"name": "Team"}"#)
     }
 
@@ -36,28 +36,28 @@ final class TeamGenerationServiceTests: XCTestCase {
             {"name": "X"}
             ```
             """
-        let result = TeamGenerationService.extractJSONObject(from: input)
+        let result = TeamConfigParser.extractJSONObject(from: input)
         XCTAssertEqual(result?.trimmingCharacters(in: .whitespacesAndNewlines), #"{"name": "X"}"#)
     }
 
     func testExtractJSON_proseWrapped() {
         let input = "I'll build a team. Here is the config: {\"name\":\"Alpha\",\"roles\":[]} — ready to use."
-        let result = TeamGenerationService.extractJSONObject(from: input)
+        let result = TeamConfigParser.extractJSONObject(from: input)
         XCTAssertEqual(result, #"{"name":"Alpha","roles":[]}"#)
     }
 
     func testExtractJSON_nestedObjects() {
         let input = #"{"name": "Team", "roles": [{"name": "A"}]}"#
-        XCTAssertEqual(TeamGenerationService.extractJSONObject(from: input), input)
+        XCTAssertEqual(TeamConfigParser.extractJSONObject(from: input), input)
     }
 
     func testExtractJSON_stringContainingBraces() {
         let input = #"{"prompt": "Handle { and } chars", "name": "X"}"#
-        XCTAssertEqual(TeamGenerationService.extractJSONObject(from: input), input)
+        XCTAssertEqual(TeamConfigParser.extractJSONObject(from: input), input)
     }
 
     func testExtractJSON_noJSON_returnsNil() {
-        XCTAssertNil(TeamGenerationService.extractJSONObject(from: "No braces here at all."))
+        XCTAssertNil(TeamConfigParser.extractJSONObject(from: "No braces here at all."))
     }
 
     func testDecodeTeamConfig_outerWithMixedEscapingInTools_extractedViaTeamConfigScan() throws {
@@ -68,7 +68,7 @@ final class TeamGenerationServiceTests: XCTestCase {
         let arguments = "{\"name\":\"create_team\",\"arguments\":{\"team_config\":\"{\\\"name\\\":\\\"Mixed Escape Team\\\",\\\"description\\\":\\\"d\\\",\\\"roles\\\":[{\\\"name\\\":\\\"Eng\\\",\\\"prompt\\\":\\\"p\\\",\\\"produces_artifacts\\\":[\\\"X\\\"],\\\"requires_artifacts\\\":[\\\"Supervisor Task\\\"],\\\"tools\\\":[\"read_file\",\"write_file\"]}],\\\"artifacts\\\":[{\\\"name\\\":\\\"X\\\",\\\"description\\\":\\\"d\\\"}],\\\"supervisor_requires\\\":[\\\"X\\\"]}\"}}"
         // Sanity: outer strict parse fails because of the bare `"read_file"` quotes.
         XCTAssertNil(JSONUtilities.parseJSONDictionary(arguments))
-        let result = try TeamGenerationService.decodeTeamConfig(from: arguments)
+        let result = try TeamConfigParser.decodeTeamConfig(from: arguments)
         XCTAssertEqual(result.team.name, "Mixed Escape Team")
         let eng = result.team.roles.first { $0.name == "Eng" }
         XCTAssertEqual(eng?.toolIDs, ["read_file", "write_file"])
@@ -77,7 +77,7 @@ final class TeamGenerationServiceTests: XCTestCase {
     func testRepairUnescapedQuotes_innerQuotesEscaped_validJSONUntouched() {
         // Valid JSON should pass through unchanged (quote followed by structural char).
         let valid = "{\"key\":\"value\",\"k2\":[\"a\",\"b\"]}"
-        XCTAssertEqual(TeamGenerationService.repairUnescapedInteriorQuotes(valid), valid)
+        XCTAssertEqual(TeamConfigParser.repairUnescapedInteriorQuotes(valid), valid)
     }
 
     func testRepairUnescapedQuotes_interiorQuotesGetEscaped() {
@@ -88,7 +88,7 @@ final class TeamGenerationServiceTests: XCTestCase {
         let postDecoded = "{\"prompt\":\"Produce a \"Decision Memo\" artifact.\"}"
         // Re-parse strict will fail; repair, then parse.
         XCTAssertNil(JSONUtilities.parseJSONDictionary(postDecoded))
-        let repaired = TeamGenerationService.repairUnescapedInteriorQuotes(postDecoded)
+        let repaired = TeamConfigParser.repairUnescapedInteriorQuotes(postDecoded)
         let parsed = JSONUtilities.parseJSONDictionary(repaired)
         XCTAssertEqual(parsed?["prompt"] as? String, "Produce a \"Decision Memo\" artifact.")
         _ = bad // Suppress unused-warning
@@ -104,7 +104,7 @@ final class TeamGenerationServiceTests: XCTestCase {
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
         let outer = "{\"team_config\":\"\(escaped)\"}"
-        let result = try TeamGenerationService.decodeTeamConfig(from: outer)
+        let result = try TeamConfigParser.decodeTeamConfig(from: outer)
         XCTAssertEqual(result.team.name, "Quote Repair Team")
         let eng = result.team.roles.first { $0.name == "Eng" }
         XCTAssertEqual(eng?.prompt, "Produce a \"Decision Memo\" artifact.")
@@ -120,14 +120,14 @@ final class TeamGenerationServiceTests: XCTestCase {
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
         let json = "{\"team_config\":\"\(escaped)\"}"
-        let result = try TeamGenerationService.decodeTeamConfig(from: json)
+        let result = try TeamConfigParser.decodeTeamConfig(from: json)
         XCTAssertEqual(result.team.name, "Trailing Junk Team")
     }
 
     func testExtractJSON_shallowTruncation_salvagedWithSyntheticClose() {
         // Shallow unbalanced object (depth=1) is now salvaged by appending
         // a synthetic `}` — handles LLM stream truncation.
-        let salvaged = TeamGenerationService.extractJSONObject(from: "{\"name\": \"X\"")
+        let salvaged = TeamConfigParser.extractJSONObject(from: "{\"name\": \"X\"")
         XCTAssertEqual(salvaged, "{\"name\": \"X\"}")
     }
 
@@ -138,7 +138,7 @@ final class TeamGenerationServiceTests: XCTestCase {
             {"name": "Upper"}
             ```
             """
-        let result = TeamGenerationService.extractJSONObject(from: input)
+        let result = TeamConfigParser.extractJSONObject(from: input)
         XCTAssertEqual(result?.trimmingCharacters(in: .whitespacesAndNewlines), #"{"name": "Upper"}"#)
     }
 
@@ -154,7 +154,7 @@ final class TeamGenerationServiceTests: XCTestCase {
             {"name": "Second"}
             ```
             """
-        let result = TeamGenerationService.extractJSONObject(from: input)
+        let result = TeamConfigParser.extractJSONObject(from: input)
         XCTAssertEqual(result?.trimmingCharacters(in: .whitespacesAndNewlines), #"{"name": "First"}"#)
     }
 
@@ -167,22 +167,22 @@ final class TeamGenerationServiceTests: XCTestCase {
             {"name": "Salvaged"}
             (no closing fence)
             """
-        let result = TeamGenerationService.extractJSONObject(from: input)
+        let result = TeamConfigParser.extractJSONObject(from: input)
         XCTAssertEqual(result, #"{"name": "Salvaged"}"#)
     }
 
     func testExtractJSON_escapedQuoteInString_doesNotConfuseScanner() {
         // The scanner must respect `\"` inside a string and not see it as a string boundary.
         let input = #"{"name": "He said \"hi\"", "x": 1}"#
-        XCTAssertEqual(TeamGenerationService.extractJSONObject(from: input), input)
+        XCTAssertEqual(TeamConfigParser.extractJSONObject(from: input), input)
     }
 
     func testExtractJSON_emptyString_returnsNil() {
-        XCTAssertNil(TeamGenerationService.extractJSONObject(from: ""))
+        XCTAssertNil(TeamConfigParser.extractJSONObject(from: ""))
     }
 
     func testExtractJSON_onlyWhitespace_returnsNil() {
-        XCTAssertNil(TeamGenerationService.extractJSONObject(from: "   \n\t  "))
+        XCTAssertNil(TeamConfigParser.extractJSONObject(from: "   \n\t  "))
     }
 
     // MARK: - decodeTeamConfig: shape precedence
@@ -204,7 +204,7 @@ final class TeamGenerationServiceTests: XCTestCase {
             }
         }
         """
-        let result = try TeamGenerationService.decodeTeamConfig(from: json)
+        let result = try TeamConfigParser.decodeTeamConfig(from: json)
         XCTAssertEqual(result.team.name, "Real Team",
                        "Nested team_config.name must take precedence over outer name")
     }
@@ -224,7 +224,7 @@ final class TeamGenerationServiceTests: XCTestCase {
         }
         """
         // Decoder reads outer fields, ignores `team_config` since it's not a dict.
-        let result = try TeamGenerationService.decodeTeamConfig(from: json)
+        let result = try TeamConfigParser.decodeTeamConfig(from: json)
         XCTAssertEqual(result.team.name, "Flat")
     }
 
@@ -262,7 +262,7 @@ final class TeamGenerationServiceTests: XCTestCase {
             }
         }
         """
-        let result = try TeamGenerationService.decodeTeamConfig(from: json)
+        let result = try TeamConfigParser.decodeTeamConfig(from: json)
         XCTAssertEqual(result.team.name, "Команда разработки калькулятора")
         let supReq = Set(result.team.supervisorRequiredArtifacts)
         // Explicit count assertion: without the merge fix, only orphan-produced
@@ -279,7 +279,7 @@ final class TeamGenerationServiceTests: XCTestCase {
         // Counter signal: the merge actually fired during decode. Together with
         // the count assertion above, this distinguishes "merge fix worked" from
         // "auto-promote alone was enough" — the latter would leave the counter at 0.
-        XCTAssertEqual(TeamGenerationService.siblingMergeFireCount, 1,
+        XCTAssertEqual(TeamConfigParser.siblingMergeFireCount, 1,
             "Decode must trigger exactly one merge fire on the misplaced supervisor_requires sibling")
     }
 
@@ -299,7 +299,7 @@ final class TeamGenerationServiceTests: XCTestCase {
             "supervisor_requires": ["DECOY"]
         }
         """
-        let result = try TeamGenerationService.decodeTeamConfig(from: json)
+        let result = try TeamConfigParser.decodeTeamConfig(from: json)
         let supReq = Set(result.team.supervisorRequiredArtifacts)
         XCTAssertEqual(supReq, ["X"], "Inside-team_config supervisor_requires must win over wrapper-level sibling")
         XCTAssertFalse(supReq.contains("DECOY"))
@@ -403,7 +403,7 @@ final class TeamGenerationServiceTests: XCTestCase {
         ]
         for c in cases {
             try XCTContext.runActivity(named: "misplaced \(c.key)") { _ in
-                let result = try TeamGenerationService.decodeTeamConfig(from: c.json)
+                let result = try TeamConfigParser.decodeTeamConfig(from: c.json)
                 try c.assertion(result)
             }
         }
@@ -423,7 +423,7 @@ final class TeamGenerationServiceTests: XCTestCase {
             "supervisor_requires": ["X"]
         }
         """
-        let result = try TeamGenerationService.decodeTeamConfig(from: json)
+        let result = try TeamConfigParser.decodeTeamConfig(from: json)
         // `team.artifacts` always carries the auto-injected "Supervisor Task" too —
         // assert containment for "X" rather than equality.
         let names = Set(result.team.artifacts.map(\.name))
@@ -439,11 +439,11 @@ final class TeamGenerationServiceTests: XCTestCase {
     func testMergeMisplacedSiblings_unknownField_isNotMerged() {
         let inner: [String: Any] = ["name": "T"]
         let wrapper: [String: Any] = ["foo": 123, "bar": ["junk"]]
-        let merged = TeamGenerationService.mergeMisplacedSiblings(into: inner, from: wrapper)
+        let merged = TeamConfigParser.mergeMisplacedSiblings(into: inner, from: wrapper)
         XCTAssertEqual(merged.count, 1, "Only inner keys should remain — junk siblings ignored")
         XCTAssertNil(merged["foo"])
         XCTAssertNil(merged["bar"])
-        XCTAssertEqual(TeamGenerationService.siblingMergeFireCount, 0,
+        XCTAssertEqual(TeamConfigParser.siblingMergeFireCount, 0,
                        "No canonical key was merged → counter must NOT bump")
     }
 
@@ -452,8 +452,8 @@ final class TeamGenerationServiceTests: XCTestCase {
     func testMergeMisplacedSiblings_realMerge_bumpsCounter() {
         let inner: [String: Any] = ["name": "T"]
         let wrapper: [String: Any] = ["supervisor_requires": ["X", "Y"]]
-        _ = TeamGenerationService.mergeMisplacedSiblings(into: inner, from: wrapper)
-        XCTAssertEqual(TeamGenerationService.siblingMergeFireCount, 1)
+        _ = TeamConfigParser.mergeMisplacedSiblings(into: inner, from: wrapper)
+        XCTAssertEqual(TeamConfigParser.siblingMergeFireCount, 1)
     }
 
     /// Counter-pollution guard. `_siblingMergeFireCount` is process-global —
@@ -466,7 +466,7 @@ final class TeamGenerationServiceTests: XCTestCase {
     /// > "testDecodeTeamConfig…") to actually run AFTER the polluters.
     func testEntryCounter_isZero_acrossTests_viaSetUp() {
         XCTAssertEqual(
-            TeamGenerationService.siblingMergeFireCount, 0,
+            TeamConfigParser.siblingMergeFireCount, 0,
             "setUp must reset _siblingMergeFireCount; without it, prior tests' counter pollution leaks here and any new counter assertion becomes order-dependent."
         )
     }
@@ -503,8 +503,8 @@ final class TeamGenerationServiceTests: XCTestCase {
             "Encoded GeneratedTeamConfig must round-trip as a JSON dictionary")
         XCTAssertEqual(
             Set(dict.keys),
-            TeamGenerationService.teamConfigSiblingKeys,
-            "Drift between GeneratedTeamConfig.CodingKeys and TeamGenerationService.teamConfigSiblingKeys would silently recreate the original misplaced-sibling bug for the drifted field. Update teamConfigSiblingKeys to match."
+            TeamConfigParser.teamConfigSiblingKeys,
+            "Drift between GeneratedTeamConfig.CodingKeys and TeamConfigParser.teamConfigSiblingKeys would silently recreate the original misplaced-sibling bug for the drifted field. Update teamConfigSiblingKeys to match."
         )
     }
 
@@ -515,13 +515,13 @@ final class TeamGenerationServiceTests: XCTestCase {
     func testMergeMisplacedSiblings_secondPass_isNoOp() {
         let inner: [String: Any] = ["name": "T", "description": "d"]
         let wrapper: [String: Any] = ["supervisor_requires": ["X"]]
-        let firstPass = TeamGenerationService.mergeMisplacedSiblings(into: inner, from: wrapper)
-        XCTAssertEqual(TeamGenerationService.siblingMergeFireCount, 1)
+        let firstPass = TeamConfigParser.mergeMisplacedSiblings(into: inner, from: wrapper)
+        XCTAssertEqual(TeamConfigParser.siblingMergeFireCount, 1)
         // Second pass: feed the merged result back as `inner`, same wrapper.
         // Every canonical key the wrapper carries is now already present inside
         // → no bump, no change.
-        let secondPass = TeamGenerationService.mergeMisplacedSiblings(into: firstPass, from: wrapper)
-        XCTAssertEqual(TeamGenerationService.siblingMergeFireCount, 1, "Second pass must be a no-op")
+        let secondPass = TeamConfigParser.mergeMisplacedSiblings(into: firstPass, from: wrapper)
+        XCTAssertEqual(TeamConfigParser.siblingMergeFireCount, 1, "Second pass must be a no-op")
         XCTAssertEqual((secondPass["supervisor_requires"] as? [String]).map(Set.init), Set(["X"]))
     }
 
@@ -537,7 +537,7 @@ final class TeamGenerationServiceTests: XCTestCase {
             "supervisor_requires": ["X"]
         }
         """
-        let result = try TeamGenerationService.decodeTeamConfig(from: json)
+        let result = try TeamConfigParser.decodeTeamConfig(from: json)
         XCTAssertFalse(result.warnings.isEmpty)
         XCTAssertTrue(result.warnings.joined().contains("made_up_tool"))
     }
@@ -571,7 +571,7 @@ final class TeamGenerationServiceTests: XCTestCase {
             }
         }
         """
-        let result = try TeamGenerationService.decodeTeamConfig(from: json)
+        let result = try TeamConfigParser.decodeTeamConfig(from: json)
         XCTAssertEqual(result.team.name, "Dev Team")
         XCTAssertEqual(result.team.roles.count, 2) // Supervisor + Eng
     }
@@ -588,7 +588,7 @@ final class TeamGenerationServiceTests: XCTestCase {
             "supervisor_requires": ["Code"]
         }
         """
-        let result = try TeamGenerationService.decodeTeamConfig(from: json)
+        let result = try TeamConfigParser.decodeTeamConfig(from: json)
         XCTAssertEqual(result.team.name, "Flat Team")
     }
 
@@ -596,11 +596,11 @@ final class TeamGenerationServiceTests: XCTestCase {
         let json = """
         {"name": "Empty", "description": "no roles", "roles": [], "artifacts": [], "supervisor_requires": []}
         """
-        XCTAssertThrowsError(try TeamGenerationService.decodeTeamConfig(from: json))
+        XCTAssertThrowsError(try TeamConfigParser.decodeTeamConfig(from: json))
     }
 
     func testDecodeTeamConfig_invalidJSON_throws() {
-        XCTAssertThrowsError(try TeamGenerationService.decodeTeamConfig(from: "not json"))
+        XCTAssertThrowsError(try TeamConfigParser.decodeTeamConfig(from: "not json"))
     }
 
     // MARK: - wrapper-shape unwrapping (regression for vague-short parsing failure)
@@ -620,7 +620,7 @@ final class TeamGenerationServiceTests: XCTestCase {
             }
         }
         """
-        let result = try TeamGenerationService.decodeTeamConfig(from: json)
+        let result = try TeamConfigParser.decodeTeamConfig(from: json)
         XCTAssertEqual(result.team.name, "Wrapped Team")
     }
 
@@ -640,7 +640,7 @@ final class TeamGenerationServiceTests: XCTestCase {
             }
         }
         """
-        let result = try TeamGenerationService.decodeTeamConfig(from: json)
+        let result = try TeamConfigParser.decodeTeamConfig(from: json)
         XCTAssertEqual(result.team.name, "Raw Call Team")
     }
 
@@ -660,7 +660,7 @@ final class TeamGenerationServiceTests: XCTestCase {
             "supervisor_requires": []
         }
         """
-        let result = try TeamGenerationService.decodeTeamConfig(from: json)
+        let result = try TeamConfigParser.decodeTeamConfig(from: json)
         // Supervisor + Dev
         XCTAssertEqual(result.team.roles.count, 2)
         let dev = result.team.roles.first { $0.name == "Dev" }
@@ -675,7 +675,7 @@ final class TeamGenerationServiceTests: XCTestCase {
         // contain `{\n  \"name\": \"T\", ...}` as literal 2-char escape sequences.
         let literalEscapedInner = "{\\n  \\\"name\\\": \\\"Double Escaped Team\\\",\\n  \\\"description\\\": \\\"d\\\",\\n  \\\"roles\\\": [{\\\"name\\\": \\\"Eng\\\", \\\"prompt\\\": \\\"p\\\", \\\"produces_artifacts\\\": [\\\"X\\\"], \\\"requires_artifacts\\\": [\\\"Supervisor Task\\\"], \\\"tools\\\": []}],\\n  \\\"artifacts\\\": [{\\\"name\\\": \\\"X\\\", \\\"description\\\": \\\"d\\\"}],\\n  \\\"supervisor_requires\\\": [\\\"X\\\"]\\n}"
         let json = "{\"team_config\":\"\(literalEscapedInner)\"}"
-        let result = try TeamGenerationService.decodeTeamConfig(from: json)
+        let result = try TeamConfigParser.decodeTeamConfig(from: json)
         XCTAssertEqual(result.team.name, "Double Escaped Team")
     }
 
@@ -684,9 +684,9 @@ final class TeamGenerationServiceTests: XCTestCase {
         // content ending with `…]}"}` at final depth 1. The salvage path should
         // append a synthetic close so the inner team config is decodable.
         let truncated = "{\"name\":\"create_team\",\"arguments\":{\"team_config\":\"{\\\"name\\\":\\\"Salvaged Team\\\",\\\"description\\\":\\\"d\\\",\\\"roles\\\":[{\\\"name\\\":\\\"Eng\\\",\\\"prompt\\\":\\\"p\\\",\\\"produces_artifacts\\\":[\\\"X\\\"],\\\"requires_artifacts\\\":[\\\"Supervisor Task\\\"],\\\"tools\\\":[]}],\\\"artifacts\\\":[{\\\"name\\\":\\\"X\\\",\\\"description\\\":\\\"d\\\"}],\\\"supervisor_requires\\\":[\\\"X\\\"]}\"}"
-        let extracted = TeamGenerationService.extractJSONObject(from: truncated)
+        let extracted = TeamConfigParser.extractJSONObject(from: truncated)
         XCTAssertNotNil(extracted, "Should salvage one missing outer brace")
-        let result = try TeamGenerationService.decodeTeamConfig(from: extracted!)
+        let result = try TeamConfigParser.decodeTeamConfig(from: extracted!)
         XCTAssertEqual(result.team.name, "Salvaged Team")
     }
 
@@ -694,7 +694,7 @@ final class TeamGenerationServiceTests: XCTestCase {
         // 4-deep unbalanced object (beyond maxSalvageDepth=3) should NOT be salvaged
         // — that much missing content signals genuinely garbled input.
         let badlyBroken = "{\"a\":{\"b\":{\"c\":{\"d\":\"x\""
-        XCTAssertNil(TeamGenerationService.extractJSONObject(from: badlyBroken))
+        XCTAssertNil(TeamConfigParser.extractJSONObject(from: badlyBroken))
     }
 
     func testDecodeTeamConfig_artifactWithNullName_droppedNotFatal() throws {
@@ -715,7 +715,7 @@ final class TeamGenerationServiceTests: XCTestCase {
             "supervisor_requires": ["X"]
         }
         """
-        let result = try TeamGenerationService.decodeTeamConfig(from: json)
+        let result = try TeamConfigParser.decodeTeamConfig(from: json)
         // Only the valid X artifact remains (Supervisor Task auto-added by builder).
         let names = Set(result.team.artifacts.map(\.name))
         XCTAssertTrue(names.contains("X"))
@@ -739,7 +739,7 @@ final class TeamGenerationServiceTests: XCTestCase {
             "supervisor_requires": ["X"]
         }
         """
-        let result = try TeamGenerationService.decodeTeamConfig(from: json)
+        let result = try TeamConfigParser.decodeTeamConfig(from: json)
         XCTAssertEqual(Set(result.team.supervisorRequiredArtifacts), Set(["X", "Y"]))
     }
 
@@ -755,7 +755,7 @@ final class TeamGenerationServiceTests: XCTestCase {
             ]
         }
         """
-        let result = try TeamGenerationService.decodeTeamConfig(from: json)
+        let result = try TeamConfigParser.decodeTeamConfig(from: json)
         let art = result.team.artifacts.first { $0.name == "Comparison Report" }
         XCTAssertNotNil(art)
         XCTAssertTrue(art!.description.contains("Investigate vector databases"), "description should borrow from prompt, got: \(art?.description ?? "nil")")
@@ -777,7 +777,7 @@ final class TeamGenerationServiceTests: XCTestCase {
             "supervisor_requires": ["Report"]
         }
         """
-        let result = try TeamGenerationService.decodeTeamConfig(from: json)
+        let result = try TeamConfigParser.decodeTeamConfig(from: json)
         let role = result.team.roles.first { $0.name == "Researcher" }
         XCTAssertEqual(role?.dependencies.requiredArtifacts, ["Supervisor Task"])
     }
@@ -800,7 +800,7 @@ final class TeamGenerationServiceTests: XCTestCase {
             "supervisor_requires": ["Final"]
         }
         """
-        let result = try TeamGenerationService.decodeTeamConfig(from: json)
+        let result = try TeamConfigParser.decodeTeamConfig(from: json)
         let b = result.team.roles.first { $0.name == "B" }
         XCTAssertEqual(b?.dependencies.requiredArtifacts, ["Mid"], "Upstream-produced artifact must be preserved verbatim")
     }
@@ -814,7 +814,7 @@ final class TeamGenerationServiceTests: XCTestCase {
         let escaped = inner.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
         let json = "{\"arguments\":{\"team_config\":\"\(escaped)\"}}"
-        let result = try TeamGenerationService.decodeTeamConfig(from: json)
+        let result = try TeamConfigParser.decodeTeamConfig(from: json)
         XCTAssertEqual(result.team.name, "Команда")
     }
 
@@ -831,7 +831,7 @@ final class TeamGenerationServiceTests: XCTestCase {
         ]
         let data = try JSONSerialization.data(withJSONObject: envelope)
         let json = String(data: data, encoding: .utf8)!
-        let result = try TeamGenerationService.decodeTeamConfig(from: json)
+        let result = try TeamConfigParser.decodeTeamConfig(from: json)
         XCTAssertEqual(result.team.name, "GptOss Team")
     }
 
@@ -849,7 +849,7 @@ final class TeamGenerationServiceTests: XCTestCase {
         XCTAssertEqual(calls.count, 1, "Harmony parser should extract one call")
         guard let call = calls.first else { return }
         XCTAssertEqual(call.name, "create_team")
-        let result = try TeamGenerationService.decodeTeamConfig(from: call.argumentsJSON)
+        let result = try TeamConfigParser.decodeTeamConfig(from: call.argumentsJSON)
         XCTAssertEqual(result.team.name, "Meal Plan Team")
         XCTAssertTrue(result.team.isChatMode, "empty supervisor_requires + empty produces → chat mode")
     }
@@ -863,7 +863,7 @@ final class TeamGenerationServiceTests: XCTestCase {
             "roles": [{"name": "Assistant", "prompt": "chat", "requires_artifacts": ["Supervisor Task"], "tools": ["ask_supervisor"]}]
         }
         """
-        let result = try TeamGenerationService.decodeTeamConfig(from: json)
+        let result = try TeamConfigParser.decodeTeamConfig(from: json)
         XCTAssertEqual(result.team.name, "Chat Team")
         XCTAssertTrue(result.team.supervisorRequiredArtifacts.isEmpty)
     }
@@ -880,7 +880,7 @@ final class TeamGenerationServiceTests: XCTestCase {
             "supervisor_requires": ["X"]
         }
         """
-        let result = try TeamGenerationService.decodeTeamConfig(from: json)
+        let result = try TeamConfigParser.decodeTeamConfig(from: json)
         // First-sentence is 88 chars, so the synthesizer clips to 60 chars.
         XCTAssertEqual(
             result.team.name,
@@ -900,7 +900,7 @@ final class TeamGenerationServiceTests: XCTestCase {
             "supervisor_requires": ["Memo"]
         }
         """
-        let result = try TeamGenerationService.decodeTeamConfig(from: json)
+        let result = try TeamConfigParser.decodeTeamConfig(from: json)
         XCTAssertEqual(result.team.name, "A specialist team for evaluating vector databases")
     }
 
@@ -909,12 +909,12 @@ final class TeamGenerationServiceTests: XCTestCase {
         // writes `}]` (role-close + array-close) where it needs `]}]` (tools-
         // close + role-close + array-close).
         let input = #"{"roles":[{"tools":["a","ask_supervisor"}]}"#
-        let repaired = TeamGenerationService.repairMissingArrayClose(input)
+        let repaired = TeamConfigParser.repairMissingArrayClose(input)
         XCTAssertEqual(repaired, #"{"roles":[{"tools":["a","ask_supervisor"]}]}"#)
     }
 
     func testRepairMissingArrayClose_noPattern_returnsNil() {
-        XCTAssertNil(TeamGenerationService.repairMissingArrayClose(#"{"a":"b"}"#))
+        XCTAssertNil(TeamConfigParser.repairMissingArrayClose(#"{"a":"b"}"#))
     }
 
     func testDecodeTeamConfig_qwenMissingArrayClose_recoversViaRepair() throws {
@@ -926,7 +926,7 @@ final class TeamGenerationServiceTests: XCTestCase {
         {"name":"create_team","arguments":{"team_config":{"name":"Speed Team","description":"d","supervisor_mode":"manual","acceptance_mode":"finalOnly","roles":[{"name":"Strategist","prompt":"p","produces_artifacts":[],"requires_artifacts":["Supervisor Task"],"tools":["read_file","ask_supervisor"}],"artifacts":[],"supervisor_requires":[]}}}
         """
         XCTAssertNil(JSONUtilities.parseJSONDictionary(arguments), "strict parse should fail on the raw payload")
-        let result = try TeamGenerationService.decodeTeamConfig(from: arguments)
+        let result = try TeamConfigParser.decodeTeamConfig(from: arguments)
         XCTAssertEqual(result.team.name, "Speed Team")
         XCTAssertEqual(result.team.isChatMode, true)
     }
@@ -953,7 +953,7 @@ final class TeamGenerationServiceTests: XCTestCase {
             "supervisor_requires": ["Final"]
         }
         """
-        let result = try TeamGenerationService.decodeTeamConfig(from: json)
+        let result = try TeamConfigParser.decodeTeamConfig(from: json)
         let consumer = result.team.roles.first { $0.name == "Consumer" }
         XCTAssertEqual(
             consumer?.dependencies.requiredArtifacts,
@@ -973,6 +973,6 @@ final class TeamGenerationServiceTests: XCTestCase {
             "supervisor_requires": ["X"]
         }
         """
-        XCTAssertThrowsError(try TeamGenerationService.decodeTeamConfig(from: json))
+        XCTAssertThrowsError(try TeamConfigParser.decodeTeamConfig(from: json))
     }
 }

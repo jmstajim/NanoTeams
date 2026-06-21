@@ -157,4 +157,50 @@ nonisolated enum AutovisorPolicy {
             && parentTaskID == nil
             && autovisorTaskID != taskID
     }
+
+    /// Whether the Autovisor can be ENABLED in the current work folder.
+    ///
+    /// The manager only does anything when there is a real, user-chosen work
+    /// folder — `ensureAutovisorTeam` / `ensureAutovisorTask` both no-op in
+    /// default (internal) storage, which has nothing to manage. So persisting
+    /// `autovisorEnabled = true` without one would leave the toggle reading "ON"
+    /// with no manager task or engine behind it: a dead, misleading control.
+    /// The single source of truth shared by the `setAutovisorEnabled` guard and
+    /// the Watchtower pill's visibility — keep them in lockstep.
+    static func canEnable(hasRealWorkFolder: Bool) -> Bool {
+        hasRealWorkFolder
+    }
+
+    /// Whether the persisted Autovisor goal is still "unset" — empty/whitespace, or
+    /// the seeded `AutovisorConstants.defaultGoal` placeholder the user hasn't
+    /// replaced. A manager with an unset goal would run on the "explore & wait"
+    /// placeholder, so every surface treats it as "not configured yet".
+    ///
+    /// We deliberately do NOT track legacy default strings: a real goal that happens
+    /// to equal the *current* default re-prompts setup, which is acceptable (the
+    /// customization is invisible to us either way). The match is EXACT (after
+    /// trimming) — a real goal that merely contains the default as a substring is
+    /// not "unset".
+    static func goalIsUnset(_ goal: String) -> Bool {
+        let trimmed = goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || trimmed == AutovisorConstants.defaultGoal
+    }
+
+    /// Whether the Autovisor surface should present the first-time SETUP pane
+    /// rather than the manager chat. THE single source of truth shared by the
+    /// detail-pane routing (`MainLayoutView.autovisorDetail`), the Watchtower pill's
+    /// click intercept, and the sidebar menu label — so a click that routes to
+    /// "setup" actually lands on setup, never silently on the chat.
+    ///
+    /// Needs setup when the manager was never created (`!taskExists`), OR it exists
+    /// but is disabled with an unset goal. The disabled+unset state is reachable and
+    /// load-bearing: `setAutovisorEnabled(false)` keeps `autovisorTaskID` set (only
+    /// Delete clears it), so a created-then-disabled manager that never got a real
+    /// goal must still route back to setup — not to a chat for a manager that won't
+    /// run. An ENABLED manager never needs setup (it's already running, even on the
+    /// placeholder goal — don't interrupt it); a disabled manager WITH a real goal
+    /// doesn't either (the pill just re-enables it directly).
+    static func needsSetup(taskExists: Bool, enabled: Bool, goalIsUnset: Bool) -> Bool {
+        !taskExists || (!enabled && goalIsUnset)
+    }
 }

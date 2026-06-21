@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Opacity constants for runtime-dynamic colors (notification.color, task.status.tintColor)
 /// where pre-computed adaptive colors are not possible.
-enum DynamicTintOpacity {
+nonisolated enum DynamicTintOpacity {
     /// Background tint for dynamic-color cards (subtle fill behind content)
     static let background: Double = 0.08
     /// Badge/pill background for dynamic colors

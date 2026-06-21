@@ -38,7 +38,7 @@ struct ReadOnlyAttachmentGrid: View {
             }
             .frame(height: 80)
             .background(
-                RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous)
+                RoundedRectangle.squircle(CornerRadius.small)
                     .fill(Colors.surfaceCard)
             )
         }
@@ -80,12 +80,12 @@ private struct FileCell: View {
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(width: 48, height: 48)
-                .clipShape(RoundedRectangle(cornerRadius: CornerRadius.micro, style: .continuous))
+                .clipShape(RoundedRectangle.squircle(CornerRadius.micro))
                 .onTapGesture { quickLookURL = url }
 
             Text(url.lastPathComponent)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .font(Typography.term2xs)
+                .foregroundStyle(Colors.textSecondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(width: 64)
@@ -115,12 +115,12 @@ private struct ClipCell: View {
         VStack(spacing: Spacing.xxs) {
             Text(displayText)
                 .font(.system(size: 6, weight: .ultraLight))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Colors.textSecondary)
                 .lineLimit(5)
                 .lineSpacing(0)
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .padding(4)
+                .padding(Spacing.xs)
                 .frame(width: 48, height: 48)
                 .background(Colors.surfacePrimary)
                 .overlay {
@@ -134,7 +134,7 @@ private struct ClipCell: View {
                 .onTapGesture { isShowingPopover = true }
 
             Text(label)
-                .font(.caption2)
+                .font(Typography.term2xs)
                 .foregroundStyle(parsed != nil ? .primary : .secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)

@@ -18,7 +18,7 @@ struct RoleScratchpadPanel: View {
                 .padding(Spacing.s)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
-                    RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous)
+                    RoundedRectangle.squircle(CornerRadius.small)
                         .fill(Colors.yellowTint)
                 )
                 .padding(.horizontal, Spacing.standard)

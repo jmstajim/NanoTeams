@@ -77,16 +77,20 @@ struct SupervisorFinalReviewView: View {
                 onClose: onClose
             )
 
-            Divider()
-
-            HSplitView {
+            // Custom `HStack + TerminalDivider` instead of `HSplitView` — the
+            // native split-view brings its own divider chrome (system gray bar
+            // with hover affordance) which fights the terminal hairline rules
+            // we use everywhere else.
+            HStack(spacing: 0) {
                 FinalReviewArtifactsPane(
                     reviewItems: reviewItems,
                     additionalItems: additionalItems,
                     selectedArtifactName: $selectedArtifactName,
                     roleDefinitions: roleDefinitions
                 )
-                .frame(minWidth: 280, idealWidth: 320, maxWidth: 380)
+                .frame(width: 300)
+
+                TerminalDivider(axis: .vertical)
 
                 FinalReviewDetailPane(
                     selectedItem: selectedItem,
@@ -95,10 +99,12 @@ struct SupervisorFinalReviewView: View {
                     supervisorTask: task.effectiveSupervisorBrief,
                     roleDefinitions: roleDefinitions
                 )
-                .frame(minWidth: 540)
+                .frame(maxWidth: .infinity)
             }
         }
         .frame(minWidth: 980, minHeight: 640)
+        .background(Colors.surfacePrimary)
+        .fontDesign(.monospaced)
         .onAppear {
             if selectedArtifactName == nil {
                 selectedArtifactName = allItems.first?.name
@@ -164,8 +170,8 @@ struct SupervisorFinalReviewView: View {
 
 #Preview("Final Review — All Ready") {
     let team = Team.default
-    let supervisorTask = Artifact(name: "Supervisor Task", icon: "star.fill", description: "User task")
-    let releaseNotes = Artifact(name: "Release Notes", icon: "doc.text.fill", description: "v1.0 release notes")
+    let supervisorTask = Artifact(name: "Supervisor Task", icon: "star", description: "User task")
+    let releaseNotes = Artifact(name: "Release Notes", icon: "doc.text", description: "v1.0 release notes")
     let step = StepExecution(
         id: "preview",
         role: .tpm,
@@ -205,7 +211,7 @@ struct SupervisorFinalReviewView: View {
         title: "TPM",
         expectedArtifacts: ["Release Notes"],
         status: .done,
-        artifacts: [Artifact(name: "Release Notes", icon: "doc.text.fill", description: "v1.0 release notes with all changes documented")]
+        artifacts: [Artifact(name: "Release Notes", icon: "doc.text", description: "v1.0 release notes with all changes documented")]
     )
     SupervisorFinalReviewView(
         task: NTMSTask(id: 0, title: "Full pipeline task", supervisorTask: "Complete product development"),

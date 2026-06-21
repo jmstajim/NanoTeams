@@ -1,30 +1,34 @@
 import SwiftUI
 
-/// Loader + italic caption for the indicator's Waiting / Processing /
-/// Generating statuses.
-/// Reserves loader space so text doesn't shift when the loader hides.
+/// Loader + caption for the indicator's Waiting / Processing / Generating
+/// statuses — the inline DS pattern shared with `MessageThinkingSection`.
+///
+/// Spinner: `NTMSLoader(font: Typography.termXs, color: Colors.accent)`
+/// — matches the caption's line-height (termXs = 11pt) so glyph and text
+/// sit on the same baseline. The accent color is the design's "alive"
+/// signal; the caption stays muted (`textTertiary`) so the spinner reads
+/// as the activity tell.
+///
+/// Typography: `termXs.medium` + `textTertiary`, identical to
+/// `MessageThinkingSection`'s label (both are the same concept — a
+/// transient status row under a spinner). Italic is intentionally
+/// excluded — in SF Mono italic is a pseudo-slant that breaks the
+/// terminal grid; the "process is live" signal lives entirely in the
+/// spinner + trailing `…` on verbs (`Waiting…`/`Generating…`); the %
+/// counter itself ticks for `Processing 42%`.
 struct MessageLoaderLabel: View {
     let text: String
-    let showLoader: Bool
 
-    init(_ text: String, showLoader: Bool) {
+    init(_ text: String) {
         self.text = text
-        self.showLoader = showLoader
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            // `isVisible: showLoader` short-circuits the TimelineView when
-            // logically hidden. Pre-fix this used `.opacity(0)`, which left
-            // the loader rotating at 30 Hz behind invisibility — wasted
-            // main-thread cycles during streaming and a contributor to the
-            // 4.41 s inLiveResize hang.
-            NTMSLoader(.mini, isVisible: showLoader)
-                .frame(width: 18, height: 12)
+        HStack(spacing: Spacing.xs) {
+            NTMSLoader(font: Typography.termXs, color: Colors.accent)
             Text(text)
-                .font(.caption.weight(.medium).monospaced())
-                .italic()
-                .foregroundStyle(.secondary)
+                .font(Typography.termXs.weight(.medium))
+                .foregroundStyle(Colors.textTertiary)
         }
     }
 }
@@ -36,9 +40,9 @@ struct MessageLoaderLabel: View {
 /// `Equatable` is synthesized so the call site in `MessageBubbleView` can
 /// wrap us with `.equatable()` — SwiftUI then skips re-evaluating this
 /// subtree (and the embedded `NTMSLoader`'s view-value rebuild) when none
-/// of the stored inputs changed across a streaming tick. The internal
-/// `TimelineView` inside `NTMSLoader` still ticks on its own schedule,
-/// decoupled from outer body re-eval — that's the point.
+/// of the stored inputs changed across a streaming tick. `NTMSLoader`'s
+/// internal `.task` ticker still drives rotation + glitch on its own
+/// schedule, decoupled from outer body re-eval — that's the point.
 ///
 /// Drift-guard: `MessageBubbleStreamingIndicatorEquatableTests` pins each
 /// stored prop's contribution. Adding a new prop without extending the
@@ -77,18 +81,7 @@ struct MessageBubbleStreamingIndicator: View, Equatable {
     var body: some View {
         if let text = statusText {
             HStack(spacing: 0) {
-                MessageLoaderLabel(text, showLoader: true)
-                // Suffix is gated on the label, not just on progress being
-                // set: the tool-call "Generating" outranks Processing in the
-                // resolver precisely because a stale progress value must not
-                // relabel flowing tokens — rendering "Generating 47%" would
-                // smuggle the stale percent back in through the suffix.
-                if text == "Processing", let progress = processingProgress {
-                    Text(" \(Int(progress * 100))%")
-                        .font(.caption.weight(.medium).monospaced())
-                        .italic()
-                        .foregroundStyle(.secondary)
-                }
+                MessageLoaderLabel(text)
                 Spacer()
             }
             .padding(.trailing, ActivityCardTokens.cardPadding)
@@ -113,6 +106,13 @@ struct MessageBubbleStreamingIndicator: View, Equatable {
     /// Generating > content suppression > Processing > Generating >
     /// Waiting) without reaching into SwiftUI view internals. Returns
     /// nil for "no status row needed".
+    ///
+    /// Output strings are ready-to-render (no caller-side suffixing):
+    /// `"Processing 42%"` (ticking %), `"Generating…"` / `"Waiting…"`
+    /// (trailing `…` carries the "in progress" signal — same convention
+    /// as `MessageThinkingSection`'s `Thinking…` / `Thinking` toggle).
+    /// The verbs `Generating`/`Waiting` only exist in the streaming-live
+    /// branch — there is no settled form to render, so `…` is unambiguous.
     static func resolveStatusText(
         isStreaming: Bool,
         isImplicitStreamTarget: Bool,
@@ -138,27 +138,27 @@ struct MessageBubbleStreamingIndicator: View, Equatable {
                 // Checked before Processing too: tokens ARE flowing, so a
                 // stale progress value must not relabel this as prompt
                 // processing.
-                return "Generating"
+                return "Generating…"
             }
             if hasMessageContent { return nil } // content is visible — no status row needed
-            if processingProgress != nil {
-                return "Processing"
+            if let progress = processingProgress {
+                return "Processing \(Int(progress * 100))%"
             }
             if hasStreamActivity {
                 // Tokens are flowing but not landing in content/thinking buffers
                 // — the model is emitting a tool call, harmony envelope, or
                 // similar. Show that work is happening so the user doesn't
                 // assume the system is hung.
-                return "Generating"
+                return "Generating…"
             }
-            return "Waiting"
+            return "Waiting…"
         }
         if isImplicitStreamTarget {
-            if processingProgress != nil {
-                return "Processing"
+            if let progress = processingProgress {
+                return "Processing \(Int(progress * 100))%"
             }
             if hasStreamActivity {
-                return "Generating"
+                return "Generating…"
             }
             return nil
         }

@@ -30,10 +30,13 @@ extension WatchtowerNotificationBanner {
 
     func supervisorInputContent(stepID: String, question: String) -> some View {
         VStack(alignment: .leading, spacing: Spacing.s) {
-            Text(question)
-                .font(.body)
-                .foregroundStyle(.primary)
-                .fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .top, spacing: Spacing.xs) {
+                PromptMarker()
+                Text(question)
+                    .font(Typography.termBase)
+                    .foregroundStyle(Colors.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             MessageComposer(
                 text: $answerText,
@@ -51,16 +54,16 @@ extension WatchtowerNotificationBanner {
     func acceptanceContent(roleID: String) -> some View {
         VStack(alignment: .leading, spacing: Spacing.s) {
             Text("Completed — awaiting your review")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(Typography.caption)
+                .foregroundStyle(Colors.textSecondary)
             HStack(spacing: Spacing.s) {
                 Button {
                     onViewDetails()
                 } label: {
                     Label("View", systemImage: "arrow.right.circle")
-                        .font(.subheadline.weight(.medium))
+                        .font(Typography.subheadlineMedium)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.terminalSecondary)
                 .controlSize(.small)
 
                 Button {
@@ -72,9 +75,9 @@ extension WatchtowerNotificationBanner {
                     }
                 } label: {
                     Label("Accept", systemImage: "checkmark")
-                        .font(.subheadline.weight(.medium))
+                        .font(Typography.subheadlineMedium)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.terminalPrimary)
                 .controlSize(.small)
             }
         }
@@ -84,8 +87,8 @@ extension WatchtowerNotificationBanner {
         VStack(alignment: .leading, spacing: Spacing.s) {
             if let error = errorMessage {
                 Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(Typography.caption)
+                    .foregroundStyle(Colors.textSecondary)
                     .lineLimit(2)
             }
 
@@ -93,9 +96,9 @@ extension WatchtowerNotificationBanner {
                 onViewDetails()
             } label: {
                 Label("View Details", systemImage: "arrow.right.circle")
-                    .font(.subheadline.weight(.medium))
+                    .font(Typography.subheadlineMedium)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.terminalSecondary)
             .controlSize(.small)
         }
     }
@@ -103,19 +106,18 @@ extension WatchtowerNotificationBanner {
     var taskDoneContent: some View {
         VStack(alignment: .leading, spacing: Spacing.s) {
             Text("All team roles have completed their work. Review the deliverables and accept the task.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .font(Typography.termBase)
+                .foregroundStyle(Colors.textSecondary)
 
             HStack(spacing: Spacing.s) {
                 if case .taskDone(let taskID, _) = notification {
                     Button {
                         onViewDetails()
                     } label: {
-                        Label("Review Task", systemImage: "eye.circle.fill")
-                            .font(.subheadline.weight(.medium))
+                        Label("Review Task", systemImage: "eye.circle")
+                            .font(Typography.subheadlineMedium)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Colors.purple)
+                    .buttonStyle(.terminalPrimary)
                     .controlSize(.small)
 
                     Button {
@@ -126,11 +128,10 @@ extension WatchtowerNotificationBanner {
                             }
                         }
                     } label: {
-                        Label("Accept Task", systemImage: "checkmark.circle.fill")
-                            .font(.subheadline.weight(.medium))
+                        Label("Accept Task", systemImage: "checkmark.circle")
+                            .font(Typography.subheadlineMedium)
                     }
-                    .buttonStyle(.bordered)
-                    .tint(Colors.emerald)
+                    .buttonStyle(.terminalSecondary)
                     .controlSize(.small)
                 }
             }
@@ -140,17 +141,17 @@ extension WatchtowerNotificationBanner {
     var timedOutContent: some View {
         VStack(alignment: .leading, spacing: Spacing.s) {
             Text("This run exceeded its time limit and was paused. Review it and resume from the task.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(Typography.caption)
+                .foregroundStyle(Colors.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             Button {
                 onViewDetails()
             } label: {
                 Label("View Task", systemImage: "arrow.right.circle")
-                    .font(.subheadline.weight(.medium))
+                    .font(Typography.subheadlineMedium)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.terminalSecondary)
             .controlSize(.small)
         }
     }

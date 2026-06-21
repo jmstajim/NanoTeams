@@ -3,8 +3,9 @@ import SwiftUI
 // MARK: - Star on GitHub Banner
 
 /// Star-on-GitHub prompt shown on the Watchtower app-update card and in Settings →
-/// Updates. Message on the left, gold-filled "Star on GitHub" capsule CTA
-/// on the right. Tapping the CTA opens the repo.
+/// Updates. Message on the left, accent-filled "Star on GitHub" capsule CTA
+/// on the right (matches the sibling "Open on GitHub" / "Update Now" CTAs).
+/// Tapping the CTA opens the repo.
 struct StarOnGitHubBanner: View {
     @Environment(NTMSOrchestrator.self) private var store
     @State private var isHovered = false
@@ -13,7 +14,7 @@ struct StarOnGitHubBanner: View {
         HStack(spacing: Spacing.m) {
             VStack(alignment: .leading, spacing: Spacing.xxs) {
                 Text("Enjoying NanoTeams? Give it a star")
-                    .font(.callout.weight(.semibold))
+                    .font(Typography.subheadlineSemibold)
                     .foregroundStyle(Colors.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -29,15 +30,15 @@ struct StarOnGitHubBanner: View {
                 URLOpener.open(AppURLs.githubRepository) { store.lastErrorMessage = $0 }
             } label: {
                 HStack(spacing: Spacing.xs) {
-                    Image(systemName: "star.fill")
-                        .font(.caption2)
+                    Image(systemName: "star")
+                        .font(Typography.caption)
                     Text("Star on GitHub")
                         .font(Typography.captionSemibold)
                 }
-                .foregroundStyle(Colors.textPrimary)
+                .foregroundStyle(Colors.textOnAccent)
                 .padding(.horizontal, Spacing.m)
                 .padding(.vertical, Spacing.xs)
-                .background(Capsule(style: .continuous).fill(Colors.gold))
+                .background(RoundedRectangle.squircle(CornerRadius.small).fill(Colors.accent))
                 .scaleEffect(isHovered ? 1.03 : 1.0)
                 .fixedSize(horizontal: true, vertical: false)
             }

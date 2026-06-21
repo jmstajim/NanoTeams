@@ -109,16 +109,24 @@ struct AutovisorSettingsView: View {
                         Task { await store.setAutovisorEnabled(next) }
                     }
                     VStack(alignment: .leading, spacing: Spacing.xxs) {
-                        Text(isEnabled ? (isRunning ? "Reviewing…" : "On") : "Off")
-                            .font(Typography.subheadlineSemibold)
-                            .foregroundStyle(isEnabled ? Colors.success : Colors.textSecondary)
+                        HStack(spacing: Spacing.xs) {
+                            StatusGlyph(
+                                glyph: isEnabled ? (isRunning ? TerminalGlyph.working : TerminalGlyph.ready) : TerminalGlyph.skipped,
+                                color: isEnabled ? Colors.success : Colors.textSecondary,
+                                animatesWork: isRunning,
+                                font: Typography.subheadlineSemibold
+                            )
+                            Text(isEnabled ? (isRunning ? "Working…" : "On") : "Off")
+                                .font(Typography.subheadlineSemibold)
+                                .foregroundStyle(isEnabled ? Colors.success : Colors.textSecondary)
+                        }
                         Text(isEnabled ? "Tap to disable" : "Tap to enable")
                             .font(Typography.caption)
                             .foregroundStyle(Colors.textTertiary)
                     }
                     Spacer()
                     if isEnabled, store.autovisorTaskID != nil {
-                        SettingsPillButton(title: "Run now", icon: "play.fill") {
+                        SettingsPillButton(title: "Run now", icon: "play") {
                             if let id = store.autovisorTaskID {
                                 // Supersedes a parked (`wait_for_events`) engine —
                                 // plain `startRun` would no-op on `.needsSupervisorInput`.
@@ -158,13 +166,16 @@ struct AutovisorSettingsView: View {
             systemImage: "target"
         ) {
             VStack(spacing: 0) {
-                editor($goalDraft, minHeight: 90) { newValue in
-                    goalSaveTask?.cancel()
-                    goalSaveTask = Task {
-                        try? await Task.sleep(for: .milliseconds(500))
-                        guard !Task.isCancelled else { return }
-                        if store.workFolder?.settings.autovisorGoal != newValue {
-                            await store.updateAutovisorGoal(newValue)
+                HStack(alignment: .top, spacing: Spacing.xs) {
+                    PromptMarker()
+                    editor($goalDraft, minHeight: 90) { newValue in
+                        goalSaveTask?.cancel()
+                        goalSaveTask = Task {
+                            try? await Task.sleep(for: .milliseconds(500))
+                            guard !Task.isCancelled else { return }
+                            if store.workFolder?.settings.autovisorGoal != newValue {
+                                await store.updateAutovisorGoal(newValue)
+                            }
                         }
                     }
                 }
@@ -185,8 +196,8 @@ struct AutovisorSettingsView: View {
                 .frame(width: SettingsLayout.toggleIconSize, height: SettingsLayout.toggleIconSize)
                 .overlay(
                     Image(systemName: "timer")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(Typography.caption)
+                        .foregroundStyle(Colors.textSecondary)
                 )
             Text("Turn off after")
                 .font(Typography.subheadline)
@@ -209,9 +220,8 @@ struct AutovisorSettingsView: View {
         HStack(spacing: Spacing.xxs) {
             Text("\(value.wrappedValue)")
                 .monospacedDigit()
-                .foregroundStyle(.secondary)
-            Stepper("", value: value, in: range)
-                .labelsHidden()
+                .foregroundStyle(Colors.textSecondary)
+            TerminalStepperButtons(value: value, range: range)
             Text(unit)
                 .font(Typography.caption)
                 .foregroundStyle(Colors.textTertiary)
@@ -248,13 +258,16 @@ struct AutovisorSettingsView: View {
             systemImage: "brain"
         ) {
             VStack(spacing: 0) {
-                editor($memoryDraft, minHeight: 140) { newValue in
-                    memorySaveTask?.cancel()
-                    memorySaveTask = Task {
-                        try? await Task.sleep(for: .milliseconds(500))
-                        guard !Task.isCancelled else { return }
-                        if store.workFolder?.settings.autovisorMemory != newValue {
-                            await store.updateAutovisorMemory(newValue)
+                HStack(alignment: .top, spacing: Spacing.xs) {
+                    PromptMarker()
+                    editor($memoryDraft, minHeight: 140) { newValue in
+                        memorySaveTask?.cancel()
+                        memorySaveTask = Task {
+                            try? await Task.sleep(for: .milliseconds(500))
+                            guard !Task.isCancelled else { return }
+                            if store.workFolder?.settings.autovisorMemory != newValue {
+                                await store.updateAutovisorMemory(newValue)
+                            }
                         }
                     }
                 }
@@ -507,11 +520,12 @@ struct AutovisorSettingsView: View {
     // scroll. The `TextField(axis: .vertical)` it replaces treated Enter as
     // "end editing", which made multi-line goal/memory editing feel broken.
     // Visual style is shared with the Watchtower Autovisor card via
-    // `autovisorEditorStyle(minHeight:)`.
+    // `borderedTextEditorStyle(minHeight:)`.
     @ViewBuilder
     private func editor(_ text: Binding<String>, minHeight: CGFloat, onChange: @escaping (String) -> Void) -> some View {
         TextEditor(text: text)
-            .autovisorEditorStyle(minHeight: minHeight)
+            .font(Typography.termBase)
+            .borderedTextEditorStyle(minHeight: minHeight)
             .onChange(of: text.wrappedValue) { _, newValue in onChange(newValue) }
     }
 

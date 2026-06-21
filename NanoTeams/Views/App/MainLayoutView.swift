@@ -11,7 +11,6 @@ struct MainLayoutView: View {
 
     @State private var selectedItem: NavigationItem? = .watchtower
     @State private var isPresentingCommandPalette = false
-    @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var taskState = TaskManagementState()
 
     // MARK: - Navigation Item
@@ -25,18 +24,38 @@ struct MainLayoutView: View {
     // MARK: - Body
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            SidebarView(taskState: taskState, selectedItem: $selectedItem)
-                .navigationSplitViewColumnWidth(
-                    min: WindowLayout.sidebarMinWidth,
-                    ideal: WindowLayout.sidebarIdealWidth,
-                    max: WindowLayout.sidebarMaxWidth
-                )
-        } detail: {
-            detailView
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                // Custom flat sidebar — replaces NavigationSplitView's native column
+                // (whose vibrancy material can't be removed with a SwiftUI background).
+                SidebarView(taskState: taskState, selectedItem: $selectedItem)
+                    .frame(width: WindowLayout.sidebarIdealWidth)
+                    .frame(maxHeight: .infinity)
+                    .background(Colors.surfaceBackground.ignoresSafeArea())
+                    .overlay(alignment: .trailing) {
+                        Rectangle()
+                            .fill(Colors.borderSubtle)
+                            .frame(width: 1)
+                            .ignoresSafeArea()
+                    }
+
+                // Detail in a NavigationStack so detail toolbars / titles still work.
+                NavigationStack {
+                    detailView
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            // tmux-style status bar + keybind footer (sits below ALL panes,
+            // including the sidebar — single source of truth for live LLM /
+            // run state). Reads model/URL from its own `config` environment so a
+            // model switch re-evaluates only the bar, not this whole layout.
+            TerminalStatusBar()
         }
-        .navigationSplitViewStyle(.balanced)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Colors.surfacePrimary)
+        .toggleStyle(.terminal)
         .sheet(isPresented: $isPresentingCommandPalette) {
             CommandPaletteView(
                 selectedItem: $selectedItem,
@@ -84,6 +103,9 @@ struct MainLayoutView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .navigateToActiveTask)) { _ in
             if let task = store.activeTask { selectedItem = .task(task.id) }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .navigateToAutovisor)) { _ in
+            selectedItem = .autovisor
         }
         .onReceive(NotificationCenter.default.publisher(for: .startRun)) { _ in
             if let taskID = store.activeTaskID { Task { await store.startRun(taskID: taskID) } }
@@ -198,9 +220,17 @@ struct MainLayoutView: View {
 
     /// The Autovisor's activity feed — its hidden task rendered through the
     /// standard TeamBoard (switchTask makes it active; the sidebar still hides it).
+    /// Shows the first-time setup pane (goal field + Enable) whenever the manager
+    /// isn't ready to run — `store.autovisorNeedsSetup`: never created, OR created
+    /// but disabled with an unset goal. Routing on the SAME predicate the pill /
+    /// sidebar use guarantees a "go to setup" click actually lands here, not on a
+    /// chat for a manager that won't run. On enable, `setAutovisorEnabled(true)`
+    /// creates/re-enables the manager; the next body evaluation sees
+    /// `autovisorNeedsSetup == false`, falls into the loader/switchTask branch, and
+    /// lands on the chat.
     @ViewBuilder
     private var autovisorDetail: some View {
-        if let id = store.autovisorTaskID {
+        if let id = store.autovisorTaskID, !store.autovisorNeedsSetup {
             if store.activeTask?.id == id {
                 TeamBoardView(workFolder: store.workFolder).id(id)
             } else {
@@ -211,13 +241,7 @@ struct MainLayoutView: View {
                     .task { await store.switchTask(to: id) }
             }
         } else {
-            ContentUnavailableView(
-                "Autovisor is off",
-                systemImage: "folder.badge.person.crop",
-                description: Text("Enable it in Settings → Autovisor.")
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(NTMSBackground())
+            AutovisorSetupView()
         }
     }
 }

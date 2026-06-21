@@ -17,13 +17,11 @@ struct CorrectRoleSheet: View {
             SheetHeader(
                 title: "Correct Role",
                 subtitle: "\(roleName) will resume with your guidance applied",
-                systemImage: "arrow.uturn.backward.circle.fill"
+                systemImage: "arrow.uturn.backward.circle"
             )
 
             VStack(alignment: .leading, spacing: Spacing.s) {
-                Text("Guidance")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.secondary)
+                MonoLabel(text: "Guidance", marker: true)
 
                 TextEditor(text: $comment)
                     .frame(height: SheetLayout.textEditorHeight)
@@ -37,7 +35,7 @@ struct CorrectRoleSheet: View {
                     comment = ""
                     isPresented = false
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.terminalSecondary)
 
                 Spacer()
 
@@ -50,7 +48,7 @@ struct CorrectRoleSheet: View {
                         isPresented = false
                     }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.terminalPrimary)
                 .keyboardShortcut(.defaultAction)
                 .disabled(comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }

@@ -12,6 +12,14 @@ nonisolated enum UserDefaultsKeys {
     static let llmRequestTimeoutSeconds = "NanoTeams.llm.requestTimeoutSeconds.v1"
     static let lastOpenedWorkFolderPath = "LastOpenedProjectPath"
     static let appAppearance = "appAppearance"
+    /// Selected dark-mode theme — one of `Theme.allCases.rawValue`. Applied only
+    /// when the effective color scheme resolves to dark; light always uses the
+    /// shared paper palette regardless of this value.
+    static let activeTheme = "NanoTeams.ui.activeTheme.v1"
+    /// Whether the `NTMSLoader` spinner fires its decorative glitch bursts
+    /// (character scramble + RGB-split + jitter). `false` keeps the spinner
+    /// rotating but suppresses the glitch flourish. Default on (absent ⇒ on).
+    static let spinnerGlitchEnabled = "NanoTeams.ui.spinnerGlitchEnabled.v1"
     static let selectedSettingsTab = "selectedSettingsTab"
     static let timelineClearedUpToDate = "NanoTeams.ui.timelineClearedUpToDate.v1"
     static let visionEnabled = "NanoTeams.vision.enabled.v1"

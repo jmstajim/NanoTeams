@@ -38,7 +38,7 @@ struct SupervisorInputCard: View {
             }
 
             Text(question)
-                .font(.body)
+                .font(Typography.termBase)
                 .foregroundStyle(isResolved ? .tertiary : .primary)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
@@ -48,10 +48,8 @@ struct SupervisorInputCard: View {
                     autoAnsweredResult(answer: answer)
                 } else if !answer.isEmpty {
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(Colors.success)
-                            .font(.caption)
-                        Text(answer).font(.body).foregroundStyle(.secondary)
+                        StatusGlyph(glyph: TerminalGlyph.done, color: Colors.success)
+                        Text(answer).font(Typography.termBase).foregroundStyle(Colors.textSecondary)
                     }
                 }
 
@@ -71,15 +69,21 @@ struct SupervisorInputCard: View {
     // MARK: - Auto-answer states
 
     private var autoAnswerProgress: some View {
-        HStack(spacing: Spacing.s) {
-            NTMSLoader(.small)
-            Text("Supervisor auto-answering...")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        // Same inline loader+caption DS pattern as `MessageLoaderLabel`
+        // and `MessageThinkingSection`: NTMSLoader at the caption's
+        // line-height (termXs) + accent for "alive", muted caption
+        // (termXs.medium + textTertiary), Unicode ellipsis `…` for "in
+        // progress". The surrounding card padding/background is
+        // unchanged — only the inline pair is unified.
+        HStack(spacing: Spacing.xs) {
+            NTMSLoader(font: Typography.termXs, color: Colors.accent)
+            Text("Supervisor auto-answering…")
+                .font(Typography.termXs.weight(.medium))
+                .foregroundStyle(Colors.textTertiary)
         }
         .padding(Spacing.s)
         .background(
-            RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous)
+            RoundedRectangle.squircle(CornerRadius.small)
                 .fill(Colors.surfaceOverlay)
         )
     }
@@ -89,14 +93,14 @@ struct SupervisorInputCard: View {
             HStack(spacing: 4) {
                 Image(systemName: "sparkles")
                     .foregroundStyle(Colors.info)
-                    .font(.caption)
+                    .font(Typography.caption)
                 Text("Auto-answered")
-                    .font(.caption.weight(.medium))
+                    .font(Typography.captionSemibold)
                     .foregroundStyle(Colors.info)
             }
             Text(answer)
-                .font(.body)
-                .foregroundStyle(.secondary)
+                .font(Typography.termBase)
+                .foregroundStyle(Colors.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
         }
@@ -114,8 +118,8 @@ struct SupervisorInputCard: View {
         } label: {
             HStack(spacing: Spacing.xs) {
                 Text("Thinking")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.tertiary)
+                    .font(Typography.captionSemibold)
+                    .foregroundStyle(Colors.textTertiary)
                 Spacer()
             }
             .contentShape(Rectangle())

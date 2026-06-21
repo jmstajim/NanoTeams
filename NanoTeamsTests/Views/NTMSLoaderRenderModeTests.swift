@@ -72,19 +72,18 @@ final class NTMSLoaderRenderModeTests: XCTestCase {
     /// so a wrong Size→dimension entry would leak as a wrong-sized
     /// invisible-loader placeholder during streaming.
     func testSize_dimensionTruthTable() async {
-        let cases: [(NTMSLoader.Size, CGFloat, CGFloat, CGFloat)] = [
-            // (size, expectedWidth, expectedHeight, expectedLineWidth)
-            (.inline,     14,  14,  1),
-            (.mini,       24,  12,  1),
-            (.small,      36,  18,  1),
-            (.regular,    60,  30,  2),
-            (.large,     100,  50,  2),
-            (.extraLarge,200, 100,  3),
+        let cases: [(NTMSLoader.Size, CGFloat, CGFloat)] = [
+            // (size, expectedWidth, expectedHeight)
+            (.inline,     14,  14),
+            (.mini,       24,  12),
+            (.small,      36,  18),
+            (.regular,    60,  30),
+            (.large,     100,  50),
+            (.extraLarge,200, 100),
         ]
-        for (size, w, h, lw) in cases {
+        for (size, w, h) in cases {
             XCTAssertEqual(size.width, w, "\(size).width")
             XCTAssertEqual(size.height, h, "\(size).height")
-            XCTAssertEqual(size.lineWidth, lw, "\(size).lineWidth")
         }
     }
 

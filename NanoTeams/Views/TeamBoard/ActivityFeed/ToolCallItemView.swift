@@ -61,8 +61,8 @@ struct ToolCallItemView: View {
                         roleNameText(roleName: roleName, teamSuffix: roleTeamSuffix, tintColor: tintColor)
                         Spacer()
                         Text(call.createdAt.formatted(date: .omitted, time: .shortened))
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
+                            .font(Typography.term2xs)
+                            .foregroundStyle(Colors.textTertiary)
                     }
                     toolCard
                 }
@@ -77,16 +77,19 @@ struct ToolCallItemView: View {
 
     private var toolCard: some View {
         VStack(alignment: .leading, spacing: ActivityCardTokens.contentSpacing) {
-            HStack(spacing: Spacing.s) {
-                statusIcon
+            HStack(spacing: Spacing.xs) {
+                // Terminal command line: `$ tool args → ok/error`
+                Text("$")
+                    .font(Typography.termXs)
+                    .foregroundStyle(Colors.textQuaternary)
                 Text(canonicalName)
-                    .font(.caption.weight(.medium).monospaced())
+                    .font(Typography.termXs.weight(.medium))
                     .foregroundStyle(statusColor)
                     .lineLimit(1)
                 if isExploratorySearch && !call.isExploratorySearchDisabled {
                     Image(systemName: "binoculars")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .font(Typography.term2xs)
+                        .foregroundStyle(Colors.textTertiary)
                         .accessibilityLabel("Exploratory search")
                 }
                 if !hasCustomSummary {
@@ -96,13 +99,14 @@ struct ToolCallItemView: View {
                     )
                     if !argSummary.isEmpty {
                         Text(argSummary)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.tertiary)
+                            .font(Typography.termXs)
+                            .foregroundStyle(Colors.textTertiary)
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
                 }
-                Spacer()
+                Spacer(minLength: Spacing.xs)
+                resultIndicator
             }
 
             callSummary
@@ -120,20 +124,17 @@ struct ToolCallItemView: View {
         }
     }
 
-    private static let statusIconSize: CGFloat = 14
-
     @ViewBuilder
-    private var statusIcon: some View {
-        Group {
-            if call.resultJSON == nil || call.isAnalyzing || call.isGeneratingTeam {
-                NTMSLoader(.inline)
-            } else if call.isError == true {
-                Image(systemName: "xmark.circle.fill").foregroundStyle(Colors.error)
-            } else {
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(Colors.success)
+    private var resultIndicator: some View {
+        if call.resultJSON == nil || call.isAnalyzing || call.isGeneratingTeam {
+            NTMSLoader(font: Typography.termXs, color: Colors.info)
+        } else {
+            HStack(spacing: 2) {
+                Text("→").foregroundStyle(Colors.textTertiary)
+                Text(call.isError == true ? "error" : "ok").foregroundStyle(statusColor)
             }
+            .font(Typography.termXs)
         }
-        .frame(width: Self.statusIconSize, height: Self.statusIconSize)
     }
 
     @ViewBuilder
@@ -160,8 +161,8 @@ private struct ToolCallCustomSummaryView: View {
                !question.isEmpty
             {
                 Text(question)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.primary)
+                    .font(Typography.captionSemibold)
+                    .foregroundStyle(Colors.textPrimary)
                     .lineLimit(3)
             }
         case ToolNames.requestTeamMeeting:
@@ -172,18 +173,18 @@ private struct ToolCallCustomSummaryView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     if !topic.isEmpty {
                         Text(topic)
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.primary)
+                            .font(Typography.captionSemibold)
+                            .foregroundStyle(Colors.textPrimary)
                             .lineLimit(2)
                     }
                     if !names.isEmpty {
                         HStack(spacing: 4) {
-                            Image(systemName: "person.3.fill")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+                            Image(systemName: "person.3")
+                                .font(Typography.term2xs)
+                                .foregroundStyle(Colors.textSecondary)
                             Text(names.joined(separator: ", "))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .font(Typography.caption)
+                                .foregroundStyle(Colors.textSecondary)
                                 .lineLimit(1)
                         }
                     }
@@ -259,5 +260,49 @@ extension ToolCallItemView: Equatable {
     }
     .padding()
     .frame(width: 500)
+    .background(Colors.surfacePrimary)
+}
+
+#Preview("Collaboration variants") {
+    VStack(spacing: 16) {
+        ToolCallItemView(
+            call: StepToolCall(
+                name: "ask_teammate",
+                argumentsJSON: "{\"teammate\":\"tech_lead\",\"question\":\"Should we use Combine or async/await for the new networking layer?\"}",
+                resultJSON: "{\"ok\": true}",
+                isError: false
+            ),
+            role: .softwareEngineer,
+            roleDefinition: nil,
+            showHeader: true,
+            teamRoles: []
+        )
+        ToolCallItemView(
+            call: StepToolCall(
+                name: "request_team_meeting",
+                argumentsJSON: "{\"topic\":\"Architecture review for storage layer\",\"participants\":[\"tech_lead\",\"software_engineer\",\"code_reviewer\"]}",
+                resultJSON: "{\"ok\": true}",
+                isError: false
+            ),
+            role: .softwareEngineer,
+            roleDefinition: nil,
+            showHeader: false,
+            teamRoles: []
+        )
+        ToolCallItemView(
+            call: StepToolCall(
+                name: "search",
+                argumentsJSON: "{\"query\":\"refactor authentication\",\"exploratory\":true}",
+                resultJSON: "{\"matches\": []}",
+                isError: false
+            ),
+            role: .codeReviewer,
+            roleDefinition: nil,
+            showHeader: true,
+            teamRoles: []
+        )
+    }
+    .padding()
+    .frame(width: 520)
     .background(Colors.surfacePrimary)
 }

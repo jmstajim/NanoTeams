@@ -10,8 +10,10 @@ struct ActivityFeedIconAvatar: View {
     @ScaledMetric(relativeTo: .caption) private var iconScale: CGFloat = 1.0
 
     var body: some View {
+        // Squared icon avatar — matches `ActivityFeedRoleAvatar` (Pass 16)
+        // so notifications and role rows render on the same chrome.
         ZStack {
-            Circle()
+            RoundedRectangle.squircle(CornerRadius.small)
                 .fill(color.opacity(DynamicTintOpacity.badge))
                 .frame(width: size, height: size)
             Image(systemName: icon)
@@ -23,16 +25,16 @@ struct ActivityFeedIconAvatar: View {
 
 #Preview("Status Variants") {
     let items: [(String, String, Color)] = [
-        ("questionmark.bubble.fill", "Question", Colors.warning),
-        ("exclamationmark.triangle.fill", "Error", Colors.error),
+        ("questionmark.bubble", "Question", Colors.warning),
+        ("exclamationmark.triangle", "Error", Colors.error),
         ("arrow.triangle.2.circlepath", "Change", Colors.info),
-        ("checkmark.circle.fill", "Done", Colors.success),
+        ("checkmark.circle", "Done", Colors.success),
     ]
     HStack(spacing: 16) {
         ForEach(items, id: \.0) { icon, label, color in
             VStack(spacing: 6) {
                 ActivityFeedIconAvatar(icon: icon, color: color)
-                Text(label).font(.caption2).foregroundStyle(.secondary)
+                Text(label).font(Typography.caption2).foregroundStyle(Colors.textSecondary)
             }
         }
     }
@@ -43,16 +45,16 @@ struct ActivityFeedIconAvatar: View {
 #Preview("Size Variants") {
     HStack(spacing: 16) {
         VStack(spacing: 6) {
-            ActivityFeedIconAvatar(icon: "bell.fill", color: Colors.info, size: 20)
-            Text("20pt").font(.caption2).foregroundStyle(.secondary)
+            ActivityFeedIconAvatar(icon: "bell", color: Colors.info, size: 20)
+            Text("20pt").font(Typography.caption2).foregroundStyle(Colors.textSecondary)
         }
         VStack(spacing: 6) {
-            ActivityFeedIconAvatar(icon: "exclamationmark.triangle.fill", color: Colors.warning)
-            Text("Default").font(.caption2).foregroundStyle(.secondary)
+            ActivityFeedIconAvatar(icon: "exclamationmark.triangle", color: Colors.warning)
+            Text("Default").font(Typography.caption2).foregroundStyle(Colors.textSecondary)
         }
         VStack(spacing: 6) {
-            ActivityFeedIconAvatar(icon: "checkmark.seal.fill", color: Colors.success, size: 40)
-            Text("40pt").font(.caption2).foregroundStyle(.secondary)
+            ActivityFeedIconAvatar(icon: "checkmark.seal", color: Colors.success, size: 40)
+            Text("40pt").font(Typography.caption2).foregroundStyle(Colors.textSecondary)
         }
     }
     .padding()

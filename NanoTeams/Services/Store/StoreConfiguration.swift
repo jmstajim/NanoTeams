@@ -562,49 +562,6 @@ final class StoreConfiguration {
 #endif
     }
 
-    private enum Keys {
-        static let llmProvider = "llmProvider"
-        static let llmBaseURL = UserDefaultsKeys.llmBaseURL
-        static let llmModel = UserDefaultsKeys.llmModel
-        static let llmMaxTokens = "llmMaxTokens"
-        static let llmTemperature = "llmTemperature"
-        static let debugModeEnabled = UserDefaultsKeys.debugModeEnabled
-        static let maxLLMRetries = UserDefaultsKeys.maxLLMRetries
-        static let llmRequestTimeoutSeconds = UserDefaultsKeys.llmRequestTimeoutSeconds
-        static let timelineClearedUpToDate = UserDefaultsKeys.timelineClearedUpToDate
-        static let visionEnabled = UserDefaultsKeys.visionEnabled
-        static let visionModelName = UserDefaultsKeys.visionModelName
-        static let visionBaseURL = UserDefaultsKeys.visionBaseURL
-        static let visionMaxTokens = UserDefaultsKeys.visionMaxTokens
-        static let dismissedNotificationIDs = UserDefaultsKeys.dismissedNotificationIDs
-        static let dismissedFeatureTipIDs = UserDefaultsKeys.dismissedFeatureTipIDs
-        static let seenSupervisorInputKeys = UserDefaultsKeys.seenSupervisorInputKeys
-        static let enterSendsMessage = UserDefaultsKeys.enterSendsMessage
-        static let embedFilesInPrompt = UserDefaultsKeys.quickCaptureEmbedFiles
-        static let loggingEnabled = UserDefaultsKeys.loggingEnabled
-        static let sidebarTaskFilter = UserDefaultsKeys.sidebarTaskFilter
-        static let teamGenLLMOverride = UserDefaultsKeys.teamGenLLMOverride
-        static let teamGenSystemPrompt = UserDefaultsKeys.teamGenSystemPrompt
-        static let teamGenForcedSupervisorMode = UserDefaultsKeys.teamGenForcedSupervisorMode
-        static let teamGenForcedAcceptanceMode = UserDefaultsKeys.teamGenForcedAcceptanceMode
-        static let lastAppUpdateCheckAt = UserDefaultsKeys.lastAppUpdateCheckAt
-        static let skippedAppUpdateTags = UserDefaultsKeys.skippedAppUpdateTags
-        static let cachedAppUpdateRelease = UserDefaultsKeys.cachedAppUpdateRelease
-        static let appUpdateCheckInterval = UserDefaultsKeys.appUpdateCheckInterval
-        static let dictationLocales = UserDefaultsKeys.dictationLocales
-        static let exploratorySearchEnabled = UserDefaultsKeys.exploratorySearchEnabled
-        static let exploratorySearchEmbeddingConfig = UserDefaultsKeys.exploratorySearchEmbeddingConfig
-        static let exploratorySearchPerTokenThreshold = UserDefaultsKeys.exploratorySearchPerTokenThreshold
-        static let exploratorySearchPhraseThreshold = UserDefaultsKeys.exploratorySearchPhraseThreshold
-        static let searchExploratoryByDefault = UserDefaultsKeys.searchExploratoryByDefault
-        static let readFileMaxLines = UserDefaultsKeys.readFileMaxLines
-        static let searchMaxResults = UserDefaultsKeys.searchMaxResults
-        static let searchIndexWatcherDebounceSeconds = UserDefaultsKeys.searchIndexWatcherDebounceSeconds
-        static let searchContextBefore = UserDefaultsKeys.searchContextBefore
-        static let searchContextAfter = UserDefaultsKeys.searchContextAfter
-        static let globalContext = UserDefaultsKeys.globalContext
-    }
-
     init(storage: any ConfigurationStorage = UserDefaults.standard) {
         self.storage = storage
         Self.migrateExpandedSearchKeys(storage)

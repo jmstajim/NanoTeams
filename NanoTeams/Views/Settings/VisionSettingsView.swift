@@ -40,9 +40,10 @@ struct VisionSettingsView: View {
 }
 
 #Preview {
-    @Previewable @State var config = StoreConfiguration()
+    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     @Previewable @State var catalog = ModelCatalog()
     VisionSettingsView()
-        .environment(config)
+        .environment(store)
+        .environment(store.configuration)
         .environment(catalog)
 }

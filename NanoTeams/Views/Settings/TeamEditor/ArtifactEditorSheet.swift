@@ -17,29 +17,21 @@ struct ArtifactEditorSheet: View {
     private let mimeTypes = ArtifactConstants.supportedMimeTypes
 
     var body: some View {
-        NavigationStack {
-            Form {
-                basicInfoSection
-                technicalSection
-                usagePreviewSection
-            }
-            .formStyle(.grouped)
-            .scrollContentBackground(.hidden)
-            .navigationTitle(mode.isCreate ? "New Artifact" : "Edit Artifact")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
+        VStack(spacing: 0) {
+            headerBar
+
+            TerminalDivider()
+
+            ScrollView {
+                VStack(spacing: Spacing.xl) {
+                    basicInfoSection
+                    technicalSection
+                    usagePreviewSection
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        saveArtifact()
-                        dismiss()
-                    }
-                    .disabled(!isValid)
-                }
+                .padding(Spacing.xl)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background(Colors.surfacePrimary)
         }
         .frame(minWidth: 600, minHeight: 500)
         .onAppear {
@@ -49,68 +41,81 @@ struct ArtifactEditorSheet: View {
         }
     }
 
+    // MARK: - Header
+
+    private var headerBar: some View {
+        HStack(spacing: Spacing.s) {
+            MonoLabel(text: mode.isCreate ? "New Artifact" : "Edit Artifact", marker: true)
+
+            Spacer()
+
+            Button("Cancel") {
+                dismiss()
+            }
+            .keyboardShortcut(.cancelAction)
+            .buttonStyle(.terminalSecondary)
+
+            Button("Save") {
+                saveArtifact()
+                dismiss()
+            }
+            .keyboardShortcut(.defaultAction)
+            .buttonStyle(.terminalPrimary)
+            .disabled(!isValid)
+        }
+        .padding(.horizontal, Spacing.standard)
+        .padding(.vertical, Spacing.m)
+    }
+
     // MARK: - Sections
 
     private var basicInfoSection: some View {
-        Section("Basic Information") {
-            HStack(spacing: 8) {
-                IconPickerButton(selectedIcon: $artifactIcon)
+        SettingsCard(header: "Basic Information", systemImage: "doc.text") {
+            VStack(alignment: .leading, spacing: Spacing.m) {
+                HStack(spacing: 8) {
+                    IconPickerButton(selectedIcon: $artifactIcon)
 
-                TextField("Artifact Name", text: $artifactName)
-                    .textFieldStyle(.roundedBorder)
-            }
+                    TextField("Artifact Name", text: $artifactName)
+                        .textFieldStyle(.plain)
+                        .terminalField()
+                }
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Description — included in the system prompt")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Description — included in the system prompt")
+                        .font(Typography.subheadline)
+                        .foregroundStyle(Colors.textSecondary)
 
-                TextEditor(text: $artifactDescription)
-                    .font(.body)
-                    .frame(minHeight: 200)
-                    .scrollContentBackground(.hidden)
-                    .padding(4)
-                    .background(Colors.surfacePrimary)
-                    .clipShape(RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous)
-                            .stroke(Colors.borderSubtle, lineWidth: 1)
-                    )
-            }
-
-        }
-    }
-
-    private var technicalSection: some View {
-        Section("Technical") {
-            Picker("MIME Type", selection: $artifactMimeType) {
-                ForEach(mimeTypes, id: \.self) { mimeType in
-                    HStack {
-                        Text(mimeTypeLabel(for: mimeType))
-                        Spacer()
-                        Text(mimeType)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .tag(mimeType)
+                    TextEditor(text: $artifactDescription)
+                        .font(Typography.termBase)
+                        .frame(minHeight: 200)
+                        .borderedTextEditorStyle()
                 }
             }
         }
     }
 
-    private var usagePreviewSection: some View {
-        Section {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Usage in Team")
-                    .font(.subheadline)
-                    .fontWeight(.medium)
+    private var technicalSection: some View {
+        SettingsCard(header: "Technical", systemImage: "wrench.and.screwdriver") {
+            HStack {
+                Text("MIME Type")
+                Spacer()
+                TerminalPicker(
+                    selection: $artifactMimeType,
+                    options: mimeTypes.map { (value: $0, label: "\(mimeTypeLabel(for: $0))  ·  \($0)") }
+                )
+            }
+        }
+    }
 
+    private var usagePreviewSection: some View {
+        SettingsCard(header: "Usage in Team", systemImage: "arrow.triangle.swap") {
+            VStack(alignment: .leading, spacing: 12) {
                 if case .edit(let artifact) = mode {
                     usageInfo(for: artifact)
                 } else {
                     Text("Save the artifact to see usage information")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(Typography.caption)
+                        .foregroundStyle(Colors.textSecondary)
                         .italic()
                 }
             }
@@ -124,16 +129,15 @@ struct ArtifactEditorSheet: View {
             if !producers.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 4) {
-                        Image(systemName: "arrow.up.circle.fill")
+                        Image(systemName: "arrow.up.circle")
                             .foregroundStyle(Colors.artifact)
                         Text("Produced by:")
-                            .font(.caption)
-                            .fontWeight(.medium)
+                            .font(Typography.captionSemibold)
                     }
                     ForEach(producers, id: \.id) { role in
                         Text("• \(role.name)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .font(Typography.caption)
+                            .foregroundStyle(Colors.textSecondary)
                             .padding(.leading, 20)
                     }
                 }
@@ -144,16 +148,15 @@ struct ArtifactEditorSheet: View {
             if !consumers.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 4) {
-                        Image(systemName: "arrow.down.circle.fill")
+                        Image(systemName: "arrow.down.circle")
                             .foregroundStyle(Colors.info)
                         Text("Required by:")
-                            .font(.caption)
-                            .fontWeight(.medium)
+                            .font(Typography.captionSemibold)
                     }
                     ForEach(consumers, id: \.id) { role in
                         Text("• \(role.name)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .font(Typography.caption)
+                            .foregroundStyle(Colors.textSecondary)
                             .padding(.leading, 20)
                     }
                 }
@@ -162,15 +165,14 @@ struct ArtifactEditorSheet: View {
             // Orphaned warning
             if producers.isEmpty && consumers.isEmpty {
                 HStack(spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(Colors.warning)
+                    StatusGlyph(glyph: TerminalGlyph.review, color: Colors.warning)
                     Text("This artifact is not used by any roles")
-                        .font(.caption)
+                        .font(Typography.caption)
                         .foregroundStyle(Colors.warning)
                 }
-                .padding(8)
+                .padding(Spacing.s)
                 .background(
-                    RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous)
+                    RoundedRectangle.squircle(CornerRadius.small)
                         .fill(Colors.warningTint)
                 )
             }

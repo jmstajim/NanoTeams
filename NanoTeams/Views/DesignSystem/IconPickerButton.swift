@@ -93,10 +93,10 @@ struct IconPickerButton: View {
             showingPicker.toggle()
         } label: {
             Image(systemName: selectedIcon)
-                .font(.title3)
-                .foregroundStyle(iconForeground)
+                .font(Typography.termLg)
+                .foregroundStyle(iconBackground)
                 .frame(width: buttonSize, height: buttonSize)
-                .background(RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous).fill(iconBackground))
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .popover(isPresented: $showingPicker) {
@@ -107,11 +107,11 @@ struct IconPickerButton: View {
                             selectedIcon = icon
                         } label: {
                             Image(systemName: icon)
-                                .font(.caption)
-                                .foregroundStyle(selectedIcon == icon ? iconForeground : .primary)
+                                .font(Typography.caption)
+                                .foregroundStyle(selectedIcon == icon ? iconForeground : Colors.textPrimary)
                                 .frame(width: gridItemSize, height: gridItemSize)
                                 .background(
-                                    RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous)
+                                    RoundedRectangle.squircle(CornerRadius.small)
                                         .fill(selectedIcon == icon ? iconBackground : Colors.surfaceCard)
                                 )
                         }

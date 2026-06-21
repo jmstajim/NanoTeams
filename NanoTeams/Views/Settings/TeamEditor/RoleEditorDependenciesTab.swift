@@ -14,8 +14,7 @@ struct RoleEditorDependenciesTab: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.m) {
-                Text("Artifact Dependencies")
-                    .font(.headline)
+                MonoLabel(text: "Artifact Dependencies", marker: true)
                     .padding(.horizontal, Spacing.standard)
                     .padding(.top, Spacing.m)
 
@@ -35,8 +34,8 @@ struct RoleEditorDependenciesTab: View {
                 }
 
                 Text("Required artifacts must be produced by upstream roles before this role can start. Produced artifacts become available to downstream roles.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(Typography.caption)
+                    .foregroundStyle(Colors.textSecondary)
                     .padding(.horizontal, Spacing.standard)
 
                 roleTypeBanner
@@ -74,12 +73,9 @@ struct RoleEditorDependenciesTab: View {
     private var supervisorDependenciesView: some View {
         VStack(alignment: .leading, spacing: Spacing.standard) {
             VStack(alignment: .leading, spacing: Spacing.s) {
-                HStack {
-                    Image(systemName: "arrow.down.circle.fill")
-                        .foregroundStyle(Colors.info)
-                    Text("Required Artifacts")
-                        .font(.subheadline)
-                        .fontWeight(.medium)
+                HStack(spacing: Spacing.xs) {
+                    Text("↓").font(Typography.termSm).foregroundStyle(Colors.info)
+                    MonoLabel(text: "Required Artifacts")
                 }
 
                 ArtifactSelectorView(
@@ -90,26 +86,23 @@ struct RoleEditorDependenciesTab: View {
                 )
             }
 
-            Divider()
+            TerminalDivider()
 
             VStack(alignment: .leading, spacing: Spacing.s) {
                 HStack {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .foregroundStyle(Colors.artifact)
-                    Text("Produced Artifacts")
-                        .font(.subheadline)
-                        .fontWeight(.medium)
+                    Text("↑").font(Typography.termSm).foregroundStyle(Colors.artifact)
+                    MonoLabel(text: "Produced Artifacts")
                     Text("(locked)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(Typography.caption)
+                        .foregroundStyle(Colors.textSecondary)
                 }
 
                 Text(SystemTemplates.supervisorTaskArtifactName)
-                    .font(.caption)
+                    .font(Typography.caption)
                     .padding(.horizontal, Spacing.s)
                     .padding(.vertical, Spacing.xs)
                     .background(
-                        Capsule(style: .continuous)
+                        RoundedRectangle.squircle(CornerRadius.small)
                             .fill(Colors.surfaceCard)
                     )
 
@@ -124,21 +117,33 @@ struct RoleEditorDependenciesTab: View {
     private var roleTypeBanner: some View {
         if !isEditingSupervisor {
             if !editorState.producedArtifacts.isEmpty {
-                Label("Producing role \u{2014} completes when all deliverables are submitted via create_artifact.",
-                      systemImage: "info.circle")
-                .font(.caption)
-                .foregroundStyle(Colors.artifact)
+                roleTypeRow(
+                    glyph: TerminalGlyph.bullet,
+                    color: Colors.artifact,
+                    text: "Producing role \u{2014} completes when all deliverables are submitted via create_artifact."
+                )
             } else if !editorState.requiredArtifacts.isEmpty {
-                Label("Chat role \u{2014} responds continuously; no deliverables.",
-                      systemImage: "info.circle")
-                .font(.caption)
-                .foregroundStyle(Colors.teal)
+                roleTypeRow(
+                    glyph: TerminalGlyph.bullet,
+                    color: Colors.teal,
+                    text: "Chat role \u{2014} responds continuously; no deliverables."
+                )
             } else {
-                Label("Observer role \u{2014} participates only via consultations and meetings.",
-                      systemImage: "info.circle")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                roleTypeRow(
+                    glyph: TerminalGlyph.skipped,
+                    color: Colors.textTertiary,
+                    text: "Observer role \u{2014} participates only via consultations and meetings."
+                )
             }
+        }
+    }
+
+    private func roleTypeRow(glyph: String, color: Color, text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Spacing.xs) {
+            StatusGlyph(glyph: glyph, color: color)
+            Text(text)
+                .font(Typography.caption)
+                .foregroundStyle(color)
         }
     }
 }

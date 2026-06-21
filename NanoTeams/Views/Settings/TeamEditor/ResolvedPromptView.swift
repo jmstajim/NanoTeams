@@ -22,7 +22,7 @@ struct ResolvedPromptView: View {
             Text(displayString)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
-                .padding(8)
+                .padding(Spacing.s)
         }
         .scrollIndicators(.automatic)
         .task(id: ObjectIdentifier(attributed)) {

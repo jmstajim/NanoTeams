@@ -70,38 +70,39 @@ struct TeamSelectorView: View {
             HStack(spacing: Spacing.s) {
                 // Team icon — larger and more prominent
                 ZStack {
-                    RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
+                    RoundedRectangle.squircle(CornerRadius.medium)
                         .fill(Colors.accentTintStrong)
                         .frame(width: 36, height: 36)
 
-                    Image(systemName: "person.3.fill")
-                        .font(.subheadline).fontWeight(.semibold)
+                    Image(systemName: "person.3")
+                        .font(Typography.subheadlineSemibold)
                         .foregroundStyle(Colors.accent)
                 }
 
                 // Team name + member count
                 VStack(alignment: .leading, spacing: 1) {
                     Text(activeTeam?.name ?? "Select Team")
-                        .font(.headline)
+                        .font(Typography.termLg)
+                        .foregroundStyle(Colors.textPrimary)
                         .lineLimit(1)
 
-                    Text("\(activeTeam?.memberCount ?? 0) members, \(activeTeam?.artifacts.count ?? 0) artifacts")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Text("\(activeTeam?.memberCount ?? 0) members · \(activeTeam?.artifacts.count ?? 0) artifacts")
+                        .font(Typography.term2xs)
+                        .foregroundStyle(Colors.textTertiary)
                 }
 
                 Image(systemName: "chevron.up.chevron.down")
-                    .font(.caption2).fontWeight(.medium)
-                    .foregroundStyle(.tertiary)
+                    .font(Typography.term2xs.weight(.medium))
+                    .foregroundStyle(Colors.textTertiary)
             }
             .padding(.horizontal, Spacing.m)
             .padding(.vertical, Spacing.s)
             .background(
-                RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
+                RoundedRectangle.squircle(CornerRadius.medium)
                     .fill(Colors.surfacePrimary)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
+                RoundedRectangle.squircle(CornerRadius.medium)
                     .strokeBorder(Colors.accentBorder, lineWidth: 0.5)
             )
         }
@@ -123,7 +124,7 @@ struct TeamSelectorView: View {
                 Spacer()
 
                 Text("\(team.memberCount) members")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Colors.textSecondary)
             }
         }
     }

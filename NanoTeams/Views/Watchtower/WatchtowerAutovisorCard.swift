@@ -27,7 +27,7 @@ struct WatchtowerAutovisorCard: View {
     var body: some View {
         if store.hasRealWorkFolder && isEnabled {
             VStack(alignment: .leading, spacing: Spacing.m) {
-                NTMSSectionHeader(title: "Autovisor", systemImage: "folder.badge.person.crop")
+                MonoLabel(text: "Autovisor", rule: true)
                 card
             }
             .onAppear(perform: seed)
@@ -63,14 +63,12 @@ struct WatchtowerAutovisorCard: View {
 
     private var goalSection: some View {
         VStack(alignment: .leading, spacing: Spacing.xxs) {
-            Text("GOAL")
-                .font(Typography.captionSemibold)
-                .foregroundStyle(Colors.textTertiary)
-                .tracking(0.8)
+            MonoLabel(text: "Goal", size: .xs)
             // Capped like MEMORY so a long goal scrolls internally instead of
             // ballooning the card inside the Watchtower ScrollView.
             TextEditor(text: $goalDraft)
-                .autovisorEditorStyle(minHeight: 60)
+                .font(Typography.termBase)
+                .borderedTextEditorStyle(minHeight: 60)
                 .frame(maxHeight: 180)
                 .onChange(of: goalDraft) { _, newValue in commitGoal(newValue) }
         }
@@ -78,14 +76,12 @@ struct WatchtowerAutovisorCard: View {
 
     private var memorySection: some View {
         VStack(alignment: .leading, spacing: Spacing.xxs) {
-            Text("MEMORY")
-                .font(Typography.captionSemibold)
-                .foregroundStyle(Colors.textTertiary)
-                .tracking(0.8)
+            MonoLabel(text: "Memory", size: .xs)
             // Capped height so a long standing memory scrolls internally instead of
             // ballooning the card inside the Watchtower ScrollView.
             TextEditor(text: $memoryDraft)
-                .autovisorEditorStyle(minHeight: 100)
+                .font(Typography.termBase)
+                .borderedTextEditorStyle(minHeight: 100)
                 .frame(maxHeight: 180)
                 .onChange(of: memoryDraft) { _, newValue in commitMemory(newValue) }
         }

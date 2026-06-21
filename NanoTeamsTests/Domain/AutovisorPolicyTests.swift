@@ -60,4 +60,79 @@ final class AutovisorPolicyTests: XCTestCase {
         // nil != taskID as supervised; pinned so a change here is deliberate.
         XCTAssertTrue(supervises(autovisorTaskID: nil))
     }
+
+    // MARK: - canEnable (work-folder gate)
+
+    /// Shared by the `setAutovisorEnabled` guard and the Watchtower pill's
+    /// visibility — both must agree that the feature needs a real work folder.
+    func testCanEnable_requiresRealWorkFolder() {
+        XCTAssertTrue(AutovisorPolicy.canEnable(hasRealWorkFolder: true),
+            "with a real work folder the Autovisor can be enabled")
+        XCTAssertFalse(AutovisorPolicy.canEnable(hasRealWorkFolder: false),
+            "default storage has nothing to manage — enabling would be a dead toggle")
+    }
+
+    // MARK: - goalIsUnset (configured-vs-placeholder gate)
+
+    func testGoalIsUnset_empty_true() {
+        XCTAssertTrue(AutovisorPolicy.goalIsUnset(""))
+    }
+
+    func testGoalIsUnset_whitespaceOnly_true() {
+        XCTAssertTrue(AutovisorPolicy.goalIsUnset("   \n\t  "),
+            "whitespace-only goal is unset (trimmed to empty)")
+    }
+
+    func testGoalIsUnset_seededDefault_true() {
+        XCTAssertTrue(AutovisorPolicy.goalIsUnset(AutovisorConstants.defaultGoal),
+            "the seeded placeholder counts as unset — the user hasn't typed a real goal")
+    }
+
+    func testGoalIsUnset_seededDefaultWithSurroundingWhitespace_true() {
+        XCTAssertTrue(AutovisorPolicy.goalIsUnset("\n  " + AutovisorConstants.defaultGoal + "  \n"),
+            "match is after trimming, so a re-seeded default with stray whitespace is still unset")
+    }
+
+    func testGoalIsUnset_realGoal_false() {
+        XCTAssertFalse(AutovisorPolicy.goalIsUnset("Ship the v2 onboarding flow and keep tests green."),
+            "a real typed goal is configured")
+    }
+
+    func testGoalIsUnset_realGoalContainingDefaultAsSubstring_false() {
+        // Exact match, NOT contains — a real goal that quotes the placeholder is
+        // still configured.
+        XCTAssertFalse(AutovisorPolicy.goalIsUnset(AutovisorConstants.defaultGoal + " Also: refactor X."),
+            "default-as-prefix is a real goal, not the unset placeholder")
+    }
+
+    // MARK: - needsSetup (setup-pane-vs-chat routing)
+
+    /// No manager task yet → always setup, regardless of enabled/goal (the
+    /// never-created first-run state).
+    func testNeedsSetup_noTask_alwaysTrue() {
+        XCTAssertTrue(AutovisorPolicy.needsSetup(taskExists: false, enabled: false, goalIsUnset: true))
+        XCTAssertTrue(AutovisorPolicy.needsSetup(taskExists: false, enabled: false, goalIsUnset: false),
+            "even with a goal pre-set in Settings, a never-created manager routes through setup")
+    }
+
+    /// THE regression case: a created-then-disabled manager whose goal is still the
+    /// placeholder must route back to setup — it used to be stranded on the chat.
+    func testNeedsSetup_taskExistsDisabledUnsetGoal_true() {
+        XCTAssertTrue(AutovisorPolicy.needsSetup(taskExists: true, enabled: false, goalIsUnset: true),
+            "disabled manager with no real goal → setup, not a chat for a manager that won't run")
+    }
+
+    /// A disabled manager WITH a real goal doesn't need setup — the pill re-enables
+    /// it directly and the chat is meaningful.
+    func testNeedsSetup_taskExistsDisabledRealGoal_false() {
+        XCTAssertFalse(AutovisorPolicy.needsSetup(taskExists: true, enabled: false, goalIsUnset: false))
+    }
+
+    /// An ENABLED manager never needs setup — it's already running. `enabled`
+    /// dominates an unset goal (don't interrupt a live placeholder run).
+    func testNeedsSetup_taskExistsEnabled_falseEvenWithUnsetGoal() {
+        XCTAssertFalse(AutovisorPolicy.needsSetup(taskExists: true, enabled: true, goalIsUnset: true),
+            "enabled dominates — a running manager on the placeholder goal stays on its chat")
+        XCTAssertFalse(AutovisorPolicy.needsSetup(taskExists: true, enabled: true, goalIsUnset: false))
+    }
 }

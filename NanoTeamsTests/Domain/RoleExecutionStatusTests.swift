@@ -23,10 +23,10 @@ final class RoleExecutionStatusTests: XCTestCase {
         XCTAssertEqual(RoleExecutionStatus.idle.icon, "circle")
         XCTAssertEqual(RoleExecutionStatus.ready.icon, "circle.lefthalf.filled")
         XCTAssertEqual(RoleExecutionStatus.working.icon, "arrow.triangle.2.circlepath")
-        XCTAssertEqual(RoleExecutionStatus.needsAcceptance.icon, "hand.raised.circle.fill")
+        XCTAssertEqual(RoleExecutionStatus.needsAcceptance.icon, "hand.raised.circle")
         XCTAssertEqual(RoleExecutionStatus.accepted.icon, "checkmark.circle")
         XCTAssertEqual(RoleExecutionStatus.revisionRequested.icon, "arrow.counterclockwise")
-        XCTAssertEqual(RoleExecutionStatus.done.icon, "checkmark.circle.fill")
+        XCTAssertEqual(RoleExecutionStatus.done.icon, "checkmark.circle")
         XCTAssertEqual(RoleExecutionStatus.failed.icon, "xmark.circle")
         XCTAssertEqual(RoleExecutionStatus.skipped.icon, "forward.circle")
     }

@@ -35,12 +35,12 @@ struct ClipPopoverContent: View {
             VStack(alignment: .leading, spacing: Spacing.xs) {
                 if let source = parsed?.source {
                     Label(source, systemImage: "doc.text")
-                        .font(.caption)
+                        .font(Typography.caption)
                         .foregroundStyle(Colors.accent)
                         .lineLimit(2)
                 }
                 Text(displayText)
-                    .font(.body)
+                    .font(Typography.termBase)
                     .textSelection(.enabled)
             }
             .padding(Spacing.m)
@@ -58,18 +58,28 @@ struct ClipPopoverContent: View {
 
 // MARK: - Remove Badge Button
 
-/// Shared dismiss badge for attachment/clip cells (xmark circle, top-trailing).
+/// Shared dismiss badge for attachment/clip cells. Visually distinct from
+/// `CloseButton` (panel close) so the user can tell single-item removal
+/// from closing the surface at a glance: an accent-tinted chip rather than
+/// a neutral chrome tile. Same `xmark` glyph, but white-on-purple at 16×16
+/// keys it as "interactive purple action chip" — the same vocabulary the
+/// panel already uses for `+` and the send button — whereas `CloseButton`
+/// stays in the `surfaceElevated` chrome family.
 struct RemoveBadgeButton: View {
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: "xmark.circle.fill")
-                .font(.caption2)
-                .foregroundStyle(.white)
-                .background(Circle().fill(Color.black.opacity(0.6)))
+            Image(systemName: "xmark")
+                .font(Typography.term2xs.weight(.bold))
+                .foregroundStyle(Colors.textOnAccent)
+                .frame(width: 16, height: 16)
+                .background(
+                    RoundedRectangle.squircle(CornerRadius.small)
+                        .fill(Colors.accent)
+                )
         }
         .buttonStyle(.plain)
-        .offset(x: 4, y: -4)
+        .offset(x: 6, y: -6)
     }
 }

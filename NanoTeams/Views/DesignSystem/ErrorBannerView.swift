@@ -14,8 +14,8 @@ struct ErrorBannerView: View {
 
         var icon: String {
             switch self {
-            case .error: "exclamationmark.triangle.fill"
-            case .info: "info.circle.fill"
+            case .error: "exclamationmark.triangle"
+            case .info: "info.circle"
             }
         }
 
@@ -44,12 +44,12 @@ struct ErrorBannerView: View {
     var body: some View {
         HStack(spacing: Spacing.s) {
             Image(systemName: style.icon)
-                .font(.body.weight(.semibold))
+                .font(Typography.termBase.weight(.semibold))
                 .foregroundStyle(style.iconColor)
 
             Text(message)
                 .font(Typography.subheadlineMedium)
-                .foregroundStyle(.primary)
+                .foregroundStyle(Colors.textPrimary)
                 .lineLimit(2)
         }
         .padding(.horizontal, Spacing.standard)
@@ -62,7 +62,7 @@ struct ErrorBannerView: View {
             RoundedRectangle.squircle(CornerRadius.large)
                 .strokeBorder(style.border, lineWidth: 1)
         }
-        .shadow(color: .black.opacity(0.25), radius: 12, y: 4)
+        .shadow(.banner)
         .onTapGesture { onDismiss() }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(style == .error ? "Error: " : "")\(message)")

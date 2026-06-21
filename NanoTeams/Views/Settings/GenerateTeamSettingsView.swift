@@ -14,7 +14,7 @@ struct GenerateTeamSettingsView: View {
         ScrollView {
             VStack(spacing: Spacing.xl) {
                 HStack(spacing: Spacing.s) {
-                    Image(systemName: "info.circle.fill")
+                    Image(systemName: "info.circle")
                         .foregroundStyle(Colors.info)
                     Text("All settings are optional. Empty fields fall back to the global LLM config and built-in prompt.")
                         .font(Typography.caption)

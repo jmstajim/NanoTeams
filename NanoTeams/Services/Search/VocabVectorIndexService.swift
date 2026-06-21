@@ -296,29 +296,22 @@ actor VocabVectorIndexService {
             return .empty
         }
 
-        // Excluded: the original query tokens themselves. Lowercased to match
-        // stored token casing.
-        let loweredQueryTokens = Set(tokens.map {
-            $0.lowercased(with: Locale(identifier: "en_US_POSIX"))
-        })
-        var related = Set<String>()
+        // Excluded: the original query tokens themselves (lowercased to match
+        // stored token casing) so they don't dominate their own expansion.
+        let loweredQueryTokens = VocabExpansionScorer.excludedTokens(tokens)
 
         // Tier 1: per-token expansion via precomputed vectors. Zero network.
-        for token in tokens {
-            if let vec = index.vector(for: token) {
-                let hits = index.nearestTokens(
-                    to: vec, k: 10, threshold: perTokenThreshold,
-                    excluding: loweredQueryTokens
-                )
-                related.formUnion(hits.map(\.token))
-            }
-        }
+        var related = VocabExpansionScorer.tier1PerToken(
+            index: index, tokens: tokens,
+            excluding: loweredQueryTokens, threshold: perTokenThreshold
+        )
 
         // Tier 2: whole-phrase expansion. Skip when the whole query is a
         // single vocab token — per-token already covered it. Otherwise fire
         // one `/v1/embeddings` call (~10-20ms locally).
-        let needsPhraseEmbed = tokens.count > 1 ||
-            tokens.first.flatMap { index.vector(for: $0) } == nil
+        let needsPhraseEmbed = VocabExpansionScorer.needsPhraseEmbedding(
+            index: index, tokens: tokens
+        )
         var liveError: String?
 
         if needsPhraseEmbed {
@@ -332,24 +325,23 @@ actor VocabVectorIndexService {
                 if let raw = vectors.first {
                     // Dim mismatch = live model differs from the model that
                     // built the persisted vectors (e.g. user swapped
-                    // `EmbeddingConfig.modelName` mid-session). `nearestTokens`
-                    // silently returns [] on mismatch; surfacing the reason
-                    // explicitly lets the UI prompt a rebuild and the LLM
-                    // know this isn't a clean "no close matches" result.
-                    // Return the per-token terms already collected — they
-                    // came from the persisted index and remain valid.
-                    if raw.count != index.meta.dims {
+                    // `EmbeddingConfig.modelName` mid-session). Surfacing the
+                    // reason explicitly lets the UI prompt a rebuild and the
+                    // LLM know this isn't a clean "no close matches" result.
+                    // Return the per-token terms already collected — they came
+                    // from the persisted index and remain valid.
+                    switch VocabExpansionScorer.tier2FromPhraseVector(
+                        rawVector: raw, index: index,
+                        excluding: loweredQueryTokens, threshold: phraseThreshold
+                    ) {
+                    case .dimMismatch:
                         return .transientError(
-                            terms: Array(related).sorted(),
+                            terms: VocabExpansionScorer.finalize(related),
                             reason: Self.reasonDimMismatch
                         )
+                    case .hits(let hits):
+                        related.formUnion(hits)
                     }
-                    let normalized = VectorMath.normalize(raw)
-                    let hits = index.nearestTokens(
-                        to: normalized, k: 20, threshold: phraseThreshold,
-                        excluding: loweredQueryTokens
-                    )
-                    related.formUnion(hits.map(\.token))
                 }
             } catch is CancellationError {
                 // Caller's tree was cancelled — propagate upward is handled
@@ -377,9 +369,9 @@ actor VocabVectorIndexService {
         }
 
         if let liveError {
-            return .transientError(terms: Array(related).sorted(), reason: liveError)
+            return .transientError(terms: VocabExpansionScorer.finalize(related), reason: liveError)
         }
-        return .expanded(terms: Array(related).sorted())
+        return .expanded(terms: VocabExpansionScorer.finalize(related))
     }
 
     // MARK: - Canonical envelope reasons

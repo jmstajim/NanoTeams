@@ -54,11 +54,11 @@ final class StepStatusTests: XCTestCase {
     func testStepStatusSystemImageName() {
         XCTAssertEqual(StepStatus.pending.systemImageName, "circle.dotted")
         XCTAssertEqual(StepStatus.running.systemImageName, "circle.inset.filled")
-        XCTAssertEqual(StepStatus.paused.systemImageName, "pause.circle.fill")
-        XCTAssertEqual(StepStatus.needsSupervisorInput.systemImageName, "questionmark.bubble.fill")
-        XCTAssertEqual(StepStatus.needsApproval.systemImageName, "checkmark.seal.fill")
-        XCTAssertEqual(StepStatus.failed.systemImageName, "xmark.circle.fill")
-        XCTAssertEqual(StepStatus.done.systemImageName, "checkmark.circle.fill")
+        XCTAssertEqual(StepStatus.paused.systemImageName, "pause.circle")
+        XCTAssertEqual(StepStatus.needsSupervisorInput.systemImageName, "questionmark.bubble")
+        XCTAssertEqual(StepStatus.needsApproval.systemImageName, "checkmark.seal")
+        XCTAssertEqual(StepStatus.failed.systemImageName, "xmark.circle")
+        XCTAssertEqual(StepStatus.done.systemImageName, "checkmark.circle")
     }
 
     func testStepStatusHashable() {

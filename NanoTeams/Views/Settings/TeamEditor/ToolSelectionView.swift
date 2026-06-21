@@ -142,7 +142,7 @@ struct ToolSelectionView: View {
                     }
                 } label: {
                     Image(systemName: showDescriptions ? "info.circle.fill" : "info.circle")
-                        .font(.system(size: 13))
+                        .font(Typography.termBase)
                         .foregroundStyle(showDescriptions ? Colors.accent : Colors.textTertiary)
                 }
                 .buttonStyle(.plain)
@@ -151,8 +151,8 @@ struct ToolSelectionView: View {
                 Spacer()
 
                 Text("\(selectedTools.intersection(editableToolNames).count)/\(editableToolNames.count)")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                    .font(Typography.caption)
+                    .foregroundStyle(Colors.textSecondary)
                     .fixedSize()
 
                 Button {
@@ -162,7 +162,7 @@ struct ToolSelectionView: View {
                 } label: {
                     Text(ToolSelectionLogic.isAllEditableSelected(selected: selectedTools, editable: editableToolNames)
                          ? "Clear All" : "Select All")
-                        .font(.caption)
+                        .font(Typography.caption)
                         .fixedSize()
                 }
                 .buttonStyle(.plain)
@@ -171,11 +171,11 @@ struct ToolSelectionView: View {
             .padding(.horizontal, Spacing.m)
             .padding(.vertical, Spacing.s)
 
-            Divider()
+            TerminalDivider()
 
             // Categories
             if filteredCategories.isEmpty && !showAutoInjected && visibleLockedTools.isEmpty {
-                ContentUnavailableView.search(text: searchText)
+                NTMSSearchEmptyState(searchText: searchText)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
@@ -237,13 +237,10 @@ private struct AutoInjectedToolsSection: View {
             VStack(alignment: .leading, spacing: 0) {
                 // Header
                 HStack(spacing: Spacing.xs) {
-                    Image(systemName: "bolt.fill")
-                        .font(.caption2)
+                    Image(systemName: "bolt")
+                        .font(Typography.term2xs)
                         .foregroundStyle(Colors.warning)
-                    Text("Auto-injected")
-                        .font(.caption)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.secondary)
+                    MonoLabel(text: "Auto-injected", accent: true)
                 }
                 .padding(.horizontal, Spacing.s)
                 .padding(.top, Spacing.m)
@@ -291,25 +288,23 @@ private struct AutoInjectedToolsSection: View {
 
     private func autoInjectedRow(toolName: String, hint: String) -> some View {
         HStack(spacing: Spacing.s) {
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 14))
-                .foregroundStyle(Colors.success)
+            StatusGlyph(glyph: TerminalGlyph.done, color: Colors.success)
                 .frame(width: 16)
 
             Text(toolName)
-                .font(.system(.callout, design: .monospaced))
+                .font(Typography.termBase)
 
             Text("Auto")
-                .font(.system(size: 9, weight: .semibold))
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
                 .padding(.horizontal, 5)
                 .padding(.vertical, 2)
-                .background(Capsule(style: .continuous).fill(Colors.successTint))
+                .background(RoundedRectangle.squircle(CornerRadius.micro).fill(Colors.successTint))
                 .foregroundStyle(Colors.success)
 
             Spacer()
 
             Text(hint)
-                .font(.caption2)
+                .font(Typography.term2xs)
                 .foregroundStyle(Colors.textTertiary)
                 .lineLimit(1)
         }
@@ -328,13 +323,10 @@ private struct RequiredToolsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: Spacing.xs) {
-                Image(systemName: "lock.fill")
-                    .font(.caption2)
+                Image(systemName: "lock")
+                    .font(Typography.term2xs)
                     .foregroundStyle(Colors.textTertiary)
-                Text("Required")
-                    .font(.caption)
-                    .fontWeight(.medium)
-                    .foregroundStyle(.secondary)
+                MonoLabel(text: "Required")
             }
             .padding(.horizontal, Spacing.s)
             .padding(.top, Spacing.m)
@@ -343,22 +335,20 @@ private struct RequiredToolsSection: View {
             VStack(spacing: 0) {
                 ForEach(tools, id: \.self) { tool in
                     HStack(spacing: Spacing.s) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 13))
-                            .foregroundStyle(Colors.textTertiary)
+                        StatusGlyph(glyph: TerminalGlyph.done, color: Colors.textTertiary)
                             .frame(width: 16)
 
                         Text(tool)
-                            .font(.system(.callout, design: .monospaced))
-                            .foregroundStyle(.secondary)
+                            .font(Typography.termBase)
+                            .foregroundStyle(Colors.textSecondary)
 
                         Spacer(minLength: 0)
 
                         Text("Required")
-                            .font(.system(size: 9, weight: .semibold))
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
                             .padding(.horizontal, 5)
                             .padding(.vertical, 2)
-                            .background(Capsule(style: .continuous).fill(Colors.neutralTint))
+                            .background(RoundedRectangle.squircle(CornerRadius.micro).fill(Colors.neutralTint))
                             .foregroundStyle(Colors.textSecondary)
                     }
                     .padding(.horizontal, Spacing.s)
@@ -366,7 +356,7 @@ private struct RequiredToolsSection: View {
                 }
             }
             .background(Colors.surfaceCard)
-            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous))
+            .clipShape(RoundedRectangle.squircle(CornerRadius.small))
         }
     }
 }
@@ -405,14 +395,11 @@ private struct ToolCategorySection: View {
             // Category header
             HStack(spacing: Spacing.xs) {
                 Image(systemName: icon)
-                    .font(.caption2)
+                    .font(Typography.term2xs)
                     .foregroundStyle(Colors.textTertiary)
                     .frame(width: 14)
 
-                Text(name)
-                    .font(.caption)
-                    .fontWeight(.medium)
-                    .foregroundStyle(.secondary)
+                MonoLabel(text: name)
 
                 Spacer()
 
@@ -425,14 +412,14 @@ private struct ToolCategorySection: View {
                         }
                     } label: {
                         Text(allSelected ? "Clear" : "All")
-                            .font(.caption2)
+                            .font(Typography.term2xs)
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(Colors.accent)
                 }
 
                 Text("\(selectedInCategory)/\(tools.count)")
-                    .font(.system(.caption2, design: .monospaced))
+                    .font(Typography.term2xs)
                     .foregroundStyle(Colors.textTertiary)
                     .fixedSize()
             }
@@ -452,7 +439,7 @@ private struct ToolCategorySection: View {
                 }
             }
             .background(Colors.surfaceCard)
-            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous))
+            .clipShape(RoundedRectangle.squircle(CornerRadius.small))
         }
     }
 }
@@ -471,19 +458,19 @@ private struct ToolRow: View {
             isSelected.toggle()
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: Spacing.s) {
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 13))
+                Image(systemName: isSelected ? "checkmark.circle" : "circle")
+                    .font(Typography.termBase)
                     .foregroundStyle(isSelected ? Colors.accent : Colors.textTertiary)
                     .frame(width: 16, alignment: .center)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(name)
-                        .font(.system(.callout, design: .monospaced))
-                        .foregroundStyle(isSelected ? .primary : .secondary)
+                        .font(Typography.termBase)
+                        .foregroundStyle(isSelected ? Colors.textPrimary : Colors.textSecondary)
 
                     if let description {
                         Text(description)
-                            .font(.caption2)
+                            .font(Typography.term2xs)
                             .foregroundStyle(Colors.textTertiary)
                             .lineLimit(1)
                     }
@@ -493,7 +480,7 @@ private struct ToolRow: View {
 
                 if let hint {
                     Text(hint)
-                        .font(.caption2)
+                        .font(Typography.term2xs)
                         .foregroundStyle(Colors.textTertiary)
                         .lineLimit(1)
                 }

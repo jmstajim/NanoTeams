@@ -37,11 +37,11 @@ struct ArtifactListView: View {
                     showingAddArtifact = true
                 } label: {
                     Image(systemName: "plus")
-                        .font(.subheadline.weight(.bold))
+                        .font(Typography.termBase.weight(.bold))
                         .foregroundStyle(Colors.accent)
                         .frame(width: 28, height: 28)
-                        .background(Colors.accentTint, in: Circle())
-                        .contentShape(Circle())
+                        .background(Colors.accentTint, in: RoundedRectangle.squircle(CornerRadius.small))
+                        .contentShape(RoundedRectangle.squircle(CornerRadius.small))
                 }
                 .buttonStyle(.plain)
                 .help("Add artifact")
@@ -62,12 +62,13 @@ struct ArtifactListView: View {
                     }
                 } label: {
                     Image(systemName: "ellipsis")
-                        .font(.subheadline.weight(.medium))
+                        .font(Typography.subheadlineMedium)
                         .foregroundStyle(Colors.textSecondary)
                         .frame(width: 28, height: 28)
                         .contentShape(Rectangle())
                 }
-                .menuStyle(.button)
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
                 .buttonStyle(.plain)
                 .fixedSize()
             }
@@ -141,21 +142,27 @@ struct ArtifactListView: View {
     }
 
     private var noResultsState: some View {
-        ContentUnavailableView.search(text: searchText)
+        NTMSSearchEmptyState(searchText: searchText)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - Artifact List
 
     private var artifactList: some View {
-        List(selection: $selectedArtifactID) {
-            ForEach(filteredArtifacts) { artifact in
-                ArtifactListItemView(artifact: artifact, team: team)
-                    .contentShape(Rectangle())
-                    .tag(artifact.id)
-                    .onTapGesture(count: 2) {
-                        showingEditArtifact = artifact
-                    }
+        // Custom LazyVStack instead of the native `List(selection:)` — DS
+        // requires `Colors.accentTint` selection + `CornerRadius.small`
+        // corners; List's system-tint wash + rounded-pill selection clash
+        // with the palette. See sibling refactor in `RoleListView.roleList`.
+        ScrollView {
+            LazyVStack(spacing: Spacing.xxs) {
+                ForEach(filteredArtifacts) { artifact in
+                    SelectableArtifactRow(
+                        artifact: artifact,
+                        team: team,
+                        isSelected: selectedArtifactID == artifact.id,
+                        onSelect: { selectedArtifactID = artifact.id },
+                        onEdit: { showingEditArtifact = artifact }
+                    )
                     .accessibilityAction(named: "Edit") {
                         showingEditArtifact = artifact
                     }
@@ -188,12 +195,44 @@ struct ArtifactListView: View {
                             Label("Delete", systemImage: "trash")
                         }
                     }
+                }
             }
+            .padding(.horizontal, Spacing.s)
+            .padding(.vertical, Spacing.xs)
         }
-        .listStyle(.inset)
-        .scrollContentBackground(.hidden)
     }
 
+}
+
+// MARK: - Selectable Artifact Row
+
+/// DS-styled wrapper around `ArtifactListItemView` — see
+/// `SelectableRoleRow` for rationale.
+private struct SelectableArtifactRow: View {
+    let artifact: TeamArtifact
+    let team: Team
+    let isSelected: Bool
+    let onSelect: () -> Void
+    let onEdit: () -> Void
+
+    @State private var isHovered = false
+
+    private var rowBackground: Color {
+        if isSelected { return Colors.accentTint }
+        if isHovered { return Colors.surfaceHover }
+        return .clear
+    }
+
+    var body: some View {
+        ArtifactListItemView(artifact: artifact, team: team)
+            .padding(.horizontal, Spacing.s)
+            .background(rowBackground, in: RoundedRectangle.squircle(CornerRadius.small))
+            .contentShape(Rectangle())
+            .onHover { isHovered = $0 }
+            // Higher-count gesture first so SwiftUI gives double-tap priority.
+            .onTapGesture(count: 2) { onEdit() }
+            .onTapGesture { onSelect() }
+    }
 }
 
 // MARK: - Artifact List Item View
@@ -203,32 +242,29 @@ private struct ArtifactListItemView: View {
     let artifact: TeamArtifact
     let team: Team
 
-    @ScaledMetric(relativeTo: .body) private var iconSize: CGFloat = 36
+    @ScaledMetric(relativeTo: .body) private var iconSize: CGFloat = 28
+    @ScaledMetric(relativeTo: .caption2) private var glyphSize: CGFloat = 10
 
     var body: some View {
         HStack(spacing: Spacing.m) {
-            // Artifact icon
-            ZStack {
-                RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
-                    .fill(Colors.accentTint)
-                    .frame(width: iconSize, height: iconSize)
-
-                Image(systemName: artifact.icon)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(Colors.accent)
-            }
+            // Artifact icon — bare glyph, matching `RoleListItemView`.
+            Image(systemName: artifact.icon)
+                .font(.system(size: glyphSize + 6, weight: .semibold))
+                .foregroundStyle(Colors.accent)
+                .frame(width: iconSize, height: iconSize)
 
             // Name + details
             VStack(alignment: .leading, spacing: Spacing.xxs) {
                 Text(artifact.name)
-                    .font(.subheadline.weight(.semibold))
+                    .font(Typography.subheadlineSemibold)
+                    .foregroundStyle(Colors.textPrimary)
                     .lineLimit(1)
 
                 // Role connections summary
                 if !roleConnectionSummary.isEmpty {
                     Text(roleConnectionSummary)
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+                        .font(Typography.caption)
+                        .foregroundStyle(Colors.textTertiary)
                         .lineLimit(1)
                 }
             }
@@ -237,8 +273,8 @@ private struct ArtifactListItemView: View {
 
             // MIME type label
             Text(artifact.mimeType)
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(.tertiary)
+                .font(Typography.term2xs)
+                .foregroundStyle(Colors.textTertiary)
         }
         .padding(.vertical, Spacing.xs)
     }

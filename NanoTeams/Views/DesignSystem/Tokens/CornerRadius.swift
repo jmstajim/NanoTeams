@@ -1,18 +1,18 @@
 import SwiftUI
 
-/// 5-tier corner radius system.
-/// Progression: 2 → 4 → 6 → 10 → 14 (clear perceptual hierarchy).
-enum CornerRadius {
-    /// Accent radius (2pt) — decorative accent bars, thin edge strips
-    static let accent: CGFloat = 2
-    /// Micro radius (4pt) — graph labels, tiny inline pills
-    static let micro: CGFloat = 4
-    /// Small radius (6pt) — badges, pills, text editors, inner card sections
-    static let small: CGFloat = 6
-    /// Medium radius (10pt) — cards, panels, banners (workhorse)
-    static let medium: CGFloat = 10
-    /// Large radius (14pt) — role nodes, action bar cards, prominent elements
-    static let large: CGFloat = 14
+/// 5-tier corner radius system — near-sharp (a terminal is a grid of cells).
+/// Progression: 1 → 2 → 2 → 3 → 4.
+nonisolated enum CornerRadius {
+    /// Accent radius (1pt) — decorative accent bars, thin edge strips
+    static let accent: CGFloat = 1
+    /// Micro radius (2pt) — graph labels, tiny inline pills
+    static let micro: CGFloat = 2
+    /// Small radius (2pt) — badges, pills, inputs, buttons, inner card sections
+    static let small: CGFloat = 2
+    /// Medium radius (3pt) — cards, panels, banners (workhorse)
+    static let medium: CGFloat = 3
+    /// Large radius (4pt) — role nodes, modals, prominent elements
+    static let large: CGFloat = 4
 }
 
 // MARK: - Squircle Convenience

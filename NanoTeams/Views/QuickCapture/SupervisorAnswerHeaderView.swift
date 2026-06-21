@@ -17,8 +17,8 @@ struct SupervisorAnswerHeaderView: View {
             )
 
             Text(statusLine)
-                .font(.headline.weight(.medium))
-                .foregroundStyle(.secondary)
+                .font(Typography.termLg)
+                .foregroundStyle(Colors.textSecondary)
                 .lineLimit(1)
         }
     }

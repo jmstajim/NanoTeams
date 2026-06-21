@@ -96,7 +96,7 @@ nonisolated enum RoleErrorStrategy: String, Codable, Hashable, CaseIterable {
     private static let metadata: [RoleErrorStrategy: (name: String, desc: String, icon: String)] = [
         .retry:         ("Retry",           "Automatically retry the operation",        "arrow.clockwise"),
         .askSupervisor: ("Ask Supervisor",  "Ask the Supervisor for guidance",          "person.fill.questionmark"),
-        .skip:          ("Skip Role",       "Skip this role and continue with others",  "forward.fill"),
+        .skip:          ("Skip Role",       "Skip this role and continue with others",  "forward"),
         .failTask:      ("Fail Task",       "Mark the entire task as failed",           "xmark.octagon"),
     ]
 

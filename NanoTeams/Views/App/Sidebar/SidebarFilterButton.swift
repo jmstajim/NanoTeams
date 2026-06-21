@@ -1,6 +1,11 @@
 import SwiftUI
 
-/// Filter chip: text-only, capsule shape, no icons to save space.
+/// Filter chip — terminal DS style: lowercase mono `name(count)` (or a small
+/// SF Symbol for the icon-only Recurring filter). No card / no border — the
+/// flat sidebar language signals selection through an accentTint fill + accent
+/// text color, mirroring the row-selection chrome on the nav-rows above. The
+/// inline `(N)` count rides dimmer than the name (textQuaternary) so the eye
+/// lands on the name first, then the count saturates to accent on selection.
 struct SidebarFilterButton: View {
     let title: String
     let icon: String
@@ -15,20 +20,21 @@ struct SidebarFilterButton: View {
     var body: some View {
         Button(action: action) {
             chipLabel
-                .font(Typography.captionSemibold)
                 .lineLimit(1)
-                .padding(.horizontal, 6)
-                .padding(.vertical, Spacing.xs)
-                .foregroundStyle(isSelected ? Colors.surfaceBackground : .secondary)
-                .background(
-                    Capsule(style: .continuous).fill(
-                        isSelected
-                            ? Colors.accent
-                            : isHovered
-                                ? Colors.surfaceElevated
-                                : Colors.surfaceCard
-                    )
-                )
+                .padding(.horizontal, Spacing.xs)
+                .padding(.vertical, Spacing.xxs)
+                .background {
+                    // Squircle shape only paints when filled; an empty rest
+                    // state leaves the chip visually flush with the sidebar
+                    // background (no card affordance, terminal-coherent).
+                    if isSelected {
+                        RoundedRectangle.squircle(CornerRadius.small)
+                            .fill(Colors.accentTint)
+                    } else if isHovered {
+                        RoundedRectangle.squircle(CornerRadius.small)
+                            .fill(Colors.surfaceHover)
+                    }
+                }
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
@@ -39,8 +45,21 @@ struct SidebarFilterButton: View {
     private var chipLabel: some View {
         if iconOnly {
             Image(systemName: icon)
+                .font(Typography.captionSemibold)
+                .foregroundStyle(isSelected ? Colors.accent : Colors.textTertiary)
         } else {
-            Text(title)
+            // Inline `(N)` count, count dimmer than the name when unselected
+            // so it reads as quiet metadata; on selection both saturate to
+            // accent so the active filter glows as one unit.
+            HStack(spacing: 0) {
+                Text(title.lowercased())
+                    .font(Typography.captionSemibold)
+                    .foregroundStyle(isSelected ? Colors.accent : Colors.textTertiary)
+                Text("(\(count))")
+                    .font(Typography.captionSemibold)
+                    .monospacedDigit()
+                    .foregroundStyle(isSelected ? Colors.accent : Colors.textQuaternary)
+            }
         }
     }
 }

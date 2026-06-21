@@ -22,19 +22,19 @@ struct LLMGenerationCard: View {
                     Spacer()
 
                     if config.llmTemperature != nil {
-                        Slider(
+                        TerminalSlider(
                             value: Binding(
                                 get: { config.llmTemperature ?? 0.7 },
                                 set: { config.llmTemperature = $0 }
                             ),
-                            in: 0...2,
+                            range: 0...2,
                             step: 0.1
                         )
                         .frame(maxWidth: 160)
 
                         Text(String(format: "%.1f", config.llmTemperature ?? 0.7))
                             .monospacedDigit()
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Colors.textSecondary)
                             .frame(minWidth: 30, alignment: .trailing)
 
                         SettingsPillButton(title: "Auto", icon: "slider.horizontal.3") {

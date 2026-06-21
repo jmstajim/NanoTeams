@@ -15,13 +15,11 @@ struct RevisionSheet: View {
             SheetHeader(
                 title: "Request Changes",
                 subtitle: "Provide feedback for \(roleName) to address",
-                systemImage: "exclamationmark.bubble.fill"
+                systemImage: "exclamationmark.bubble"
             )
 
             VStack(alignment: .leading, spacing: Spacing.s) {
-                Text("Feedback")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.secondary)
+                MonoLabel(text: "Feedback", marker: true)
 
                 TextEditor(text: $comment)
                     .frame(height: SheetLayout.textEditorHeight)
@@ -35,7 +33,7 @@ struct RevisionSheet: View {
                     comment = ""
                     isPresented = false
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.terminalSecondary)
 
                 Spacer()
 
@@ -50,7 +48,7 @@ struct RevisionSheet: View {
                         isPresented = false
                     }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.terminalPrimary)
                 .keyboardShortcut(.defaultAction)
                 .disabled(comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }

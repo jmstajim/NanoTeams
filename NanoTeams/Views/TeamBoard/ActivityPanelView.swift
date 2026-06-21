@@ -36,7 +36,7 @@ struct ActivityPanelView: View {
                     onCorrect: isReadOnly ? nil : onCorrectRole,
                     isReadOnly: isReadOnly
                 )
-                Divider()
+                TerminalDivider()
             }
 
             TeamActivityFeedView(
@@ -63,8 +63,7 @@ struct ActivityPanelView: View {
 
 #Preview("Activity Panel — No Role Selected") {
     @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
-    @Previewable @State var config = StoreConfiguration()
-    @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var dictation = DictationService()
     @Previewable @State var selectedRoleID: String? = nil
     ActivityPanelView(
         run: nil,
@@ -77,15 +76,16 @@ struct ActivityPanelView: View {
         onRequestChanges: { _, _ in }
     )
     .environment(store)
-    .environment(config)
-    .environment(streaming)
+    .environment(store.engineState)
+    .environment(store.configuration)
+    .environment(store.streamingPreviewManager)
+    .environment(dictation)
     .frame(width: 500, height: 600)
 }
 
 #Preview("Activity Panel — Role Selected") {
     @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
-    @Previewable @State var config = StoreConfiguration()
-    @Previewable @State var streaming = StreamingPreviewManager()
+    @Previewable @State var dictation = DictationService()
     @Previewable @State var selectedRoleID: String? = Team.default.roles.first(where: { !$0.isSupervisor })?.id
     let team = Team.default
     ActivityPanelView(
@@ -99,7 +99,9 @@ struct ActivityPanelView: View {
         onRequestChanges: { _, _ in }
     )
     .environment(store)
-    .environment(config)
-    .environment(streaming)
+    .environment(store.engineState)
+    .environment(store.configuration)
+    .environment(store.streamingPreviewManager)
+    .environment(dictation)
     .frame(width: 500, height: 600)
 }

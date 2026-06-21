@@ -30,12 +30,17 @@ nonisolated struct TimelineEvent: Identifiable {
         .started: 0x01, .completed: 0x02, .failed: 0x03,
     ]
 
-    static func stableID(stepID: String, eventType: TimelineEventType) -> UUID {
-        // Deterministic UUID from (stepID, eventType) — stable across app launches.
-        // Uses FNV-1a hash (not Hasher, which is randomized per process).
+    static func stableID(taskID: Int, runID: Int, stepID: String, eventType: TimelineEventType) -> UUID {
+        // Deterministic UUID from (taskID, runID, stepID, eventType) — stable
+        // across app launches. Uses FNV-1a hash (not Hasher, which is randomized
+        // per process). Including taskID + runID is LOAD-BEARING: `stepID` is the
+        // ROLE id, which recurs in EVERY run of a task, so hashing the step alone
+        // makes two runs of the same role collide on one UUID → SwiftUI ForEach
+        // "ID occurs multiple times within the collection" (undefined results).
         let suffix = suffixMap[eventType] ?? 0x00
+        let composite = "\(taskID):\(runID):\(stepID)"
         var h: UInt64 = 14695981039346656037 // FNV offset basis
-        for byte in stepID.utf8 {
+        for byte in composite.utf8 {
             h ^= UInt64(byte)
             h &*= 1099511628211 // FNV prime
         }
@@ -80,40 +85,80 @@ struct WatchtowerTimelineItem: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
 
+    /// Terminal status glyph + color for the event type (the design's per-row
+    /// status marker). Reuses the documented status palette by event kind.
+    /// Timeline events are historical — never animated. Chat-mode `.started`
+    /// uses the prompt chevron `›` to match `TaskStatus.glyph(isChatMode:)`
+    /// and the prompt-marker rail discipline shared across chat surfaces;
+    /// non-chat `.started` keeps the static work-arrow `▸`. Symbol shape
+    /// alone distinguishes the three event kinds (`▸ / ✓ / ✗`).
+    private var statusGlyph: (glyph: String, color: Color, animates: Bool) {
+        switch event.eventType {
+        case .started:
+            let glyph = event.isChatMode ? TerminalGlyph.prompt : TerminalGlyph.working
+            return (glyph, Colors.accent, false)
+        case .completed: return (TerminalGlyph.done, Colors.success, false)
+        case .failed: return (TerminalGlyph.failed, Colors.error, false)
+        }
+    }
+
+    /// Role name in bold + the action text in secondary — the design's
+    /// `ActivityRow` two-tone label. Falls back to a single secondary run when
+    /// the text doesn't lead with the role name (chat-mode phrasing).
+    @ViewBuilder
+    private var activityText: some View {
+        let name = event.role.displayName
+        let full = event.displayText
+        if full.hasPrefix(name) {
+            Text(name).fontWeight(.semibold).foregroundStyle(Colors.textPrimary)
+                + Text(String(full.dropFirst(name.count))).foregroundStyle(Colors.textSecondary)
+        } else {
+            Text(full).foregroundStyle(Colors.textSecondary)
+        }
+    }
+
     var body: some View {
         Button(action: onTap) {
-            HStack(spacing: Spacing.m) {
+            HStack(alignment: .top, spacing: Spacing.s) {
+                StatusGlyph(
+                    glyph: statusGlyph.glyph,
+                    color: statusGlyph.color,
+                    animatesWork: statusGlyph.animates,
+                    font: Typography.termSm
+                )
+                .padding(.top, 1)
+
                 ActivityFeedRoleAvatar(
                     role: event.role,
                     roleDefinition: event.roleDefinition,
-                    size: 28
+                    size: 20
                 )
+                .padding(.top, 1)
 
-                // Event text
+                // Event text — role name bold, action text secondary (1:1 ActivityRow).
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(event.displayText)
-                        .font(.subheadline)
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
+                    activityText
+                        .font(Typography.termSm)
+                        .lineLimit(2)
 
                     Text(event.taskTitle)
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+                        .font(Typography.term2xs)
+                        .foregroundStyle(Colors.textTertiary)
                         .lineLimit(1)
+                        .truncationMode(.tail)
                 }
 
-                Spacer()
+                Spacer(minLength: Spacing.s)
 
                 // Timestamp
                 Text(event.timestamp.formatted(.relative(presentation: .named)))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .font(Typography.term2xs)
+                    .foregroundStyle(Colors.textTertiary)
+                    .padding(.top, 1)
             }
-            .padding(Spacing.s)
-            .background(
-                RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous)
-                    .fill(isHovered ? Colors.surfaceHover : Color.clear)
-            )
+            .padding(.horizontal, Spacing.m)
+            .padding(.vertical, Spacing.s)
+            .background(isHovered ? Colors.surfaceHover : Color.clear)
         }
         .buttonStyle(.plain)
         .onHover { hovering in

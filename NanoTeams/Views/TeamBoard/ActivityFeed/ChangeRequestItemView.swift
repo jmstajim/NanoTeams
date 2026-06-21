@@ -20,14 +20,14 @@ struct ChangeRequestItemView: View {
             VStack(alignment: .leading, spacing: ActivityCardTokens.contentSpacing) {
                 HStack(spacing: 6) {
                     Text(requesterName)
-                        .font(.caption.weight(.semibold))
+                        .font(Typography.captionSemibold)
                         .foregroundStyle(requesterRole.tintColor)
-                    Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.secondary)
-                    Text(targetRoleName).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Image(systemName: "arrow.right").font(Typography.term2xs).foregroundStyle(Colors.textSecondary)
+                    Text(targetRoleName).font(Typography.captionSemibold).foregroundStyle(Colors.textSecondary)
                     statusBadge(request.status)
                     Spacer()
                     Text(request.createdAt.formatted(date: .omitted, time: .shortened))
-                        .font(.caption2).foregroundStyle(.tertiary)
+                        .font(Typography.term2xs).foregroundStyle(Colors.textTertiary)
                 }
 
                 contentCard
@@ -39,24 +39,24 @@ struct ChangeRequestItemView: View {
 
     private var contentCard: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Changes Requested").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            MonoLabel(text: "Changes Requested", size: .xs)
 
             Text(request.changes)
-                .font(.body)
+                .font(Typography.termBase)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
 
             if !request.reasoning.isEmpty {
                 Text("Reasoning: \(request.reasoning)")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .font(Typography.termBase)
+                    .foregroundStyle(Colors.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.vertical, Spacing.xs)
         .padding(.leading, Spacing.s)
         .overlay(alignment: .leading) {
-            RoundedRectangle(cornerRadius: CornerRadius.accent, style: .continuous)
+            RoundedRectangle.squircle(CornerRadius.accent)
                 .fill(Colors.warning)
                 .frame(width: 2)
                 .padding(.vertical, 4)
@@ -68,11 +68,11 @@ struct ChangeRequestItemView: View {
     @ViewBuilder
     private func statusBadge(_ status: ChangeRequestStatus) -> some View {
         Text(status.displayName)
-            .font(.caption2.weight(.medium))
+            .font(Typography.term2xs.weight(.medium))
             .foregroundStyle(status.statusColor)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
-            .background(Capsule(style: .continuous).fill(status.statusColor.opacity(DynamicTintOpacity.badge)))
+            .background(RoundedRectangle.squircle(CornerRadius.micro).fill(status.statusColor.opacity(DynamicTintOpacity.badge)))
     }
 }
 

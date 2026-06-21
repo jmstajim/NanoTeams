@@ -373,9 +373,9 @@ final class TeamActivityComposerRoutingTests: XCTestCase {
         XCTAssertEqual(options[1].label, "Answer Market Intelligence Analyst")
         XCTAssertEqual(options[2].label, "Answer Strategic Visionary")
         // Reply icon on every Answer chip.
-        XCTAssertEqual(options[0].icon, "arrowshape.turn.up.left.fill")
-        XCTAssertEqual(options[1].icon, "arrowshape.turn.up.left.fill")
-        XCTAssertEqual(options[2].icon, "arrowshape.turn.up.left.fill")
+        XCTAssertEqual(options[0].icon, "arrowshape.turn.up.left")
+        XCTAssertEqual(options[1].icon, "arrowshape.turn.up.left")
+        XCTAssertEqual(options[2].icon, "arrowshape.turn.up.left")
     }
 
     // MARK: - computeCanSubmit — content gate + nil-recipient block

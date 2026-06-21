@@ -28,12 +28,16 @@ struct GenerateTeamSystemPromptCard: View {
                 Text("Use built-in default prompt")
                     .font(Typography.subheadline)
             }
+            .toggleStyle(.terminal)
 
             if !isUsingDefault {
-                TextEditor(text: $config.teamGenSystemPrompt)
-                    .font(Typography.caption)
-                    .frame(minHeight: 280)
-                    .borderedTextEditorStyle()
+                HStack(alignment: .top, spacing: Spacing.xs) {
+                    PromptMarker()
+                    TextEditor(text: $config.teamGenSystemPrompt)
+                        .font(Typography.caption)
+                        .frame(minHeight: 280)
+                        .borderedTextEditorStyle()
+                }
 
                 HStack {
                     SettingsPillButton(title: "Load Built-in Default", icon: "doc.on.doc") {

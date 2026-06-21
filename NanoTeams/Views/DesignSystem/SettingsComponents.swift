@@ -30,7 +30,7 @@ struct SettingsMasterDetailView<Master: View, Detail: View, EmptyDetail: View>: 
                 .scrollContentBackground(.hidden)
                 .background(Colors.surfacePrimary)
 
-            Divider()
+            TerminalDivider(axis: .vertical)
 
             Group {
                 if hasSelection {
@@ -76,25 +76,25 @@ struct SettingsMasterDetailView<Master: View, Detail: View, EmptyDetail: View>: 
         hasSelection: true,
         master: {
             List {
-                Text("FAANG Team").font(.subheadline)
-                Text("Startup Team").font(.subheadline)
-                Text("Quest Party").font(.subheadline)
+                Text("FAANG Team").font(Typography.subheadline)
+                Text("Startup Team").font(Typography.subheadline)
+                Text("Quest Party").font(Typography.subheadline)
             }
             .listStyle(.sidebar)
         },
         detail: {
             VStack {
                 Text("Team Configuration")
-                    .font(.headline)
+                    .font(Typography.termLg)
                 Text("8 members, 7 artifacts")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(Typography.caption)
+                    .foregroundStyle(Colors.textSecondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         },
         emptyDetail: {
             Text("Select a team")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Colors.textSecondary)
         }
     )
     .frame(width: 700, height: 300)
@@ -102,7 +102,9 @@ struct SettingsMasterDetailView<Master: View, Detail: View, EmptyDetail: View>: 
 
 // MARK: - Settings Empty State
 
-/// Empty state for settings
+/// Empty state for settings.
+/// Thin wrapper over `NTMSEmptyState` so the title + description stay mono;
+/// the action button styling is identical (accent capsule → `.terminalPrimary`).
 struct SettingsEmptyState: View {
     let title: String
     let systemImage: String
@@ -111,23 +113,13 @@ struct SettingsEmptyState: View {
     var action: (() -> Void)? = nil
 
     var body: some View {
-        ContentUnavailableView {
-            Label(title, systemImage: systemImage)
-        } description: {
-            Text(description)
-        } actions: {
-            if let actionTitle, let action {
-                Button(action: action) {
-                    Text(actionTitle)
-                        .font(Typography.captionSemibold)
-                        .foregroundStyle(Colors.surfaceBackground)
-                        .padding(.horizontal, Spacing.m)
-                        .padding(.vertical, Spacing.xs)
-                        .background(Capsule(style: .continuous).fill(Colors.accent))
-                }
-                .buttonStyle(.plain)
-            }
-        }
+        NTMSEmptyState(
+            title: title,
+            message: description,
+            systemImage: systemImage,
+            action: action,
+            actionLabel: actionTitle
+        )
     }
 }
 
@@ -144,21 +136,22 @@ struct SearchFieldView: View {
     var body: some View {
         HStack(spacing: Spacing.xs) {
             Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-                .font(.subheadline)
+                .foregroundStyle(Colors.textSecondary)
+                .font(Typography.termBase)
                 .accessibilityHidden(true)
 
             TextField(placeholder, text: $text)
                 .textFieldStyle(.plain)
+                .font(Typography.termBase)
                 .onSubmit { onSubmit?() }
 
             if !text.isEmpty {
                 Button {
                     text = ""
                 } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                        .font(.subheadline)
+                    Image(systemName: "xmark.circle")
+                        .foregroundStyle(Colors.textSecondary)
+                        .font(Typography.termBase)
                 }
                 .buttonStyle(.plain)
             }
@@ -166,7 +159,7 @@ struct SearchFieldView: View {
         .padding(.horizontal, Spacing.s)
         .frame(height: 28)
         .background(
-            RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
+            RoundedRectangle.squircle(CornerRadius.medium)
                 .fill(Colors.surfacePrimary)
         )
     }

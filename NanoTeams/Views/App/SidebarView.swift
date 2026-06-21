@@ -33,35 +33,29 @@ struct SidebarView: View {
         taskList
             .safeAreaInset(edge: .top) {
                 VStack(spacing: 0) {
-                    // Watchtower — primary nav
+                    // Watchtower — primary nav (full-width flat row)
                     watchtowerButton
-                        .padding(.horizontal, Spacing.m)
-                        .padding(.top, Spacing.s)
-                        .padding(.bottom, Spacing.xs)
+                        .padding(.top, Spacing.m)
 
-                    // Work folder card
+                    // Autovisor — full-width flat nav row, shown only while enabled.
+                    // Sits directly under Watchtower so the two top-level nav
+                    // surfaces cluster together above the work-folder context block.
+                    if let info = autovisorInfo {
+                        autovisorButton(info)
+                    }
+
+                    // Work folder — flat full-width DS block (bottom border, no card)
                     if let folder = store.workFolderURL {
                         if store.hasRealWorkFolder {
                             projectInfoCard(folder: folder)
-                                .padding(.horizontal, Spacing.m)
-                                .padding(.bottom, Spacing.xs)
                         } else {
                             defaultStorageCard
-                                .padding(.horizontal, Spacing.m)
-                                .padding(.bottom, Spacing.xs)
                         }
-                    }
-
-                    // Autovisor — top-level nav, shown only while enabled
-                    if let info = autovisorInfo {
-                        autovisorButton(info)
-                            .padding(.horizontal, Spacing.m)
-                            .padding(.bottom, Spacing.xs)
                     }
 
                     // Tasks section header
                     tasksHeader
-                        .padding(.leading, Spacing.m + Spacing.xs)
+                        .padding(.leading, Spacing.m)
                         .padding(.trailing, Spacing.m)
                         .padding(.top, Spacing.m)
                         .padding(.bottom, Spacing.s)
@@ -74,7 +68,17 @@ struct SidebarView: View {
                 }
                 .background(Colors.surfaceBackground)
             }
-            .safeAreaInset(edge: .bottom) { SidebarFooter() }
+            // Flat DS sidebar — fill the whole column (incl. the titlebar strip
+            // behind the traffic lights) with the opaque `void` surface so the
+            // native NavigationSplitView vibrancy never shows, and draw the
+            // design's hairline right border.
+            .background(Colors.surfaceBackground.ignoresSafeArea())
+            .overlay(alignment: .trailing) {
+                Rectangle()
+                    .fill(Colors.borderSubtle)
+                    .frame(width: 1)
+                    .ignoresSafeArea()
+            }
             .confirmationDialog(
                 "Remove Task?",
                 isPresented: $taskState.isShowingDeleteConfirmation,
@@ -157,96 +161,164 @@ struct SidebarView: View {
     // MARK: - Task Data
 
     private var allTasks: [SidebarTaskItem] {
-        store.taskSummaries(filter: .all).map { task in
-            let hasUnread = task.isChatMode
-                && task.status == .needsSupervisorInput
-                && !taskState.seenSupervisorInputTaskIDs.contains(task.id)
-            let isEngineRunning = engineState.taskEngineStates[task.id] == .running
-            return SidebarTaskItem(
-                id: task.id, title: task.title, status: task.status,
-                updatedAt: task.updatedAt, isChatMode: task.isChatMode,
-                hasUnreadInput: hasUnread,
-                isEngineRunning: isEngineRunning,
-                isRecurring: task.nextRecurrenceFireAt != nil
-            )
-        }
+        SidebarViewLogic.buildSidebarTaskItems(
+            summaries: store.taskSummaries(filter: .all),
+            seenSupervisorInputTaskIDs: taskState.seenSupervisorInputTaskIDs,
+            engineStates: engineState.taskEngineStates
+        )
     }
 
     private var filteredTasks: [SidebarTaskItem] {
         taskState.filteredTasks(from: allTasks)
     }
 
-    /// Live state for the Autovisor nav entry. `nil` (entry hidden) unless the
-    /// manager has been created (`autovisorTaskID != nil`) AND is enabled — it
-    /// disappears when turned off (re-enable from the Watchtower Quick Action).
-    /// `needsInput` means GENUINELY waiting on the human (escalation question) —
-    /// the deliberate `wait_for_events` idle park shares the same engine state but
-    /// is excluded so the icon doesn't pulse while the manager is just idle.
-    private struct ManagerRowInfo { let running: Bool; let needsInput: Bool }
-
-    private var autovisorInfo: ManagerRowInfo? {
-        guard let id = store.autovisorTaskID,
-              store.workFolder?.settings.autovisorEnabled == true else { return nil }
-        let state = engineState.taskEngineStates[id]
-        return ManagerRowInfo(
-            running: state == .running,
-            needsInput: state == .needsSupervisorInput && !store.autovisorIsIdleParked
+    /// Live state for the Autovisor nav entry (resolution delegated to
+    /// `SidebarViewLogic.resolveManagerRowInfo`). `nil` (entry hidden) ONLY when
+    /// there's no real work folder — Autovisor is folder-scoped and refuses to
+    /// enable in default storage. In a folder the row is always visible:
+    /// configured → routes to the chat; unconfigured → routes to the first-time
+    /// setup pane (`AutovisorSetupView`).
+    private var autovisorInfo: SidebarViewLogic.ManagerRowInfo? {
+        let isManagerActive = store.autovisorTaskID != nil
+            && store.workFolder?.settings.autovisorEnabled == true
+        let state = store.autovisorTaskID.flatMap { engineState.taskEngineStates[$0] }
+        return SidebarViewLogic.resolveManagerRowInfo(
+            hasWorkFolder: store.hasRealWorkFolder,
+            isManagerActive: isManagerActive,
+            engineState: state,
+            isIdleParked: store.autovisorIsIdleParked
         )
     }
 
     // MARK: - Watchtower Button
 
     private var watchtowerButton: some View {
-        let isSelected = selectedItem == .watchtower
-        return Button {
+        Button {
             selectedItem = .watchtower
         } label: {
-            HStack(spacing: Spacing.s) {
-                // Icon circle — accent when selected
-                ZStack {
-                    RoundedRectangle.squircle(CornerRadius.small)
-                        .fill(isSelected ? Colors.accent : Colors.surfaceElevated)
-                        .frame(width: 30, height: 30)
-                    Image(systemName: "binoculars.fill")
-                        .font(Typography.caption)
-                        .foregroundStyle(isSelected ? Colors.surfaceBackground : .secondary)
-                }
-
-                Text("Watchtower")
-                    .font(Typography.subheadlineSemibold)
-                    .foregroundStyle(isSelected ? .primary : .secondary)
-
-                Spacer()
-            }
-            .padding(.horizontal, Spacing.m)
-            .padding(.vertical, Spacing.s)
-            .background(
-                RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
-                    .fill(isWatchtowerHovered
-                        ? Colors.surfaceHover
-                        : Colors.surfaceCard)
+            terminalNavRowContent(
+                icon: "binoculars",
+                title: "watchtower",
+                accessibilityName: "Watchtower",
+                isSelected: selectedItem == .watchtower,
+                status: .none
             )
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .terminalNavRowLabelInset()
         }
         .buttonStyle(.plain)
+        .terminalNavRowChrome(
+            isSelected: selectedItem == .watchtower,
+            isHovered: isWatchtowerHovered
+        )
         .onHover { isWatchtowerHovered = $0 }
         .accessibilityHint("Observe team activity and take quick actions")
+    }
+
+    /// Live state for a terminal nav-row's trailing indicator.
+    /// `none` keeps the trailing edge empty (no ambient noise); `working` and
+    /// `needsInput` render a glyph + uppercase-mono label per the design's tmux
+    /// pane-status pattern.
+    private enum NavRowStatus: Equatable {
+        case none
+        case working
+        case needsInput
+    }
+
+    /// Inner content of a terminal nav row: leading SF Symbol anchor + lowercase
+    /// mono identity (CLI namespace style) + tmux-style trailing status badge.
+    /// The icon telegraphs "navigable destination" — without it, the lowercase
+    /// title visually competes with the uppercase section headers below
+    /// (`WORK FOLDER`, `TASKS`) and reads as a label, not a button. Wrapped by
+    /// `terminalNavRowChrome` to add the inset squircle accentTint fill on
+    /// selection and hover fill. Splitting content from chrome lets the Autovisor
+    /// row include a trailing ⋯ Menu inside the same selection envelope without
+    /// double-painting the fill.
+    private func terminalNavRowContent(
+        icon: String,
+        title: String,
+        accessibilityName: String,
+        isSelected: Bool,
+        status: NavRowStatus
+    ) -> some View {
+        HStack(spacing: Spacing.s) {
+            Image(systemName: icon)
+                // Fixed-width slot keeps title baseline aligned across rows
+                // even when icons have different intrinsic widths.
+                .font(Typography.subheadlineMedium)
+                .foregroundStyle(isSelected ? Colors.accent : Colors.textSecondary)
+                .frame(width: 18, alignment: .center)
+                .accessibilityHidden(true)
+            Text(title)
+                // Fixed weight across selected / unselected so the cell
+                // doesn't reflow on selection.
+                .font(Typography.subheadlineMedium)
+                .foregroundStyle(isSelected ? Colors.accent : Colors.textPrimary)
+                .lineLimit(1)
+                .accessibilityLabel(accessibilityName)
+            Spacer(minLength: Spacing.s)
+            navStatusIndicator(for: status)
+        }
+    }
+
+    /// Trailing status badge for `terminalNavRow`. `NTMSLoader` carries
+    /// motion (mid-stream LLM work); the `◆` glyph + `WAITING` label calls out
+    /// human-blocking states without re-using the accent color (info hue).
+    @ViewBuilder
+    private func navStatusIndicator(for status: NavRowStatus) -> some View {
+        switch status {
+        case .none:
+            EmptyView()
+        case .working:
+            HStack(spacing: Spacing.xs) {
+                NTMSLoader(font: Typography.term2xs, color: Colors.accent)
+                Text("WORKING")
+                    .font(Typography.term2xs)
+                    .tracking(Typography.labelTracking)
+                    .foregroundStyle(Colors.accent)
+            }
+            // Breathing room so the label doesn't butt against a trailing ⋯ menu.
+            .padding(.trailing, Spacing.xs)
+            .accessibilityLabel("Working")
+        case .needsInput:
+            HStack(spacing: Spacing.xs) {
+                Text(TerminalGlyph.review)
+                    .font(Typography.term2xs)
+                    .foregroundStyle(Colors.info)
+                Text("WAITING")
+                    .font(Typography.term2xs)
+                    .tracking(Typography.labelTracking)
+                    .foregroundStyle(Colors.info)
+            }
+            .padding(.trailing, Spacing.xs)
+            .accessibilityLabel("Waiting on Supervisor input")
+        }
     }
 
     // MARK: - Tasks Header & Search
 
     private var tasksHeader: some View {
-        HStack {
-            Text("Tasks & Chats")
-                .font(Typography.subheadlineSemibold)
-                .foregroundStyle(.primary)
+        HStack(spacing: Spacing.xs) {
+            MonoLabel(text: "Tasks", marker: true)
+            // `(N)` count chip per the design's tmux ledger heading.
+            Text("(\(allTasks.count))")
+                .font(Typography.term2xs)
+                .foregroundStyle(Colors.textTertiary)
+                .monospacedDigit()
+                .accessibilityHidden(true)
             Spacer()
             Button { QuickCaptureController.shared.showNewTask() } label: {
                 Image(systemName: "plus")
                     .font(Typography.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Colors.textSecondary)
                     .frame(width: 26, height: 26)
                     .background(
-                        Circle().fill(Colors.surfaceElevated)
+                        RoundedRectangle.squircle(CornerRadius.small)
+                            .fill(Colors.surfaceElevated)
+                            .overlay(
+                                RoundedRectangle.squircle(CornerRadius.small)
+                                    .strokeBorder(Colors.borderSubtle, lineWidth: 1)
+                            )
                     )
             }
             .buttonStyle(.plain)
@@ -260,15 +332,14 @@ struct SidebarView: View {
                 expandedSearchField
                     .transition(.opacity)
             } else {
-                filterChips
-                    .fixedSize()
-                    .transition(.opacity)
-
-                HStack {
+                HStack(spacing: Spacing.xs) {
                     searchToggleButton
+                        .fixedSize()
+                    filterChips
                         .fixedSize()
                     Spacer()
                 }
+                .transition(.opacity)
             }
         }
         .frame(height: 28)
@@ -280,7 +351,7 @@ struct SidebarView: View {
                 SidebarFilterButton(
                     title: filter.displayName,
                     icon: filter.icon,
-                    count: filterCount(for: filter),
+                    count: SidebarViewLogic.filterCount(filter, from: allTasks),
                     isSelected: taskState.taskFilter == filter,
                     iconOnly: filter.isIconOnly
                 ) {
@@ -290,6 +361,9 @@ struct SidebarView: View {
         }
     }
 
+    /// Flat DS — drop the rounded card / border / surfaceCard fill. The chip is
+    /// just the SF Symbol glyph; selection chrome is reserved for the filters
+    /// themselves. Hover supplies the only ambient affordance.
     private var searchToggleButton: some View {
         Button {
             withAnimation(Animations.quick) {
@@ -298,31 +372,36 @@ struct SidebarView: View {
         } label: {
             Image(systemName: "magnifyingglass")
                 .font(Typography.captionSemibold)
-                .padding(.horizontal, 6)
-                .padding(.vertical, Spacing.xs)
-                .foregroundStyle(.secondary)
-                .background(
-                    Capsule(style: .continuous).fill(
-                        isSearchButtonHovered
-                            ? Colors.surfaceElevated
-                            : Colors.surfaceCard
-                    )
-                )
+                .foregroundStyle(Colors.textTertiary)
+                .padding(.horizontal, Spacing.xs)
+                .padding(.vertical, Spacing.xxs)
+                .background {
+                    if isSearchButtonHovered {
+                        RoundedRectangle.squircle(CornerRadius.small)
+                            .fill(Colors.surfaceHover)
+                    }
+                }
         }
         .buttonStyle(.plain)
         .onHover { isSearchButtonHovered = $0 }
         .accessibilityLabel("Search tasks")
+        .help("Search tasks")
     }
 
+    /// Terminal search input: `/` prompt prefix (vim/less idiom) + mono field,
+    /// no rounded card. An accent hairline along the bottom marks the focused
+    /// element; a mono `ESC` mini-label on the right doubles as a tap target
+    /// AND teaches the keyboard shortcut (canonical terminal pattern).
     private var expandedSearchField: some View {
         HStack(spacing: Spacing.xs) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-                .font(.subheadline)
+            Text("/")
+                .font(Typography.termBase)
+                .foregroundStyle(Colors.accent)
                 .accessibilityHidden(true)
 
-            TextField("Search...", text: $taskState.taskSearchText)
+            TextField("search…", text: $taskState.taskSearchText)
                 .textFieldStyle(.plain)
+                .font(Typography.termSm)
                 .focused($isSearchFieldFocused)
                 .onSubmit {
                     if let firstTask = filteredTasks.first {
@@ -340,29 +419,24 @@ struct SidebarView: View {
                     taskState.collapseSearch()
                 }
             } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundStyle(.secondary)
-                    .font(.subheadline)
+                Text("ESC")
+                    .font(Typography.term2xs)
+                    .tracking(Typography.labelTracking)
+                    .foregroundStyle(Colors.textTertiary)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Close search")
         }
-        .padding(.horizontal, Spacing.s)
+        .padding(.horizontal, Spacing.xs)
         .frame(height: 28)
-        .background(
-            RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
-                .fill(Colors.surfacePrimary)
-        )
+        .background(Colors.surfaceElevated)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Colors.accent)
+                .frame(height: 1)
+        }
         .task {
             isSearchFieldFocused = true
-        }
-    }
-
-    private func filterCount(for filter: TaskFilter) -> Int {
-        switch filter {
-        case .all:       return allTasks.count
-        case .running:   return allTasks.filter { $0.status != .done }.count
-        case .done:      return allTasks.filter { $0.status == .done }.count
-        case .recurring: return allTasks.filter { $0.isRecurring }.count
         }
     }
 
@@ -374,12 +448,12 @@ struct SidebarView: View {
                 if filteredTasks.isEmpty {
                     taskEmptyState
                 } else {
-                    ForEach(filteredTasks) { task in
+                    ForEach(Array(filteredTasks.enumerated()), id: \.element.id) { offset, task in
                         Button { selectedItem = .task(task.id) } label: {
                             SidebarTaskRow(
                                 task: task,
-                                isActive: store.activeTaskID == task.id,
-                                isSelected: selectedItem == .task(task.id)
+                                isSelected: selectedItem == .task(task.id),
+                                displayIndex: offset + 1
                             )
                                 .contentShape(Rectangle())
                         }
@@ -413,7 +487,6 @@ struct SidebarView: View {
                     }
                 }
             }
-            .padding(.horizontal, Spacing.m)
         }
         .background(Colors.surfaceBackground)
     }
@@ -423,54 +496,67 @@ struct SidebarView: View {
     /// to `.autovisor` (its chat); the ⋯ menu offers Open Chat, Disable,
     /// Delete, and Autovisor Settings (mirroring the work-folder card's menu affordance).
     @ViewBuilder
-    private func autovisorButton(_ info: ManagerRowInfo) -> some View {
+    private func autovisorButton(_ info: SidebarViewLogic.ManagerRowInfo) -> some View {
         let isSelected = selectedItem == .autovisor
-        HStack(spacing: Spacing.xs) {
+        // `needsInput` outranks `running` — a Supervisor-blocking question is the
+        // louder signal even while the engine is technically also live.
+        let status: NavRowStatus = {
+            if info.needsInput { return .needsInput }
+            if info.running    { return .working }
+            return .none
+        }()
+        HStack(spacing: 0) {
             Button {
                 selectedItem = .autovisor
             } label: {
-                HStack(spacing: Spacing.s) {
-                    ZStack {
-                        RoundedRectangle.squircle(CornerRadius.small)
-                            .fill(isSelected ? Colors.accent : Colors.surfaceElevated)
-                            .frame(width: 30, height: 30)
-                        Image(systemName: "folder.badge.person.crop")
-                            .font(Typography.caption)
-                            .symbolRenderingMode(.palette)
-                            .foregroundStyle(
-                                isSelected ? AnyShapeStyle(Colors.surfaceBackground) : AnyShapeStyle(Colors.purple),
-                                isSelected ? AnyShapeStyle(Colors.surfaceBackground) : AnyShapeStyle(.secondary)
-                            )
-                            .symbolEffect(.pulse, options: .repeating,
-                                          isActive: !isSelected && (info.running || info.needsInput))
-                    }
-                    Text("Autovisor")
-                        .font(Typography.subheadlineSemibold)
-                        .foregroundStyle(isSelected ? .primary : .secondary)
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
-                }
-                .contentShape(Rectangle())
+                terminalNavRowContent(
+                    icon: "bolt.badge.automatic",
+                    title: "autovisor",
+                    accessibilityName: "Autovisor",
+                    isSelected: isSelected,
+                    status: status
+                )
+                // Stretch the label across the row so the empty area between the
+                // status indicator and the ⋯ Menu is part of the button's tap
+                // target, then bake the chrome's leading + vertical inner padding
+                // INTO the label (via `terminalNavRowLabelInset`) so the visible
+                // squircle's interior is fully clickable. Without these, the
+                // Button takes only its intrinsic width (icon + title + status)
+                // and the surrounding squircle pixels read as the row but tap
+                // through to nothing.
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .terminalNavRowLabelInset(trailing: 0)
             }
             .buttonStyle(.plain)
             .accessibilityHint("Open the Autovisor chat")
 
             Menu {
                 Button { selectedItem = .autovisor } label: {
-                    Label("Open Chat", systemImage: "arrow.right.circle")
+                    // Label tracks the destination the SAME predicate routes to:
+                    // `.autovisor` lands on the setup pane iff `autovisorNeedsSetup`,
+                    // else the chat. Keying on `info.isEnabled` mislabeled a
+                    // disabled-but-real-goal manager (routes to chat) as "Open Setup".
+                    Label(
+                        store.autovisorNeedsSetup ? "Open Setup" : "Open Chat",
+                        systemImage: "arrow.right.circle"
+                    )
                 }
-                Divider()
-                Button {
-                    if selectedItem == .autovisor { selectedItem = .watchtower }
-                    Task { await store.setAutovisorEnabled(false) }
-                } label: {
-                    Label("Disable", systemImage: "pause.circle")
-                }
-                Divider()
-                Button(role: .destructive) {
-                    showDeleteManagerConfirmation = true
-                } label: {
-                    Label("Delete", systemImage: "trash")
+                // Disable / Delete only make sense for a configured manager —
+                // an unconfigured row has nothing to disable or delete.
+                if info.isEnabled {
+                    Divider()
+                    Button {
+                        if selectedItem == .autovisor { selectedItem = .watchtower }
+                        Task { await store.setAutovisorEnabled(false) }
+                    } label: {
+                        Label("Disable", systemImage: "pause.circle")
+                    }
+                    Divider()
+                    Button(role: .destructive) {
+                        showDeleteManagerConfirmation = true
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
                 }
                 Divider()
                 Button {
@@ -481,17 +567,30 @@ struct SidebarView: View {
                 }
             } label: {
                 SidebarIconButton(icon: "ellipsis")
+                    // Vertical-only inset preserves the menu's tap target
+                    // height to match the row chrome; horizontal positioning
+                    // is handled entirely by the chrome + .offset below so
+                    // the autovisor ⋯ visually aligns with the work-folder
+                    // card's ⋯ regardless of SwiftUI's borderlessButton
+                    // menu-label internal centering.
+                    .terminalNavRowLabelInset(leading: 0, trailing: 0)
             }
-            .menuStyle(.button)
+            .menuStyle(.borderlessButton)
             .buttonStyle(.plain)
             .menuIndicator(.hidden)
+            // Both ⋯ menus share the same SidebarIconButton + .borderlessButton
+            // label. This row's chrome trails by `chromeHInset`; the folder card
+            // trails by `menuTrailingInset`. Nudge this ⋯ LEFT by the difference
+            // (`autovisorMenuNudge`, derived) so the two line up at the same x.
+            .offset(x: -SidebarNavRowMetrics.autovisorMenuNudge)
         }
-        .padding(.leading, Spacing.m)
-        .padding(.trailing, Spacing.xs)
-        .padding(.vertical, Spacing.s)
-        .background(
-            RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
-                .fill(isAutovisorHovered ? Colors.surfaceHover : Colors.surfaceCard)
+        // Shared chrome: inset squircle accentTint fill on selection, hover
+        // fill, outer horizontal margin. The trailing ⋯ menu sits inside the
+        // same selection envelope so the row reads as one unit; tap routing
+        // still splits between the row's Button and the Menu.
+        .terminalNavRowChrome(
+            isSelected: isSelected,
+            isHovered: isAutovisorHovered
         )
         .onHover { isAutovisorHovered = $0 }
     }
@@ -501,13 +600,13 @@ struct SidebarView: View {
         let emptyState = TaskFilterEmptyState.for(taskState.taskFilter, searchText: taskState.taskSearchText)
         VStack(spacing: Spacing.l) {
             Image(systemName: emptyState.icon)
-                .font(.title)
-                .foregroundStyle(.tertiary)
+                .font(Typography.term2xl)
+                .foregroundStyle(Colors.textTertiary)
             VStack(spacing: Spacing.xs) {
                 Text(emptyState.title).font(Typography.subheadlineSemibold)
                 Text(emptyState.subtitle)
                     .font(Typography.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Colors.textSecondary)
                     .multilineTextAlignment(.center)
             }
             Button {
@@ -527,10 +626,10 @@ struct SidebarView: View {
                     Text(emptyStateCTALabel)
                         .font(Typography.captionSemibold)
                 }
-                .foregroundStyle(Colors.surfaceBackground)
+                .foregroundStyle(Colors.textOnAccent)
                 .padding(.horizontal, Spacing.standard)
                 .padding(.vertical, Spacing.s)
-                .background(Capsule(style: .continuous).fill(Colors.accent))
+                .background(RoundedRectangle.squircle(CornerRadius.small).fill(Colors.accent))
             }
             .buttonStyle(.plain)
         }
@@ -538,9 +637,7 @@ struct SidebarView: View {
     }
 
     private var emptyStateCTALabel: String {
-        if !taskState.taskSearchText.isEmpty { return "Clear Search" }
-        if taskState.taskFilter != .all { return "Show All" }
-        return "New Task"
+        SidebarViewLogic.resolveCTALabel(searchText: taskState.taskSearchText, filter: taskState.taskFilter)
     }
 
     // MARK: - Helpers
@@ -552,6 +649,76 @@ struct SidebarView: View {
 
     private func refreshRecentProjects() {
         recentProjects = NSDocumentController.shared.recentDocumentURLs
+    }
+}
+
+// MARK: - Nav-Row Metrics
+
+/// Geometry shared between the Autovisor nav row and the work-folder card so their
+/// trailing ⋯ menus align at the same x from the sidebar edge. Single source of
+/// truth for what used to be three independent magic numbers across two files
+/// (chrome H-inset + an ⋯ offset on the nav row, hand-matched to the card's trailing
+/// pad). `autovisorMenuNudge` is DERIVED from the inset difference, so the
+/// `chromeHInset + autovisorMenuNudge == menuTrailingInset` alignment invariant
+/// holds by construction — changing either inset keeps the two menus aligned.
+enum SidebarNavRowMetrics {
+    /// Symmetric horizontal inset of a nav-row's squircle chrome from the sidebar edge.
+    static let chromeHInset: CGFloat = Spacing.s        // 8
+
+    /// Distance from the sidebar edge to the trailing ⋯ glyph (both rows agree here).
+    static let menuTrailingInset: CGFloat = Spacing.m   // 12
+
+    /// Extra leftward nudge the Autovisor ⋯ needs ON TOP of the chrome inset to
+    /// reach `menuTrailingInset`. A `.offset` (not trailing padding) so it bypasses
+    /// the `.borderlessButton` menu-label's internal centering.
+    static let autovisorMenuNudge: CGFloat = menuTrailingInset - chromeHInset  // 4
+}
+
+// MARK: - Terminal Nav-Row Chrome
+
+private extension View {
+    /// Inner inset for a terminal nav-row's Button label — applied BEFORE
+    /// `.contentShape(Rectangle())` so the visible squircle's interior padding
+    /// becomes part of the Button's hit-test area. If this padding were applied
+    /// outside the Button (the old chrome shape), the squircle would visually
+    /// suggest a full-width target but only the label's intrinsic frame (icon +
+    /// title + status badge) would actually tap.
+    func terminalNavRowLabelInset(
+        leading: CGFloat = Spacing.s,
+        trailing: CGFloat = Spacing.s,
+        vertical: CGFloat = Spacing.s
+    ) -> some View {
+        self
+            .padding(.leading, leading)
+            .padding(.trailing, trailing)
+            .padding(.vertical, vertical)
+            .contentShape(Rectangle())
+    }
+
+    /// Background + outer margin for a terminal nav-row. Inner padding is the
+    /// responsibility of each Button/Menu label (via `terminalNavRowLabelInset`)
+    /// so the padded area is tappable. Splitting chrome from row content also
+    /// lets rows include a trailing affordance (e.g. the Autovisor ⋯ menu)
+    /// inside the SAME selection envelope, so the row reads as one unit
+    /// visually while tap routing still splits between the row's Button and
+    /// the trailing control.
+    ///
+    /// Deliberately NOT the flat edge-to-edge fill + 2px left accent bar pattern
+    /// used by `SidebarTaskRow` — that vocabulary is reserved for list items.
+    /// Nav destinations get the squircle "pill" treatment so they read as
+    /// destinations, not list rows.
+    @ViewBuilder
+    func terminalNavRowChrome(isSelected: Bool, isHovered: Bool) -> some View {
+        self
+            .background {
+                RoundedRectangle.squircle(CornerRadius.small)
+                    .fill(
+                        isSelected
+                            ? Colors.accentTint
+                            : (isHovered ? Colors.surfaceHover : Color.clear)
+                    )
+            }
+            .padding(.horizontal, SidebarNavRowMetrics.chromeHInset)
     }
 }
 
@@ -607,6 +774,46 @@ private func makePreviewStoreWithTasks() -> NTMSOrchestrator {
     return store
 }
 
+/// Dedicated task ID for the Autovisor singleton in previews — kept out of
+/// the visible task list (the orchestrator filters it out of `taskSummaries`)
+/// and high enough not to collide with `previewTaskIDs`.
+// periphery:ignore - used in #Preview macros below
+private let previewAutovisorTaskID = 99
+
+/// Builds a preview store with Autovisor enabled — the hidden manager task ID
+/// pinned on `WorkFolderState`, `autovisorEnabled = true` on settings, and an
+/// optional engine state for the manager task (drives the nav row's pulse and
+/// accent treatments per `SidebarViewLogic.resolveManagerRowInfo`).
+// periphery:ignore - used in #Preview macros below
+private func makePreviewStoreWithAutovisor(
+    folder: URL = URL(fileURLWithPath: "/Users/dev/MyProject"),
+    autovisorEngineState: TeamEngineState? = nil,
+    tasks: [TaskSummary] = []
+) -> NTMSOrchestrator {
+    let store = NTMSOrchestrator(repository: NTMSRepository())
+    store.workFolderURL = folder
+    var settings = ProjectSettings.defaults
+    settings.autovisorEnabled = true
+    settings.autovisorGoal = "Keep the codebase shippable."
+    store.snapshot = WorkFolderContext(
+        projection: WorkFolderProjection(
+            state: WorkFolderState(
+                name: folder.lastPathComponent,
+                autovisorTaskID: previewAutovisorTaskID
+            ),
+            settings: settings,
+            teams: Team.defaultTeams
+        ),
+        tasksIndex: TasksIndex(tasks: tasks),
+        toolDefinitions: [],
+        activeTaskID: nil
+    )
+    if let autovisorEngineState {
+        store.engineState[previewAutovisorTaskID] = autovisorEngineState
+    }
+    return store
+}
+
 // MARK: - Previews
 
 #Preview("Sidebar — No Folder") {
@@ -618,6 +825,7 @@ private func makePreviewStoreWithTasks() -> NTMSOrchestrator {
         .environment(store.engineState)
         .environment(store.configuration)
         .environment(store.streamingPreviewManager)
+        .environment(LLMStatusMonitor())
         .frame(width: 280, height: 600)
 }
 
@@ -630,6 +838,7 @@ private func makePreviewStoreWithTasks() -> NTMSOrchestrator {
         .environment(store.engineState)
         .environment(store.configuration)
         .environment(store.streamingPreviewManager)
+        .environment(LLMStatusMonitor())
         .frame(width: 280, height: 600)
 }
 
@@ -642,6 +851,7 @@ private func makePreviewStoreWithTasks() -> NTMSOrchestrator {
         .environment(store.engineState)
         .environment(store.configuration)
         .environment(store.streamingPreviewManager)
+        .environment(LLMStatusMonitor())
         .frame(width: 280, height: 600)
 }
 
@@ -654,5 +864,58 @@ private func makePreviewStoreWithTasks() -> NTMSOrchestrator {
         .environment(store.engineState)
         .environment(store.configuration)
         .environment(store.streamingPreviewManager)
+        .environment(LLMStatusMonitor())
+        .frame(width: 280, height: 600)
+}
+
+#Preview("Sidebar — Autovisor Enabled (Idle)") {
+    @Previewable @State var store = makePreviewStoreWithAutovisor()
+    @Previewable @State var taskState = TaskManagementState()
+    @Previewable @State var selected: MainLayoutView.NavigationItem? = .watchtower
+    SidebarView(taskState: taskState, selectedItem: $selected)
+        .environment(store)
+        .environment(store.engineState)
+        .environment(store.configuration)
+        .environment(store.streamingPreviewManager)
+        .environment(LLMStatusMonitor())
+        .frame(width: 280, height: 600)
+}
+
+#Preview("Sidebar — Autovisor Running") {
+    @Previewable @State var store = makePreviewStoreWithAutovisor(autovisorEngineState: .running)
+    @Previewable @State var taskState = TaskManagementState()
+    @Previewable @State var selected: MainLayoutView.NavigationItem? = .watchtower
+    SidebarView(taskState: taskState, selectedItem: $selected)
+        .environment(store)
+        .environment(store.engineState)
+        .environment(store.configuration)
+        .environment(store.streamingPreviewManager)
+        .environment(LLMStatusMonitor())
+        .frame(width: 280, height: 600)
+}
+
+#Preview("Sidebar — Autovisor Needs Input") {
+    @Previewable @State var store = makePreviewStoreWithAutovisor(autovisorEngineState: .needsSupervisorInput)
+    @Previewable @State var taskState = TaskManagementState()
+    @Previewable @State var selected: MainLayoutView.NavigationItem? = .watchtower
+    SidebarView(taskState: taskState, selectedItem: $selected)
+        .environment(store)
+        .environment(store.engineState)
+        .environment(store.configuration)
+        .environment(store.streamingPreviewManager)
+        .environment(LLMStatusMonitor())
+        .frame(width: 280, height: 600)
+}
+
+#Preview("Sidebar — Autovisor Selected") {
+    @Previewable @State var store = makePreviewStoreWithAutovisor(autovisorEngineState: .running)
+    @Previewable @State var taskState = TaskManagementState()
+    @Previewable @State var selected: MainLayoutView.NavigationItem? = .autovisor
+    SidebarView(taskState: taskState, selectedItem: $selected)
+        .environment(store)
+        .environment(store.engineState)
+        .environment(store.configuration)
+        .environment(store.streamingPreviewManager)
+        .environment(LLMStatusMonitor())
         .frame(width: 280, height: 600)
 }

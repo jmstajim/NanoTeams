@@ -155,7 +155,7 @@ import SwiftUI
         title: "Code Reviewer",
         expectedArtifacts: ["Code Review Summary"],
         status: .done,
-        artifacts: [Artifact(name: "Code Review Summary", icon: "checkmark.shield.fill", description: "Review completed")],
+        artifacts: [Artifact(name: "Code Review Summary", icon: "checkmark.shield", description: "Review completed")],
         toolCalls: [
             StepToolCall(name: "read_file", argumentsJSON: "{\"path\": \"Sources/NotificationService.swift\"}", resultJSON: "{\"content\": \"class NotificationService { ... }\"}", isError: false),
             StepToolCall(name: "request_changes", argumentsJSON: "{\"target_role\": \"Software Engineer\", \"changes\": \"Missing error handling in WebSocket reconnection logic\"}", resultJSON: "{\"status\": \"approved\"}", isError: false)
@@ -251,7 +251,7 @@ import SwiftUI
         title: "TPM",
         expectedArtifacts: ["Release Notes"],
         status: .done,
-        artifacts: [Artifact(name: "Release Notes", icon: "doc.text.fill", description: "v1.0 release notes")]
+        artifacts: [Artifact(name: "Release Notes", icon: "doc.text", description: "v1.0 release notes")]
     )
     TeamActivityFeedView(
         run: Run(
@@ -288,7 +288,7 @@ import SwiftUI
         title: "Product Manager",
         expectedArtifacts: ["Product Requirements"],
         status: .done,
-        artifacts: [Artifact(name: "Product Requirements", icon: "doc.text.fill", description: "PRD v2")],
+        artifacts: [Artifact(name: "Product Requirements", icon: "doc.text", description: "PRD v2")],
         toolCalls: [
             StepToolCall(name: "read_file", argumentsJSON: "{\"path\": \"README.md\"}", resultJSON: "{\"content\": \"# Project\"}", isError: false)
         ]
@@ -299,7 +299,7 @@ import SwiftUI
         title: "Software Engineer",
         expectedArtifacts: ["Engineering Notes"],
         status: .needsApproval,
-        artifacts: [Artifact(name: "Engineering Notes", icon: "hammer.fill", description: "Implementation complete")],
+        artifacts: [Artifact(name: "Engineering Notes", icon: "hammer", description: "Implementation complete")],
         toolCalls: [
             StepToolCall(name: "write_file", argumentsJSON: "{\"path\": \"Sources/NotificationService.swift\"}", resultJSON: "{\"success\": true}", isError: false),
             StepToolCall(name: "run_xcodebuild", argumentsJSON: "{\"action\": \"build\"}", resultJSON: "{\"success\": true, \"warnings\": 2}", isError: false)
@@ -340,7 +340,7 @@ import SwiftUI
         title: "Product Manager",
         expectedArtifacts: ["Product Requirements"],
         status: .done,
-        artifacts: [Artifact(name: "Product Requirements", icon: "doc.text.fill", description: "PRD")],
+        artifacts: [Artifact(name: "Product Requirements", icon: "doc.text", description: "PRD")],
         toolCalls: [
             StepToolCall(name: "read_file", argumentsJSON: "{\"path\": \"README.md\"}", resultJSON: "{\"content\": \"# Project\"}", isError: false)
         ]
@@ -393,7 +393,7 @@ import SwiftUI
         messages: [
             StepMessage(role: .productManager, content: "I'll analyze the requirements and create a comprehensive PRD.")
         ],
-        artifacts: [Artifact(name: "Product Requirements", icon: "doc.text.fill", description: "PRD")],
+        artifacts: [Artifact(name: "Product Requirements", icon: "doc.text", description: "PRD")],
         toolCalls: [
             StepToolCall(name: "read_file", argumentsJSON: "{\"path\": \"README.md\"}", resultJSON: "{\"content\": \"# Project\"}", isError: false)
         ]
@@ -433,7 +433,7 @@ import SwiftUI
         messages: [
             StepMessage(role: .productManager, content: "Analyzing requirements for the notification system.")
         ],
-        artifacts: [Artifact(name: "Product Requirements", icon: "doc.text.fill", description: "PRD")],
+        artifacts: [Artifact(name: "Product Requirements", icon: "doc.text", description: "PRD")],
         toolCalls: [
             StepToolCall(name: "read_file", argumentsJSON: "{\"path\": \"README.md\"}", resultJSON: "{\"content\": \"# Project\"}", isError: false)
         ]
@@ -686,17 +686,17 @@ import SwiftUI
         ]
     )
 
-    // 6. Artifact expanded with nil content (loader + "Loading content...")
+    // 6. Artifact expanded with nil content (loader + "Loading…")
     let artifactLoadingStep = StepExecution(
         id: "preview",
         role: .productManager,
         title: "Product Manager",
         expectedArtifacts: ["Product Requirements"],
         status: .done,
-        artifacts: [Artifact(name: "Product Requirements", icon: "doc.text.fill", description: "PRD v2")]
+        artifacts: [Artifact(name: "Product Requirements", icon: "doc.text", description: "PRD v2")]
     )
 
-    // 7. Supervisor auto-answering (loader + "Supervisor auto-answering...")
+    // 7. Supervisor auto-answering (loader + "Supervisor auto-answering…")
     let autoAnswerStep = StepExecution(
         id: "preview",
         role: .softwareEngineer,

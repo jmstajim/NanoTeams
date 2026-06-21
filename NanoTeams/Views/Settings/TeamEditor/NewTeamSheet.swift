@@ -16,34 +16,30 @@ struct NewTeamSheet: View {
             // Header
             VStack(spacing: Spacing.s) {
                 Text("New Team")
-                    .font(.title2)
-                    .fontWeight(.semibold)
+                    .font(Typography.termXl)
+                    .foregroundStyle(Colors.textPrimary)
 
                 Text("Choose a starting point for your team")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .font(Typography.subheadline)
+                    .foregroundStyle(Colors.textSecondary)
             }
             .padding(.top, Spacing.xl)
             .padding(.bottom, Spacing.l)
 
             // Team name
             VStack(alignment: .leading, spacing: Spacing.s) {
-                Text("Team Name")
-                    .font(.subheadline)
-                    .fontWeight(.medium)
+                MonoLabel(text: "Team Name", rule: true)
 
                 TextField("Enter team name", text: $teamName)
-                    .textFieldStyle(.roundedBorder)
-                    .controlSize(.large)
+                    .textFieldStyle(.plain)
+                    .terminalField()
             }
             .padding(.horizontal, Spacing.xl)
             .padding(.bottom, Spacing.l)
 
             // Template grid
             VStack(alignment: .leading, spacing: Spacing.s) {
-                Text("Template")
-                    .font(.subheadline)
-                    .fontWeight(.medium)
+                MonoLabel(text: "Template", rule: true)
                     .padding(.horizontal, Spacing.xl)
 
                 ScrollView {
@@ -67,7 +63,7 @@ struct NewTeamSheet: View {
                 }
             }
 
-            Divider()
+            TerminalDivider()
 
             // Footer buttons
             HStack {
@@ -75,6 +71,7 @@ struct NewTeamSheet: View {
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
+                .buttonStyle(.terminalSecondary)
 
                 Spacer()
 
@@ -83,7 +80,7 @@ struct NewTeamSheet: View {
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.terminalPrimary)
                 .disabled(teamName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             .padding(Spacing.standard)
@@ -105,21 +102,21 @@ struct NewTeamSheet: View {
     ], spacing: Spacing.m) {
         TemplateCard(
             name: "FAANG",
-            icon: "building.2.fill",
+            icon: "building.2",
             description: "Full product dev pipeline with PM, UX, Engineering, and QA",
             isSelected: true,
             action: {}
         )
         TemplateCard(
             name: "Startup",
-            icon: "bolt.fill",
+            icon: "bolt",
             description: "Lean team with a single Software Engineer",
             isSelected: false,
             action: {}
         )
         TemplateCard(
             name: "Quest Party",
-            icon: "shield.fill",
+            icon: "shield",
             description: "Adventure module creation with specialized roles",
             isSelected: false,
             action: {}
@@ -152,27 +149,26 @@ struct TemplateCard: View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: Spacing.s) {
                 Image(systemName: icon)
-                    .font(.title2)
-                    .foregroundStyle(isSelected ? Colors.accent : .secondary)
+                    .font(Typography.termXl)
+                    .foregroundStyle(isSelected ? Colors.accent : Colors.textSecondary)
 
                 Text(name)
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-                    .foregroundStyle(.primary)
+                    .font(Typography.subheadlineMedium)
+                    .foregroundStyle(Colors.textPrimary)
 
                 Text(description)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(Typography.caption)
+                    .foregroundStyle(Colors.textSecondary)
                     .lineLimit(2)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(Spacing.m)
             .background(
-                RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
+                RoundedRectangle.squircle(CornerRadius.medium)
                     .fill(cardBackground)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
+                RoundedRectangle.squircle(CornerRadius.medium)
                     .strokeBorder(
                         isSelected ? Colors.accent : Colors.borderSubtle,
                         lineWidth: isSelected ? 2 : 1

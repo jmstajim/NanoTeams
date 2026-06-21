@@ -156,21 +156,22 @@ struct TeamGraphEditorView: View {
                 if team.roles.isEmpty {
                     VStack(spacing: 12) {
                         Image(systemName: "person.badge.plus")
-                            .font(.largeTitle)
-                            .foregroundStyle(.tertiary)
+                            .font(Typography.term3xl)
+                            .foregroundStyle(Colors.textTertiary)
 
                         Text("No Roles in Team")
-                            .font(.headline)
+                            .font(Typography.termLg)
+                            .foregroundStyle(Colors.textPrimary)
 
                         Text("Add roles using the Roles tab")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
+                            .font(Typography.termBase)
+                            .foregroundStyle(Colors.textSecondary)
                     }
                     .padding()
                     .background(
-                        RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
+                        RoundedRectangle.squircle(CornerRadius.medium)
                             .fill(Colors.surfaceCard)
-                            .shadow(radius: 3)
+                            .shadow(.card)
                     )
                 }
             }

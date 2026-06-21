@@ -20,6 +20,7 @@ import SwiftUI
 /// closures so orchestrator emissions during a running task don't fire body
 /// re-evals here.
 struct TemplatePreviewSheet: View {
+    @Environment(\.dismiss) private var dismiss
     @Environment(StoreConfiguration.self) private var config
     @Environment(NTMSOrchestrator.self) private var store
     let team: Team
@@ -50,29 +51,33 @@ struct TemplatePreviewSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("Template Preview")
-                    .font(.headline)
+            HStack(spacing: Spacing.s) {
+                MonoLabel(text: "Template Preview", marker: true)
                 Spacer()
                 if templateType == .meeting {
                     Toggle("As Coordinator", isOn: $previewAsCoordinator)
-                        .toggleStyle(.checkbox)
+                        .toggleStyle(.terminal)
                         .help("Preview the prompt the meeting coordinator role receives. Runtime emits a different coordinator hint than non-coordinator participants.")
                 }
-                Picker("Role", selection: $selectedRoleID) {
-                    ForEach(nonSupervisorRoles) { role in
-                        Text(role.name).tag(Optional(role.id))
-                    }
-                }
+                TerminalPicker(
+                    selection: $selectedRoleID,
+                    options: nonSupervisorRoles.map { (value: Optional($0.id), label: $0.name) }
+                )
                 .frame(width: 200)
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                    .buttonStyle(.terminalSecondary)
+                    .controlSize(.small)
             }
-            .padding()
+            .padding(.horizontal, Spacing.standard)
+            .padding(.vertical, Spacing.m)
 
-            Divider()
+            TerminalDivider()
 
             if selectedRoleID == nil {
                 Text("(select a role)")
-                    .foregroundStyle(.secondary)
+                    .font(Typography.termBase)
+                    .foregroundStyle(Colors.textSecondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 switch rendered {

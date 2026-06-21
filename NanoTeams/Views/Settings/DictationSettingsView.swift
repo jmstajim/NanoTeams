@@ -40,7 +40,7 @@ struct DictationSettingsView: View {
             footer: "All dictation runs entirely on your Mac using Apple's on-device speech recognition. No audio or transcripts leave your device."
         ) {
             SettingsItemHeader(
-                icon: "checkmark.shield.fill",
+                icon: "checkmark.shield",
                 title: "On-device only",
                 subtitle: "No Speech Recognition permission dialog and no network access."
             )
@@ -94,14 +94,14 @@ private struct DictationLanguagesCard: View {
                         NTMSLoader(.small)
                         Text("Loading supported languages…")
                             .font(Typography.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Colors.textSecondary)
                         Spacer()
                     }
                     .padding(.vertical, Spacing.s)
                 } else if models.isEmpty {
                     Text("No languages are supported on this device.")
                         .font(Typography.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Colors.textSecondary)
                 } else {
                     ForEach(models) { model in
                         LanguageRow(
@@ -319,8 +319,8 @@ private struct LanguageRow: View {
     }
 
     private var checkbox: some View {
-        Image(systemName: isSelected ? "checkmark.square.fill" : "square")
-            .font(.title3)
+        Image(systemName: isSelected ? "checkmark.square" : "square")
+            .font(Typography.termLg)
             .foregroundStyle(isSelected ? Colors.accent : Colors.textTertiary)
     }
 
@@ -329,8 +329,7 @@ private struct LanguageRow: View {
         switch model.status {
         case .installed:
             HStack(spacing: Spacing.s) {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(Colors.success)
+                StatusGlyph(glyph: TerminalGlyph.done, color: Colors.success)
                 SettingsPillButton(
                     title: isRemoving ? "Removing…" : "Remove",
                     icon: "trash",

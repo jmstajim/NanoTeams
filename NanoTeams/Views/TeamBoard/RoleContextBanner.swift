@@ -94,12 +94,12 @@ struct RoleContextBanner: View {
             }
 
             if !consultations.isEmpty {
-                Divider().padding(.horizontal, Spacing.s)
+                TerminalDivider().padding(.horizontal, Spacing.s)
                 RoleConsultationsPanel(consultations: consultations, isExpanded: $showConsultations)
             }
 
             if let pad = scratchpad, !pad.isEmpty {
-                Divider().padding(.horizontal, Spacing.s)
+                TerminalDivider().padding(.horizontal, Spacing.s)
                 RoleScratchpadPanel(content: pad, isExpanded: $showScratchpad)
             }
         }
@@ -155,8 +155,8 @@ struct RoleContextBanner: View {
                         isShowingCorrectSheet = true
                     } label: {
                         Image(systemName: "arrow.uturn.backward.circle")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.tertiary)
+                            .font(Typography.termXs)
+                            .foregroundStyle(Colors.textTertiary)
                     }
                     .buttonStyle(.plain)
                     .help("Correct role")
@@ -168,8 +168,8 @@ struct RoleContextBanner: View {
                         isShowingRestartSheet = true
                     } label: {
                         Image(systemName: "arrow.counterclockwise")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.tertiary)
+                            .font(Typography.termXs)
+                            .foregroundStyle(Colors.textTertiary)
                     }
                     .buttonStyle(.plain)
                     .help("Restart role")
@@ -182,8 +182,8 @@ struct RoleContextBanner: View {
                     }
                 } label: {
                     Image(systemName: "xmark")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
+                        .font(Typography.termXs)
+                        .foregroundStyle(Colors.textTertiary)
                 }
                 .buttonStyle(.plain)
                 .help("Deselect role (Escape)")
@@ -220,7 +220,7 @@ struct RoleContextBanner: View {
         title: "Software Engineer",
         expectedArtifacts: ["Engineering Notes"],
         status: .done,
-        artifacts: [Artifact(name: "Engineering Notes", icon: "doc.text.fill", description: "Implementation details")],
+        artifacts: [Artifact(name: "Engineering Notes", icon: "doc.text", description: "Implementation details")],
         consultations: [
             TeammateConsultation(
                 requestingRole: .softwareEngineer,
@@ -292,7 +292,7 @@ struct RoleContextBanner: View {
         title: "Product Manager",
         expectedArtifacts: ["Product Requirements"],
         status: .done,
-        artifacts: [Artifact(name: "Product Requirements", icon: "doc.text.fill", description: "PRD v1")]
+        artifacts: [Artifact(name: "Product Requirements", icon: "doc.text", description: "PRD v1")]
     )
     RoleContextBanner(
         roleID: pmRole.id,
@@ -315,7 +315,7 @@ struct RoleContextBanner: View {
         title: "Code Reviewer",
         expectedArtifacts: ["Code Review Summary"],
         status: .needsApproval,
-        artifacts: [Artifact(name: "Code Review Summary", icon: "checkmark.shield.fill", description: "Review summary")]
+        artifacts: [Artifact(name: "Code Review Summary", icon: "checkmark.shield", description: "Review summary")]
     )
     RoleContextBanner(
         roleID: crRole.id,
@@ -338,7 +338,7 @@ struct RoleContextBanner: View {
         title: "Product Manager",
         expectedArtifacts: ["Product Requirements"],
         status: .done,
-        artifacts: [Artifact(name: "Product Requirements", icon: "doc.text.fill", description: "PRD")]
+        artifacts: [Artifact(name: "Product Requirements", icon: "doc.text", description: "PRD")]
     )
     RoleContextBanner(
         roleID: pmRole.id,

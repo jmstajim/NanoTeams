@@ -106,7 +106,7 @@ nonisolated enum MeetingStatus: String, Codable, Hashable {
 
     private static let metadata: [MeetingStatus: (displayName: String, icon: String)] = [
         .pending:                ("Pending",                  "clock"),
-        .inProgress:             ("In Progress",              "person.3.fill"),
+        .inProgress:             ("In Progress",              "person.3"),
         .completed:              ("Completed",                "checkmark.circle"),
         .escalatedToSupervisor:  ("Escalated to Supervisor",  "exclamationmark.triangle"),
         .cancelled:              ("Cancelled",                "xmark.circle"),

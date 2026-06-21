@@ -5,93 +5,120 @@ import AppKit
 
 extension SidebarView {
 
-    /// No-folder state — prominent CTA to open a work folder.
+    /// No-folder state — labelled `▌ WORK FOLDER` section explaining default
+    /// storage, with an `[ open folder ]` CTA and a muted "show storage"
+    /// secondary affordance. Sibling of `projectInfoCard` — shares its
+    /// terminal-DS chrome (MonoLabel marker, mono type, TerminalDivider,
+    /// bracketed buttons) so the two states read as the same block.
     var defaultStorageCard: some View {
-        VStack(alignment: .leading, spacing: Spacing.m) {
-            HStack(spacing: Spacing.s) {
-                RoundedRectangle.squircle(CornerRadius.small)
-                    .fill(Colors.surfaceElevated)
-                    .frame(width: 30, height: 30)
-                    .overlay(
-                        Image(systemName: "folder.badge.plus")
-                            .font(Typography.caption)
-                            .foregroundStyle(.secondary)
-                    )
-                VStack(alignment: .leading, spacing: Spacing.xxs) {
-                    Text("No Work Folder")
-                        .font(Typography.subheadlineSemibold)
-                        .foregroundStyle(.primary)
-                    Text("Select a folder to access and manage files")
-                        .font(Typography.caption)
+        VStack(alignment: .leading, spacing: Spacing.s) {
+            // Section label — pairs with `▌ TASKS` below and matches the
+            // active state's header for visual rhythm.
+            MonoLabel(text: "Work folder", marker: true)
+
+            // Status row: glyph + name + supporting subtitle.
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: Spacing.xs) {
+                    Text(TerminalGlyph.idle)
+                        .font(Typography.termSm)
                         .foregroundStyle(Colors.textTertiary)
-                        .lineLimit(2)
+                        .accessibilityHidden(true)
+                    Text("No folder selected")
+                        .font(Typography.termMd)
+                        .foregroundStyle(Colors.textPrimary)
+                        .lineLimit(1)
                 }
+                Text("Files stored in default storage.")
+                    .font(Typography.term2xs)
+                    .foregroundStyle(Colors.textTertiary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            Button { isPresentingFolderPicker = true } label: {
-                Text("Open Folder")
-                    .font(Typography.captionSemibold)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, Spacing.m)
-                    .padding(.vertical, Spacing.xs)
-                    .background(
-                        Capsule(style: .continuous)
-                            .fill(Colors.surfaceElevated)
-                    )
-            }
-            .buttonStyle(.plain)
-            .frame(maxWidth: .infinity)
+            // Primary CTA — bracketed DS button.
+            HStack(spacing: Spacing.s) {
+                Button { isPresentingFolderPicker = true } label: {
+                    Text("open folder")
+                }
+                .buttonStyle(.terminalSecondary)
+                .accessibilityHint("Choose a folder to open as the work folder")
 
+                Spacer(minLength: 0)
+            }
+
+            // Secondary affordance — muted text link to default-storage dir.
             Button {
                 if !NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: NTMSOrchestrator.defaultStorageURL.path) {
                     store.lastErrorMessage = "Could not open storage folder"
                 }
             } label: {
-                Text("Show Storage in Finder")
-                    .font(Typography.caption)
-                    .foregroundStyle(Colors.textTertiary)
+                HStack(spacing: Spacing.xs) {
+                    Text(TerminalGlyph.prompt)
+                        .font(Typography.term2xs)
+                        .foregroundStyle(Colors.accent)
+                        .accessibilityHidden(true)
+                    Text("show storage in finder")
+                        .font(Typography.term2xs)
+                        .foregroundStyle(Colors.textTertiary)
+                }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .frame(maxWidth: .infinity)
         }
-        .padding(.horizontal, Spacing.m)
+        .padding(.leading, Spacing.m)
+        .padding(.trailing, Spacing.xs)
         .padding(.vertical, Spacing.m)
-        .background(
-            RoundedRectangle.squircle(CornerRadius.medium)
-                .fill(Colors.surfaceCard)
-        )
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // Flat DS block — no card; full-width bottom hairline (TerminalDivider).
+        .overlay(alignment: .bottom) { TerminalDivider() }
     }
 
-    /// Active project card — compact row with folder icon, name, and an ⋯ actions menu (folder settings live at the bottom of that menu).
+    /// Active work-folder block — a labelled `▌ WORK FOLDER` section with the
+    /// folder name + home-relative path, an inline ⋯ actions menu, and a
+    /// context slot underneath (generate CTA / live loader / context body).
+    /// Aligns with the design's terminal language (MonoLabel marker, mono
+    /// type, TerminalDivider hairline, `.terminalGhost` bracketed CTA).
     func projectInfoCard(folder: URL) -> some View {
         let hasContext = !(store.workFolder?.settings.context.isEmpty ?? true)
+        let isGenerating = store.isGeneratingWorkFolderContext
         return VStack(alignment: .leading, spacing: Spacing.s) {
-            HStack(spacing: Spacing.s) {
-                // Folder icon — tap to reveal in Finder
-                Button {
-                    NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: folder.path)
-                } label: {
-                    RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous)
-                        .fill(Colors.surfaceElevated)
-                        .frame(width: 30, height: 30)
-                        .overlay(
-                            Image(systemName: "folder.fill")
-                                .font(Typography.caption)
-                                .foregroundStyle(.secondary)
-                        )
+            // Section label — pairs with `▌ TASKS` below for rhythm.
+            MonoLabel(text: "Work folder", marker: true)
+
+            // Folder identity: name + home-relative path on the left,
+            // ⋯ actions menu on the right.
+            HStack(alignment: .top, spacing: Spacing.xs) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Button {
+                        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: folder.path)
+                    } label: {
+                        HStack(spacing: Spacing.xs) {
+                            Image(systemName: "folder")
+                                .font(Typography.termSm)
+                                .foregroundStyle(Colors.textTertiary)
+                                .accessibilityHidden(true)
+                            Text(folder.lastPathComponent)
+                                .font(Typography.termMd)
+                                .foregroundStyle(Colors.textPrimary)
+                                .lineLimit(1)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Reveal in Finder")
+
+                    // Home-relativized path — truncates at the leading edge so
+                    // the deepest folder stays visible (real-terminal trait).
+                    Text(homeRelativePath(folder))
+                        .font(Typography.term2xs)
+                        .foregroundStyle(Colors.textTertiary)
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                        .help(folder.path)
                 }
-                .buttonStyle(.plain)
-                .help("Reveal in Finder")
 
-                // Work folder name
-                Text(folder.lastPathComponent)
-                    .font(Typography.subheadlineSemibold)
-                    .lineLimit(1)
-                    .help(folder.path)
+                Spacer(minLength: Spacing.xs)
 
-                Spacer(minLength: 0)
-
-                // Folder actions menu
                 Menu {
                     Button {
                         NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: folder.path)
@@ -116,7 +143,7 @@ extension SidebarView {
                             Button {
                                 Task { await store.openWorkFolder(url) }
                             } label: {
-                                Label(url.lastPathComponent, systemImage: "folder.fill")
+                                Label(url.lastPathComponent, systemImage: "folder")
                             }
                             .disabled(url == store.workFolderURL)
                         }
@@ -139,60 +166,70 @@ extension SidebarView {
                 } label: {
                     SidebarIconButton(icon: "ellipsis")
                 }
-                .menuStyle(.button)
+                .menuStyle(.borderlessButton)
                 .buttonStyle(.plain)
                 .menuIndicator(.hidden)
             }
 
-            // Context or generate button.
-            //
-            // Generating state takes priority over the context text so a
-            // regeneration kicked off from Settings (which keeps the previous
-            // context in place until the new one streams in) shows up here
-            // too. Tap-to-cancel works from either surface.
-            let isGenerating = store.isGeneratingWorkFolderContext
-            if isGenerating {
-                Button {
-                    store.cancelWorkFolderContextGeneration()
-                } label: {
-                    HStack(spacing: Spacing.xs) {
-                        NTMSLoader(.mini)
-                            .frame(width: 12, height: 12)
-                        Text("Generating...")
-                            .font(Typography.caption)
-                    }
-                    .foregroundStyle(Colors.textSecondary)
-                }
-                .buttonStyle(.plain)
-            } else if hasContext {
-                Text(store.workFolder?.settings.context ?? "")
-                    .font(Typography.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .truncationMode(.tail)
-            } else {
-                Button {
-                    store.startGeneratingWorkFolderContext()
-                } label: {
-                    HStack(spacing: Spacing.xs) {
-                        Image(systemName: "sparkles")
-                            .font(Typography.caption)
-                            .frame(width: 12, height: 12)
-                        Text("Generate Context")
-                            .font(Typography.caption)
-                    }
-                    .foregroundStyle(Colors.accent)
-                }
-                .buttonStyle(.plain)
-            }
+            // Context slot — `Generating` takes priority over `hasContext`
+            // so a regeneration kicked off from Settings (which keeps the
+            // previous context in place until the new one streams in) is
+            // visible here too. Tap-to-cancel works from either surface.
+            contextSlot(hasContext: hasContext, isGenerating: isGenerating)
         }
         .padding(.leading, Spacing.m)
-        .padding(.trailing, Spacing.xs)
+        // Shared single source of truth for the trailing ⋯ alignment: the card
+        // pads to `menuTrailingInset` directly; the Autovisor nav row reaches the
+        // same x as chrome inset + a derived nudge. See `SidebarNavRowMetrics`.
+        .padding(.trailing, SidebarNavRowMetrics.menuTrailingInset)
         .padding(.vertical, Spacing.m)
-        .background(
-            RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
-                .fill(Colors.surfaceCard)
-        )
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // Flat DS block — no card; full-width bottom hairline (TerminalDivider).
+        .overlay(alignment: .bottom) { TerminalDivider() }
+    }
+
+    /// Context slot variants — generating loader, body text, or generate CTA.
+    @ViewBuilder
+    private func contextSlot(hasContext: Bool, isGenerating: Bool) -> some View {
+        if isGenerating {
+            Button {
+                store.cancelWorkFolderContextGeneration()
+            } label: {
+                HStack(spacing: Spacing.xs) {
+                    NTMSLoader(font: Typography.termXs, color: Colors.accent)
+                    Text("generating context…")
+                        .font(Typography.termXs)
+                        .foregroundStyle(Colors.textSecondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Tap to cancel")
+        } else if hasContext {
+            Text(store.workFolder?.settings.context ?? "")
+                .font(Typography.termXs)
+                .foregroundStyle(Colors.textSecondary)
+                .lineLimit(2)
+                .truncationMode(.tail)
+        } else {
+            Button {
+                store.startGeneratingWorkFolderContext()
+            } label: {
+                Text("generate context")
+            }
+            .buttonStyle(.terminalGhost)
+            .accessibilityHint("Describe this project so the AI understands it")
+        }
+    }
+
+    /// Replace `$HOME` prefix with `~` for terminal-style path display.
+    /// Falls back to the absolute path when the folder is outside the home dir.
+    private func homeRelativePath(_ url: URL) -> String {
+        let path = url.path
+        let home = NSHomeDirectory()
+        if path == home { return "~" }
+        if path.hasPrefix(home + "/") { return "~" + path.dropFirst(home.count) }
+        return path
     }
 }
 
@@ -207,13 +244,13 @@ struct SidebarIconButton: View {
     var body: some View {
         Image(systemName: icon)
             .font(Typography.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Colors.textSecondary)
             .frame(width: 26, height: 26)
             .background(
-                Circle()
+                RoundedRectangle.squircle(CornerRadius.small)
                     .fill(isHovered ? Colors.surfaceElevated : .clear)
             )
-            .contentShape(Circle())
+            .contentShape(Rectangle())
             .onHover { isHovered = $0 }
     }
 }
@@ -238,6 +275,7 @@ private func makeCardPreviewStore(folder: URL?) -> NTMSOrchestrator {
         .environment(store.engineState)
         .environment(store.configuration)
         .environment(store.streamingPreviewManager)
+        .environment(LLMStatusMonitor())
         .frame(width: 280, height: 500)
 }
 
@@ -250,6 +288,7 @@ private func makeCardPreviewStore(folder: URL?) -> NTMSOrchestrator {
         .environment(store.engineState)
         .environment(store.configuration)
         .environment(store.streamingPreviewManager)
+        .environment(LLMStatusMonitor())
         .frame(width: 280, height: 500)
 }
 
@@ -262,5 +301,6 @@ private func makeCardPreviewStore(folder: URL?) -> NTMSOrchestrator {
         .environment(store.engineState)
         .environment(store.configuration)
         .environment(store.streamingPreviewManager)
+        .environment(LLMStatusMonitor())
         .frame(width: 280, height: 500)
 }

@@ -440,7 +440,7 @@ final class TeamMeetingServiceTests: XCTestCase {
 
     func testMeetingStatus_Icon() {
         XCTAssertEqual(MeetingStatus.pending.icon, "clock")
-        XCTAssertEqual(MeetingStatus.inProgress.icon, "person.3.fill")
+        XCTAssertEqual(MeetingStatus.inProgress.icon, "person.3")
         XCTAssertEqual(MeetingStatus.completed.icon, "checkmark.circle")
         XCTAssertEqual(MeetingStatus.escalatedToSupervisor.icon, "exclamationmark.triangle")
         XCTAssertEqual(MeetingStatus.cancelled.icon, "xmark.circle")

@@ -12,7 +12,7 @@ struct TeamBoundaryBandView: View {
     var body: some View {
         HStack(spacing: Spacing.xs) {
             Image(systemName: directionIcon)
-                .font(.caption)
+                .font(Typography.caption)
                 .foregroundStyle(Colors.purple)
                 .accessibilityHidden(true)
 
@@ -22,7 +22,7 @@ struct TeamBoundaryBandView: View {
 
             if let role = boundary.delegatedFromRoleName, boundary.direction == .intoChild {
                 Text(verbatim: "by \(role)")
-                    .font(.caption)
+                    .font(Typography.caption)
                     .foregroundStyle(Colors.textSecondary)
             }
             Spacer()

@@ -19,8 +19,13 @@ struct WatchtowerView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: Spacing.l) {
-                // Keyboard shortcut hints
-                shortcutHints
+                // Brand masthead — figlet + WATCHTOWER label + "N tasks need you"
+                // headline + subtitle + AUTOVISOR toggle + new-task button, per
+                // DesignSystemByClaude/.../Watchtower.jsx lines 199-223.
+                WatchtowerHeader(
+                    needsYouCount: WatchtowerNotification.needsYouCount(cachedNotifications),
+                    onNewTask: { QuickCaptureController.shared.showNewTask() }
+                )
 
                 if let release = appUpdateState.availableRelease {
                     WatchtowerAppUpdateCard(
@@ -35,16 +40,6 @@ struct WatchtowerView: View {
                     .transition(.scale(scale: 0.95, anchor: .center).combined(with: .opacity))
                 }
 
-                // Quick actions row — its own subview so its snapshot-derived
-                // Autovisor reads stay off this body. The manager reassigns the
-                // snapshot on every memory write / background mutation while reviewing;
-                // reading them here would re-evaluate the whole body and hitch
-                // scrolling (CLAUDE.md #11).
-                WatchtowerQuickActionsBar(
-                    navigationSelection: $navigationSelection,
-                    onShowFinalReview: { isShowingFinalReviewSheet = true }
-                )
-
                 // Autovisor goal + live memory + chat box. Self-gating (renders
                 // only while the manager is on); the on/off toggle is in Quick Actions.
                 WatchtowerAutovisorCard()
@@ -55,7 +50,7 @@ struct WatchtowerView: View {
 
                 // Notification banners (from all loaded tasks)
                 if !cachedNotifications.isEmpty {
-                    NTMSSectionHeader(title: "Notifications", systemImage: "bell.fill")
+                    MonoLabel(text: "Inbox", rule: true)
                         .transition(.opacity)
                     ForEach(cachedNotifications) { notification in
                         WatchtowerNotificationBanner(
@@ -112,7 +107,7 @@ struct WatchtowerView: View {
             .padding(.bottom, Spacing.l)
         }
         .background(NTMSBackground())
-        .navigationTitle("Watchtower")
+        .navigationTitle("")
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         .sheet(isPresented: $isShowingFinalReviewSheet) {
             if let task = store.activeTask {
@@ -136,15 +131,15 @@ struct WatchtowerView: View {
                 VStack(spacing: Spacing.m) {
                     Image(systemName: "doc.text.magnifyingglass")
                         .font(.largeTitle)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Colors.textTertiary)
                         .accessibilityHidden(true)
                     Text("No active task to review")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .font(Typography.termBase)
+                        .foregroundStyle(Colors.textSecondary)
                     Button("Close") {
                         isShowingFinalReviewSheet = false
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.terminalSecondary)
                     .controlSize(.small)
                 }
                 .frame(minWidth: 480, minHeight: 220)
@@ -158,53 +153,11 @@ struct WatchtowerView: View {
         .onChange(of: config.dismissedNotificationIDs) { _, _ in refreshNotifications() }
     }
 
-    // MARK: - Shortcut Hints
-
-    private var shortcutHints: some View {
-        HStack(spacing: Spacing.s) {
-            HStack(spacing: Spacing.xxs) {
-                ForEach(["⌃", "⌥", "⌘"], id: \.self) { key in
-                    shortcutKey(key)
-                }
-            }
-            VStack(alignment: .leading, spacing: Spacing.xxs) {
-                HStack(spacing: Spacing.s) {
-                    shortcutKey("0")
-                    Text("Quick Task")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                    InfoTip("Open the floating overlay panel to create a task, answer a question, or send a chat message.\n\nShortcut: ⌃ ⌥ ⌘ 0")
-                }
-                HStack(spacing: Spacing.s) {
-                    shortcutKey("K")
-                    Text("Context Capture")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                    InfoTip("Capture the current selection (text or files) from any app and attach it to the Quick Task panel.\n\nShortcut: ⌃ ⌥ ⌘ K")
-                }
-            }
-            Spacer()
-        }
-    }
-
-    private func shortcutKey(_ key: String) -> some View {
-        Text(key)
-            .font(.system(size: 11, weight: .medium, design: .monospaced))
-            .foregroundStyle(.secondary)
-            .frame(minWidth: 20, minHeight: 20)
-            .background(
-                RoundedRectangle(cornerRadius: CornerRadius.micro, style: .continuous)
-                    .fill(Colors.surfaceElevated)
-            )
-    }
-
     // MARK: - Activity Timeline
 
     private var activityTimelineSection: some View {
         VStack(alignment: .leading, spacing: Spacing.m) {
-            NTMSSectionHeader(title: "Recent Activity", systemImage: "clock.fill")
+            MonoLabel(text: "Recent Activity", rule: true)
 
             WatchtowerTimeline(
                 onTaskSelect: { taskID in
@@ -216,9 +169,11 @@ struct WatchtowerView: View {
                 clearedUpToDate: $clearedUpToDate
             )
             .frame(minHeight: 300)
-            .background(Colors.surfaceCard)
-            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous))
-            .shadow(.card)
+            .background(Colors.surfaceCard, in: RoundedRectangle.squircle(CornerRadius.medium))
+            .overlay(
+                RoundedRectangle.squircle(CornerRadius.medium)
+                    .strokeBorder(Colors.borderSubtle, lineWidth: 1)
+            )
         }
     }
 

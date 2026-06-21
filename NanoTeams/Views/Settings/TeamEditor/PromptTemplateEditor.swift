@@ -11,6 +11,12 @@ struct PromptTemplateEditor: NSViewRepresentable {
     @Binding var template: String
     @Binding var pendingInsertion: String?
     let placeholders: [(key: String, label: String, category: String)]
+    /// Observed so `updateNSView` re-stamps NSTextView colors when the user
+    /// switches themes. AppKit caches resolved NSColors per `NSAppearance` —
+    /// switching between two themes that share a color scheme (e.g. two dark
+    /// palettes) does NOT auto-invalidate that cache. Reading this property
+    /// makes SwiftUI re-invoke `updateNSView` on every theme change.
+    @AppStorage(UserDefaultsKeys.activeTheme) private var activeThemeRaw: String = Theme.defaultTheme.rawValue
 
     func makeCoordinator() -> Coordinator {
         Coordinator(template: $template, placeholders: placeholders)
@@ -123,6 +129,24 @@ struct PromptTemplateEditor: NSViewRepresentable {
             context.coordinator.placeholders = placeholders
         }
 
+        // Re-stamp colors + rebuild attributed string when the active theme
+        // changes. AppKit's NSColor cache keys on `NSAppearance.name`, so a
+        // palette swap within the same color scheme (dark→dark) keeps the
+        // stale resolved color until we replace the attribute outright.
+        let themeChanged = context.coordinator.lastAppliedTheme != activeThemeRaw
+        if themeChanged {
+            context.coordinator.lastAppliedTheme = activeThemeRaw
+            textView.textColor = Colors.nsTextPrimary
+            textView.backgroundColor = Colors.nsSurfaceCard
+            let selectedRange = textView.selectedRange()
+            let attributed = PlaceholderParser.attributedString(from: template, placeholders: placeholders)
+            storage.setAttributedString(attributed)
+            let maxLen = storage.length
+            if selectedRange.location <= maxLen {
+                textView.setSelectedRange(NSRange(location: min(selectedRange.location, maxLen), length: 0))
+            }
+        }
+
         // Handle pending insertion at cursor position.
         // `pendingInsertion = nil` is deferred via `DispatchQueue.main.async`
         // because SwiftUI state mutations from inside `updateNSView` trip the
@@ -166,6 +190,9 @@ struct PromptTemplateEditor: NSViewRepresentable {
         var placeholders: [(key: String, label: String, category: String)]
         weak var textView: NSTextView?
         var isEditing = false
+        /// Last theme rawValue stamped into the textView — drives the
+        /// theme-change branch in `updateNSView`.
+        var lastAppliedTheme: String?
         private var debounceTimer: Timer?
 
         init(template: Binding<String>, placeholders: [(key: String, label: String, category: String)]) {

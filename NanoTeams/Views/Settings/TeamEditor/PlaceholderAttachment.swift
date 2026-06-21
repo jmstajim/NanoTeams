@@ -10,38 +10,23 @@ nonisolated final class PlaceholderAttachment: NSTextAttachment {
     let label: String
     let category: String
 
-    private static let colorMap: [String: (dark: Int, light: Int)] = [
-        "role": (dark: 0x818CF8, light: 0x4F46E5),       // indigo (accent)
-        "context": (dark: 0x1DB954, light: 0x16A34A),     // success green
-        "tools": (dark: 0xF97316, light: 0xEA580C),       // warning orange
-        "artifacts": (dark: 0x8B5CF6, light: 0x7C3AED),   // purple
-    ]
-
-    // Memoize dynamic NSColors per category. Without this, every call to
-    // `color(for:)` produced a fresh `NSColor(name: nil) { ... }` instance
-    // that compared unequal by identity even when the resolved RGB matched —
-    // which broke `NSAttributedString.isEqual` (used as the change-detection
-    // short-circuit in `ResolvedPromptView.updateNSView`) and forced a full
+    // Memoize semantic theme-aware NSColors per category. Categories map to
+    // design-system tokens (Color Rule #7: no hardcoded hex in views) — every
+    // chip now tracks both the dark/light appearance and the active theme.
+    // Caching matters: each `Colors.nsThemed(...)` call mints a fresh
+    // dynamic `NSColor(name: nil) { ... }` that compares unequal by identity
+    // even when the resolved RGB matches, which breaks `NSAttributedString.isEqual`
+    // (used as the change-detection short-circuit in
+    // `ResolvedPromptView.updateNSView`) and forces a full
     // `setAttributedString` + NSTextView relayout on every SwiftUI body
-    // invocation, including scroll-driven re-renders. Result: severe scroll
-    // jank in the preview sheets. Caching here makes the foreground-color
-    // attribute a stable singleton so `isEqual` actually fires.
-    private static let dynamicColors: [String: NSColor] = {
-        var dict: [String: NSColor] = [:]
-        for (category, pair) in colorMap {
-            dict[category] = NSColor(name: nil) { appearance in
-                let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                let hex = isDark ? pair.dark : pair.light
-                return NSColor(
-                    red: CGFloat((hex >> 16) & 0xFF) / 255.0,
-                    green: CGFloat((hex >> 8) & 0xFF) / 255.0,
-                    blue: CGFloat(hex & 0xFF) / 255.0,
-                    alpha: 1.0
-                )
-            }
-        }
-        return dict
-    }()
+    // invocation, including scroll-driven re-renders. Caching here makes
+    // the foreground-color attribute a stable singleton so `isEqual` fires.
+    private static let dynamicColors: [String: NSColor] = [
+        "role":      Colors.nsThemed(\.accent),
+        "context":   Colors.nsThemed(\.success),
+        "tools":     Colors.nsThemed(\.warning),
+        "artifacts": Colors.nsThemed(\.artifact),
+    ]
 
     // Cache pre-rasterized chip bitmaps by `(label, category)`. The
     // previous implementation used the handler-based
@@ -76,7 +61,9 @@ nonisolated final class PlaceholderAttachment: NSTextAttachment {
     }
 
     private static func renderChipImage(label: String, category: String) -> NSImage {
-        let chipFont = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        // Monospaced — chips sit inside a mono `NSTextView` (prompt template
+        // editor), so a mono chip face keeps the cell grid stable.
+        let chipFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .semibold)
         let chipColor = color(for: category)
         let textAttrs: [NSAttributedString.Key: Any] = [
             .font: chipFont,
@@ -87,7 +74,12 @@ nonisolated final class PlaceholderAttachment: NSTextAttachment {
         let chipWidth = ceil(textSize.width + horizontalPadding)
         let chipHeight: CGFloat = 20
         let chipSize = NSSize(width: chipWidth, height: chipHeight)
-        let cornerRadius = chipHeight / 2
+        // Near-sharp corners — design system reserves full-pill radii for
+        // legacy contexts; `CornerRadius.micro` is the token for "tiny
+        // inline pills" (graph labels & co.). Keeps the chip aligned with
+        // the terminal-grid aesthetic instead of looking like a stranger
+        // pill in a square-cornered surface.
+        let cornerRadius = CornerRadius.micro
 
         // Render once into a retina-scale bitmap rep. NSTextView blits the
         // resulting pixels on every draw call with no closure invocation.
@@ -120,10 +112,10 @@ nonisolated final class PlaceholderAttachment: NSTextAttachment {
         let rect = NSRect(origin: .zero, size: chipSize)
         let path = NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5),
                                 xRadius: cornerRadius, yRadius: cornerRadius)
-        chipColor.withAlphaComponent(0.15).setFill()
+        chipColor.withAlphaComponent(DynamicTintOpacity.badge).setFill()
         path.fill()
 
-        chipColor.withAlphaComponent(0.4).setStroke()
+        chipColor.withAlphaComponent(DynamicTintOpacity.stroke).setStroke()
         path.lineWidth = 1
         path.stroke()
 

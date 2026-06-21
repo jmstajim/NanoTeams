@@ -190,7 +190,7 @@ struct GraphPanelView: View {
                     NTMSLoader(.large)
                     Text("Generating team…")
                         .font(Typography.captionSemibold)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Colors.textSecondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Colors.surfaceOverlayStrong)
@@ -198,7 +198,11 @@ struct GraphPanelView: View {
                 generationFailureOverlay
             }
         }
-        .background(Colors.surfacePrimary)
+        .background {
+            // Terminal dot-grid canvas — faint; depth comes from node borders.
+            Colors.surfacePrimary
+            DotGridBackground()
+        }
         .task {
             // Defer to next main-runloop tick. `.task` fires after the
             // first layout pass — different from `.onAppear` which fires
@@ -277,14 +281,14 @@ struct GraphPanelView: View {
     private func delegationBandView(for layer: DelegationLayer) -> some View {
         HStack(spacing: Spacing.xs) {
             Image(systemName: "arrow.turn.down.right")
-                .font(.caption)
+                .font(Typography.caption)
                 .foregroundStyle(Colors.purple)
                 .accessibilityHidden(true)
             Text("Delegated to \(layer.childTeam.name)")
                 .font(Typography.captionSemibold)
                 .foregroundStyle(Colors.textPrimary)
             Text(verbatim: "by \(layer.parentRoleName)")
-                .font(.caption)
+                .font(Typography.caption)
                 .foregroundStyle(Colors.textSecondary)
             Spacer()
             statusPill(for: layer)
@@ -296,13 +300,22 @@ struct GraphPanelView: View {
 
     @ViewBuilder
     private func statusPill(for layer: DelegationLayer) -> some View {
-        let (label, foreground, background) = pillContent(for: layer)
-        Text(label)
-            .font(.caption2.weight(.medium))
-            .foregroundStyle(foreground)
-            .padding(.horizontal, Spacing.xs)
-            .padding(.vertical, 2)
-            .background(background, in: Capsule())
+        let (label, foreground, background, glyph) = pillContent(for: layer)
+        HStack(spacing: Spacing.xxs) {
+            StatusGlyph(
+                glyph: glyph,
+                color: foreground,
+                animatesWork: engineState.taskEngineStates[layer.id] == .running,
+                font: Typography.term2xs
+            )
+            Text(label.uppercased())
+                .font(Typography.caption2.weight(.medium))
+                .tracking(Typography.labelTracking)
+                .foregroundStyle(foreground)
+        }
+        .padding(.horizontal, Spacing.xs)
+        .padding(.vertical, 2)
+        .background(background, in: RoundedRectangle.squircle(CornerRadius.small))
     }
 
     /// Resolves pill label + foreground + background for the in-flight
@@ -312,22 +325,19 @@ struct GraphPanelView: View {
     /// colors, always use a named tint). Completed/failed delegations are
     /// filtered out by `resolveDelegationLayers`, so this helper only sees
     /// in-flight layers.
-    private func pillContent(for layer: DelegationLayer) -> (String, Color, Color) {
-        switch engineState.taskEngineStates[layer.id] {
-        case .running:               return ("running", Colors.success,       Colors.successTint)
-        case .paused:                return ("paused",  Colors.warning,       Colors.warningTint)
-        case .needsAcceptance:       return ("review",  Colors.purple,        Colors.purpleTint)
-        case .needsSupervisorInput:  return ("input",   Colors.warning,       Colors.warningTint)
-        case .done:                  return ("done",    Colors.textSecondary, Colors.neutralTint)
-        case .failed:                return ("failed",  Colors.error,         Colors.errorTint)
-        case .pending, nil:          return ("idle",    Colors.textTertiary,  Colors.dimTint)
-        }
+    private func pillContent(for layer: DelegationLayer) -> (String, Color, Color, String) {
+        // Single source of truth — `TeamEngineState.display` (StatusDisplayExtensions)
+        // shared with the navbar status badge so a delegation child's pill color
+        // matches the badge for the same engine state (previously diverged:
+        // running=success vs info, input=warning vs gold, done=textSecondary vs success).
+        let d = TeamEngineState.display(for: engineState.taskEngineStates[layer.id])
+        return (d.label, d.color, d.tint, d.glyph)
     }
 
     private var generationFailureOverlay: some View {
         VStack(spacing: Spacing.m) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 32))
+            Image(systemName: "exclamationmark.triangle")
+                .font(Typography.term3xl)
                 .foregroundStyle(Colors.error)
             Text("Team generation failed")
                 .font(Typography.subheadlineSemibold)
@@ -341,7 +351,7 @@ struct GraphPanelView: View {
             }
             if let onRetryGeneration {
                 Button("Retry", action: onRetryGeneration)
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.terminalPrimary)
                     .padding(.top, Spacing.s)
             }
         }
@@ -353,6 +363,7 @@ struct GraphPanelView: View {
 // MARK: - Previews
 
 #Preview("Graph Panel — Idle") {
+    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     @Previewable @State var selectedRoleID: String? = nil
     let team = Team.default
     let wf = WorkFolderProjection(
@@ -368,10 +379,13 @@ struct GraphPanelView: View {
         producedArtifacts: [],
         selectedRoleID: $selectedRoleID
     )
+    .environment(store)
+    .environment(store.engineState)
     .frame(width: 500, height: 400)
 }
 
 #Preview("Graph Panel — In Progress") {
+    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     @Previewable @State var selectedRoleID: String? = nil
     let team = Team.default
     let wf = WorkFolderProjection(
@@ -393,5 +407,7 @@ struct GraphPanelView: View {
         selectedRoleID: $selectedRoleID,
         isEngineRunning: true
     )
+    .environment(store)
+    .environment(store.engineState)
     .frame(width: 500, height: 400)
 }

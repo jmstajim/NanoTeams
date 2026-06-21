@@ -1,63 +1,40 @@
 import SwiftUI
 
-// MARK: - Glow Colors (design-system palette)
-
-/// Shared gradient colors for glow effects.
-enum GlowPalette {
-    static let colors: [Color] = [
-        Colors.cyan,
-        .clear,
-        .clear,
-        .clear,
-        .clear,
-
-        Colors.info,
-        .clear,
-        .clear,
-        .clear,
-        .clear,
-
-        Colors.artifact,
-        .clear,
-        .clear,
-        .clear,
-        .clear,
-
-        Colors.purple,
-        .clear,
-        .clear,
-        .clear,
-        .clear,
-
-        Colors.emerald,
-        .clear,
-        .clear,
-        .clear,
-        .clear,
-    ]
-}
-
 // MARK: - NTMSLoader
 
-/// A branded loading indicator that renders a glowing, animated lobe-based spinner.
+/// The branded loading indicator — a **rotating stick** in the accent color
+/// with occasional hacker-style **glitch bursts**.
 ///
-/// `NTMSLoader` uses a rotating angular gradient and a slowly counter-rotating shape
-/// to create a more distinctive loading state than the system spinner. Choose one of
-/// the provided ``Size`` presets for the intended presentation context.
+/// One ticker at 80 ms runs two modes (matching the JS reference):
+/// - **Rotation** — the glyph cycles `│ → ╱ → ─ → ╲` via `tickCount % 4`.
+/// - **Glitch** — each idle tick rolls a ~2% chance to start a burst of 3–6
+///   frames (≈ one burst every ~3 seconds).
+///   While the burst is active a random glyph from the hacker set (`0 1 ⧄ ▒ ≡ ⌗ ₿ ｱ …`)
+///   replaces the rotation char, the cell gets a 1px diagonal jitter, and an
+///   RGB-split overlay paints a red copy +1px right and a cyan copy −1px left
+///   (chromatic-aberration / "torn signal" effect). `tickCount` is *not*
+///   advanced during the burst, so rotation resumes from the exact angle it
+///   left off.
 ///
-/// Available sizes:
-/// - `.inline`: For compact inline status indicators.
-/// - `.mini`: For small status affordances.
-/// - `.small`: For compact controls and buttons.
-/// - `.regular`: The default size for general loading states.
-/// - `.large`: For prominent loading states.
-/// - `.extraLarge`: For splash screens or onboarding.
+/// Rendered in SF Mono so the four rotation glyphs share an advance width.
+/// Reduce Motion → frozen first frame (no rotation, no glitches), same as a
+/// live window resize. The `Size`/`renderMode` API is preserved so the ~19
+/// call sites and pinning tests keep working; only the visual changed.
 ///
-/// Example:
+/// Two construction shapes:
+/// - **Sized** (`NTMSLoader(.small)`) — fixed `width × height` footprint from
+///   a `Size` preset. Used for standalone loaders inside cards / panels.
+/// - **Font-based** (`NTMSLoader(font: Typography.termXs)`) — inline-with-text
+///   rendering, no frame, baseline-aligned to the supplied font. Used for the
+///   "Working" / "Thinking" / "Processing" caption rows next to a `Text`.
+///   Replaces the legacy `BrailleSpinner` (now removed) so the glitch effect
+///   is uniform across every spinner in the app.
+///
 /// ```swift
-/// NTMSLoader()              // Uses the default `.regular` size
-/// NTMSLoader(.small)        // Suitable for compact controls
-/// NTMSLoader(.large)        // Suitable for full-screen loading states
+/// NTMSLoader()                              // .regular
+/// NTMSLoader(.small)                        // compact controls / buttons
+/// NTMSLoader(.inline)                       // matches a 14×14 inline icon
+/// NTMSLoader(font: Typography.termXs)       // inline beside a small caption
 /// ```
 struct NTMSLoader: View {
     /// Pre-defined size presets mirroring ControlSize semantics.
@@ -88,54 +65,95 @@ struct NTMSLoader: View {
             }
         }
 
-        var lineWidth: CGFloat {
+        /// Mono glyph point size that fills the footprint.
+        var glyphSize: CGFloat {
             switch self {
-            case .inline:     return 1
-            case .mini:       return 1
-            case .small:      return 1
-            case .regular:    return 2
-            case .large:      return 2
-            case .extraLarge: return 3
+            case .inline:     return 12
+            case .mini:       return 17
+            case .small:      return 24
+            case .regular:    return 32
+            case .large:      return 54
+            case .extraLarge: return 108
             }
         }
     }
 
-    private let size: Size
-    private let isVisible: Bool
-
-    init(_ size: Size = .regular, isVisible: Bool = true) {
-        self.size = size
-        self.isVisible = isVisible
+    /// Two ways to size the spinner: a fixed-frame `Size` preset, or an
+    /// inline-with-text `Font` (no frame — caller's layout drives the cell).
+    private enum Footprint {
+        case sized(Size)
+        case font(Font)
     }
 
-    /// Color rotation period in seconds (faster).
-    private let colorPeriod: Double = 3.0
-    /// Shape rotation period in seconds (slower, reverse direction).
-    private let shapePeriod: Double = 10.0
+    private let footprint: Footprint
+    private let isVisible: Bool
+    private let color: Color
 
-    @State private var startDate = Date.now
+    init(_ size: Size = .regular, isVisible: Bool = true, color: Color = Colors.accent) {
+        self.footprint = .sized(size)
+        self.isVisible = isVisible
+        self.color = color
+    }
+
+    /// Inline-with-text spinner. Baseline-aligned to `font`, no fixed frame —
+    /// fits beside a sibling `Text` in an `HStack` exactly like the legacy
+    /// `BrailleSpinner` did.
+    init(font: Font, isVisible: Bool = true, color: Color = Colors.accent) {
+        self.footprint = .font(font)
+        self.isVisible = isVisible
+        self.color = color
+    }
+
+    /// Tick cadence — 80 ms, drives both rotation and glitch bursts.
+    private static let tickInterval: Duration = .milliseconds(80)
+    /// Rotating stick using monospaced box-drawing glyphs (clockwise).
+    private static let rotationFrames = ["│", "╱", "─", "╲"]
+    /// Probability that an idle tick starts a glitch burst. Tuned so a burst
+    /// happens roughly every ~3 seconds (~50 idle ticks × 80ms + burst).
+    private static let glitchTriggerProbability: Double = 0.02
+    /// Length of a glitch burst, in ticks.
+    private static let glitchFrameRange: ClosedRange<Int> = 3...6
+    /// Hacker-style glyph pool used during a glitch burst.
+    private static let glitchGlyphs: [String] = [
+        "0", "1", "⧄", "▒", "≡", "⌗", "█", "▓", "░",
+        "≀", "⍰", "⏦", "⁊", "⸮", "／", "＼",
+        "ｱ", "ｲ", "ｳ", "ｴ", "ｵ", "ﾊ", "ｶ", "ﾐ",
+        "@", "#", "%", "&", "$", "/", "\\", "{", "}", "<", ">"
+    ]
+
+    // RGB-split channels for the chromatic-aberration overlay. NOT design-system
+    // colors — the glitch effect demands the canonical full-saturation R / C
+    // channels; muting them with `Colors.error` etc. kills the look. Cyan has
+    // no semantic token equivalent either. Scoped to this file by design.
+    private static let glitchChannelRed = Color(red: 1.0, green: 0.0, blue: 0.0)
+    private static let glitchChannelCyan = Color(red: 0.0, green: 1.0, blue: 1.0)
+
+    @State private var tickCount: Int = 0
+    @State private var glitchFramesRemaining: Int = 0
+    @State private var currentGlitchChar: String = "0"
+    @State private var shakeOffset: CGSize = .zero
     @Environment(\.windowResizeMonitor) private var resizeMonitor
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// User toggle (Settings → Theme → Effects). `false` suppresses the glitch
+    /// flourish (scramble + RGB-split + jitter) while the spinner keeps rotating.
+    /// `@AppStorage` (not `StoreConfiguration`) so this design-system primitive
+    /// works in previews and the standalone QuickCapture panel without an
+    /// injected environment. Default on (absent key ⇒ `true`).
+    @AppStorage(UserDefaultsKeys.spinnerGlitchEnabled) private var glitchEnabled: Bool = true
 
     /// Render branches driven by `renderMode(isVisible:isResizing:reduceMotion:)`.
-    /// The split keeps `body` declarative and lets unit tests pin the truth table
-    /// without instantiating SwiftUI views.
     enum RenderMode: Equatable {
-        /// Don't render — `isVisible == false`. Returns a zero-cost
-        /// `Color.clear` placeholder so the TimelineView is never constructed.
+        /// Don't render — `isVisible == false`. Zero-cost `Color.clear`.
         case hidden
-        /// Render one frozen frame — Reduce Motion is on, or a live resize is
-        /// in progress. Either way, no per-frame animation work.
+        /// One frozen frame — Reduce Motion or a live resize.
         case frozen
-        /// Drive the TimelineView at 24 Hz.
+        /// Drive the spinner timeline.
         case live
     }
 
     /// Pure decision: which render branch should `body` take? Reduce Motion
-    /// trumps the live branch (accessibility contract — a continuous spinner
-    /// is exactly what the system Reduce-Motion setting asks us to suppress).
-    /// Resize-suppression and Reduce-Motion both map to `.frozen` because they
-    /// want the same thing: a single static frame.
+    /// trumps the live branch (accessibility contract). Resize-suppression and
+    /// Reduce-Motion both map to `.frozen` — both want a single static frame.
     static func renderMode(
         isVisible: Bool,
         isResizing: Bool,
@@ -146,6 +164,14 @@ struct NTMSLoader: View {
         return .live
     }
 
+    /// Pure decision: should an idle tick start a glitch burst? The glitch is the
+    /// scramble + RGB-split + jitter overlay; `glitchEnabled == false` suppresses
+    /// it entirely (rotation continues). Strict `<` so `roll == probability` never
+    /// fires — matches the inline roll this replaced.
+    static func shouldStartGlitchBurst(glitchEnabled: Bool, roll: Double, probability: Double) -> Bool {
+        glitchEnabled && roll < probability
+    }
+
     var body: some View {
         switch Self.renderMode(
             isVisible: isVisible,
@@ -153,56 +179,117 @@ struct NTMSLoader: View {
             reduceMotion: reduceMotion
         ) {
         case .hidden:
-            // Replaces the legacy `.opacity(0)` pattern at `MessageLoaderLabel:18`,
-            // which kept the TimelineView ticking at full rate while invisible.
-            Color.clear.frame(width: size.width, height: size.height)
+            hiddenPlaceholder
         case .frozen:
-            // Freeze the loader at the angles captured right now. One gradient
-            // evaluation per state change, near-zero per-frame cost. Visually
-            // the spinner stops rotating during drag (or always, under Reduce
-            // Motion) and resumes seamlessly when the suppressor lifts.
-            staticFrame
+            // First rotation frame — a single steady glyph.
+            glyph(Self.rotationFrames[0], glitching: false)
         case .live:
-            // 24 Hz timeline (down from 30 Hz pre-fix — visually equivalent for
-            // continuous rotation, one less out-of-phase tick per macOS 60/120
-            // Hz vsync).
-            TimelineView(.periodic(from: .now, by: 1.0 / 24.0)) { context in
-                let elapsed = context.date.timeIntervalSince(startDate)
-                animatedFrame(
-                    colorAngle: elapsed / colorPeriod * 360,
-                    shapeAngle: -(elapsed / shapePeriod * 360)
-                )
+            glyph(currentDisplayChar, glitching: glitchEnabled && glitchFramesRemaining > 0)
+                .offset(glitchEnabled ? shakeOffset : .zero)
+                .task {
+                    while !Task.isCancelled {
+                        try? await Task.sleep(for: Self.tickInterval)
+                        if Task.isCancelled { return }
+                        tick()
+                    }
+                }
+        }
+    }
+
+    /// Zero-cost invisible placeholder that preserves the spinner's footprint.
+    /// Sized variant uses an explicit frame; font variant uses a hidden text
+    /// of the first rotation glyph so its baseline-aware width is preserved.
+    @ViewBuilder
+    private var hiddenPlaceholder: some View {
+        switch footprint {
+        case .sized(let size):
+            Color.clear.frame(width: size.width, height: size.height)
+        case .font(let font):
+            Text(Self.rotationFrames[0]).font(font).hidden()
+        }
+    }
+
+    /// Character shown on the next render — glitch glyph during a burst,
+    /// otherwise the rotation frame at the current angle.
+    private var currentDisplayChar: String {
+        if glitchEnabled && glitchFramesRemaining > 0 { return currentGlitchChar }
+        return Self.rotationFrames[tickCount % Self.rotationFrames.count]
+    }
+
+    /// One ticker step. Matches the JS reference:
+    /// - During a burst: swap to a fresh random glitch glyph, jitter 1px diag,
+    ///   decrement the burst counter. `tickCount` is intentionally untouched
+    ///   so rotation resumes from the exact angle when the burst ends.
+    /// - Otherwise: advance rotation by one frame, clear jitter, then roll the
+    ///   2% chance to start a new burst.
+    private func tick() {
+        if glitchFramesRemaining > 0 && glitchEnabled {
+            currentGlitchChar = Self.glitchGlyphs.randomElement() ?? "0"
+            shakeOffset = CGSize(
+                width: Bool.random() ? 1 : -1,
+                height: Bool.random() ? 1 : -1
+            )
+            glitchFramesRemaining -= 1
+        } else {
+            // Idle, or a burst cancelled mid-flight by toggling the effect off —
+            // clear any leftover burst counter so it settles on this tick.
+            glitchFramesRemaining = 0
+            tickCount &+= 1
+            shakeOffset = .zero
+            let roll = Double.random(in: 0..<1)
+            if Self.shouldStartGlitchBurst(
+                glitchEnabled: glitchEnabled,
+                roll: roll,
+                probability: Self.glitchTriggerProbability
+            ) {
+                glitchFramesRemaining = Int.random(in: Self.glitchFrameRange)
+                currentGlitchChar = Self.glitchGlyphs.randomElement() ?? "0"
             }
-            .frame(width: size.width, height: size.height)
         }
     }
 
     @ViewBuilder
-    private var staticFrame: some View {
-        let elapsed = Date.now.timeIntervalSince(startDate)
-        animatedFrame(
-            colorAngle: elapsed / colorPeriod * 360,
-            shapeAngle: -(elapsed / shapePeriod * 360)
-        )
-        .frame(width: size.width, height: size.height)
+    private func glyph(_ s: String, glitching: Bool) -> some View {
+        let stack = ZStack {
+            if glitching {
+                // RGB-split: red copy shifts +1px right, cyan copy −1px left.
+                Text(s)
+                    .font(glyphFont)
+                    .foregroundStyle(Self.glitchChannelRed)
+                    .offset(x: 1)
+                Text(s)
+                    .font(glyphFont)
+                    .foregroundStyle(Self.glitchChannelCyan)
+                    .offset(x: -1)
+            }
+            Text(s)
+                .font(glyphFont)
+                .foregroundStyle(color)
+        }
+        switch footprint {
+        case .sized(let size):
+            stack
+                .frame(width: size.width, height: size.height)
+                .accessibilityHidden(true)
+        case .font:
+            // No frame — the glyph's own metrics drive size and baseline so
+            // the spinner aligns with sibling text in an HStack.
+            stack
+                .accessibilityHidden(true)
+        }
     }
 
-    @ViewBuilder
-    private func animatedFrame(colorAngle: Double, shapeAngle: Double) -> some View {
-        let gradient = AngularGradient(
-            colors: GlowPalette.colors,
-            center: .center,
-            startAngle: .degrees(colorAngle),
-            endAngle: .degrees(colorAngle + 360)
-        )
-
-        lobeShape
-            .stroke(lineWidth: size.lineWidth)
-            .fill(gradient)
-            .rotationEffect(.degrees(shapeAngle))
+    /// Font used for every Text layer inside `glyph(...)`. Sized footprints
+    /// derive an SF Mono size from the preset; font footprints pass through
+    /// the caller-supplied font verbatim.
+    private var glyphFont: Font {
+        switch footprint {
+        case .sized(let size):
+            return .system(size: size.glyphSize, weight: .regular, design: .monospaced)
+        case .font(let font):
+            return font
+        }
     }
-
-    private var lobeShape: LobeShape { LobeShape() }
 }
 
 // MARK: - Previews
@@ -215,9 +302,9 @@ struct NTMSLoader: View {
         ) { size in
             HStack {
                 Text(String(describing: size))
-                    .font(.caption.monospaced())
+                    .font(Typography.monoCaption)
                     .frame(width: 80, alignment: .trailing)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Colors.textSecondary)
                 NTMSLoader(size)
             }
         }
@@ -225,26 +312,3 @@ struct NTMSLoader: View {
     .padding(40)
     .background(Colors.surfacePrimary)
 }
-
-// MARK: - Lobe Shape
-
-/// Five-lobed rose curve shape.
-private struct LobeShape: Shape {
-    func path(in rect: CGRect) -> Path {
-        let cx = rect.midX
-        let cy = rect.midY
-        let half = min(rect.width, rect.height) / 2 * 0.9
-        let segments = 100
-
-        var path = Path()
-        for i in 0...segments {
-            let t = CGFloat(i) / CGFloat(segments) * .pi * 2
-            let r = abs(cos(2.5 * t))
-            let pt = CGPoint(x: cx + r * cos(t) * half, y: cy + r * sin(t) * half)
-            if i == 0 { path.move(to: pt) } else { path.addLine(to: pt) }
-        }
-        path.closeSubpath()
-        return path
-    }
-}
-

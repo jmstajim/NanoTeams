@@ -22,46 +22,26 @@ struct FinalReviewDetailPane: View {
             .transition(.opacity)
             .animationWithReduceMotion(.easeInOut(duration: 0.2), value: selectedArtifactName)
         }
+        .background(Colors.surfacePrimary)
     }
 
     private func artifactDetail(_ item: FinalReviewItem) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.m) {
-                HStack {
-                    Text(item.name)
-                        .font(.title3.weight(.semibold))
-
-                    Spacer()
-
-                    Label(
-                        item.isReady ? "Ready" : "Missing",
-                        systemImage: item.isReady ? "checkmark.circle.fill" : "exclamationmark.circle"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(item.isReady ? Colors.success : Colors.warning)
-                }
-
-                Divider()
+                headerRow(for: item)
 
                 if item.isReady {
                     if let produced = item.produced {
-                        Text("Produced by \(roleDefinitions.roleName(for: produced.roleID))")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
-                        if let content = contentCache[item.name] {
-                            contentView(content: content, artifact: produced.artifact)
-                        } else {
-                            HStack(spacing: Spacing.s) {
-                                NTMSLoader(.small)
-                                Text("Loading artifact content...")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .padding()
-                        }
+                        producerByline(roleID: produced.roleID)
+                        contentPane(
+                            title: item.name,
+                            content: contentCache[item.name],
+                            artifact: produced.artifact
+                        )
                     } else if item.name == SystemTemplates.supervisorTaskArtifactName {
-                        contentView(
+                        producerByline(roleID: nil)
+                        contentPane(
+                            title: item.name,
                             content: supervisorTask.trimmingCharacters(in: .whitespacesAndNewlines),
                             artifact: nil
                         )
@@ -70,63 +50,148 @@ struct FinalReviewDetailPane: View {
                     missingArtifactBanner
                 }
             }
-            .padding()
+            .padding(Spacing.l)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    private func contentView(content: String, artifact: Artifact?) -> some View {
-        Group {
-            if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text("(No content)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else if isMarkdown(artifact: artifact) {
-                Text(.init(content))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                Text(content)
-                    .font(.system(.callout, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+    // MARK: - Header
+
+    private func headerRow(for item: FinalReviewItem) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            HStack(spacing: 0) {
+                Text("artifact/")
+                    .font(Typography.termLg)
+                    .foregroundStyle(Colors.textTertiary)
+                Text(item.name)
+                    .font(Typography.termLg)
+                    .foregroundStyle(Colors.textPrimary)
             }
+            .lineLimit(1)
+
+            Spacer()
+
+            statusBadge(isReady: item.isReady)
         }
-        .padding()
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous)
-                .fill(Colors.surfaceOverlay)
-        )
+        .accessibilityElement(children: .combine)
     }
+
+    private func statusBadge(isReady: Bool) -> some View {
+        let color = isReady ? Colors.success : Colors.warning
+        let label = isReady ? "Ready" : "Missing"
+        let glyph = isReady ? TerminalGlyph.done : TerminalGlyph.failed
+
+        return HStack(spacing: Spacing.xxs) {
+            Text(glyph)
+                .font(Typography.termSm)
+                .foregroundStyle(color)
+            Text(label.uppercased())
+                .font(Typography.term2xs)
+                .tracking(Typography.labelTracking)
+                .foregroundStyle(color)
+        }
+        .padding(.horizontal, Spacing.xs)
+        .padding(.vertical, Spacing.xxs)
+        .background(
+            RoundedRectangle.squircle(CornerRadius.micro)
+                .fill(color.opacity(DynamicTintOpacity.background))
+        )
+        .overlay(
+            RoundedRectangle.squircle(CornerRadius.micro)
+                .strokeBorder(color.opacity(DynamicTintOpacity.stroke), lineWidth: 1)
+        )
+        .fixedSize()
+    }
+
+    // MARK: - Producer byline
+
+    @ViewBuilder
+    private func producerByline(roleID: String?) -> some View {
+        HStack(spacing: Spacing.xs) {
+            Text("produced by")
+                .font(Typography.caption)
+                .foregroundStyle(Colors.textTertiary)
+            Text(roleID.map { roleDefinitions.roleName(for: $0) } ?? "Supervisor")
+                .font(Typography.captionSemibold)
+                .foregroundStyle(Colors.textSecondary)
+        }
+    }
+
+    // MARK: - Content pane
+
+    private func contentPane(title: String, content: String?, artifact: Artifact?) -> some View {
+        TerminalPane(
+            title: title,
+            fill: Colors.surfaceCard,
+            contentPadding: Spacing.m
+        ) {
+            Group {
+                if let content {
+                    if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text("(no content)")
+                            .font(Typography.caption)
+                            .foregroundStyle(Colors.textTertiary)
+                    } else if isMarkdown(artifact: artifact) {
+                        Text(.init(content))
+                            .font(Typography.termBase)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        Text(content)
+                            .font(Typography.termBase)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                } else {
+                    HStack(spacing: Spacing.s) {
+                        NTMSLoader(.small)
+                        Text("Loading artifact content…")
+                            .font(Typography.caption)
+                            .foregroundStyle(Colors.textTertiary)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    // MARK: - Missing banner
 
     private var missingArtifactBanner: some View {
         VStack(alignment: .leading, spacing: Spacing.s) {
-            Label("Artifact not available", systemImage: "exclamationmark.triangle")
-                .font(.subheadline)
-                .foregroundStyle(Colors.warning)
+            HStack(spacing: Spacing.xs) {
+                Text(TerminalGlyph.failed)
+                    .font(Typography.termSm)
+                    .foregroundStyle(Colors.warning)
+                Text("Artifact not available")
+                    .font(Typography.subheadlineSemibold)
+                    .foregroundStyle(Colors.warning)
+            }
 
             Text("This artifact is required by Supervisor review settings but was not produced in the run.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(Typography.caption)
+                .foregroundStyle(Colors.textSecondary)
         }
-        .padding()
+        .padding(Spacing.m)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous)
+            RoundedRectangle.squircle(CornerRadius.small)
                 .fill(Colors.warningTint)
+        )
+        .overlay(
+            RoundedRectangle.squircle(CornerRadius.small)
+                .strokeBorder(Colors.warning.opacity(DynamicTintOpacity.stroke), lineWidth: 1)
         )
     }
 
+    // MARK: - Empty
+
     private var emptyDetail: some View {
-        VStack(spacing: Spacing.m) {
-            Image(systemName: "doc.text")
-                .font(.largeTitle)
-                .foregroundStyle(.secondary)
-            Text("Select an artifact to review")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        NTMSEmptyState(
+            title: "No Artifact Selected",
+            message: "Pick an artifact on the left to review its content.",
+            systemImage: "doc.text"
+        )
     }
 
     private func isMarkdown(artifact: Artifact?) -> Bool {
@@ -168,10 +233,10 @@ struct FinalReviewDetailPane: View {
         ],
         supervisorTask: "",
         roleDefinitions: [
-            TeamRoleDefinition(id: "pm-1", name: "Product Manager", icon: "doc.text.fill", prompt: "", toolIDs: [], usePlanningPhase: false, dependencies: RoleDependencies()),
+            TeamRoleDefinition(id: "pm-1", name: "Product Manager", icon: "doc.text", prompt: "", toolIDs: [], usePlanningPhase: false, dependencies: RoleDependencies()),
         ]
     )
-    .frame(width: 500, height: 500)
+    .frame(width: 600, height: 500)
     .background(Colors.surfacePrimary)
 }
 
@@ -183,7 +248,7 @@ struct FinalReviewDetailPane: View {
         supervisorTask: "",
         roleDefinitions: []
     )
-    .frame(width: 500, height: 300)
+    .frame(width: 600, height: 300)
     .background(Colors.surfacePrimary)
 }
 
@@ -195,6 +260,6 @@ struct FinalReviewDetailPane: View {
         supervisorTask: "",
         roleDefinitions: []
     )
-    .frame(width: 500, height: 300)
+    .frame(width: 600, height: 300)
     .background(Colors.surfacePrimary)
 }

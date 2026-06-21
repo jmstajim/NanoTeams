@@ -68,7 +68,7 @@ struct LLMServerConfigCard: View {
         HStack {
             SettingsPillButton(
                 title: "Test Connection",
-                icon: "bolt.fill",
+                icon: "bolt",
                 isLoading: connectionStatus == .checking,
                 action: onTestConnection
             )
@@ -78,10 +78,11 @@ struct LLMServerConfigCard: View {
 
             if !effectiveMessage.isEmpty {
                 HStack(spacing: Spacing.xs) {
-                    Image(systemName: effectiveStatus == .failure
-                          ? "exclamationmark.circle"
-                          : "info.circle")
-                        .font(Typography.caption)
+                    StatusGlyph(
+                        glyph: effectiveStatus == .failure ? TerminalGlyph.failed : TerminalGlyph.bullet,
+                        color: effectiveStatus == .failure ? Colors.error : Colors.textSecondary,
+                        font: Typography.caption
+                    )
                     Text(effectiveMessage)
                         .font(Typography.caption)
                 }

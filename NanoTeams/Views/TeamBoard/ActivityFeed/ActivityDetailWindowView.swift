@@ -24,19 +24,19 @@ fileprivate struct DisplayModePills: View {
                         .font(Typography.caption.weight(.medium))
                         .padding(.horizontal, Spacing.m)
                         .padding(.vertical, 6)
-                        .foregroundStyle(mode == option ? Color.primary : Color.secondary)
+                        .foregroundStyle(mode == option ? Colors.textPrimary : Colors.textSecondary)
                         .background {
                             if mode == option {
-                                Capsule().fill(Colors.surfaceElevated)
+                                RoundedRectangle.squircle(CornerRadius.small).fill(Colors.surfaceElevated)
                             }
                         }
-                        .contentShape(Capsule())
+                        .contentShape(RoundedRectangle.squircle(CornerRadius.small))
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(2)
-        .background(Capsule().fill(Colors.surfaceCard))
+        .padding(Spacing.xxs)
+        .background(RoundedRectangle.squircle(CornerRadius.small).fill(Colors.surfaceCard))
     }
 }
 
@@ -112,7 +112,7 @@ struct ActivityDetailWindowView: View {
             trailing: nil
         ) {
             Text(text)
-                .font(.body)
+                .font(Typography.termBase)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -177,12 +177,12 @@ private struct DetailHeader: View {
             }
             Text(eyebrow)
                 .font(Typography.caption2.weight(.semibold))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Colors.textTertiary)
                 .textCase(.uppercase)
                 .tracking(0.6)
                 .lineLimit(1)
             Text(title)
-                .font(.headline.weight(.semibold))
+                .font(Typography.termLg)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .textSelection(.enabled)
@@ -190,7 +190,7 @@ private struct DetailHeader: View {
             if let metadata, !metadata.isEmpty {
                 Text(metadata)
                     .font(Typography.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Colors.textSecondary)
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
@@ -232,7 +232,7 @@ private struct ToolCallDetailBody: View {
             title: toolName,
             metadata: createdAt.formatted(date: .abbreviated, time: .standard),
             leadingIcon: .init(
-                systemName: isError ? "xmark.circle.fill" : "checkmark.circle.fill",
+                systemName: isError ? "xmark.circle" : "checkmark.circle",
                 color: isError ? Colors.error : Colors.success
             ),
             trailing: hasPrettyRendering ? AnyView(DisplayModePills(mode: $displayMode)) : nil
@@ -251,10 +251,10 @@ private struct ToolCallDetailBody: View {
     private func section(title: String, json: String, isError: Bool) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .font(Typography.captionSemibold)
+                .foregroundStyle(Colors.textSecondary)
             Text(rendered(json))
-                .font(.system(.body, design: .monospaced))
+                .font(Typography.termBase)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -348,16 +348,18 @@ private struct ArtifactDetailBody: View {
             } else if let binaryInfo {
                 binaryAffordance(byteCount: binaryInfo.byteCount, fileURL: binaryInfo.fileURL)
             } else if let loadError {
-                ContentUnavailableView(
-                    "Couldn't load artifact",
-                    systemImage: "exclamationmark.triangle",
-                    description: Text(loadError)
+                NTMSEmptyState(
+                    title: "Couldn't load artifact",
+                    message: loadError,
+                    systemImage: "exclamationmark.triangle"
                 )
                 .padding(Spacing.xl)
             } else {
                 HStack(spacing: Spacing.s) {
                     NTMSLoader(.small)
-                    Text("Loading…").foregroundStyle(.secondary)
+                    Text("Loading…")
+                        .font(Typography.termBase)
+                        .foregroundStyle(Colors.textSecondary)
                 }
                 .padding(Spacing.xl)
             }
@@ -372,15 +374,13 @@ private struct ArtifactDetailBody: View {
         let formattedSize = ByteCountFormatter.string(
             fromByteCount: Int64(byteCount), countStyle: .file
         )
-        ContentUnavailableView {
-            Label("Binary artifact", systemImage: "doc")
-        } description: {
-            Text("\(formattedSize) — open the file in Finder to view it.")
-        } actions: {
-            Button("Reveal in Finder") {
-                NSWorkspace.shared.activateFileViewerSelecting([fileURL])
-            }
-        }
+        NTMSEmptyState(
+            title: "Binary artifact",
+            message: "\(formattedSize) — open the file in Finder to view it.",
+            systemImage: "doc",
+            action: { NSWorkspace.shared.activateFileViewerSelecting([fileURL]) },
+            actionLabel: "Reveal in Finder"
+        )
         .padding(Spacing.xl)
     }
 
@@ -390,14 +390,14 @@ private struct ArtifactDetailBody: View {
     private func contentView(for content: String) -> some View {
         if displayMode == .raw || !hasPrettyRendering {
             Text(content)
-                .font(.system(.body, design: .monospaced))
+                .font(Typography.termBase)
         } else if isMarkdown {
             Text(.init(content))
         } else if isHTML, let attributed = Self.renderHTML(content) {
             Text(attributed)
         } else if let prettyJSON = prettyPrintJSON(content) {
             Text(prettyJSON)
-                .font(.system(.body, design: .monospaced))
+                .font(Typography.termBase)
         } else {
             // Fallback (shouldn't hit because hasPrettyRendering would be false).
             Text(content)
@@ -500,14 +500,16 @@ private struct MeetingToolDetailBody: View {
     private func toolBlock(_ summary: MeetingToolSummary) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: Spacing.xs) {
-                Image(systemName: summary.isError ? "xmark.circle.fill" : "checkmark.circle.fill")
-                    .foregroundStyle(summary.isError ? Colors.error : Colors.success)
+                StatusGlyph(
+                    glyph: summary.isError ? TerminalGlyph.failed : TerminalGlyph.done,
+                    color: summary.isError ? Colors.error : Colors.success
+                )
                 Text(summary.toolName)
-                    .font(.subheadline.weight(.semibold).monospaced())
+                    .font(Typography.subheadlineSemibold)
                 Spacer()
                 Text(summary.createdAt.formatted(date: .omitted, time: .standard))
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .font(Typography.term2xs)
+                    .foregroundStyle(Colors.textTertiary)
             }
             if !summary.arguments.isEmpty {
                 labelledBlock(title: "Arguments", text: summary.arguments, isError: false)
@@ -522,10 +524,10 @@ private struct MeetingToolDetailBody: View {
     private func labelledBlock(title: String, text: String, isError: Bool) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .font(Typography.captionSemibold)
+                .foregroundStyle(Colors.textSecondary)
             Text(rendered(text))
-                .font(.system(.body, design: .monospaced))
+                .font(Typography.termBase)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)

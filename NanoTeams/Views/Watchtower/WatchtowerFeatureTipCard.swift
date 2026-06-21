@@ -24,11 +24,11 @@ struct WatchtowerFeatureTipCard: View {
             VStack(alignment: .leading, spacing: Spacing.xxs) {
                 Text(title)
                     .font(Typography.subheadlineSemibold)
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(Colors.textPrimary)
                     .lineLimit(1)
                 Text(description)
                     .font(Typography.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Colors.textSecondary)
                     .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -57,17 +57,17 @@ struct WatchtowerFeatureTipCard: View {
     }
 
     private var cover: some View {
-        LinearGradient(
-            colors: [tint, tint.opacity(0.55)],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
-        .frame(width: Self.coverSize, height: Self.coverSize)
-        .clipShape(RoundedRectangle.squircle(CornerRadius.small))
+        // Solid tint (no gradient) — DS monochrome+1 prefers flat color tiles
+        // over decorative gradients. The icon glyph already provides the
+        // visual interest; gradients here read as marketing flourish.
+        Rectangle()
+            .fill(tint)
+            .frame(width: Self.coverSize, height: Self.coverSize)
+            .clipShape(RoundedRectangle.squircle(CornerRadius.small))
         .overlay {
             Image(systemName: icon)
                 .font(.system(size: Self.glyphSize, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(Colors.textOnAccent)
                 .accessibilityHidden(true)
         }
     }
@@ -78,7 +78,7 @@ struct WatchtowerFeatureTipCard: View {
         } label: {
             Image(systemName: "xmark")
                 .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Colors.textSecondary)
                 .frame(width: 18, height: 18)
                 .contentShape(Rectangle())
         }

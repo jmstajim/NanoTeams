@@ -37,8 +37,14 @@ struct TeamSettingsCollaborationSection: View {
     @State private var invitableRolesExpanded = false
 
     var body: some View {
-        Section {
+        SettingsCard(
+            header: "Collaboration",
+            systemImage: "person.2",
+            footer: "Configure how team members interact during meetings."
+        ) {
+            VStack(alignment: .leading, spacing: Spacing.m) {
             Toggle("Supervisor can join meetings", isOn: $supervisorCanBeInvited)
+                .toggleStyle(.terminal)
 
             // Auto (= `meetingCoordinatorRoleID == nil`) means: no designated
             // coordinator — the initiator of each meeting becomes its
@@ -48,23 +54,26 @@ struct TeamSettingsCollaborationSection: View {
             // role removed) to nil so the picker shows "Auto" instead of a
             // blank selection, matching the runtime's silent self-heal in
             // `LLMExecutionService.resolveCoordinatorRole`.
-            Picker("Meeting Coordinator", selection: Binding<String?>(
-                get: {
-                    MeetingCoordinatorPickerLogic.normalizedSelection(
-                        stored: team.settings.meetingCoordinatorRoleID,
-                        availableIDs: nonSupervisorRoles.map(\.id)
-                    )
-                },
-                set: { newRoleID in
-                    team.settings.meetingCoordinatorRoleID =
-                        MeetingCoordinatorPickerLogic.sanitizedSelection(newRoleID)
-                    onSave()
-                }
-            )) {
-                Text("Auto").tag(String?.none)
-                ForEach(nonSupervisorRoles) { role in
-                    Text(role.name).tag(String?.some(role.id))
-                }
+            HStack {
+                Text("Meeting Coordinator")
+                Spacer()
+                TerminalPicker(
+                    selection: Binding<String?>(
+                        get: {
+                            MeetingCoordinatorPickerLogic.normalizedSelection(
+                                stored: team.settings.meetingCoordinatorRoleID,
+                                availableIDs: nonSupervisorRoles.map(\.id)
+                            )
+                        },
+                        set: { newRoleID in
+                            team.settings.meetingCoordinatorRoleID =
+                                MeetingCoordinatorPickerLogic.sanitizedSelection(newRoleID)
+                            onSave()
+                        }
+                    ),
+                    options: [(value: String?.none, label: "Auto")]
+                        + nonSupervisorRoles.map { (value: String?.some($0.id), label: $0.name) }
+                )
             }
 
             DisclosureGroup(isExpanded: $invitableRolesExpanded) {
@@ -81,7 +90,7 @@ struct TeamSettingsCollaborationSection: View {
                                 onSave()
                             }
                         ))
-                        .toggleStyle(.checkbox)
+                        .toggleStyle(.terminal)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -90,15 +99,11 @@ struct TeamSettingsCollaborationSection: View {
                     withAnimation(reduceMotion ? .none : Animations.quick) { invitableRolesExpanded.toggle() }
                 } label: {
                     Text("Invitable Roles")
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(Colors.textPrimary)
                 }
                 .buttonStyle(.plain)
             }
-
-        } header: {
-            Text("Collaboration")
-        } footer: {
-            Text("Configure how team members interact during meetings.")
+            }
         }
     }
 }
@@ -118,17 +123,17 @@ struct TeamSettingsCollaborationSection: View {
 
     let nonSupervisorRoles = team.roles
 
-    Form {
-        TeamSettingsCollaborationSection(
-            team: $team,
-            supervisorCanBeInvited: $supervisorCanBeInvited,
-            nonSupervisorRoles: nonSupervisorRoles,
-            onSave: {}
-        )
+    ScrollView {
+        VStack {
+            TeamSettingsCollaborationSection(
+                team: $team,
+                supervisorCanBeInvited: $supervisorCanBeInvited,
+                nonSupervisorRoles: nonSupervisorRoles,
+                onSave: {}
+            )
+        }
+        .padding(Spacing.xl)
     }
-    .formStyle(.grouped)
-    .scrollContentBackground(.hidden)
     .frame(width: 480)
-    .fixedSize(horizontal: false, vertical: true)
     .background(Colors.surfacePrimary)
 }

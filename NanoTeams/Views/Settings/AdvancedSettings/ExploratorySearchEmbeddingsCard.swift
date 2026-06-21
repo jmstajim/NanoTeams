@@ -102,10 +102,12 @@ struct ExploratorySearchEmbeddingsCard: View {
     @ViewBuilder
     private func buildStatusRow(coordinator: SearchIndexCoordinator) -> some View {
         HStack(spacing: Spacing.xs) {
-            Image(systemName: statusIcon(state: coordinator.vectorIndexState,
-                                         building: coordinator.isBuildingVectorIndex))
-                .foregroundStyle(statusTint(state: coordinator.vectorIndexState)
-                                 ?? Colors.textSecondary)
+            StatusGlyph(
+                glyph: statusGlyph(state: coordinator.vectorIndexState,
+                                   building: coordinator.isBuildingVectorIndex),
+                color: statusTint(state: coordinator.vectorIndexState) ?? Colors.neutral,
+                animatesWork: coordinator.isBuildingVectorIndex
+            )
             Text(statusLabel(state: coordinator.vectorIndexState,
                              building: coordinator.isBuildingVectorIndex))
                 .font(Typography.caption)
@@ -145,13 +147,13 @@ struct ExploratorySearchEmbeddingsCard: View {
 
     // MARK: - Status helpers
 
-    private func statusIcon(state: VocabVectorIndexState, building: Bool) -> String {
-        if building { return "arrow.triangle.2.circlepath" }
+    private func statusGlyph(state: VocabVectorIndexState, building: Bool) -> String {
+        if building { return TerminalGlyph.working }
         switch state {
-        case .ready: return "checkmark.circle.fill"
-        case .modelUnavailable: return "exclamationmark.triangle.fill"
-        case .error: return "xmark.octagon.fill"
-        case .missing, .loading, .building: return "circle.dotted"
+        case .ready: return TerminalGlyph.done
+        case .modelUnavailable: return TerminalGlyph.failed
+        case .error: return TerminalGlyph.failed
+        case .missing, .loading, .building: return TerminalGlyph.idle
         }
     }
 

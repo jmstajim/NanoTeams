@@ -183,8 +183,8 @@ struct LLMEndpointEditor<TestSlot: View>: View {
 
     private func statusIcon(_ status: EndpointStatus) -> String {
         switch status {
-        case .error: return "xmark.octagon.fill"
-        case .warning: return "exclamationmark.triangle.fill"
+        case .error: return "xmark.octagon"
+        case .warning: return "exclamationmark.triangle"
         case .info: return "info.circle"
         }
     }

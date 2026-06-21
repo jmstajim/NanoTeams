@@ -28,14 +28,14 @@ struct WatchtowerAppUpdateCard: View {
         VStack(alignment: .leading, spacing: Spacing.standard) {
             HStack(alignment: .top, spacing: Spacing.s) {
                 Image(systemName: "sparkles")
-                    .font(.title3)
+                    .font(Typography.termXl)
                     .foregroundStyle(Colors.accent)
                     .symbolEffect(.pulse)
                     .padding(.top, 1)
 
                 VStack(alignment: .leading, spacing: Spacing.xxs) {
                     Text("NanoTeams \(release.tag) is ready")
-                        .font(.subheadline.weight(.semibold))
+                        .font(Typography.subheadlineSemibold)
                         .foregroundStyle(Colors.textPrimary)
                         .fixedSize(horizontal: false, vertical: true)
 
@@ -52,15 +52,15 @@ struct WatchtowerAppUpdateCard: View {
                     onUpdate()
                 } label: {
                     HStack(spacing: Spacing.xs) {
-                        Image(systemName: "arrow.up.right.circle.fill")
-                            .font(.caption)
+                        Image(systemName: "arrow.up.right.circle")
+                            .font(Typography.caption)
                         Text("Open on GitHub")
                             .font(Typography.captionSemibold)
                     }
                     .foregroundStyle(Colors.textOnAccent)
                     .padding(.horizontal, Spacing.m)
                     .padding(.vertical, Spacing.xs)
-                    .background(Capsule(style: .continuous).fill(Colors.accent))
+                    .background(RoundedRectangle.squircle(CornerRadius.small).fill(Colors.accent))
                     .scaleEffect(isUpdateHovered ? 1.03 : 1.0)
                     .fixedSize(horizontal: true, vertical: false)
                 }

@@ -44,7 +44,16 @@ import AppKit
 struct SelectableMessageText: NSViewRepresentable {
     let content: String
 
-    static let defaultFont: NSFont = .systemFont(ofSize: NSFont.systemFontSize)
+    // Monospaced system font (SF Mono) — matches `Typography.termBase` (13pt)
+    // so message body type stays on the same mono grid as every other row
+    // label/timestamp/header in the activity feed (DS "Mono everywhere" rule).
+    // SwiftUI's `.fontDesign(.monospaced)` from the window root only routes
+    // SwiftUI Text; AppKit `NSTextView` is opaque to it, so the font must be
+    // pinned here.
+    static let defaultFont: NSFont = .monospacedSystemFont(
+        ofSize: NSFont.systemFontSize,
+        weight: .regular
+    )
     static var defaultTextColor: NSColor { Colors.nsTextPrimary }
 
     static var defaultAttributes: [NSAttributedString.Key: Any] {

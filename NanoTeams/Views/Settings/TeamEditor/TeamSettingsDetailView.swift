@@ -15,26 +15,29 @@ struct TeamSettingsDetailView: View {
     @State private var limits: TeamLimits = .default
 
     var body: some View {
-        Form {
-            generalSection
-            // The managed singleton (Autovisor) hides settings it can't honor:
-            // acceptance/supervisor-mode are forced for the autonomous chat-mode
-            // manager (changing them breaks it), and collaboration/limits are
-            // meaningless for its single management role.
-            if !team.isManagedSingleton {
-                acceptanceSection
-                supervisorModeSection
-                TeamSettingsCollaborationSection(
-                    team: $team,
-                    supervisorCanBeInvited: $supervisorCanBeInvited,
-                    nonSupervisorRoles: nonSupervisorRoles,
-                    onSave: onSave
-                )
-                TeamSettingsLimitsSection(limits: $limits)
+        ScrollView {
+            VStack(spacing: Spacing.xl) {
+                generalSection
+                // The managed singleton (Autovisor) hides settings it can't honor:
+                // acceptance/supervisor-mode are forced for the autonomous chat-mode
+                // manager (changing them breaks it), and collaboration/limits are
+                // meaningless for its single management role.
+                if !team.isManagedSingleton {
+                    acceptanceSection
+                    supervisorModeSection
+                    TeamSettingsCollaborationSection(
+                        team: $team,
+                        supervisorCanBeInvited: $supervisorCanBeInvited,
+                        nonSupervisorRoles: nonSupervisorRoles,
+                        onSave: onSave
+                    )
+                    TeamSettingsLimitsSection(limits: $limits)
+                }
             }
+            .padding(Spacing.xl)
         }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Colors.surfacePrimary)
         .onAppear {
             loadSettings()
         }
@@ -68,83 +71,93 @@ struct TeamSettingsDetailView: View {
     // MARK: - General
 
     private var generalSection: some View {
-        Section {
-            TextField("Team Name", text: $team.name)
-                .textFieldStyle(.roundedBorder)
+        SettingsCard(header: "General", systemImage: "info.circle") {
+            VStack(alignment: .leading, spacing: Spacing.m) {
+                TextField("Team Name", text: $team.name)
+                    .textFieldStyle(.plain)
+                    .terminalField()
 
-            VStack(alignment: .leading, spacing: Spacing.xs) {
-                Text("Description")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                TextEditor(text: $team.description)
-                    .font(.body)
-                    .frame(minHeight: 60, maxHeight: 120)
-                    .borderedTextEditorStyle()
+                VStack(alignment: .leading, spacing: Spacing.xs) {
+                    Text("Description")
+                        .font(Typography.subheadline)
+                        .foregroundStyle(Colors.textSecondary)
+                    TextEditor(text: $team.description)
+                        .font(Typography.termBase)
+                        .frame(minHeight: 60, maxHeight: 120)
+                        .borderedTextEditorStyle()
+                }
             }
-        } header: {
-            Text("General")
         }
     }
 
     // MARK: - Acceptance
 
     private var acceptanceSection: some View {
-        Section {
-            Picker("Mode", selection: $acceptanceMode) {
-                ForEach(AcceptanceMode.allCases, id: \.self) { mode in
-                    Text(mode.displayName).tag(mode)
+        SettingsCard(
+            header: "Acceptance & Review",
+            systemImage: "checkmark.seal",
+            footer: "Controls when the Supervisor reviews and approves team output."
+        ) {
+            VStack(alignment: .leading, spacing: Spacing.s) {
+                HStack {
+                    Text("Mode")
+                    Spacer()
+                    TerminalPicker(
+                        selection: $acceptanceMode,
+                        options: AcceptanceMode.allCases.map { (value: $0, label: $0.displayName) }
+                    )
                 }
-            }
 
-            Text(acceptanceMode.description)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                Text(acceptanceMode.description)
+                    .font(Typography.caption)
+                    .foregroundStyle(Colors.textSecondary)
 
-            if acceptanceMode == .customCheckpoints {
-                VStack(alignment: .leading, spacing: Spacing.s) {
-                    Text("Roles Requiring Approval")
-                        .font(.subheadline)
-                        .fontWeight(.medium)
+                if acceptanceMode == .customCheckpoints {
+                    VStack(alignment: .leading, spacing: Spacing.s) {
+                        Text("Roles Requiring Approval")
+                            .font(Typography.subheadlineMedium)
 
-                    ForEach(nonSupervisorRoles) { role in
-                        Toggle(role.name, isOn: Binding(
-                            get: { acceptanceCheckpoints.contains(role.id) },
-                            set: { isOn in
-                                if isOn {
-                                    acceptanceCheckpoints.insert(role.id)
-                                } else {
-                                    acceptanceCheckpoints.remove(role.id)
+                        ForEach(nonSupervisorRoles) { role in
+                            Toggle(role.name, isOn: Binding(
+                                get: { acceptanceCheckpoints.contains(role.id) },
+                                set: { isOn in
+                                    if isOn {
+                                        acceptanceCheckpoints.insert(role.id)
+                                    } else {
+                                        acceptanceCheckpoints.remove(role.id)
+                                    }
                                 }
-                            }
-                        ))
-                        .toggleStyle(.checkbox)
+                            ))
+                            .toggleStyle(.terminal)
+                        }
                     }
+                    .padding(.top, Spacing.xs)
                 }
-                .padding(.top, Spacing.xs)
             }
-        } header: {
-            Text("Acceptance & Review")
-        } footer: {
-            Text("Controls when the Supervisor reviews and approves team output.")
         }
     }
 
     // MARK: - Supervisor Mode
 
     private var supervisorModeSection: some View {
-        Section {
-            Picker("Mode", selection: $supervisorMode) {
-                ForEach(SupervisorMode.allCases, id: \.self) { mode in
-                    Text(mode.displayName).tag(mode)
+        SettingsCard(
+            header: "Ask Supervisor",
+            systemImage: "person.fill.questionmark",
+            footer: "Controls how the team handles questions to the Supervisor."
+        ) {
+            VStack(alignment: .leading, spacing: Spacing.s) {
+                HStack {
+                    Text("Mode")
+                    Spacer()
+                    TerminalSegmentedPicker(
+                        selection: $supervisorMode,
+                        options: SupervisorMode.allCases.map { (value: $0, label: $0.displayName) }
+                    )
                 }
+                Text(supervisorMode.description)
+                    .font(Typography.caption)
+                    .foregroundStyle(Colors.textSecondary)
             }
-            Text(supervisorMode.description)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        } header: {
-            Text("Ask Supervisor")
-        } footer: {
-            Text("Controls how the team handles questions to the Supervisor.")
         }
     }
 

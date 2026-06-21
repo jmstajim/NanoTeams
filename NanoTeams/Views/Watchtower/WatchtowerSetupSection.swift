@@ -30,7 +30,7 @@ struct WatchtowerSetupSection: View {
 
         if !visible.isEmpty {
             VStack(alignment: .leading, spacing: Spacing.m) {
-                NTMSSectionHeader(title: "Setup", systemImage: "sparkles")
+                MonoLabel(text: "Setup", rule: true)
                 LazyVGrid(
                     columns: [GridItem(.flexible(), spacing: Spacing.m),
                               GridItem(.flexible(), spacing: Spacing.m)],

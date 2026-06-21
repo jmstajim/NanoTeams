@@ -88,8 +88,14 @@ final class EditableNSTextView: NSTextView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         if shouldDrawPlaceholder(), let placeholder = placeholderText {
+            // Placeholder font falls back to mono if the host hasn't pinned one
+            // — matches `EditableMessageTextView.defaultFont` so the placeholder
+            // sits on the same mono grid as the typed text.
             let attributes: [NSAttributedString.Key: Any] = [
-                .font: font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize),
+                .font: font ?? NSFont.monospacedSystemFont(
+                    ofSize: NSFont.systemFontSize,
+                    weight: .regular
+                ),
                 .foregroundColor: Colors.nsTextSecondary
             ]
             let attributed = NSAttributedString(string: placeholder, attributes: attributes)

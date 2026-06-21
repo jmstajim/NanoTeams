@@ -109,7 +109,7 @@ struct LLMTokenField: View {
                 Button {
                     token = ""
                 } label: {
-                    Image(systemName: "xmark.circle.fill")
+                    Image(systemName: "xmark.circle")
                         .foregroundStyle(Colors.textTertiary)
                 }
                 .buttonStyle(.plain)

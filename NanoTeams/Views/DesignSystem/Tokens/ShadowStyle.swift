@@ -8,14 +8,20 @@ struct ShadowStyle {
     let x: CGFloat
     let y: CGFloat
 
-    /// Subtle card shadow (default resting state)
-    static let card = ShadowStyle(color: .black.opacity(0.2), radius: 8, x: 0, y: 2)
-    /// Elevated card shadow (dragging, hover)
-    static let elevated = ShadowStyle(color: .black.opacity(0.3), radius: 14, x: 0, y: 0)
+    // Flat terminal: depth comes from borders + the surface ladder, not blur.
+    // Only modals/popovers keep a real drop shadow.
+
+    /// Near-flat hairline — default resting card (depth is the border, not this)
+    static let card = ShadowStyle(color: .black.opacity(0.35), radius: 1, x: 0, y: 1)
+    /// Elevated — modals, popovers, dragging
+    static let elevated = ShadowStyle(color: .black.opacity(0.45), radius: 12, x: 0, y: 8)
     /// Key shadow for keyboard-like elements
-    static let key = ShadowStyle(color: .black.opacity(0.1), radius: 1, x: 0, y: 1)
+    static let key = ShadowStyle(color: .black.opacity(0.2), radius: 1, x: 0, y: 1)
     /// Minimal UI shadow (theme preview thumbnails)
-    static let ui = ShadowStyle(color: .black.opacity(0.08), radius: 2, x: 0, y: 1)
+    static let ui = ShadowStyle(color: .black.opacity(0.12), radius: 1, x: 0, y: 1)
+    /// Floating notification banner — softer than `.elevated` (lower opacity,
+    /// smaller y-offset) so it doesn't overpower the always-visible chrome below.
+    static let banner = ShadowStyle(color: .black.opacity(0.25), radius: 12, x: 0, y: 4)
 }
 
 extension View {

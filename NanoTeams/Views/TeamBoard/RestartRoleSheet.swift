@@ -17,9 +17,7 @@ struct RestartRoleSheet: View {
             )
 
             VStack(alignment: .leading, spacing: Spacing.s) {
-                Text("Instructions (optional)")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.secondary)
+                MonoLabel(text: "Instructions (optional)", marker: true)
 
                 TextEditor(text: $comment)
                     .frame(height: SheetLayout.textEditorHeight)
@@ -27,8 +25,8 @@ struct RestartRoleSheet: View {
                     .accessibilityLabel("Instructions for restart")
 
                 Text("Provide instructions for the role on restart.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .font(Typography.caption2)
+                    .foregroundStyle(Colors.textTertiary)
             }
 
             HStack {
@@ -36,7 +34,7 @@ struct RestartRoleSheet: View {
                     comment = ""
                     isPresented = false
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.terminalSecondary)
 
                 Spacer()
 
@@ -45,8 +43,7 @@ struct RestartRoleSheet: View {
                     comment = ""
                     isPresented = false
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(Colors.warning)
+                .buttonStyle(.terminalDanger) // cascading reset of role + downstream — cautionary
                 .keyboardShortcut(.defaultAction)
             }
         }

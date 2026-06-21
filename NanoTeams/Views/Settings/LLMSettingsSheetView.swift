@@ -37,7 +37,7 @@ struct LLMSettingsView: View {
         ScrollView {
             VStack(spacing: Spacing.xl) {
                 HStack(spacing: Spacing.s) {
-                    Image(systemName: "info.circle.fill")
+                    Image(systemName: "info.circle")
                         .foregroundStyle(Colors.info)
                     Text("Requires LM Studio 0.4.0 or later.")
                         .font(Typography.caption)
@@ -101,9 +101,10 @@ struct LLMSettingsView: View {
 }
 
 #Preview {
-    @Previewable @State var config = StoreConfiguration()
+    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     @Previewable @State var catalog = ModelCatalog()
     LLMSettingsView()
-        .environment(config)
+        .environment(store)
+        .environment(store.configuration)
         .environment(catalog)
 }

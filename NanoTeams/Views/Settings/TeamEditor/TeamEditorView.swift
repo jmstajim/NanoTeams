@@ -65,6 +65,11 @@ struct TeamEditorView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // Terminal-style sub-toolbar — replaces the native `.toolbar` block
+            // (Pass 29, mirrors the TeamBoard Pass 28 pattern). Per the JSX spec:
+            // `▌ TEAM EDITOR  <selector>  ··  <validation>  ⋯`.
+            teamEditorTopBar
+
             // Validation Banner
             if !validationIssues.isEmpty {
                 validationBanner
@@ -83,23 +88,36 @@ struct TeamEditorView: View {
 
                     // Right: segmented tabs + tab content
                     VStack(spacing: 0) {
-                        HStack(spacing: Spacing.xs) {
+                        // Terminal-idiom tab strip — sharp corners (DS rule:
+                        // radius ≤ 4pt) replacing the prior `Capsule` pill.
+                        // Mirrors `TerminalSegmentedPicker`'s squared chrome
+                        // so RoleEditor and TeamEditor tabs read identically.
+                        HStack(spacing: 2) {
                             ForEach(availableTabs) { tab in
                                 Button { selectedTab = tab } label: {
                                     Label(tab.label, systemImage: tab.icon)
                                         .labelStyle(.titleOnly)
-                                        .font(Typography.captionSemibold)
-                                        .foregroundStyle(selectedTab == tab ? Colors.surfaceBackground : .secondary)
-                                        .padding(.horizontal, Spacing.m)
-                                        .padding(.vertical, Spacing.xs)
+                                        .font(Typography.termXs.weight(.medium))
+                                        .foregroundStyle(selectedTab == tab ? Colors.textOnAccent : Colors.textSecondary)
+                                        .padding(.horizontal, Spacing.s)
+                                        .padding(.vertical, Spacing.xxs)
+                                        .frame(maxWidth: .infinity)
                                         .background(
-                                            Capsule(style: .continuous)
-                                                .fill(selectedTab == tab ? Colors.accent : Colors.surfaceElevated)
+                                            RoundedRectangle.squircle(CornerRadius.micro)
+                                                .fill(selectedTab == tab ? Colors.accent : Color.clear)
                                         )
+                                        .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
+                                .accessibilityAddTraits(selectedTab == tab ? [.isSelected] : [])
                             }
                         }
+                        .padding(Spacing.xxs)
+                        .background(Colors.surfaceElevated, in: RoundedRectangle.squircle(CornerRadius.small))
+                        .overlay(
+                            RoundedRectangle.squircle(CornerRadius.small)
+                                .strokeBorder(Colors.borderSubtle, lineWidth: 1)
+                        )
                         .padding(.horizontal, Spacing.standard)
                         .padding(.vertical, Spacing.s)
 
@@ -109,70 +127,6 @@ struct TeamEditorView: View {
                 }
             } else {
                 noTeamView
-            }
-        }
-        .toolbar {
-            ToolbarItemGroup(placement: .principal) {
-                if let snapshot = store.snapshot {
-                    // Hide only the Generated Team placeholder from the config list.
-                    // The Autovisor team IS shown here (protected: non-deletable,
-                    // non-duplicable) so it can be inspected/configured.
-                    let selectableTeams = snapshot.workFolder.teams.filter { !$0.isHiddenFromTeamEditor }
-                    if !selectableTeams.isEmpty {
-                        let activeID = activeTeam?.id ?? selectableTeams[0].id
-                        let canDuplicate = activeTeam.map { !$0.isManagedSingleton } ?? false
-                        let canDelete = activeTeam.map {
-                            TeamManagementService.canDeleteTeam(in: snapshot.workFolder, teamID: $0.id)
-                        } ?? false
-                        TeamSelectorView(
-                            teams: selectableTeams,
-                            activeTeamID: activeID,
-                            canDelete: canDelete,
-                            canDuplicate: canDuplicate,
-                            onSelect: handleSelectTeam,
-                            onAdd: { showingNewTeamSheet = true },
-                            onGenerate: { showingGenerateTeamSheet = true },
-                            onDuplicate: handleDuplicateTeam,
-                            onDelete: { showingDeleteConfirmation = true }
-                        )
-                    }
-                }
-            }
-
-            ToolbarItemGroup(placement: .primaryAction) {
-                Menu {
-                    Button {
-                        showingImportTeam = true
-                    } label: {
-                        Label("Import Team...", systemImage: "square.and.arrow.down")
-                    }
-
-                    Button {
-                        handleExportTeam()
-                    } label: {
-                        Label("Export Team...", systemImage: "square.and.arrow.up")
-                    }
-                    .disabled(activeTeam == nil)
-
-                    Divider()
-
-                    Button {
-                        handleResetLayout()
-                    } label: {
-                        Label("Reset Graph Layout", systemImage: "arrow.counterclockwise")
-                    }
-
-                    Divider()
-
-                    Button {
-                        handleRestoreDefaults()
-                    } label: {
-                        Label("Restore Default Teams", systemImage: "arrow.triangle.2.circlepath")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                }
-                .help("More actions")
             }
         }
         .sheet(isPresented: $showingNewTeamSheet) {
@@ -229,6 +183,76 @@ struct TeamEditorView: View {
         }
     }
 
+    // MARK: - Top Bar
+
+    /// Terminal-style sub-toolbar — the sole navbar for the Team Editor pane
+    /// (Pass 29). Replaces the native macOS `.toolbar` block; layout per
+    /// `DesignSystemByClaude/ui_kits/desktop/TeamEditor.jsx` lines 408–420.
+    @ViewBuilder
+    private var teamEditorTopBar: some View {
+        TeamEditorTopBar(issues: validationIssues) {
+            if let snapshot = store.snapshot {
+                // Hide only the Generated Team placeholder from the config list.
+                // The Autovisor team IS shown here (protected: non-deletable,
+                // non-duplicable) so it can be inspected/configured.
+                let selectableTeams = snapshot.workFolder.teams.filter { !$0.isHiddenFromTeamEditor }
+                if !selectableTeams.isEmpty {
+                    let activeID = activeTeam?.id ?? selectableTeams[0].id
+                    let canDuplicate = activeTeam.map { !$0.isManagedSingleton } ?? false
+                    let canDelete = activeTeam.map {
+                        TeamManagementService.canDeleteTeam(in: snapshot.workFolder, teamID: $0.id)
+                    } ?? false
+                    TeamSelectorView(
+                        teams: selectableTeams,
+                        activeTeamID: activeID,
+                        canDelete: canDelete,
+                        canDuplicate: canDuplicate,
+                        onSelect: handleSelectTeam,
+                        onAdd: { showingNewTeamSheet = true },
+                        onGenerate: { showingGenerateTeamSheet = true },
+                        onDuplicate: handleDuplicateTeam,
+                        onDelete: { showingDeleteConfirmation = true }
+                    )
+                }
+            }
+        } actions: {
+            Menu {
+                Button {
+                    showingImportTeam = true
+                } label: {
+                    Label("Import Team...", systemImage: "square.and.arrow.down")
+                }
+
+                Button {
+                    handleExportTeam()
+                } label: {
+                    Label("Export Team...", systemImage: "square.and.arrow.up")
+                }
+                .disabled(activeTeam == nil)
+
+                Divider()
+
+                Button {
+                    handleResetLayout()
+                } label: {
+                    Label("Reset Graph Layout", systemImage: "arrow.counterclockwise")
+                }
+
+                Divider()
+
+                Button {
+                    handleRestoreDefaults()
+                } label: {
+                    Label("Restore Default Teams", systemImage: "arrow.triangle.2.circlepath")
+                }
+            } label: {
+                Label("More", systemImage: "ellipsis")
+            }
+            .navbarIconCell()
+            .help("More actions")
+        }
+    }
+
     // MARK: - Validation Banner
 
     private var validationBanner: some View {
@@ -236,11 +260,13 @@ struct TeamEditorView: View {
         return VStack(alignment: .leading, spacing: Spacing.s) {
             ForEach(validationIssues) { issue in
                 HStack(spacing: Spacing.s) {
-                    Image(systemName: issue.isError ? "exclamationmark.octagon.fill" : "exclamationmark.triangle.fill")
-                        .foregroundStyle(issue.isError ? Colors.error : Colors.warning)
+                    StatusGlyph(
+                        glyph: issue.isError ? TerminalGlyph.failed : TerminalGlyph.review,
+                        color: issue.isError ? Colors.error : Colors.warning
+                    )
                     Text(issue.message)
-                        .font(.callout)
-                        .foregroundStyle(.primary)
+                        .font(Typography.termBase)
+                        .foregroundStyle(Colors.textPrimary)
                 }
             }
         }
@@ -272,17 +298,13 @@ struct TeamEditorView: View {
     }
 
     private var noTeamView: some View {
-        ContentUnavailableView {
-            Label("No Team Selected", systemImage: "person.3")
-        } description: {
-            Text("Create or select a team to configure it")
-        } actions: {
-            Button("Create Team") {
-                showingNewTeamSheet = true
-            }
-            .buttonStyle(.borderedProminent)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        NTMSEmptyState(
+            title: "No Team Selected",
+            message: "Create or select a team to configure it",
+            systemImage: "person.3",
+            action: { showingNewTeamSheet = true },
+            actionLabel: "Create Team"
+        )
     }
 
     // MARK: - Helpers
@@ -339,6 +361,11 @@ struct TeamEditorView: View {
 }
 
 #Preview {
+    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var dictation = DictationService()
     TeamEditorView()
+        .environment(store)
+        .environment(store.configuration)
+        .environment(dictation)
         .frame(width: 900, height: 700)
 }

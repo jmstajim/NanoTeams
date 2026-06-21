@@ -10,8 +10,8 @@ enum TaskFilter: String, CaseIterable, Hashable {
 
     private static let metadata: [TaskFilter: (displayName: String, icon: String)] = [
         .running:   ("Active",    "circle.inset.filled"),
-        .done:      ("Done",      "checkmark.circle.fill"),
-        .all:       ("All",       "tray.full.fill"),
+        .done:      ("Done",      "checkmark.circle"),
+        .all:       ("All",       "tray.full"),
         .recurring: ("Recurring", "repeat"),
     ]
 

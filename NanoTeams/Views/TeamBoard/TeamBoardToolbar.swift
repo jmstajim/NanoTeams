@@ -1,8 +1,13 @@
 import AppKit
 import SwiftUI
 
-// MARK: - Toolbar Components
+// MARK: - Top-Bar Action Components
 
+/// Action-button vars composed into the `TeamBoardTopBar`'s right cluster
+/// (Pass 28 dropped the native `.toolbar` block — the in-view TopBar is now
+/// the sole navbar). Each returns a `Button` / `Menu` with `Label("name",
+/// systemImage: "…")`; the TopBar forces `.labelStyle(.iconOnly)` and the
+/// flat `NavbarIconButtonStyle` via the env at its actions slot.
 extension TeamBoardView {
 
     var graphToggleButton: some View {
@@ -18,49 +23,25 @@ extension TeamBoardView {
         }
     }
 
-    @ViewBuilder
-    var playPauseButton: some View {
-        if !isHistoricalRun, let task {
-            let taskState = engineState.taskEngineStates[task.id]
-            if taskState == .running || taskState == .needsSupervisorInput || taskState == .needsAcceptance {
-                Button {
-                    Task { await store.pauseRun(taskID: task.id) }
-                } label: {
-                    Label("Pause Run", systemImage: "pause.fill")
-                        .foregroundStyle(Colors.warning)
-                }
-            } else if taskState == .paused {
-                Button {
-                    Task { await store.resumeRun(taskID: task.id) }
-                } label: {
-                    Label("Resume Run", systemImage: "play.fill")
-                        .foregroundStyle(Colors.success)
-                }
-            } else if taskState == .pending || taskState == nil {
-                Button {
-                    Task { await store.startRun(taskID: task.id) }
-                } label: {
-                    Label("Start Run", systemImage: "play.fill")
-                        .foregroundStyle(Colors.success)
-                }
-            }
-        }
-    }
-
-    /// "Run now" — Autovisor board only. Native toolbar button (icon + label) that
-    /// starts a fresh manager review pass via `startAutovisorPass`, which supersedes a
-    /// parked (`wait_for_events`) engine that plain `startRun` no-ops on. Sits in the
-    /// right toolbar cluster, just right of the "Autovisor / Next run" title.
+    /// "Run now" — Autovisor board only. Renders in the TopBar's right cluster
+    /// as a bracketed `[ ▷ Run now ]` button — the only action that keeps its
+    /// label. Uses `.terminalSecondary` to override the cluster's env-level
+    /// `.navbarIcon` style, which would otherwise clamp the label to a 28×28pt
+    /// cell and truncate the text. Starts a fresh manager review pass via
+    /// `startAutovisorPass`, which supersedes a parked (`wait_for_events`)
+    /// engine that plain `startRun` no-ops on.
     @ViewBuilder
     var autovisorRunNowButton: some View {
         if isAutovisorBoard, !isHistoricalRun, let task {
             Button {
                 Task { await store.startAutovisorPass(taskID: task.id) }
             } label: {
-                Label("Run now", systemImage: "play.fill")
-                    .foregroundStyle(.secondary)
+                Label("Run now", systemImage: "play")
             }
             .labelStyle(.titleAndIcon)
+            .buttonStyle(.terminalSecondary)
+            .controlSize(.small)
+            .fixedSize()
             .help("Start a fresh Autovisor review pass now")
         }
     }
@@ -74,7 +55,7 @@ extension TeamBoardView {
                 Button {
                     isShowingFinalReviewSheet = true
                 } label: {
-                    Label("Review Task", systemImage: "eye.circle.fill")
+                    Label("Review Task", systemImage: "eye.circle")
                         .foregroundStyle(Colors.purple)
                 }
                 .help("Open Supervisor Final Review")
@@ -82,7 +63,7 @@ extension TeamBoardView {
                 Button {
                     Task { _ = await store.closeTask(taskID: task.id) }
                 } label: {
-                    Label("Accept Task", systemImage: "checkmark.circle.fill")
+                    Label("Accept Task", systemImage: "checkmark.circle")
                         .foregroundStyle(Colors.purple)
                 }
                 .help("Accept completed task and mark as Done")
@@ -97,8 +78,8 @@ extension TeamBoardView {
             Button {
                 isShowingAutomationSheet = true
             } label: {
-                Label("Automation", systemImage: "clock.arrow.2.circlepath")
-                    .foregroundStyle(isActive ? Colors.accent : Color.primary)
+                Label("Automation", systemImage: "arrow.triangle.2.circlepath")
+                    .foregroundStyle(isActive ? Colors.accent : Colors.textPrimary)
             }
             .help(automationHelpText(for: task))
         }
@@ -115,6 +96,57 @@ extension TeamBoardView {
         return parts.isEmpty
             ? "Automation — repeat this task on a schedule or limit how long a run may take"
             : parts.joined(separator: " · ")
+    }
+
+    /// Team picker — re-exposes `store.switchTeam(to:)` (its only UI caller, the
+    /// activity-feed `teamHeaderMenu`, was removed in the navbar redesign). A
+    /// live, non-Autovisor, non-managed-singleton task with ≥2 selectable teams
+    /// can be re-run on a different team; the switch pauses the run, syncs role
+    /// statuses, and prunes steps to the new roster (`TeamSwitchPlanner`).
+    /// Pure gate for whether the "Switch Team" menu should appear: a live
+    /// (non-historical), non-Autovisor, non-managed-singleton task with at least
+    /// two selectable teams (switching to a different team needs an alternative).
+    /// Extracted so the branch coverage is unit-testable.
+    nonisolated static func shouldOfferTeamSwitch(
+        isAutovisorBoard: Bool,
+        isHistoricalRun: Bool,
+        activeTeamIsManagedSingleton: Bool,
+        selectableTeamCount: Int
+    ) -> Bool {
+        !isAutovisorBoard
+            && !isHistoricalRun
+            && !activeTeamIsManagedSingleton
+            && selectableTeamCount > 1
+    }
+
+    @ViewBuilder
+    private var switchTeamMenu: some View {
+        let teams = (store.snapshot?.workFolder.teams ?? []).filter { !$0.isHiddenFromPickers }
+        if Self.shouldOfferTeamSwitch(
+            isAutovisorBoard: isAutovisorBoard,
+            isHistoricalRun: isHistoricalRun,
+            activeTeamIsManagedSingleton: resolvedTeam.isManagedSingleton,
+            selectableTeamCount: teams.count
+        ) {
+            Menu {
+                ForEach(teams) { team in
+                    Button {
+                        Task { await store.switchTeam(to: team.id) }
+                    } label: {
+                        let title = "\(team.name) (\(team.memberCount) members)"
+                        if team.id == resolvedTeam.id {
+                            Label(title, systemImage: "checkmark")
+                        } else {
+                            Text(title)
+                        }
+                    }
+                }
+            } label: {
+                Label("Switch Team", systemImage: "person.2.badge.gearshape")
+            }
+
+            Divider()
+        }
     }
 
     var moreActionsMenu: some View {
@@ -139,6 +171,8 @@ extension TeamBoardView {
                 Divider()
             }
 
+            switchTeamMenu
+
             // Run history submenu
             Menu {
                 if let task = task, !task.runs.isEmpty {
@@ -154,13 +188,13 @@ extension TeamBoardView {
                             Label {
                                 Text("Run — \(status.displayLabel)\(timedOutSuffix) — \(timeStr)")
                             } icon: {
-                                Image(systemName: isActive ? "checkmark.circle.fill" : status.systemImageName)
+                                Image(systemName: isActive ? "checkmark.circle" : status.systemImageName)
                             }
                         }
                     }
                 } else {
                     Text("No runs yet")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Colors.textSecondary)
                 }
             } label: {
                 Label("Run History", systemImage: "clock.arrow.circlepath")
@@ -206,7 +240,8 @@ extension TeamBoardView {
                 }
             }
         } label: {
-            Label("More", systemImage: "ellipsis.circle")
+            Label("More", systemImage: "ellipsis")
         }
+        .navbarIconCell()
     }
 }

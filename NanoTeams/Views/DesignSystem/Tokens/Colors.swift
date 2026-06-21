@@ -1,183 +1,283 @@
 import AppKit
 import SwiftUI
 
-/// Semantic color palette — adaptive dark/light.
+/// Semantic color palette — theme-aware adaptive dark/light.
 ///
-/// Each color is defined with a dark-mode variant (vibrant on black)
-/// and a light-mode variant (darker for contrast on white).
-/// Uses `NSColor(name:dynamicProvider:)` for automatic switching.
+/// Every token below is sourced from `Theme.current` (the user-selected theme
+/// in UserDefaults) via the `themed(_:)` helper. The dynamic `NSColor` provider
+/// inside `themed` resolves the dark / light variant per system color scheme,
+/// and the `static var` access pattern means SwiftUI view bodies re-pull fresh
+/// values whenever the root `@AppStorage(UserDefaultsKeys.activeTheme)`
+/// observer is invalidated.
+///
+/// To add a new theme: drop a new `ThemePalette` into `Theme.swift` and add it
+/// to the `Theme` enum + `darkPaletteMap`. No edits required here.
 nonisolated enum Colors {
-    // MARK: - Adaptive Color Helper
+    // MARK: - Per-theme color cache
+    //
+    // Keyed by (active theme, token keyPath, alpha). Buys two properties at once:
+    //   1. Identity stability WITHIN a theme — repeated `Colors.nsTextPrimary`
+    //      (or `Colors.success`) accesses return the SAME instance, so
+    //      `NSAttributedString` equality + the NSTextView append / appearance-
+    //      restamp short-circuits hold (`ColorsNSIdentityTests`, CLAUDE.md #50),
+    //      and SwiftUI view-equality short-circuits aren't defeated by a fresh
+    //      `Color` per body read.
+    //   2. Freshness ACROSS themes — a SAME-SCHEME theme switch (e.g. Terminal→OLED,
+    //      both dark) yields a NEW instance whose AppKit per-appearance resolution
+    //      cache is empty, so it resolves the new palette immediately instead of
+    //      serving the pre-switch hex until the next app launch (AppKit only
+    //      re-invokes a dynamic provider on a dark↔light appearance change, never
+    //      on a palette swap within one scheme). The root `.id(activeTheme)`
+    //      rebuild re-pulls these accessors, so on-screen AppKit text re-stamps
+    //      the fresh color.
+    // The dynamic provider captures the theme at creation so a cached entry can't
+    // drift if `Theme.current` advances between lookup and a later draw.
+    private struct ThemeColorKey: Hashable {
+        let theme: String
+        let keyPath: AnyKeyPath
+        let alphaBits: UInt   // CGFloat.bitPattern is platform-width UInt
+    }
+    private nonisolated(unsafe) static var nsColorCache: [ThemeColorKey: NSColor] = [:]
+    private nonisolated(unsafe) static var colorCache: [ThemeColorKey: Color] = [:]
+    // NSLock in a SYNCHRONOUS context (these helpers are non-async) — allowed by
+    // Swift 6 (the ban is async-only). The provider closure runs on AppKit's
+    // appearance thread but never touches the cache, so the lock only guards the
+    // dict mutations on the (mostly-main) accessor thread.
+    private static let colorCacheLock = NSLock()
 
-    /// Creates an adaptive Color that switches between dark and light variants.
-    /// Uses `NSColor(name:dynamicProvider:)` — macOS handles switching automatically.
+    // MARK: - Themed Color Helpers
+
+    /// Resolves a token from the active theme as a SwiftUI `Color`, memoized per
+    /// (theme, token, alpha). Reading the same token repeatedly in a body returns
+    /// one stable value; switching themes returns a fresh value (and the
+    /// `.id(activeTheme)` root rebuild re-pulls it).
+    nonisolated static func themed(_ keyPath: KeyPath<ThemePalette, UInt64>, alpha: CGFloat = 1.0) -> Color {
+        let ns = nsThemed(keyPath, alpha: alpha)
+        let key = ThemeColorKey(theme: Theme.current.rawValue, keyPath: keyPath, alphaBits: alpha.bitPattern)
+        return colorCacheLock.withLock {
+            if let cached = colorCache[key] { return cached }
+            let color = Color(nsColor: ns)
+            colorCache[key] = color
+            return color
+        }
+    }
+
+    /// Like `themed`, but returns the underlying dynamic NSColor so AppKit
+    /// consumers (NSTextView, NSAttributedString) don't have to bounce through
+    /// the SwiftUI `Color → NSColor` converter (which is `@MainActor`). Memoized
+    /// per (theme, token, alpha) — see the cache note above.
+    nonisolated static func nsThemed(_ keyPath: KeyPath<ThemePalette, UInt64>, alpha: CGFloat = 1.0) -> NSColor {
+        let theme = Theme.current
+        let key = ThemeColorKey(theme: theme.rawValue, keyPath: keyPath, alphaBits: alpha.bitPattern)
+        return colorCacheLock.withLock {
+            if let cached = nsColorCache[key] { return cached }
+            let color = NSColor(name: nil) { appearance in
+                let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                return Self.makeNSColor(hex: theme.palette(isDark: isDark)[keyPath: keyPath], alpha: alpha)
+            }
+            nsColorCache[key] = color
+            return color
+        }
+    }
+
+    // MARK: - Adaptive Color Helper (theme-independent overrides)
+
+    /// Theme-independent adaptive color — pinned dark/light hex pair. Use this
+    /// only when the color MUST stay constant across themes (e.g. transparent
+    /// fade gradients that overlay specific surfaces). For all semantic tokens,
+    /// prefer `themed(_:)`.
     static func adaptive(dark: UInt64, light: UInt64, alpha: CGFloat = 1.0) -> Color {
         Color(nsColor: nsAdaptive(dark: dark, light: light, alpha: alpha))
     }
 
-    /// Like `adaptive`, but returns the underlying dynamic NSColor directly so
-    /// AppKit consumers don't have to bounce through the SwiftUI `Color → NSColor`
-    /// converter (which is `@MainActor` and therefore unusable from any
-    /// nonisolated `static let` initializer evaluated at module load).
+    /// AppKit counterpart of `adaptive`.
     nonisolated static func nsAdaptive(dark: UInt64, light: UInt64, alpha: CGFloat = 1.0) -> NSColor {
         NSColor(name: nil) { appearance in
             let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             let hex = isDark ? dark : light
-            return NSColor(
-                red: CGFloat((hex >> 16) & 0xFF) / 255.0,
-                green: CGFloat((hex >> 8) & 0xFF) / 255.0,
-                blue: CGFloat(hex & 0xFF) / 255.0,
-                alpha: alpha
-            )
+            return Self.makeNSColor(hex: hex, alpha: alpha)
         }
+    }
+
+    private nonisolated static func makeNSColor(hex: UInt64, alpha: CGFloat) -> NSColor {
+        NSColor(
+            red: CGFloat((hex >> 16) & 0xFF) / 255.0,
+            green: CGFloat((hex >> 8) & 0xFF) / 255.0,
+            blue: CGFloat(hex & 0xFF) / 255.0,
+            alpha: alpha
+        )
     }
 
     // MARK: - Status Colors (unique per semantic meaning)
 
-    /// Success/Done — green. Use for completed, approved, positive states
-    static let success = adaptive(dark: 0x4FB985, light: 0x24885A)
-    /// Warning/Paused — orange. Use for user-paused states
-    static let warning = adaptive(dark: 0xD4974E, light: 0xB36B1E)
-    /// Error/Failed — red. Use for failures, destructive actions
-    static let error = adaptive(dark: 0xD96A7F, light: 0xB8465A)
-    /// Info/Working — blue. Use for in-progress, active execution
-    static let info = adaptive(dark: 0x5F87D9, light: 0x3E63BD)
-    /// Neutral/Idle — gray. Use for idle, inactive, not started
-    static let neutral = adaptive(dark: 0x645E5A, light: 0xC9C1BB)
+    /// Success/Done — neutral "done" gray. Monochrome+1: completion is told by
+    /// the ✓ glyph + brightness, not by green.
+    static var success: Color { themed(\.success) }
+    /// Warning/Paused — lavender signal (the design's `--nt-warning` aliases the accent)
+    static var warning: Color { themed(\.warning) }
+    /// Error/Failed — muted terracotta. The sole 2nd accent, reserved for failure.
+    static var error: Color { themed(\.error) }
+    /// Info/Working — lavender signal. Alive / executing.
+    static var info: Color { themed(\.info) }
+    /// Neutral/Idle — mid gray. Visible but inactive.
+    static var neutral: Color { themed(\.neutral) }
 
     // MARK: - Extended Status Palette (each visually unique)
 
-    /// Periwinkle — meetings, collaborative states
-    static let purple = adaptive(dark: 0x8F82E6, light: 0x6957C7)
-    /// Artifact — gaming epic purple, artifact deliverables
-    static let artifact = adaptive(dark: 0xA86DE8, light: 0x7B3FC2)
-    /// Teal — connected, linked, advisory roles
-    static let teal = adaptive(dark: 0x3FB6AA, light: 0x25857D)
-    /// Yellow — revision requested, changes needed
-    static let yellow = adaptive(dark: 0xD5B455, light: 0xAD8425)
-    /// Indigo — Supervisor/authority roles
-    static let indigo = adaptive(dark: 0x6D76E2, light: 0x4E55BA)
-    /// Pink — design-related content
-    static let pink = adaptive(dark: 0xD887B2, light: 0xB6598A)
-    /// Cyan — ready state, tech/engineering
-    static let cyan = adaptive(dark: 0x46B8D0, light: 0x2588A1)
-    /// Mint — ops/infra content
-    static let mint = adaptive(dark: 0x56C999, light: 0x2D9368)
-    /// Brown — lore/historical content
-    static let brown = adaptive(dark: 0x9A795F, light: 0x765842)
-    /// Emerald — accepted by Supervisor (distinct from done/green)
-    static let emerald = adaptive(dark: 0x35BE81, light: 0x198A5B)
-    /// Gold — waiting for Supervisor input/answer
-    static let gold = adaptive(dark: 0xD6A64D, light: 0xB27A1F)
-    /// Dim — skipped/observer, near-invisible
-    static let dim = adaptive(dark: 0x433E3B, light: 0xDDD5CF)
+    // Token names are kept stable across themes so every call site compiles;
+    // each theme remaps the hexes to match its hue family.
+
+    /// Meetings, collaborative states — meeting gray (◆)
+    static var purple: Color { themed(\.purple) }
+    /// Artifact deliverables — neutral "done" gray
+    static var artifact: Color { themed(\.artifact) }
+    /// Advisory / connected roles — ready gray
+    static var teal: Color { themed(\.teal) }
+    /// Revision requested — lavender signal (attention)
+    static var yellow: Color { themed(\.yellow) }
+    /// Supervisor / authority — bright "review" neutral
+    static var indigo: Color { themed(\.indigo) }
+    /// Design-related content — mid gray
+    static var pink: Color { themed(\.pink) }
+    /// Ready state, tech/engineering — ready gray
+    static var cyan: Color { themed(\.cyan) }
+    /// Ops/infra content — done gray
+    static var mint: Color { themed(\.mint) }
+    /// Lore/historical content — meeting gray
+    static var brown: Color { themed(\.brown) }
+    /// Accepted by Supervisor — brightest neutral (✓✓)
+    static var emerald: Color { themed(\.emerald) }
+    /// Waiting for Supervisor input/answer — lavender signal (attention)
+    static var gold: Color { themed(\.gold) }
+    /// Skipped/observer — idle, near-invisible
+    static var dim: Color { themed(\.dim) }
 
     // MARK: - Surface Colors
 
-    /// Deepest background — sidebar
-    static let surfaceBackground = adaptive(dark: 0x0A0A0A, light: 0xFAFAFA)
-    /// Primary content area — graph canvas, main content, window
-    static let surfacePrimary = adaptive(dark: 0x111111, light: 0xFFFFFF)
-    /// Cards, panels — activity feed, settings sections
-    static let surfaceCard = adaptive(dark: 0x161616, light: 0xF8F8F8)
-    /// Elevated — hover states, inputs, elevated cards
-    static let surfaceElevated = adaptive(dark: 0x1E1E1E, light: 0xF0F0F0)
+    /// Deepest background — sidebar / window chrome (void)
+    static var surfaceBackground: Color { themed(\.surfaceBackground) }
+    /// Primary content area — graph canvas, main content, window (terminal bg)
+    static var surfacePrimary: Color { themed(\.surfacePrimary) }
+    /// Cards, panels — activity feed, settings sections (surface)
+    static var surfaceCard: Color { themed(\.surfaceCard) }
+    /// Elevated — inputs, popovers, selected row (elevated)
+    static var surfaceElevated: Color { themed(\.surfaceElevated) }
     /// Subtler elevated tint — used by inheritance/disabled rows that need
     /// to read as "less prominent than an editable field" without falling
     /// to plain background. Pre-computed so callers don't apply
     /// `surfaceElevated.opacity(0.5)` (forbidden by Color Rule #2).
-    static let surfaceElevatedSubtle = adaptive(dark: 0x191919, light: 0xF4F4F4)
-    /// Hover feedback on cards/timeline items
-    static let surfaceHover = adaptive(dark: 0x1A1A1A, light: 0xEEEEEE)
-    /// Overlay (dimmed window, code blocks)
-    static let surfaceOverlay = adaptive(dark: 0x141414, light: 0xF0F0F0)
+    static var surfaceElevatedSubtle: Color { themed(\.surfaceElevatedSubtle) }
+    /// Hover feedback on cards/timeline items (hover)
+    static var surfaceHover: Color { themed(\.surfaceHover) }
+    /// Overlay (dimmed window inset, code blocks)
+    static var surfaceOverlay: Color { themed(\.surfaceOverlay) }
     /// Strong overlay for blocking content (loading/failure overlays atop the canvas)
-    static let surfaceOverlayStrong = adaptive(dark: 0x0E0E0E, light: 0xF7F7F7)
+    static var surfaceOverlayStrong: Color { themed(\.surfaceOverlayStrong) }
 
-    /// Fade gradient — content fade-out above banners
-    static let surfaceFadeClear = adaptive(dark: 0x111111, light: 0xFFFFFF, alpha: 0)
+    /// Fade gradient — transparent variant of `surfacePrimary` for fade-out
+    /// gradients above banners. Uses `themed(...)` with explicit alpha so it
+    /// tracks the active theme's primary surface.
+    static var surfaceFadeClear: Color { themed(\.surfacePrimary, alpha: 0) }
 
     // MARK: - Border Colors
 
-    /// Subtle border — dividers, card outlines
-    static let borderSubtle = adaptive(dark: 0x282321, light: 0xE7E0DA)
+    /// Subtle border — box-drawing pane separators, dividers, card outlines
+    static var borderSubtle: Color { themed(\.borderSubtle) }
+    /// Strong border — interactive outlines (secondary buttons, focused
+    /// inputs). 1:1 with `--nt-border-strong` in `tokens/colors.css`.
+    static var borderStrong: Color { themed(\.borderStrong) }
+
     // MARK: - Accent Color (interactive elements)
 
-    /// Primary accent — sourced from AccentColor asset catalog (single source of truth)
-    static let accent = Color.accentColor
+    /// Primary accent — sourced from the active theme palette so custom UI
+    /// (buttons, focus rings, status pills) swaps with the theme. Native
+    /// AppKit controls (NSColorWell etc.) still resolve through the
+    /// `AccentColor` asset catalog — that asset is the system-wide fallback
+    /// and is not theme-aware on purpose.
+    static var accent: Color { themed(\.accent) }
 
     // MARK: - Status Tint Backgrounds
     // Pre-computed background tints for status-colored cards/banners.
     // These replace `statusColor.opacity(X)` patterns — each is a proper adaptive color.
 
-    /// Green tint — success badges, completion indicators
-    static let successTint = adaptive(dark: 0x16201C, light: 0xF2FAF6)
-    /// Orange tint — warning banners, pause indicators
-    static let warningTint = adaptive(dark: 0x211913, light: 0xFDF7F1)
-    /// Red tint — error backgrounds
-    static let errorTint = adaptive(dark: 0x211416, light: 0xFCF1F2)
-    /// Blue tint — working/in-progress node backgrounds
-    static let infoTint = adaptive(dark: 0x161B24, light: 0xF2F5FB)
-    /// Periwinkle tint — meeting cards, acceptance cards
-    static let purpleTint = adaptive(dark: 0x171726, light: 0xF3F1FB)
-    /// Artifact tint — artifact cards, badges
-    static let artifactTint = adaptive(dark: 0x191521, light: 0xF8F2FA)
-    /// Cyan tint — ready state node backgrounds
-    static let cyanTint = adaptive(dark: 0x141E21, light: 0xF0F8FA)
-    /// Yellow tint — revision requested backgrounds
-    static let yellowTint = adaptive(dark: 0x211C14, light: 0xFBF7ED)
-    /// Neutral tint — idle node backgrounds
-    static let neutralTint = adaptive(dark: 0x171514, light: 0xF4F1EE)
-    /// Dim tint — skipped node backgrounds
-    static let dimTint = adaptive(dark: 0x151312, light: 0xF5F2EF)
-    /// Emerald tint — accepted node backgrounds
-    static let emeraldTint = adaptive(dark: 0x14201B, light: 0xF0F9F4)
+    /// Done tint — success badges, completion indicators
+    static var successTint: Color { themed(\.successTint) }
+    /// Signal tint — paused/warning banners (lavender wash)
+    static var warningTint: Color { themed(\.warningTint) }
+    /// Terracotta tint — error/failure backgrounds
+    static var errorTint: Color { themed(\.errorTint) }
+    /// Signal tint — working/in-progress node backgrounds (lavender wash)
+    static var infoTint: Color { themed(\.infoTint) }
+    /// Meeting tint — meeting cards, acceptance cards
+    static var purpleTint: Color { themed(\.purpleTint) }
+    /// Neutral tint — artifact cards, badges
+    static var artifactTint: Color { themed(\.artifactTint) }
+    /// Ready tint — ready state node backgrounds
+    static var cyanTint: Color { themed(\.cyanTint) }
+    /// Signal tint — revision requested backgrounds (lavender wash)
+    static var yellowTint: Color { themed(\.yellowTint) }
+    /// Idle tint — idle node backgrounds
+    static var neutralTint: Color { themed(\.neutralTint) }
+    /// Idle tint — skipped node backgrounds
+    static var dimTint: Color { themed(\.dimTint) }
+    /// Accepted tint — accepted node backgrounds (brightest neutral wash)
+    static var emeraldTint: Color { themed(\.emeraldTint) }
 
     // MARK: - Status Border Colors
     // Pre-computed border colors for status-tinted cards.
 
-    /// Error border — error banner outlines
-    static let errorBorder = adaptive(dark: 0x47282C, light: 0xEFCFD3)
-    /// Neutral border — info banner outlines
-    static let neutralBorder = adaptive(dark: 0x2E2B28, light: 0xDDD8D3)
+    /// Error border — terracotta failure outlines
+    static var errorBorder: Color { themed(\.errorBorder) }
+    /// Neutral border — info banner outlines (border-strong)
+    static var neutralBorder: Color { themed(\.neutralBorder) }
 
     // MARK: - Accent Tint Colors
 
-    /// Accent tint — subtle accent backgrounds (hover, selection highlight)
-    static let accentTint = adaptive(dark: 0x241F36, light: 0xE4D8F3)
+    /// Accent tint — subtle backgrounds (hover, selection highlight)
+    static var accentTint: Color { themed(\.accentTint) }
     /// Accent tint strong — selected template cards, team selector icons
-    static let accentTintStrong = adaptive(dark: 0x201B31, light: 0xDED1F1)
-    /// Accent border — accent-colored outlines
-    static let accentBorder = adaptive(dark: 0x4D456F, light: 0xB8A3E3)
+    static var accentTintStrong: Color { themed(\.accentTintStrong) }
+    /// Accent border — outlines / focus ring
+    static var accentBorder: Color { themed(\.accentBorder) }
 
     // MARK: - Text Colors
     // Use SwiftUI .primary/.secondary/.tertiary for text in views.
     // These Color values exist for places that need a Color (not ShapeStyle),
     // e.g. Canvas drawing, NSColor contexts, or graph stroke colors.
 
-    /// Primary text — main content text
-    static let textPrimary = adaptive(dark: 0xFBF7F3, light: 0x221F1D)
+    /// Primary text — main content text (terminal foreground)
+    static var textPrimary: Color { themed(\.textPrimary) }
     /// Secondary text — descriptions, metadata
-    static let textSecondary = adaptive(dark: 0xC2B8B0, light: 0x746B65)
-    /// Tertiary text — placeholders, hints, disabled
-    static let textTertiary = adaptive(dark: 0x8A817B, light: 0x9E948D)
-    /// Text on accent surfaces (e.g. inside an accent-filled capsule button).
-    /// White in both modes since the accent is dark enough for contrast.
-    static let textOnAccent = adaptive(dark: 0xFFFFFF, light: 0xFFFFFF)
+    static var textSecondary: Color { themed(\.textSecondary) }
+    /// Tertiary text — placeholders, hints, comments, disabled
+    static var textTertiary: Color { themed(\.textTertiary) }
+    /// Quaternary / watermark text — the faintest legible tone, for decorative
+    /// terminal sigils (`$`, `task/`, `›`). Maps to the design's `text-faint`.
+    static var textQuaternary: Color { themed(\.textQuaternary) }
+    /// Text/icon on an accent fill. Theme-determined contrast — light text on
+    /// dark themes, deep text on paper.
+    static var textOnAccent: Color { themed(\.textOnAccent) }
 
     // MARK: - NSColor Accessors (for AppKit contexts: NSTextView, NSAttributedString)
 
+    // These feed `NSAttributedString` foreground/background attributes and
+    // NSTextView stamping, where instance IDENTITY is load-bearing:
+    // `NSAttributedString.isEqual` and the append-only / appearance-restamp
+    // short-circuits (`SelectableMessageText`, `ResolvedPromptView`,
+    // `PlaceholderParser`) compare attribute VALUES by reference — so each must
+    // return a STABLE instance within a theme (`ColorsNSIdentityTests`,
+    // CLAUDE.md #50). Routing through `nsThemed`'s per-theme cache gives exactly
+    // that, while ALSO returning a fresh instance after a same-scheme theme
+    // switch — so the prior `static let` staleness (pre-switch hex lingered until
+    // app relaunch) is gone: the `.id(activeTheme)` root rebuild re-pulls these
+    // and the AppKit text re-stamps the fresh color.
+
     /// Primary text as NSColor — for NSTextView, NSAttributedString.
-    /// Built via `nsAdaptive` (nonisolated) instead of `NSColor(_ color: Color)`
-    /// (which is `@MainActor` under default isolation and therefore unusable
-    /// in this `static let` evaluated at module load on a non-main thread).
-    nonisolated static let nsTextPrimary = nsAdaptive(dark: 0xFBF7F3, light: 0x221F1D)
-    /// Surface card as NSColor — for NSTextView backgrounds. Same `nsAdaptive`
-    /// rationale as `nsTextPrimary`.
-    nonisolated static let nsSurfaceCard = nsAdaptive(dark: 0x161616, light: 0xF8F8F8)
+    nonisolated static var nsTextPrimary: NSColor { nsThemed(\.textPrimary) }
+    /// Surface card as NSColor — for NSTextView backgrounds.
+    nonisolated static var nsSurfaceCard: NSColor { nsThemed(\.surfaceCard) }
     /// Secondary text as NSColor — for NSTextAttachment fallbacks etc.
-    /// Hex values mirror `Colors.textSecondary`.
-    nonisolated static let nsTextSecondary = nsAdaptive(dark: 0xC2B8B0, light: 0x746B65)
+    nonisolated static var nsTextSecondary: NSColor { nsThemed(\.textSecondary) }
 
     // MARK: - Picker Palette
 
@@ -226,83 +326,85 @@ private struct ColorPreviewSection: Identifiable {
 
 private extension Colors {
     // periphery:ignore - used in #Preview macros (color catalog)
-    static let previewSections: [ColorPreviewSection] = [
-        ColorPreviewSection(
-            title: "Status",
-            items: [
-                ColorPreviewItem(name: "success", color: success),
-                ColorPreviewItem(name: "warning", color: warning),
-                ColorPreviewItem(name: "error", color: error),
-                ColorPreviewItem(name: "info", color: info),
-                ColorPreviewItem(name: "neutral", color: neutral)
-            ]
-        ),
-        ColorPreviewSection(
-            title: "Extended Status",
-            items: [
-                ColorPreviewItem(name: "purple", color: purple),
-                ColorPreviewItem(name: "artifact", color: artifact),
-                ColorPreviewItem(name: "teal", color: teal),
-                ColorPreviewItem(name: "yellow", color: yellow),
-                ColorPreviewItem(name: "indigo", color: indigo),
-                ColorPreviewItem(name: "pink", color: pink),
-                ColorPreviewItem(name: "cyan", color: cyan),
-                ColorPreviewItem(name: "mint", color: mint),
-                ColorPreviewItem(name: "brown", color: brown),
-                ColorPreviewItem(name: "emerald", color: emerald),
-                ColorPreviewItem(name: "gold", color: gold),
-                ColorPreviewItem(name: "dim", color: dim)
-            ]
-        ),
-        ColorPreviewSection(
-            title: "Surfaces",
-            items: [
-                ColorPreviewItem(name: "surfaceBackground", color: surfaceBackground),
-                ColorPreviewItem(name: "surfacePrimary", color: surfacePrimary),
-                ColorPreviewItem(name: "surfaceCard", color: surfaceCard),
-                ColorPreviewItem(name: "surfaceElevated", color: surfaceElevated),
-                ColorPreviewItem(name: "surfaceElevatedSubtle", color: surfaceElevatedSubtle),
-                ColorPreviewItem(name: "surfaceHover", color: surfaceHover),
-                ColorPreviewItem(name: "surfaceOverlay", color: surfaceOverlay),
-                ColorPreviewItem(name: "surfaceFadeClear", color: surfaceFadeClear)
-            ]
-        ),
-        ColorPreviewSection(
-            title: "Borders",
-            items: [
-                ColorPreviewItem(name: "borderSubtle", color: borderSubtle),
-                ColorPreviewItem(name: "errorBorder", color: errorBorder),
-                ColorPreviewItem(name: "accentBorder", color: accentBorder)
-            ]
-        ),
-        ColorPreviewSection(
-            title: "Tints",
-            items: [
-                ColorPreviewItem(name: "successTint", color: successTint),
-                ColorPreviewItem(name: "warningTint", color: warningTint),
-                ColorPreviewItem(name: "errorTint", color: errorTint),
-                ColorPreviewItem(name: "infoTint", color: infoTint),
-                ColorPreviewItem(name: "purpleTint", color: purpleTint),
-                ColorPreviewItem(name: "artifactTint", color: artifactTint),
-                ColorPreviewItem(name: "cyanTint", color: cyanTint),
-                ColorPreviewItem(name: "yellowTint", color: yellowTint),
-                ColorPreviewItem(name: "neutralTint", color: neutralTint),
-                ColorPreviewItem(name: "dimTint", color: dimTint),
-                ColorPreviewItem(name: "emeraldTint", color: emeraldTint),
-                ColorPreviewItem(name: "accentTint", color: accentTint),
-                ColorPreviewItem(name: "accentTintStrong", color: accentTintStrong)
-            ]
-        ),
-        ColorPreviewSection(
-            title: "Text & Accent",
-            items: [
-                ColorPreviewItem(name: "accent", color: accent),
-                ColorPreviewItem(name: "textPrimary", color: textPrimary),
-                ColorPreviewItem(name: "textSecondary", color: textSecondary),
-                ColorPreviewItem(name: "textTertiary", color: textTertiary)
-            ]
-        )
-    ]
+    static var previewSections: [ColorPreviewSection] {
+        [
+            ColorPreviewSection(
+                title: "Status",
+                items: [
+                    ColorPreviewItem(name: "success", color: success),
+                    ColorPreviewItem(name: "warning", color: warning),
+                    ColorPreviewItem(name: "error", color: error),
+                    ColorPreviewItem(name: "info", color: info),
+                    ColorPreviewItem(name: "neutral", color: neutral)
+                ]
+            ),
+            ColorPreviewSection(
+                title: "Extended Status",
+                items: [
+                    ColorPreviewItem(name: "purple", color: purple),
+                    ColorPreviewItem(name: "artifact", color: artifact),
+                    ColorPreviewItem(name: "teal", color: teal),
+                    ColorPreviewItem(name: "yellow", color: yellow),
+                    ColorPreviewItem(name: "indigo", color: indigo),
+                    ColorPreviewItem(name: "pink", color: pink),
+                    ColorPreviewItem(name: "cyan", color: cyan),
+                    ColorPreviewItem(name: "mint", color: mint),
+                    ColorPreviewItem(name: "brown", color: brown),
+                    ColorPreviewItem(name: "emerald", color: emerald),
+                    ColorPreviewItem(name: "gold", color: gold),
+                    ColorPreviewItem(name: "dim", color: dim)
+                ]
+            ),
+            ColorPreviewSection(
+                title: "Surfaces",
+                items: [
+                    ColorPreviewItem(name: "surfaceBackground", color: surfaceBackground),
+                    ColorPreviewItem(name: "surfacePrimary", color: surfacePrimary),
+                    ColorPreviewItem(name: "surfaceCard", color: surfaceCard),
+                    ColorPreviewItem(name: "surfaceElevated", color: surfaceElevated),
+                    ColorPreviewItem(name: "surfaceElevatedSubtle", color: surfaceElevatedSubtle),
+                    ColorPreviewItem(name: "surfaceHover", color: surfaceHover),
+                    ColorPreviewItem(name: "surfaceOverlay", color: surfaceOverlay),
+                    ColorPreviewItem(name: "surfaceFadeClear", color: surfaceFadeClear)
+                ]
+            ),
+            ColorPreviewSection(
+                title: "Borders",
+                items: [
+                    ColorPreviewItem(name: "borderSubtle", color: borderSubtle),
+                    ColorPreviewItem(name: "errorBorder", color: errorBorder),
+                    ColorPreviewItem(name: "accentBorder", color: accentBorder)
+                ]
+            ),
+            ColorPreviewSection(
+                title: "Tints",
+                items: [
+                    ColorPreviewItem(name: "successTint", color: successTint),
+                    ColorPreviewItem(name: "warningTint", color: warningTint),
+                    ColorPreviewItem(name: "errorTint", color: errorTint),
+                    ColorPreviewItem(name: "infoTint", color: infoTint),
+                    ColorPreviewItem(name: "purpleTint", color: purpleTint),
+                    ColorPreviewItem(name: "artifactTint", color: artifactTint),
+                    ColorPreviewItem(name: "cyanTint", color: cyanTint),
+                    ColorPreviewItem(name: "yellowTint", color: yellowTint),
+                    ColorPreviewItem(name: "neutralTint", color: neutralTint),
+                    ColorPreviewItem(name: "dimTint", color: dimTint),
+                    ColorPreviewItem(name: "emeraldTint", color: emeraldTint),
+                    ColorPreviewItem(name: "accentTint", color: accentTint),
+                    ColorPreviewItem(name: "accentTintStrong", color: accentTintStrong)
+                ]
+            ),
+            ColorPreviewSection(
+                title: "Text & Accent",
+                items: [
+                    ColorPreviewItem(name: "accent", color: accent),
+                    ColorPreviewItem(name: "textPrimary", color: textPrimary),
+                    ColorPreviewItem(name: "textSecondary", color: textSecondary),
+                    ColorPreviewItem(name: "textTertiary", color: textTertiary)
+                ]
+            )
+        ]
+    }
 }
 
 // periphery:ignore - used in #Preview macros (color catalog)

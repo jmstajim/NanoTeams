@@ -15,36 +15,41 @@ struct RoleEditorGeneralTab: View {
     }
 
     var body: some View {
-        Form {
-            Section("Identity") {
-                HStack(spacing: Spacing.m) {
-                    IconPickerButton(
-                        selectedIcon: $editorState.roleIcon,
-                        iconForeground: resolvedIconForeground,
-                        iconBackground: resolvedIconBackground
-                    )
+        ScrollView {
+            VStack(spacing: Spacing.xl) {
+                SettingsCard(header: "Identity", systemImage: "person.text.rectangle") {
+                    VStack(alignment: .leading, spacing: Spacing.m) {
+                        HStack(spacing: Spacing.m) {
+                            IconPickerButton(
+                                selectedIcon: $editorState.roleIcon,
+                                iconForeground: resolvedIconForeground,
+                                iconBackground: resolvedIconBackground
+                            )
 
-                    TextField("Role Name", text: $editorState.roleName)
-                        .textFieldStyle(.roundedBorder)
-                        .controlSize(.large)
+                            TextField("Role Name", text: $editorState.roleName)
+                                .textFieldStyle(.plain)
+                                .terminalField()
+                        }
+
+                        ColorPaletteRow(selectedHex: $editorState.roleIconBackground, label: "Icon Color")
+                    }
                 }
 
-                ColorPaletteRow(selectedHex: $editorState.roleIconColor, label: "Icon Color")
-                ColorPaletteRow(selectedHex: $editorState.roleIconBackground, label: "Background")
-            }
-
-            if !isEditingSupervisor {
-                Section("Execution") {
-                    Toggle("Use Planning Phase", isOn: $editorState.usePlanningPhase)
-
-                    Text("When enabled, the LLM first creates a plan, then executes it. Recommended for complex roles.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                if !isEditingSupervisor {
+                    SettingsCard(
+                        header: "Execution",
+                        systemImage: "play.circle",
+                        footer: "When enabled, the LLM first creates a plan, then executes it. Recommended for complex roles."
+                    ) {
+                        Toggle("Use Planning Phase", isOn: $editorState.usePlanningPhase)
+                            .toggleStyle(.terminal)
+                    }
                 }
             }
+            .padding(Spacing.xl)
         }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Colors.surfacePrimary)
     }
 }
 
@@ -57,8 +62,8 @@ private struct ColorPaletteRow: View {
     var body: some View {
         HStack(spacing: Spacing.s) {
             Text(label)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .font(Typography.subheadline)
+                .foregroundStyle(Colors.textSecondary)
                 .frame(width: 80, alignment: .leading)
 
             ScrollView(.horizontal, showsIndicators: false) {
@@ -81,19 +86,19 @@ private struct ColorPaletteRow: View {
         return Button {
             selectedHex = item.hex
         } label: {
-            Circle()
+            RoundedRectangle.squircle(CornerRadius.small)
                 .fill(fillColor)
                 .frame(width: 20, height: 20)
                 .overlay {
                     if isWhite {
-                        Circle().strokeBorder(Colors.borderSubtle, lineWidth: 1)
+                        RoundedRectangle.squircle(CornerRadius.small).strokeBorder(Colors.borderSubtle, lineWidth: 1)
                     }
                 }
                 .overlay {
                     if isSelected {
                         Image(systemName: "checkmark")
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(isLight ? Color.black : Color.white)
+                            .font(Typography.term2xs.weight(.bold))
+                            .foregroundStyle(isLight ? Colors.textPrimary : Colors.textOnAccent)
                     }
                 }
         }

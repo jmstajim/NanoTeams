@@ -20,22 +20,22 @@ nonisolated enum ToolConstants {
 
     /// Ordered list of tool categories with display names and icons.
     static let displayCategories: [ToolCategoryDisplay] = [
-        ToolCategoryDisplay(id: "filesystem", name: "File System", icon: "folder.fill",
+        ToolCategoryDisplay(id: "filesystem", name: "File System", icon: "folder",
                             tools: [TN.readFile, TN.readLines, TN.writeFile, TN.editFile, TN.deleteFile, TN.listFiles, TN.search]),
         ToolCategoryDisplay(id: "git", name: "Git", icon: "arrow.triangle.branch",
                             tools: [TN.gitStatus, TN.gitAdd, TN.gitCommit, TN.gitPull, TN.gitBranchList,
                                     TN.gitCheckout, TN.gitMerge, TN.gitLog, TN.gitDiff, TN.gitStash, TN.gitBranch]),
-        ToolCategoryDisplay(id: "build", name: "Build", icon: "hammer.fill",
+        ToolCategoryDisplay(id: "build", name: "Build", icon: "hammer",
                             tools: [TN.runXcodebuild, TN.runXcodetests]),
         // conclude_meeting is auto-injected for the Meeting Coordinator (see `toolSchemas`)
         // and shown in the Auto-injected UI section — not manually selectable.
-        ToolCategoryDisplay(id: "collaboration", name: "Collaboration", icon: "bubble.left.and.bubble.right.fill",
+        ToolCategoryDisplay(id: "collaboration", name: "Collaboration", icon: "bubble.left.and.bubble.right",
                             tools: [TN.askTeammate, TN.requestTeamMeeting, TN.requestChanges]),
         ToolCategoryDisplay(id: "memory", name: "Memory", icon: "brain.head.profile",
                             tools: [TN.updateScratchpad]),
-        ToolCategoryDisplay(id: "supervisor", name: "Supervisor", icon: "crown.fill",
+        ToolCategoryDisplay(id: "supervisor", name: "Supervisor", icon: "crown",
                             tools: [TN.askSupervisor]),
-        ToolCategoryDisplay(id: "vision", name: "Vision", icon: "eye.fill",
+        ToolCategoryDisplay(id: "vision", name: "Vision", icon: "eye",
                             tools: [TN.analyzeImage]),
         // Delegation tools (delegate_to_team + 3 companions) are NEVER manually
         // selectable — they auto-inject when the role's delegation settings
@@ -63,11 +63,11 @@ nonisolated enum ToolConstants {
                                       tools: category.tools + [TN.concludeMeeting])
                 : category
         } + [
-            ToolCategoryDisplay(id: "artifacts", name: "Artifacts", icon: "doc.fill",
+            ToolCategoryDisplay(id: "artifacts", name: "Artifacts", icon: "doc",
                                 tools: [TN.createArtifact]),
-            ToolCategoryDisplay(id: "teamGeneration", name: "Team Generation", icon: "person.3.sequence.fill",
+            ToolCategoryDisplay(id: "teamGeneration", name: "Team Generation", icon: "person.3.sequence",
                                 tools: [TN.createTeam]),
-            ToolCategoryDisplay(id: "delegation", name: "Delegation", icon: "arrowshape.turn.up.right.fill",
+            ToolCategoryDisplay(id: "delegation", name: "Delegation", icon: "arrowshape.turn.up.right",
                                 tools: [TN.delegateToTeam, TN.cancelDelegation, TN.resumeDelegation, TN.forwardToTeam]),
             ToolCategoryDisplay(id: "autovisor", name: "Autovisor", icon: "folder.badge.person.crop",
                                 tools: [TN.listTasks, TN.taskStatus, TN.createManagedTask, TN.controlTask,

@@ -10,7 +10,12 @@ struct TeamSettingsLimitsSection: View {
     @State private var changeRequestsExpanded = false
 
     var body: some View {
-        Section {
+        SettingsCard(
+            header: "Limits",
+            systemImage: "gauge.with.dots.needle.bottom.50percent",
+            footer: "Limits prevent runaway collaboration costs. Adjust based on team complexity."
+        ) {
+            VStack(alignment: .leading, spacing: Spacing.m) {
             DisclosureGroup(isExpanded: $consultationExpanded) {
                 limitsRow("Consultations per step", subtitle: "How many times a role can ask teammates",
                           value: $limits.maxConsultationsPerStep, range: 1...20)
@@ -27,7 +32,7 @@ struct TeamSettingsLimitsSection: View {
                     withAnimation(reduceMotion ? .none : Animations.quick) { consultationExpanded.toggle() }
                 } label: {
                     Text("Consultation & Meetings")
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(Colors.textPrimary)
                 }
                 .buttonStyle(.plain)
             }
@@ -46,14 +51,11 @@ struct TeamSettingsLimitsSection: View {
                     withAnimation(reduceMotion ? .none : Animations.quick) { changeRequestsExpanded.toggle() }
                 } label: {
                     Text("Change Requests")
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(Colors.textPrimary)
                 }
                 .buttonStyle(.plain)
             }
-        } header: {
-            Text("Limits")
-        } footer: {
-            Text("Limits prevent runaway collaboration costs. Adjust based on team complexity.")
+            }
         }
     }
 
@@ -71,13 +73,12 @@ struct TeamSettingsLimitsSection: View {
                     } else {
                         Text("\(value.wrappedValue)").monospacedDigit()
                     }
-                    Stepper("", value: value, in: range)
-                        .labelsHidden()
+                    TerminalStepperButtons(value: value, range: range)
                 }
             }
             Text(subtitle)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(Typography.caption)
+                .foregroundStyle(Colors.textSecondary)
         }
     }
 }
@@ -85,12 +86,12 @@ struct TeamSettingsLimitsSection: View {
 #Preview("Team Limits") {
     @Previewable @State var limits = TeamLimits.default
 
-    Form {
-        TeamSettingsLimitsSection(limits: $limits)
+    ScrollView {
+        VStack {
+            TeamSettingsLimitsSection(limits: $limits)
+        }
+        .padding(Spacing.xl)
     }
-    .formStyle(.grouped)
-    .scrollContentBackground(.hidden)
     .frame(width: 480)
-    .fixedSize(horizontal: false, vertical: true)
     .background(Colors.surfacePrimary)
 }

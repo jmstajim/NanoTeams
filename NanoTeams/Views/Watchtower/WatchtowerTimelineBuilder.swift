@@ -14,7 +14,7 @@ nonisolated enum WatchtowerTimelineBuilder {
         for run in task.runs {
             for step in run.steps {
                 let roleDef = findRoleDefinition(for: step, in: roleDefinitions)
-                let startedID = TimelineEvent.stableID(stepID: step.id, eventType: .started)
+                let startedID = TimelineEvent.stableID(taskID: task.id, runID: run.id, stepID: step.id, eventType: .started)
 
                 events.append(TimelineEvent(
                     id: startedID,
@@ -30,7 +30,7 @@ nonisolated enum WatchtowerTimelineBuilder {
 
                 if step.status == .done {
                     events.append(TimelineEvent(
-                        id: TimelineEvent.stableID(stepID: step.id, eventType: .completed),
+                        id: TimelineEvent.stableID(taskID: task.id, runID: run.id, stepID: step.id, eventType: .completed),
                         taskID: task.id,
                         taskTitle: task.title,
                         role: step.role,
@@ -42,7 +42,7 @@ nonisolated enum WatchtowerTimelineBuilder {
                     ))
                 } else if step.status == .failed {
                     events.append(TimelineEvent(
-                        id: TimelineEvent.stableID(stepID: step.id, eventType: .failed),
+                        id: TimelineEvent.stableID(taskID: task.id, runID: run.id, stepID: step.id, eventType: .failed),
                         taskID: task.id,
                         taskTitle: task.title,
                         role: step.role,

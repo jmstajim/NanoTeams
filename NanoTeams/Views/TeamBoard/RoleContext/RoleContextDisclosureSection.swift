@@ -18,17 +18,17 @@ struct RoleContextDisclosureSection<Content: View>: View {
             } label: {
                 HStack(spacing: Spacing.xs) {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .font(Typography.term2xs)
+                        .foregroundStyle(Colors.textTertiary)
                     Image(systemName: icon)
-                        .font(.caption)
+                        .font(Typography.caption)
                         .foregroundStyle(color)
                     Text(title)
                         .font(Typography.caption.weight(.medium))
                     if let count {
                         Text("(\(count))")
                             .font(Typography.caption2)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Colors.textSecondary)
                     }
                     Spacer()
                 }

@@ -194,35 +194,26 @@ struct MessageBubbleView: View {
                         contentText
                             .padding(ActivityCardTokens.cardPadding)
                             .background(
-                                RoundedRectangle(
-                                    cornerRadius: ActivityCardTokens.cornerRadius,
-                                    style: .continuous
-                                )
-                                .fill(Colors.surfaceElevated)
+                                RoundedRectangle.squircle(ActivityCardTokens.cornerRadius)
+                                    .fill(Colors.surfaceElevated)
                             )
                     } else if message.sourceContext == .serverError {
                         // Transient retry-status note → red error bubble so a
                         // failing/reconnecting LLM call is unmistakable.
                         Text(content)
-                            .font(.callout)
+                            .font(Typography.termBase)
                             .foregroundStyle(Colors.error)
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(ActivityCardTokens.cardPadding)
                             .background(
-                                RoundedRectangle(
-                                    cornerRadius: ActivityCardTokens.cornerRadius,
-                                    style: .continuous
-                                )
-                                .fill(Colors.errorTint)
+                                RoundedRectangle.squircle(ActivityCardTokens.cornerRadius)
+                                    .fill(Colors.errorTint)
                             )
                             .overlay(
-                                RoundedRectangle(
-                                    cornerRadius: ActivityCardTokens.cornerRadius,
-                                    style: .continuous
-                                )
-                                .strokeBorder(Colors.errorBorder, lineWidth: 1)
+                                RoundedRectangle.squircle(ActivityCardTokens.cornerRadius)
+                                    .strokeBorder(Colors.errorBorder, lineWidth: 1)
                             )
                     } else {
                         contentText
@@ -478,7 +469,7 @@ extension MessageBubbleView: Equatable {
 @ViewBuilder
 private func messageBubblePreviewSectionLabel(_ text: String) -> some View {
     Text(text)
-        .font(.caption2.weight(.bold))
-        .foregroundStyle(.tertiary)
+        .font(Typography.caption2.weight(.bold))
+        .foregroundStyle(Colors.textTertiary)
         .padding(.leading, 4)
 }

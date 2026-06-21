@@ -12,11 +12,11 @@ nonisolated enum WatchtowerNotificationType {
 
     func icon(isChatMode: Bool) -> String {
         switch self {
-        case .supervisorInput: return isChatMode ? "bubble.left.and.bubble.right.fill" : "questionmark.bubble.fill"
-        case .acceptance: return "hand.raised.circle.fill"
-        case .failed: return "exclamationmark.triangle.fill"
-        case .taskDone: return "checkmark.circle.fill"
-        case .timedOut: return "clock.badge.exclamationmark.fill"
+        case .supervisorInput: return isChatMode ? "bubble.left.and.bubble.right" : "questionmark.bubble"
+        case .acceptance: return "hand.raised.circle"
+        case .failed: return "exclamationmark.triangle"
+        case .taskDone: return "checkmark.circle"
+        case .timedOut: return "clock.badge.exclamationmark"
         }
     }
 
@@ -45,10 +45,26 @@ nonisolated enum WatchtowerNotificationType {
         }
     }
 
+    /// Whether this notification surfaces an action *button* (answer / accept /
+    /// review). `.failed` / `.timedOut` are informational — no inline action — so
+    /// they're excluded here.
     var requiresAction: Bool {
         switch self {
         case .supervisorInput, .acceptance, .taskDone: return true
         case .failed, .timedOut: return false
+        }
+    }
+
+    /// Whether this notification counts toward the "{N} tasks need you" headline.
+    /// Distinct from `requiresAction`: it INCLUDES `.failed` / `.timedOut`,
+    /// because a failed or timed-out task is unresolved and must be counted —
+    /// otherwise the masthead reads "0 tasks need you" while a failure sits in
+    /// the inbox. Every current notification needs attention; the explicit
+    /// predicate keeps the headline honest if a purely-informational type is
+    /// added later.
+    var needsAttention: Bool {
+        switch self {
+        case .supervisorInput, .acceptance, .taskDone, .failed, .timedOut: return true
         }
     }
 
@@ -83,6 +99,13 @@ nonisolated struct WatchtowerNotification: Identifiable {
     let type: WatchtowerNotificationType
 
     var id: String { type.dismissID }
+
+    /// Count for the "{N} tasks need you" headline — notifications needing the
+    /// Supervisor's attention, INCLUDING failed / timed-out (see
+    /// `WatchtowerNotificationType.needsAttention`). Pure + testable.
+    static func needsYouCount(_ notifications: [WatchtowerNotification]) -> Int {
+        notifications.filter(\.type.needsAttention).count
+    }
 }
 
 // MARK: - Run + All Watchtower Notifications
@@ -147,83 +170,3 @@ extension Run {
     }
 }
 
-// MARK: - Quick Action
-
-struct QuickAction: Identifiable {
-    let id: String
-    let title: String
-    var subtitle: String?
-    let icon: String
-    let color: Color
-    let action: () -> Void
-
-    // MARK: - Factory
-
-    /// Builds the list of available Watchtower quick actions based on current state.
-    static func makeActions(
-        activeTask: NTMSTask?,
-        engineStatus: TeamEngineState?,
-        requiresFinalReview: Bool,
-        autovisorEnabled: Bool,
-        autovisorRunning: Bool,
-        hasWorkFolder: Bool,
-        onNewTask: @escaping () -> Void,
-        onToggleAutovisor: @escaping () -> Void,
-        onNavigateToTask: @escaping (Int) -> Void,
-        onPauseRun: @escaping (Int) -> Void,
-        onShowFinalReview: @escaping () -> Void,
-        onCloseTask: @escaping (Int) -> Void
-    ) -> [QuickAction] {
-        var actions: [QuickAction] = []
-
-        actions.append(QuickAction(id: "newTask", title: "New Task", subtitle: "or chat", icon: "plus.circle.fill", color: Colors.accent) {
-            onNewTask()
-        })
-
-        // Autovisor toggle — pinned as the second action whenever a real
-        // work folder is open (mirrors the big card's `hasRealWorkFolder` gate).
-        // Tapping flips the per-folder automated supervisor on/off; the subtitle
-        // reflects its live state. Off = muted icon, on = green, same semantics
-        // as `AutovisorPowerToggle`.
-        if hasWorkFolder {
-            let status = autovisorEnabled ? (autovisorRunning ? "Reviewing…" : "On") : "Off"
-            actions.append(QuickAction(
-                id: "autovisor",
-                title: "Autovisor",
-                subtitle: status,
-                icon: "power.circle.fill",
-                color: autovisorEnabled ? Colors.success : Colors.textSecondary
-            ) {
-                onToggleAutovisor()
-            })
-        }
-
-        guard let activeTask else { return actions }
-        let taskID = activeTask.id
-
-        actions.append(QuickAction(id: "continueTask", title: "Continue Task", subtitle: activeTask.title, icon: "arrow.right.circle.fill", color: Colors.info) {
-            onNavigateToTask(taskID)
-        })
-
-        if engineStatus == .running || engineStatus == .needsAcceptance {
-            actions.append(QuickAction(id: "pauseRun", title: "Pause Run", icon: "pause.circle.fill", color: Colors.warning) {
-                onPauseRun(taskID)
-            })
-        }
-
-        if activeTask.isReadyForFinalAcceptance {
-            actions.append(QuickAction(id: "reviewTask", title: "Review Task", subtitle: activeTask.title, icon: "eye.circle.fill", color: Colors.purple) {
-                if requiresFinalReview {
-                    onShowFinalReview()
-                } else {
-                    onNavigateToTask(taskID)
-                }
-            })
-            actions.append(QuickAction(id: "acceptTask", title: "Accept Task", icon: "checkmark.circle.fill", color: Colors.emerald) {
-                onCloseTask(taskID)
-            })
-        }
-
-        return actions
-    }
-}

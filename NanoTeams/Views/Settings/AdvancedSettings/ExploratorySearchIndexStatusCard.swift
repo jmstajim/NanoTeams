@@ -23,10 +23,20 @@ struct ExploratorySearchIndexStatusCard: View {
                     label: "Last built",
                     value: coordinator.lastBuiltAt.map { lastBuiltString(for: $0) } ?? "—"
                 )
-                statusRow(
-                    label: "Status",
-                    value: coordinator.isBuilding ? "Indexing…" : "Idle (auto-updating)"
-                )
+                HStack {
+                    Text("Status")
+                        .font(Typography.subheadline)
+                        .foregroundStyle(Colors.textSecondary)
+                    Spacer()
+                    StatusGlyph(
+                        glyph: coordinator.isBuilding ? TerminalGlyph.working : (coordinator.lastError != nil ? TerminalGlyph.failed : TerminalGlyph.idle),
+                        color: coordinator.isBuilding ? Colors.accent : (coordinator.lastError != nil ? Colors.error : Colors.neutral),
+                        animatesWork: coordinator.isBuilding
+                    )
+                    Text(coordinator.isBuilding ? "Indexing…" : "Idle (auto-updating)")
+                        .font(Typography.subheadlineMedium)
+                        .foregroundStyle(Colors.textPrimary)
+                }
                 if let err = coordinator.lastError {
                     Text(err)
                         .font(Typography.caption)

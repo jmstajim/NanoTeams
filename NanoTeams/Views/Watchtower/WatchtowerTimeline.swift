@@ -19,7 +19,7 @@ struct WatchtowerTimeline: View {
             filterHeader
                 .padding(Spacing.m)
 
-            Divider()
+            TerminalDivider()
 
             // Timeline content
             if filteredEvents.isEmpty {
@@ -51,20 +51,20 @@ struct WatchtowerTimeline: View {
             } label: {
                 HStack(spacing: Spacing.s) {
                     Image(systemName: "line.3.horizontal.decrease.circle")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Colors.textSecondary)
 
                     Text(filterLabel)
-                        .font(.subheadline)
-                        .foregroundStyle(.primary)
+                        .font(Typography.termBase)
+                        .foregroundStyle(Colors.textPrimary)
 
                     Image(systemName: "chevron.down")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+                        .font(Typography.caption)
+                        .foregroundStyle(Colors.textTertiary)
                 }
                 .padding(.horizontal, Spacing.m)
                 .padding(.vertical, Spacing.s)
                 .background(
-                    RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous)
+                    RoundedRectangle.squircle(CornerRadius.small)
                         .fill(Colors.surfaceCard)
                 )
             }
@@ -116,13 +116,13 @@ struct WatchtowerTimeline: View {
             HStack {
                 Spacer()
                 Text("Show more (\(filteredEvents.count - visibleCount) remaining)")
-                    .font(.subheadline)
+                    .font(Typography.termBase)
                     .foregroundStyle(Colors.accent)
                 Spacer()
             }
             .padding(Spacing.m)
             .background(
-                RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
+                RoundedRectangle.squircle(CornerRadius.medium)
                     .fill(Colors.accentTint)
             )
         }
@@ -136,12 +136,12 @@ struct WatchtowerTimeline: View {
             VStack(spacing: Spacing.m) {
                 Image(systemName: "clock")
                     .font(.largeTitle)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Colors.textTertiary)
                     .accessibilityHidden(true)
 
                 Text("No activity")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .font(Typography.termBase)
+                    .foregroundStyle(Colors.textSecondary)
             }
             Spacer()
         }
@@ -178,7 +178,7 @@ private struct ClearTimelineButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: "eye.slash")
-                .font(.caption)
+                .font(Typography.caption)
                 .foregroundStyle(isHovered ? .primary : .secondary)
         }
         .buttonStyle(.plain)

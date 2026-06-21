@@ -33,9 +33,10 @@ struct DictationMicButton: View {
 
     var body: some View {
         Button(action: handleTap) {
-            Image(systemName: isListeningHere ? "mic.circle.fill" : "mic.circle")
-                .font(.title2)
+            Image(systemName: "mic")
+                .font(Typography.termBase.weight(.medium))
                 .foregroundStyle(iconTint)
+                .frame(width: 28, height: 24)
                 .symbolEffect(.pulse, options: .repeating, isActive: isListeningHere)
                 .contentTransition(.symbolEffect(.replace))
         }

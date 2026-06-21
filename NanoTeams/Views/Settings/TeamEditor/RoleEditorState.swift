@@ -27,7 +27,7 @@ nonisolated enum RoleSection: String, CaseIterable, Identifiable {
 /// (`$editorState.roleName`, etc.) instead of 17 separate `@State` properties.
 nonisolated struct RoleEditorState {
     var roleName: String = ""
-    var roleIcon: String = "person.fill"
+    var roleIcon: String = "person"
     var rolePrompt: String = ""
     var selectedTools: Set<String> = []
     var usePlanningPhase: Bool = true

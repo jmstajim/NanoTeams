@@ -16,14 +16,14 @@ struct MessageBubbleHeader: View {
             roleNameText(roleName: roleName, teamSuffix: teamSuffix, tintColor: tintColor)
             if let sourceLabel {
                 Text("(\(sourceLabel))")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(Typography.term2xs)
+                    .foregroundStyle(Colors.textSecondary)
             }
             Spacer()
             if !isStreaming {
                 Text(timestamp.formatted(date: .omitted, time: .shortened))
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .font(Typography.term2xs)
+                    .foregroundStyle(Colors.textTertiary)
             }
         }
     }

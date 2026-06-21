@@ -35,7 +35,8 @@ struct MeetingMessageItemView: View {
                         messageTypeTag(message.messageType)
                         Spacer()
                         Text(message.createdAt.formatted(date: .omitted, time: .shortened))
-                            .font(.caption2).foregroundStyle(.tertiary)
+                            .font(Typography.term2xs)
+                            .foregroundStyle(Colors.textTertiary)
                     }
                 }
 
@@ -62,7 +63,7 @@ struct MeetingMessageItemView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(ActivityCardTokens.cardPadding)
             .background(
-                RoundedRectangle(cornerRadius: ActivityCardTokens.cornerRadius, style: .continuous)
+                RoundedRectangle.squircle(ActivityCardTokens.cornerRadius)
                     .fill(Colors.purpleTint)
             )
     }
@@ -79,8 +80,8 @@ struct MeetingMessageItemView: View {
         } label: {
             HStack(spacing: Spacing.xs) {
                 Text("Thinking")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.tertiary)
+                    .font(Typography.captionSemibold)
+                    .foregroundStyle(Colors.textTertiary)
                 Spacer()
             }
             .contentShape(Rectangle())
@@ -107,12 +108,13 @@ struct MeetingMessageItemView: View {
             ))
         } label: {
             HStack(spacing: Spacing.s) {
-                Image(systemName: summary.isError ? "xmark.circle.fill" : "checkmark.circle.fill")
-                    .font(.caption2)
-                    .foregroundStyle(summary.isError ? Colors.error : Colors.success)
-                    .frame(width: 14, height: 14)
+                StatusGlyph(
+                    glyph: summary.isError ? TerminalGlyph.failed : TerminalGlyph.done,
+                    color: summary.isError ? Colors.error : Colors.success
+                )
+                .frame(width: 14, height: 14)
                 Text(summary.toolName)
-                    .font(.caption.weight(.medium).monospaced())
+                    .font(Typography.termXs.weight(.medium))
                     .foregroundStyle(summary.isError ? Colors.error : Colors.success)
                 Spacer()
             }
@@ -130,10 +132,10 @@ struct MeetingMessageItemView: View {
         } label: {
             HStack(spacing: Spacing.s) {
                 Image(systemName: "wrench.and.screwdriver")
-                    .font(.caption)
+                    .font(Typography.caption)
                     .foregroundStyle(Colors.purple)
                 Text("\(summaries.count) tool calls")
-                    .font(.caption.weight(.medium).monospaced())
+                    .font(Typography.termXs.weight(.medium))
                     .foregroundStyle(Colors.purple)
                 Spacer()
             }
@@ -147,14 +149,16 @@ struct MeetingMessageItemView: View {
     @ViewBuilder
     private func messageTypeTag(_ type: TeamMessageType) -> some View {
         if type != .discussion {
-            Label(type.rawValue, systemImage: messageTypeIcon(type))
-                .font(.caption2)
-                .foregroundStyle(Colors.purple)
+            HStack(spacing: Spacing.xxs) {
+                Text(TerminalGlyph.meeting)
+                    .font(Typography.term2xs)
+                    .foregroundStyle(Colors.purple)
+                Text(type.rawValue.uppercased())
+                    .font(Typography.term2xs.weight(.medium))
+                    .tracking(Typography.labelTracking)
+                    .foregroundStyle(Colors.purple)
+            }
         }
-    }
-
-    private func messageTypeIcon(_ type: TeamMessageType) -> String {
-        type.icon
     }
 }
 

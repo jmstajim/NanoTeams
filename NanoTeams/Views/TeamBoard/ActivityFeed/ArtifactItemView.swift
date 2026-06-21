@@ -46,10 +46,10 @@ struct ArtifactItemView: View {
                 if showHeader {
                     HStack(spacing: 6) {
                         roleNameText(roleName: roleName, teamSuffix: roleTeamSuffix, tintColor: tintColor)
-                        Text("produced artifact").font(.caption).foregroundStyle(.secondary)
+                        Text("produced artifact").font(Typography.termXs).foregroundStyle(Colors.textSecondary)
                         Spacer()
                         Text(artifact.createdAt.formatted(date: .omitted, time: .shortened))
-                            .font(.caption2).foregroundStyle(.tertiary)
+                            .font(Typography.term2xs).foregroundStyle(Colors.textTertiary)
                     }
                 }
 
@@ -86,19 +86,21 @@ struct ArtifactItemView: View {
 
     private var artifactCard: some View {
         HStack(spacing: ActivityCardTokens.contentSpacing) {
-            Image(systemName: "doc.fill")
+            Image(systemName: "doc")
                 .foregroundStyle(Colors.artifact)
-                .font(.body)
+                .font(Typography.termBase)
             VStack(alignment: .leading, spacing: 2) {
-                Text(artifact.name).font(.subheadline.weight(.medium))
-                Text(artifact.mimeType).font(.caption2).foregroundStyle(.tertiary)
+                Text(artifact.name)
+                    .font(Typography.termSm.weight(.medium))
+                    .foregroundStyle(Colors.textPrimary)
+                Text(artifact.mimeType).font(Typography.term2xs).foregroundStyle(Colors.textTertiary)
             }
             Spacer()
         }
         .padding(.vertical, Spacing.xs)
         .padding(.leading, Spacing.s)
         .overlay(alignment: .leading) {
-            RoundedRectangle(cornerRadius: CornerRadius.accent, style: .continuous)
+            RoundedRectangle.squircle(CornerRadius.accent)
                 .fill(Colors.artifact)
                 .frame(width: 2)
                 .padding(.vertical, 4)
@@ -153,7 +155,7 @@ extension ArtifactItemView: Equatable {
 #Preview("Variants") {
     VStack(spacing: 16) {
         ArtifactItemView(
-            artifact: Artifact(name: "Product Requirements", icon: "doc.text.fill", description: "PRD for the feature"),
+            artifact: Artifact(name: "Product Requirements", icon: "doc.text", description: "PRD for the feature"),
             role: .productManager,
             roleDefinition: nil,
             showHeader: true,

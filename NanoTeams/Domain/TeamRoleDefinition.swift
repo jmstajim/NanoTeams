@@ -16,7 +16,7 @@ nonisolated struct TeamRoleDefinition: Codable, Identifiable {
     /// Display name of the role (e.g., "Backend Engineer", "Founder")
     var name: String
 
-    /// SF Symbol name for the role icon (e.g., "hammer.fill", "crown.fill")
+    /// SF Symbol name for the role icon (e.g., "hammer", "crown")
     var icon: String
 
     /// System prompt for the LLM when executing this role
@@ -77,7 +77,7 @@ nonisolated struct TeamRoleDefinition: Codable, Identifiable {
     init(
         id: String,
         name: String,
-        icon: String = "person.fill",
+        icon: String = "person",
         prompt: String,
         toolIDs: [String],
         usePlanningPhase: Bool,
@@ -139,7 +139,7 @@ nonisolated struct TeamRoleDefinition: Codable, Identifiable {
         let systemRoleIDForIcon = try container.decodeIfPresent(String.self, forKey: .systemRoleID)
         self.icon =
             try container.decodeIfPresent(String.self, forKey: .icon)
-            ?? SystemTemplates.roles[systemRoleIDForIcon ?? ""]?.icon ?? "person.fill"
+            ?? SystemTemplates.roles[systemRoleIDForIcon ?? ""]?.icon ?? "person"
         self.prompt = try container.decode(String.self, forKey: .prompt)
         self.toolIDs = try container.decodeIfPresent([String].self, forKey: .toolIDs) ?? []
         self.usePlanningPhase =

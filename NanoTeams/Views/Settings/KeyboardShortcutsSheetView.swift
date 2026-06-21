@@ -12,15 +12,16 @@ struct KeyboardShortcutsSheetView: View {
             if !embedInSettings {
                 HStack {
                     Text("Keyboard Shortcuts")
-                        .font(.title3.weight(.semibold))
+                        .font(Typography.termLg)
+                        .foregroundStyle(Colors.textPrimary)
                     Spacer()
                     Button("Done") { dismiss() }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.terminalSecondary)
                         .controlSize(.small)
                 }
                 .padding()
                 .background(Colors.surfaceCard)
-                .overlay(alignment: .bottom) { Divider() }
+                .overlay(alignment: .bottom) { TerminalDivider() }
             }
             
             if embedInSettings {
@@ -69,17 +70,15 @@ struct KeyboardShortcutsSheetView: View {
             ])
 
             Text("When \"Enter sends message\" is enabled in Settings, Enter sends and Shift+Return or Cmd+Return inserts a new line.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
+                .font(Typography.caption)
+                .foregroundStyle(Colors.textTertiary)
         }
     }
     
     private func shortcutSection(title: String, shortcuts: [(String, String)]) -> some View {
         VStack(alignment: .leading, spacing: Spacing.m) {
-            Text(title)
-                .font(.headline)
-                .foregroundStyle(.secondary)
-            
+            MonoLabel(text: title, rule: true)
+
             VStack(spacing: 0) {
                 ForEach(shortcuts, id: \.0) { (label, key) in
                     HStack {
@@ -91,12 +90,12 @@ struct KeyboardShortcutsSheetView: View {
                     .padding(.horizontal, Spacing.m)
                     
                     if label != shortcuts.last?.0 {
-                        Divider()
+                        TerminalDivider()
                     }
                 }
             }
             .background(
-                RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
+                RoundedRectangle.squircle(CornerRadius.medium)
                     .fill(Colors.surfaceCard)
             )
         }
@@ -138,17 +137,17 @@ struct KeyboardKeyView: View {
     
     var body: some View {
         Text(key)
-            .font(.callout.monospaced())
-            .foregroundStyle(.secondary)
+            .font(Typography.termBase)
+            .foregroundStyle(Colors.textSecondary)
             .padding(.horizontal, Spacing.s)
             .padding(.vertical, Spacing.xs)
             .background(
-                RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous)
+                RoundedRectangle.squircle(CornerRadius.small)
                     .fill(Colors.surfacePrimary)
                     .shadow(.key)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous)
+                RoundedRectangle.squircle(CornerRadius.small)
                     .strokeBorder(Colors.borderSubtle, lineWidth: 1)
             )
     }

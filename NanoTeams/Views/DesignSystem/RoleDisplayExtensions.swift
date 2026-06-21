@@ -101,12 +101,12 @@ func displayRoleLabel(roleName: String, teamName: String?, isChildTeam: Bool) ->
 @inline(__always)
 func roleNameText(roleName: String, teamSuffix: String?, tintColor: Color) -> Text {
     let base = Text(roleName)
-        .font(.caption.weight(.semibold))
+        .font(Typography.captionSemibold)
         .foregroundStyle(tintColor)
     guard let teamSuffix, !teamSuffix.isEmpty else { return base }
     return base + Text(" from \(teamSuffix)")
-        .font(.caption.weight(.regular))
-        .foregroundStyle(.secondary)
+        .font(Typography.caption.weight(.regular))
+        .foregroundStyle(Colors.textSecondary)
 }
 
 // MARK: - RoleCompletionType Display Extensions

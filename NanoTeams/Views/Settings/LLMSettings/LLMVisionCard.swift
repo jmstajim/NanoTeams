@@ -75,6 +75,7 @@ struct LLMVisionCard: View {
                 Text("Enable Vision Model")
                     .font(Typography.subheadline)
             }
+            .toggleStyle(.terminal)
 
             if config.visionEnabled {
                 LLMEndpointEditor(

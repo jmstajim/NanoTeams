@@ -12,7 +12,7 @@ struct RoleArtifactBadges: View {
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(
-                        Capsule(style: .continuous)
+                        RoundedRectangle.squircle(CornerRadius.small)
                             .fill(Colors.artifactTint)
                     )
                     .foregroundStyle(Colors.artifact)

@@ -65,7 +65,9 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
     /// Highest priority: prompt processing in progress. Even if the
     /// activity flag is also set (defensive — the streaming service
     /// clears progress on first delta, but a stale ordering shouldn't
-    /// reverse the meaning), Processing wins.
+    /// reverse the meaning), Processing wins. % is embedded by the
+    /// resolver — view-side suffixing was removed when the format was
+    /// unified with `Generating…`/`Waiting…`.
     func testProcessingProgress_winsOverActivity() {
         let result = MessageBubbleStreamingIndicator.resolveStatusText(
             isStreaming: true,
@@ -75,7 +77,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             processingProgress: 0.42,
             hasStreamActivity: true
         )
-        XCTAssertEqual(result, "Processing")
+        XCTAssertEqual(result, "Processing 42%")
     }
 
     func testProcessingProgress_alone_returnsProcessing() {
@@ -87,14 +89,16 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             processingProgress: 0.99,
             hasStreamActivity: false
         )
-        XCTAssertEqual(result, "Processing")
+        XCTAssertEqual(result, "Processing 99%")
     }
 
-    /// Activity flag without progress → "Generating". This is the
+    /// Activity flag without progress → "Generating…". This is the
     /// user-reported scenario: tokens flowing into harmony tool-call
     /// buffer, invisible to content/thinking previews. Pre-fix this
-    /// rendered as "Waiting" — confusing because the model panel showed
-    /// token count climbing.
+    /// rendered as "Waiting…" — confusing because the model panel showed
+    /// token count climbing. Trailing `…` carries the "live" signal
+    /// since there's no numeric counter to tick (mirrors
+    /// `MessageThinkingSection`'s `Thinking…`).
     func testActivity_withoutProgress_returnsGenerating() {
         let result = MessageBubbleStreamingIndicator.resolveStatusText(
             isStreaming: true,
@@ -104,11 +108,12 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             processingProgress: nil,
             hasStreamActivity: true
         )
-        XCTAssertEqual(result, "Generating")
+        XCTAssertEqual(result, "Generating…")
     }
 
     /// Lowest priority — fall-through when truly nothing has happened.
-    /// Original "Waiting" semantics: connection open, no events received.
+    /// Original "Waiting…" semantics: connection open, no events received.
+    /// Trailing `…` matches `Generating…` / `Thinking…` for "in progress".
     func testNoActivity_noProgress_noContent_returnsWaiting() {
         let result = MessageBubbleStreamingIndicator.resolveStatusText(
             isStreaming: true,
@@ -118,12 +123,12 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             processingProgress: nil,
             hasStreamActivity: false
         )
-        XCTAssertEqual(result, "Waiting")
+        XCTAssertEqual(result, "Waiting…")
     }
 
     // MARK: - Edge cases
 
-    /// progress=0.0 must still render "Processing" — that's prompt
+    /// progress=0.0 must still render "Processing 0%" — that's prompt
     /// processing just starting. The bridge case is non-trivial because
     /// `Optional<Double>` of `0.0` is "set" not "unset"; we shouldn't
     /// treat 0.0 as "no progress yet".
@@ -136,7 +141,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             processingProgress: 0.0,
             hasStreamActivity: false
         )
-        XCTAssertEqual(result, "Processing",
+        XCTAssertEqual(result, "Processing 0%",
                        "progress=0.0 is 'started, 0% done' — must render Processing, not fall through to Waiting")
     }
 
@@ -153,7 +158,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             processingProgress: 1.0,
             hasStreamActivity: false
         )
-        XCTAssertEqual(result, "Processing")
+        XCTAssertEqual(result, "Processing 100%")
     }
 
     /// Both content AND thinking visible — thinking wins (returns nil
@@ -184,7 +189,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
     // still empty.
 
     /// Fallback regression: visible (frozen) prose + tool call assembling
-    /// + nothing in the thinking preview yet → must show "Generating",
+    /// + nothing in the thinking preview yet → must show "Generating…",
     /// not nil.
     func testStreamingToolCall_withVisibleContent_returnsGenerating() {
         let result = MessageBubbleStreamingIndicator.resolveStatusText(
@@ -196,7 +201,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             hasStreamActivity: true,
             isStreamingToolCall: true
         )
-        XCTAssertEqual(result, "Generating",
+        XCTAssertEqual(result, "Generating…",
                        "Pre-marker prose is frozen once the tool-call envelope starts — it is no longer 'the indicator'. With an empty thinking preview the status row must surface Generating.")
     }
 
@@ -235,7 +240,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
     /// Defensive priority pin: if a stale `processingProgress` coexists
     /// with the tool-call flag (shouldn't happen — progress clears on the
     /// first delta, and the marker arrives via content deltas), the flag
-    /// wins: tokens ARE flowing, "Processing" would be a lie.
+    /// wins: tokens ARE flowing, "Processing N%" would be a lie.
     func testStreamingToolCall_winsOverProcessingProgress() {
         let result = MessageBubbleStreamingIndicator.resolveStatusText(
             isStreaming: true,
@@ -246,7 +251,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             hasStreamActivity: true,
             isStreamingToolCall: true
         )
-        XCTAssertEqual(result, "Generating")
+        XCTAssertEqual(result, "Generating…")
     }
 
     /// Worst-case pile-up: thinking visible + stale progress + activity +
@@ -318,8 +323,8 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             processingProgress: nil,
             hasStreamActivity: true
         )
-        XCTAssertEqual(result, "Generating",
-                       "Latest committed bubble in a still-running step must surface 'Generating' while tool-call deltas are flowing — even though content is present, that content is frozen and the activity belongs to the next emission")
+        XCTAssertEqual(result, "Generating…",
+                       "Latest committed bubble in a still-running step must surface 'Generating…' while tool-call deltas are flowing — even though content is present, that content is frozen and the activity belongs to the next emission")
     }
 
     func testImplicitTarget_withProcessingProgress_returnsProcessing() {
@@ -331,8 +336,8 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             processingProgress: 0.42,
             hasStreamActivity: false
         )
-        XCTAssertEqual(result, "Processing",
-                       "Tool-result → next-LLM-iteration prompt-processing window: implicit target shows 'Processing' even with committed content")
+        XCTAssertEqual(result, "Processing 42%",
+                       "Tool-result → next-LLM-iteration prompt-processing window: implicit target shows 'Processing N%' even with committed content")
     }
 
     /// Mirrors the streaming-branch `testProcessingProgress_zero_returnsProcessing`
@@ -348,7 +353,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             processingProgress: 0.0,
             hasStreamActivity: false
         )
-        XCTAssertEqual(result, "Processing")
+        XCTAssertEqual(result, "Processing 0%")
     }
 
     func testImplicitTarget_processingWinsOverActivity() {
@@ -360,7 +365,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             processingProgress: 0.5,
             hasStreamActivity: true
         )
-        XCTAssertEqual(result, "Processing",
+        XCTAssertEqual(result, "Processing 50%",
                        "Same priority order as the streaming branch: Processing > Generating")
     }
 

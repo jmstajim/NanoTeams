@@ -145,9 +145,10 @@ struct MessageComposer<SettingsMenu: View>: View {
                 Button {
                     presentOpenPanel()
                 } label: {
-                    Image(systemName: "plus.circle")
-                        .font(.title2)
+                    Image(systemName: "plus")
+                        .font(Typography.termBase.weight(.medium))
                         .foregroundStyle(Colors.accent)
+                        .frame(width: 28, height: 24)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Attach files")
@@ -157,11 +158,25 @@ struct MessageComposer<SettingsMenu: View>: View {
                 if hasAttachments {
                     let count = attachments.count + clipTexts.count
                     Text("\(count) item\(count == 1 ? "" : "s")")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(Typography.caption)
+                        .foregroundStyle(Colors.textSecondary)
                 }
 
                 Spacer()
+
+                // `⌘⏎` (or `⏎`) keyhint chip — terminal-idiom shortcut nudge
+                // pulled from `QuickCapture.jsx` (`marginLeft: auto` keyhint
+                // span before the dictate button). Visible only when there's
+                // something submittable so it doesn't compete with the empty
+                // resting state. Tracks `enterSendsMessage` so the glyph stays
+                // in lockstep with the active key binding.
+                if canSubmit && !isSubmitting {
+                    Text(config.enterSendsMessage ? "⏎" : "⌘⏎")
+                        .font(Typography.term2xs)
+                        .foregroundStyle(Colors.textQuaternary)
+                        .padding(.trailing, Spacing.xs)
+                        .accessibilityHidden(true)
+                }
 
                 DictationMicButton(text: $text)
 
@@ -199,12 +214,12 @@ struct MessageComposer<SettingsMenu: View>: View {
                     Image(systemName: "arrow.down.doc")
                     Text("Drop to attach")
                 }
-                .font(.subheadline.weight(.medium))
+                .font(Typography.subheadlineMedium)
                 .foregroundStyle(Colors.accent)
                 .padding(.horizontal, Spacing.m)
                 .padding(.vertical, Spacing.xs)
                 .background(
-                    Capsule(style: .continuous)
+                    RoundedRectangle.squircle(CornerRadius.small)
                         .fill(Colors.surfaceElevated)
                 )
                 .allowsHitTesting(false)
@@ -304,12 +319,12 @@ struct MessageComposer<SettingsMenu: View>: View {
             ZStack(alignment: .topTrailing) {
                 Text(displayText)
                     .font(.system(size: 6, weight: .ultraLight))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Colors.textSecondary)
                     .lineLimit(5)
                     .lineSpacing(0)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .padding(4)
+                    .padding(Spacing.xs)
                     .frame(width: 40, height: 40)
                     .background(Colors.surfacePrimary)
                     .overlay {
@@ -331,8 +346,8 @@ struct MessageComposer<SettingsMenu: View>: View {
             }
 
             Text(label)
-                .font(.caption2)
-                .foregroundStyle(parsed != nil ? .primary : .secondary)
+                .font(Typography.caption2)
+                .foregroundStyle(parsed != nil ? Colors.textPrimary : Colors.textSecondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(width: 52)
@@ -367,8 +382,8 @@ struct MessageComposer<SettingsMenu: View>: View {
                                 Image(systemName: "eye.trianglebadge.exclamationmark")
                                     .font(.system(size: 10))
                                     .foregroundStyle(Colors.warning)
-                                    .padding(2)
-                                    .background(Circle().fill(Colors.surfaceCard))
+                                    .padding(Spacing.xxs)
+                                    .background(RoundedRectangle.squircle(CornerRadius.micro).fill(Colors.surfaceCard))
                             }
                             .buttonStyle(.plain)
                             .help("Vision not configured — click to set up")
@@ -384,8 +399,8 @@ struct MessageComposer<SettingsMenu: View>: View {
             }
 
             Text(attachment.fileName)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .font(Typography.caption2)
+                .foregroundStyle(Colors.textTertiary)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(width: 52)
@@ -402,41 +417,29 @@ struct MessageComposer<SettingsMenu: View>: View {
     }
 
     private func stageURLs(_ urls: [URL]) {
-        var rejectedNames: [String] = []
-        for url in urls {
-            // Directories can't be staged — reject explicitly so the drop doesn't
-            // look successful while producing nothing in the attachment grid.
-            if url.hasDirectoryPath {
-                rejectedNames.append(url.lastPathComponent)
-                continue
+        // Directory rejection / dedup / rejection-collection is pure (MessageComposerFileStaging);
+        // only the security-scoped access + the actual stage call are the view's side effect,
+        // injected via the `stage` closure. `onStageAttachment` already set `lastErrorMessage`
+        // on the store for any specific failure; we aggregate one banner for the batch.
+        let result = MessageComposerFileStaging.validateAndStage(
+            urls: urls,
+            existing: attachments,
+            stage: { url in
+                let didAccess = url.startAccessingSecurityScopedResource()
+                defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
+                return onStageAttachment(url)
             }
-            let didAccess = url.startAccessingSecurityScopedResource()
-            defer {
-                if didAccess { url.stopAccessingSecurityScopedResource() }
-            }
-            guard let attachment = onStageAttachment(url) else {
-                // `onStageAttachment` already set `lastErrorMessage` on the store for
-                // the specific failure; collect the filename so we can aggregate a
-                // single banner covering the whole batch.
-                rejectedNames.append(url.lastPathComponent)
-                continue
-            }
-            if !attachments.contains(attachment) {
-                attachments.append(attachment)
-            }
-        }
-        if !rejectedNames.isEmpty {
-            appendImportError("Could not attach: \(rejectedNames.joined(separator: ", "))")
+        )
+        attachments.append(contentsOf: result.staged)
+        if !result.rejected.isEmpty {
+            appendImportError("Could not attach: \(result.rejected.joined(separator: ", "))")
         }
     }
 
     // Aggregates so a second failure doesn't silently overwrite the first.
     private func appendImportError(_ message: String) {
-        if let existing = importErrorMessage, !existing.isEmpty {
-            importErrorMessage = existing + "\n" + message
-        } else {
-            importErrorMessage = message
-        }
+        importErrorMessage = MessageComposerFileStaging.aggregateErrorMessage(
+            existing: importErrorMessage, new: message)
     }
 
     // MARK: - Paste Monitor
@@ -513,15 +516,16 @@ struct EmbedFilesSettingsButton<Extra: View>: View {
             isShowing.toggle()
         } label: {
             Image(systemName: "gearshape")
-                .font(.subheadline)
+                .font(Typography.termBase)
                 .foregroundStyle(Colors.textTertiary)
+                .frame(width: 28, height: 24)
         }
         .buttonStyle(.plain)
         .popover(isPresented: $isShowing) {
             VStack(alignment: .leading, spacing: Spacing.s) {
                 extraContent
                 Toggle("Embed files in prompt", isOn: $config.embedFilesInPrompt)
-                    .toggleStyle(.checkbox)
+                    .toggleStyle(.terminal)
             }
             .padding(Spacing.m)
         }

@@ -24,8 +24,8 @@ nonisolated enum ActivityNotificationType: Hashable {
 
     func icon(isChatMode: Bool) -> String {
         switch self {
-        case .supervisorInput: return isChatMode ? "bubble.left.and.bubble.right.fill" : "questionmark.bubble.fill"
-        case .failed: return "exclamationmark.triangle.fill"
+        case .supervisorInput: return isChatMode ? "bubble.left.and.bubble.right" : "questionmark.bubble"
+        case .failed: return "exclamationmark.triangle"
         }
     }
 

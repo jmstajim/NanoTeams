@@ -22,12 +22,11 @@ struct MessageThinkingSection: View {
         } label: {
             HStack(spacing: Spacing.xs) {
                 if isStreaming {
-                    NTMSLoader(.mini)
-                        .frame(width: 14, height: 12)
+                    NTMSLoader(font: Typography.termXs, color: Colors.accent)
                 }
-                Text(isStreaming ? "Thinking..." : "Thinking")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.tertiary)
+                Text(isStreaming ? "Thinking…" : "Thinking")
+                    .font(Typography.termXs.weight(.medium))
+                    .foregroundStyle(Colors.textTertiary)
                 Spacer()
             }
             .contentShape(Rectangle())

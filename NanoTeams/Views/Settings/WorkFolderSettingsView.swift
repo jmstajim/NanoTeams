@@ -95,7 +95,7 @@ struct WorkFolderSettingsView: View {
         VStack(alignment: .leading, spacing: Spacing.m) {
             if let folder = store.workFolderURL {
                 SettingsItemHeader(
-                    icon: "folder.fill",
+                    icon: "folder",
                     title: folder.lastPathComponent,
                     subtitle: folder.path
                 )
@@ -122,9 +122,7 @@ struct WorkFolderSettingsView: View {
 
                 if !recentProjects.isEmpty {
                     VStack(alignment: .leading, spacing: Spacing.xs) {
-                        Text("Recent")
-                            .font(Typography.captionSemibold)
-                            .foregroundStyle(Colors.textTertiary)
+                        MonoLabel(text: "Recent")
 
                         ForEach(Array(recentProjects.prefix(5)), id: \.self) { url in
                             Button {
@@ -136,12 +134,12 @@ struct WorkFolderSettingsView: View {
                                 }
                             } label: {
                                 HStack(spacing: Spacing.s) {
-                                    Image(systemName: "folder.fill")
+                                    Image(systemName: "folder")
                                         .font(Typography.caption)
-                                        .foregroundStyle(.tertiary)
+                                        .foregroundStyle(Colors.textTertiary)
                                     Text(url.lastPathComponent)
                                         .font(Typography.caption)
-                                        .foregroundStyle(url == store.workFolderURL ? Colors.textTertiary : .secondary)
+                                        .foregroundStyle(url == store.workFolderURL ? Colors.textTertiary : Colors.textSecondary)
                                 }
                             }
                             .buttonStyle(.plain)
@@ -162,16 +160,19 @@ struct WorkFolderSettingsView: View {
             systemImage: "doc.text",
             footer: "This context is sent to all AI roles. Use Generate to build it from your files, or write your own."
         ) {
-            TextEditor(text: $contextDraft)
-                .font(.system(.body, design: .monospaced))
-                .scrollContentBackground(.hidden)
-                .frame(minHeight: 150)
-                .padding(Spacing.s)
-                .background(
-                    RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous)
-                        .fill(Colors.surfaceElevated)
-                )
-                .onChange(of: contextDraft) { _, newValue in
+            HStack(alignment: .top, spacing: Spacing.xs) {
+                PromptMarker()
+                TextEditor(text: $contextDraft)
+                    .font(Typography.termBase)
+                    .scrollContentBackground(.hidden)
+                    .frame(minHeight: 150)
+            }
+            .padding(Spacing.s)
+            .background(
+                RoundedRectangle.squircle(CornerRadius.small)
+                    .fill(Colors.surfaceElevated)
+            )
+            .onChange(of: contextDraft) { _, newValue in
                     saveTask?.cancel()
                     saveTask = Task {
                         try? await Task.sleep(for: .milliseconds(500))
@@ -206,7 +207,7 @@ struct WorkFolderSettingsView: View {
                     .foregroundStyle(isGenerating ? Colors.textSecondary : Colors.surfaceBackground)
                     .padding(.horizontal, Spacing.m)
                     .padding(.vertical, Spacing.xs)
-                    .background(Capsule(style: .continuous).fill(isGenerating ? Colors.surfaceElevated : Colors.accent))
+                    .background(RoundedRectangle.squircle(CornerRadius.small).fill(isGenerating ? Colors.surfaceElevated : Colors.accent))
                 }
                 .buttonStyle(.plain)
 
@@ -218,11 +219,11 @@ struct WorkFolderSettingsView: View {
                         Text("Prompt")
                     }
                     .font(Typography.captionSemibold)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Colors.textSecondary)
                     .padding(.horizontal, Spacing.m)
                     .padding(.vertical, Spacing.xs)
                     .background(
-                        Capsule(style: .continuous)
+                        RoundedRectangle.squircle(CornerRadius.small)
                             .fill(Colors.surfaceElevated)
                     )
                 }
@@ -262,7 +263,7 @@ struct WorkFolderSettingsView: View {
 
     private var dangerCard: some View {
         VStack(alignment: .leading, spacing: Spacing.s) {
-            NTMSSectionHeader(title: "Danger Zone", systemImage: "exclamationmark.triangle")
+            MonoLabel(text: "Danger Zone", rule: true)
 
             VStack(alignment: .leading, spacing: Spacing.m) {
                 Button {
@@ -277,7 +278,7 @@ struct WorkFolderSettingsView: View {
                     .padding(.horizontal, Spacing.m)
                     .padding(.vertical, Spacing.xs)
                     .background(
-                        Capsule(style: .continuous)
+                        RoundedRectangle.squircle(CornerRadius.small)
                             .fill(Colors.errorTint)
                     )
                 }
@@ -290,7 +291,7 @@ struct WorkFolderSettingsView: View {
             .padding(Spacing.standard)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
+                RoundedRectangle.squircle(CornerRadius.medium)
                     .fill(Colors.errorTint)
             )
         }
@@ -312,23 +313,25 @@ struct WorkFolderSettingsView: View {
 
     private var promptPopoverContent: some View {
         VStack(alignment: .leading, spacing: Spacing.s) {
-            Text("Generation Prompt")
-                .font(Typography.subheadlineSemibold)
+            MonoLabel(text: "Generation Prompt", marker: true)
 
             Text("Controls what the AI focuses on when analyzing the folder.")
                 .font(Typography.caption)
                 .foregroundStyle(Colors.textSecondary)
 
-            TextEditor(text: $promptDraft)
-                .font(.system(.callout, design: .monospaced))
-                .scrollContentBackground(.hidden)
-                .frame(minHeight: 160)
-                .padding(Spacing.s)
-                .background(
-                    RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous)
-                        .fill(Colors.surfaceElevated)
-                )
-                .onChange(of: promptDraft) { _, newValue in
+            HStack(alignment: .top, spacing: Spacing.xs) {
+                PromptMarker()
+                TextEditor(text: $promptDraft)
+                    .font(Typography.termBase)
+                    .scrollContentBackground(.hidden)
+                    .frame(minHeight: 160)
+            }
+            .padding(Spacing.s)
+            .background(
+                RoundedRectangle.squircle(CornerRadius.small)
+                    .fill(Colors.surfaceElevated)
+            )
+            .onChange(of: promptDraft) { _, newValue in
                     promptSaveTask?.cancel()
                     promptSaveTask = Task {
                         try? await Task.sleep(for: .milliseconds(500))
@@ -382,26 +385,24 @@ struct SchemeSection: View {
     var body: some View {
         if availableSchemes.isEmpty {
             HStack(spacing: Spacing.s) {
-                Image(systemName: "exclamationmark.triangle")
-                    .foregroundStyle(Colors.warning)
+                StatusGlyph(glyph: TerminalGlyph.review, color: Colors.warning)
                 Text("No Xcode schemes found")
                     .font(Typography.subheadline)
                     .foregroundStyle(Colors.textSecondary)
             }
         } else {
-            Picker(
-                "Scheme",
-                selection: Binding(
-                    get: { selectedScheme ?? "" },
-                    set: { selectedScheme = $0.isEmpty ? nil : $0 }
+            HStack {
+                Text("Scheme")
+                    .font(Typography.subheadline)
+                Spacer()
+                TerminalPicker(
+                    selection: Binding(
+                        get: { selectedScheme ?? "" },
+                        set: { selectedScheme = $0.isEmpty ? nil : $0 }
+                    ),
+                    options: [("", "Select a scheme")] + availableSchemes.map { ($0, $0) }
                 )
-            ) {
-                Text("Select a scheme").tag("")
-                ForEach(availableSchemes, id: \.self) { scheme in
-                    Text(scheme).tag(scheme)
-                }
             }
-            .pickerStyle(.menu)
         }
     }
 }

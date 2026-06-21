@@ -55,13 +55,17 @@ struct RoleNodeRuntimeView: View {
     var body: some View {
         Button(action: onSelect) {
             VStack(spacing: 4) {
-                // Role icon in subtle container
+                // Role icon (SF Symbol) in a sharp terminal chip
                 ZStack {
-                    Circle()
+                    RoundedRectangle.squircle(CornerRadius.small)
                         .fill(Colors.surfaceElevated)
                         .frame(width: 32, height: 32)
+                        .overlay(
+                            RoundedRectangle.squircle(CornerRadius.small)
+                                .strokeBorder(Colors.borderSubtle, lineWidth: 1)
+                        )
                     Image(systemName: roleIcon)
-                        .font(.caption.weight(.medium))
+                        .font(Typography.caption.weight(.medium))
                         .foregroundStyle(status == .idle ? roleTintColor : statusDisplayColor)
                 }
                 // Known 32×32. Short-circuits the constraint-walk
@@ -70,17 +74,26 @@ struct RoleNodeRuntimeView: View {
 
                 // Role name
                 Text(roleName)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.primary)
+                    .font(Typography.captionSemibold)
+                    .foregroundStyle(Colors.textPrimary)
                     .lineLimit(2)
                     .multilineTextAlignment(.center)
 
-                // Status label
-                Text(statusDisplayName)
-                    .font(.caption2)
-                    .foregroundStyle(statusDisplayColor)
+                // Status row — terminal glyph carries the status (braille spinner
+                // when live), paired with the status name.
+                HStack(spacing: 4) {
+                    StatusGlyph(
+                        glyph: status.glyph(isInMeeting: isInMeeting, isPaused: isPaused),
+                        color: statusDisplayColor,
+                        animatesWork: isEngineRunning && !isPaused && !isInMeeting && status == .working,
+                        font: Typography.term2xs
+                    )
+                    Text(statusDisplayName)
+                        .font(Typography.caption2)
+                        .foregroundStyle(statusDisplayColor)
+                }
             }
-            .padding(8)
+            .padding(Spacing.s)
             .frame(minWidth: 80, maxWidth: Self.nodeMaxWidth, minHeight: 60)
             .fixedSize(horizontal: false, vertical: true)
             // Consolidate fill + stroke into a single `.background` so
@@ -95,9 +108,9 @@ struct RoleNodeRuntimeView: View {
             // walk — worth doing.
             .background {
                 ZStack {
-                    RoundedRectangle(cornerRadius: CornerRadius.large, style: .continuous)
+                    RoundedRectangle.squircle(CornerRadius.large)
                         .fill(isHovered ? Colors.surfaceElevated : Colors.surfaceCard)
-                    RoundedRectangle(cornerRadius: CornerRadius.large, style: .continuous)
+                    RoundedRectangle.squircle(CornerRadius.large)
                         .stroke(nodeStyle.borderColor, lineWidth: nodeStyle.borderWidth)
                 }
             }

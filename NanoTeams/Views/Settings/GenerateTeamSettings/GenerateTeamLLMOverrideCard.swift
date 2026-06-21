@@ -96,19 +96,19 @@ struct GenerateTeamLLMOverrideCard: View {
                 Spacer()
 
                 if let current = config.teamGenLLMOverride?.temperature {
-                    Slider(
+                    TerminalSlider(
                         value: Binding(
                             get: { current },
                             set: { setTemperature($0) }
                         ),
-                        in: 0...2,
+                        range: 0...2,
                         step: 0.1
                     )
                     .frame(maxWidth: 160)
 
                     Text(String(format: "%.1f", current))
                         .monospacedDigit()
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Colors.textSecondary)
                         .frame(minWidth: 30, alignment: .trailing)
 
                     SettingsPillButton(title: "Auto", icon: "slider.horizontal.3") {

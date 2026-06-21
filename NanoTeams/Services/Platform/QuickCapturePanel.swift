@@ -76,8 +76,22 @@ class QuickCapturePanel: NSPanel, NSWindowDelegate {
         hidesOnDeactivate = false
         isReleasedWhenClosed = false
 
-        // Appearance
-        backgroundColor = NSColor(Colors.surfacePrimary)
+        // Appearance — clear window background + AppKit shadow. The DS-aligned
+        // `CornerRadius.large` (4pt) rounding is provided by the SwiftUI content's
+        // own rounded-rect background fill in `setContent` (a static shape layer),
+        // NOT by masking the AppKit theme-frame layer.
+        //
+        // We deliberately do NOT set `masksToBounds + cornerRadius` on the theme
+        // frame: that layer is an ancestor of the panel-hosted `NSScrollView`
+        // (MessageComposer → EditableMessageTextView), so a rounded mask forces an
+        // offscreen GPU mask pass on every CA frame the scrollview emits while the
+        // user types / scrolls — the exact lag trap CLAUDE.md #50 documents
+        // ("Wrap NSScrollView in an outer NSView host with … cornerRadius +
+        // masksToBounds — lag came back"). A non-clipping `.fill` shape rounds the
+        // corners for free (transparent corners over the clear window) and the
+        // composer's content padding keeps the scrollview well inside the 4pt
+        // radius, so nothing needs clipping.
+        backgroundColor = .clear
         isOpaque = false
         hasShadow = true
         animationBehavior = .none
@@ -105,7 +119,19 @@ class QuickCapturePanel: NSPanel, NSWindowDelegate {
 
     /// Sets the SwiftUI content view for this panel.
     func setContent<Content: View>(_ view: Content) {
-        let hosting = NSHostingView(rootView: view.ignoresSafeArea())
+        // Provide the DS surface fill + 4pt rounded corners via a static SwiftUI
+        // `.fill` background (NOT a `.clipShape` and NOT an AppKit layer mask —
+        // both force a per-CA-frame offscreen mask pass over the hosted
+        // NSScrollView; see `configure()` + CLAUDE.md #50). The corners outside the
+        // rounded rect stay transparent over the clear window, and `hasShadow`
+        // follows the rounded opaque region.
+        let rounded = view
+            .background(
+                RoundedRectangle.squircle(CornerRadius.large)
+                    .fill(Colors.surfacePrimary)
+            )
+            .ignoresSafeArea()
+        let hosting = NSHostingView(rootView: rounded)
         // Pin the panel to the user-resized frame: don't let SwiftUI's intrinsic
         // content size drive a window resize. Without this, `onGeometryChange`
         // measurements inside the form (e.g. MessageComposer's auto-grow field)
@@ -618,6 +644,17 @@ class QuickCapturePanel: NSPanel, NSWindowDelegate {
 // periphery:ignore - used in #Preview macros below
 @MainActor
 private enum QuickCapturePanelPreview {
+    /// Panel width matches the AppKit floor (`QuickCapturePanel.panelMinSize.width`)
+    /// — single source of truth so DS-aligned previews can never drift from the
+    /// real resize floor.
+    static let panelWidth: CGFloat = QuickCapturePanel.panelMinSize.width
+    /// Three semantic heights covering the panel's actual content states.
+    /// Compact = empty / short task; medium = task + clip-or-file rail;
+    /// tall = supervisor-answer mode with thinking disclosure expanded.
+    static let heightCompact: CGFloat = 360
+    static let heightMedium: CGFloat = 420
+    static let heightTall: CGFloat = 540
+
     static func makeStore() -> NTMSOrchestrator {
         let store = NTMSOrchestrator(repository: NTMSRepository())
         store.snapshot = WorkFolderContext(
@@ -657,9 +694,142 @@ private enum QuickCapturePanelPreview {
         // swiftlint:disable:next force_try
         return try! StagedAttachment(url: url, stagedRelativePath: stagedRelativePath)
     }
+
+    /// One row in the Showcase preview. `id` keys `ForEach` and is stable for
+    /// the lifetime of the sample list (held as `@Previewable @State`).
+    struct Sample: Identifiable {
+        let id = UUID()
+        let label: String
+        let mode: QuickCaptureMode
+        let formState: QuickCaptureFormState
+        let height: CGFloat
+    }
+
+    /// Every state surfaced in the per-state previews, in the same order so
+    /// the Showcase reads like a visual table of contents.
+    static func makeShowcaseSamples() -> [Sample] {
+        let standardPayload = SupervisorAnswerPayload(
+            stepID: "showcase-standard",
+            taskID: Int(),
+            role: .softwareEngineer,
+            roleDefinition: nil,
+            question: "Async/await or completion handlers for the network layer?",
+            messageContent: "Two possible approaches surfaced in the audit. Picking one to standardize on.",
+            thinking: "Codebase currently mixes both patterns.",
+            isChatMode: false
+        )
+        let chatPayload = SupervisorAnswerPayload(
+            stepID: "showcase-chat",
+            taskID: Int(),
+            role: .custom(id: "assistant"),
+            roleDefinition: TeamRoleDefinition(
+                id: "assistant", name: "Assistant", icon: "bubble.left.and.bubble.right",
+                prompt: "", toolIDs: [], usePlanningPhase: false, dependencies: RoleDependencies(),
+                iconBackground: RoleColorDefaults.defaultHex
+            ),
+            question: "What should I focus on next?",
+            messageContent: "Hi! I'm ready to help. What do you need?",
+            thinking: "User just started a chat session.",
+            isChatMode: true
+        )
+        return [
+            Sample(
+                label: "Empty",
+                mode: .overlay,
+                formState: makeFormState(),
+                height: heightCompact
+            ),
+            Sample(
+                label: "Task",
+                mode: .overlay,
+                formState: makeFormState(
+                    supervisorTask: "Review the first-run experience, identify friction points, and propose a simpler setup path."
+                ),
+                height: heightCompact
+            ),
+            Sample(
+                label: "Clips",
+                mode: .overlay,
+                formState: makeFormState(
+                    supervisorTask: "Summarize the pasted research and extract the main risks.",
+                    clippedTexts: [
+                        "Interview notes mention a slow setup flow and unclear permissions prompts.",
+                        "Support tickets mention users abandoning onboarding before the first successful action."
+                    ]
+                ),
+                height: heightCompact
+            ),
+            Sample(
+                label: "Files",
+                mode: .overlay,
+                formState: makeFormState(
+                    attachments: [
+                        makeAttachment(fileName: "LaunchPlan.md", stagedRelativePath: "drafts/launch-plan.md"),
+                        makeAttachment(fileName: "Metrics.csv", stagedRelativePath: "drafts/metrics.csv")
+                    ]
+                ),
+                height: heightCompact
+            ),
+            Sample(
+                label: "Mixed",
+                mode: .overlay,
+                formState: makeFormState(
+                    supervisorTask: "Combine the attached documents with the clipped evidence and propose a retention experiment plan.",
+                    attachments: [
+                        makeAttachment(fileName: "RetentionBrief.pdf", stagedRelativePath: "drafts/retention-brief.pdf")
+                    ],
+                    clippedTexts: [
+                        "Customer interviews highlight that teams do not understand what happens after they create the first task."
+                    ]
+                ),
+                height: heightMedium
+            ),
+            Sample(
+                label: "Answer · Standard",
+                mode: .supervisorAnswer(payload: standardPayload),
+                formState: makeFormState(),
+                height: heightMedium
+            ),
+            Sample(
+                label: "Answer · Chat",
+                mode: .supervisorAnswer(payload: chatPayload),
+                formState: makeFormState(),
+                height: heightTall
+            )
+        ]
+    }
 }
 
-#Preview("Quick Capture Panel — Empty") {
+extension View {
+    /// Injects every `@Environment(...)` `QuickCaptureFormView` and its subtree
+    /// read — single source of truth so a new env-dependency can't silently
+    /// break only some of the previews (the way `DictationService` did).
+    fileprivate func quickCapturePreviewEnvironment(
+        store: NTMSOrchestrator
+    ) -> some View {
+        self
+            .environment(store)
+            .environment(store.configuration)
+            .environment(StreamingPreviewManager())
+            .environment(DictationService())
+    }
+
+    /// Renders the panel preview as it appears floating over the desktop:
+    /// panel-shaped frame, the same 4pt chrome curvature the panel's rounded
+    /// SwiftUI background fill paints at runtime (see `setContent`), an elevated
+    /// shadow, and a `surfaceBackground` backdrop (Level 0) so the panel's
+    /// `surfacePrimary` fill (Level 1) reads with the same contrast as in production.
+    fileprivate func quickCapturePreviewChrome(height: CGFloat) -> some View {
+        self
+            .frame(width: QuickCapturePanelPreview.panelWidth, height: height)
+            .clipShape(RoundedRectangle.squircle(CornerRadius.large))
+            .shadow(.elevated)
+            .padding(Spacing.l)
+            .background(Colors.surfaceBackground)
+    }
+}
+
+#Preview("Quick Capture / Empty") {
     @Previewable @State var store = QuickCapturePanelPreview.makeStore()
     @Previewable @State var formState = QuickCapturePanelPreview.makeFormState()
 
@@ -669,13 +839,11 @@ private enum QuickCapturePanelPreview {
         onSubmit: {},
         onCancel: {}
     )
-    .environment(store)
-    .environment(store.configuration)
-    .environment(StreamingPreviewManager())
-    .frame(width: 250, height: 360)
+    .quickCapturePreviewEnvironment(store: store)
+    .quickCapturePreviewChrome(height: QuickCapturePanelPreview.heightCompact)
 }
 
-#Preview("Quick Capture Panel — Task") {
+#Preview("Quick Capture / Task") {
     @Previewable @State var store = QuickCapturePanelPreview.makeStore()
     @Previewable @State var formState = QuickCapturePanelPreview.makeFormState(
         supervisorTask: "Review the first-run experience, identify friction points, and propose a simpler setup path."
@@ -687,13 +855,11 @@ private enum QuickCapturePanelPreview {
         onSubmit: {},
         onCancel: {}
     )
-    .environment(store)
-    .environment(store.configuration)
-    .environment(StreamingPreviewManager())
-    .frame(width: 250, height: 360)
+    .quickCapturePreviewEnvironment(store: store)
+    .quickCapturePreviewChrome(height: QuickCapturePanelPreview.heightCompact)
 }
 
-#Preview("Quick Capture Panel — Clips") {
+#Preview("Quick Capture / Clips") {
     @Previewable @State var store = QuickCapturePanelPreview.makeStore()
     @Previewable @State var formState = QuickCapturePanelPreview.makeFormState(
         supervisorTask: "Summarize the pasted research and extract the main risks.",
@@ -709,13 +875,11 @@ private enum QuickCapturePanelPreview {
         onSubmit: {},
         onCancel: {}
     )
-    .environment(store)
-    .environment(store.configuration)
-    .environment(StreamingPreviewManager())
-    .frame(width: 250, height: 360)
+    .quickCapturePreviewEnvironment(store: store)
+    .quickCapturePreviewChrome(height: QuickCapturePanelPreview.heightCompact)
 }
 
-#Preview("Quick Capture Panel — Files") {
+#Preview("Quick Capture / Files") {
     @Previewable @State var store = QuickCapturePanelPreview.makeStore()
     @Previewable @State var formState = QuickCapturePanelPreview.makeFormState(
         attachments: [
@@ -730,13 +894,11 @@ private enum QuickCapturePanelPreview {
         onSubmit: {},
         onCancel: {}
     )
-    .environment(store)
-    .environment(store.configuration)
-    .environment(StreamingPreviewManager())
-    .frame(width: 250, height: 360)
+    .quickCapturePreviewEnvironment(store: store)
+    .quickCapturePreviewChrome(height: QuickCapturePanelPreview.heightCompact)
 }
 
-#Preview("Quick Capture Panel — Mixed") {
+#Preview("Quick Capture / Mixed") {
     @Previewable @State var store = QuickCapturePanelPreview.makeStore()
     @Previewable @State var formState = QuickCapturePanelPreview.makeFormState(
         supervisorTask: "Combine the attached documents with the clipped evidence and propose a retention experiment plan.",
@@ -754,13 +916,11 @@ private enum QuickCapturePanelPreview {
         onSubmit: {},
         onCancel: {}
     )
-    .environment(store)
-    .environment(store.configuration)
-    .environment(StreamingPreviewManager())
-    .frame(width: 250, height: 420)
+    .quickCapturePreviewEnvironment(store: store)
+    .quickCapturePreviewChrome(height: QuickCapturePanelPreview.heightMedium)
 }
 
-#Preview("Supervisor Answer") {
+#Preview("Supervisor Answer / Standard") {
     @Previewable @State var store = QuickCapturePanelPreview.makeStore()
     @Previewable @State var formState = QuickCapturePanelPreview.makeFormState()
 
@@ -781,13 +941,11 @@ private enum QuickCapturePanelPreview {
         onSubmit: {},
         onCancel: {}
     )
-    .environment(store)
-    .environment(store.configuration)
-    .environment(StreamingPreviewManager())
-    .frame(width: 250, height: 420)
+    .quickCapturePreviewEnvironment(store: store)
+    .quickCapturePreviewChrome(height: QuickCapturePanelPreview.heightMedium)
 }
 
-#Preview("Supervisor Answer — Chat Mode") {
+#Preview("Supervisor Answer / Chat") {
     @Previewable @State var store = QuickCapturePanelPreview.makeStore()
     @Previewable @State var formState = QuickCapturePanelPreview.makeFormState()
 
@@ -796,7 +954,7 @@ private enum QuickCapturePanelPreview {
         taskID: Int(),
         role: .custom(id: "assistant"),
         roleDefinition: TeamRoleDefinition(
-            id: "assistant", name: "Assistant", icon: "bubble.left.and.bubble.right.fill",
+            id: "assistant", name: "Assistant", icon: "bubble.left.and.bubble.right",
             prompt: "", toolIDs: [], usePlanningPhase: false, dependencies: RoleDependencies(),
             iconBackground: RoleColorDefaults.defaultHex
         ),
@@ -812,8 +970,54 @@ private enum QuickCapturePanelPreview {
         onSubmit: {},
         onCancel: {}
     )
-    .environment(store)
-    .environment(store.configuration)
-    .environment(StreamingPreviewManager())
-    .frame(width: 250, height: 540)
+    .quickCapturePreviewEnvironment(store: store)
+    .quickCapturePreviewChrome(height: QuickCapturePanelPreview.heightTall)
+}
+
+/// Single-canvas gamut of every panel state — at-a-glance visual audit for
+/// designers / reviewers. Adaptive 2-column grid so the canvas re-flows as
+/// the preview window is resized.
+#Preview("Quick Capture / Showcase") {
+    @Previewable @State var store = QuickCapturePanelPreview.makeStore()
+    @Previewable @State var samples = QuickCapturePanelPreview.makeShowcaseSamples()
+
+    let cellWidth = QuickCapturePanelPreview.panelWidth + Spacing.l * 2
+
+    ScrollView {
+        LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: cellWidth), spacing: Spacing.xl)],
+            spacing: Spacing.xl
+        ) {
+            ForEach(samples) { sample in
+                VStack(spacing: Spacing.m) {
+                    QuickCaptureFormView(
+                        mode: sample.mode,
+                        formState: sample.formState,
+                        onSubmit: {},
+                        onCancel: {}
+                    )
+                    .frame(
+                        width: QuickCapturePanelPreview.panelWidth,
+                        height: sample.height
+                    )
+                    .clipShape(RoundedRectangle.squircle(CornerRadius.large))
+                    .shadow(.elevated)
+
+                    Text(sample.label)
+                        .font(Typography.caption)
+                        .tracking(Typography.labelTracking)
+                        .textCase(.uppercase)
+                        .foregroundStyle(Colors.textSecondary)
+                }
+            }
+        }
+        .padding(Spacing.xl)
+    }
+    .quickCapturePreviewEnvironment(store: store)
+    .background(Colors.surfaceBackground)
+    // Explicit canvas size — without it Xcode opens the showcase at the
+    // ScrollView's zero intrinsic size and collapses every tile. Width fits
+    // two `cellWidth` cells with `Spacing.xl` inter-column gap; height lets
+    // the longest two rows (tall + medium) breathe.
+    .frame(minWidth: cellWidth * 2 + Spacing.xl * 3, minHeight: 1200)
 }

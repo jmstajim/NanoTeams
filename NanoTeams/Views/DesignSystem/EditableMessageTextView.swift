@@ -32,7 +32,14 @@ struct EditableMessageTextView: NSViewRepresentable {
     /// newline at the caret natively.
     let onReturnKey: (_ hasShift: Bool, _ hasCommand: Bool) -> Bool
 
-    static let defaultFont: NSFont = .systemFont(ofSize: NSFont.systemFontSize)
+    // Monospaced system font (SF Mono) — pinned at the AppKit boundary so the
+    // composer's typed text stays on the same mono grid as the rest of the DS
+    // (DS "Mono everywhere" rule). SwiftUI's `.fontDesign(.monospaced)` does
+    // NOT route into `NSTextView` — same crossing as `SelectableMessageText`.
+    static let defaultFont: NSFont = .monospacedSystemFont(
+        ofSize: NSFont.systemFontSize,
+        weight: .regular
+    )
     static var defaultTextColor: NSColor { Colors.nsTextPrimary }
 
     func makeCoordinator() -> Coordinator { Coordinator() }

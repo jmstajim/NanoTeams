@@ -46,11 +46,10 @@ struct RoleEditorPromptTab: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Role Guidance")
-                            .font(.headline)
+                        MonoLabel(text: "Role Guidance", marker: true)
                         Text("This text is injected into the team's system prompt template as **{roleGuidance}**. It defines what this role focuses on, its expertise, and how it should approach tasks.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .font(Typography.caption)
+                            .foregroundStyle(Colors.textSecondary)
                     }
 
                     Spacer()
@@ -59,9 +58,9 @@ struct RoleEditorPromptTab: View {
                         editorState.showingPromptPreview = true
                     } label: {
                         Label("Preview Full Prompt", systemImage: "eye")
-                            .font(.caption)
+                            .font(Typography.caption)
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.terminalSecondary)
                     .controlSize(.small)
                     .help("Preview the complete system prompt that the LLM receives, with this guidance inserted into the template")
                 }
@@ -69,14 +68,23 @@ struct RoleEditorPromptTab: View {
             .padding(.horizontal, Spacing.standard)
             .padding(.top, Spacing.s)
 
-            TextEditor(text: $editorState.rolePrompt)
-                .font(.system(.body, design: .monospaced))
-                .scrollContentBackground(.hidden)
-                .padding(Spacing.s)
-                .background(Colors.surfacePrimary)
-                
-                .padding(.horizontal, Spacing.standard)
-                .padding(.bottom, Spacing.s)
+            HStack(alignment: .top, spacing: Spacing.xs) {
+                PromptMarker()
+                TextEditor(text: $editorState.rolePrompt)
+                    .font(Typography.termBase)
+                    .scrollContentBackground(.hidden)
+            }
+            .padding(Spacing.s)
+            .background(
+                RoundedRectangle.squircle(CornerRadius.small)
+                    .fill(Colors.surfacePrimary)
+            )
+            .overlay(
+                RoundedRectangle.squircle(CornerRadius.small)
+                    .strokeBorder(Colors.borderSubtle, lineWidth: 1)
+            )
+            .padding(.horizontal, Spacing.standard)
+            .padding(.bottom, Spacing.s)
         }
         .sheet(isPresented: $editorState.showingPromptPreview) {
             PromptPreviewSheet(

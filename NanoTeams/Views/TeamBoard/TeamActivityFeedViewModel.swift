@@ -265,22 +265,95 @@ final class TeamActivityFeedViewModel {
     // MARK: - Scroll Position Tracking
 
     /// Whether the user is near the bottom of the scroll view. Used to decide whether to auto-scroll on new items.
-    /// Updated from the view's `onScrollGeometryChange` via `isNearBottom(contentOffsetY:...)`.
+    /// Updated from the view's `onScrollGeometryChange` action by recomputing the gate from
+    /// `ScrollFollowSnapshot.distanceFromBottom` (built via the shared `distanceFromBottom(...)` helper).
     var isNearBottom: Bool = true
 
     /// Pixel slack within which (≤) the scroll position still counts as "at bottom".
     nonisolated static let nearBottomThreshold: CGFloat = 60
 
+    /// Tolerance (pt) for the growth-follow disambiguator. A pure content-growth
+    /// tick (scroll offset frozen) moves `distanceFromBottom` by exactly the content
+    /// growth; a concurrent user drag-up moves it by MORE. The slack absorbs
+    /// sub-pixel / fractional jitter so a real growth tick still re-pins while an
+    /// intentional drag does not.
+    nonisolated static let growthFollowSlack: CGFloat = 4
+
+    /// Distance (pt) from the resting bottom of the scroll view. SINGLE SOURCE OF
+    /// TRUTH for the at-bottom geometry: the view's `onScrollGeometryChange`
+    /// transform builds `ScrollFollowSnapshot.distanceFromBottom` from this exact
+    /// helper and `isNearBottom` delegates to it, so production and the pinned tests
+    /// can never silently diverge.
+    ///
+    /// `topInset` is SUBTRACTED: a safe-area top inset (e.g. the TeamBoardTopBar)
+    /// shifts the resting bottom content-offset down by exactly its own height, so
+    /// at the TRUE bottom `contentHeight + bottomInset - containerHeight -
+    /// contentOffsetY` equals `topInset`, not 0. Omitting the term over-reports the
+    /// distance by `topInset` and, when that exceeds `threshold`, latches the feed
+    /// out of auto-scroll. Verified against live geometry traces.
+    nonisolated static func distanceFromBottom(
+        contentHeight: CGFloat,
+        bottomInset: CGFloat,
+        topInset: CGFloat,
+        containerHeight: CGFloat,
+        contentOffsetY: CGFloat
+    ) -> CGFloat {
+        contentHeight + bottomInset - topInset - containerHeight - contentOffsetY
+    }
+
     /// Distance from the bottom edge ≤ threshold counts as "at bottom".
     /// Content shorter than the container is always at bottom (distance ≤ 0).
+    /// Delegates the geometry to `distanceFromBottom(...)` so there is exactly one
+    /// distance formula shared by production and tests.
     nonisolated static func isNearBottom(
         contentOffsetY: CGFloat,
         contentHeight: CGFloat,
         containerHeight: CGFloat,
         bottomInset: CGFloat,
+        topInset: CGFloat = 0,
         threshold: CGFloat = nearBottomThreshold
     ) -> Bool {
-        (contentHeight + bottomInset - containerHeight - contentOffsetY) <= threshold
+        distanceFromBottom(
+            contentHeight: contentHeight,
+            bottomInset: bottomInset,
+            topInset: topInset,
+            containerHeight: containerHeight,
+            contentOffsetY: contentOffsetY
+        ) <= threshold
+    }
+
+    /// Equatable snapshot of the scroll geometry the view feeds into
+    /// `onScrollGeometryChange`. Built from the SwiftUI `ScrollGeometry` (plain
+    /// `CGFloat`s only, so it stays test-reachable). The `action` closure reads BOTH
+    /// the `contentHeight` delta and the `distanceFromBottom` delta to tell "content
+    /// grew under a pinned scroll" from "user scrolled (possibly while content grew)".
+    nonisolated struct ScrollFollowSnapshot: Equatable {
+        let distanceFromBottom: CGFloat
+        let contentHeight: CGFloat
+    }
+
+    /// Re-pin to the bottom ONLY for a content-growth tick under a STILL-pinned
+    /// scroll. The growth-vs-drag disambiguator: when content grows by Δ while the
+    /// scroll offset is frozen (the streaming case the original fix targets),
+    /// `distanceFromBottom` grows by exactly Δ (≤ Δ if the offset auto-followed
+    /// part of it). If the user ALSO dragged up on the same coalesced geometry
+    /// tick, the distance grows by MORE than Δ — so we must NOT re-pin, otherwise a
+    /// user scrolling up DURING streaming is yanked back to the bottom on every
+    /// token (growth ticks short-circuit the gate recompute). `wasAtBottom` is the
+    /// stored gate; a shrink or a pure offset change is never a growth tick.
+    nonisolated static func shouldFollowGrowth(
+        oldContentHeight: CGFloat,
+        newContentHeight: CGFloat,
+        oldDistanceFromBottom: CGFloat,
+        newDistanceFromBottom: CGFloat,
+        wasAtBottom: Bool,
+        slack: CGFloat = growthFollowSlack
+    ) -> Bool {
+        guard wasAtBottom else { return false }
+        let heightDelta = newContentHeight - oldContentHeight
+        guard heightDelta > 0 else { return false }
+        let distanceDelta = newDistanceFromBottom - oldDistanceFromBottom
+        return distanceDelta <= heightDelta + slack
     }
 
     /// Set when task switches — consumed after timeline rebuild to scroll to bottom.

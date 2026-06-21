@@ -199,20 +199,51 @@ final class WatchtowerTimelineBuilderTests: XCTestCase {
     // MARK: - TimelineEvent.stableID
 
     func testStableID_deterministicForSameInput() {
-        let stepID = "test_step"
-        let id1 = TimelineEvent.stableID(stepID: stepID, eventType: .started)
-        let id2 = TimelineEvent.stableID(stepID: stepID, eventType: .started)
+        let id1 = TimelineEvent.stableID(taskID: 0, runID: 0, stepID: "test_step", eventType: .started)
+        let id2 = TimelineEvent.stableID(taskID: 0, runID: 0, stepID: "test_step", eventType: .started)
         XCTAssertEqual(id1, id2)
     }
 
     func testStableID_differentForDifferentEventTypes() {
-        let stepID = "test_step"
-        let started = TimelineEvent.stableID(stepID: stepID, eventType: .started)
-        let completed = TimelineEvent.stableID(stepID: stepID, eventType: .completed)
-        let failed = TimelineEvent.stableID(stepID: stepID, eventType: .failed)
+        let started = TimelineEvent.stableID(taskID: 0, runID: 0, stepID: "test_step", eventType: .started)
+        let completed = TimelineEvent.stableID(taskID: 0, runID: 0, stepID: "test_step", eventType: .completed)
+        let failed = TimelineEvent.stableID(taskID: 0, runID: 0, stepID: "test_step", eventType: .failed)
         XCTAssertNotEqual(started, completed)
         XCTAssertNotEqual(started, failed)
         XCTAssertNotEqual(completed, failed)
+    }
+
+    /// The crash fix: `stepID` is the ROLE id, which recurs in every run, so the
+    /// same role+event in DIFFERENT runs must get DIFFERENT ids — otherwise the
+    /// Watchtower `ForEach` sees a duplicate UUID ("ID occurs multiple times").
+    func testStableID_differentForDifferentRuns() {
+        let run0 = TimelineEvent.stableID(taskID: 0, runID: 0, stepID: "se", eventType: .started)
+        let run1 = TimelineEvent.stableID(taskID: 0, runID: 1, stepID: "se", eventType: .started)
+        XCTAssertNotEqual(run0, run1, "same role+event across runs must not collide")
+    }
+
+    /// And different tasks (defensive — if the timeline ever aggregates tasks).
+    func testStableID_differentForDifferentTasks() {
+        let task0 = TimelineEvent.stableID(taskID: 0, runID: 0, stepID: "se", eventType: .started)
+        let task1 = TimelineEvent.stableID(taskID: 1, runID: 0, stepID: "se", eventType: .started)
+        XCTAssertNotEqual(task0, task1, "same role+event across tasks must not collide")
+    }
+
+    /// End-to-end reproduction: a task with two runs of the SAME role must yield
+    /// timeline events with all-unique ids (the duplicate-ID crash the user hit).
+    func testCollectEvents_sameRoleAcrossRuns_producesUniqueIDs() {
+        let step1 = makeStep(status: .done)   // run 0, role SE, id "test_step"
+        let step2 = makeStep(status: .done)   // run 1, SAME role + id
+        let run1 = Run(id: 0, steps: [step1])
+        let run2 = Run(id: 1, steps: [step2])
+        let task = makeTask(runs: [run1, run2])
+
+        let events = WatchtowerTimelineBuilder.collectEvents(from: task, roleDefinitions: [])
+
+        XCTAssertEqual(events.count, 4, "2 done steps × (started + completed)")
+        let ids = events.map(\.id)
+        XCTAssertEqual(Set(ids).count, ids.count,
+            "every timeline event id must be unique — the same role recurs across runs")
     }
 
     // MARK: - TimelineEvent.displayText

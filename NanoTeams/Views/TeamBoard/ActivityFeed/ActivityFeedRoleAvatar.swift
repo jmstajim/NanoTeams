@@ -10,29 +10,30 @@ struct ActivityFeedRoleAvatar: View {
     @ScaledMetric(relativeTo: .caption) private var iconScale: CGFloat = 1.0
 
     var body: some View {
-        let bg = roleDefinition?.resolvedIconBackground ?? role.tintColor
-        let fg = roleDefinition?.resolvedIconColor ?? Color.white
-        let icon = roleDefinition?.icon ?? "person.fill"
+        let tint = roleDefinition?.resolvedIconBackground ?? role.tintColor
+        let icon = roleDefinition?.icon ?? "person"
 
-        let avatar = ZStack {
-            Circle()
-                .fill(bg)
-                .frame(width: size, height: size)
-            Image(systemName: icon)
-                .font(.system(size: size * 0.4 * iconScale, weight: .semibold))
-                .foregroundStyle(fg)
-        }
-        // Avatar has a known fixed frame (`size × size`). Without
-        // `.fixedSize()`, AppKit's constraint walk asks SwiftUI for
-        // `minSize()` on every NSHostingView, which round-trips through
-        // `_sizeThatFits` over the ZStack. `.fixedSize()` tells SwiftUI
-        // the answer is constant and short-circuits the query.
-        .fixedSize()
+        // Bare icon avatar — no chrome. Icon is tinted with what used to
+        // be the squircle background colour so role identity remains.
+        // Glyph size + frame are pinned to DS tokens
+        // (`ActivityCardTokens.avatarIconSize` / `.avatarSize`) so every
+        // SF Symbol renders at the same point size regardless of its
+        // intrinsic metrics.
+        let avatar = Image(systemName: icon)
+            .font(.system(size: ActivityCardTokens.avatarIconSize * iconScale, weight: .semibold))
+            .symbolRenderingMode(.monochrome)
+            .foregroundStyle(tint)
+            .frame(width: size, height: size)
+            // Avatar has a known fixed frame (`size × size`). Without
+            // `.fixedSize()`, AppKit's constraint walk asks SwiftUI for
+            // `minSize()` on every NSHostingView. `.fixedSize()` tells
+            // SwiftUI the answer is constant and short-circuits the query.
+            .fixedSize()
 
         if let onTap {
             Button(action: onTap) { avatar }
                 .buttonStyle(.plain)
-                .contentShape(Circle())
+                .contentShape(Rectangle())
                 .accessibilityLabel("Select \(roleDefinition?.name ?? role.displayName)")
         } else {
             avatar
@@ -48,12 +49,12 @@ struct ActivityFeedRoleAvatar: View {
             iconBackground: RoleColorDefaults.backgroundHex["softwareEngineer"] ?? RoleColorDefaults.defaultHex
         )),
         (.productManager, TeamRoleDefinition(
-            id: "pm", name: "Product Manager", icon: "doc.text.fill",
+            id: "pm", name: "Product Manager", icon: "doc.text",
             prompt: "", toolIDs: [], usePlanningPhase: false, dependencies: RoleDependencies(),
             iconBackground: RoleColorDefaults.backgroundHex["productManager"] ?? RoleColorDefaults.defaultHex
         )),
         (.uxDesigner, TeamRoleDefinition(
-            id: "uxd", name: "UX Designer", icon: "paintbrush.pointed.fill",
+            id: "uxd", name: "UX Designer", icon: "paintbrush.pointed",
             prompt: "", toolIDs: [], usePlanningPhase: false, dependencies: RoleDependencies(),
             iconBackground: RoleColorDefaults.backgroundHex["uxDesigner"] ?? RoleColorDefaults.defaultHex
         )),
@@ -67,7 +68,7 @@ struct ActivityFeedRoleAvatar: View {
         ForEach(roles, id: \.0) { role, def in
             VStack(spacing: 6) {
                 ActivityFeedRoleAvatar(role: role, roleDefinition: def)
-                Text(def.name).font(.caption2).foregroundStyle(.secondary)
+                Text(def.name).font(Typography.caption2).foregroundStyle(Colors.textSecondary)
             }
         }
     }
@@ -86,7 +87,7 @@ struct ActivityFeedRoleAvatar: View {
         ForEach(roles, id: \.0) { role, label in
             VStack(spacing: 6) {
                 ActivityFeedRoleAvatar(role: role, roleDefinition: nil)
-                Text(label).font(.caption2).foregroundStyle(.secondary)
+                Text(label).font(Typography.caption2).foregroundStyle(Colors.textSecondary)
             }
         }
     }

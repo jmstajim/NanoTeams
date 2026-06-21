@@ -1,17 +1,19 @@
 import SwiftUI
 
-/// Circular `xmark` close button used by overlay surfaces (Quick Capture panel,
-/// modal sheets). Visually a small 18×18 dot in `Colors.surfaceElevated`.
+/// Squared `xmark` close button used by overlay surfaces (Quick Capture panel,
+/// modal sheets). Visually a small 18×18 tile in `Colors.surfaceElevated`.
+/// Terminal-aesthetic squircle replaces what used to be a circular dot —
+/// the DS mandates radius ≤ 4pt for all chrome (a terminal is a grid).
 struct CloseButton: View {
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Image(systemName: "xmark")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .font(Typography.term2xs.weight(.semibold))
+                .foregroundStyle(Colors.textSecondary)
                 .frame(width: 18, height: 18)
-                .background(Circle().fill(Colors.surfaceElevated))
+                .background(RoundedRectangle.squircle(CornerRadius.small).fill(Colors.surfaceElevated))
         }
         .buttonStyle(.plain)
         .fixedSize()

@@ -273,7 +273,7 @@ struct TeamGraphCanvas: View {
         let displayLabel = label.count > 20 ? String(label.prefix(18)) + "..." : label
 
         let text = Text(displayLabel)
-            .font(.system(size: fontSize, weight: isHighlighted ? .medium : .regular))
+            .font(.system(size: fontSize, weight: isHighlighted ? .medium : .regular, design: .monospaced))
             .foregroundStyle(textColor)
 
         let resolvedText = context.resolve(text)
@@ -286,7 +286,7 @@ struct TeamGraphCanvas: View {
             height: textSize.height + GraphTokens.labelPaddingV * 2
         )
 
-        let pillPath = RoundedRectangle(cornerRadius: GraphTokens.labelCornerRadius, style: .continuous).path(in: pillRect)
+        let pillPath = RoundedRectangle.squircle(GraphTokens.labelCornerRadius).path(in: pillRect)
         context.fill(pillPath, with: .color(Colors.surfaceElevated))
         context.stroke(pillPath, with: .color(color.opacity(DynamicTintOpacity.stroke)), lineWidth: 0.5)
 

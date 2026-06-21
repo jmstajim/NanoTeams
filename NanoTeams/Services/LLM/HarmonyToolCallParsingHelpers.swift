@@ -206,162 +206,15 @@ nonisolated enum ToolCallParsingHelpers {
 
         let providerID = stringValue(dict["id"]) ?? stringValue(dict["call_id"])
 
-        // Reserved-name guard applies to every shape below, not just the bare-identifier
-        // path in `CallMarkerStrategy`. Without this, `{"name":"commentary",...}`
-        // would bypass the marker-level filter and reach dispatch as a tool call.
-        func acceptingName(_ name: String) -> String? {
-            reservedChannelNames.contains(name.lowercased()) ? nil : name
-        }
-
-        // Flat create_artifact emission: `{"content":…,"format":…,"name":"<Artifact>"}`
-        // with NO `arguments` wrapper. Here the top-level `name` is the ARTIFACT
-        // name (a create_artifact parameter), NOT the tool name — some models
-        // collapse the canonical
-        // `{"name":"create_artifact","arguments":{"name":"<Artifact>",…}}` into this
-        // shape, putting the artifact name on the top-level `name` key. Without this
-        // the artifact name mis-binds as the tool name (observed with `gemma-4-e4b`:
-        // `<|call|>{…,"name":"Production Readiness"}` resolving to a tool literally
-        // named "Production Readiness"). Gated on three conditions so it never
-        // over-reaches:
-        //   1. no `arguments`/`args`/… wrapper (it's a flat payload);
-        //   2. the top-level `name` value is NOT itself a known tool — a legitimate
-        //      flat call whose `name` IS a tool that also takes `content`
-        //      (e.g. `update_scratchpad`) must stay that tool, not become
-        //      create_artifact;
-        //   3. the payload matches create_artifact's exact signature
-        //      (`recognizeToolFromArguments`: `name`+`content`, no keys exclusive to
-        //      other tools).
-        // The whole flat dict becomes the args so the artifact `name`/`content`/
-        // `format` survive. Checked BEFORE the generic top-level-`name` path so the
-        // artifact name doesn't win as the tool name.
-        let hasArgsWrapper = dict["arguments"] != nil || dict["args"] != nil
-            || dict["parameters"] != nil || dict["params"] != nil
-        if !hasArgsWrapper,
-           let topLevelName = stringValue(dict["name"]),
-           !ToolNames.allNames.contains(topLevelName),
-           recognizeToolFromArguments(dict) == ToolNames.createArtifact {
-            return StepToolCall(
-                providerID: providerID,
-                name: ToolNames.createArtifact,
-                argumentsJSON: normalizeArgumentsJSON(dict))
-        }
-
-        if let name = stringValue(dict["name"]).flatMap(acceptingName) {
-            let args = dict["arguments"] ?? dict["args"] ?? dict["parameters"] ?? dict["params"]
-                ?? synthesizeArgumentsFromTopLevel(dict)
-            return StepToolCall(
-                providerID: providerID, name: name, argumentsJSON: normalizeArgumentsJSON(args))
-        }
-
-        if let toolName = (stringValue(dict["tool_name"]) ?? stringValue(dict["tool"])
-            ?? stringValue(dict["function_name"])).flatMap(acceptingName)
-        {
-            let args = dict["arguments"] ?? dict["args"] ?? dict["parameters"] ?? dict["params"]
-                ?? synthesizeArgumentsFromTopLevel(dict)
-            return StepToolCall(
-                providerID: providerID, name: toolName, argumentsJSON: normalizeArgumentsJSON(args))
-        }
-
-        if let fnDictAny = dict["function"] as? [String: Any],
-            let fnName = stringValue(fnDictAny["name"]).flatMap(acceptingName)
-        {
-            let argsAny = fnDictAny["arguments"] ?? fnDictAny["args"]
-            return StepToolCall(
-                providerID: providerID, name: fnName, argumentsJSON: normalizeArgumentsJSON(argsAny)
-            )
-        }
-
-        // Shape-based fallback: some models emit `{"arguments":{…}}` without a
-        // top-level tool name — the `name` field lives inside `arguments` as a
-        // tool parameter (e.g. artifact name for create_artifact). Infer the
-        // tool from the argument signature when it's unambiguous.
-        if let inferred = inferToolNameFromShape(dict) {
-            return StepToolCall(
-                providerID: providerID,
-                name: inferred.name,
-                argumentsJSON: normalizeArgumentsJSON(inferred.arguments))
-        }
-
-        return nil
-    }
-
-    /// When a tool call dict has a recognized name but no `arguments`/`args`/`parameters`/
-    /// `params` key, gather all remaining top-level keys (excluding identifier/envelope
-    /// fields) into a synthetic arguments dict.
-    ///
-    /// Handles model variants that emit the spec-violating shape
-    /// `{"name":"X","content":"…"}` instead of the canonical
-    /// `{"name":"X","arguments":{"content":"…"}}`. Observed in `gemma-4-26b-a4b`
-    /// and similar models that emit tool args at the top level: the model puts
-    /// `content` next to `name`, parser without this fallback sees `arguments`
-    /// missing → tool receives empty args → returns `INVALID_ARGS` → model loops
-    /// retrying the same broken format. With this synthesis the call resolves.
-    ///
-    /// Returns nil when there are no promotable keys (so the caller falls back to
-    /// the existing nil-args path, which serialises to "").
-    ///
-    /// Return type is `Any?` (not `[String:Any]?`) so it composes cleanly with
-    /// `dict["arguments"] ?? dict["args"] ?? … ?? synthesizeArgumentsFromTopLevel(dict)`
-    /// in the parser. Mixing `Any?` with `[String:Any]?` in a `??` chain causes Swift
-    /// to wrap the dict-optional as `Any.some(Optional<…>.none)`, which then bypasses
-    /// `normalizeArgumentsJSON`'s nil-guard and falls through to `String(describing:)`
-    /// — producing the literal string `"nil"` as `argumentsJSON`. Keeping the return
-    /// `Any?` avoids that subtle double-wrap.
-    static func synthesizeArgumentsFromTopLevel(_ dict: [String: Any]) -> Any? {
-        // Keys that identify or wrap the call envelope itself — never promote them.
-        // The four args-keys (`arguments`/`args`/`parameters`/`params`) are listed
-        // for completeness even though synthesis only fires when they're absent.
-        // Harmony framing fields (`type`/`channel`/`recipient`/`constrain`) and
-        // OpenAI tool-call envelope fields (`type:"function"`) are also reserved
-        // — promoting them would inject `{"type":"function", ...}` into a
-        // tool's args dict and cause `INVALID_ARGS` rejections or, worse, silent
-        // acceptance of garbage.
-        let reserved: Set<String> = [
-            "name", "tool_name", "tool", "function_name",
-            "id", "call_id", "function",
-            "arguments", "args", "parameters", "params",
-            "type", "channel", "recipient", "constrain",
-        ]
-        let promoted = dict.filter { !reserved.contains($0.key) }
-        return promoted.isEmpty ? nil : promoted
-    }
-
-    /// Fallback tool-name inference when no top-level identifier is present.
-    /// Conservative: only fires on an unambiguous argument signature. Today this
-    /// recognises `create_artifact` wrapped as `{"arguments":{…}}` — a pattern
-    /// some local models produce when the top-level envelope is stripped.
-    ///
-    /// Returns `(toolName, unwrappedArguments)` on success — the caller serialises
-    /// `unwrappedArguments` as the StepToolCall's `argumentsJSON`.
-    static func inferToolNameFromShape(_ dict: [String: Any]) -> (name: String, arguments: Any?)? {
-        if let inner = dict["arguments"] as? [String: Any],
-           let name = recognizeToolFromArguments(inner) {
-            return (name: name, arguments: inner)
-        }
-        return nil
-    }
-
-    /// Keys that unambiguously belong to a non-`create_artifact` tool. If any
-    /// match, inference refuses to guess — the caller falls through to the
-    /// generic "name missing" nudge rather than dispatching a wrong tool.
-    private static let keysExclusiveToOtherTools: Set<String> = [
-        "path", "old_text", "new_text",                 // file tools
-        "question", "teammate",                         // supervisor / consultation
-        "query",                                        // search
-        "scheme",                                       // xcodebuild
-        "topic", "participants",                        // request_team_meeting
-        "target_role", "changes", "reasoning",          // request_changes
-        "image_path", "prompt",                         // analyze_image
-    ]
-
-    private static func recognizeToolFromArguments(_ args: [String: Any]) -> String? {
-        let keys = Set(args.keys)
-        guard keys.isDisjoint(with: keysExclusiveToOtherTools) else { return nil }
-        // Require BOTH of create_artifact's mandatory fields. `format` alone is
-        // too generic — any future tool that accepts it would silently be
-        // dispatched as create_artifact.
-        guard keys.contains("name"), keys.contains("content") else { return nil }
-        return "create_artifact"
+        // Shape recognition (which envelope variant the model emitted) is owned
+        // by `ToolCallShapeRecognizer`. The repair/recovery above turned the
+        // (possibly broken) bytes into this clean dict; here we only dispatch on
+        // its shape and serialize the resolved arguments.
+        guard let resolved = ToolCallShapeRecognizer.resolve(from: dict) else { return nil }
+        return StepToolCall(
+            providerID: providerID,
+            name: resolved.name,
+            argumentsJSON: normalizeArgumentsJSON(resolved.arguments))
     }
 
     private static func normalizeArgumentsJSON(_ value: Any?) -> String {
@@ -376,7 +229,10 @@ nonisolated enum ToolCallParsingHelpers {
         return String(describing: value)
     }
 
-    private static func stringValue(_ any: Any?) -> String? {
+    /// Non-empty string value of a JSON `Any?`, else nil. Internal (not
+    /// `private`) because `ToolCallShapeRecognizer` reads name fields through
+    /// it — a shared parsing utility, the documented purpose of this enum.
+    static func stringValue(_ any: Any?) -> String? {
         guard let any else { return nil }
         if let s = any as? String, !s.isEmpty { return s }
         return nil
@@ -686,7 +542,8 @@ nonisolated enum ToolCallParsingHelpers {
             return .malformedJSON
         }
 
-        return .missingToolName(inferredToolName: inferToolNameFromShape(dict)?.name)
+        return .missingToolName(
+            inferredToolName: ToolCallShapeRecognizer.inferToolNameFromShape(dict)?.name)
     }
 
     /// Returns true when the buffer's only envelope-shaped markers are

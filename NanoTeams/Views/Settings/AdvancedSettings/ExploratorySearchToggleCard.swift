@@ -26,6 +26,7 @@ struct ExploratorySearchToggleCard: View {
                             .foregroundStyle(Colors.textTertiary)
                     }
                 }
+                .toggleStyle(.terminal)
 
                 Toggle(isOn: $config.searchExploratoryByDefault) {
                     VStack(alignment: .leading, spacing: Spacing.xxs) {
@@ -36,6 +37,7 @@ struct ExploratorySearchToggleCard: View {
                             .foregroundStyle(Colors.textTertiary)
                     }
                 }
+                .toggleStyle(.terminal)
                 .disabled(!config.exploratorySearchEnabled)
             }
         }

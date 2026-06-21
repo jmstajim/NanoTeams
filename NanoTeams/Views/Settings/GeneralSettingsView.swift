@@ -3,7 +3,8 @@ import SwiftUI
 // MARK: - General Settings View
 
 struct GeneralSettingsView: View {
-    @AppStorage(UserDefaultsKeys.appAppearance) private var appAppearance: AppAppearance = .system
+    @AppStorage(UserDefaultsKeys.activeTheme) private var activeThemeRaw: String = Theme.defaultTheme.rawValue
+    @AppStorage(UserDefaultsKeys.spinnerGlitchEnabled) private var spinnerGlitchEnabled: Bool = true
     @Environment(NTMSOrchestrator.self) var store
     @Environment(StoreConfiguration.self) var config
     @State private var isShowingResetAppConfirmation = false
@@ -11,7 +12,6 @@ struct GeneralSettingsView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: Spacing.xl) {
-                themeCard
                 inputCard
                 globalContextCard
                 dangerZoneCard
@@ -28,7 +28,8 @@ struct GeneralSettingsView: View {
             Button("Reset Everything", role: .destructive) {
                 Task {
                     config.resetToDefaults()
-                    appAppearance = .system
+                    activeThemeRaw = Theme.defaultTheme.rawValue
+                    spinnerGlitchEnabled = true
                     await store.resetAllData()
                 }
             }
@@ -38,29 +39,7 @@ struct GeneralSettingsView: View {
         }
     }
 
-    // MARK: - Theme Card
-
-    private var themeCard: some View {
-        SettingsCard(
-            header: "Theme",
-            systemImage: "paintbrush.pointed",
-            footer: "Choose how NanoTeams looks on your device. System follows your macOS appearance setting."
-        ) {
-            HStack(spacing: Spacing.l) {
-                ForEach(AppAppearance.allCases) { appearance in
-                    ThemeButton(
-                        appearance: appearance,
-                        isSelected: appAppearance == appearance
-                    ) {
-                        withAnimation(Animations.quick) {
-                            appAppearance = appearance
-                        }
-                    }
-                }
-                Spacer()
-            }
-        }
-    }
+    // Theme picker moved to the dedicated `ThemeSettingsView` tab (Settings → Theme).
 
     // MARK: - Input Card
 
@@ -94,14 +73,7 @@ struct GeneralSettingsView: View {
 
     private var dangerZoneCard: some View {
         VStack(alignment: .leading, spacing: Spacing.s) {
-            HStack(spacing: Spacing.s) {
-                Image(systemName: "exclamationmark.triangle")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Colors.error)
-                Text("Danger Zone")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Colors.error)
-            }
+            MonoLabel(text: "Danger Zone", rule: true)
 
             VStack(alignment: .leading, spacing: Spacing.m) {
                 Button {
@@ -116,7 +88,7 @@ struct GeneralSettingsView: View {
                     .padding(.horizontal, Spacing.m)
                     .padding(.vertical, Spacing.xs)
                     .background(
-                        Capsule(style: .continuous)
+                        RoundedRectangle.squircle(CornerRadius.small)
                             .fill(Colors.errorTint)
                     )
                 }
@@ -158,14 +130,18 @@ struct SettingsToggleRow: View {
                 .frame(width: SettingsLayout.toggleIconSize, height: SettingsLayout.toggleIconSize)
                 .overlay(
                     Image(systemName: icon)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(Typography.caption)
+                        .foregroundStyle(Colors.textSecondary)
                 )
             Text(title)
                 .font(Typography.subheadline)
             Spacer()
+            // Terminal toggle propagates through the environment, but a leftover
+            // `.toggleStyle(.switch)` here would override that and re-introduce
+            // the AppKit sliding capsule. Pin `.terminal` explicitly so this
+            // shared settings row never regresses.
             Toggle("", isOn: $isOn)
-                .toggleStyle(.switch)
+                .toggleStyle(.terminal)
                 .labelsHidden()
         }
         .padding(.vertical, Spacing.xs)
@@ -179,67 +155,6 @@ struct SettingsToggleRow: View {
     }
 }
 
-// MARK: - Theme Button
-
-struct ThemeButton: View {
-    let appearance: AppAppearance
-    let isSelected: Bool
-    let action: () -> Void
-
-    @State private var isHovered = false
-    @ScaledMetric(relativeTo: .body) private var previewWidth: CGFloat = 80
-    @ScaledMetric(relativeTo: .body) private var previewHeight: CGFloat = 50
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: Spacing.s) {
-                ZStack {
-                    // Background fill (for light/dark) or split view (for system)
-                    if appearance == .system {
-                        HStack(spacing: 0) {
-                            Rectangle()
-                                .fill(Color.white)
-                            Rectangle()
-                                .fill(Color(white: 0.15))
-                        }
-                        .frame(width: previewWidth, height: previewHeight)
-                        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous))
-                    } else {
-                        RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
-                            .fill(themePreviewColor)
-                            .frame(width: previewWidth, height: previewHeight)
-                    }
-
-                    // Border on top
-                    RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
-                        .strokeBorder(
-                            isSelected ? Colors.accent : Color.primary.opacity(isHovered ? DynamicTintOpacity.stroke : DynamicTintOpacity.badge),
-                            lineWidth: isSelected ? 2 : 1
-                        )
-                        .frame(width: previewWidth, height: previewHeight)
-                }
-                .shadow(.ui)
-
-                Text(appearance.displayName)
-                    .font(isSelected ? Typography.captionSemibold : Typography.caption)
-                    .foregroundStyle(isSelected ? .primary : .secondary)
-            }
-        }
-        .buttonStyle(.plain)
-        .trackHover($isHovered)
-        .animation(Animations.quick, value: isSelected)
-        .animation(Animations.quick, value: isHovered)
-    }
-
-    private static let previewColorMap: [AppAppearance: Color] = [
-        .light: .white,
-        .dark: Color(white: 0.15),
-        .system: .clear,
-    ]
-
-    private var themePreviewColor: Color { Self.previewColorMap[appearance] ?? .clear }
-}
-
 // MARK: - Previews
 
 #Preview("General Settings") {
@@ -249,14 +164,4 @@ struct ThemeButton: View {
         .environment(store)
         .environment(config)
         .frame(width: 500, height: 600)
-}
-
-#Preview("Theme Buttons") {
-    HStack(spacing: Spacing.l) {
-        ThemeButton(appearance: .light, isSelected: false, action: {})
-        ThemeButton(appearance: .dark, isSelected: true, action: {})
-        ThemeButton(appearance: .system, isSelected: false, action: {})
-    }
-    .padding()
-    .background(Colors.surfacePrimary)
 }

@@ -78,18 +78,6 @@ struct TeamBoardView: View {
         return task.isReadyForFinalAcceptance
     }
 
-    /// Window subtitle: the next scheduled recurrence run, if the task repeats.
-    /// Empty otherwise (no subtitle shown).
-    private func automationSubtitle(for task: NTMSTask) -> String {
-        guard let recurrence = task.recurrence, recurrence.isEnabled, let next = recurrence.nextFireAt else {
-            return ""
-        }
-        let when = Calendar.current.isDateInToday(next)
-            ? next.formatted(date: .omitted, time: .shortened)
-            : next.formatted(date: .abbreviated, time: .shortened)
-        return "Next run: \(when)"
-    }
-
     var body: some View {
         if let task = task {
             content(for: task)
@@ -105,33 +93,42 @@ struct TeamBoardView: View {
 
     @ViewBuilder
     private func content(for task: NTMSTask) -> some View {
-        Group {
-            if isGraphPanelVisible {
-                HSplitView {
+        VStack(spacing: 0) {
+            Group {
+                if isGraphPanelVisible {
+                    HSplitView {
+                        chatPanel(for: task)
+                            .frame(minWidth: WindowLayout.teamBoardActivityMinWidth)
+                        graphPanel(for: task)
+                            .frame(minWidth: WindowLayout.teamBoardGraphMinWidth)
+                    }
+                } else {
                     chatPanel(for: task)
                         .frame(minWidth: WindowLayout.teamBoardActivityMinWidth)
-                    graphPanel(for: task)
-                        .frame(minWidth: WindowLayout.teamBoardGraphMinWidth)
                 }
-            } else {
-                chatPanel(for: task)
-                    .frame(minWidth: WindowLayout.teamBoardActivityMinWidth)
+            }
+            .frame(maxHeight: .infinity)
+            .background(WindowResizeMonitorAccessor(monitor: resizeMonitor))
+            .environment(\.windowResizeMonitor, resizeMonitor)
+            .background(NTMSBackground())
+            .overlay(alignment: .top) {
+                historicalRunBanner
             }
         }
-        .background(WindowResizeMonitorAccessor(monitor: resizeMonitor))
-        .environment(\.windowResizeMonitor, resizeMonitor)
-        .background(NTMSBackground())
-        .overlay(alignment: .top) {
-            historicalRunBanner
-        }
-        .toolbar {
-            // Play/pause left
-            ToolbarItemGroup(placement: .navigation) {
-                playPauseButton
-            }
-
-            // Right side actions
-            ToolbarItemGroup(placement: .primaryAction) {
+        // `TeamBoardTopBar` is the SOLE navbar — task/title + pause/resume +
+        // all right-side actions. Replaces the native `.toolbar` block so there's no round
+        // AppKit chrome sitting above the in-view bar.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            TeamBoardTopBar(
+                taskTitle: task.title,
+                teamName: resolvedTeam.name,
+                runLabel: displayedRun.map { "run #\($0.id)" },
+                engineState: engineState.taskEngineStates[task.id],
+                isHistoricalRun: isHistoricalRun,
+                onPause: { Task { await store.pauseRun(taskID: task.id) } },
+                onResume: { Task { await store.resumeRun(taskID: task.id) } },
+                onStart: { Task { await store.startRun(taskID: task.id) } }
+            ) {
                 autovisorRunNowButton
                 acceptTaskButton
                 automationButton
@@ -139,9 +136,7 @@ struct TeamBoardView: View {
                 graphToggleButton
             }
         }
-        .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
-        .navigationTitle(task.title)
-        .navigationSubtitle(automationSubtitle(for: task))
+        .navigationTitle("")
         .onAppear {
             if let roleID = store.pendingRoleSelection {
                 selectedRoleID = roleID
@@ -218,19 +213,19 @@ struct TeamBoardView: View {
                 Image(systemName: "clock.arrow.circlepath")
                     .foregroundStyle(Colors.warning)
                 Text("Viewing historical run")
-                    .font(.caption)
+                    .font(Typography.caption)
                 Spacer()
                 Button("Back to current") {
                     store.selectedRunID = nil
                 }
-                .font(.caption)
-                .buttonStyle(.bordered)
+                .font(Typography.caption)
+                .buttonStyle(.terminalSecondary)
                 .controlSize(.small)
             }
             .padding(.horizontal, Spacing.m)
             .padding(.vertical, Spacing.s)
             .background(
-                RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous)
+                RoundedRectangle.squircle(CornerRadius.small)
                     .fill(Colors.warningTint)
             )
             .padding(.horizontal, Spacing.s)

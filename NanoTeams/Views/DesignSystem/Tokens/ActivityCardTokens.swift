@@ -3,7 +3,11 @@ import SwiftUI
 /// Unified design tokens for Team Activity Feed cards.
 enum ActivityCardTokens {
     /// Avatar size for all card types
-    static let avatarSize: CGFloat = 32
+    static let avatarSize: CGFloat = 22
+    /// Avatar icon glyph size — pinned to `Typography.termSm` (12pt) so every
+    /// role avatar renders its SF Symbol at the same point size regardless of
+    /// the glyph's intrinsic metrics.
+    static let avatarIconSize: CGFloat = 12
     /// Card outer padding
     static let cardPadding: CGFloat = Spacing.m  // 12pt
     /// Spacing between content elements

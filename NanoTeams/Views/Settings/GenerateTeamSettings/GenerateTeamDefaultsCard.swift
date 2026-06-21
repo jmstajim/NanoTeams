@@ -19,14 +19,11 @@ struct GenerateTeamDefaultsCard: View {
                 Text("Supervisor Mode")
                     .font(Typography.subheadline)
                 Spacer()
-                Picker("", selection: $config.teamGenForcedSupervisorMode) {
-                    Text("Auto (LLM decides)").tag(Optional<SupervisorMode>.none)
-                    ForEach(SupervisorMode.allCases, id: \.self) { mode in
-                        Text(mode.displayName).tag(Optional<SupervisorMode>.some(mode))
-                    }
-                }
-                .pickerStyle(.menu)
-                .labelsHidden()
+                TerminalPicker(
+                    selection: $config.teamGenForcedSupervisorMode,
+                    options: [(Optional<SupervisorMode>.none, "Auto (LLM decides)")]
+                        + SupervisorMode.allCases.map { (Optional<SupervisorMode>.some($0), $0.displayName) }
+                )
                 .frame(maxWidth: 220)
             }
 
@@ -34,14 +31,11 @@ struct GenerateTeamDefaultsCard: View {
                 Text("Acceptance Mode")
                     .font(Typography.subheadline)
                 Spacer()
-                Picker("", selection: $config.teamGenForcedAcceptanceMode) {
-                    Text("Auto (LLM decides)").tag(Optional<AcceptanceMode>.none)
-                    ForEach(Self.acceptanceModes, id: \.self) { mode in
-                        Text(mode.displayName).tag(Optional<AcceptanceMode>.some(mode))
-                    }
-                }
-                .pickerStyle(.menu)
-                .labelsHidden()
+                TerminalPicker(
+                    selection: $config.teamGenForcedAcceptanceMode,
+                    options: [(Optional<AcceptanceMode>.none, "Auto (LLM decides)")]
+                        + Self.acceptanceModes.map { (Optional<AcceptanceMode>.some($0), $0.displayName) }
+                )
                 .frame(maxWidth: 220)
             }
         }

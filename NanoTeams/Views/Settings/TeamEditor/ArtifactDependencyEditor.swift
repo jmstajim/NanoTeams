@@ -16,12 +16,9 @@ struct ArtifactDependencyEditor: View {
         VStack(alignment: .leading, spacing: Spacing.standard) {
             // Required Artifacts
             VStack(alignment: .leading, spacing: Spacing.s) {
-                HStack {
-                    Image(systemName: "arrow.down.circle.fill")
-                        .foregroundStyle(Colors.info)
-                    Text("Required Artifacts")
-                        .font(.subheadline)
-                        .fontWeight(.medium)
+                HStack(spacing: Spacing.xs) {
+                    Text("↓").font(Typography.termSm).foregroundStyle(Colors.info)
+                    MonoLabel(text: "Required Artifacts")
                 }
 
                 ArtifactSelectorView(
@@ -32,16 +29,13 @@ struct ArtifactDependencyEditor: View {
                 )
             }
 
-            Divider()
+            TerminalDivider()
 
             // Produced Artifacts
             VStack(alignment: .leading, spacing: Spacing.s) {
-                HStack {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .foregroundStyle(Colors.artifact)
-                    Text("Produced Artifacts")
-                        .font(.subheadline)
-                        .fontWeight(.medium)
+                HStack(spacing: Spacing.xs) {
+                    Text("↑").font(Typography.termSm).foregroundStyle(Colors.artifact)
+                    MonoLabel(text: "Produced Artifacts")
                 }
 
                 ArtifactSelectorView(
@@ -73,8 +67,8 @@ struct ArtifactSelectorView: View {
             // Selected artifacts (with remove button)
             if selected.isEmpty {
                 Text(placeholder)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(Typography.caption)
+                    .foregroundStyle(Colors.textSecondary)
                     .italic()
                     .padding(Spacing.s)
             } else {
@@ -82,29 +76,33 @@ struct ArtifactSelectorView: View {
                     ForEach(selected, id: \.self) { artifact in
                         HStack(spacing: Spacing.xs) {
                             Text(artifact)
-                                .font(.caption)
+                                .font(Typography.caption)
 
                             Button {
                                 selected.removeAll { $0 == artifact }
                             } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                Image(systemName: "xmark.circle")
+                                    .font(Typography.caption)
+                                    .foregroundStyle(Colors.textSecondary)
                             }
                             .buttonStyle(.plain)
                         }
                         .padding(.horizontal, Spacing.s)
                         .padding(.vertical, Spacing.xs)
+                        // Squared chip — DS sharp corners (was `Capsule`).
                         .background(
-                            Capsule(style: .continuous)
+                            RoundedRectangle.squircle(CornerRadius.small)
                                 .fill(Colors.surfaceCard)
                         )
-                        
+                        .overlay(
+                            RoundedRectangle.squircle(CornerRadius.small)
+                                .strokeBorder(Colors.borderSubtle, lineWidth: 1)
+                        )
                     }
                 }
             }
 
-            // Add artifact menu
+            // Add artifact menu — terminal-style chrome over a native borderless Menu
             Menu {
                 ForEach(remaining, id: \.self) { artifact in
                     Button(artifact) {
@@ -114,7 +112,7 @@ struct ArtifactSelectorView: View {
 
                 if remaining.isEmpty {
                     Text("All artifacts selected")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Colors.textSecondary)
                 }
 
                 if let onCreateNew {
@@ -124,16 +122,35 @@ struct ArtifactSelectorView: View {
                     }
                 }
             } label: {
-                Label("Add Artifact", systemImage: "plus.circle")
-                    .font(.caption)
+                HStack(spacing: Spacing.xs) {
+                    Image(systemName: "plus")
+                        .font(Typography.caption)
+                    Text("Add Artifact")
+                        .font(Typography.caption)
+                    Image(systemName: "chevron.down")
+                        .font(Typography.term2xs)
+                        .foregroundStyle(Colors.textTertiary)
+                }
+                .foregroundStyle(Colors.textPrimary)
+                .padding(.horizontal, Spacing.s)
+                .padding(.vertical, Spacing.xxs)
+                .background(
+                    RoundedRectangle.squircle(CornerRadius.small)
+                        .fill(Colors.surfaceElevated)
+                )
+                .overlay(
+                    RoundedRectangle.squircle(CornerRadius.small)
+                        .strokeBorder(Colors.borderSubtle, lineWidth: 1)
+                )
             }
-            .menuStyle(.button)
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
             .fixedSize()
             .disabled(remaining.isEmpty && onCreateNew == nil)
         }
         .padding(Spacing.m)
         .background(
-            RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
+            RoundedRectangle.squircle(CornerRadius.medium)
                 .fill(Colors.surfacePrimary)
         )
         

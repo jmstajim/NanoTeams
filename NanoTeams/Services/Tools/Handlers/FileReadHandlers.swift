@@ -37,33 +37,20 @@ nonisolated struct ReadFileTool: ToolHandler {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let path = try requiredString(args, "path")
 
-            let fileURL = try resolver.resolveFileURL(relativePath: path)
-
-            var isDir: ObjCBool = false
-            guard fileManager.fileExists(atPath: fileURL.path, isDirectory: &isDir) else {
-                return makeErrorResult(
-                    toolName: Self.name, args: args,
-                    code: .fileNotFound, message: "File not found: \(path)",
-                    next: NextHint(
-                        suggested_cmd: TN.listFiles,
-                        suggested_args: ["path": (path as NSString).deletingLastPathComponent],
-                        reason: "Check available files"
-                    )
+            // Resolve + validate (existence, RTFD-as-file, directory rejection).
+            // read_file's not-found hint points at the parent directory.
+            let fileURL: URL
+            switch try FileReadSupport.resolveReadableFile(
+                toolName: Self.name, args: args, path: path,
+                resolver: resolver, fileManager: fileManager,
+                notFoundNext: NextHint(
+                    suggested_cmd: TN.listFiles,
+                    suggested_args: ["path": (path as NSString).deletingLastPathComponent],
+                    reason: "Check available files"
                 )
-            }
-
-            // RTFD is a file-bundle directory — treat as a single document.
-            let isRTFDBundle = isDir.boolValue && fileURL.pathExtension.lowercased() == "rtfd"
-            guard !isDir.boolValue || isRTFDBundle else {
-                return makeErrorResult(
-                    toolName: Self.name, args: args,
-                    code: .notAFile, message: "Path is a directory: \(path)",
-                    next: NextHint(
-                        suggested_cmd: TN.listFiles,
-                        suggested_args: ["path": path],
-                        reason: "List directory contents"
-                    )
-                )
+            ) {
+            case .file(let url): fileURL = url
+            case .rejected(let err): return err
             }
 
             struct ReadFileData: Codable {
@@ -78,28 +65,11 @@ nonisolated struct ReadFileTool: ToolHandler {
             // Extract content (PDF/DOCX/RTF/etc. → plain text; otherwise raw UTF-8).
             let fullContent: String
             let encoding: String
-            if let extracted = DocumentTextExtractor.extractText(from: fileURL) {
-                if DocumentTextExtractor.isFailureMessage(extracted) {
-                    return makeErrorResult(
-                        toolName: Self.name, args: args,
-                        code: .commandFailed, message: extracted
-                    )
-                }
-                fullContent = extracted
-                encoding = "extracted_text"
-            } else {
-                // A nil decode here means the file is binary or non-UTF-8.
-                // Returning empty content would make the LLM mistake the file
-                // for genuinely empty — surface a clear error envelope instead.
-                guard let utf8 = try? String(contentsOf: fileURL, encoding: .utf8) else {
-                    return makeErrorResult(
-                        toolName: Self.name, args: args,
-                        code: .commandFailed,
-                        message: "File is not valid UTF-8 — appears to be binary or in another encoding: \(path)"
-                    )
-                }
-                fullContent = utf8
-                encoding = "utf-8"
+            switch FileReadSupport.extractContent(
+                toolName: Self.name, args: args, path: path, fileURL: fileURL
+            ) {
+            case .text(let content, let enc): fullContent = content; encoding = enc
+            case .failure(let err): return err
             }
 
             let allLines = fullContent.components(separatedBy: .newlines)
@@ -194,40 +164,22 @@ nonisolated struct ReadLinesTool: ToolHandler {
                 )
             }
 
-            let fileURL = try resolver.resolveFileURL(relativePath: path)
-
-            var isDir: ObjCBool = false
-            guard fileManager.fileExists(atPath: fileURL.path, isDirectory: &isDir) else {
-                return makeErrorResult(
-                    toolName: Self.name, args: args,
-                    code: .fileNotFound, message: "File not found: \(path)"
-                )
-            }
-
-            let isRTFDBundle = isDir.boolValue && fileURL.pathExtension.lowercased() == "rtfd"
-            if isDir.boolValue && !isRTFDBundle {
-                return makeErrorResult(
-                    toolName: Self.name, args: args,
-                    code: .notAFile, message: "Path is a directory: \(path)",
-                    next: NextHint(
-                        suggested_cmd: TN.listFiles,
-                        suggested_args: ["path": path],
-                        reason: "List directory contents"
-                    )
-                )
+            // Resolve + validate. read_lines omits the not-found hint.
+            let fileURL: URL
+            switch try FileReadSupport.resolveReadableFile(
+                toolName: Self.name, args: args, path: path,
+                resolver: resolver, fileManager: fileManager, notFoundNext: nil
+            ) {
+            case .file(let url): fileURL = url
+            case .rejected(let err): return err
             }
 
             let content: String
-            if let extracted = DocumentTextExtractor.extractText(from: fileURL) {
-                if DocumentTextExtractor.isFailureMessage(extracted) {
-                    return makeErrorResult(
-                        toolName: Self.name, args: args,
-                        code: .commandFailed, message: extracted
-                    )
-                }
-                content = extracted
-            } else {
-                content = try String(contentsOf: fileURL, encoding: .utf8)
+            switch FileReadSupport.extractContent(
+                toolName: Self.name, args: args, path: path, fileURL: fileURL
+            ) {
+            case .text(let extracted, _): content = extracted
+            case .failure(let err): return err
             }
             let allLines = content.components(separatedBy: .newlines)
             let totalLines = allLines.count

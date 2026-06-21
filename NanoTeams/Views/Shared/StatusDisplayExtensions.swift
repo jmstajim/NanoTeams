@@ -43,11 +43,11 @@ extension StepStatus {
     private static let systemImageNameMap: [StepStatus: String] = [
         .pending: "circle.dotted",
         .running: "circle.inset.filled",
-        .paused: "pause.circle.fill",
-        .needsSupervisorInput: "questionmark.bubble.fill",
-        .needsApproval: "checkmark.seal.fill",
-        .failed: "xmark.circle.fill",
-        .done: "checkmark.circle.fill",
+        .paused: "pause.circle",
+        .needsSupervisorInput: "questionmark.bubble",
+        .needsApproval: "checkmark.seal",
+        .failed: "xmark.circle",
+        .done: "checkmark.circle",
     ]
 
     var systemImageName: String {
@@ -74,12 +74,12 @@ extension TaskStatus {
 
     private static let systemImageNameMap: [TaskStatus: String] = [
         .running: "circle.inset.filled",
-        .done: "checkmark.circle.fill",
-        .paused: "pause.circle.fill",
+        .done: "checkmark.circle",
+        .paused: "pause.circle",
         .waiting: "circle",
-        .needsSupervisorInput: "questionmark.bubble.fill",
-        .needsSupervisorAcceptance: "eye.circle.fill",
-        .failed: "xmark.circle.fill",
+        .needsSupervisorInput: "questionmark.bubble",
+        .needsSupervisorAcceptance: "eye.circle",
+        .failed: "xmark.circle",
     ]
 
     var systemImageName: String {
@@ -107,8 +107,60 @@ extension TaskStatus {
     func systemImageName(isChatMode: Bool) -> String {
         guard isChatMode else { return systemImageName }
         switch self {
-        case .running, .needsSupervisorInput, .paused: return "bubble.left.and.bubble.right.fill"
+        case .running, .needsSupervisorInput, .paused: return "bubble.left.and.bubble.right"
         default: return systemImageName
+        }
+    }
+}
+
+// MARK: - TeamEngineState Display Extensions
+
+extension TeamEngineState {
+    /// One canonical visual descriptor for a team engine state — terminal glyph,
+    /// lowercase label, foreground color, and the matching tint background.
+    ///
+    /// Single source of truth shared by the Team Board navbar badge
+    /// (`TeamBoardTopBar`) and the delegation-layer graph pills
+    /// (`GraphPanelView`) so the same engine state never renders two different
+    /// colors. Colors mirror the `TaskStatus` / `StepStatus` semantic palette
+    /// above (running→info, paused→warning, needsAcceptance→purple,
+    /// needsSupervisorInput→gold, done→success, failed→error, idle→tertiary).
+    nonisolated struct Display {
+        let glyph: String
+        let label: String
+        let color: Color
+        let tint: Color
+    }
+
+    /// Resolves the display descriptor for an optional engine state. `nil`
+    /// (no engine yet) and `.pending` both read as idle. `isChatMode` swaps the
+    /// `.running` label from "working" to "chat" (the navbar badge distinction).
+    /// `nonisolated` (the body only reads nonisolated `Colors` / `TerminalGlyph`)
+    /// so it's callable from tests even though `TeamEngineState` is `@MainActor`.
+    nonisolated static func display(for state: TeamEngineState?, isChatMode: Bool = false) -> Display {
+        switch state {
+        case .running:
+            return Display(glyph: TerminalGlyph.working,
+                           label: isChatMode ? "chat" : "working",
+                           color: Colors.info, tint: Colors.infoTint)
+        case .paused:
+            return Display(glyph: TerminalGlyph.paused, label: "paused",
+                           color: Colors.warning, tint: Colors.warningTint)
+        case .needsAcceptance:
+            return Display(glyph: TerminalGlyph.review, label: "review",
+                           color: Colors.purple, tint: Colors.purpleTint)
+        case .needsSupervisorInput:
+            return Display(glyph: TerminalGlyph.prompt, label: "needs input",
+                           color: Colors.gold, tint: Colors.warningTint)
+        case .done:
+            return Display(glyph: TerminalGlyph.done, label: "done",
+                           color: Colors.success, tint: Colors.neutralTint)
+        case .failed:
+            return Display(glyph: TerminalGlyph.failed, label: "failed",
+                           color: Colors.error, tint: Colors.errorTint)
+        case .pending, .none:
+            return Display(glyph: TerminalGlyph.idle, label: "idle",
+                           color: Colors.textTertiary, tint: Colors.dimTint)
         }
     }
 }

@@ -23,9 +23,7 @@ struct PromptPreviewSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Full Prompt Preview")
-                    .font(.title3)
-                    .fontWeight(.semibold)
+                MonoLabel(text: "Full Prompt Preview", marker: true)
 
                 Spacer()
 
@@ -36,19 +34,21 @@ struct PromptPreviewSheet: View {
                     }
                 } label: {
                     Label("Copy", systemImage: "doc.on.doc")
-                        .font(.caption)
+                        .font(Typography.caption)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.terminalSecondary)
                 .controlSize(.small)
                 .disabled(rendered.plain == nil)
 
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.cancelAction)
+                    .buttonStyle(.terminalSecondary)
+                    .controlSize(.small)
             }
             .padding(.horizontal, Spacing.standard)
             .padding(.vertical, Spacing.m)
 
-            Divider()
+            TerminalDivider()
 
             switch rendered {
             case .notRendered:
@@ -144,13 +144,14 @@ struct WirePreviewUnavailableView: View {
     var body: some View {
         VStack(spacing: Spacing.s) {
             Image(systemName: "wand.and.stars")
-                .font(.largeTitle)
-                .foregroundStyle(.secondary)
+                .font(Typography.term3xl)
+                .foregroundStyle(Colors.textSecondary)
             Text("Preview unavailable")
-                .font(.headline)
+                .font(Typography.termLg)
+                .foregroundStyle(Colors.textPrimary)
             Text(error.description)
-                .font(.callout)
-                .foregroundStyle(.secondary)
+                .font(Typography.termBase)
+                .foregroundStyle(Colors.textSecondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, Spacing.l)
         }

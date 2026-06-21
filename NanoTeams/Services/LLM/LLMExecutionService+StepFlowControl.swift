@@ -242,7 +242,7 @@ extension LLMExecutionService {
         // stateful continuation would send `{"input":""}` and LM Studio rejects
         // with HTTP 400.
         if let systemMsg = conversationMessages.first(where: { $0.role == .system }),
-           systemMsg.content?.contains("PLANNING PHASE") == true {
+           PlanningPhasePolicy.isPlanningSystemPrompt(systemMsg.content) {
             let plan = cleanedContent.isEmpty ? "(no plan provided)" : cleanedContent
             if let delegate, isExecutionLive(stepID: stepID, taskID: task.id) {
                 _ = await delegate.mutateTask(taskID: task.id) { task in
@@ -601,37 +601,26 @@ extension LLMExecutionService {
         // prompt to PLANNING PHASE, filter tools to update_scratchpad, and
         // saveLLMConversation below would wipe llmConversation — including the
         // just-appended revision-feedback message.
-        let isFirstIteration = step.scratchpad == nil
-            && tracker.recentCalls(limit: 1).isEmpty
-            && step.revisionComment == nil
+        let isFirstIteration = PlanningPhasePolicy.isFirstIteration(
+            scratchpadIsNil: step.scratchpad == nil,
+            hasNoRecentCalls: tracker.recentCalls(limit: 1).isEmpty,
+            revisionCommentIsNil: step.revisionComment == nil
+        )
         let hasPriorConversation = !step.llmConversation.isEmpty
-        let hasScratchpadTool = tools.contains { $0.name == ToolNames.updateScratchpad }
+        let hasScratchpadTool = PlanningPhasePolicy.hasScratchpadTool(in: tools)
 
-        if usePlanningPhase && isFirstIteration && hasScratchpadTool {
+        if PlanningPhasePolicy.shouldEnterPlanning(
+            isFirstIteration: isFirstIteration,
+            usePlanningPhase: usePlanningPhase,
+            hasScratchpadTool: hasScratchpadTool
+        ) {
             // Save original system prompt before replacing
             if let systemMsg = conversationMessages.first(where: { $0.role == .system }) {
                 executionStates[stepKey]?.originalSystemPrompt = systemMsg.content
             }
 
-            // Planning-phase prompt intentionally omits an inline tool-call example:
-            // `buildToolSchemaSection` already appends a single `## Tool Calling`
-            // block (with the Harmony format + a concrete example) to every system
-            // prompt, and a second inline example in a different syntax produces
-            // mixed-format output on smaller models.
-            let basePlanningPrompt = """
-            You are \(roleForMessage.displayName).
-
-            ## PLANNING PHASE
-            Before starting work, create your plan.
-
-            Call `update_scratchpad` with a numbered list of steps you will take, for example:
-            1. Review the requirements
-            2. Research relevant context
-            3. Create an outline
-            4. Produce the deliverable
-
-            This is the only tool available now. After you create your plan, you will have access to all your tools.
-            """
+            let basePlanningPrompt = PlanningPhasePolicy.basePlanningPrompt(
+                roleName: roleForMessage.displayName)
             let planningSystemPrompt = TemplateResolver.appendingSeparator(
                 delegate?.globalLLMContext ?? "",
                 to: basePlanningPrompt
@@ -644,13 +633,13 @@ extension LLMExecutionService {
                 )
             }
             await saveLLMConversation(stepID: stepID, taskID: taskID, messages: conversationMessages)
-            return (tools.filter { $0.name == ToolNames.updateScratchpad }, resetSession: false)
+            return (PlanningPhasePolicy.planningTools(from: tools), resetSession: false)
         } else {
             // Restore original system prompt after planning phase
             var didRestorePrompt = false
             if let savedPrompt = executionStates[stepKey]?.originalSystemPrompt,
                let systemIdx = conversationMessages.firstIndex(where: { $0.role == .system }),
-               conversationMessages[systemIdx].content?.contains("PLANNING PHASE") == true {
+               PlanningPhasePolicy.isPlanningSystemPrompt(conversationMessages[systemIdx].content) {
                 conversationMessages[systemIdx] = ChatMessage(
                     role: .system,
                     content: savedPrompt

@@ -63,12 +63,10 @@ struct GenerateTeamSheet: View {
     private var header: some View {
         HStack(alignment: .top, spacing: Spacing.s) {
             VStack(alignment: .leading, spacing: Spacing.xs) {
-                Text("Generate a team")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(Colors.textPrimary)
+                MonoLabel(text: "Generate a team", marker: true)
 
                 Text("Describe what you need the team for — a task, a project, or a goal.")
-                    .font(.caption)
+                    .font(Typography.caption)
                     .foregroundStyle(Colors.textSecondary)
             }
             Spacer(minLength: 0)
@@ -79,28 +77,31 @@ struct GenerateTeamSheet: View {
     // MARK: - Input
 
     private var inputField: some View {
-        TextField(
-            "e.g. Build a REST API with auth, or A team for weekly content planning…",
-            text: $taskDescription,
-            axis: .vertical
-        )
-        .lineLimit(5...15)
-        .textFieldStyle(.plain)
-        .font(.system(size: 13))
-        .foregroundStyle(Colors.textPrimary)
+        HStack(alignment: .top, spacing: Spacing.xs) {
+            PromptMarker(cursor: true)
+            TextField(
+                "e.g. Build a REST API with auth, or A team for weekly content planning…",
+                text: $taskDescription,
+                axis: .vertical
+            )
+            .lineLimit(5...15)
+            .textFieldStyle(.plain)
+            .font(Typography.termBase)
+            .foregroundStyle(Colors.textPrimary)
+            .focused($isFocused)
+            .disabled(isGenerating)
+        }
         .padding(Spacing.s)
         .frame(minHeight: 220, alignment: .topLeading)
         .background(
             RoundedRectangle.squircle(CornerRadius.small)
                 .fill(Colors.surfaceElevated)
         )
-        .focused($isFocused)
-        .disabled(isGenerating)
     }
 
     private func errorBanner(_ message: String) -> some View {
         Text(message)
-            .font(.caption2)
+            .font(Typography.term2xs)
             .foregroundStyle(Colors.error)
     }
 
@@ -116,12 +117,12 @@ struct GenerateTeamSheet: View {
                 submit()
             } label: {
                 Text("Generate")
-                    .font(.subheadline.weight(.semibold))
+                    .font(Typography.subheadlineSemibold)
                     .foregroundStyle(canSubmit ? Colors.textOnAccent : Colors.textTertiary)
                     .padding(.horizontal, Spacing.standard)
                     .padding(.vertical, Spacing.s)
                     .background(
-                        Capsule()
+                        RoundedRectangle.squircle(CornerRadius.small)
                             .fill(canSubmit ? Colors.accent : Colors.surfaceElevated)
                     )
             }
@@ -138,9 +139,7 @@ struct GenerateTeamSheet: View {
         VStack(spacing: Spacing.m) {
             Spacer(minLength: 0)
             NTMSLoader(.large)
-            Text("Generating team…")
-                .font(Typography.captionSemibold)
-                .foregroundStyle(.secondary)
+            MonoLabel(text: "Generating team", accent: true)
             Spacer(minLength: 0)
             capsuleCancelButton
         }
@@ -150,11 +149,11 @@ struct GenerateTeamSheet: View {
     private var capsuleCancelButton: some View {
         Button(action: cancel) {
             Text("Cancel")
-                .font(.subheadline.weight(.semibold))
+                .font(Typography.subheadlineSemibold)
                 .foregroundStyle(Colors.textSecondary)
                 .padding(.horizontal, Spacing.standard)
                 .padding(.vertical, Spacing.s)
-                .background(Capsule().fill(Colors.surfaceElevated))
+                .background(RoundedRectangle.squircle(CornerRadius.small).fill(Colors.surfaceElevated))
         }
         .buttonStyle(.plain)
     }

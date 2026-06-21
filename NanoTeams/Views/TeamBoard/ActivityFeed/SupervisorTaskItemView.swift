@@ -25,13 +25,14 @@ struct SupervisorTaskItemView: View {
 
             VStack(alignment: .leading, spacing: Spacing.xs) {
                 HStack(spacing: Spacing.s) {
+                    PromptMarker()
                     Text("Supervisor")
-                        .font(.caption.weight(.semibold))
+                        .font(Typography.captionSemibold)
                         .foregroundStyle(Role.supervisor.tintColor)
                     Spacer()
                     Text(createdAt.formatted(date: .omitted, time: .shortened))
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .font(Typography.term2xs)
+                        .foregroundStyle(Colors.textTertiary)
                 }
 
                 if !trimmedTask.isEmpty {
@@ -43,7 +44,7 @@ struct SupervisorTaskItemView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(ActivityCardTokens.cardPadding)
                         .background(
-                            RoundedRectangle(cornerRadius: ActivityCardTokens.cornerRadius, style: .continuous)
+                            RoundedRectangle.squircle(ActivityCardTokens.cornerRadius)
                                 .fill(Colors.surfaceElevated)
                         )
                 }

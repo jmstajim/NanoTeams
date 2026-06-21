@@ -58,7 +58,7 @@ struct ActivityFeedActionBar: View {
         return content()
             .padding(Spacing.m)
             .background(
-                RoundedRectangle(cornerRadius: CornerRadius.large, style: .continuous)
+                RoundedRectangle.squircle(CornerRadius.large)
                     .fill(isHovered ? Colors.surfaceHover : Colors.surfaceCard)
             )
             .animation(Animations.quick, value: isHovered)
@@ -70,31 +70,33 @@ struct ActivityFeedActionBar: View {
     private var taskCompletedCard: some View {
         cardChrome(id: "task-review") {
             HStack(spacing: Spacing.m) {
-                Image(systemName: allArtifactsReady ? "checkmark.seal.fill" : "clock.badge.checkmark")
-                    .font(.title3)
-                    .foregroundStyle(allArtifactsReady ? Colors.success : Colors.purple)
-                    .accessibilityHidden(true)
+                StatusGlyph(
+                    glyph: allArtifactsReady ? TerminalGlyph.done : TerminalGlyph.review,
+                    color: allArtifactsReady ? Colors.success : Colors.purple,
+                    font: Typography.termMd
+                )
+                .accessibilityHidden(true)
 
                 // Title + subtitle
                 VStack(alignment: .leading, spacing: Spacing.xxs) {
                     HStack(spacing: Spacing.xs) {
-                        Text("Ready for Review")
-                            .font(Typography.subheadlineSemibold)
+                        MonoLabel(text: "Ready for Review")
                         if !normalizedArtifacts.isEmpty {
                             Text("\(readyCount)/\(normalizedArtifacts.count)")
-                                .font(.caption2.weight(.bold).monospacedDigit())
-                                .foregroundStyle(.secondary)
+                                .font(Typography.term2xs.weight(.bold))
+                                .monospacedDigit()
+                                .foregroundStyle(Colors.textSecondary)
                                 .padding(.horizontal, 5)
                                 .padding(.vertical, 1)
                                 .background(
-                                    Capsule(style: .continuous)
+                                    RoundedRectangle.squircle(CornerRadius.micro)
                                         .fill(Colors.surfaceElevated)
                                 )
                         }
                     }
                     Text(reviewSubtitle)
                         .font(Typography.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Colors.textSecondary)
                 }
 
                 Spacer()
@@ -103,12 +105,10 @@ struct ActivityFeedActionBar: View {
                 Button {
                     onReviewTask?()
                 } label: {
-                    Label("Review Task", systemImage: "eye.circle.fill")
-                        .font(.caption.weight(.semibold))
+                    Label("Review Task", systemImage: "eye.circle")
+                        .font(Typography.captionSemibold)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(Colors.purple)
-                .clipShape(Capsule(style: .continuous))
+                .buttonStyle(.terminalPrimary)
                 .controlSize(.small)
             }
         }
@@ -119,18 +119,17 @@ struct ActivityFeedActionBar: View {
     private func acceptanceCard(roleID: String, roleName: String) -> some View {
         cardChrome(id: "accept-\(roleID)") {
             HStack(spacing: Spacing.m) {
-                Image(systemName: "person.crop.circle.badge.checkmark")
-                    .font(.title3)
-                    .foregroundStyle(Colors.purple)
+                StatusGlyph(glyph: TerminalGlyph.review, color: Colors.purple, font: Typography.termMd)
                     .accessibilityHidden(true)
 
                 // Title + subtitle
                 VStack(alignment: .leading, spacing: Spacing.xxs) {
                     Text(roleName)
                         .font(Typography.subheadlineSemibold)
+                        .foregroundStyle(Colors.textPrimary)
                     Text("Awaiting review")
                         .font(Typography.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Colors.textSecondary)
                 }
 
                 Spacer()
@@ -140,16 +139,16 @@ struct ActivityFeedActionBar: View {
                     if filterRoleID != roleID {
                         Button { onSelectRole?(roleID) } label: {
                             Image(systemName: "arrow.right.circle")
-                                .font(.body)
+                                .font(Typography.termBase)
                         }
                         .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Colors.textSecondary)
                         .help("View role output")
                     }
 
                     Button { onRequestChanges?(roleID) } label: {
                         Image(systemName: "arrow.counterclockwise")
-                            .font(.body)
+                            .font(Typography.termBase)
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(Colors.warning)
@@ -159,11 +158,9 @@ struct ActivityFeedActionBar: View {
                         Task { await onAcceptRole?(roleID) }
                     } label: {
                         Label("Accept", systemImage: "checkmark")
-                            .font(.caption.weight(.semibold))
+                            .font(Typography.captionSemibold)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Colors.success)
-                    .clipShape(Capsule(style: .continuous))
+                    .buttonStyle(.terminalPrimary)
                     .controlSize(.small)
                 }
             }
@@ -279,8 +276,8 @@ struct ActivityFeedActionBar: View {
 private func previewSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
     VStack(alignment: .leading, spacing: 4) {
         Text(title)
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.tertiary)
+            .font(Typography.term2xs.weight(.semibold))
+            .foregroundStyle(Colors.textTertiary)
             .padding(.leading, Spacing.s)
         content()
     }

@@ -18,18 +18,49 @@ struct ToolDefinitionEditorView: View {
         SettingsMasterDetailView(
             hasSelection: selectedToolBinding != nil,
             master: {
-                List(selection: $selectedToolID) {
-                    ForEach(categorizedTools, id: \.category.id) { group in
-                        Section(group.category.name) {
-                            ForEach(group.tools) { tool in
-                                toolRow(tool)
-                                    .tag(tool.id)
-                            }
+                VStack(spacing: 0) {
+                    // "Restore Defaults" pill — Pass 29 moved this out of the
+                    // native `.toolbar` block (round AppKit bezel) into a flat
+                    // DS pill at the top of the master pane so the Settings
+                    // sheet has no AppKit chrome above the in-view content.
+                    HStack {
+                        Spacer()
+                        SettingsPillButton(
+                            title: "Restore Defaults",
+                            icon: "arrow.counterclockwise",
+                            isDestructive: true
+                        ) {
+                            isShowingRestoreConfirmation = true
                         }
                     }
+                    .padding(.horizontal, Spacing.s)
+                    .padding(.top, Spacing.s)
+
+                    // DS-styled list: no native `List` (it brings native indigo
+                    // selection + row dividers). Hover/selected backgrounds use
+                    // `surfaceHover` / `accentTint`, squircle corners, no dividers.
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: Spacing.m) {
+                            ForEach(categorizedTools, id: \.category.id) { group in
+                                VStack(alignment: .leading, spacing: Spacing.xxs) {
+                                    NTMSSectionHeader(title: group.category.name)
+                                        .padding(.horizontal, Spacing.s)
+
+                                    ForEach(group.tools) { tool in
+                                        ToolDefinitionListRow(
+                                            tool: tool,
+                                            isSelected: selectedToolID == tool.id,
+                                            onSelect: { selectedToolID = tool.id }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        .padding(.horizontal, Spacing.s)
+                        .padding(.vertical, Spacing.s)
+                    }
+                    .scrollContentBackground(.hidden)
                 }
-                .listStyle(.inset)
-                .scrollContentBackground(.hidden)
             },
             detail: {
                 if selectedToolBinding != nil {
@@ -64,15 +95,6 @@ struct ToolDefinitionEditorView: View {
         }
         .onChange(of: tools) { _, _ in
             Task { await save() }
-        }
-        .toolbar {
-            ToolbarItem(placement: .automatic) {
-                Button {
-                    isShowingRestoreConfirmation = true
-                } label: {
-                    Label("Restore Defaults", systemImage: "arrow.counterclockwise")
-                }
-            }
         }
         .confirmationDialog(
             "Restore Default Tools?",
@@ -109,17 +131,12 @@ struct ToolDefinitionEditorView: View {
         let uncategorized = tools.filter { !usedIDs.contains($0.id) }
         if !uncategorized.isEmpty {
             let otherCategory = ToolConstants.ToolCategoryDisplay(
-                id: "other", name: "Other", icon: "ellipsis.circle.fill", tools: []
+                id: "other", name: "Other", icon: "ellipsis", tools: []
             )
             groups.append(ToolCategoryGroup(category: otherCategory, tools: uncategorized))
         }
 
         return groups
-    }
-
-    private func toolRow(_ tool: ToolDefinitionRecord) -> some View {
-        Text(tool.name)
-            .font(.system(.callout, design: .monospaced))
     }
 
     private var selectedToolBinding: Binding<ToolDefinitionRecord>? {
@@ -243,50 +260,66 @@ struct ToolDetailEditor: View {
     let onParametersChange: @MainActor @Sendable (String) -> Void
 
     var body: some View {
-        Form {
-            Section("Identity") {
-                if isBuiltIn {
-                    LabeledContent("Name", value: nameDraft)
-                } else {
-                    TextField("Name", text: Binding(get: { nameDraft }, set: { onNameChange($0) }))
-                }
-            }
-
-            Section("Description") {
-                if isBuiltIn {
-                    Text(promptDraft)
-                        .font(.system(.body, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                } else {
-                    TextEditor(text: Binding(get: { promptDraft }, set: { onPromptChange($0) }))
-                        .font(.system(.body, design: .monospaced))
-                        .scrollContentBackground(.hidden)
-                        .frame(minHeight: 80)
-                }
-            }
-
-            Section("Parameters (JSON Schema)") {
-                if isBuiltIn {
-                    Text(parametersDraft)
-                        .font(.system(.body, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                } else {
-                    TextEditor(text: Binding(get: { parametersDraft }, set: { onParametersChange($0) }))
-                        .font(.system(.body, design: .monospaced))
-                        .scrollContentBackground(.hidden)
-                        .frame(minHeight: 120)
+        ScrollView {
+            VStack(spacing: Spacing.xl) {
+                SettingsCard(header: "Identity", systemImage: "tag") {
+                    if isBuiltIn {
+                        HStack {
+                            Text("Name").font(Typography.subheadline)
+                            Spacer()
+                            Text(nameDraft)
+                                .font(Typography.subheadline)
+                                .foregroundStyle(Colors.textSecondary)
+                        }
+                    } else {
+                        TextField("Name", text: Binding(get: { nameDraft }, set: { onNameChange($0) }))
+                            .textFieldStyle(.plain)
+                            .terminalField()
+                    }
                 }
 
-                if let parametersError {
-                    Label(parametersError, systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(Colors.error)
+                SettingsCard(header: "Description", systemImage: "text.alignleft") {
+                    if isBuiltIn {
+                        Text(promptDraft)
+                            .font(.system(.body, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        TextEditor(text: Binding(get: { promptDraft }, set: { onPromptChange($0) }))
+                            .font(.system(.body, design: .monospaced))
+                            .frame(minHeight: 80)
+                            .borderedTextEditorStyle()
+                    }
+                }
+
+                SettingsCard(header: "Parameters (JSON Schema)", systemImage: "curlybraces") {
+                    VStack(alignment: .leading, spacing: Spacing.s) {
+                        if isBuiltIn {
+                            Text(parametersDraft)
+                                .font(.system(.body, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        } else {
+                            TextEditor(text: Binding(get: { parametersDraft }, set: { onParametersChange($0) }))
+                                .font(.system(.body, design: .monospaced))
+                                .frame(minHeight: 120)
+                                .borderedTextEditorStyle()
+                        }
+
+                        if let parametersError {
+                            HStack(spacing: Spacing.xs) {
+                                StatusGlyph(glyph: TerminalGlyph.failed, color: Colors.error)
+                                Text(parametersError)
+                            }
+                            .foregroundStyle(Colors.error)
+                        }
+                    }
                 }
             }
+            .padding(Spacing.xl)
         }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Colors.surfacePrimary)
     }
 }
 
@@ -295,6 +328,44 @@ struct ToolDetailEditor: View {
 private struct ToolCategoryGroup {
     let category: ToolConstants.ToolCategoryDisplay
     let tools: [ToolDefinitionRecord]
+}
+
+// MARK: - DS List Row
+
+/// One tool entry in the master pane. Owns its own hover state so neighbour rows
+/// don't repaint on pointer moves. Mirrors `SidebarTaskRow`'s selection/hover
+/// idiom: `accentTint` when selected, `surfaceHover` on pointer-in, clear otherwise.
+private struct ToolDefinitionListRow: View {
+    let tool: ToolDefinitionRecord
+    let isSelected: Bool
+    let onSelect: () -> Void
+
+    @State private var isHovered = false
+
+    private var rowBackground: Color {
+        if isSelected { return Colors.accentTint }
+        if isHovered { return Colors.surfaceHover }
+        return .clear
+    }
+
+    var body: some View {
+        Button(action: onSelect) {
+            Text(tool.name)
+                .font(Typography.termBase)
+                .foregroundStyle(isSelected ? Colors.textPrimary : Colors.textSecondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, Spacing.s)
+                .padding(.vertical, Spacing.xs)
+                .background(
+                    RoundedRectangle.squircle(CornerRadius.small).fill(rowBackground)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .trackHover($isHovered)
+        .animationWithReduceMotion(Animations.quick, value: isHovered)
+        .animationWithReduceMotion(Animations.quick, value: isSelected)
+    }
 }
 
 #Preview {

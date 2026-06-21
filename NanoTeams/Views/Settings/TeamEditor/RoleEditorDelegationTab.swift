@@ -59,30 +59,30 @@ struct RoleEditorDelegationTab: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.m) {
-                Text("Delegation")
-                    .font(.headline)
+                MonoLabel(text: "Delegation", marker: true)
                     .padding(.horizontal, Spacing.standard)
                     .padding(.top, Spacing.m)
 
                 Text("Pick the teams this role may delegate sub-tasks to via the `delegate_to_team` tool. The role's tool loop blocks until the delegated team finishes; final artifacts are returned to the role. Selecting any target (or enabling generated teams) auto-injects the 4-tool delegation pack into the role's LLM schema.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(Typography.caption)
+                    .foregroundStyle(Colors.textSecondary)
                     .padding(.horizontal, Spacing.standard)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Divider()
+                TerminalDivider()
                     .padding(.horizontal, Spacing.standard)
 
                 Toggle("Allow generating new teams on the fly", isOn: $editorState.allowDelegationToGeneratedTeams)
+                    .toggleStyle(.terminal)
                     .padding(.horizontal, Spacing.standard)
 
                 Text("When enabled, the role can pass `team_id: \"generated\"` to spawn a fresh team tailored to the task brief. Otherwise only whitelisted existing teams are valid targets.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(Typography.caption)
+                    .foregroundStyle(Colors.textSecondary)
                     .padding(.horizontal, Spacing.standard)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Divider()
+                TerminalDivider()
                     .padding(.horizontal, Spacing.standard)
 
                 teamWhitelistSection
@@ -112,30 +112,29 @@ struct RoleEditorDelegationTab: View {
     @ViewBuilder
     private var teamWhitelistSection: some View {
         VStack(alignment: .leading, spacing: Spacing.s) {
-            Text("Allowed Teams")
-                .font(.subheadline)
-                .fontWeight(.semibold)
+            MonoLabel(text: "Allowed Teams")
 
             if delegatableTeams.isEmpty {
                 Text("No other delegatable teams in this project. Chat-mode teams can't be delegation targets — create a non-chat team, or enable generated teams above.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(Typography.caption)
+                    .foregroundStyle(Colors.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 ForEach(delegatableTeams, id: \.id) { otherTeam in
                     Toggle(isOn: bindingForTeam(otherTeam.id)) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(otherTeam.name)
-                                .font(.body)
+                                .font(Typography.termBase)
+                                .foregroundStyle(Colors.textPrimary)
                             if !otherTeam.description.isEmpty {
                                 Text(otherTeam.description)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .font(Typography.caption)
+                                    .foregroundStyle(Colors.textSecondary)
                                     .lineLimit(2)
                             }
                         }
                     }
-                    .toggleStyle(.checkbox)
+                    .toggleStyle(.terminal)
                     .padding(.vertical, 2)
                 }
             }
@@ -160,15 +159,13 @@ struct RoleEditorDelegationTab: View {
 
     private var constraintsBanner: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Label("Constraints", systemImage: "info.circle")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            MonoLabel(text: "Constraints")
             Text("• Chat-mode teams cannot be delegated to (they never auto-complete).")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .font(Typography.caption2)
+                .foregroundStyle(Colors.textSecondary)
             Text("• Per-delegation timeout: \(Int(DelegationConstants.delegationTimeoutSeconds / 60)) minutes.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .font(Typography.caption2)
+                .foregroundStyle(Colors.textSecondary)
         }
         .padding(Spacing.s)
         .background(

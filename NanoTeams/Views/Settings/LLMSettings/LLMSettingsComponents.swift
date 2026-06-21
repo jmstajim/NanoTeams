@@ -9,28 +9,38 @@ enum LLMConnectionStatus {
     case success
     case failure
 
-    private static let badgeMap: [LLMConnectionStatus: (label: String, icon: String, color: Color, tint: Color)] = [
-        .success: ("Connected", "checkmark.circle.fill", Colors.success, Colors.successTint),
-        .failure: ("Failed", "xmark.circle.fill", Colors.error, Colors.errorTint),
+    private static let badgeMap: [LLMConnectionStatus: (label: String, glyph: String, color: Color, tint: Color)] = [
+        .success: ("Connected", TerminalGlyph.done, Colors.success, Colors.successTint),
+        .failure: ("Failed", TerminalGlyph.failed, Colors.error, Colors.errorTint),
     ]
 
-    var badgeMetadata: (label: String, icon: String, color: Color, tint: Color)? { Self.badgeMap[self] }
+    var badgeMetadata: (label: String, glyph: String, color: Color, tint: Color)? { Self.badgeMap[self] }
 }
 
 struct LLMConnectionStatusPill: View {
     let status: LLMConnectionStatus
 
     var body: some View {
-        if let meta = status.badgeMetadata {
+        if status == .checking {
             HStack(spacing: Spacing.xs) {
-                Image(systemName: meta.icon)
+                NTMSLoader(font: Typography.captionSemibold, color: Colors.accent)
+                Text("Testing")
+            }
+            .font(Typography.captionSemibold)
+            .foregroundStyle(Colors.accent)
+            .padding(.horizontal, Spacing.m)
+            .padding(.vertical, Spacing.xs)
+            .background(RoundedRectangle.squircle(CornerRadius.small).fill(Colors.accentTint))
+        } else if let meta = status.badgeMetadata {
+            HStack(spacing: Spacing.xs) {
+                StatusGlyph(glyph: meta.glyph, color: meta.color, font: Typography.captionSemibold)
                 Text(meta.label)
             }
             .font(Typography.captionSemibold)
             .foregroundStyle(meta.color)
             .padding(.horizontal, Spacing.m)
             .padding(.vertical, Spacing.xs)
-            .background(Capsule(style: .continuous).fill(meta.tint))
+            .background(RoundedRectangle.squircle(CornerRadius.small).fill(meta.tint))
         }
     }
 }
@@ -85,26 +95,33 @@ struct LLMModelPickerSection: View {
     var emptyLabel: String = "Select a model"
     let onRefresh: () -> Void
 
+    /// Mirrors the prior Picker content ordering: leading empty/sentinel
+    /// entries (default + a current-but-not-listed model), then the
+    /// fetched model list.
+    private var modelOptions: [(value: String, label: String)] {
+        var options: [(value: String, label: String)] = []
+        if modelName.isEmpty {
+            options.append(("", emptyLabel))
+        }
+        if !modelName.isEmpty && !availableModels.contains(modelName) {
+            options.append((modelName, modelName))
+        }
+        options.append(contentsOf: availableModels.map { ($0, $0) })
+        return options
+    }
+
     var body: some View {
         HStack(spacing: Spacing.s) {
-            Picker("Model", selection: $modelName) {
-                if modelName.isEmpty {
-                    Text(emptyLabel).font(Typography.mono).tag("")
-                }
-                if !modelName.isEmpty && !availableModels.contains(modelName) {
-                    Text(modelName).font(Typography.mono).tag(modelName)
-                }
-                ForEach(availableModels, id: \.self) { model in
-                    Text(model).font(Typography.mono).tag(model)
-                }
-            }
-            .pickerStyle(.menu)
+            Text("Model")
+                .font(Typography.subheadline)
+                .foregroundStyle(Colors.textSecondary)
+            TerminalPicker(selection: $modelName, options: modelOptions)
 
             if !modelName.isEmpty {
                 Button {
                     modelName = ""
                 } label: {
-                    Image(systemName: "xmark.circle.fill")
+                    Image(systemName: "xmark.circle")
                         .foregroundStyle(Colors.textTertiary)
                 }
                 .buttonStyle(.plain)
@@ -184,7 +201,7 @@ struct LLMElevatedTextField: View {
                 Button {
                     text = defaultValue
                 } label: {
-                    Image(systemName: "xmark.circle.fill")
+                    Image(systemName: "xmark.circle")
                         .foregroundStyle(Colors.textTertiary)
                 }
                 .buttonStyle(.plain)
@@ -194,7 +211,7 @@ struct LLMElevatedTextField: View {
         }
         .padding(Spacing.s)
         .background(
-            RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous)
+            RoundedRectangle.squircle(CornerRadius.small)
                 .fill(Colors.surfaceElevated)
         )
     }

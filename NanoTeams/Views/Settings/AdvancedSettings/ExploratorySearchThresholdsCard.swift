@@ -43,7 +43,7 @@ struct ExploratorySearchThresholdsCard: View {
                     .monospacedDigit()
                     .foregroundStyle(Colors.textPrimary)
             }
-            Slider(value: value, in: range, step: 0.01)
+            TerminalSlider(value: value, range: range, step: 0.01)
             Text(caption)
                 .font(Typography.caption)
                 .foregroundStyle(Colors.textTertiary)

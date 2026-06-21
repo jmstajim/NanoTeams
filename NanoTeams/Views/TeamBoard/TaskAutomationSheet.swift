@@ -31,17 +31,17 @@ struct TaskAutomationSheet: View {
             SheetHeader(
                 title: "Automation",
                 subtitle: "Repeat this task on a schedule, or limit how long a single run may take",
-                systemImage: "clock.arrow.2.circlepath",
+                systemImage: "arrow.triangle.2.circlepath",
                 tintColor: Colors.accent
             )
 
             repeatSection
-            Divider()
+            TerminalDivider()
             timeoutSection
 
             HStack {
                 Button("Cancel") { isPresented = false }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.terminalSecondary)
                     .keyboardShortcut(.cancelAction)
 
                 Spacer()
@@ -50,7 +50,7 @@ struct TaskAutomationSheet: View {
                     onSave(draft.toRecurrence(), draft.toTimeoutSeconds())
                     isPresented = false
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.terminalPrimary)
                 .keyboardShortcut(.defaultAction)
             }
         }
@@ -64,17 +64,15 @@ struct TaskAutomationSheet: View {
         VStack(alignment: .leading, spacing: Spacing.s) {
             Toggle(isOn: $draft.repeatEnabled) {
                 Text("Repeat")
-                    .font(.subheadline.weight(.medium))
+                    .font(Typography.subheadlineMedium)
             }
+            .toggleStyle(.terminal)
 
             if draft.repeatEnabled {
-                Picker("", selection: $draft.kind) {
-                    ForEach(AutomationDraft.Kind.allCases) { kind in
-                        Text(kind.label).tag(kind)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
+                TerminalSegmentedPicker(
+                    selection: $draft.kind,
+                    options: AutomationDraft.Kind.allCases.map { ($0, $0.label) }
+                )
 
                 Group {
                     switch draft.kind {
@@ -93,15 +91,13 @@ struct TaskAutomationSheet: View {
     private var intervalEditor: some View {
         HStack(spacing: Spacing.s) {
             Text("Every")
-                .foregroundStyle(.secondary)
-            Stepper(value: intervalHoursBinding, in: 0...999) {
-                Text("\(draft.intervalHours) h")
-                    .monospacedDigit()
-            }
-            Stepper(value: intervalMinutesBinding, in: 0...59) {
-                Text("\(draft.intervalMinutes) m")
-                    .monospacedDigit()
-            }
+                .foregroundStyle(Colors.textSecondary)
+            Text("\(draft.intervalHours) h")
+                .monospacedDigit()
+            TerminalStepperButtons(value: intervalHoursBinding, range: 0...999)
+            Text("\(draft.intervalMinutes) m")
+                .monospacedDigit()
+            TerminalStepperButtons(value: intervalMinutesBinding, range: 0...59)
         }
     }
 
@@ -109,55 +105,48 @@ struct TaskAutomationSheet: View {
         VStack(alignment: .leading, spacing: Spacing.s) {
             HStack(spacing: Spacing.s) {
                 Text("At")
-                    .foregroundStyle(.secondary)
-                DatePicker("", selection: $draft.timeOfDay, displayedComponents: .hourAndMinute)
-                    .datePickerStyle(.field)
-                    .labelsHidden()
+                    .foregroundStyle(Colors.textSecondary)
+                TerminalDatePicker(selection: $draft.timeOfDay, components: .hourAndMinute)
             }
             HStack(spacing: Spacing.xs) {
                 ForEach(AutomationDraft.weekdayOrder, id: \.self) { wd in
                     Toggle(AutomationDraft.weekdaySymbol(wd), isOn: weekdayBinding(wd))
-                        .toggleStyle(.button)
+                        .toggleStyle(.terminalChip)
                         .accessibilityLabel(AutomationDraft.weekdayName(wd))
                 }
             }
             Text(draft.weekdays.isEmpty ? "Every day" : "Selected days only")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .font(Typography.caption2)
+                .foregroundStyle(Colors.textTertiary)
         }
     }
 
     private var monthlyEditor: some View {
         HStack(spacing: Spacing.s) {
             Text("On day")
-                .foregroundStyle(.secondary)
-            Stepper(value: $draft.dayOfMonth, in: 1...31) {
-                Text("\(draft.dayOfMonth)")
-                    .monospacedDigit()
-            }
+                .foregroundStyle(Colors.textSecondary)
+            Text("\(draft.dayOfMonth)")
+                .monospacedDigit()
+            TerminalStepperButtons(value: $draft.dayOfMonth, range: 1...31)
             Text("at")
-                .foregroundStyle(.secondary)
-            DatePicker("", selection: $draft.timeOfDay, displayedComponents: .hourAndMinute)
-                .datePickerStyle(.field)
-                .labelsHidden()
+                .foregroundStyle(Colors.textSecondary)
+            TerminalDatePicker(selection: $draft.timeOfDay, components: .hourAndMinute)
         }
     }
 
     private var onceEditor: some View {
-        DatePicker("", selection: $draft.onceDate, displayedComponents: [.date, .hourAndMinute])
-            .datePickerStyle(.field)
-            .labelsHidden()
+        TerminalDatePicker(selection: $draft.onceDate, components: [.date, .hourAndMinute])
     }
 
     @ViewBuilder
     private var nextRunLabel: some View {
         if let next = draft.previewNextFire() {
             Text("Next run: \(next.formatted(date: .abbreviated, time: .shortened))")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(Typography.caption)
+                .foregroundStyle(Colors.textSecondary)
         } else {
             Text("This schedule has no upcoming run (the date is in the past).")
-                .font(.caption)
+                .font(Typography.caption)
                 .foregroundStyle(Colors.warning)
         }
     }
@@ -203,25 +192,24 @@ struct TaskAutomationSheet: View {
         VStack(alignment: .leading, spacing: Spacing.s) {
             Toggle(isOn: $draft.timeoutEnabled) {
                 Text("Run timeout")
-                    .font(.subheadline.weight(.medium))
+                    .font(Typography.subheadlineMedium)
             }
+            .toggleStyle(.terminal)
 
             if draft.timeoutEnabled {
                 HStack(spacing: Spacing.m) {
                     Text("Pause after")
-                        .foregroundStyle(.secondary)
-                    Stepper(value: timeoutHoursBinding, in: 0...999) {
-                        Text("\(draft.timeoutHours) h")
-                            .monospacedDigit()
-                    }
-                    Stepper(value: timeoutMinutesBinding, in: 0...59) {
-                        Text("\(draft.timeoutMinutes) m")
-                            .monospacedDigit()
-                    }
+                        .foregroundStyle(Colors.textSecondary)
+                    Text("\(draft.timeoutHours) h")
+                        .monospacedDigit()
+                    TerminalStepperButtons(value: timeoutHoursBinding, range: 0...999)
+                    Text("\(draft.timeoutMinutes) m")
+                        .monospacedDigit()
+                    TerminalStepperButtons(value: timeoutMinutesBinding, range: 0...59)
                 }
                 Text("If a run lasts longer, it's paused and you're notified.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .font(Typography.caption2)
+                    .foregroundStyle(Colors.textTertiary)
             }
         }
     }

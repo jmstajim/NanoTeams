@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// Reusable empty-state view for team editor lists (roles, artifacts).
-/// Uses ContentUnavailableView with a title, icon, description, and a single action button.
+/// Thin wrapper over `NTMSEmptyState` so title + description honor
+/// Typography mono tokens instead of `ContentUnavailableView`'s SF Pro chrome.
 struct TeamEditorEmptyStateView: View {
     let title: String
     let icon: String
@@ -10,15 +11,13 @@ struct TeamEditorEmptyStateView: View {
     let onAction: () -> Void
 
     var body: some View {
-        ContentUnavailableView {
-            Label(title, systemImage: icon)
-        } description: {
-            Text(description)
-        } actions: {
-            Button(actionTitle, action: onAction)
-                .buttonStyle(.borderedProminent)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        NTMSEmptyState(
+            title: title,
+            message: description,
+            systemImage: icon,
+            action: onAction,
+            actionLabel: actionTitle
+        )
     }
 }
 

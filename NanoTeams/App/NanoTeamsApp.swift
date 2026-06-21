@@ -5,6 +5,7 @@ import SwiftUI
 extension Notification.Name {
     static let navigateToWatchtower = Notification.Name("navigateToWatchtower")
     static let navigateToActiveTask = Notification.Name("navigateToActiveTask")
+    static let navigateToAutovisor = Notification.Name("navigateToAutovisor")
     static let openProject = Notification.Name("openProject")
     static let closeProject = Notification.Name("closeProject")
     static let createNewTask = Notification.Name("createNewTask")
@@ -30,9 +31,19 @@ struct NanoTeamsApp: App {
     /// settings surface that picks a model so opening multiple cards on
     /// the same server doesn't re-issue `/api/v1/models`.
     @State private var modelCatalog = ModelCatalog()
-    @AppStorage(UserDefaultsKeys.appAppearance) private var appAppearance: AppAppearance = .system
+    /// Single source of truth for the active theme — System / Light / Dark /
+    /// OLED / Arctic / ... Observed at app root so a switch invalidates every
+    /// descendant `body`; `Colors.themed(...)` reads `Theme.current` per
+    /// resolution to pull fresh hexes, and the matching
+    /// `.preferredColorScheme(_:)` modifier propagates scheme intent.
+    @AppStorage(UserDefaultsKeys.activeTheme) private var activeThemeRaw: String = Theme.defaultTheme.rawValue
 
     init() {
+        // One-shot migration of the legacy `appAppearance` UserDefaults key
+        // ("system" / "light" / "dark") into the unified `activeTheme` slot.
+        // Idempotent — once `activeTheme` is set, subsequent launches no-op.
+        Theme.migrateLegacyAppearanceIfNeeded()
+
         // Explicit init so dependents share the same `StoreConfiguration` /
         // orchestrator reference. SwiftUI's `@State` default-value initializers
         // can't reference each other, so we build them here and inject via
@@ -43,6 +54,12 @@ struct NanoTeamsApp: App {
         _dictation = State(initialValue: DictationService(
             onErrorSurfaced: { message in orchestrator.lastErrorMessage = message }
         ))
+    }
+
+    /// Resolved active theme — single point that decodes the persisted raw
+    /// value used by `.preferredColorScheme(...)` callers below.
+    private var activeTheme: Theme {
+        Theme(rawValue: activeThemeRaw) ?? Theme.defaultTheme
     }
 
     var body: some Scene {
@@ -60,7 +77,18 @@ struct NanoTeamsApp: App {
                     .environment(dictation)
                     .environment(appUpdateState)
                     .environment(modelCatalog)
-                    .preferredColorScheme(appAppearance.colorScheme)
+                    .preferredColorScheme(activeTheme.preferredColorScheme)
+                    .fontDesign(.monospaced)
+                    // Drive native SwiftUI controls (focus rings, pickers, default
+                    // selection) off the THEMED accent rather than the fixed
+                    // AccentColor asset, so they don't diverge per theme.
+                    .tint(Colors.accent)
+                    // Force a tree rebuild when the user picks a new theme so
+                    // every `Colors.*` access pulls fresh hexes. Theme switches
+                    // are rare (one tap from Settings), so the rebuild cost is
+                    // acceptable in exchange for an instant, complete visual
+                    // swap including AppKit-resident views.
+                    .id(activeThemeRaw)
                     .onAppear {
                         QuickCaptureController.shared.setup(store: store, dictation: dictation)
                         // Bridge the Quick Capture queue into the orchestrator so the
@@ -166,6 +194,10 @@ struct NanoTeamsApp: App {
                 .environment(dictation)
                 .environment(appUpdateState)
                 .environment(modelCatalog)
+                .preferredColorScheme(activeTheme.preferredColorScheme)
+                .fontDesign(.monospaced)
+                .tint(Colors.accent)
+                .id(activeThemeRaw)
         }
         .defaultSize(width: 1000, height: 700)
         .restorationBehavior(.disabled)
@@ -179,7 +211,10 @@ struct NanoTeamsApp: App {
                 ActivityDetailWindowView(detail: detail)
                     .environment(store)
                     .environment(store.configuration)
-                    .preferredColorScheme(appAppearance.colorScheme)
+                    .preferredColorScheme(activeTheme.preferredColorScheme)
+                    .fontDesign(.monospaced)
+                    .tint(Colors.accent)
+                    .id(activeThemeRaw)
             }
         }
         .defaultSize(width: 720, height: 560)

@@ -8,14 +8,17 @@ struct FailedNotificationCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.s) {
             if let error = errorMessage, !error.isEmpty {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(3)
+                HStack(alignment: .firstTextBaseline, spacing: Spacing.xs) {
+                    StatusGlyph(glyph: TerminalGlyph.failed, color: Colors.error)
+                    Text(error)
+                        .font(Typography.caption)
+                        .foregroundStyle(Colors.textSecondary)
+                        .lineLimit(3)
+                }
             }
             Text("Check role details for more information.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
+                .font(Typography.caption)
+                .foregroundStyle(Colors.textTertiary)
         }
     }
 }

@@ -19,9 +19,30 @@ struct InsertVariableButton: View {
                 }
             }
         } label: {
-            Label("Insert Variable", systemImage: "plus.circle")
-                .font(.caption)
+            HStack(spacing: Spacing.xs) {
+                Image(systemName: "plus")
+                    .font(Typography.caption)
+                Text("Insert Variable")
+                    .font(Typography.caption)
+                Image(systemName: "chevron.down")
+                    .font(Typography.term2xs)
+                    .foregroundStyle(Colors.textTertiary)
+            }
+            .foregroundStyle(Colors.textPrimary)
+            .padding(.horizontal, Spacing.s)
+            .padding(.vertical, Spacing.xxs)
+            .background(
+                RoundedRectangle.squircle(CornerRadius.small)
+                    .fill(Colors.surfaceElevated)
+            )
+            .overlay(
+                RoundedRectangle.squircle(CornerRadius.small)
+                    .strokeBorder(Colors.borderSubtle, lineWidth: 1)
+            )
         }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
     }
 
     private var groupedCategories: [(category: String, items: [(key: String, label: String, category: String)])] {

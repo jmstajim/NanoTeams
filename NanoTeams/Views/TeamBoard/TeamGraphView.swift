@@ -202,7 +202,7 @@ struct TeamGraphView: View {
                 RoleNodeRuntimeView(
                     roleID: nodePosition.roleID,
                     roleName: displayedRoleName,
-                    roleIcon: roleDef?.icon ?? "person.fill",
+                    roleIcon: roleDef?.icon ?? "person",
                     status: status,
                     isSelected: selectedRoleID == nodePosition.roleID,
                     position: CGPoint(

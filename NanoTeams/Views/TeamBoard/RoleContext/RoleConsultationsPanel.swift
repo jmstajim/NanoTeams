@@ -9,7 +9,7 @@ struct RoleConsultationsPanel: View {
         RoleContextDisclosureSection(
             title: "Consultations",
             count: consultations.count,
-            icon: "bubble.left.and.bubble.right.fill",
+            icon: "bubble.left.and.bubble.right",
             color: Colors.info,
             isExpanded: $isExpanded
         ) {
@@ -26,19 +26,21 @@ struct RoleConsultationsPanel: View {
     private func consultationCard(_ consultation: TeammateConsultation) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Image(systemName: "bubble.left.and.bubble.right.fill")
+                Image(systemName: "bubble.left.and.bubble.right")
                     .foregroundStyle(Colors.info)
-                    .font(.caption)
+                    .font(Typography.caption)
                 Text("Asked \(consultation.consultedRole.displayName)")
                     .font(Typography.caption.bold())
                 Spacer()
-                Image(systemName: consultation.status.icon)
-                    .foregroundStyle(Self.iconTint(for: consultation.status))
-                    .font(.caption)
+                StatusGlyph(
+                    glyph: Self.statusGlyph(for: consultation.status),
+                    color: Self.iconTint(for: consultation.status),
+                    font: Typography.termSm
+                )
             }
             Text(consultation.question)
                 .font(Typography.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Colors.textSecondary)
                 .lineLimit(2)
             if let response = consultation.response {
                 Text(response)
@@ -46,14 +48,14 @@ struct RoleConsultationsPanel: View {
                     .lineLimit(3)
                     .padding(6)
                     .background(
-                        RoundedRectangle(cornerRadius: CornerRadius.micro, style: .continuous)
+                        RoundedRectangle.squircle(CornerRadius.micro)
                             .fill(Self.responseTint(for: consultation.status))
                     )
             }
         }
         .padding(Spacing.s)
         .background(
-            RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous)
+            RoundedRectangle.squircle(CornerRadius.small)
                 .fill(Colors.surfaceCard)
         )
     }
@@ -77,6 +79,16 @@ struct RoleConsultationsPanel: View {
         case .completed: return Colors.success
         case .failed: return Colors.error
         default: return Colors.warning
+        }
+    }
+
+    /// Terminal status glyph symmetric with `iconTint` — replaces the
+    /// SF-Symbol status icon with the Monochrome+1 terminal vocabulary.
+    static func statusGlyph(for status: ConsultationStatus) -> String {
+        switch status {
+        case .completed: return TerminalGlyph.done
+        case .failed: return TerminalGlyph.failed
+        default: return TerminalGlyph.working
         }
     }
 }

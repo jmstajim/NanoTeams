@@ -29,26 +29,26 @@ struct TeamNodeView: View {
             // Role icon and name
             HStack(spacing: Spacing.xxs) {
                 Image(systemName: icon)
-                    .font(.caption2)
+                    .font(Typography.term2xs)
                 Text(roleName)
-                    .font(.system(.caption2, weight: .medium))
+                    .font(Typography.term2xs.weight(.medium))
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
             .foregroundStyle(tintColor)
 
-            Divider()
+            TerminalDivider()
 
             // Input artifacts (required)
             if !dependencies.requiredArtifacts.isEmpty {
                 HStack(alignment: .top, spacing: Spacing.xxs) {
-                    Image(systemName: "arrow.down.circle.fill")
-                        .font(.caption2)
+                    Image(systemName: "arrow.down.circle")
+                        .font(Typography.term2xs)
                         .foregroundStyle(Colors.info)
                         .padding(.top, 1)
                     Text(dependencies.requiredArtifacts.joined(separator: ", "))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .font(Typography.term2xs)
+                        .foregroundStyle(Colors.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -56,13 +56,13 @@ struct TeamNodeView: View {
             // Output artifacts (produces)
             if !dependencies.producesArtifacts.isEmpty {
                 HStack(alignment: .top, spacing: Spacing.xxs) {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.caption2)
+                    Image(systemName: "arrow.up.circle")
+                        .font(Typography.term2xs)
                         .foregroundStyle(Colors.artifact)
                         .padding(.top, 1)
                     Text(dependencies.producesArtifacts.joined(separator: ", "))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .font(Typography.term2xs)
+                        .foregroundStyle(Colors.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -72,11 +72,11 @@ struct TeamNodeView: View {
         .frame(maxWidth: Self.nodeMaxWidth, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
         .background(
-            RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
+            RoundedRectangle.squircle(CornerRadius.medium)
                 .fill(backgroundColor)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
+            RoundedRectangle.squircle(CornerRadius.medium)
                 .stroke(borderColor, lineWidth: isSelected ? 2 : 1)
         )
         .shadow(isDragging ? .elevated : .card)
@@ -165,7 +165,7 @@ struct TeamNodeView: View {
     ZStack {
         TeamNodeView(
             roleName: "Junior Engineer",
-            icon: "wrench.and.screwdriver.fill",
+            icon: "wrench.and.screwdriver",
             tintColor: .blue,
             dependencies: RoleDependencies(
                 requiredArtifacts: [
@@ -183,7 +183,7 @@ struct TeamNodeView: View {
 
         TeamNodeView(
             roleName: "Software Engineer",
-            icon: "hammer.fill",
+            icon: "hammer",
             tintColor: .green,
             dependencies: RoleDependencies(
                 requiredArtifacts: [
@@ -225,7 +225,7 @@ struct TeamNodeView: View {
 
         TeamNodeView(
             roleName: "Architect",
-            icon: "building.columns.fill",
+            icon: "building.columns",
             tintColor: .purple,
             dependencies: RoleDependencies(
                 requiredArtifacts: [

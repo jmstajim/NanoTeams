@@ -44,6 +44,55 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase {
         XCTAssertTrue(r.message.contains("99999"))
     }
 
+    // MARK: - Enable guard (no real work folder)
+
+    /// Enabling the Autovisor in default storage (no work folder open) must be
+    /// refused — otherwise the toggle would persist `ON` while
+    /// `ensureAutovisorTask` no-ops, a dead control. The refusal returns before
+    /// any engine start, so it runs without LM Studio.
+    func testSetAutovisorEnabled_withoutWorkFolder_refusesAndInforms() async {
+        XCTAssertFalse(sut.hasRealWorkFolder, "precondition: no real work folder open")
+        sut.lastInfoMessage = nil
+        await sut.setAutovisorEnabled(true)
+        XCTAssertNotNil(sut.lastInfoMessage,
+            "refusing to enable without a work folder must surface an info message")
+        XCTAssertFalse(sut.snapshot?.workFolder.settings.autovisorEnabled ?? false,
+            "the enable must NOT have persisted")
+    }
+
+    /// Disabling is always allowed (it clears a possibly-stale persisted `true`),
+    /// so it must NOT be intercepted by the enable guard.
+    func testSetAutovisorDisabled_withoutWorkFolder_isAllowed() async {
+        XCTAssertFalse(sut.hasRealWorkFolder)
+        sut.lastInfoMessage = nil
+        await sut.setAutovisorEnabled(false)
+        XCTAssertNil(sut.lastInfoMessage,
+            "disabling is always allowed — the enable guard must not fire on disable")
+    }
+
+    /// The return value makes a refused enable observable — `AutovisorSetupView.enable`
+    /// (and any future caller) can tell a real enable from a folder-closed refusal
+    /// instead of silently assuming success.
+    func testSetAutovisorEnabled_returnValueReflectsOutcome() async {
+        XCTAssertFalse(sut.hasRealWorkFolder, "precondition: no real work folder open")
+        let enabled = await sut.setAutovisorEnabled(true)
+        XCTAssertFalse(enabled, "enable in default storage is refused → returns false")
+        let disabled = await sut.setAutovisorEnabled(false)
+        XCTAssertTrue(disabled, "disable always takes effect → returns true")
+    }
+
+    // MARK: - autovisorNeedsSetup (setup-pane-vs-chat routing)
+
+    /// Fresh orchestrator (no manager task, disabled) → the detail surface routes
+    /// to the first-time setup pane. Drives `MainLayoutView.autovisorDetail`, the
+    /// Watchtower pill intercept, and the sidebar menu label off ONE predicate, so
+    /// a "go to setup" click can't land on the chat.
+    func testAutovisorNeedsSetup_noManagerTask_isTrue() {
+        XCTAssertNil(sut.autovisorTaskID, "precondition: manager never created")
+        XCTAssertTrue(sut.autovisorNeedsSetup,
+            "no manager task → show setup, not a chat for a manager that doesn't exist")
+    }
+
     // MARK: - F1: role validation
 
     func testManageRole_unknownRole_failsWithoutMutating() async {

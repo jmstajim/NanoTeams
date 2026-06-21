@@ -21,15 +21,18 @@ struct GlobalContextCard: View {
                     .foregroundStyle(Colors.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                TextEditor(text: $config.globalContext)
-                    .font(.system(.callout, design: .monospaced))
-                    .scrollContentBackground(.hidden)
-                    .frame(minHeight: 160)
-                    .padding(Spacing.s)
-                    .background(
-                        RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous)
-                            .fill(Colors.surfaceElevated)
-                    )
+                HStack(alignment: .top, spacing: Spacing.xs) {
+                    PromptMarker()
+                    TextEditor(text: $config.globalContext)
+                        .font(.system(.callout, design: .monospaced))
+                        .scrollContentBackground(.hidden)
+                        .frame(minHeight: 160)
+                }
+                .padding(Spacing.s)
+                .background(
+                    RoundedRectangle.squircle(CornerRadius.small)
+                        .fill(Colors.surfaceElevated)
+                )
 
                 HStack {
                     Button {

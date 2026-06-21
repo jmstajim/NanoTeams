@@ -46,11 +46,11 @@ struct RoleListView: View {
                         showingAddRole = true
                     } label: {
                         Image(systemName: "plus")
-                            .font(.subheadline.weight(.bold))
+                            .font(Typography.termBase.weight(.bold))
                             .foregroundStyle(Colors.accent)
                             .frame(width: 28, height: 28)
-                            .background(Colors.accentTint, in: Circle())
-                            .contentShape(Circle())
+                            .background(Colors.accentTint, in: RoundedRectangle.squircle(CornerRadius.small))
+                            .contentShape(RoundedRectangle.squircle(CornerRadius.small))
                     }
                     .buttonStyle(.plain)
                     .help("Add role")
@@ -71,12 +71,13 @@ struct RoleListView: View {
                         }
                     } label: {
                         Image(systemName: "ellipsis")
-                            .font(.subheadline.weight(.medium))
+                            .font(Typography.subheadlineMedium)
                             .foregroundStyle(Colors.textSecondary)
                             .frame(width: 28, height: 28)
                             .contentShape(Rectangle())
                     }
-                    .menuStyle(.button)
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
                     .buttonStyle(.plain)
                     .fixedSize()
                 }
@@ -151,7 +152,7 @@ struct RoleListView: View {
     }
 
     private var noResultsState: some View {
-        ContentUnavailableView.search(text: searchText)
+        NTMSSearchEmptyState(searchText: searchText)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -168,50 +169,48 @@ struct RoleListView: View {
     }
 
     private var roleList: some View {
-        List(selection: $selectedRoleID) {
-            ForEach(onGraphRoles) { role in
-                roleRow(for: role)
-            }
+        // Custom LazyVStack instead of the native `List(selection:)` —
+        // List's selection wash is a saturated system tint that clashes with
+        // the lavender DS palette, and its row corners are not the near-sharp
+        // 2pt squircles the DS calls for. Owning the rendering ourselves lets
+        // selection/hover backgrounds use `Colors.accentTint`/`surfaceHover`
+        // (Color Rule #2: no `.opacity()` on DS colors) and corners use
+        // `CornerRadius.small` (Color Rule #7).
+        ScrollView {
+            LazyVStack(spacing: Spacing.xxs) {
+                ForEach(onGraphRoles) { role in
+                    roleRow(for: role)
+                }
 
-            if !offGraphRoles.isEmpty {
-                Section {
+                if !offGraphRoles.isEmpty {
+                    HStack {
+                        MonoLabel(text: "Off-Graph")
+                        Spacer()
+                    }
+                    .padding(.horizontal, Spacing.s)
+                    .padding(.top, Spacing.s)
+
                     ForEach(offGraphRoles) { role in
                         roleRow(for: role, showAddToGraph: true)
                     }
-                } header: {
-                    Text("Off-Graph")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.tertiary)
                 }
             }
+            .padding(.horizontal, Spacing.s)
+            .padding(.vertical, Spacing.xs)
         }
-        .listStyle(.inset)
-        .scrollContentBackground(.hidden)
     }
 
     @ViewBuilder
     private func roleRow(for role: TeamRoleDefinition, showAddToGraph: Bool = false) -> some View {
-        HStack(spacing: 0) {
-            RoleListItemView(role: role)
-
-            if showAddToGraph && !isReadOnly {
-                Button {
-                    handleAddToGraph(role)
-                } label: {
-                    Image(systemName: "plus.circle.fill")
-                        .font(.title3)
-                        .foregroundStyle(Colors.accent)
-                }
-                .padding(.leading, Spacing.s)
-                .buttonStyle(.plain)
-                .help("Add \(role.name) to graph")
-            }
-        }
-        .contentShape(Rectangle())
-        .tag(role.id)
-        .onTapGesture(count: 2) {
-            showingEditRole = role
-        }
+        SelectableRoleRow(
+            role: role,
+            isSelected: selectedRoleID == role.id,
+            showAddToGraph: showAddToGraph,
+            isReadOnly: isReadOnly,
+            onSelect: { selectedRoleID = role.id },
+            onEdit: { showingEditRole = role },
+            onAddToGraph: { handleAddToGraph(role) }
+        )
         .accessibilityAction(named: "Edit") {
             showingEditRole = role
         }
@@ -256,32 +255,81 @@ struct RoleListView: View {
 
 }
 
+// MARK: - Selectable Role Row
+
+/// DS-styled wrapper around `RoleListItemView`: owns the selection/hover
+/// background (so the wash matches `Colors.accentTint` / `surfaceHover`),
+/// near-sharp `CornerRadius.small` corners, and tap routing (single =
+/// select, double = edit). Replaces the native `List(selection:)` row whose
+/// system-tint selection clashed with the DS palette.
+private struct SelectableRoleRow: View {
+    let role: TeamRoleDefinition
+    let isSelected: Bool
+    let showAddToGraph: Bool
+    let isReadOnly: Bool
+    let onSelect: () -> Void
+    let onEdit: () -> Void
+    let onAddToGraph: () -> Void
+
+    @State private var isHovered = false
+
+    private var rowBackground: Color {
+        if isSelected { return Colors.accentTint }
+        if isHovered { return Colors.surfaceHover }
+        return .clear
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            RoleListItemView(role: role)
+
+            if showAddToGraph && !isReadOnly {
+                Button {
+                    onAddToGraph()
+                } label: {
+                    Image(systemName: "plus.circle")
+                        .font(Typography.termXl)
+                        .foregroundStyle(Colors.accent)
+                }
+                .padding(.leading, Spacing.s)
+                .buttonStyle(.plain)
+                .help("Add \(role.name) to graph")
+            }
+        }
+        .padding(.horizontal, Spacing.s)
+        .background(rowBackground, in: RoundedRectangle.squircle(CornerRadius.small))
+        .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
+        // Higher-count gesture must come first so SwiftUI gives the double-tap
+        // priority and only falls through to single-tap after the disambig delay.
+        .onTapGesture(count: 2) { onEdit() }
+        .onTapGesture { onSelect() }
+    }
+}
+
 // MARK: - Role List Item View
 
 /// Compact role list item showing name, key badges, and a summary line.
 private struct RoleListItemView: View {
     let role: TeamRoleDefinition
 
-    @ScaledMetric(relativeTo: .body) private var avatarSize: CGFloat = 36
+    @ScaledMetric(relativeTo: .body) private var avatarSize: CGFloat = 28
     @ScaledMetric(relativeTo: .caption2) private var badgeIconSize: CGFloat = 10
 
     var body: some View {
         HStack(spacing: Spacing.m) {
-            // Role icon
-            ZStack {
-                Circle()
-                    .fill(role.resolvedIconBackground)
-                    .frame(width: avatarSize, height: avatarSize)
-
-                Image(systemName: role.icon)
-                    .font(.system(size: badgeIconSize + 4, weight: .semibold))
-                    .foregroundStyle(role.resolvedIconColor)
-            }
+            // Role icon — bare glyph tinted with what used to be the
+            // squircle background. Matches `ActivityFeedRoleAvatar`.
+            Image(systemName: role.icon)
+                .font(.system(size: badgeIconSize + 6, weight: .semibold))
+                .foregroundStyle(role.resolvedIconBackground)
+                .frame(width: avatarSize, height: avatarSize)
 
             // Name + summary
             VStack(alignment: .leading, spacing: Spacing.xxs) {
                 Text(role.name)
-                    .font(.subheadline.weight(.semibold))
+                    .font(Typography.subheadlineSemibold)
+                    .foregroundStyle(Colors.textPrimary)
                     .lineLimit(1)
 
                 summaryLine
@@ -308,8 +356,8 @@ private struct RoleListItemView: View {
 
                     if !role.toolIDs.isEmpty {
                         Label("\(role.toolIDs.count)", systemImage: "wrench")
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(.tertiary)
+                            .font(Typography.term2xs.weight(.medium))
+                            .foregroundStyle(Colors.textTertiary)
                             .help("\(role.toolIDs.count) tools available")
                     }
                 }
@@ -324,8 +372,8 @@ private struct RoleListItemView: View {
         let parts = role.artifactSummary
         if !parts.isEmpty {
             Text(parts)
-                .font(.caption)
-                .foregroundStyle(.tertiary)
+                .font(Typography.caption)
+                .foregroundStyle(Colors.textTertiary)
                 .lineLimit(1)
         }
     }

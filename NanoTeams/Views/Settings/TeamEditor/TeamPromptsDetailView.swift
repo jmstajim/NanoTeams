@@ -24,9 +24,8 @@ struct TeamPromptsDetailView: View {
                     } label: {
                         VStack(spacing: 4) {
                             Text(template.label)
-                                .font(.subheadline)
-                                .fontWeight(selectedTemplate == template ? .semibold : .regular)
-                                .foregroundStyle(selectedTemplate == template ? .primary : .secondary)
+                                .font(Typography.subheadlineSemibold)
+                                .foregroundStyle(selectedTemplate == template ? Colors.textPrimary : Colors.textSecondary)
 
                             Rectangle()
                                 .fill(selectedTemplate == template ? Colors.accent : .clear)
@@ -41,12 +40,15 @@ struct TeamPromptsDetailView: View {
             .padding(.top, Spacing.s)
 
             // Description
-            Text(selectedTemplate.description)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, Spacing.standard)
-                .padding(.top, Spacing.s)
+            HStack(alignment: .top, spacing: Spacing.xs) {
+                PromptMarker()
+                Text(selectedTemplate.description)
+                    .font(Typography.caption)
+                    .foregroundStyle(Colors.textSecondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Spacing.standard)
+            .padding(.top, Spacing.s)
 
             // Editor
             PromptTemplateEditor(
@@ -59,7 +61,7 @@ struct TeamPromptsDetailView: View {
             .padding(.vertical, Spacing.xs)
             .onChange(of: templateBinding.wrappedValue) { _, _ in onSave() }
 
-            Divider()
+            TerminalDivider()
 
             // Actions bar
             HStack {
@@ -75,10 +77,12 @@ struct TeamPromptsDetailView: View {
                 Button("Preview") {
                     showPreview = true
                 }
+                .buttonStyle(.terminalSecondary)
 
                 Button("Reset to Default") {
                     resetCurrentTemplate()
                 }
+                .buttonStyle(.terminalSecondary)
             }
             .padding(.horizontal, Spacing.standard)
             .padding(.vertical, Spacing.s)

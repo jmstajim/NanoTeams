@@ -21,10 +21,10 @@ nonisolated enum TeamTemplateFactory {
         TeamTemplateMetadata(id: "codingAgent", name: "Coding Agent", icon: "wand.and.rays", description: "Hybrid coding agent: handles small edits directly, delegates complex work to teams"),
         TeamTemplateMetadata(id: "assistant", name: "Personal Assistant", icon: "bubble.left.and.text.bubble.right", description: "Interactive assistant for any task"),
         TeamTemplateMetadata(id: "faang", name: "FAANG Team", icon: "building.2", description: "Full product development pipeline"),
-        TeamTemplateMetadata(id: "engineering", name: "Engineering Team", icon: "wrench.and.screwdriver.fill", description: "Lean engineering pipeline"),
-        TeamTemplateMetadata(id: "startup", name: "Startup", icon: "bolt.fill", description: "Minimal team for rapid prototyping"),
-        TeamTemplateMetadata(id: "questParty", name: "Quest Party", icon: "scroll.fill", description: "Adventure creation and management"),
-        TeamTemplateMetadata(id: "discussionClub", name: "Discussion Club", icon: "bubble.left.and.bubble.right.fill", description: "Meeting-driven discussion"),
+        TeamTemplateMetadata(id: "engineering", name: "Engineering Team", icon: "wrench.and.screwdriver", description: "Lean engineering pipeline"),
+        TeamTemplateMetadata(id: "startup", name: "Startup", icon: "bolt", description: "Minimal team for rapid prototyping"),
+        TeamTemplateMetadata(id: "questParty", name: "Quest Party", icon: "scroll", description: "Adventure creation and management"),
+        TeamTemplateMetadata(id: "discussionClub", name: "Discussion Club", icon: "bubble.left.and.bubble.right", description: "Meeting-driven discussion"),
     ]
 
     // MARK: - Public API
