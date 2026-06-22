@@ -224,7 +224,7 @@ final class ProjectSettingsMigrationTests: XCTestCase {
     func testRoundTrip_autovisorFields_preserved() throws {
         var activation = AutovisorActivation.default
         activation.onTaskCompleted = true
-        activation.minSecondsBetweenRuns = 120
+        activation.onTaskCreated = true
 
         let original = ProjectSettings(
             context: "ctx",
@@ -260,7 +260,6 @@ final class ProjectSettingsMigrationTests: XCTestCase {
         XCTAssertTrue(activation.onTaskFailed)
         XCTAssertFalse(activation.onTaskCreated)
         XCTAssertTrue(activation.onTaskStuck, "absent onTaskStuck defaults to true (forward-compat)")
-        XCTAssertEqual(activation.minSecondsBetweenRuns, 60)
     }
 
     func testEncode_preservesSelectedScheme() throws {

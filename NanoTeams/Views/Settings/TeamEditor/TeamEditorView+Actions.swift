@@ -111,7 +111,7 @@ extension TeamEditorView {
         // caused a silent fallback that commingled a second roster into the run.
         // The user must pause/close the task first.
         if store.teamIsInUseByActiveRun(team.id) {
-            store.lastErrorMessage = "Can't delete \"\(team.name)\" — a task is currently running on it. Pause or close that task first."
+            store.lastErrorMessage = "Can't delete \"\(team.name)\" — a task is running on it or scheduled to re-run on it. Pause/close that task or turn off its schedule first."
             return
         }
 

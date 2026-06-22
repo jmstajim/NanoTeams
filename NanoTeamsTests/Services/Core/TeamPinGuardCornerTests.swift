@@ -287,4 +287,165 @@ final class TeamPinGuardCornerTests: XCTestCase {
         XCTAssertTrue(store.teamIsInUseByActiveRun(teamA.id),
                       "Deletion guard must remain authoritative for an EVICTED (unloaded) non-closed task — the index scan sees it; a loaded-only scan would have missed it and allowed the destructive delete")
     }
+
+    // MARK: - Generated-team pin (team lives on task.generatedTeam, NOT teams.json)
+
+    /// Builds a generated team (the shape `GeneratedTeamBuilder` produces: a
+    /// `_gen_`-style id absent from `workFolder.teams`) with a single named role.
+    private func makeGeneratedTeam(roleID: String, roleName: String = "Architect") -> Team {
+        Team(
+            id: NTMSID.from(name: "gen_\(UUID().uuidString)"),
+            name: "Generated Team",
+            description: "",
+            roles: [TeamRoleDefinition(id: roleID, name: roleName, prompt: "", toolIDs: [],
+                                       usePlanningPhase: false, dependencies: RoleDependencies())],
+            artifacts: [], settings: TeamSettings(), graphLayout: TeamGraphLayout()
+        )
+    }
+
+    /// THE bug from the report (`accessibility_improvement_team_gen_*` / run 1):
+    /// a run pinned to a generated team's id whose team lives ONLY on
+    /// `task.generatedTeam` (never in `workFolder.teams`). The guard must resolve
+    /// it generatedTeam-aware and mint the role's step instead of refusing it
+    /// "no longer exists".
+    func testFindOrCreateStep_pinnedToGeneratedTeam_notInWorkfolder_roleInRoster_createsStep() async {
+        let store = makeOrchestrator()
+        let root = makeWorkFolderRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        await store.openWorkFolder(root)
+
+        let genTeam = makeGeneratedTeam(roleID: "gen_arch")
+        let tid = await store.createTask(title: "T", supervisorTask: "...")
+        guard let tid else { return XCTFail("create failed") }
+        _ = await store.mutateTask(taskID: tid) { task in
+            task.runs = [Run(id: 0, teamID: genTeam.id)]
+            task.adoptGeneratedTeam(genTeam)
+        }
+        XCTAssertNil(store.workFolder?.team(withID: genTeam.id),
+                     "Test setup: the generated team must NOT be present in workFolder.teams")
+        store.lastErrorMessage = nil
+
+        let stepID = await store.findOrCreateStep(taskID: tid, roleID: "gen_arch")
+        XCTAssertNotNil(stepID,
+                        "A generated-team role must mint a step even though the team isn't in teams.json")
+        XCTAssertEqual(store.loadedTask(tid)?.runs.last?.steps.count, 1)
+        XCTAssertNil(store.lastErrorMessage,
+                     "No 'no longer exists' diagnostic for a resolvable generated team")
+    }
+
+    /// A role NOT in the generated roster is still refused (the membership guard
+    /// survives the generatedTeam-aware resolution).
+    func testFindOrCreateStep_pinnedToGeneratedTeam_roleNotInRoster_blocked() async {
+        let store = makeOrchestrator()
+        let root = makeWorkFolderRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        await store.openWorkFolder(root)
+
+        let genTeam = makeGeneratedTeam(roleID: "gen_arch")
+        let tid = await store.createTask(title: "T", supervisorTask: "...")
+        guard let tid else { return XCTFail("create failed") }
+        _ = await store.mutateTask(taskID: tid) { task in
+            task.runs = [Run(id: 0, teamID: genTeam.id)]
+            task.adoptGeneratedTeam(genTeam)
+        }
+        store.lastErrorMessage = nil
+
+        let stepID = await store.findOrCreateStep(taskID: tid, roleID: "not_in_gen_roster")
+        XCTAssertNil(stepID, "A role outside the generated roster must be refused")
+        XCTAssertEqual(store.loadedTask(tid)?.runs.last?.steps.count, 0)
+        XCTAssertTrue(store.lastErrorMessage?.contains("Roster swap blocked") ?? false)
+    }
+
+    /// The generatedTeam fallback is GATED on exact id match: a pin id that
+    /// matches NEITHER `workFolder.teams` NOR `task.generatedTeam.id` must still
+    /// fail "no longer exists" — the guard does not blindly substitute the
+    /// generated team regardless of the pinned id.
+    func testFindOrCreateStep_pinIdMismatchesGeneratedTeam_stillFailsNoLongerExists() async {
+        let store = makeOrchestrator()
+        let root = makeWorkFolderRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        await store.openWorkFolder(root)
+
+        let genTeam = makeGeneratedTeam(roleID: "gen_arch")
+        let pinnedButGone = NTMSID.from(name: "deleted_\(UUID().uuidString)")  // != genTeam.id
+        let tid = await store.createTask(title: "T", supervisorTask: "...")
+        guard let tid else { return XCTFail("create failed") }
+        _ = await store.mutateTask(taskID: tid) { task in
+            task.runs = [Run(id: 0, teamID: pinnedButGone)]
+            task.adoptGeneratedTeam(genTeam)
+        }
+        store.lastErrorMessage = nil
+
+        let stepID = await store.findOrCreateStep(taskID: tid, roleID: "gen_arch")
+        XCTAssertNil(stepID,
+                     "A pin id matching neither the folder nor generatedTeam.id must still fail")
+        XCTAssertTrue(store.lastErrorMessage?.contains("no longer exists") ?? false,
+                      "The id-mismatch case keeps the loud 'no longer exists' diagnostic — the fix is exact-id-gated, not a blanket generatedTeam substitution")
+    }
+
+    /// A DELEGATED child (`parentTaskID != nil`) running on a generated team uses
+    /// the SAME findOrCreateStep guard. This pins that generated-team DELEGATION
+    /// (`delegate_to_team team_id: "generated"`) — which the same blind spot also
+    /// broke — seeds its first role after the fix.
+    func testFindOrCreateStep_delegatedChild_pinnedToGeneratedTeam_seedsRole() async {
+        let store = makeOrchestrator()
+        let root = makeWorkFolderRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        await store.openWorkFolder(root)
+
+        let parentID = await store.createTask(title: "Parent", supervisorTask: "...")
+        guard let parentID else { return XCTFail("parent create failed") }
+        let childID = await store.createDelegatedTask(
+            parentTaskID: parentID, parentRoleID: "coding_agent", title: "Child",
+            supervisorTask: "Sub-brief", preferredTeamID: nil, depth: 1)
+        guard let childID else { return XCTFail("child create failed") }
+
+        let genTeam = makeGeneratedTeam(roleID: "gen_arch")
+        _ = await store.mutateTask(taskID: childID) { task in
+            task.runs = [Run(id: 0, teamID: genTeam.id)]
+            task.adoptGeneratedTeam(genTeam)
+        }
+        store.lastErrorMessage = nil
+
+        let stepID = await store.findOrCreateStep(taskID: childID, roleID: "gen_arch")
+        XCTAssertNotNil(stepID,
+                        "A delegated child on a generated team must seed its role (generated-team delegation repair)")
+        XCTAssertEqual(store.loadedTask(childID)?.runs.last?.steps.count, 1)
+        XCTAssertNil(store.lastErrorMessage)
+    }
+
+    /// The bug failed at EVERY role, not just the first — the whole pipeline was
+    /// dead. This mints two distinct generated-team roles in sequence and asserts
+    /// both steps are seeded (the pipeline can actually advance).
+    func testFindOrCreateStep_pinnedToGeneratedTeam_multipleRoles_allSeed() async {
+        let store = makeOrchestrator()
+        let root = makeWorkFolderRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        await store.openWorkFolder(root)
+
+        let genID = NTMSID.from(name: "gen_\(UUID().uuidString)")
+        let genTeam = Team(
+            id: genID, name: "Generated Team", description: "",
+            roles: [
+                TeamRoleDefinition(id: "gen_arch", name: "Architect", prompt: "", toolIDs: [],
+                                   usePlanningPhase: false, dependencies: RoleDependencies()),
+                TeamRoleDefinition(id: "gen_tester", name: "Tester", prompt: "", toolIDs: [],
+                                   usePlanningPhase: false, dependencies: RoleDependencies())
+            ],
+            artifacts: [], settings: TeamSettings(), graphLayout: TeamGraphLayout())
+
+        let tid = await store.createTask(title: "T", supervisorTask: "...")
+        guard let tid else { return XCTFail("create failed") }
+        _ = await store.mutateTask(taskID: tid) { task in
+            task.runs = [Run(id: 0, teamID: genID)]
+            task.adoptGeneratedTeam(genTeam)
+        }
+
+        let s1 = await store.findOrCreateStep(taskID: tid, roleID: "gen_arch")
+        let s2 = await store.findOrCreateStep(taskID: tid, roleID: "gen_tester")
+        XCTAssertNotNil(s1, "first generated role must seed")
+        XCTAssertNotNil(s2, "second generated role must also seed — the pipeline advances, not just role 1")
+        XCTAssertEqual(store.loadedTask(tid)?.runs.last?.steps.count, 2,
+                       "both generated-team role steps must be minted")
+    }
 }

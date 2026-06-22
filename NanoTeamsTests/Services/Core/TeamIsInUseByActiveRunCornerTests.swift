@@ -211,4 +211,119 @@ final class TeamIsInUseByActiveRunCornerTests: XCTestCase {
         XCTAssertFalse(store.teamIsInUseByActiveRun(realTeam.id),
                        "A real, unpinned team remains not-in-use alongside the synthetic pin")
     }
+
+    // MARK: - Recurrence keeps a .done task's team in use (deletion hardening)
+
+    /// Seeds a CLOSED (derives `.done`) task pinned to `team`, with the supplied
+    /// recurrence. Returns the task id.
+    private func makeClosedRecurringTask(
+        _ store: NTMSOrchestrator, team: Team, recurrence: TaskRecurrence?
+    ) async -> Int? {
+        guard let roleID = team.roles.first(where: { !$0.isSupervisor })?.id else { return nil }
+        guard let tid = await store.createTask(title: "Rec", supervisorTask: "...", preferredTeamID: team.id)
+        else { return nil }
+        _ = await store.mutateTask(taskID: tid) { task in
+            var run = Run(id: 0, teamID: team.id)
+            run.steps = [StepExecution(id: roleID, role: .custom(id: roleID), title: "S", status: .done)]
+            task.runs = [run]
+            task.closedAt = MonotonicClock.shared.now()
+            task.recurrence = recurrence
+        }
+        return tid
+    }
+
+    /// A `.done` (closed) task with an ENABLED recurrence will re-run on its team
+    /// on the next fire — the guard must keep the team in use so it can't be
+    /// deleted out from under that future run.
+    func testRecurringDoneTask_enabledRecurrence_blocksDeletion() async {
+        let store = makeOrchestrator()
+        let root = makeWorkFolderRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        await store.openWorkFolder(root)
+        guard let (teamA, _) = twoTeams(store) else { return XCTFail("need 2 teams") }
+
+        let recurrence = TaskRecurrence(
+            rule: .interval(seconds: 3600), isEnabled: true,
+            nextFireAt: Date(timeIntervalSinceNow: 3600))
+        guard let tid = await makeClosedRecurringTask(store, team: teamA, recurrence: recurrence) else {
+            return XCTFail("setup failed")
+        }
+
+        XCTAssertEqual(summary(store, tid)?.status, .done, "Test setup: closed task derives .done")
+        XCTAssertNotNil(summary(store, tid)?.nextRecurrenceFireAt,
+                        "Test setup: an enabled recurrence carries a future fire into the summary")
+        XCTAssertTrue(store.teamIsInUseByActiveRun(teamA.id),
+                      "A .done task with an enabled recurrence keeps its team in use — the next fire re-runs on it")
+    }
+
+    /// A `.done` task whose recurrence is DISABLED does not block deletion
+    /// (`nextRecurrenceFireAt` is nil for a disabled recurrence).
+    func testDoneTask_disabledRecurrence_doesNotBlock() async {
+        let store = makeOrchestrator()
+        let root = makeWorkFolderRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        await store.openWorkFolder(root)
+        guard let (teamA, _) = twoTeams(store) else { return XCTFail("need 2 teams") }
+
+        let recurrence = TaskRecurrence(
+            rule: .interval(seconds: 3600), isEnabled: false,
+            nextFireAt: Date(timeIntervalSinceNow: 3600))
+        guard let tid = await makeClosedRecurringTask(store, team: teamA, recurrence: recurrence) else {
+            return XCTFail("setup failed")
+        }
+
+        XCTAssertEqual(summary(store, tid)?.status, .done)
+        XCTAssertNil(summary(store, tid)?.nextRecurrenceFireAt,
+                     "Test setup: a disabled recurrence carries no fire into the summary")
+        XCTAssertFalse(store.teamIsInUseByActiveRun(teamA.id),
+                       "A .done task with a disabled recurrence does NOT keep its team in use")
+    }
+
+    /// A spent `.once` recurrence self-disables (`reschedule` → isEnabled=false,
+    /// nextFireAt=nil), so a `.done` task carrying it does not block deletion.
+    func testDoneTask_spentOnceRecurrence_doesNotBlock() async {
+        let store = makeOrchestrator()
+        let root = makeWorkFolderRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        await store.openWorkFolder(root)
+        guard let (teamA, _) = twoTeams(store) else { return XCTFail("need 2 teams") }
+
+        // A `.once` whose date is in the past, then rescheduled — self-disables.
+        var spent = TaskRecurrence(rule: .once(date: Date(timeIntervalSince1970: 1)), isEnabled: true)
+        spent.reschedule(after: Date())
+        XCTAssertFalse(spent.isEnabled, "Test setup: a past .once must self-disable on reschedule")
+        XCTAssertNil(spent.nextFireAt)
+
+        guard let tid = await makeClosedRecurringTask(store, team: teamA, recurrence: spent) else {
+            return XCTFail("setup failed")
+        }
+
+        XCTAssertNil(summary(store, tid)?.nextRecurrenceFireAt)
+        XCTAssertFalse(store.teamIsInUseByActiveRun(teamA.id),
+                       "A spent one-shot recurrence does NOT keep its team in use after it has fired")
+    }
+
+    /// An OPEN (non-`.done`) recurring task is in use via the original
+    /// `status != .done` clause — the recurrence clause is additive, not the only
+    /// path. Pins that the new predicate didn't narrow the existing behavior.
+    func testOpenRecurringTask_stillInUse_viaStatusClause() async {
+        let store = makeOrchestrator()
+        let root = makeWorkFolderRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        await store.openWorkFolder(root)
+        guard let (teamA, _) = twoTeams(store) else { return XCTFail("need 2 teams") }
+
+        let tid = await store.createTask(title: "OpenRec", supervisorTask: "...", preferredTeamID: teamA.id)
+        guard let tid else { return XCTFail("create failed") }
+        _ = await store.mutateTask(taskID: tid) { task in
+            task.runs = [Run(id: 0, teamID: teamA.id)]   // open run, NOT closed
+            task.closedAt = nil
+            task.recurrence = TaskRecurrence(rule: .interval(seconds: 3600), isEnabled: true,
+                                             nextFireAt: Date(timeIntervalSinceNow: 3600))
+        }
+
+        XCTAssertNotEqual(summary(store, tid)?.status, .done, "Test setup: the task is open, not .done")
+        XCTAssertTrue(store.teamIsInUseByActiveRun(teamA.id),
+                      "An open recurring task keeps its team in use via the status clause (recurrence is additive)")
+    }
 }

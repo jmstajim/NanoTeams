@@ -240,11 +240,11 @@ final class NTMSOrchestrator {
     /// shared form state.
     @ObservationIgnored weak var quickCaptureFormState: QuickCaptureFormState?
 
-    /// Debounce timestamp for Autovisor event-wakes — bounds how often events
-    /// (a task needing input / failing / completing) can spawn a manager review,
-    /// per `AutovisorActivation.minSecondsBetweenRuns`. Stamped on EVERY manager
-    /// run start (event-wake, recurrence, Run-now, open-time) so a recurrence-driven
-    /// run can't be immediately re-triggered by an event.
+    /// Timestamp of the manager's last review pass start (any path: event-wake,
+    /// recurrence, Run-now, open-time). A "last reviewed" diagnostic signal, NOT a
+    /// throttle — the event-wake debounce was removed: events reach the manager
+    /// immediately when it's idle, or queue (mid-review injection) when it's running.
+    /// Stamped in `startRun`'s manager hook.
     @ObservationIgnored var autovisorLastWakeAt: Date?
 
     /// Top-level task ids the Autovisor has already seen, so the `onTaskCreated`
@@ -264,6 +264,25 @@ final class NTMSOrchestrator {
     /// evaluated (`.stuck` keys survive observer wakes, which never run the stuck
     /// detector), so a condition that clears and later re-fires notifies again.
     @ObservationIgnored var autovisorNotifiedAttentionKeys: Set<AutovisorAttentionKey> = []
+
+    /// Stable snapshot of the attention conditions present at the manager's last
+    /// review pass start — the DELIVER-ONCE baseline for event wakes. There is no
+    /// time-throttle: a condition NOT in this set is "fresh" — it arose SINCE the last
+    /// pass (typically a task the manager created mid-pass whose artifact /
+    /// `ask_supervisor` landed after it parked) — and wakes the manager immediately
+    /// (or, if it's already running, is injected into the live conversation). A
+    /// condition already in the snapshot is NOT re-delivered; the periodic recurrence
+    /// sweep re-reviews unresolved ones. The pass-start seed RECOMPUTES `.stuck` into
+    /// the baseline so a stuck task is delivered once, not every poll. Deliberately SEPARATE
+    /// from `autovisorNotifiedAttentionKeys` (the mid-review injection dedup set —
+    /// pruned + `formUnion`'d during a pass): this one is NOT pruned, so a condition
+    /// present at pass start stays "not fresh" even if it momentarily flickers. Set at
+    /// every pass start (`seedAutovisorNotifiedKeysForPassStart`) AND synchronously in
+    /// `wakeAutovisorForEvents` before the `await` — that synchronous record is the
+    /// SOLE serialization between the concurrent observer + poll callers (a second wake
+    /// for the same conditions sees them as not-fresh and bails, so neither
+    /// double-starts a `createNewRun`).
+    @ObservationIgnored var autovisorLastPassAttentionKeys: Set<AutovisorAttentionKey> = []
 
     /// Tasks the Autovisor created during the CURRENT review pass. Reset to 0
     /// on each manager run start (in `startRun`); bounded in `createManagedTask` by
@@ -384,7 +403,15 @@ final class NTMSOrchestrator {
     func teamIsInUseByActiveRun(_ teamID: NTMSID) -> Bool {
         guard let summaries = snapshot?.tasksIndex.tasks else { return false }
         return summaries.contains { summary in
-            summary.pinnedTeamID == teamID && summary.status != .done
+            // A `.done` task with an ENABLED recurrence will re-run on this team on
+            // its next fire — deleting the team now would strand that future run.
+            // `toSummary` sets `nextRecurrenceFireAt = isEnabled ? nextFireAt : nil`,
+            // so it is non-nil for any enabled recurrence that still has a scheduled
+            // fire — INCLUDING one already due but not yet rescheduled (still the safe
+            // direction: keep a team that's about to re-run un-deletable). A spent
+            // rule self-disables via `TaskRecurrence.reschedule`, nilling it.
+            summary.pinnedTeamID == teamID
+                && (summary.status != .done || summary.nextRecurrenceFireAt != nil)
         }
     }
 

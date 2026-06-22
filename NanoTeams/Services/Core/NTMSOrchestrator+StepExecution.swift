@@ -140,7 +140,20 @@ extension NTMSOrchestrator {
         let run = task.runs[runIndex]
         if let pinned = run.teamID {
             // Pinned run: the role MUST belong to the pinned team, which must exist.
-            guard let pinnedTeam = workFolder?.team(withID: pinned) else {
+            // Resolve the pinned id generatedTeam-aware — a generated team lives on
+            // `task.generatedTeam`, never in `workFolder.teams`, so a teams.json-only
+            // lookup would falsely report it "no longer exists". This is PIN-FIRST
+            // (use generatedTeam only when its id equals the pin), deliberately
+            // STRICTER than `TeamResolution.resolve` (which is generatedTeam-first):
+            // a pin that matches neither must still fail loudly "no longer exists".
+            // It nonetheless AGREES with `resolvedTeam(for:)` (used by makeStep below)
+            // in every reachable state, because `generatedTeam` is only ever set while
+            // the run is pinned to it — adopt + re-pin happen together in
+            // `applyGeneratedTeamSuccess`, and `switchTeam` clears it on a roster swap.
+            let pinnedTeam = (task.generatedTeam?.id == pinned)
+                ? task.generatedTeam
+                : workFolder?.team(withID: pinned)
+            guard let pinnedTeam else {
                 lastErrorMessage = "Refusing to seed role '\(roleID)' into run \(run.id): pinned team '\(pinned)' no longer exists."
                 return nil
             }
@@ -149,6 +162,9 @@ extension NTMSOrchestrator {
                 return nil
             }
         } else if let anchorRoleID = run.steps.first?.effectiveRoleID,
+                  // Legacy run with no pinned teamID. Generated runs always carry a pin
+                  // (createTeamRun + the runTeamGeneration re-pin), so this branch is
+                  // unreachable for them — it is generatedTeam-blind by omission, not by bug.
                   let rosterTeam = workFolder?.teams.first(where: { $0.findRole(byIdentifier: anchorRoleID) != nil }),
                   rosterTeam.findRole(byIdentifier: roleID) == nil {
             // Legacy run without a pinned teamID: infer the roster from an existing

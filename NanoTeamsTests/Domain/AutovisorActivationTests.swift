@@ -2,35 +2,20 @@ import XCTest
 @testable import NanoTeams
 
 /// Pins `AutovisorActivation.clamped()` — the persistence-boundary re-floor of the
-/// event-wake debounce. The Settings editor mutates `minSecondsBetweenRuns` via a
-/// SwiftUI binding (`minSecondsBinding`), bypassing the `init` clamp, so `clamped()`
-/// (called by `updateAutovisorActivation`) is the only thing re-flooring an
-/// out-of-range value before it reaches `settings.json`. Mirrors the sibling
+/// sleep-timer duration. The Settings editor mutates the fields via SwiftUI bindings,
+/// bypassing the `init` clamp, so `clamped()` (called by `updateAutovisorActivation`)
+/// is the only thing re-flooring an out-of-range value before it reaches
+/// `settings.json`. Mirrors the sibling
 /// `AutovisorTuningTests.testClamped_reAppliesFloorsAfterDirectMutation`.
 final class AutovisorActivationTests: XCTestCase {
-
-    func testClamped_reFloorsDebounceAfterDirectMutation() {
-        var below = AutovisorActivation.default
-        below.minSecondsBetweenRuns = 0
-        XCTAssertEqual(below.clamped().minSecondsBetweenRuns,
-                       AutovisorConstants.minEventWakeDebounceSeconds,
-                       "below-floor debounce re-floored on persist")
-
-        var valid = AutovisorActivation.default
-        valid.minSecondsBetweenRuns = 120
-        XCTAssertEqual(valid.clamped().minSecondsBetweenRuns, 120,
-                       "valid value passes through unchanged")
-    }
 
     func testClamped_leavesTriggerBoolsUntouched() {
         var a = AutovisorActivation.default
         a.onTaskNeedsSupervisor = false
         a.onTaskCreated = true
-        a.minSecondsBetweenRuns = 90
         let c = a.clamped()
         XCTAssertFalse(c.onTaskNeedsSupervisor)
         XCTAssertTrue(c.onTaskCreated)
-        XCTAssertEqual(c.minSecondsBetweenRuns, 90, "in-range debounce unchanged")
     }
 
     // MARK: - Auto-off sleep timer
@@ -76,7 +61,6 @@ final class AutovisorActivationTests: XCTestCase {
             onTaskCompleted: false,
             onTaskCreated: true,
             onTaskStuck: false,
-            minSecondsBetweenRuns: 120,
             autoDisableEnabled: false,
             autoDisableAfterSeconds: 7200
         )

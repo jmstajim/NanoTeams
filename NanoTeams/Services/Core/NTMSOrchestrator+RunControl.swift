@@ -39,12 +39,11 @@ extension NTMSOrchestrator {
         }
 
         // Autovisor run start (any path: event-wake, recurrence, Run-now,
-        // open-time pass). Stamp the wake-debounce clock so an event can't
-        // immediately re-trigger a fresh review on top of this one, reset the
-        // per-review creation counter, and seed the mid-review notice dedup set
-        // with everything matching right now — the pass observes those via
-        // list_tasks, so only conditions that NEWLY arise mid-pass inject a
-        // live notice (otherwise the manager's own `.running` transition
+        // open-time pass). Stamp the "last reviewed" diagnostic timestamp, reset the
+        // per-review creation counter, and seed the mid-review notice dedup set + the
+        // deliver-once freshness baseline with everything matching right now — the pass
+        // observes those via list_tasks, so only conditions that NEWLY arise mid-pass
+        // inject a live notice (otherwise the manager's own `.running` transition
         // re-fires the observer and duplicates the triggering condition).
         if taskID == autovisorTaskID {
             autovisorLastWakeAt = Date()

@@ -60,11 +60,6 @@ nonisolated enum AutovisorConstants {
     /// accumulation across many review passes.
     static let maxConcurrentManagedTasks = 2
 
-    /// Lower bound for `AutovisorActivation.minSecondsBetweenRuns` — the
-    /// event-wake debounce can never be set below this (a `0`/negative value would
-    /// otherwise allow a wake-storm). 30s is well under the 60s default.
-    static let minEventWakeDebounceSeconds: TimeInterval = 30
-
     /// Minimum auto-off (sleep-timer) duration. The scheduler evaluates once a
     /// minute, so sub-minute durations could never be honored on time.
     static let minAutoDisableSeconds: TimeInterval = 60

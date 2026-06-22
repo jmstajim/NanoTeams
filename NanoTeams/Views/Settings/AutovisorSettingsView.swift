@@ -308,16 +308,6 @@ struct AutovisorSettingsView: View {
 
                 SettingsToggleRow(title: "Wake when a task is stuck or looping", icon: "arrow.triangle.2.circlepath", isOn: $activation.onTaskStuck)
                 rowCaption("Wake when a running role hangs or loops — thresholds set under Stuck detection.")
-
-                SettingsStepperRow(
-                    title: "Min seconds between event wakes",
-                    icon: "timer",
-                    value: minSecondsBinding,
-                    range: 30...600,
-                    step: 15,
-                    zeroLabel: nil
-                )
-                rowCaption("Debounce so a burst of events doesn't spawn back-to-back reviews. The timed schedule is unaffected.")
             }
         }
         .onChange(of: intervalMinutes) { _, minutes in
@@ -402,15 +392,6 @@ struct AutovisorSettingsView: View {
         Binding(
             get: { max(1, Int((tuning.stuckLoopRecencySeconds / 60).rounded())) },
             set: { tuning.stuckLoopRecencySeconds = TimeInterval($0 * 60) }
-        )
-    }
-
-    /// Event-wake debounce edited in whole seconds; stored as `TimeInterval`. The
-    /// `SettingsStepperRow` value cell is `Int`, so this bridges to the stored `TimeInterval`.
-    private var minSecondsBinding: Binding<Int> {
-        Binding(
-            get: { Int(activation.minSecondsBetweenRuns) },
-            set: { activation.minSecondsBetweenRuns = TimeInterval($0) }
         )
     }
 

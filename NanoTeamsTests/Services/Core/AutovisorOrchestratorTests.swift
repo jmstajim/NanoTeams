@@ -445,35 +445,33 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase {
         sut.stopEngineForTask(mgrID)  // tidy the spawned manager run
     }
 
-    /// A wake INSIDE the debounce window must not re-stamp or start a run — pins that
-    /// `wakeAutovisorForEvents` actually reads `minSecondsBetweenRuns` (the value-level clamp
-    /// is pinned separately in `AutovisorActionTests`).
-    func testWake_withinDebounceWindow_doesNotReStamp() async {
+    /// No throttle: a FRESH condition wakes the manager immediately even right after a
+    /// prior pass — the event-wake debounce (`minSecondsBetweenRuns`) was removed.
+    func testWake_freshCondition_wakesWithNoThrottle() async {
         let mgrID = await enabledManager()
         guard await makeReviewStartupTask() != nil else { return }  // a wake-worthy (Review) task
-        let stamp = Date(timeIntervalSince1970: 1_000_000)
-        sut.autovisorLastWakeAt = stamp
-        await sut.wakeAutovisorForEvents(now: stamp.addingTimeInterval(5))  // < 30s debounce floor
-        XCTAssertEqual(sut.autovisorLastWakeAt, stamp,
-                       "a wake inside the debounce window must not re-stamp")
-        XCTAssertNotEqual(sut.taskEngineStates[mgrID], .running, "no manager run should have started")
+        let priorPass = Date(timeIntervalSince1970: 1_000_000)
+        sut.autovisorLastWakeAt = priorPass  // the old debounce would have suppressed this
+        await sut.wakeAutovisorForEvents()
+        XCTAssertNotEqual(sut.autovisorLastWakeAt, priorPass,
+                          "a fresh condition wakes immediately regardless of a recent prior pass")
+        sut.stopEngineForTask(mgrID)
     }
 
-    /// Level-triggered contract: a task that STAYS in Review re-wakes the manager once the
-    /// debounce window has elapsed — there is intentionally NO edge-dedup (a `handled`-style set
-    /// was adversarially rejected). Re-introducing one would make this test fail. The boundary is
-    /// strict `<`, so a wake at EXACTLY `minSecondsBetweenRuns` fires.
-    func testWake_afterDebounceWindow_reFires() async {
-        let mgrID = await enabledManager()
-        guard await makeReviewStartupTask() != nil else { return }  // a still-Review task
-        let window = sut.snapshot?.workFolder.settings.autovisorActivation.minSecondsBetweenRuns ?? 60
-        let old = Date(timeIntervalSince1970: 1_000_000)
-        sut.autovisorLastWakeAt = old
-        // now - old == window → strict `<` is false → NOT debounced → wakes again.
-        await sut.wakeAutovisorForEvents(now: old.addingTimeInterval(window))
-        XCTAssertNotEqual(sut.autovisorLastWakeAt, old,
-                          "once the debounce window elapses, a still-Review task wakes again (level-triggered)")
-        sut.stopEngineForTask(mgrID)
+    /// Deliver-once: a condition already in the freshness baseline (reviewed at the
+    /// manager's last pass start) is NOT re-delivered — the periodic recurrence review
+    /// re-surfaces it instead, so a standing unresolved condition can't tight-loop.
+    func testWake_alreadyReviewedCondition_doesNotReWake() async {
+        _ = await enabledManager()
+        guard let taskID = await makeReviewStartupTask() else { return }
+        let priorPass = Date(timeIntervalSince1970: 1_000_000)
+        sut.autovisorLastWakeAt = priorPass
+        sut.autovisorLastPassAttentionKeys = [
+            NTMSOrchestrator.AutovisorAttentionKey(taskID: taskID, trigger: .completed)
+        ]
+        await sut.wakeAutovisorForEvents()
+        XCTAssertEqual(sut.autovisorLastWakeAt, priorPass,
+                       "an already-reviewed condition is not re-delivered — no fresh pass (deliver-once)")
     }
 
     /// A manager parked on `wait_for_events` (`.needsSupervisorInput`) must still be

@@ -16,14 +16,11 @@ extension LLMExecutionService {
         guard let stepIndex = run.steps.firstIndex(where: { $0.id == stepID }) else { return [] }
         let step = run.steps[stepIndex]
 
-        // Resolve team: prefer task's preferredTeamID, then project's activeTeam
-        let resolvedTeam: Team? = {
-            if let preferredTeamID = task.preferredTeamID,
-               let team = delegate.snapshot?.workFolder.team(withID: preferredTeamID) {
-                return team
-            }
-            return delegate.snapshot?.workFolder.activeTeam
-        }()
+        // Resolve team via the shared pin/generatedTeam-aware resolver — a generated
+        // team lives on `task.generatedTeam` (never in `workFolder.teams`), so the old
+        // `preferredTeamID → activeTeam` lookup built the system prompt against the
+        // empty "Generated Team" placeholder (wrong name, no roles, generic guidance).
+        let resolvedTeam: Team? = resolveTeam(task: task)
 
         // Autovisor: append its standing memory to globalContext so it lands in the
         // manager's system prompt every fresh run (recurrence rebuilds the run, picking up

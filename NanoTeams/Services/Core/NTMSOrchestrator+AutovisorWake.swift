@@ -161,14 +161,13 @@ extension NTMSOrchestrator {
 
     /// Wakes the manager when a folder task needs it, per the activation triggers.
     /// Called both as an immediate event-wake (engine-state observer) and as a
-    /// level-triggered backstop from the poll loop — the latter catches event-wakes
-    /// the observer debounced. Two delivery shapes:
+    /// level-triggered backstop from the poll loop. No throttle — two delivery shapes:
     /// • manager `.running` (mid-review) — the event is injected into the LIVE
     ///   conversation as a queued supervisor message (drained next tool-loop
-    ///   iteration), deduped per (task, trigger) via `autovisorNotifiedAttentionKeys`
-    ///   and exempt from the wake debounce;
-    /// • any other state — a FRESH review pass, debounced by `minSecondsBetweenRuns`
-    ///   (a parked `wait_for_events` engine is superseded, not continued).
+    ///   iteration), deduped per (task, trigger) via `autovisorNotifiedAttentionKeys`;
+    /// • any other state — an immediate FRESH review pass for a not-yet-seen condition
+    ///   (a parked `wait_for_events` engine is superseded, not continued). A condition
+    ///   already in `autovisorLastPassAttentionKeys` is not re-delivered (deliver-once).
     ///
     /// `includeStuck` enables the `onTaskStuck` evaluation — passed `true` ONLY by
     /// the per-minute poll backstop. The hot engine-state observer leaves it `false`
@@ -206,12 +205,11 @@ extension NTMSOrchestrator {
 
         // Already reviewing → deliver the event into the LIVE conversation (queued
         // supervisor message, drained on the next tool-loop iteration) instead of
-        // waiting for the pass to end. Deduped per (task, trigger); the wake
-        // debounce deliberately does NOT apply — each distinct condition notifies
-        // once while it persists. No `autovisorLastWakeAt` stamp, so a condition
-        // the manager fails to address mid-pass still gets the normal fresh-pass
-        // wake once the pass ends. This branch is fully synchronous (no `await`),
-        // so a concurrent observer/poll call can't double-inject.
+        // waiting for the pass to end. Deduped per (task, trigger) — each distinct
+        // condition notifies once while it persists; a condition the manager fails to
+        // address mid-pass still gets the normal fresh-pass wake once the pass ends.
+        // This branch is fully synchronous (no `await`), so a concurrent observer/poll
+        // call can't double-inject.
         if taskEngineStates[managerID] == .running {
             let fresh = items.filter { !autovisorNotifiedAttentionKeys.contains($0.key) }
             // The form-state guard must precede ALL bookkeeping: when it isn't
@@ -243,18 +241,37 @@ extension NTMSOrchestrator {
         // orphan it on the old run (data loss). Defer to the resume — it continues
         // the SAME run; the event stays live (level-triggered) and injects once the
         // manager hits `.running` (the observer re-fires on that transition). No
-        // debounce stamp / no seen update here so the event remains deliverable.
+        // freshness-snapshot / seen update here so the event remains deliverable.
         if taskEngineStates[managerID] == .needsSupervisorInput,
            autovisorHasPendingHumanContinuation(managerID) {
             return
         }
 
-        if let last = autovisorLastWakeAt, now.timeIntervalSince(last) < act.minSecondsBetweenRuns { return }
+        // NO THROTTLE: a "fresh" condition — one NOT present at the manager's last pass
+        // start (`autovisorLastPassAttentionKeys`) — wakes the manager immediately. A
+        // condition it has ALREADY seen is not re-delivered (deliver-once); the periodic
+        // recurrence sweep re-reviews any it didn't resolve, so a standing unresolved
+        // condition can't tight-loop. The baseline is recomputed at pass start INCLUDING
+        // stuck (`seedAutovisorNotifiedKeysForPassStart`), so a stuck task is delivered
+        // ONCE (not every poll tick) and a no-longer-stuck one is dropped (a fresh stuck
+        // episode re-wakes). Fixes the wedge where a task the manager CREATED mid-pass
+        // produced its artifact / called ask_supervisor AFTER it parked: never in the
+        // snapshot → wakes promptly. (A burst is naturally bounded: the first event flips
+        // the manager to `.running`, so the rest take the mid-review injection branch
+        // above instead of new passes.)
+        let hasFreshCondition = items.contains { !autovisorLastPassAttentionKeys.contains($0.key) }
+        guard hasFreshCondition else { return }
+        // Record what THIS pass reviews as the new deliver-once baseline — SYNCHRONOUSLY,
+        // before the `await startAutovisorPass` below — so a concurrent observer/poll wake
+        // for the same conditions sees them as not-fresh and bails. This synchronous record
+        // is now the SOLE serialization between the two callers (the debounce that used to
+        // provide it was removed); without it both would `createNewRun`. The pass-start
+        // seed re-sets it once the run is live.
+        autovisorLastPassAttentionKeys = Set(items.map(\.key))
         // Mark every current top-level task as seen so `onTaskCreated` doesn't
         // re-trigger for the same ones next tick (the other triggers are
-        // level-based and re-evaluate correctly under the debounce).
+        // level-based and re-evaluate correctly).
         autovisorSeenTaskIDs = Set(watchable.map(\.id))
-        autovisorLastWakeAt = now
         // Event wakes get a FRESH review pass — a parked (`wait_for_events`)
         // engine is superseded, not continued (only human messages continue
         // the parked conversation).
@@ -277,9 +294,24 @@ extension NTMSOrchestrator {
     func seedAutovisorNotifiedKeysForPassStart() {
         guard let settings = snapshot?.workFolder.settings, settings.autovisorEnabled,
               let managerID = autovisorTaskID else { return }
+        let watchable = autovisorWatchableTasks(excluding: managerID)
+        let act = settings.autovisorActivation
+        // Injection dedup set: `stuck: []` (its existing contract — list_tasks doesn't
+        // surface stuck, so a stuck condition injects once mid-pass).
         autovisorNotifiedAttentionKeys = Set(Self.autovisorAttentionItems(
-            watchable: autovisorWatchableTasks(excluding: managerID), engineStates: taskEngineStates,
-            activation: settings.autovisorActivation, seen: autovisorSeenTaskIDs, stuck: []
+            watchable: watchable, engineStates: taskEngineStates,
+            activation: act, seen: autovisorSeenTaskIDs, stuck: []
+        ).map(\.key))
+        // Deliver-once freshness baseline for the NEXT event wake — covers passes that
+        // DON'T go through `wakeAutovisorForEvents` (recurrence, open-time, Run-now); the
+        // event-wake path also sets it synchronously for the race guard. RECOMPUTES stuck
+        // (once per pass — cheap next to the LLM call) so a stuck task the manager just
+        // reviewed isn't re-delivered every poll, while a no-longer-stuck one is dropped
+        // (a fresh stuck episode re-wakes).
+        let stuck = act.onTaskStuck ? computeStuckTaskIDs(watchable: watchable, now: Date()) : []
+        autovisorLastPassAttentionKeys = Set(Self.autovisorAttentionItems(
+            watchable: watchable, engineStates: taskEngineStates,
+            activation: act, seen: autovisorSeenTaskIDs, stuck: stuck
         ).map(\.key))
     }
 
@@ -296,9 +328,10 @@ extension NTMSOrchestrator {
     /// with hand-built `TaskSummary` values.
     ///
     /// All four triggers are LEVEL-triggered: a task that stays in a matching state keeps the
-    /// manager wake-eligible every tick. The caller's `minSecondsBetweenRuns` debounce bounds how
-    /// often that actually spawns a run, and the per-minute poll backstop catches event-wakes the
-    /// observer debounced. The manager resolves each by acting — answering, closing, or restarting —
+    /// manager wake-eligible every tick. The caller's deliver-once freshness baseline
+    /// (`autovisorLastPassAttentionKeys`) bounds how often that actually spawns a run (a condition
+    /// already reviewed isn't re-delivered), and the per-minute poll backstop is the level-triggered
+    /// safety net. The manager resolves each by acting — answering, closing, or restarting —
     /// after which the trigger goes quiet.
     ///
     /// `onTaskCompleted` keys on the DERIVED `.needsSupervisorAcceptance` ("Review") status, NOT

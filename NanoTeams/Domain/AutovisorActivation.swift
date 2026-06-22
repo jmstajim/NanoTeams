@@ -4,8 +4,10 @@ import Foundation
 ///
 /// The periodic *schedule* itself does NOT live here — it lives on the manager
 /// task's `recurrence` (so the existing automation scheduler picks it up via
-/// `recurringTaskIDsDue`). This struct carries the **event-driven** triggers plus
-/// a debounce, persisted inside `ProjectSettings` (`settings.json`).
+/// `recurringTaskIDsDue`). This struct carries the **event-driven** triggers,
+/// persisted inside `ProjectSettings` (`settings.json`). There is no throttle:
+/// an event wakes the manager immediately when it's idle, or is injected into its
+/// live conversation when it's already running (mid-review delivery).
 ///
 /// `onTaskNeedsSupervisor` is special: besides waking the manager, it gates the
 /// auto-answer suppression. When it is `false`, the universal-supervisor behavior
@@ -28,11 +30,6 @@ nonisolated struct AutovisorActivation: Codable, Hashable {
     /// per-minute poll backstop (`computeStuckTaskIDs`), never on the hot
     /// engine-state observer path.
     var onTaskStuck: Bool
-    /// Minimum seconds between event-driven wakes (debounce) so a burst of events
-    /// doesn't spawn back-to-back review runs. Scheduled recurrence is unaffected.
-    /// Clamped to `>= minEventWakeDebounceSeconds` so a `0`/negative value can't
-    /// defeat the debounce (a wake-storm) via a hand-edited `settings.json`.
-    var minSecondsBetweenRuns: TimeInterval
 
     /// Sleep timer master switch (ON by default): when on, the Autovisor turns
     /// itself off `autoDisableAfterSeconds` after being enabled. Persisted as an
@@ -54,7 +51,6 @@ nonisolated struct AutovisorActivation: Codable, Hashable {
         onTaskCompleted: Bool = true,
         onTaskCreated: Bool = false,
         onTaskStuck: Bool = true,
-        minSecondsBetweenRuns: TimeInterval = 60,
         autoDisableEnabled: Bool = true,
         autoDisableAfterSeconds: TimeInterval = AutovisorConstants.defaultAutoDisableAfterSeconds
     ) {
@@ -63,7 +59,6 @@ nonisolated struct AutovisorActivation: Codable, Hashable {
         self.onTaskCompleted = onTaskCompleted
         self.onTaskCreated = onTaskCreated
         self.onTaskStuck = onTaskStuck
-        self.minSecondsBetweenRuns = Self.clampDebounce(minSecondsBetweenRuns)
         self.autoDisableEnabled = autoDisableEnabled
         self.autoDisableAfterSeconds = Self.clampAutoDisable(autoDisableAfterSeconds)
     }
@@ -87,17 +82,10 @@ nonisolated struct AutovisorActivation: Codable, Hashable {
             onTaskCompleted: try c.decodeIfPresent(Bool.self, forKey: .onTaskCompleted) ?? true,
             onTaskCreated: try c.decodeIfPresent(Bool.self, forKey: .onTaskCreated) ?? false,
             onTaskStuck: try c.decodeIfPresent(Bool.self, forKey: .onTaskStuck) ?? true,
-            minSecondsBetweenRuns: try c.decodeIfPresent(TimeInterval.self, forKey: .minSecondsBetweenRuns) ?? 60,
             autoDisableEnabled: try c.decodeIfPresent(Bool.self, forKey: .autoDisableEnabled) ?? true,
             autoDisableAfterSeconds: try c.decodeIfPresent(TimeInterval.self, forKey: .autoDisableAfterSeconds)
                 ?? AutovisorConstants.defaultAutoDisableAfterSeconds
         )
-    }
-
-    /// Floors the debounce at the configured minimum so the invariant ("a burst of
-    /// events can't spawn back-to-back runs") holds for any constructed or decoded value.
-    static func clampDebounce(_ seconds: TimeInterval) -> TimeInterval {
-        max(AutovisorConstants.minEventWakeDebounceSeconds, seconds)
     }
 
     /// Bounds the sleep-timer duration: floored at the scheduler's once-a-minute
@@ -109,11 +97,11 @@ nonisolated struct AutovisorActivation: Codable, Hashable {
             AutovisorConstants.maxAutoDisableSeconds)
     }
 
-    /// Returns a copy with `minSecondsBetweenRuns` and `autoDisableAfterSeconds`
-    /// re-floored. Mirrors `AutovisorTuning.clamped()`: the Settings editor's
-    /// bindings mutate the fields directly (bypassing the `init` clamps), so the
-    /// persist path (`updateAutovisorActivation`) re-applies the floors through
-    /// this. Delegates to `init(...)` so the floors execute in exactly one place.
+    /// Returns a copy with `autoDisableAfterSeconds` re-floored. Mirrors
+    /// `AutovisorTuning.clamped()`: the Settings editor's bindings mutate the fields
+    /// directly (bypassing the `init` clamp), so the persist path
+    /// (`updateAutovisorActivation`) re-applies the floor through this. Delegates to
+    /// `init(...)` so the floor executes in exactly one place.
     func clamped() -> AutovisorActivation {
         AutovisorActivation(
             onTaskNeedsSupervisor: onTaskNeedsSupervisor,
@@ -121,7 +109,6 @@ nonisolated struct AutovisorActivation: Codable, Hashable {
             onTaskCompleted: onTaskCompleted,
             onTaskCreated: onTaskCreated,
             onTaskStuck: onTaskStuck,
-            minSecondsBetweenRuns: minSecondsBetweenRuns,
             autoDisableEnabled: autoDisableEnabled,
             autoDisableAfterSeconds: autoDisableAfterSeconds
         )

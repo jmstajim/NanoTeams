@@ -55,6 +55,267 @@ final class TeamGenerationOrchestratorTests: NTMSOrchestratorTestBase {
         XCTAssertTrue(envelope.contains("\"ok\":false"))
     }
 
+    // MARK: - applyGeneratedTeamSuccess: re-pin run.teamID (Part 1 of the gen-team pin fix)
+
+    /// On generation success the run must be RE-PINNED from the transient
+    /// "Generated Team" placeholder id to the real generated team's id. Without
+    /// this, `findOrCreateStep`'s roster-swap guard rejects every generated role
+    /// (run 0 pinned to the placeholder → "not a member"; the placeholder has no
+    /// roster). Also adopts the team, finalizes the step, and propagates the id
+    /// into `TaskSummary.pinnedTeamID` (the deletion-guard input).
+    func testApplyGeneratedTeamSuccess_repinsRunTeamID_finalizesStep_andAdopts() async {
+        await sut.openWorkFolder(tempDir)
+        guard let taskID = await sut.createTask(title: "Gen", supervisorTask: "build something") else {
+            XCTFail("createTask returned nil"); return
+        }
+
+        // Mirror runTeamGeneration step 1: a run pinned to the placeholder id with
+        // a synthetic create_team step in the "generating" state.
+        let placeholderID = NTMSID.from(name: "Generated Team")
+        let stepID = "team_generation_TEST"
+        let toolCallID = UUID()
+        await sut.mutateTask(taskID: taskID) { task in
+            var run = Run(id: 0, teamID: placeholderID)
+            run.steps = [StepExecution(
+                id: stepID, role: .supervisor, title: "Generate Team", status: .running,
+                toolCalls: [StepToolCall(
+                    id: toolCallID, name: ToolNames.createTeam, argumentsJSON: "{}",
+                    resultJSON: NTMSOrchestrator._testGeneratingEnvelope(), isError: false)])]
+            task.runs = [run]
+        }
+
+        // The real generated team (NOT in workFolder.teams), one ready worker role.
+        let genID = NTMSID.from(name: "gen_\(UUID().uuidString)")
+        let genTeam = Team(
+            id: genID, name: "Gen Team", description: "",
+            roles: [TeamRoleDefinition(id: "gen_worker", name: "Worker", prompt: "", toolIDs: [],
+                                       usePlanningPhase: false, dependencies: RoleDependencies())],
+            artifacts: [], settings: TeamSettings(), graphLayout: TeamGraphLayout())
+
+        await sut.applyGeneratedTeamSuccess(
+            taskID: taskID, team: genTeam, stepID: stepID, toolCallID: toolCallID, warnings: [])
+
+        let run = sut.loadedTask(taskID)?.runs.last
+        XCTAssertEqual(run?.teamID, genID,
+                       "run.teamID must be re-pinned from the placeholder to the generated team's id")
+        XCTAssertEqual(sut.loadedTask(taskID)?.generatedTeam?.id, genID, "generated team must be adopted")
+        XCTAssertEqual(sut.loadedTask(taskID)?.toSummary().pinnedTeamID, genID,
+                       "summary.pinnedTeamID must carry the generated id (deletion-guard input)")
+        let step = run?.steps.first(where: { $0.id == stepID })
+        XCTAssertEqual(step?.status, .done, "generation step must be finalized to .done")
+        XCTAssertFalse(step?.toolCalls.first?.isError ?? true, "create_team tool call must be marked success")
+        XCTAssertEqual(run?.roleStatuses["gen_worker"], .ready,
+                       "a no-dependency worker must be seeded .ready by the shared seeding helper")
+    }
+
+    /// Retry / regeneration: the run is pinned to a PRIOR generation's `_gen_` id
+    /// while a NEW team (different id) is produced. The re-pin must OVERWRITE the
+    /// stale pin with the new team's id. Seeding a stale pin distinct from the new
+    /// id is what makes this catch a deleted re-pin (an `== genID` pre-state could
+    /// not — pinned by review #12).
+    func testApplyGeneratedTeamSuccess_overwritesStalePriorGenPin() async {
+        await sut.openWorkFolder(tempDir)
+        guard let taskID = await sut.createTask(title: "Gen", supervisorTask: "build") else {
+            XCTFail("createTask returned nil"); return
+        }
+
+        let newGenID = NTMSID.from(name: "gen_new_\(UUID().uuidString)")
+        let stalePriorGenID = NTMSID.from(name: "gen_old_\(UUID().uuidString)")
+        XCTAssertNotEqual(newGenID, stalePriorGenID, "Test setup: stale and new ids must differ")
+        let genTeam = Team(
+            id: newGenID, name: "Gen Team", description: "",
+            roles: [TeamRoleDefinition(id: "gen_worker", name: "Worker", prompt: "", toolIDs: [],
+                                       usePlanningPhase: false, dependencies: RoleDependencies())],
+            artifacts: [], settings: TeamSettings(), graphLayout: TeamGraphLayout())
+
+        let stepID = "team_generation_RETRY"
+        let toolCallID = UUID()
+        await sut.mutateTask(taskID: taskID) { task in
+            var run = Run(id: 0, teamID: stalePriorGenID)   // pinned to a PRIOR generation
+            run.steps = [StepExecution(
+                id: stepID, role: .supervisor, title: "Generate Team", status: .running,
+                toolCalls: [StepToolCall(
+                    id: toolCallID, name: ToolNames.createTeam, argumentsJSON: "{}",
+                    resultJSON: NTMSOrchestrator._testGeneratingEnvelope(), isError: false)])]
+            task.runs = [run]
+        }
+
+        let applied = await sut.applyGeneratedTeamSuccess(
+            taskID: taskID, team: genTeam, stepID: stepID, toolCallID: toolCallID, warnings: [])
+
+        XCTAssertTrue(applied, "the mutation landed (run + step present)")
+        XCTAssertEqual(sut.loadedTask(taskID)?.runs.last?.teamID, newGenID,
+                       "re-pin must OVERWRITE the stale prior-generation pin with the new team's id — deleting the re-pin would leave the old id and fail this")
+        XCTAssertEqual(sut.loadedTask(taskID)?.generatedTeam?.id, newGenID)
+        XCTAssertEqual(sut.loadedTask(taskID)?.runs.last?.steps.first?.status, .done)
+    }
+
+    /// Teardown / task-switch race: the generation step is gone before the success
+    /// mutation lands. `applyGeneratedTeamSuccess` must return `false` and NOT adopt
+    /// the team (CLAUDE.md §7: mutateTask==true means "persisted", not "did
+    /// something"); the caller then keeps the engine from starting on a non-adopted
+    /// placeholder-pinned team.
+    func testApplyGeneratedTeamSuccess_missingStep_returnsFalse_doesNotAdopt() async {
+        await sut.openWorkFolder(tempDir)
+        guard let taskID = await sut.createTask(title: "Gen", supervisorTask: "build") else {
+            XCTFail("createTask returned nil"); return
+        }
+        await sut.mutateTask(taskID: taskID) { task in
+            task.runs = [Run(id: 0, teamID: NTMSID.from(name: "placeholder"))]  // no generation step
+        }
+        let genTeam = Team(
+            id: NTMSID.from(name: "gen_\(UUID().uuidString)"), name: "Gen", description: "",
+            roles: [TeamRoleDefinition(id: "gen_w", name: "W", prompt: "", toolIDs: [],
+                                       usePlanningPhase: false, dependencies: RoleDependencies())],
+            artifacts: [], settings: TeamSettings(), graphLayout: TeamGraphLayout())
+
+        let applied = await sut.applyGeneratedTeamSuccess(
+            taskID: taskID, team: genTeam, stepID: "team_generation_MISSING",
+            toolCallID: UUID(), warnings: [])
+
+        XCTAssertFalse(applied, "a missing generation step must report failure, not silent success")
+        XCTAssertNil(sut.loadedTask(taskID)?.generatedTeam,
+                     "the team must NOT be adopted when the success mutation can't land")
+    }
+
+    // MARK: - switchTeam abandons a stale generated team (review #1/#2/#3 root cause)
+
+    /// Switching a generated-team task to a real team must CLEAR `task.generatedTeam`.
+    /// Otherwise `TeamResolution` (generatedTeam-first) keeps resolving the old
+    /// generated roster for `makeStep` / `buildChatMessages` while the run is
+    /// re-pinned to the new team — a dead run + wrong prompt. Also aligns the task's
+    /// chat mode to the switched-to team.
+    func testSwitchTeam_clearsStaleGeneratedTeam_andAdoptsTargetChatMode() async {
+        await sut.openWorkFolder(tempDir)
+        guard let taskID = await sut.createTask(title: "T", supervisorTask: "...") else {
+            XCTFail("createTask returned nil"); return
+        }
+
+        let genID = NTMSID.from(name: "gen_\(UUID().uuidString)")
+        let genTeam = Team(
+            id: genID, name: "Gen", description: "",
+            roles: [TeamRoleDefinition(id: "gen_w", name: "Assistant", prompt: "", toolIDs: [],
+                                       usePlanningPhase: false, dependencies: RoleDependencies())],
+            artifacts: [], settings: TeamSettings(), graphLayout: TeamGraphLayout())
+        // A real folder team whose chat mode DIFFERS from the generated team — makes
+        // the chat-mode assertion catch a missing setStoredChatMode.
+        guard let target = sut.workFolder?.teams.first(where: {
+            $0.templateID != "generated" && !$0.isManagedSingleton && $0.isChatMode != genTeam.isChatMode
+        }) else { XCTFail("need a real team with the opposite chat mode"); return }
+
+        await sut.mutateTask(taskID: taskID) { task in
+            task.runs = [Run(id: 0, teamID: genID)]
+            task.adoptGeneratedTeam(genTeam)
+        }
+        await sut.switchTask(to: taskID)   // switchTeam operates on the active task
+        XCTAssertNotNil(sut.loadedTask(taskID)?.generatedTeam, "precondition: generated team set")
+
+        await sut.switchTeam(to: target.id)
+
+        XCTAssertNil(sut.loadedTask(taskID)?.generatedTeam,
+                     "switchTeam must clear the stale generated team so resolution stops preferring it")
+        XCTAssertEqual(sut.loadedTask(taskID)?.runs.last?.teamID, target.id,
+                       "the run is re-pinned to the switched-to team")
+        XCTAssertEqual(sut.loadedTask(taskID)?.isChatMode, target.isChatMode,
+                       "task chat mode must align with the switched-to team after the generated team is cleared")
+    }
+
+    /// END-TO-END regression for the review's CONFIRMED dead-run (#1): after
+    /// switching a generated-team task to a real team, `findOrCreateStep` must mint
+    /// the real team's role. Pre-fix, `switchTeam` left `task.generatedTeam` set, so
+    /// the guard validated the role against the (pinned) real team but `makeStep`
+    /// resolved the STALE generated team (TeamResolution generatedTeam-first) and
+    /// returned nil → the role failed and the whole run was dead.
+    func testSwitchTeamFromGenerated_thenFindOrCreateStep_mintsTargetRole() async {
+        await sut.openWorkFolder(tempDir)
+        guard let taskID = await sut.createTask(title: "T", supervisorTask: "...") else {
+            XCTFail("createTask returned nil"); return
+        }
+
+        let genID = NTMSID.from(name: "gen_\(UUID().uuidString)")
+        let genTeam = Team(
+            id: genID, name: "Gen", description: "",
+            roles: [TeamRoleDefinition(id: "gen_only", name: "GenRole", prompt: "", toolIDs: [],
+                                       usePlanningPhase: false, dependencies: RoleDependencies())],
+            artifacts: [], settings: TeamSettings(), graphLayout: TeamGraphLayout())
+        guard let target = sut.workFolder?.teams.first(where: { t in
+            t.templateID != "generated" && !t.isManagedSingleton && t.roles.contains { !$0.isSupervisor }
+        }), let targetRoleID = target.roles.first(where: { !$0.isSupervisor })?.id else {
+            XCTFail("need a real team with a non-supervisor role"); return
+        }
+        XCTAssertNil(genTeam.findRole(byIdentifier: targetRoleID),
+                     "Test setup: target role absent from the generated team (so a stale generatedTeam would fail makeStep)")
+
+        await sut.mutateTask(taskID: taskID) { task in
+            task.runs = [Run(id: 0, teamID: genID)]
+            task.adoptGeneratedTeam(genTeam)
+        }
+        await sut.switchTask(to: taskID)
+        await sut.switchTeam(to: target.id)
+
+        let stepID = await sut.findOrCreateStep(taskID: taskID, roleID: targetRoleID)
+        XCTAssertNotNil(stepID,
+                        "After switching off a generated team, the target team's role must mint a step — the dead run is fixed")
+        XCTAssertEqual(sut.loadedTask(taskID)?.runs.last?.steps.count, 1)
+    }
+
+    /// `clearGeneratedTeam()` on switch must be a safe no-op for a NON-generated
+    /// task: the switch still re-pins + aligns chat mode, generatedTeam stays nil.
+    func testSwitchTeam_nonGeneratedTask_generatedTeamStaysNil() async {
+        await sut.openWorkFolder(tempDir)
+        guard let reals = sut.workFolder?.teams.filter({ $0.templateID != "generated" && !$0.isManagedSingleton }),
+              reals.count >= 2 else { XCTFail("need 2 real teams"); return }
+        let t1 = reals[0], t2 = reals[1]
+        guard let taskID = await sut.createTask(title: "T", supervisorTask: "...", preferredTeamID: t1.id) else {
+            XCTFail("createTask returned nil"); return
+        }
+        await sut.mutateTask(taskID: taskID) { task in task.runs = [Run(id: 0, teamID: t1.id)] }
+        await sut.switchTask(to: taskID)
+        XCTAssertNil(sut.loadedTask(taskID)?.generatedTeam, "precondition: no generated team")
+
+        await sut.switchTeam(to: t2.id)
+
+        XCTAssertNil(sut.loadedTask(taskID)?.generatedTeam, "clearGeneratedTeam is a safe no-op for a non-generated task")
+        XCTAssertEqual(sut.loadedTask(taskID)?.runs.last?.teamID, t2.id, "run re-pinned to the switched-to team")
+        XCTAssertEqual(sut.loadedTask(taskID)?.isChatMode, t2.isChatMode, "chat mode aligns to the switched-to team")
+    }
+
+    /// `applyGeneratedTeamSuccess` adopt/re-pin are the contract; the tool-call
+    /// envelope update is best-effort. An unmatched `toolCallID` (step present)
+    /// must still adopt, re-pin, finalize the step, and return true.
+    func testApplyGeneratedTeamSuccess_wrongToolCallID_stillAdoptsAndRepins() async {
+        await sut.openWorkFolder(tempDir)
+        guard let taskID = await sut.createTask(title: "Gen", supervisorTask: "build") else {
+            XCTFail("createTask returned nil"); return
+        }
+        let genID = NTMSID.from(name: "gen_\(UUID().uuidString)")
+        let genTeam = Team(
+            id: genID, name: "Gen", description: "",
+            roles: [TeamRoleDefinition(id: "gen_w", name: "W", prompt: "", toolIDs: [],
+                                       usePlanningPhase: false, dependencies: RoleDependencies())],
+            artifacts: [], settings: TeamSettings(), graphLayout: TeamGraphLayout())
+        let stepID = "team_generation_WTC"
+        await sut.mutateTask(taskID: taskID) { task in
+            var run = Run(id: 0, teamID: NTMSID.from(name: "placeholder"))
+            run.steps = [StepExecution(
+                id: stepID, role: .supervisor, title: "Generate Team", status: .running,
+                toolCalls: [StepToolCall(
+                    id: UUID(), name: ToolNames.createTeam, argumentsJSON: "{}",
+                    resultJSON: NTMSOrchestrator._testGeneratingEnvelope(), isError: false)])]
+            task.runs = [run]
+        }
+
+        let applied = await sut.applyGeneratedTeamSuccess(
+            taskID: taskID, team: genTeam, stepID: stepID, toolCallID: UUID(), warnings: [])
+
+        XCTAssertTrue(applied, "the step exists → the mutation lands even if the toolCall id doesn't match")
+        XCTAssertEqual(sut.loadedTask(taskID)?.generatedTeam?.id, genID, "team adopted regardless of toolCall match")
+        XCTAssertEqual(sut.loadedTask(taskID)?.runs.last?.teamID, genID, "run re-pinned regardless of toolCall match")
+        XCTAssertEqual(sut.loadedTask(taskID)?.runs.last?.steps.first?.status, .done, "step finalized")
+        XCTAssertTrue(sut.loadedTask(taskID)?.runs.last?.steps.first?.toolCalls.first?.isGeneratingTeam ?? false,
+                      "an unmatched toolCall keeps its generating placeholder — envelope update is best-effort")
+    }
+
     // MARK: - retryTeamGeneration removes prior generation steps
 
     /// `retryTeamGeneration` must clear any prior `create_team` step from the latest

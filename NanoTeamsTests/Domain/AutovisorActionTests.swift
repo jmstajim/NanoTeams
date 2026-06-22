@@ -48,34 +48,25 @@ final class AutovisorActionTests: XCTestCase {
         XCTAssertTrue(a.onTaskFailed)
         XCTAssertTrue(a.onTaskCompleted, "wake-on-complete defaults ON so the manager reviews finished work")
         XCTAssertFalse(a.onTaskCreated)
-        XCTAssertEqual(a.minSecondsBetweenRuns, 60)
+        XCTAssertTrue(a.onTaskStuck)
     }
 
     func testActivation_roundTrip() throws {
         var a = AutovisorActivation.default
         a.onTaskCompleted = true
         a.onTaskNeedsSupervisor = false
-        a.minSecondsBetweenRuns = 300
         let data = try JSONCoderFactory.makePersistenceEncoder().encode(a)
         let back = try JSONCoderFactory.makeDateDecoder().decode(AutovisorActivation.self, from: data)
         XCTAssertEqual(back, a)
     }
 
-    // F6: an out-of-range debounce can't defeat the wake-storm guard.
-    func testActivation_clampsDebounceFloor_onInit() {
-        XCTAssertEqual(AutovisorActivation(minSecondsBetweenRuns: 0).minSecondsBetweenRuns,
-                       AutovisorConstants.minEventWakeDebounceSeconds)
-        XCTAssertEqual(AutovisorActivation(minSecondsBetweenRuns: -100).minSecondsBetweenRuns,
-                       AutovisorConstants.minEventWakeDebounceSeconds)
-        XCTAssertEqual(AutovisorActivation(minSecondsBetweenRuns: 120).minSecondsBetweenRuns, 120)
-    }
-
-    func testActivation_clampsDebounceFloor_onDecode() throws {
+    func testActivation_legacyDebounceKey_ignoredOnDecode() throws {
+        // The removed `minSecondsBetweenRuns` (no throttle anymore) — an old settings.json
+        // carrying it must still decode, the stale key simply dropped.
         let json = #"{"onTaskNeedsSupervisor":true,"onTaskFailed":true,"onTaskCompleted":false,"onTaskCreated":false,"minSecondsBetweenRuns":0}"#
         let back = try JSONCoderFactory.makeDateDecoder()
             .decode(AutovisorActivation.self, from: Data(json.utf8))
-        XCTAssertEqual(back.minSecondsBetweenRuns, AutovisorConstants.minEventWakeDebounceSeconds,
-                       "a hand-edited settings.json with 0 must clamp to the floor")
+        XCTAssertFalse(back.onTaskCompleted, "present fields still decode")
     }
 
     // MARK: - ControlVerb / RoleVerb decode boundary (D1)

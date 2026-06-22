@@ -116,32 +116,21 @@ extension NTMSOrchestrator {
         // 3. Update the tool call + set task.generatedTeam on success.
         switch generationResult {
         case .success(let buildResult):
-            let team = buildResult.team
-            let successEnvelope = TeamGenerationEnvelopes.makeSuccessEnvelope(team: team, warnings: buildResult.warnings)
-            await mutateTask(taskID: taskID) { task in
-                guard let ri = task.runs.indices.last,
-                      let si = task.runs[ri].steps.firstIndex(where: { $0.id == stepID })
-                else { return }
-                if let ti = task.runs[ri].steps[si].toolCalls.firstIndex(where: { $0.id == toolCallID }) {
-                    task.runs[ri].steps[si].toolCalls[ti].resultJSON = successEnvelope
-                    task.runs[ri].steps[si].toolCalls[ti].isError = false
-                }
-                task.runs[ri].steps[si].status = .done
-                task.runs[ri].steps[si].completedAt = MonotonicClock.shared.now()
-                task.runs[ri].steps[si].updatedAt = MonotonicClock.shared.now()
-
-                task.adoptGeneratedTeam(team)
-
-                // Seed role statuses via the shared helper so this code path stays
-                // in sync with `GeneratedTeamBuilderTests.testSeedRoleStatuses_*`.
-                let producedArtifacts = TaskEngineStoreAdapter.computeProducedArtifactNames(
-                    task: task, run: task.runs[ri]
-                )
-                GeneratedTeamBuilder.seedRoleStatuses(
-                    for: team,
-                    existingRun: &task.runs[ri],
-                    producedArtifacts: producedArtifacts
-                )
+            let applied = await applyGeneratedTeamSuccess(
+                taskID: taskID,
+                team: buildResult.team,
+                stepID: stepID,
+                toolCallID: toolCallID,
+                warnings: buildResult.warnings
+            )
+            // Teardown / task-switch race: the run or generation step vanished
+            // before the success mutation could land, so the team was NOT adopted
+            // or re-pinned. Don't report success — returning `false` keeps the
+            // detached `startRun` Task from starting the engine on a non-adopted
+            // (placeholder-pinned) team.
+            guard applied else {
+                lastErrorMessage = "Team generation finished but could not be applied (the task or its run changed). Try again."
+                return false
             }
             if !buildResult.warnings.isEmpty {
                 lastInfoMessage = buildResult.warnings.joined(separator: " ")
@@ -176,6 +165,70 @@ extension NTMSOrchestrator {
             }
             return false
         }
+    }
+
+    /// Applies a successfully-generated team to the task's latest run: finalizes the
+    /// `create_team` step (`.done` + success envelope), adopts the team, **re-pins
+    /// `run.teamID` to the generated team's id**, and seeds role statuses.
+    ///
+    /// Why the re-pin: `createNewRun` runs BEFORE generation, so `run.teamID` is the
+    /// transient "Generated Team" placeholder (roleIDs: []). Leaving it there makes
+    /// `findOrCreateStep`'s roster-swap guard reject every generated role as "not a
+    /// member of pinned team". The generated team's own id is what the guard (now
+    /// generatedTeam-aware) and `TaskSummary.pinnedTeamID` must carry.
+    ///
+    /// Extracted from `runTeamGeneration`'s success arm so the adopt / re-pin / seed
+    /// invariants are unit-testable without an LLM round-trip — keeping production and
+    /// `TeamGenerationOrchestratorTests` in lockstep (same rationale as the shared
+    /// `GeneratedTeamBuilder.seedRoleStatuses` helper).
+    ///
+    /// Returns `true` only when the mutation actually landed (the run + generation
+    /// step were still present). `mutateTask` returning `true` means "persisted",
+    /// NOT "the closure did something" (CLAUDE.md §7): in a teardown / task-switch
+    /// race the generation step can be gone, the `guard` short-circuits, and the
+    /// team would NOT be adopted / re-pinned — so the caller must not report
+    /// success. Uses a captured flag (the `didPersist` pattern from
+    /// `NTMSOrchestrator+QueuedMessages`).
+    @discardableResult
+    func applyGeneratedTeamSuccess(
+        taskID: Int,
+        team: Team,
+        stepID: String,
+        toolCallID: UUID,
+        warnings: [String]
+    ) async -> Bool {
+        let successEnvelope = TeamGenerationEnvelopes.makeSuccessEnvelope(team: team, warnings: warnings)
+        var applied = false
+        await mutateTask(taskID: taskID) { task in
+            guard let ri = task.runs.indices.last,
+                  let si = task.runs[ri].steps.firstIndex(where: { $0.id == stepID })
+            else { return }
+            if let ti = task.runs[ri].steps[si].toolCalls.firstIndex(where: { $0.id == toolCallID }) {
+                task.runs[ri].steps[si].toolCalls[ti].resultJSON = successEnvelope
+                task.runs[ri].steps[si].toolCalls[ti].isError = false
+            }
+            task.runs[ri].steps[si].status = .done
+            task.runs[ri].steps[si].completedAt = MonotonicClock.shared.now()
+            task.runs[ri].steps[si].updatedAt = MonotonicClock.shared.now()
+
+            task.adoptGeneratedTeam(team)
+            task.runs[ri].teamID = team.id   // re-pin to the team that actually executes
+
+            // Seed role statuses via the shared helper so this code path stays
+            // in sync with `GeneratedTeamBuilderTests.testSeedRoleStatuses_*`.
+            let producedArtifacts = TaskEngineStoreAdapter.computeProducedArtifactNames(
+                task: task, run: task.runs[ri]
+            )
+            GeneratedTeamBuilder.seedRoleStatuses(
+                for: team,
+                existingRun: &task.runs[ri],
+                producedArtifacts: producedArtifacts
+            )
+            // Mirror the `.failure` arm, which bumps the run timestamp on completion.
+            task.runs[ri].updatedAt = MonotonicClock.shared.now()
+            applied = true
+        }
+        return applied
     }
 
     /// Retries team generation after a previous attempt failed. Removes any prior

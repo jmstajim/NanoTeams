@@ -547,10 +547,10 @@ extension NTMSOrchestrator {
         }
     }
 
-    /// Persists the Autovisor's event-wake triggers + debounce + auto-off timer.
-    /// `clamped()` re-floors `minSecondsBetweenRuns`/`autoDisableAfterSeconds` here
-    /// because the editor's bindings mutate the fields directly, bypassing the init
-    /// clamps (same rationale as `updateAutovisorTuning`).
+    /// Persists the Autovisor's event-wake triggers + auto-off timer.
+    /// `clamped()` re-floors `autoDisableAfterSeconds` here because the editor's
+    /// bindings mutate the fields directly, bypassing the init clamp (same rationale
+    /// as `updateAutovisorTuning`).
     func updateAutovisorActivation(_ activation: AutovisorActivation) async {
         let oldAutoOff = snapshot?.workFolder.settings.autovisorActivation.effectiveAutoDisableAfterSeconds
         await mutateWorkFolder { proj in
@@ -642,6 +642,19 @@ extension NTMSOrchestrator {
         await mutateTask(taskID: taskID) { task in
             // Update task's preferred team so engine resolves correctly
             task.preferredTeamID = teamID
+
+            // Abandon any transient generated team. `TeamResolution` (and thus
+            // `resolvedTeam(for:)` / `buildChatMessages` / `makeStep`) checks
+            // `generatedTeam` FIRST, so leaving it set would keep the engine
+            // resolving the OLD generated roster while the run is re-pinned to
+            // `teamID` below — minting steps / building prompts against the wrong
+            // team (a dead run). The switch target is always a real folder team
+            // (the generated placeholder is hidden from the picker), so the
+            // transient is unconditionally stale here. Also align the task's
+            // chat mode to the switched-to team (the getter falls back to
+            // `storedIsChatMode` once the generated team is cleared).
+            task.clearGeneratedTeam()
+            task.setStoredChatMode(team.isChatMode)
 
             guard let runIndex = task.runs.indices.last else { return }
             var run = task.runs[runIndex]
