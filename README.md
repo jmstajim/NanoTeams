@@ -1,4 +1,4 @@
-# **nanoteams**
+# **NanoTeams**
 
 ### Open-source AI coding assistant and multi-agent teams for macOS — put your project on autopilot with local LLMs
 
@@ -12,13 +12,13 @@
 
 **AI coding assistant and multi-agent AI teams for macOS, powered by local LLMs through [LM Studio](https://lmstudio.ai).** Open-source, free, fully private. Start an agentic chat with the **Coding Assistant**, let the **Coding Agent** edit small changes directly and delegate the heavy lifting to another team ([Get started](#getting-started)), or hand a task to a team of specialized AI roles that read your files, produce artifacts, consult each other, and report back when done. Switch on the **Autovisor** and an automated Supervisor runs the whole folder for you — creating, answering, and reviewing tasks on its own. Generate custom teams from a one-line description, paste images and documents straight into the composer, search your project semantically with on-device embeddings, clip text from any app, dictate hands-free with fully on-device speech recognition, and queue messages to working roles without pausing them.
 
-<img width="600" height="510" alt="nanoteams — AI coding assistant and multi-agent AI teams for macOS" src="https://github.com/user-attachments/assets/c7549d11-abd9-4faf-94c3-6cefb6214394" />
+<img width="600" height="510" alt="NanoTeams — AI coding assistant and multi-agent AI teams for macOS" src="https://github.com/user-attachments/assets/c7549d11-abd9-4faf-94c3-6cefb6214394" />
 
-## Why **nanoteams**
+## Why **NanoTeams**
 
 The goal is simple: make local LLMs work **as fast and efficiently as possible** in real tasks — writing code, making decisions, organizing your thinking, drafting documents, and bringing ideas to life.
 
-**nanoteams** treats smaller models as the design constraint.
+**NanoTeams** treats smaller models as the design constraint.
 
 Stateful chat keeps things fast. The architecture forgives mistakes. Every piece of the program compensates for something local models don't do well.
 
@@ -35,12 +35,12 @@ Stateful chat keeps things fast. The architecture forgives mistakes. Every piece
 ## Getting Started
 
 1. Open **LM Studio** and load a model (see [Recommended Models](#recommended-models))
-2. Launch **nanoteams**
+2. Launch **NanoTeams**
 3. Select a work folder — this is where AI roles will read and write files
 4. Pick a team — **Coding Assistant** is the default and a good starting point (chat-mode with files, git, and Xcode tools); the new **Coding Agent** edits small changes itself and delegates bigger work to another team
 5. Create a task, describe what you need — the team takes it from there
 
-<img width="1280" height="1107" alt="nanoteams — create a new task and select a team" src="https://github.com/user-attachments/assets/512ce4a7-34d6-40aa-a8d0-cd9bac47c569" />
+<img width="1280" height="1107" alt="NanoTeams — create a new task and select a team" src="https://github.com/user-attachments/assets/512ce4a7-34d6-40aa-a8d0-cd9bac47c569" />
 
 ## How It Works
 
@@ -50,7 +50,7 @@ For example, with the **FAANG Team**: you describe what you want → PM writes r
 
 Each role can read/write files, use git, build with Xcode, consult other roles, request team meetings, and delegate a self-contained sub-task to another team — all within a sandboxed environment limited to your work folder.
 
-<img width="1280" height="1009" alt="nanoteams — team graph showing roles and artifact dependencies" src="https://github.com/user-attachments/assets/9e75d4c2-4cda-43a9-812b-3abd20ed986d" />
+<img width="1280" height="1009" alt="NanoTeams — team graph showing roles and artifact dependencies" src="https://github.com/user-attachments/assets/9e75d4c2-4cda-43a9-812b-3abd20ed986d" />
 
 ## How Roles Work
 Every role in a team falls into one of three types — this determines what the role does and how it finishes.
@@ -79,7 +79,7 @@ In the Discussion Club, four personality roles (The Open, The Conscientious, The
 ### Multi-Agent AI Teams
 Create tasks and let a team of specialized AI roles collaborate. Each role has its own system prompt, tool access, and artifact responsibilities. Roles communicate through consultations, team meetings, and change requests.
 
-<img width="1280" height="1049" alt="nanoteams — activity feed with AI role messages and tool calls" src="https://github.com/user-attachments/assets/93b34c9e-9296-4c5c-9b3b-2e9d7adf576a" />
+<img width="1280" height="1049" alt="NanoTeams — activity feed with AI role messages and tool calls" src="https://github.com/user-attachments/assets/93b34c9e-9296-4c5c-9b3b-2e9d7adf576a" />
 
 ### Autovisor — Automated Supervisor
 Flip one switch and an autonomous agent takes over your work folder. Give the **Autovisor** a goal and it watches every task, creates and schedules new ones, answers the questions roles would normally ask you, reviews finished work, and closes it — keeping a standing memory between passes. It wakes when a task needs input, fails, completes, is created, or looks stuck; when there's nothing to do it parks and waits. You can message it any time — your message continues its conversation. A sleep timer turns it off a set time after enabling, so an experiment can't run all night. Configure the goal, memory, triggers, schedule, and an optional dedicated model in **Settings → Autovisor**.
@@ -118,7 +118,7 @@ Two global hotkeys work from any app:
 
 Cmd+V in the composer pastes anything from the clipboard — copied files (any kind, including PDFs / DOCX / source files), screenshots and images, or plain text. Files and images are staged as attachments; text drops into the message field.
 
-<img width="936" height="988" alt="nanoteams — Quick Capture overlay for creating tasks from any app" src="https://github.com/user-attachments/assets/519e1c86-8bac-40b6-89d0-a5c08827b0b4" />
+<img width="936" height="988" alt="NanoTeams — Quick Capture overlay for creating tasks from any app" src="https://github.com/user-attachments/assets/519e1c86-8bac-40b6-89d0-a5c08827b0b4" />
 
 ### Private Voice Dictation
 Hands-free input via Apple's `SpeechAnalyzer` and `DictationTranscriber` — fully on-device, multilingual, and offline. Available in Quick Capture, Supervisor answers, and revision feedback. Requires macOS 26+.
@@ -141,7 +141,7 @@ Create your own teams with custom roles, artifacts, prompts, dependencies, and h
 ### Themes
 
 ### Privacy & Security
-**nanoteams** doesn't send your data anywhere. All processing happens locally via LM Studio. Debug logs are off by default. All file operations are sandboxed to the selected work folder — no arbitrary shell access.
+**NanoTeams** doesn't send your data anywhere. All processing happens locally via LM Studio. Debug logs are off by default. All file operations are sandboxed to the selected work folder — no arbitrary shell access.
 
 ## Built-in Teams
 
@@ -158,13 +158,13 @@ Create your own teams with custom roles, artifacts, prompts, dependencies, and h
 
 ## Recommended Models
 
-**nanoteams** has been trained on:
+**NanoTeams** has been trained on:
 - **[gpt-oss-20b](https://lmstudio.ai/models/openai/gpt-oss-20b)**
 - **[qwen3.5-9b](https://lmstudio.ai/models/qwen/qwen3.5-9b)**
 - **[gemma-4-26b-a4b](https://lmstudio.ai/models/google/gemma-4-26b-a4b)**
 - **[qwen3.5-35b-a3b](https://lmstudio.ai/models/qwen/qwen3.5-35b-a3b)**
 
-Have a favorite local LLM? [Open an issue](https://github.com/jmstajim/NanoTeams/issues) — I'd love to make **nanoteams** work better with it.
+Have a favorite local LLM? [Open an issue](https://github.com/jmstajim/NanoTeams/issues) — I'd love to make **NanoTeams** work better with it.
 
 ## Build from Source
 
@@ -178,20 +178,20 @@ No external dependencies required — pure Swift/SwiftUI.
 
 ## FAQ
 
-**Is nanoteams free?**
-Yes. **nanoteams** is open-source and free. There are no subscriptions, no API keys, and no usage limits. You only pay for the hardware your local LLM runs on.
+**Is NanoTeams free?**
+Yes. **NanoTeams** is open-source and free. There are no subscriptions, no API keys, and no usage limits. You only pay for the hardware your local LLM runs on.
 
-**Does nanoteams send my data anywhere?**
+**Does NanoTeams send my data anywhere?**
 No. All inference runs locally through LM Studio on your Mac. Files, prompts, and tool calls never leave your machine. There is no telemetry and no account.
 
 **Do I need an internet connection?**
-No, after the initial download of LM Studio and a model. **nanoteams** works fully offline — useful for travel, secure environments, or air-gapped machines.
+No, after the initial download of LM Studio and a model. **NanoTeams** works fully offline — useful for travel, secure environments, or air-gapped machines.
 
-**What models does nanoteams support?**
-Any model you can run in LM Studio. **nanoteams** has been trained on `gpt-oss-20b`, `qwen3.5-9b`, `gemma-4-26b-a4b`, and `qwen3.5-35b-a3b` — see [Recommended Models](#recommended-models). Vision models (for image analysis) are configured separately per role.
+**What models does NanoTeams support?**
+Any model you can run in LM Studio. **NanoTeams** has been trained on `gpt-oss-20b`, `qwen3.5-9b`, `gemma-4-26b-a4b`, and `qwen3.5-35b-a3b` — see [Recommended Models](#recommended-models). Vision models (for image analysis) are configured separately per role.
 
-**Why use nanoteams instead of a hosted AI assistant?**
-Hosted assistants run massive frontier models in the cloud and are excellent at what they do. **nanoteams** is a different choice for a different need: when your code or data can't leave the machine, when you don't want a subscription or per-token bill, or when you want a multi-agent workflow with specialized roles, artifact pipelines, and on-device embeddings around whichever local model you prefer.
+**Why use NanoTeams instead of a hosted AI assistant?**
+Hosted assistants run massive frontier models in the cloud and are excellent at what they do. **NanoTeams** is a different choice for a different need: when your code or data can't leave the machine, when you don't want a subscription or per-token bill, or when you want a multi-agent workflow with specialized roles, artifact pipelines, and on-device embeddings around whichever local model you prefer.
 
 **Can I customize teams and roles?**
 Yes. Create your own teams with custom roles, artifacts, prompts, tool access, dependencies, and per-role LLM overrides. Import/export as JSON. Or describe a task in one line and let the LLM design a team for it.
@@ -199,7 +199,7 @@ Yes. Create your own teams with custom roles, artifacts, prompts, tool access, d
 **Can one team hand work to another?**
 Yes. A peer-level role can delegate a self-contained sub-task to another team with the `delegate_to_team` tool and get that team's final artifacts back as the result. The built-in **Coding Agent** does this out of the box — editing small changes itself and delegating bigger work to the Engineering Team, Startup, or a freshly generated team. While a delegation runs you can message the delegating role to pause the child team, then cancel, resume, or forward guidance. Enable it per role in the *Delegation* tab of the role editor.
 
-**Can nanoteams work unattended?**
+**Can NanoTeams work unattended?**
 Yes — enable the **Autovisor** for a work folder. It acts as an automated Supervisor: it watches your tasks, creates and schedules new ones, answers their questions, reviews the results, and closes finished work, guided by a goal and a standing memory you can edit. A built-in sleep timer turns it off automatically after a set time.
 
 **What are the system requirements?**
