@@ -12,7 +12,7 @@
 
 **AI coding assistant and multi-agent AI teams for macOS, powered by local LLMs through [LM Studio](https://lmstudio.ai).** Open-source, free, fully private. Start an agentic chat with the **Coding Assistant**, let the **Coding Agent** edit small changes directly and delegate the heavy lifting to another team ([Get started](#getting-started)), or hand a task to a team of specialized AI roles that read your files, produce artifacts, consult each other, and report back when done. Switch on the **Autovisor** and an automated Supervisor runs the whole folder for you — creating, answering, and reviewing tasks on its own. Generate custom teams from a one-line description, paste images and documents straight into the composer, search your project semantically with on-device embeddings, clip text from any app, dictate hands-free with fully on-device speech recognition, and queue messages to working roles without pausing them.
 
-<img width="600" height="510" alt="NanoTeams — AI coding assistant and multi-agent AI teams for macOS" src="https://github.com/user-attachments/assets/c7549d11-abd9-4faf-94c3-6cefb6214394" />
+<img width="1280" height="1203" alt="NanoTeams — AI coding assistant and multi-agent AI teams for macOS" src="https://github.com/user-attachments/assets/4c58e909-5d5a-47ed-858c-b897c3bc9d30" />
 
 ## Why **NanoTeams**
 
@@ -40,7 +40,7 @@ Stateful chat keeps things fast. The architecture forgives mistakes. Every piece
 4. Pick a team — **Coding Assistant** is the default and a good starting point (chat-mode with files, git, and Xcode tools); the new **Coding Agent** edits small changes itself and delegates bigger work to another team
 5. Create a task, describe what you need — the team takes it from there
 
-<img width="1280" height="1107" alt="NanoTeams — create a new task and select a team" src="https://github.com/user-attachments/assets/512ce4a7-34d6-40aa-a8d0-cd9bac47c569" />
+<img width="1280" height="1143" alt="NanoTeams — create a new task and select a team" src="https://github.com/user-attachments/assets/2ec90b85-d8ce-43f6-bc0f-57635761dd94" />
 
 ## How It Works
 
@@ -50,7 +50,7 @@ For example, with the **FAANG Team**: you describe what you want → PM writes r
 
 Each role can read/write files, use git, build with Xcode, consult other roles, request team meetings, and delegate a self-contained sub-task to another team — all within a sandboxed environment limited to your work folder.
 
-<img width="1280" height="1009" alt="NanoTeams — team graph showing roles and artifact dependencies" src="https://github.com/user-attachments/assets/9e75d4c2-4cda-43a9-812b-3abd20ed986d" />
+<img width="1280" height="1047" alt="NanoTeams — team graph showing roles and artifact dependencies" src="https://github.com/user-attachments/assets/fd0da67e-212b-4713-b408-579916919ca1" />
 
 ## How Roles Work
 Every role in a team falls into one of three types — this determines what the role does and how it finishes.
@@ -78,8 +78,6 @@ In the Discussion Club, four personality roles (The Open, The Conscientious, The
 
 ### Multi-Agent AI Teams
 Create tasks and let a team of specialized AI roles collaborate. Each role has its own system prompt, tool access, and artifact responsibilities. Roles communicate through consultations, team meetings, and change requests.
-
-<img width="1280" height="1049" alt="NanoTeams — activity feed with AI role messages and tool calls" src="https://github.com/user-attachments/assets/93b34c9e-9296-4c5c-9b3b-2e9d7adf576a" />
 
 ### Autovisor — Automated Supervisor
 Flip one switch and an autonomous agent takes over your work folder. Give the **Autovisor** a goal and it watches every task, creates and schedules new ones, answers the questions roles would normally ask you, reviews finished work, and closes it — keeping a standing memory between passes. It wakes when a task needs input, fails, completes, is created, or looks stuck; when there's nothing to do it parks and waits. You can message it any time — your message continues its conversation. A sleep timer turns it off a set time after enabling, so an experiment can't run all night. Configure the goal, memory, triggers, schedule, and an optional dedicated model in **Settings → Autovisor**.
@@ -118,8 +116,6 @@ Two global hotkeys work from any app:
 
 Cmd+V in the composer pastes anything from the clipboard — copied files (any kind, including PDFs / DOCX / source files), screenshots and images, or plain text. Files and images are staged as attachments; text drops into the message field.
 
-<img width="936" height="988" alt="NanoTeams — Quick Capture overlay for creating tasks from any app" src="https://github.com/user-attachments/assets/519e1c86-8bac-40b6-89d0-a5c08827b0b4" />
-
 ### Private Voice Dictation
 Hands-free input via Apple's `SpeechAnalyzer` and `DictationTranscriber` — fully on-device, multilingual, and offline. Available in Quick Capture, Supervisor answers, and revision feedback. Requires macOS 26+.
 
@@ -139,6 +135,8 @@ Roles produce and consume named artifacts (requirements, design specs, plans). E
 Create your own teams with custom roles, artifacts, prompts, dependencies, and hierarchy. Import/export as JSON. Role and system prompt templates are fully editable, with `{globalContext}` and `{toolCalling}` placeholder chips you can position anywhere in a template — leave them out and the global context and tool-calling block are appended automatically, so older templates keep working.
 
 ### Themes
+
+<img width="1280" height="1068" alt="NanoTeams — Themes" src="https://github.com/user-attachments/assets/7391d0d4-f482-4ae2-ac42-5952cda4010a" />
 
 ### Privacy & Security
 **NanoTeams** doesn't send your data anywhere. All processing happens locally via LM Studio. Debug logs are off by default. All file operations are sandboxed to the selected work folder — no arbitrary shell access.
