@@ -145,7 +145,7 @@ struct SelectableMessageText: NSViewRepresentable {
     ) -> CGSize? {
         guard let width = proposal.width,
               width.isFinite,
-              width > 0,
+              width >= SelfSizingTextView.minMeasurementWidth,
               let textStorage = nsView.textStorage
         else { return nil }
         let height = context.coordinator.measureCache.measure(
@@ -283,9 +283,20 @@ final class SelfSizingTextView: NSTextView {
         fatalError("SelfSizingTextView is not coder-instantiable; use init().")
     }
 
+    /// Smallest width we will ever measure text at. SwiftUI proposes transient
+    /// near-zero widths during a `LazyVStack` relayout / safe-area-inset settle; at
+    /// such a width every line wraps to ~1 glyph and `usedRect` reports a ~10x-tall
+    /// height. Across the whole feed that spiked `contentSize.height` ~9x (2700→24012),
+    /// which made the auto-scroll thrash. No real bubble is narrower than this, so we
+    /// keep the last good width until a plausible one arrives.
+    static let minMeasurementWidth: CGFloat = 50
+
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         guard let textContainer else { return }
+        // Ignore transient sub-`minMeasurementWidth` frames from intermediate layout
+        // passes — measuring at a near-zero width is the feed's `contentSize` 9x spike.
+        guard newSize.width >= Self.minMeasurementWidth else { return }
         // Half-pixel epsilon: SwiftUI/AppKit float math can produce
         // sub-pixel deltas (e.g. 379.999... vs 380.0) that would otherwise
         // trigger spurious `invalidateIntrinsicContentSize`, and combined
@@ -302,12 +313,26 @@ final class SelfSizingTextView: NSTextView {
         }
     }
 
+    /// Last height measured at a plausible width. Returned by `intrinsicContentSize`
+    /// when the container width is transiently sub-`minMeasurementWidth`, so a near-zero
+    /// width can't report a ~10x-tall height (the feed's `contentSize` spike).
+    private var lastGoodIntrinsicHeight: CGFloat = 0
+
     override var intrinsicContentSize: NSSize {
         guard let layoutManager, let textContainer else {
             #if DEBUG
             assertionFailure("SelfSizingTextView lost its TextKit 1 stack — TextKit 2 fallback path. Bubble will render with zero height.")
             #endif
             return super.intrinsicContentSize
+        }
+        // The third measurement path (used when `sizeThatFits` returns nil for a tiny
+        // proposal). A `textContainer.width` of ~0 — from a fresh bubble whose real
+        // frame hasn't landed, or a transient relayout — wraps every line to ~1 glyph
+        // and reports a ~10x-tall height. Hold the last good height until a plausible
+        // width arrives, so the feed's contentSize stays stable and the auto-scroll
+        // doesn't thrash.
+        guard textContainer.size.width >= Self.minMeasurementWidth else {
+            return NSSize(width: NSView.noIntrinsicMetric, height: lastGoodIntrinsicHeight)
         }
         layoutManager.ensureLayout(for: textContainer)
         #if DEBUG
@@ -319,7 +344,9 @@ final class SelfSizingTextView: NSTextView {
         // parent's `.frame(maxWidth: .infinity)` propagates available
         // width; our `setFrameSize` syncs `textContainer`; the next
         // `intrinsicContentSize` read returns the right height.
-        return NSSize(width: NSView.noIntrinsicMetric, height: ceil(used.height))
+        let h = ceil(used.height)
+        lastGoodIntrinsicHeight = h
+        return NSSize(width: NSView.noIntrinsicMetric, height: h)
     }
 
     #if DEBUG

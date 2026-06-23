@@ -269,14 +269,15 @@ final class TeamActivityFeedViewModel {
     /// `ScrollFollowSnapshot.distanceFromBottom` (built via the shared `distanceFromBottom(...)` helper).
     var isNearBottom: Bool = true
 
-    /// Pixel slack within which (≤) the scroll position still counts as "at bottom".
-    nonisolated static let nearBottomThreshold: CGFloat = 60
+    /// Pixel slack within which (≤) the scroll position still counts as "at bottom"
+    /// and auto-scroll/follow engages.
+    nonisolated static let nearBottomThreshold: CGFloat = 50
 
-    /// Tolerance (pt) for the growth-follow disambiguator. A pure content-growth
-    /// tick (scroll offset frozen) moves `distanceFromBottom` by exactly the content
+    /// Tolerance (pt) for the growth-follow disambiguator. A pure content-growth tick
+    /// (scroll offset frozen) moves `distanceFromBottom` by exactly the content
     /// growth; a concurrent user drag-up moves it by MORE. The slack absorbs
-    /// sub-pixel / fractional jitter so a real growth tick still re-pins while an
-    /// intentional drag does not.
+    /// sub-pixel / fractional jitter so a real growth tick keeps the pin while an
+    /// intentional drag releases it.
     nonisolated static let growthFollowSlack: CGFloat = 4
 
     /// Distance (pt) from the resting bottom of the scroll view. SINGLE SOURCE OF
@@ -299,6 +300,38 @@ final class TeamActivityFeedViewModel {
         contentOffsetY: CGFloat
     ) -> CGFloat {
         contentHeight + bottomInset - topInset - containerHeight - contentOffsetY
+    }
+
+    /// The `y` value to pass to `ScrollPosition.scrollTo(y:)` to land the feed at
+    /// the TRUE bottom — i.e. at the offset where `distanceFromBottom == 0`.
+    ///
+    /// This is deliberately NOT the resting bottom `contentOffset.y`. SwiftUI's
+    /// `scrollTo(y:)` lands the offset `topInset` SHORT of its `y` argument (the
+    /// argument is in a content space shifted down by the top safe-area inset, so
+    /// `offset == y − topInset`). The resting bottom offset, per the
+    /// `distanceFromBottom` SSOT, is `cH + insBot − insTop − container`. To make
+    /// `scrollTo` LAND there, the argument must be `insTop` HIGHER, which cancels
+    /// the inset term: `cH + insBot − container`.
+    ///
+    /// Why this exists: the prior code passed the resting offset directly, so every
+    /// settle-scroll landed `insTop` (≈79pt) short. `distanceFromBottom` then read
+    /// `insTop`, above `nearBottomThreshold`, which latched the feed out of
+    /// auto-follow even though `cH` was the correct, stable height — the documented
+    /// "autoscroll stopped / can't re-pin" bug, verified in the live geometry trace
+    /// (`scrollTo(y:)` consistently landed exactly `insTop` short; resting `dist`
+    /// pinned at 79 for ~70 ticks). Note `topInset` is therefore NOT a parameter:
+    /// it cancels out by construction.
+    ///
+    /// Robust under both inset models: if `scrollTo(y:)` were instead exact (no
+    /// `insTop` undershoot), this lands at `dist == −insTop` — still ≤ threshold,
+    /// still "at bottom" (a sub-pixel overscroll that snaps back). The prior
+    /// formula, by contrast, lands at `dist == +insTop` and latches false.
+    nonisolated static func bottomTargetY(
+        contentHeight: CGFloat,
+        bottomInset: CGFloat,
+        containerHeight: CGFloat
+    ) -> CGFloat {
+        contentHeight + bottomInset - containerHeight
     }
 
     /// Distance from the bottom edge ≤ threshold counts as "at bottom".
@@ -326,21 +359,27 @@ final class TeamActivityFeedViewModel {
     /// `onScrollGeometryChange`. Built from the SwiftUI `ScrollGeometry` (plain
     /// `CGFloat`s only, so it stays test-reachable). The `action` closure reads BOTH
     /// the `contentHeight` delta and the `distanceFromBottom` delta to tell "content
-    /// grew under a pinned scroll" from "user scrolled (possibly while content grew)".
+    /// grew under a pinned scroll" (keep the pin) from "user scrolled (release the
+    /// pin)".
     nonisolated struct ScrollFollowSnapshot: Equatable {
         let distanceFromBottom: CGFloat
         let contentHeight: CGFloat
+        /// The `y` to feed `scrollTo(y:)` to land at the true bottom — see
+        /// `bottomTargetY(contentHeight:bottomInset:containerHeight:)`. Carried in the
+        /// snapshot (computed in the pure transform) so the view can stash it into
+        /// `@State` from the ACTION closure — a `@State` write in the transform is
+        /// dropped as "state mutation during view update", which left the deferred
+        /// scroll targeting y=0 (the top).
+        let bottomTargetY: CGFloat
     }
 
-    /// Re-pin to the bottom ONLY for a content-growth tick under a STILL-pinned
-    /// scroll. The growth-vs-drag disambiguator: when content grows by Δ while the
-    /// scroll offset is frozen (the streaming case the original fix targets),
-    /// `distanceFromBottom` grows by exactly Δ (≤ Δ if the offset auto-followed
-    /// part of it). If the user ALSO dragged up on the same coalesced geometry
-    /// tick, the distance grows by MORE than Δ — so we must NOT re-pin, otherwise a
-    /// user scrolling up DURING streaming is yanked back to the bottom on every
-    /// token (growth ticks short-circuit the gate recompute). `wasAtBottom` is the
-    /// stored gate; a shrink or a pure offset change is never a growth tick.
+    /// Keep the bottom-pin through a content-growth tick under a STILL-pinned scroll.
+    /// The growth-vs-drag disambiguator: when content grows by Δ while the scroll
+    /// offset is frozen (the streaming case), `distanceFromBottom` grows by ≤ Δ. If
+    /// the user ALSO dragged up on the same coalesced geometry tick, the distance
+    /// grows by MORE than Δ — so the pin must release, otherwise a user scrolling up
+    /// DURING streaming is yanked back. `wasAtBottom` is the stored pin; a shrink or a
+    /// pure offset change is never a growth tick (the caller recomputes the gate then).
     nonisolated static func shouldFollowGrowth(
         oldContentHeight: CGFloat,
         newContentHeight: CGFloat,

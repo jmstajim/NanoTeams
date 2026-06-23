@@ -355,8 +355,38 @@ struct TeamActivityFeedView: View {
 
     // MARK: - Timeline Scroll
 
-    @State private var scrollPosition = ScrollPosition(edge: .bottom)
     @ScaledMetric(relativeTo: .body) private var scrollButtonSize: CGFloat = 26
+
+    /// Offset-based scroll position. `scrollTo(edge:.bottom)` is the only mechanism that
+    /// reliably scrolls ANY distance in this LazyVStack — an `id` scroll can't reach a
+    /// sentinel that streaming pushed out of the lazy-realization window, so the feed
+    /// fell behind and the gate latched out of follow. The edge-scroll's only hazard is
+    /// the transient mid-commit content-size (overshoot); the burst-resets below gate
+    /// every fire to AFTER the commit's spike→collapse settles.
+    @State private var scrollPosition = ScrollPosition(edge: .bottom)
+    @State private var scrollSettleTask: Task<Void, Never>?
+    /// Start of the current coalesced follow burst — drives the max-wait force-fire.
+    @State private var settleBurstStart: Date?
+    /// Exact bottom content-offset computed from the accurate SwiftUI geometry each tick;
+    /// the deferred scroll sets this directly so it can't land short/over from the
+    /// NSScrollView's lagging content-size.
+    @State private var lastBottomTargetY: CGFloat = 0
+    /// Debounce for releasing the bottom-pin — a transient container/cH blip must NOT
+    /// drop follow; only a sustained departure does.
+    @State private var gateReleaseTask: Task<Void, Never>?
+
+    /// How long `dist` must stay past the threshold before the pin releases (filters
+    /// transient layout-negotiation blips from a real scroll-up).
+    private static let gateReleaseDelayMs = 160
+
+    /// Quiet window (ms) the layout must hold before the deferred scroll fires — above
+    /// the dense intra-commit tick spacing (~1-15ms) so a commit's spike→collapse burst
+    /// coalesces into ONE post-settle scroll.
+    private static let scrollSettleQuietMs = 70
+    /// Hard ceiling (ms) on the coalesce: during FAST continuous streaming geometry
+    /// ticks never leave a quiet window, so force-fire at least this often or the feed
+    /// drifts up and the gate latches out of follow (the observed "stuck" failure).
+    private static let scrollSettleMaxWaitMs = 220
 
     private var timelineScrollView: some View {
         ScrollView {
@@ -389,87 +419,156 @@ struct TeamActivityFeedView: View {
             .background(ScrollBounceDisabler())
         }
         .scrollPosition($scrollPosition)
-        // Geometry-based at-bottom detection + content-growth follow.
-        //
-        // `distanceFromBottom` SUBTRACTS `contentInsets.top`. The feed sits under a
-        // ~79pt safe-area top bar (TeamBoardTopBar, added in the REDESIGN). A top
-        // inset shifts the resting bottom content-offset down by exactly its own
-        // height, so WITHOUT the `- insetTop` term the distance reads ~79 even when
-        // the scroll is at the TRUE bottom — permanently above the 60pt threshold.
-        // `isNearBottom` then latched false, which gated out every auto-scroll
-        // (`shouldFollowGrowth` needs `wasAtBottom`) and pinned the button on. Live
-        // geometry traces confirmed the invariant: at the resting bottom,
-        // `contentH + insetBottom - containerH - offsetY == insetTop`, i.e. the
-        // corrected distance is 0. (The earlier `.defaultScrollAnchor` attempt was
-        // inert — the offset stayed frozen because the scroll never read as "at the
-        // anchor"; removing it also restores top-alignment for short content.)
+        // At-bottom detection + bottom-pin maintenance. `distanceFromBottom` SUBTRACTS
+        // `contentInsets.top` (the ~79pt TeamBoardTopBar safe-area inset); at the true
+        // bottom the corrected distance is 0. The `action` keeps the pin through
+        // content growth (via `shouldFollowGrowth`) but DEFERS the actual scroll to
+        // `requestSettleScroll()` — so it lands on the SETTLED height, never on a
+        // transient mid-commit spike (the old overshoot). `isNearBottom` is the pin /
+        // button gate; the deferred scroll re-checks it at fire time.
         .onScrollGeometryChange(for: TeamActivityFeedViewModel.ScrollFollowSnapshot.self) { geo in
-            // Distance via the shared SSOT helper — production and the pinned tests
-            // use the SAME formula, so a future tweak can't silently diverge.
-            TeamActivityFeedViewModel.ScrollFollowSnapshot(
-                distanceFromBottom: TeamActivityFeedViewModel.distanceFromBottom(
-                    contentHeight: geo.contentSize.height,
-                    bottomInset: geo.contentInsets.bottom,
-                    topInset: geo.contentInsets.top,
-                    containerHeight: geo.containerSize.height,
-                    contentOffsetY: geo.contentOffset.y
-                ),
-                contentHeight: geo.contentSize.height
+            let distance = TeamActivityFeedViewModel.distanceFromBottom(
+                contentHeight: geo.contentSize.height,
+                bottomInset: geo.contentInsets.bottom,
+                topInset: geo.contentInsets.top,
+                containerHeight: geo.containerSize.height,
+                contentOffsetY: geo.contentOffset.y
+            )
+            // The `y` to feed `scrollTo(y:)` so the feed lands where `dist == 0`.
+            // NOT the resting offset: `scrollTo(y:)` undershoots its argument by the
+            // top safe-area inset, so the target drops the `- insTop` term (see
+            // `bottomTargetY`). Passing the resting offset directly was the bug —
+            // every settle-scroll landed `insTop` short, leaving `dist == insTop`
+            // above the gate threshold and latching auto-follow off. Computed here
+            // (pure), stashed into `@State` from the action closure.
+            let targetY = TeamActivityFeedViewModel.bottomTargetY(
+                contentHeight: geo.contentSize.height,
+                bottomInset: geo.contentInsets.bottom,
+                containerHeight: geo.containerSize.height
+            )
+            return TeamActivityFeedViewModel.ScrollFollowSnapshot(
+                distanceFromBottom: distance,
+                contentHeight: geo.contentSize.height,
+                bottomTargetY: targetY
             )
         } action: { old, new in
-            // Re-pin ONLY for a content-growth tick under a still-pinned scroll.
-            // `shouldFollowGrowth` compares the distance delta against the content
-            // growth, so a user dragging up DURING streaming (distance grows by MORE
-            // than the content did) falls through to the gate recompute below and is
-            // never yanked back to the bottom.
-            if TeamActivityFeedViewModel.shouldFollowGrowth(
+            // Stash the scroll-to-bottom target (= resting offset + insTop; see
+            // `bottomTargetY`). Writing @State here in the ACTION is valid; doing it
+            // in the transform would be dropped as "state mutation during view update".
+            lastBottomTargetY = new.bottomTargetY
+            // A content-growth-under-pinned-scroll tick keeps the pin; otherwise the
+            // pin is recomputed from the (real-offset) geometry — that's where a
+            // deliberate user scroll up/down flips it.
+            let follow = TeamActivityFeedViewModel.shouldFollowGrowth(
                 oldContentHeight: old.contentHeight,
                 newContentHeight: new.contentHeight,
                 oldDistanceFromBottom: old.distanceFromBottom,
                 newDistanceFromBottom: new.distanceFromBottom,
                 wasAtBottom: viewModel.isNearBottom
-            ) {
-                scrollPosition.scrollTo(edge: .bottom)
-                return
+            )
+            let nowNear = new.distanceFromBottom <= TeamActivityFeedViewModel.nearBottomThreshold
+            if follow || nowNear {
+                // Following growth, or back within the band → engage/keep the pin NOW.
+                gateReleaseTask?.cancel()
+                gateReleaseTask = nil
+                if !viewModel.isNearBottom {
+                    viewModel.isNearBottom = true
+                }
+            } else if viewModel.isNearBottom, gateReleaseTask == nil {
+                // dist > threshold and not a growth tick. This is EITHER a deliberate
+                // scroll-up OR a transient layout-negotiation blip (e.g. a commit's
+                // spike→collapse, or a settle-scroll briefly landing off). Debounce the
+                // release so only a SUSTAINED departure drops follow — a blip that
+                // recovers within the window is cancelled above by a near/growth tick.
+                gateReleaseTask = Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(Self.gateReleaseDelayMs))
+                    guard !Task.isCancelled else { return }
+                    gateReleaseTask = nil
+                    viewModel.isNearBottom = false
+                }
             }
-            // Pure offset change (real user scroll, or the settle tick after a
-            // re-pin) → recompute the gate.
-            viewModel.isNearBottom =
-                new.distanceFromBottom <= TeamActivityFeedViewModel.nearBottomThreshold
+            // A SHRINK means we're inside a commit's spike→collapse oscillation (a fast
+            // stream is monotonic). Reset the max-wait burst so this tick can only fire
+            // on the QUIET settle (after the collapse), never via a mid-transient
+            // force-fire — that mid-transient fire is what left the scroll past the
+            // collapsed bottom (dist≈-550) until the next settle corrected it.
+            if new.contentHeight < old.contentHeight { settleBurstStart = nil }
+            // Reschedule the deferred scroll on EVERY geometry change so it fires only
+            // after the layout quiesces (the commit spike→collapse fully settles).
+            requestSettleScroll()
         }
         .onChange(of: viewModel.timelineVersion) { _, _ in
             switch viewModel.consumeScrollAction() {
-            case .jump: scrollPosition.scrollTo(edge: .bottom)
-            case .animate: scrollToBottomAnimated()
-            case nil: break
+            case .jump:
+                // Task switch: force the pin and place at the bottom once settled.
+                viewModel.isNearBottom = true
+                requestSettleScroll()
+            case .animate:
+                // New structural item while at bottom → settle-scroll (no-op if not pinned).
+                requestSettleScroll()
+            case nil:
+                break
             }
         }
         // The rebuild bumps `timelineVersion`, so the onChange above is the
-        // single scroll site — no completion-scroll here (it would double-fire).
+        // single rebuild-driven scroll site — no completion-scroll here.
         .onChange(of: streamingManager.structuralVersion) { _, _ in
+            // A structural change (preview commit / new bubble) is the start of a content
+            // glitch. Reset the max-wait burst so the follow can't force-fire mid-spike —
+            // it waits for the QUIET settle after the spike→collapse, where the edge
+            // content-size is correct (no overshoot).
+            settleBurstStart = nil
             viewModel.scheduleStructuralRebuild(context: buildContext())
         }
         .onChange(of: store.activeTaskID) { _, _ in
+            scrollSettleTask?.cancel()
+            gateReleaseTask?.cancel()
+            settleBurstStart = nil
             viewModel.resetForTaskSwitch()
         }
         .onReceive(NotificationCenter.default.publisher(for: .scrollFeedToBottom)) { _ in
-            scrollToBottomAnimated()
+            viewModel.isNearBottom = true
+            requestSettleScroll()
         }
-        .onDisappear { viewModel.cancelStructuralRebuild() }
+        .onDisappear {
+            scrollSettleTask?.cancel()
+            gateReleaseTask?.cancel()
+            settleBurstStart = nil
+            viewModel.cancelStructuralRebuild()
+        }
     }
 
-    /// Smooth (non-bouncy) scroll to the bottom edge; also re-establishes the
-    /// `ScrollPosition` bottom-edge association so the feed resumes following
-    /// per-token content growth while streaming.
-    private func scrollToBottomAnimated() {
-        withAnimation(reduceMotion ? Animations.reducedMotion : Animations.smooth) {
-            scrollPosition.scrollTo(edge: .bottom)
+    /// Coalesced bottom-follow. Every geometry tick (and the button / task-switch /
+    /// notification surfaces) calls this; it reschedules a single scroll for
+    /// `scrollSettleQuietMs` after the LAST tick — so a commit's spike→collapse burst
+    /// collapses to ONE scroll — but never later than `scrollSettleMaxWaitMs` after the
+    /// burst began, so FAST continuous streaming (no quiet window) still follows. At
+    /// fire it re-checks the pin and edge-scrolls to the bottom. A commit additionally
+    /// resets the burst (geo-action shrink + the `structuralVersion` onChange), so the
+    /// fire always lands AFTER the spike→collapse settles — where the edge content-size
+    /// is correct, so no overshoot.
+    private func requestSettleScroll() {
+        scrollSettleTask?.cancel()
+        let now = Date()
+        let burstStart = settleBurstStart ?? now
+        settleBurstStart = burstStart
+        let quietFireAt = now.addingTimeInterval(Double(Self.scrollSettleQuietMs) / 1000)
+        let maxFireAt = burstStart.addingTimeInterval(Double(Self.scrollSettleMaxWaitMs) / 1000)
+        let delayMs = Int(max(0, min(quietFireAt, maxFireAt).timeIntervalSince(now) * 1000))
+        scrollSettleTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(delayMs))
+            guard !Task.isCancelled else { return }
+            settleBurstStart = nil
+            guard viewModel.isNearBottom else { return }
+            // Set the EXACT bottom offset from accurate geometry (not edge, which lags).
+            scrollPosition.scrollTo(y: lastBottomTargetY)
         }
     }
 
     private var scrollToBottomButton: some View {
         Button {
-            scrollToBottomAnimated()
+            viewModel.isNearBottom = true
+            requestSettleScroll()
         } label: {
             Image(systemName: "chevron.down")
                 .font(Typography.captionSemibold)

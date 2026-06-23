@@ -148,7 +148,7 @@ final class TeamActivityFeedViewModelOrchestrationTests: XCTestCase {
     // MARK: - At-Bottom Detection (isNearBottom geometry helper)
 
     /// Truth table for the pure geometry helper that drives auto-scroll gating
-    /// and the scroll-to-bottom button. Threshold is 60pt.
+    /// and the scroll-to-bottom button. Threshold is 50pt.
     func testIsNearBottom_exactlyAtBottom() {
         // content 1000, container 400 → max offset 600; sitting exactly there.
         XCTAssertTrue(TeamActivityFeedViewModel.isNearBottom(
@@ -156,21 +156,21 @@ final class TeamActivityFeedViewModelOrchestrationTests: XCTestCase {
     }
 
     func testIsNearBottom_withinThreshold() {
-        // 59pt above the bottom — still counts as at bottom.
+        // 49pt above the bottom (max offset 600) — still counts as at bottom.
         XCTAssertTrue(TeamActivityFeedViewModel.isNearBottom(
-            contentOffsetY: 541, contentHeight: 1000, containerHeight: 400, bottomInset: 0))
+            contentOffsetY: 551, contentHeight: 1000, containerHeight: 400, bottomInset: 0))
     }
 
     func testIsNearBottom_exactlyAtThreshold() {
-        // Exactly 60pt above the bottom — the contract is ≤, so this counts.
+        // Exactly 50pt above the bottom — the contract is ≤, so this counts.
         XCTAssertTrue(TeamActivityFeedViewModel.isNearBottom(
-            contentOffsetY: 540, contentHeight: 1000, containerHeight: 400, bottomInset: 0))
+            contentOffsetY: 550, contentHeight: 1000, containerHeight: 400, bottomInset: 0))
     }
 
     func testIsNearBottom_beyondThreshold() {
-        // 61pt above the bottom — user has scrolled up.
+        // 51pt above the bottom — user has scrolled up.
         XCTAssertFalse(TeamActivityFeedViewModel.isNearBottom(
-            contentOffsetY: 539, contentHeight: 1000, containerHeight: 400, bottomInset: 0))
+            contentOffsetY: 549, contentHeight: 1000, containerHeight: 400, bottomInset: 0))
     }
 
     func testIsNearBottom_bottomOvershoot_rubberBand_isTrue() {
@@ -269,11 +269,80 @@ final class TeamActivityFeedViewModelOrchestrationTests: XCTestCase {
         XCTAssertEqual(withoutInset - withInset, 79, accuracy: 0.0001)
     }
 
-    // MARK: - Content-Growth Follow (shouldFollowGrowth)
+    // MARK: - bottomTargetY (scroll-target ↔ at-bottom gate consistency)
 
-    /// Pure content growth under a pinned scroll: the offset is frozen, so the
-    /// distance grows by EXACTLY the content growth (+80/+80). This is the original
-    /// fix — re-pin so the feed keeps following streaming output.
+    /// THE regression for the "autoscroll stopped / can't re-pin" bug. The settle
+    /// scroll passes `bottomTargetY` to `scrollTo(y:)`, which lands `topInset`
+    /// SHORT of its argument; the landed offset must read `distanceFromBottom == 0`
+    /// (the at-bottom gate's zero). Uses the SAME numbers as the pinned
+    /// `distanceFromBottom` true-bottom test: cH 1348, container 904.5, insTop 79
+    /// → resting bottom offset 364.5. `bottomTargetY` must therefore be 443.5
+    /// (364.5 + insTop) so that `scrollTo` undershoots back to exactly 364.5.
+    func testBottomTargetY_scrollLandsWhereGateReadsZero() {
+        let cH: CGFloat = 1348, container: CGFloat = 904.5, insTop: CGFloat = 79, insBot: CGFloat = 0
+        let target = TeamActivityFeedViewModel.bottomTargetY(
+            contentHeight: cH, bottomInset: insBot, containerHeight: container)
+        XCTAssertEqual(target, 443.5, accuracy: 0.0001,
+                       "target must be the resting bottom offset PLUS topInset (cancels the inset term)")
+        // `scrollTo(y:)` lands `insTop` short of its argument (verified in the live trace).
+        let landedOffset = target - insTop
+        XCTAssertEqual(landedOffset, 364.5, accuracy: 0.0001, "lands at the pinned true-bottom offset")
+        let distAfterScroll = TeamActivityFeedViewModel.distanceFromBottom(
+            contentHeight: cH, bottomInset: insBot, topInset: insTop,
+            containerHeight: container, contentOffsetY: landedOffset)
+        XCTAssertEqual(distAfterScroll, 0, accuracy: 0.0001,
+                       "the settle-scroll must land where the at-bottom gate reads 0 — not topInset short")
+        XCTAssertLessThanOrEqual(distAfterScroll, TeamActivityFeedViewModel.nearBottomThreshold,
+                                 "landed within the at-bottom band → gate stays pinned, no latch-out")
+    }
+
+    /// Pins the BUG the fix removes: passing the resting bottom offset directly
+    /// (the pre-fix `cH + insBot - insTop - container`) lands `insTop` short, so
+    /// the post-scroll distance equals `insTop` — above the at-bottom threshold, which
+    /// latched the feed out of auto-follow. The fixed `bottomTargetY` is exactly
+    /// `insTop` higher, which cancels that residual.
+    func testBottomTargetY_correctsTopInsetUndershoot() {
+        let cH: CGFloat = 1348, container: CGFloat = 904.5, insTop: CGFloat = 79, insBot: CGFloat = 0
+        let restingOffset = cH + insBot - insTop - container  // the pre-fix (buggy) target
+        let fixed = TeamActivityFeedViewModel.bottomTargetY(
+            contentHeight: cH, bottomInset: insBot, containerHeight: container)
+        XCTAssertEqual(fixed - restingOffset, insTop, accuracy: 0.0001,
+                       "fix adds back exactly topInset to compensate scrollTo's undershoot")
+        // Pre-fix landing (restingOffset - insTop) read dist == insTop (> threshold → latch).
+        let buggyDist = TeamActivityFeedViewModel.distanceFromBottom(
+            contentHeight: cH, bottomInset: insBot, topInset: insTop,
+            containerHeight: container, contentOffsetY: restingOffset - insTop)
+        XCTAssertEqual(buggyDist, insTop, accuracy: 0.0001)
+        XCTAssertGreaterThan(buggyDist, TeamActivityFeedViewModel.nearBottomThreshold,
+                             "the pre-fix target latched the gate false — this is the bug being fixed")
+    }
+
+    /// A bottom inset extends the scrollable range, so the target grows by exactly
+    /// the inset (more content reachable below the fold before the true bottom).
+    func testBottomTargetY_bottomInsetExtendsTarget() {
+        let withoutInset = TeamActivityFeedViewModel.bottomTargetY(
+            contentHeight: 1000, bottomInset: 0, containerHeight: 400)
+        let withInset = TeamActivityFeedViewModel.bottomTargetY(
+            contentHeight: 1000, bottomInset: 100, containerHeight: 400)
+        XCTAssertEqual(withoutInset, 600, accuracy: 0.0001)
+        XCTAssertEqual(withInset - withoutInset, 100, accuracy: 0.0001)
+    }
+
+    /// Content shorter than the container yields a negative target (nothing to
+    /// scroll). `scrollTo(y:)` clamps to the top; the gate already reads at-bottom
+    /// for short content, so this is benign — pin the value so a future refactor
+    /// can't silently make it positive (which would scroll past empty content).
+    func testBottomTargetY_contentShorterThanContainer_isNonPositive() {
+        let target = TeamActivityFeedViewModel.bottomTargetY(
+            contentHeight: 200, bottomInset: 0, containerHeight: 400)
+        XCTAssertEqual(target, -200, accuracy: 0.0001)
+    }
+
+    // MARK: - Content-Growth Follow (shouldFollowGrowth keeps the bottom-pin)
+
+    /// Pure content growth under a pinned scroll: the offset is frozen, so the distance
+    /// grows by EXACTLY the content growth (+80/+80) → keep the pin (the deferred
+    /// settle-scroll will land at the bottom once the layout quiesces).
     func testShouldFollowGrowth_growthUnderPinnedScroll_isTrue() {
         XCTAssertTrue(TeamActivityFeedViewModel.shouldFollowGrowth(
             oldContentHeight: 1000, newContentHeight: 1080,
@@ -282,7 +351,7 @@ final class TeamActivityFeedViewModelOrchestrationTests: XCTestCase {
     }
 
     /// Growth where the offset auto-followed PART of it (distance grew less than the
-    /// content) → still a pure-growth tick, still re-pin.
+    /// content) → still a pure-growth tick, keep the pin.
     func testShouldFollowGrowth_growthWithPartialOffsetFollow_isTrue() {
         XCTAssertTrue(TeamActivityFeedViewModel.shouldFollowGrowth(
             oldContentHeight: 1000, newContentHeight: 1080,
@@ -290,9 +359,9 @@ final class TeamActivityFeedViewModelOrchestrationTests: XCTestCase {
             wasAtBottom: true))
     }
 
-    /// THE FIX (finding #1): content grew AND the user dragged up on the same
-    /// coalesced geometry tick — distance grows by MORE than the content did
-    /// (+80 height, +180 distance ⇒ ~100pt drag) → do NOT re-pin, never yank.
+    /// Content grew AND the user dragged up on the same coalesced geometry tick —
+    /// distance grows by MORE than the content did (+80 height, +180 distance ⇒ ~100pt
+    /// drag) → release the pin, never yank.
     func testShouldFollowGrowth_growthPlusUserDragUp_isFalse() {
         XCTAssertFalse(TeamActivityFeedViewModel.shouldFollowGrowth(
             oldContentHeight: 1000, newContentHeight: 1080,
@@ -300,9 +369,8 @@ final class TeamActivityFeedViewModelOrchestrationTests: XCTestCase {
             wasAtBottom: true))
     }
 
-    /// A drag-up WITHIN the slack tolerance (sub-pixel / fractional jitter) still
-    /// re-pins — the slack must not be so tight that float noise flips the decision.
-    /// +80 height, +82 distance (2pt, ≤ 80 + slack(4)) → still follow.
+    /// A drag-up WITHIN the slack tolerance (sub-pixel / fractional jitter) keeps the
+    /// pin — the slack must not be so tight that float noise flips the decision.
     func testShouldFollowGrowth_growthPlusJitterWithinSlack_isTrue() {
         XCTAssertTrue(TeamActivityFeedViewModel.shouldFollowGrowth(
             oldContentHeight: 1000, newContentHeight: 1080,
@@ -310,17 +378,17 @@ final class TeamActivityFeedViewModelOrchestrationTests: XCTestCase {
             wasAtBottom: true))
     }
 
-    /// A drag-up JUST beyond the slack tolerance flips to "don't re-pin" — pins the
+    /// A drag-up JUST beyond the slack tolerance flips to "release pin" — pins the
     /// boundary so the slack can't silently widen into "always follow".
     func testShouldFollowGrowth_growthPlusDragJustBeyondSlack_isFalse() {
-        // +80 height, +85 distance (5pt > 80 + slack(4)) → user wins, don't follow.
+        // +80 height, +85 distance (5pt > 80 + slack(4)) → user wins, release.
         XCTAssertFalse(TeamActivityFeedViewModel.shouldFollowGrowth(
             oldContentHeight: 1000, newContentHeight: 1080,
             oldDistanceFromBottom: 0, newDistanceFromBottom: 85,
             wasAtBottom: true))
     }
 
-    /// Content grew but the user had ALREADY scrolled up (gate false) → no re-pin.
+    /// Content grew but the user had ALREADY scrolled up (pin released) → stays released.
     func testShouldFollowGrowth_grewWhileScrolledUp_isFalse() {
         XCTAssertFalse(TeamActivityFeedViewModel.shouldFollowGrowth(
             oldContentHeight: 1000, newContentHeight: 1080,
@@ -328,8 +396,8 @@ final class TeamActivityFeedViewModelOrchestrationTests: XCTestCase {
             wasAtBottom: false))
     }
 
-    /// Content shrank (a streaming preview committed to a shorter bubble, or an item
-    /// collapsed) while at bottom → not a growth tick, do not re-pin here.
+    /// Content shrank (a commit collapsing the transient spike, or an item collapsing)
+    /// while at bottom → not a growth tick; the caller recomputes the gate instead.
     func testShouldFollowGrowth_shrankWhileAtBottom_isFalse() {
         XCTAssertFalse(TeamActivityFeedViewModel.shouldFollowGrowth(
             oldContentHeight: 1080, newContentHeight: 1000,
@@ -337,8 +405,8 @@ final class TeamActivityFeedViewModelOrchestrationTests: XCTestCase {
             wasAtBottom: true))
     }
 
-    /// Pure offset change (height unchanged) while at bottom → not a growth tick;
-    /// the gate recompute path owns this, shouldFollowGrowth must say false.
+    /// Pure offset change (height unchanged) while at bottom → not a growth tick; the
+    /// gate-recompute path owns this, shouldFollowGrowth must say false.
     func testShouldFollowGrowth_sameHeightWhileAtBottom_isFalse() {
         XCTAssertFalse(TeamActivityFeedViewModel.shouldFollowGrowth(
             oldContentHeight: 1000, newContentHeight: 1000,
@@ -346,15 +414,17 @@ final class TeamActivityFeedViewModelOrchestrationTests: XCTestCase {
             wasAtBottom: true))
     }
 
-    /// The Equatable snapshot must distinguish a growth tick from a pure offset
-    /// tick so `onScrollGeometryChange`'s `action` fires on both.
+    /// The Equatable snapshot must distinguish a growth tick from a pure offset tick so
+    /// `onScrollGeometryChange`'s `action` fires on both.
     func testScrollFollowSnapshot_equatable() {
-        let a = TeamActivityFeedViewModel.ScrollFollowSnapshot(distanceFromBottom: 0, contentHeight: 1000)
-        let sameOffsetGrew = TeamActivityFeedViewModel.ScrollFollowSnapshot(distanceFromBottom: 0, contentHeight: 1080)
-        let movedSameHeight = TeamActivityFeedViewModel.ScrollFollowSnapshot(distanceFromBottom: 120, contentHeight: 1000)
+        let a = TeamActivityFeedViewModel.ScrollFollowSnapshot(distanceFromBottom: 0, contentHeight: 1000, bottomTargetY: 250)
+        let sameOffsetGrew = TeamActivityFeedViewModel.ScrollFollowSnapshot(distanceFromBottom: 0, contentHeight: 1080, bottomTargetY: 330)
+        let movedSameHeight = TeamActivityFeedViewModel.ScrollFollowSnapshot(distanceFromBottom: 120, contentHeight: 1000, bottomTargetY: 250)
+        let sameButDifferentTarget = TeamActivityFeedViewModel.ScrollFollowSnapshot(distanceFromBottom: 0, contentHeight: 1000, bottomTargetY: 999)
         XCTAssertNotEqual(a, sameOffsetGrew)
         XCTAssertNotEqual(a, movedSameHeight)
-        XCTAssertEqual(a, TeamActivityFeedViewModel.ScrollFollowSnapshot(distanceFromBottom: 0, contentHeight: 1000))
+        XCTAssertNotEqual(a, sameButDifferentTarget)
+        XCTAssertEqual(a, TeamActivityFeedViewModel.ScrollFollowSnapshot(distanceFromBottom: 0, contentHeight: 1000, bottomTargetY: 250))
     }
 
     // MARK: - Scroll Action Policy (consumeScrollAction)
