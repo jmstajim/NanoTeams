@@ -28,4 +28,45 @@ final class WatchtowerHeaderTests: XCTestCase {
     func testShouldBlink_reduceMotionAndEmptyInbox_isFalse() {
         XCTAssertFalse(WatchtowerHeader.shouldBlink(reduceMotion: true, hasTasks: false))
     }
+
+    // MARK: - headlineParts (pluralization: noun + verb agree in number)
+
+    /// Single pending task → singular noun AND singular verb: "1 task needs you".
+    /// Regression: the masthead previously hardcoded "tasks"/"need" → "1 tasks need you".
+    func testHeadlineParts_oneTask_isSingular() {
+        let parts = WatchtowerHeader.headlineParts(needsYouCount: 1)
+        XCTAssertEqual(parts.prefix, "1 task ")
+        XCTAssertEqual(parts.accent, "needs you")
+        XCTAssertEqual(parts.prefix + parts.accent, "1 task needs you")
+    }
+
+    /// Multiple pending tasks → plural noun AND plural verb: "3 tasks need you".
+    func testHeadlineParts_manyTasks_isPlural() {
+        let parts = WatchtowerHeader.headlineParts(needsYouCount: 3)
+        XCTAssertEqual(parts.prefix, "3 tasks ")
+        XCTAssertEqual(parts.accent, "need you")
+        XCTAssertEqual(parts.prefix + parts.accent, "3 tasks need you")
+    }
+
+    /// Boundary: exactly 2 is plural (only 1 is singular).
+    func testHeadlineParts_twoTasks_isPlural() {
+        let parts = WatchtowerHeader.headlineParts(needsYouCount: 2)
+        XCTAssertEqual(parts.prefix, "2 tasks ")
+        XCTAssertEqual(parts.accent, "need you")
+    }
+
+    /// Empty inbox → no count prefix, resting "all clear" phrase (no cursor target).
+    func testHeadlineParts_emptyInbox_isAllClear() {
+        let parts = WatchtowerHeader.headlineParts(needsYouCount: 0)
+        XCTAssertEqual(parts.prefix, "")
+        XCTAssertEqual(parts.accent, "all clear")
+    }
+
+    /// Defensive: a negative count (unreachable in practice) is treated as empty,
+    /// not as a malformed "−1 tasks" headline.
+    func testHeadlineParts_negativeCount_isAllClear() {
+        let parts = WatchtowerHeader.headlineParts(needsYouCount: -1)
+        XCTAssertEqual(parts.prefix, "")
+        XCTAssertEqual(parts.accent, "all clear")
+    }
 }

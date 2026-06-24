@@ -62,8 +62,9 @@ struct WatchtowerHeader: View {
         }
     }
 
-    /// "{N} tasks need you█" when there's pending work — "need you" in accent,
-    /// blinking █ cursor. Falls back to "all clear█" with a steady cursor when the
+    /// "{N} task(s) need(s) you█" when there's pending work — noun + verb agree in
+    /// number (see `headlineParts`), the "need(s) you" run in accent, blinking █
+    /// cursor. Falls back to "all clear█" with a steady cursor when the
     /// inbox is empty. The cursor is concatenated INTO the accent run, glued by a
     /// non-breaking space (`\u{00A0}`), so it stays anchored to the end of "you" /
     /// "clear" no matter where the headline wraps (a sibling `Text` in an HStack
@@ -130,10 +131,25 @@ struct WatchtowerHeader: View {
     }
 
     private var hasTasks: Bool { needsYouCount > 0 }
-    private var prefixText: String { hasTasks ? "\(needsYouCount) tasks " : "" }
-    private var accentPhrase: String { hasTasks ? "need you" : "all clear" }
+    private var prefixText: String { Self.headlineParts(needsYouCount: needsYouCount).prefix }
+    private var accentPhrase: String { Self.headlineParts(needsYouCount: needsYouCount).accent }
     private var accessibilityHeadline: String {
-        hasTasks ? "\(needsYouCount) tasks need you" : "all clear"
+        let parts = Self.headlineParts(needsYouCount: needsYouCount)
+        return parts.prefix + parts.accent
+    }
+
+    /// Pure pluralization for the headline — both the noun ("task"/"tasks", in the
+    /// `prefix` primary-color run) and the verb ("needs you"/"need you", in the
+    /// `accent` run) agree in number with `needsYouCount`: 1 → "1 task needs you",
+    /// N → "N tasks need you". An empty (or, defensively, non-positive) inbox returns
+    /// `("", "all clear")` — the resting state with no count and no cursor target.
+    /// `nonisolated static` so it's testable without mounting the view (CLAUDE.md
+    /// sync-test main-actor abort gotcha), mirroring `shouldBlink`.
+    nonisolated static func headlineParts(needsYouCount: Int) -> (prefix: String, accent: String) {
+        guard needsYouCount > 0 else { return ("", "all clear") }
+        let noun = needsYouCount == 1 ? "task" : "tasks"
+        let verb = needsYouCount == 1 ? "needs you" : "need you"
+        return ("\(needsYouCount) \(noun) ", verb)
     }
 
     /// "$ watch --inbox · open a task or chat to clear it".
