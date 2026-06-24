@@ -12,7 +12,7 @@
 
 **AI coding assistant and multi-agent AI teams for macOS, powered by local LLMs through [LM Studio](https://lmstudio.ai).** Open-source, free, fully private. Start an agentic chat with the **Coding Assistant**, let the **Coding Agent** edit small changes directly and delegate the heavy lifting to another team ([Get started](#getting-started)), or hand a task to a team of specialized AI roles that read your files, produce artifacts, consult each other, and report back when done. Switch on the **Autovisor** and an automated Supervisor runs the whole folder for you — creating, answering, and reviewing tasks on its own. Generate custom teams from a one-line description, paste images and documents straight into the composer, search your project semantically with on-device embeddings, clip text from any app, dictate hands-free with fully on-device speech recognition, and queue messages to working roles without pausing them.
 
-<img width="1280" height="1203" alt="NanoTeams — AI coding assistant and multi-agent AI teams for macOS" src="https://github.com/user-attachments/assets/4c58e909-5d5a-47ed-858c-b897c3bc9d30" />
+<img width="1280" height="1112" alt="NanoTeams — AI coding assistant and multi-agent AI teams for macOS" src="https://github.com/user-attachments/assets/124d259d-3e5b-4fbd-b4b2-39dd8458a5ba" />
 
 ## Why **NanoTeams**
 
