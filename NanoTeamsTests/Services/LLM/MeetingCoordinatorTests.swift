@@ -33,7 +33,10 @@ final class MeetingCoordinatorTests: XCTestCase {
         XCTAssertTrue(excluded.contains(TN.scheduleTask))
         XCTAssertTrue(excluded.contains(TN.setWorkFolderContext))
         XCTAssertTrue(excluded.contains(TN.waitForEvents))
-        XCTAssertEqual(excluded.count, 22)
+        // Shell tools run a login shell — never available in a meeting turn.
+        XCTAssertTrue(excluded.contains(TN.bash))
+        XCTAssertTrue(excluded.contains(TN.bashOutput))
+        XCTAssertEqual(excluded.count, 24)
     }
 
     // MARK: - filterMeetingTools

@@ -46,5 +46,15 @@ extension StoreConfiguration {
         static let searchContextBefore = UserDefaultsKeys.searchContextBefore
         static let searchContextAfter = UserDefaultsKeys.searchContextAfter
         static let globalContext = UserDefaultsKeys.globalContext
+        static let bashMode = UserDefaultsKeys.bashMode
+        static let bashRestrictionLevel = UserDefaultsKeys.bashRestrictionLevel
+        static let bashAllowRules = UserDefaultsKeys.bashAllowRules
+        static let bashAskRules = UserDefaultsKeys.bashAskRules
+        static let bashDenyRules = UserDefaultsKeys.bashDenyRules
+        static let bashSandboxEnabled = UserDefaultsKeys.bashSandboxEnabled
+        static let bashSandboxPermissions = UserDefaultsKeys.bashSandboxPermissions
+        static let bashAllowUnsandboxedFallback = UserDefaultsKeys.bashAllowUnsandboxedFallback
+        static let bashJudgeModel = UserDefaultsKeys.bashJudgeModel
+        static let bashJudgeLLMOverride = UserDefaultsKeys.bashJudgeLLMOverride
     }
 }

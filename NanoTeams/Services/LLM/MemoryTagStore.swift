@@ -21,6 +21,7 @@ nonisolated final class MemoryTagStore {
         case build = "B"     // run_xcodebuild, run_xcodetests
         case git = "G"       // git_status, git_diff
         case plan = "P"      // update_scratchpad
+        case shell = "S"     // bash
     }
 
     enum TagStatus {
@@ -53,6 +54,7 @@ nonisolated final class MemoryTagStore {
     nonisolated(unsafe) static let defaultProcessors: [any ToolResultProcessor] = [
         FileToolProcessor(),
         BuildGitToolProcessor(),
+        BashToolProcessor(),
     ]
 
     init(
@@ -164,6 +166,18 @@ nonisolated struct BuildGitToolProcessor: ToolResultProcessor {
         case TN.gitDiff: return store.processGitDiff(result, iteration: iteration)
         default: return .passthrough
         }
+    }
+}
+
+/// Processes the `bash` tool. Repeat-identical command output collapses to a tag
+/// reference; `bash_output` (incremental background reads) is intentionally NOT
+/// tagged — its output changes every call.
+nonisolated struct BashToolProcessor: ToolResultProcessor {
+    let supportedTools: Set<String> = [ToolNames.bash]
+
+    func process(_ result: ToolExecutionResult, iteration: Int, store: MemoryTagStore) -> TagProcessingResult {
+        guard result.toolName == ToolNames.bash else { return .passthrough }
+        return store.processBash(result, iteration: iteration)
     }
 }
 

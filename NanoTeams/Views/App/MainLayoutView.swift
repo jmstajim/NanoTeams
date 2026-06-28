@@ -188,7 +188,9 @@ struct MainLayoutView: View {
         guard let task = store.loadedTask(taskID),
               let run = task.runs.last else { return }
         let team = store.resolvedTeam(for: task)
-        let notifications = run.allWatchtowerNotifications(task: task, teamRoles: team.roles)
+        let bashApprovals = store.bashApprovalRequests.values.filter { $0.taskID == task.id }
+        let notifications = run.allWatchtowerNotifications(
+            task: task, teamRoles: team.roles, bashApprovals: bashApprovals)
         for notification in notifications {
             config.dismissNotification(id: notification.dismissID)
         }

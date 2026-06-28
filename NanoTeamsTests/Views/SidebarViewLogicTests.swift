@@ -66,6 +66,43 @@ final class SidebarViewLogicTests: XCTestCase {
         XCTAssertFalse(items[0].hasUnreadInput)
     }
 
+    // MARK: - hasPendingBashApproval (cross-task held-command badge)
+
+    func testBuild_bashApprovalFlag_litForMatchingTask() {
+        // A background task (status .running, NOT .needsSupervisorInput — the in-loop
+        // hold keeps it running) still gets the badge purely from the request set.
+        let items = SidebarViewLogic.buildSidebarTaskItems(
+            summaries: [summary(1, status: .running), summary(2, status: .running)],
+            seenSupervisorInputTaskIDs: [],
+            bashApprovalTaskIDs: [2],
+            engineStates: [1: .running, 2: .running]
+        )
+        XCTAssertFalse(items[0].hasPendingBashApproval, "task 1 has no held command")
+        XCTAssertTrue(items[1].hasPendingBashApproval, "task 2 is holding a command")
+    }
+
+    func testBuild_bashApprovalFlag_defaultsOffWhenSetEmpty() {
+        let items = SidebarViewLogic.buildSidebarTaskItems(
+            summaries: [summary(1, status: .running)],
+            seenSupervisorInputTaskIDs: [],
+            bashApprovalTaskIDs: [],
+            engineStates: [:]
+        )
+        XCTAssertFalse(items[0].hasPendingBashApproval)
+    }
+
+    func testBuild_bashApprovalFlag_unrelatedTaskIDsDoNotLeak() {
+        // A held command on a child/other task id (e.g. 99) must not light any visible
+        // top-level row.
+        let items = SidebarViewLogic.buildSidebarTaskItems(
+            summaries: [summary(1, status: .running)],
+            seenSupervisorInputTaskIDs: [],
+            bashApprovalTaskIDs: [99],
+            engineStates: [:]
+        )
+        XCTAssertFalse(items[0].hasPendingBashApproval)
+    }
+
     func testBuild_engineRunningFlag() {
         let items = SidebarViewLogic.buildSidebarTaskItems(
             summaries: [summary(1, status: .running), summary(2, status: .running)],

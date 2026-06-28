@@ -1381,4 +1381,39 @@ final class TeamActivityComposerRoutingTests: XCTestCase {
             ),
             "Queue a message for PM…")
     }
+
+    // MARK: - BashApprovalCardList.sortedRequests (held-command cards)
+
+    private func bashRequest(taskID: Int, stepID: String, command: String, at: Date) -> BashApprovalRequest {
+        BashApprovalRequest(
+            taskID: taskID, stepID: stepID, commandKey: "key:\(command)", command: command,
+            workingDirectory: nil, offerAlways: false, createdAt: at)
+    }
+
+    func testSortedRequests_filtersByTaskAndOrdersByCreatedAt() {
+        let t0 = Date(timeIntervalSince1970: 100)
+        let t1 = Date(timeIntervalSince1970: 200)
+        let t2 = Date(timeIntervalSince1970: 300)
+        let all: [TaskStepKey: BashApprovalRequest] = [
+            TaskStepKey(taskID: 1, stepID: "b"): bashRequest(taskID: 1, stepID: "b", command: "later", at: t2),
+            TaskStepKey(taskID: 1, stepID: "a"): bashRequest(taskID: 1, stepID: "a", command: "earlier", at: t1),
+            TaskStepKey(taskID: 2, stepID: "c"): bashRequest(taskID: 2, stepID: "c", command: "other", at: t0),
+        ]
+        // Only task 1's requests, oldest-first — NOT the globally-oldest task-2 entry.
+        XCTAssertEqual(
+            BashApprovalCardList.sortedRequests(for: 1, from: all).map(\.command),
+            ["earlier", "later"])
+        XCTAssertEqual(
+            BashApprovalCardList.sortedRequests(for: 2, from: all).map(\.command),
+            ["other"])
+    }
+
+    func testSortedRequests_noMatch_isEmpty() {
+        let all: [TaskStepKey: BashApprovalRequest] = [
+            TaskStepKey(taskID: 1, stepID: "a"):
+                bashRequest(taskID: 1, stepID: "a", command: "ls", at: Date(timeIntervalSince1970: 1)),
+        ]
+        XCTAssertTrue(BashApprovalCardList.sortedRequests(for: 99, from: all).isEmpty)
+        XCTAssertTrue(BashApprovalCardList.sortedRequests(for: 1, from: [:]).isEmpty)
+    }
 }

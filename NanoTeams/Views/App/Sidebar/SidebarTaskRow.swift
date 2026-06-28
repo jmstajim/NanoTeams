@@ -99,6 +99,12 @@ struct SidebarTaskRow: View {
                             .foregroundStyle(Colors.textSecondary)
                             .accessibilityLabel("Recurring")
                     }
+                    if task.hasPendingBashApproval {
+                        Image(systemName: "terminal")
+                            .font(Typography.caption2)
+                            .foregroundStyle(Colors.warning)
+                            .accessibilityLabel("Awaiting command approval")
+                    }
                 }
                 statusMetadataRow
             }

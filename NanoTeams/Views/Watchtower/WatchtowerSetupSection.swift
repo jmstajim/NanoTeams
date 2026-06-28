@@ -84,6 +84,7 @@ struct WatchtowerSetupSection: View {
             case .vision: return !visionConfigured
             case .dictation: return dictationLocalesEmpty
             case .autovisor: return hasWorkFolder && !autovisorEnabled
+            case .bash: return true   // always offered until dismissed; Bash is on by default
             }
         }
     }
@@ -137,6 +138,14 @@ struct WatchtowerSetupSection: View {
                 description: "Let an automated supervisor watch this folder's tasks, answer their questions, and advance a goal on its own.",
                 tint: Colors.cyan,
                 tab: .autovisor
+            )
+        case .bash:
+            return Copy(
+                icon: "terminal",
+                title: "Bash",
+                description: "Let roles run shell commands with sandbox confinement and the allow/ask/deny rules you control.",
+                tint: Colors.warning,
+                tab: .bash
             )
         }
     }

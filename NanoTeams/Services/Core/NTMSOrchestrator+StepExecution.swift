@@ -65,6 +65,10 @@ extension NTMSOrchestrator {
         draftID: UUID? = nil,
         isAutoAnswer: Bool = false
     ) async -> Bool {
+        // Bash approvals are NOT answered here — they are held in-loop by the gate
+        // and resolved DIRECTLY via the Allow/Deny buttons (`resolveBashApproval`),
+        // bypassing the model. This path handles only normal `ask_supervisor`.
+
         // Finalize staged attachments and clean up draft directory
         var finalPaths: [String] = []
         if let workFolderRoot = workFolderURL {

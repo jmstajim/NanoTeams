@@ -164,6 +164,7 @@ struct SidebarView: View {
         SidebarViewLogic.buildSidebarTaskItems(
             summaries: store.taskSummaries(filter: .all),
             seenSupervisorInputTaskIDs: taskState.seenSupervisorInputTaskIDs,
+            bashApprovalTaskIDs: Set(store.bashApprovalRequests.keys.map(\.taskID)),
             engineStates: engineState.taskEngineStates
         )
     }

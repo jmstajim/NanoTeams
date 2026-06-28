@@ -165,6 +165,35 @@ nonisolated func makeSupervisorQuestionResult(
     )
 }
 
+// MARK: - Synthetic results (built without executing the tool)
+
+nonisolated extension ToolExecutionResult {
+    /// Builds a synthetic result for a tool call that was NOT executed, carrying
+    /// the call's `providerID` so the wire `tool_call_id` resolves and the model
+    /// never sees an orphaned tool call (which causes HTTP 400 / token growth).
+    ///
+    /// Single source of truth for the providerID-threading footgun: the bash
+    /// gate (`gateBashCalls`) and any future pre-execution synthesizer must build
+    /// results through here rather than re-deriving the `providerID ?? UUID()`
+    /// fallback inline. Mirrors the construction already used by
+    /// `makeUnavailableToolResult` / `makeIdenticalWriteLoopResult`.
+    static func synthetic(
+        for call: StepToolCall,
+        outputJSON: String,
+        isError: Bool,
+        signal: ToolSignal? = nil
+    ) -> ToolExecutionResult {
+        ToolExecutionResult(
+            providerID: call.providerID ?? UUID().uuidString,
+            toolName: call.name,
+            argumentsJSON: call.argumentsJSON,
+            outputJSON: outputJSON,
+            isError: isError,
+            signal: signal
+        )
+    }
+}
+
 // MARK: - JSON Helpers
 
 nonisolated private func encodeToJSON<T: Encodable>(_ value: T) -> String {

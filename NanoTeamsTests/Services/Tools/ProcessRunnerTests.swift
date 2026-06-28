@@ -166,7 +166,7 @@ final class ProcessRunnerTests: XCTestCase {
                 timeout: 0.5
             )
         ) { error in
-            if case ProcessRunnerError.timeout(let seconds) = error {
+            if case ProcessRunnerError.timeout(let seconds, _, _) = error {
                 XCTAssertEqual(seconds, 0.5)
             } else {
                 XCTFail("Expected timeout error, got: \(error)")
@@ -193,7 +193,7 @@ final class ProcessRunnerTests: XCTestCase {
     }
 
     func testProcessRunnerErrorDescriptions() {
-        let timeoutError = ProcessRunnerError.timeout(30)
+        let timeoutError = ProcessRunnerError.timeout(30, stdout: "", stderr: "")
         XCTAssertEqual(timeoutError.errorDescription, "Process timed out after 30 seconds")
 
         let notFoundError = ProcessRunnerError.executableNotFound("/path/to/bin")

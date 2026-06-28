@@ -12,7 +12,10 @@ extension ToolRegistry {
         readFileMaxLines: Int = AppDefaults.readFileMaxLines,
         searchMaxResults: Int = AppDefaults.searchMaxResults,
         searchContextBefore: Int = AppDefaults.searchContextBefore,
-        searchContextAfter: Int = AppDefaults.searchContextAfter
+        searchContextAfter: Int = AppDefaults.searchContextAfter,
+        bashSandboxEnabled: Bool = BashConstants.defaultSandboxEnabled,
+        bashSandboxPermissions: BashSandboxPermissions = BashSandboxPermissions(),
+        bashAllowUnsandboxedFallback: Bool = false
     ) -> (registry: ToolRegistry, runtime: ToolRuntime) {
         let registry = ToolRegistry()
         let logger = toolCallsLogURL.map { ToolCallLogger(logURL: $0) }
@@ -26,7 +29,10 @@ extension ToolRegistry {
             readFileMaxLines: readFileMaxLines,
             searchMaxResults: searchMaxResults,
             searchContextBefore: searchContextBefore,
-            searchContextAfter: searchContextAfter
+            searchContextAfter: searchContextAfter,
+            bashSandboxEnabled: bashSandboxEnabled,
+            bashSandboxPermissions: bashSandboxPermissions,
+            bashAllowUnsandboxedFallback: bashAllowUnsandboxedFallback
         )
         for handler in handlers {
             let name = type(of: handler).name

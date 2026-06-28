@@ -13,6 +13,7 @@ nonisolated enum ToolCategory: String, Codable {
     case artifact
     case vision
     case delegation
+    case shell
 }
 
 // MARK: - ToolHandlerDependencies
@@ -38,6 +39,14 @@ nonisolated struct ToolHandlerDependencies {
     let searchContextBefore: Int
     /// Default `context_after` for `search` when the LLM omits the argument.
     let searchContextAfter: Int
+    /// Whether `bash` confines commands in a macOS Seatbelt sandbox. From the
+    /// user's `BashPolicy`, surfaced at registry-build time.
+    let bashSandboxEnabled: Bool
+    /// Per-folder read/write grants for the `bash` Seatbelt sandbox. From the
+    /// user's `BashPolicy`, surfaced at registry-build time.
+    let bashSandboxPermissions: BashSandboxPermissions
+    /// Whether `bash` may retry unsandboxed if the Seatbelt wrapper fails to launch.
+    let bashAllowUnsandboxedFallback: Bool
 
     init(
         workFolderRoot: URL,
@@ -48,7 +57,10 @@ nonisolated struct ToolHandlerDependencies {
         readFileMaxLines: Int,
         searchMaxResults: Int,
         searchContextBefore: Int,
-        searchContextAfter: Int
+        searchContextAfter: Int,
+        bashSandboxEnabled: Bool = BashConstants.defaultSandboxEnabled,
+        bashSandboxPermissions: BashSandboxPermissions = BashSandboxPermissions(),
+        bashAllowUnsandboxedFallback: Bool = false
     ) {
         self.workFolderRoot = workFolderRoot
         self.resolver = resolver
@@ -59,6 +71,9 @@ nonisolated struct ToolHandlerDependencies {
         self.searchMaxResults = searchMaxResults
         self.searchContextBefore = searchContextBefore
         self.searchContextAfter = searchContextAfter
+        self.bashSandboxEnabled = bashSandboxEnabled
+        self.bashSandboxPermissions = bashSandboxPermissions
+        self.bashAllowUnsandboxedFallback = bashAllowUnsandboxedFallback
     }
 }
 

@@ -9,8 +9,8 @@ import XCTest
 final class ToolNamesAllNamesTests: XCTestCase {
 
     func testAllNames_countMatchesToolCount() {
-        // Mirror of DefaultToolSchemasTests.testDefaultToolsCountIs43.
-        XCTAssertEqual(ToolNames.allNames.count, 43)
+        // Mirror of DefaultToolSchemasTests.testDefaultToolsCountIs45.
+        XCTAssertEqual(ToolNames.allNames.count, 45)
     }
 
     func testAllNames_containsRepresentativesFromEachCategory() {

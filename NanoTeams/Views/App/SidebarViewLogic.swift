@@ -27,10 +27,14 @@ enum SidebarViewLogic {
     /// Projects the task index into sidebar rows. `hasUnreadInput` lights only for a
     /// chat-mode task waiting on the Supervisor whose prompt the user hasn't seen yet;
     /// `isEngineRunning` / `isRecurring` are read straight off the live engine map and
-    /// the recurrence schedule.
+    /// the recurrence schedule. `hasPendingBashApproval` lights when the task (even a
+    /// BACKGROUND one) is holding a `bash` command awaiting Allow/Deny — the in-loop
+    /// hold keeps the step `.running`, so this badge is the only sidebar signal that a
+    /// non-active task is waiting on a command decision.
     static func buildSidebarTaskItems(
         summaries: [TaskSummary],
         seenSupervisorInputTaskIDs: Set<Int>,
+        bashApprovalTaskIDs: Set<Int> = [],
         engineStates: [Int: TeamEngineState]
     ) -> [SidebarTaskItem] {
         summaries.map { task in
@@ -45,7 +49,8 @@ enum SidebarViewLogic {
                 isChatMode: task.isChatMode,
                 hasUnreadInput: hasUnread,
                 isEngineRunning: engineStates[task.id] == .running,
-                isRecurring: task.nextRecurrenceFireAt != nil
+                isRecurring: task.nextRecurrenceFireAt != nil,
+                hasPendingBashApproval: bashApprovalTaskIDs.contains(task.id)
             )
         }
     }

@@ -93,6 +93,52 @@ final class NTMSRepositoryReconcileTests: XCTestCase {
                        "reconcile must overwrite stale system-role scalar fields")
     }
 
+    /// "bash enabled by default for code-writing roles" must reach EXISTING work
+    /// folders, not just freshly-bootstrapped ones. The version-bump reconcile
+    /// rewrites system-role `toolIDs` unconditionally — so a folder seeded by an
+    /// older build (whose Software Engineer lacked bash) gains it on the next open
+    /// after an app upgrade. Pins the migration path the default-bash change relies on.
+    func testVersionBump_restoresBashToolForSoftwareEngineer() throws {
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        // Simulate a folder seeded by a pre-bash build: strip bash + bash_output
+        // from FAANG's Software Engineer toolIDs.
+        let store = AtomicJSONStore()
+        var teamsFile = try store.read(TeamsFile.self, from: paths.teamsJSON)
+        let faangIdx = try XCTUnwrap(teamsFile.teams.firstIndex { $0.templateID == "faang" })
+        let seIdx = try XCTUnwrap(
+            teamsFile.teams[faangIdx].roles.firstIndex { $0.systemRoleID == "softwareEngineer" }
+        )
+        teamsFile.teams[faangIdx].roles[seIdx].toolIDs.removeAll {
+            $0 == ToolNames.bash || $0 == ToolNames.bashOutput
+        }
+        try store.write(teamsFile, to: paths.teamsJSON)
+
+        // Rewind the watermark so reconcile wants to run on reopen.
+        var state = try store.read(WorkFolderState.self, from: paths.workFolderJSON)
+        state.lastAppliedAppVersion = ""
+        try store.write(state, to: paths.workFolderJSON)
+
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        let reconciled = try store.read(TeamsFile.self, from: paths.teamsJSON)
+        let newIdx = try XCTUnwrap(reconciled.teams.firstIndex { $0.templateID == "faang" })
+        let se = try XCTUnwrap(
+            reconciled.teams[newIdx].roles.first { $0.systemRoleID == "softwareEngineer" }
+        )
+        XCTAssertTrue(se.toolIDs.contains(ToolNames.bash),
+                      "version-bump reconcile must restore bash to the Software Engineer")
+        XCTAssertTrue(se.toolIDs.contains(ToolNames.bashOutput),
+                      "version-bump reconcile must restore bash_output to the Software Engineer")
+
+        // A review role in the same team must stay shell-free after reconcile.
+        let reviewer = try XCTUnwrap(
+            reconciled.teams[newIdx].roles.first { $0.systemRoleID == "codeReviewer" }
+        )
+        XCTAssertFalse(reviewer.toolIDs.contains(ToolNames.bash),
+                       "reconcile must not grant bash to review roles")
+    }
+
     /// The Autovisor team is bundled but hidden (not in `Team.defaultTeams`), so the
     /// reconcile pass indexes it explicitly. A version bump must refresh the manager
     /// role's prompt to the bundled text WITHOUT resetting user-toggled optional tools

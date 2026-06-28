@@ -11,4 +11,8 @@ struct SidebarTaskItem: Identifiable {
     /// True when the task has an enabled recurrence schedule — drives the
     /// "recurring" badge in the sidebar row.
     var isRecurring: Bool = false
+    /// True when the task is holding a `bash` command awaiting Allow/Deny — drives
+    /// the terminal "needs command approval" badge so a BACKGROUND task waiting on a
+    /// command is discoverable without opening it.
+    var hasPendingBashApproval: Bool = false
 }

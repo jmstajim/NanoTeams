@@ -42,6 +42,17 @@ nonisolated enum ToolCallSummarizer {
                 }
                 return "\"\(query)\""
             },
+            TN.bash: { dict in
+                // Resolve via the same single-source helper the gate + handler use,
+                // so the card shows exactly the command that runs (honors alias keys).
+                guard let command = BashArguments.command(from: dict) else { return "" }
+                // Collapse newlines/runs of whitespace so a multi-line command reads
+                // as one scannable line; the card middle-truncates the visible portion.
+                return command
+                    .components(separatedBy: .whitespacesAndNewlines)
+                    .filter { !$0.isEmpty }
+                    .joined(separator: " ")
+            },
             TN.gitCheckout: { ($0["branch"] as? String) ?? "?" },
             TN.gitAdd: { dict in
                 if let paths = dict["paths"] as? [String], !paths.isEmpty {

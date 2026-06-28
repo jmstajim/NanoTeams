@@ -1,7 +1,10 @@
 import Foundation
 
 nonisolated enum ProcessRunnerError: LocalizedError {
-    case timeout(TimeInterval)
+    /// Carries the output captured BEFORE the deadline so a timed-out command
+    /// (e.g. a build that printed 100 KB then hung) can still surface its partial
+    /// stdout/stderr instead of returning empty.
+    case timeout(TimeInterval, stdout: String, stderr: String)
     case executableNotFound(String)
     /// The enclosing Swift `Task` was cancelled while the subprocess was running.
     /// `ProcessRunner.run` SIGTERMs (and SIGKILLs after a grace period) the child
@@ -11,7 +14,7 @@ nonisolated enum ProcessRunnerError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .timeout(let seconds):
+        case .timeout(let seconds, _, _):
             "Process timed out after \(Int(seconds)) seconds"
         case .executableNotFound(let path):
             "Executable not found: \(path)"
@@ -147,15 +150,17 @@ nonisolated struct ProcessRunner {
             _ = pipeGroup.wait(timeout: .now() + .seconds(1))
         }
 
+        // Decode the drained pipes BEFORE the throws so a timeout can carry the
+        // partial output captured before the deadline.
+        let stdout = String(data: stdoutBox.data, encoding: .utf8) ?? ""
+        let stderr = String(data: stderrBox.data, encoding: .utf8) ?? ""
+
         if didCancel {
             throw ProcessRunnerError.cancelled
         }
         if didTimeOut {
-            throw ProcessRunnerError.timeout(timeout)
+            throw ProcessRunnerError.timeout(timeout, stdout: stdout, stderr: stderr)
         }
-
-        let stdout = String(data: stdoutBox.data, encoding: .utf8) ?? ""
-        let stderr = String(data: stderrBox.data, encoding: .utf8) ?? ""
 
         return Result(
             exitCode: process.terminationStatus,
@@ -186,6 +191,51 @@ nonisolated struct ProcessRunner {
     ) throws -> Result {
         try run(
             executable: "/usr/bin/xcodebuild",
+            arguments: arguments,
+            currentDirectory: directory,
+            timeout: timeout
+        )
+    }
+
+    /// Resolves the user's login shell. Prefers `$SHELL` when it points at an
+    /// executable (so the user's real PATH from `~/.zshrc` is available), else
+    /// falls back to `/bin/zsh`. `/bin/bash` on macOS is the frozen 3.2 build
+    /// that reads `~/.bash_profile`, which most users don't maintain — using the
+    /// login shell from `$SHELL` mirrors Claude Code's Bash tool.
+    static func loginShell(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        fileManager: FileManager = .default
+    ) -> String {
+        if let shell = environment["SHELL"],
+           !shell.trimmingCharacters(in: .whitespaces).isEmpty,
+           fileManager.isExecutableFile(atPath: shell) {
+            return shell
+        }
+        return BashConstants.fallbackShell
+    }
+
+    /// Runs a shell command string through the login shell (`<shell> -lc "<cmd>"`),
+    /// optionally confined by a Seatbelt profile. A non-zero exit is returned in
+    /// the `Result` (NOT thrown) — the caller decides whether that's a failure.
+    /// Timeout / cancellation still throw `ProcessRunnerError`.
+    static func runShell(
+        _ command: String,
+        in directory: URL,
+        timeout: TimeInterval,
+        sandboxProfile: String?
+    ) throws -> Result {
+        let shell = loginShell()
+        let executable: String
+        let arguments: [String]
+        if let profile = sandboxProfile {
+            (executable, arguments) = SeatbeltSandbox.wrap(
+                profile: profile, shell: shell, command: command)
+        } else {
+            executable = shell
+            arguments = ["-lc", command]
+        }
+        return try run(
+            executable: executable,
             arguments: arguments,
             currentDirectory: directory,
             timeout: timeout

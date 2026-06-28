@@ -64,4 +64,16 @@ nonisolated enum UserDefaultsKeys {
     static let searchContextBefore = "NanoTeams.search.contextBefore.v1"
     static let searchContextAfter = "NanoTeams.search.contextAfter.v1"
     static let globalContext = "NanoTeams.llm.globalContext.v1"
+    // Bash (shell command execution) policy.
+    static let bashMode = "NanoTeams.bash.mode.v1"
+    static let bashRestrictionLevel = "NanoTeams.bash.restrictionLevel.v1"
+    static let bashAllowRules = "NanoTeams.bash.allowRules.v1"
+    static let bashAskRules = "NanoTeams.bash.askRules.v1"
+    static let bashDenyRules = "NanoTeams.bash.denyRules.v1"
+    static let bashSandboxEnabled = "NanoTeams.bash.sandboxEnabled.v1"
+    static let bashSandboxPermissions = "NanoTeams.bash.sandboxPermissions.v1"
+    static let bashAllowUnsandboxedFallback = "NanoTeams.bash.allowUnsandboxedFallback.v1"
+    /// Legacy plain judge-model key; migrated into `bashJudgeLLMOverride` on read.
+    static let bashJudgeModel = "NanoTeams.bash.judgeModel.v1"
+    static let bashJudgeLLMOverride = "NanoTeams.bash.judgeLLMOverride.v1"
 }

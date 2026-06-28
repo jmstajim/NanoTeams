@@ -246,6 +246,17 @@ extension LLMExecutionService {
                 ?? "Tool '\(toolName)' is unavailable."
             return "\(intro) Do not retry '\(toolName)' — the precondition is set by the work folder, not by your arguments. Pick a different tool or proceed without this step."
 
+        case "bash_denied":
+            // The command was blocked by the bash-permission policy (deny rule,
+            // judge rejection, or human approval unavailable). Like
+            // `tool_not_authorized`, the block is policy, not args — retrying the
+            // same command loops. Surface the envelope's reason and steer the
+            // model to a different approach.
+            let nested = ((dict?["error"] as? [String: Any])?["message"] as? String)
+                .flatMap { $0.isEmpty ? nil : $0 }
+            let reason = nested ?? "The command was blocked by the command-permission policy."
+            return "\(reason) Do NOT retry this command — the block is set by policy, not by your arguments. Choose a different approach, use a read-only or already-approved command, or ask the Supervisor."
+
         case "identical_write_loop":
             // The args ARE the rejected duplicate — retrying with the same args
             // hits the loop guard again. The model needs to verify state, not

@@ -21,6 +21,7 @@ struct SettingsView: View {
         case vision = "Vision"
         case exploratorySearch = "Exploratory Search"
         case toolBehavior = "Tool Behavior"
+        case bash = "Bash"
         case debug = "Debug"
         case teams = "Teams"
         case generateTeam = "Generate Team"
@@ -35,6 +36,7 @@ struct SettingsView: View {
             .theme: "paintbrush.pointed",
             .dictation: "mic", .vision: "eye", .exploratorySearch: "binoculars",
             .toolBehavior: "slider.horizontal.3",
+            .bash: "terminal",
             .debug: "ladybug",
             .teams: "rectangle.3.group",
             .generateTeam: "wand.and.stars",
@@ -79,14 +81,15 @@ struct SettingsView: View {
     // MARK: - Sidebar
 
     private var settingsSidebar: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            settingsSection("Configuration", tabs: [.general, .theme, .llm, .workFolder, .autovisor])
-            settingsSection("Advanced", tabs: [.exploratorySearch, .vision, .dictation, .toolBehavior, .debug])
-            settingsSection("Team", tabs: [.teams, .generateTeam, .tools])
-            settingsSection("Support", tabs: [.help, .updates])
-            Spacer()
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                settingsSection("Configuration", tabs: [.general, .theme, .llm, .workFolder, .autovisor])
+                settingsSection("Advanced", tabs: [.exploratorySearch, .vision, .dictation, .toolBehavior, .bash, .debug])
+                settingsSection("Team", tabs: [.teams, .generateTeam, .tools])
+                settingsSection("Support", tabs: [.updates, .help])
+            }
+            .padding(.top, Spacing.standard)
         }
-        .padding(.top, Spacing.standard)
         .background(Colors.surfaceBackground)
     }
 
@@ -134,6 +137,8 @@ struct SettingsView: View {
                 ExploratorySearchSettingsView()
             case .toolBehavior:
                 ToolBehaviorSettingsView()
+            case .bash:
+                BashSettingsView()
             case .debug:
                 DebugSettingsView()
             case .teams:

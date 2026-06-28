@@ -52,6 +52,26 @@ final class LLMExecutionService {
     /// same team would otherwise evict/cross-write each other's entries (see TaskStepKey).
     /// Entry present iff step is executing.
     var executionStates: [TaskStepKey: StepExecutionState] = [:]
+
+    /// Held `bash` commands awaiting the human's in-loop Allow / Deny decision,
+    /// keyed by (taskID, stepID) → command key → waiter. The gate's `await`
+    /// registers one per held command; a button tap (via the orchestrator) or a
+    /// Pause cancellation resolves it. The decision goes straight to the gate — the
+    /// model is never asked to re-issue. See `LLMExecutionService+BashApproval`.
+    var bashApprovalWaiters: [TaskStepKey: [String: BashApprovalWaiter]] = [:]
+
+    /// The command a step is currently holding for approval — read by the on-demand
+    /// "Ask AI" advisor (`requestBashJudgeAdvice`) so it can judge the exact held
+    /// command. Populated only for the duration of `awaitBashApproval`.
+    var pendingBashApprovals: [TaskStepKey: PendingBashApproval] = [:]
+
+    /// Tears a step's bash-approval state down: resumes any pending waiter with
+    /// `.deny` (fail safe) and drops the pending record. Called from every teardown
+    /// path that removes the `executionStates` entry.
+    func clearBashState(stepID: String, taskID: Int) {
+        failPendingBashApprovals(stepID: stepID, taskID: taskID)
+        pendingBashApprovals[TaskStepKey(taskID: taskID, stepID: stepID)] = nil
+    }
     /// Team IDs for which we have already surfaced the "designated coordinator
     /// no longer exists" info message. Throttles
     /// `reportOrphanCoordinatorIfNeeded` to one notification per team per
@@ -82,6 +102,7 @@ final class LLMExecutionService {
         let key = TaskStepKey(taskID: taskID, stepID: stepID)
         executionStates[key]?.cleanup()
         executionStates[key] = nil
+        clearBashState(stepID: stepID, taskID: taskID)
     }
 
     /// Centralized reset for retry-cap counters that fire when the model produced a
@@ -160,6 +181,7 @@ final class LLMExecutionService {
             }
         }
         executionStates[key] = nil
+        clearBashState(stepID: stepID, taskID: taskID)
         delegate?.clearStreamingPreview(stepID: stepID, taskID: taskID)
     }
 
@@ -196,6 +218,14 @@ final class LLMExecutionService {
             delegate?.clearStreamingPreview(stepID: key.stepID, taskID: key.taskID)
         }
         executionStates.removeAll()
+        bashApprovalWaiters.values.forEach { $0.values.forEach { $0.resolve(.deny) } }
+        bashApprovalWaiters.removeAll()
+        pendingBashApprovals.removeAll()
+        // Drop the orchestrator's published cards too — resolving the waiters above
+        // resumes the orphaned awaits which will each call `bashApprovalDidEnd`, but
+        // that may run AFTER a newly-opened folder has rendered; clear directly so no
+        // stale card can show (and, with task-ID reuse, be mis-attributed).
+        delegate?.clearAllBashApprovalRequests()
     }
 
     /// Request graceful finish for an advisory role's step. At the next iteration
@@ -211,6 +241,7 @@ final class LLMExecutionService {
         for key in keysToCancel {
             executionStates[key]?.cleanup()
             executionStates[key] = nil
+            clearBashState(stepID: key.stepID, taskID: key.taskID)
             delegate?.clearStreamingPreview(stepID: key.stepID, taskID: key.taskID)
         }
     }

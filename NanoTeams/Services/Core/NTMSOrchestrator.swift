@@ -25,6 +25,12 @@ final class NTMSOrchestrator {
     /// triggering orchestrator-wide re-evaluation on settings changes.
     let configuration: StoreConfiguration
 
+    /// `bash` commands currently HELD awaiting the human's in-loop Allow/Deny
+    /// decision, keyed by (taskID, stepID). Mirrors the gate's await state so the
+    /// activity feed renders the approval buttons. Mutated only via the
+    /// `LLMStateDelegate` bash-approval hooks (see `NTMSOrchestrator+BashAdvice`).
+    var bashApprovalRequests: [TaskStepKey: BashApprovalRequest] = [:]
+
     // MARK: - Computed Properties
 
     /// Engine states keyed by task ID.
@@ -50,6 +56,11 @@ final class NTMSOrchestrator {
 
     var visionLLMConfig: LLMConfig? {
         configuration.visionLLMConfig
+    }
+
+    // periphery:ignore - protocol conformance (LLMStateDelegate)
+    var bashPolicy: BashPolicy {
+        configuration.bashPolicy
     }
 
     var loggingEnabled: Bool {

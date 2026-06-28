@@ -45,6 +45,10 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
         var globalLLMContext: String { "" }
         var maxLLMRetries: Int { 0 }
         var visionLLMConfig: LLMConfig? { nil }
+        var bashPolicy: BashPolicy { BashPolicy() }
+        func bashApprovalDidBegin(_ request: BashApprovalRequest) {}
+        func bashApprovalDidEnd(taskID: Int, stepID: String, commandKey: String, createdAt: Date) {}
+        func clearAllBashApprovalRequests() {}
         var snapshot: WorkFolderContext? {
             guard let projection = workFolderProjection else { return nil }
             return WorkFolderContext(

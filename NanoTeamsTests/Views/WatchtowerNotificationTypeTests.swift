@@ -127,4 +127,56 @@ final class WatchtowerNotificationTypeTests: XCTestCase {
         let sut = WatchtowerNotificationType.timedOut(taskID: 5, taskTitle: "Nightly")
         XCTAssertFalse(sut.icon(isChatMode: false).isEmpty)
     }
+
+    // MARK: - bashApprovalNeeded
+
+    private func bashNotif(
+        stepID: String = "eng", taskID: Int = 7, command: String = "rm -rf build",
+        role: Role = .softwareEngineer, at: TimeInterval = 100
+    ) -> WatchtowerNotificationType {
+        .bashApprovalNeeded(
+            stepID: stepID, taskID: taskID, command: command, role: role,
+            createdAt: Date(timeIntervalSince1970: at))
+    }
+
+    func testBashApprovalNeeded_warningColor_independentOfChatMode() {
+        XCTAssertSameColor(bashNotif().color(isChatMode: false), Colors.warning)
+        XCTAssertSameColor(bashNotif().color(isChatMode: true), Colors.warning)
+    }
+
+    func testBashApprovalNeeded_terminalIcon() {
+        XCTAssertEqual(bashNotif().icon(isChatMode: false), "terminal")
+    }
+
+    func testBashApprovalNeeded_titleNamesRole() {
+        let t = bashNotif(role: .softwareEngineer).title(isChatMode: false)
+        XCTAssertTrue(t.contains(Role.softwareEngineer.displayName))
+        XCTAssertTrue(t.lowercased().contains("command"))
+    }
+
+    func testBashApprovalNeeded_doesNotRequireInlineAction() {
+        // Pointer to the in-task card — the banner only navigates, no inline buttons.
+        XCTAssertFalse(bashNotif().requiresAction)
+    }
+
+    func testBashApprovalNeeded_countsTowardNeedsAttention() {
+        // Even though requiresAction is false, a held command IS waiting on the user.
+        XCTAssertTrue(bashNotif().needsAttention)
+    }
+
+    func testBashApprovalNeeded_dismissID_discriminatesByCreatedAt() {
+        // A re-held command (same step/task, new createdAt) gets a fresh dismiss ID so
+        // a prior dismissal can't suppress the new hold.
+        let first = bashNotif(at: 100)
+        let second = bashNotif(at: 200)
+        XCTAssertNotEqual(first.dismissID, second.dismissID)
+        XCTAssertTrue(first.dismissID.hasPrefix("bash::7::eng::"),
+                      "dismiss key is task+step+createdAt scoped")
+    }
+
+    func testBashApprovalNeeded_dismissID_distinctFromSupervisorInputOnSameStep() {
+        let bash = bashNotif(stepID: "eng", taskID: 7)
+        let input = WatchtowerNotificationType.supervisorInput(stepID: "eng", question: "Q", role: .softwareEngineer)
+        XCTAssertNotEqual(bash.dismissID, input.dismissID)
+    }
 }

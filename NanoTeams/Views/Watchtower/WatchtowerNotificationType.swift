@@ -9,6 +9,12 @@ nonisolated enum WatchtowerNotificationType {
     case failed(stepID: String, role: Role, errorMessage: String?)
     case taskDone(taskID: Int, taskTitle: String)
     case timedOut(taskID: Int, taskTitle: String)
+    /// A `bash` command is HELD awaiting Allow/Deny. The in-loop hold keeps the step
+    /// `.running` (no `.needsSupervisorInput`), so for a BACKGROUND task this banner
+    /// is the only Watchtower signal it's waiting. Informational pointer — the
+    /// Allow/Deny/Always/Ask-AI card lives in the task's activity feed; the banner's
+    /// open affordance navigates there.
+    case bashApprovalNeeded(stepID: String, taskID: Int, command: String, role: Role, createdAt: Date)
 
     func icon(isChatMode: Bool) -> String {
         switch self {
@@ -17,6 +23,7 @@ nonisolated enum WatchtowerNotificationType {
         case .failed: return "exclamationmark.triangle"
         case .taskDone: return "checkmark.circle"
         case .timedOut: return "clock.badge.exclamationmark"
+        case .bashApprovalNeeded: return "terminal"
         }
     }
 
@@ -27,6 +34,7 @@ nonisolated enum WatchtowerNotificationType {
         case .failed: return Colors.error
         case .taskDone: return Colors.success
         case .timedOut: return Colors.warning
+        case .bashApprovalNeeded: return Colors.warning
         }
     }
 
@@ -42,16 +50,19 @@ nonisolated enum WatchtowerNotificationType {
             return "\(taskTitle) completed"
         case .timedOut(_, let taskTitle):
             return "\(taskTitle) timed out"
+        case .bashApprovalNeeded(_, _, _, let role, _):
+            return "\(role.displayName) wants to run a command"
         }
     }
 
     /// Whether this notification surfaces an action *button* (answer / accept /
     /// review). `.failed` / `.timedOut` are informational — no inline action — so
-    /// they're excluded here.
+    /// they're excluded here. `.bashApprovalNeeded` is a pointer: the rich Allow/Deny
+    /// card lives in the task feed, so the banner only navigates (no inline action).
     var requiresAction: Bool {
         switch self {
         case .supervisorInput, .acceptance, .taskDone: return true
-        case .failed, .timedOut: return false
+        case .failed, .timedOut, .bashApprovalNeeded: return false
         }
     }
 
@@ -64,7 +75,7 @@ nonisolated enum WatchtowerNotificationType {
     /// added later.
     var needsAttention: Bool {
         switch self {
-        case .supervisorInput, .acceptance, .taskDone, .failed, .timedOut: return true
+        case .supervisorInput, .acceptance, .taskDone, .failed, .timedOut, .bashApprovalNeeded: return true
         }
     }
 
@@ -82,6 +93,11 @@ nonisolated enum WatchtowerNotificationType {
         case .failed(let stepID, _, _): return stepID
         case .taskDone(let taskID, _): return String(taskID)
         case .timedOut(let taskID, _): return "timeout::\(taskID)"
+        // `createdAt` discriminates hold instances: a re-held command (new createdAt)
+        // gets a fresh ID so a prior dismissal doesn't suppress it — same per-instance
+        // identity the in-loop gate keys on.
+        case .bashApprovalNeeded(let stepID, let taskID, _, _, let createdAt):
+            return "bash::\(taskID)::\(stepID)::\(createdAt.timeIntervalSince1970)"
         }
     }
 }
@@ -113,10 +129,25 @@ nonisolated struct WatchtowerNotification: Identifiable {
 extension Run {
     /// Returns ALL Watchtower notifications for this run (not just highest-priority).
     /// Dismissal filtering is handled by the caller (view state concern).
-    func allWatchtowerNotifications(task: NTMSTask, teamRoles: [TeamRoleDefinition]) -> [WatchtowerNotificationType] {
+    func allWatchtowerNotifications(
+        task: NTMSTask,
+        teamRoles: [TeamRoleDefinition],
+        bashApprovals: [BashApprovalRequest] = []
+    ) -> [WatchtowerNotificationType] {
         var notifications: [WatchtowerNotificationType] = []
         var seenStepIDs: Set<String> = []
         let isChatMode = task.isChatMode
+
+        // Held `bash` commands (cross-task discoverable). The step is `.running` while
+        // the gate awaits, so this never collides with the input/acceptance/failed
+        // loops below (those need other statuses) — append directly. Role resolved
+        // from the holding step so the title can name it.
+        for req in bashApprovals where req.taskID == task.id {
+            let role = steps.first(where: { $0.id == req.stepID })?.role ?? Role.fromID(req.stepID)
+            notifications.append(.bashApprovalNeeded(
+                stepID: req.stepID, taskID: req.taskID, command: req.command,
+                role: role, createdAt: req.createdAt))
+        }
 
         // Shared predicate so Watchtower / activity feed / composer chip agree.
         // A bare `needsSupervisorInput && answer == nil` check misses the race

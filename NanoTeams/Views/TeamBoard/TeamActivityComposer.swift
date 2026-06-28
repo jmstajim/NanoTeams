@@ -666,3 +666,239 @@ struct TeamActivityComposer: View {
         var id: Recipient { recipient }
     }
 }
+
+// MARK: - Bash approval card list
+
+/// The held-`bash`-command approval cards for `taskID`. Rendered at the activity-feed
+/// level (NOT inside the composer) so they stay visible even when the composer is
+/// hidden — e.g. while the Supervisor browses a historical run of a task whose LIVE
+/// run is holding a command, where the gate is awaiting a decision with no other UI
+/// to give it. Self-hides when nothing is held.
+struct BashApprovalCardList: View {
+    let taskID: Int
+    let roleDefinitions: [TeamRoleDefinition]
+
+    @Environment(NTMSOrchestrator.self) private var store
+
+    /// Held requests for `taskID`, oldest first. Pure (no view state) so the
+    /// task-isolation + ordering is unit-testable without rendering.
+    nonisolated static func sortedRequests(
+        for taskID: Int, from all: [TaskStepKey: BashApprovalRequest]
+    ) -> [BashApprovalRequest] {
+        all.filter { $0.key.taskID == taskID }
+            .map(\.value)
+            .sorted { $0.createdAt < $1.createdAt }
+    }
+
+    var body: some View {
+        ForEach(Self.sortedRequests(for: taskID, from: store.bashApprovalRequests)) { request in
+            BashApprovalCard(
+                taskID: taskID,
+                request: request,
+                roleName: roleDefinitions.first(where: { $0.id == request.stepID })?.name ?? request.stepID)
+        }
+    }
+}
+
+// MARK: - Bash approval card (Allow / Deny buttons that bypass the model)
+
+/// A `bash` command HELD by the gate awaiting the human's decision. The buttons
+/// resolve the gate's in-loop await DIRECTLY — Allow runs the real command (its
+/// output goes to the model); Deny returns a denial. "Always allow" (non-Manual
+/// modes only) persists a standing allow rule first. The "Ask AI" advisory is a
+/// read-only second opinion.
+private struct BashApprovalCard: View {
+    let taskID: Int
+    let request: BashApprovalRequest
+    let roleName: String
+
+    @Environment(NTMSOrchestrator.self) private var store
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.xs) {
+            HStack(spacing: Spacing.xxs) {
+                Image(systemName: "terminal")
+                    .accessibilityHidden(true)
+                Text("\(roleName) wants to run a command")
+            }
+            .font(Typography.caption.weight(.medium))
+            .foregroundStyle(Colors.textSecondary)
+
+            Text(request.command)
+                .font(Typography.monoCaption)
+                .foregroundStyle(Colors.textPrimary)
+                .textSelection(.enabled)
+                .lineLimit(4)
+                .truncationMode(.middle)
+                .padding(Spacing.xs)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle.squircle(CornerRadius.micro).fill(Colors.surfaceOverlay))
+
+            // Action row: Allow / Deny (+ Always allow) on the left, the read-only
+            // "Ask AI" second opinion pushed to the right. Verdicts render below,
+            // sized to their content.
+            BashApprovalAdviceView(taskID: taskID, stepID: request.stepID) {
+                Button("Allow") { resolve(.allow) }
+                    .buttonStyle(.terminalPrimary)
+                Button("Deny") { resolve(.deny) }
+                    .buttonStyle(.terminalDanger)
+                if request.offerAlways {
+                    Button("Always allow") { resolve(.alwaysAllow) }
+                        .buttonStyle(.terminalGhost)
+                }
+            }
+            .id(request.createdAt)
+        }
+        .padding(Spacing.s)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle.squircle(CornerRadius.small).fill(Colors.surfaceElevated))
+    }
+
+    private func resolve(_ choice: BashApprovalChoice) {
+        store.resolveBashApproval(
+            taskID: taskID, stepID: request.stepID, commandKey: request.commandKey, choice: choice)
+    }
+}
+
+// MARK: - Bash approval "Ask AI" advice
+
+/// The bash-approval action row plus its on-demand "Ask AI" second opinion. The
+/// caller supplies the Allow/Deny(/Always) buttons as `actions` — they sit on the
+/// left of the row and the read-only "Ask AI" button is pushed to the right, on the
+/// same level. The judge verdict (read-only, no effect on the gate) renders below,
+/// sized to its content. Host with `.id(request.createdAt)` so the in-flight advice
+/// request + verdicts are scoped to a single held-command instance and never leak
+/// across an identical re-held command.
+private struct BashApprovalAdviceView<Actions: View>: View {
+    let taskID: Int
+    let stepID: String
+    let actions: Actions
+
+    @Environment(NTMSOrchestrator.self) private var store
+    @State private var verdicts: [BashAdvice]? = nil
+    /// The in-flight "Ask AI" request, or nil when idle. Owning the Task lets us
+    /// cancel it (a) on a second tap of the button (toggle to stop), and (b) when
+    /// the card is removed — which is exactly what pressing Allow/Deny does (it
+    /// resolves the gate, the gate stops holding the command, the card disappears).
+    /// `isLoading` is derived so there is a single source of truth.
+    @State private var adviceTask: Task<Void, Never>? = nil
+
+    private var isLoading: Bool { adviceTask != nil }
+
+    init(taskID: Int, stepID: String, @ViewBuilder actions: () -> Actions) {
+        self.taskID = taskID
+        self.stepID = stepID
+        self.actions = actions()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.xs) {
+            HStack(spacing: Spacing.xs) {
+                actions
+                Spacer(minLength: Spacing.s)
+                askAIButton
+            }
+            .controlSize(.small)
+
+            if let verdicts {
+                if verdicts.isEmpty {
+                    // Reachable race: the held command resolved between the tap and the
+                    // await, so there was nothing to assess. Say so instead of going blank.
+                    Text("Nothing to review — the command was already resolved.")
+                        .font(Typography.caption)
+                        .foregroundStyle(Colors.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    VStack(alignment: .leading, spacing: Spacing.xs) {
+                        ForEach(verdicts) { verdict in
+                            row(verdict)
+                        }
+                    }
+                }
+            }
+        }
+        // Allow/Deny resolve the gate and remove this card → cancel any in-flight
+        // Ask AI so it doesn't keep running (or apply a now-stale verdict).
+        .onDisappear { cancelAdvice() }
+    }
+
+    private var askAIButton: some View {
+        // While loading the button stays tappable so a second tap stops Ask AI.
+        Button { toggle() } label: {
+            HStack(spacing: Spacing.xxs) {
+                if isLoading {
+                    NTMSLoader(font: Typography.termXs, color: Colors.accent)
+                } else {
+                    Image(systemName: "sparkles").accessibilityHidden(true)
+                }
+                Text(isLoading ? "Stop" : "Ask AI")
+            }
+        }
+        .buttonStyle(.terminalSecondary)
+        .fixedSize()
+    }
+
+    private func row(_ verdict: BashAdvice) -> some View {
+        HStack(alignment: .top, spacing: Spacing.xs) {
+            StatusGlyph(
+                glyph: verdict.allowed ? TerminalGlyph.done : TerminalGlyph.failed,
+                color: verdict.allowed ? Colors.success : Colors.error)
+            VStack(alignment: .leading, spacing: Spacing.xxs) {
+                Text(verdict.command)
+                    .font(Typography.monoCaption)
+                    .foregroundStyle(Colors.textSecondary)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+                // The AI's read — what the command does + a safety opinion. Marked with
+                // the Ask AI sparkles so it's clearly the SECOND OPINION; the ✅/❌ glyph
+                // and the gate rationale below are the authoritative verdict. Hidden when
+                // the explainer returned nothing (fail-soft empty).
+                if !verdict.explanation.isEmpty {
+                    HStack(alignment: .top, spacing: Spacing.xxs) {
+                        Image(systemName: "sparkles")
+                            .font(Typography.caption)
+                            .foregroundStyle(Colors.accent)
+                            .accessibilityHidden(true)
+                        Text(verdict.explanation)
+                            .font(Typography.caption)
+                            .foregroundStyle(Colors.textSecondary)
+                            .lineLimit(4)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                // The authoritative gate verdict's rationale (dimmer — the basis for the glyph).
+                Text(verdict.reason)
+                    .font(Typography.caption)
+                    .foregroundStyle(Colors.textTertiary)
+                    .lineLimit(4)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Tap handler: start Ask AI when idle, or stop it when already running.
+    private func toggle() {
+        if isLoading {
+            cancelAdvice()
+            return
+        }
+        // Keep any prior verdict visible while re-asking — it's replaced when the new
+        // result lands. Blanking it here would leave the user with nothing if they then
+        // tap Stop mid-refresh.
+        adviceTask = Task {
+            let result = await store.requestBashJudgeAdvice(taskID: taskID, stepID: stepID)
+            // A second tap / Allow / Deny cancels us mid-flight — drop the result
+            // so a stale verdict can't land after the user moved on.
+            if Task.isCancelled { return }
+            verdicts = result
+            adviceTask = nil
+        }
+    }
+
+    private func cancelAdvice() {
+        adviceTask?.cancel()
+        adviceTask = nil
+    }
+}

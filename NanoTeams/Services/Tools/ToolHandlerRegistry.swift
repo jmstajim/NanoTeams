@@ -84,6 +84,11 @@ nonisolated enum ToolHandlerRegistry {
         ScheduleTaskTool.self,
         SetWorkFolderContextTool.self,
         WaitForEventsTool.self,
+
+        // Shell (blocked in default storage, excluded in meetings, default-on for
+        // the code-writing roles + opt-in for others, gated by the bash-permission layer)
+        BashTool.self,
+        BashOutputTool.self,
     ]
 
     // MARK: - Schema & Metadata Queries (cached)
@@ -146,6 +151,10 @@ nonisolated enum ToolHandlerRegistry {
     /// Vision analysis tools.
     static var visionTools: Set<String> { names(in: .vision) }
 
+    /// Shell-command tools (`bash` + `bash_output`). Blocked in default storage and
+    /// excluded from meetings, like write/git/xcode tools.
+    static var shellTools: Set<String> { names(in: .shell) }
+
     // MARK: - Handler Instance Construction
 
     /// Builds instance handlers bound to a specific work folder by iterating
@@ -160,6 +169,9 @@ nonisolated enum ToolHandlerRegistry {
         searchMaxResults: Int = AppDefaults.searchMaxResults,
         searchContextBefore: Int = AppDefaults.searchContextBefore,
         searchContextAfter: Int = AppDefaults.searchContextAfter,
+        bashSandboxEnabled: Bool = BashConstants.defaultSandboxEnabled,
+        bashSandboxPermissions: BashSandboxPermissions = BashSandboxPermissions(),
+        bashAllowUnsandboxedFallback: Bool = false,
         fileManager: FileManager = .default
     ) -> [any ToolHandler] {
         let internalDir = NTMSPaths(workFolderRoot: workFolderRoot).internalDir
@@ -173,7 +185,10 @@ nonisolated enum ToolHandlerRegistry {
             readFileMaxLines: readFileMaxLines,
             searchMaxResults: searchMaxResults,
             searchContextBefore: searchContextBefore,
-            searchContextAfter: searchContextAfter
+            searchContextAfter: searchContextAfter,
+            bashSandboxEnabled: bashSandboxEnabled,
+            bashSandboxPermissions: bashSandboxPermissions,
+            bashAllowUnsandboxedFallback: bashAllowUnsandboxedFallback
         )
 
         return allTypes.compactMap { type -> (any ToolHandler)? in

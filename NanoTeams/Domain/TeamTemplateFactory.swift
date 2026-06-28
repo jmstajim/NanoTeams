@@ -89,6 +89,7 @@ nonisolated enum TeamTemplateFactory {
                 TN.listFiles, TN.search, TN.updateScratchpad,
                 TN.gitAdd, TN.gitCommit,
                 TN.runXcodebuild, TN.runXcodetests,
+                TN.bash, TN.bashOutput,
                 TN.askSupervisor,
             ]
             roles[1].dependencies.requiredArtifacts = [SystemTemplates.supervisorTaskArtifactName]
@@ -206,6 +207,7 @@ nonisolated enum TeamTemplateFactory {
                 TN.gitAdd, TN.gitCommit, TN.gitCheckout, TN.gitBranch,
                 TN.gitMerge, TN.gitPull, TN.gitStash,
                 TN.runXcodebuild, TN.runXcodetests,
+                TN.bash, TN.bashOutput,
                 TN.askSupervisor, TN.analyzeImage,
             ]
             roles[1].dependencies.requiredArtifacts = [SystemTemplates.supervisorTaskArtifactName]

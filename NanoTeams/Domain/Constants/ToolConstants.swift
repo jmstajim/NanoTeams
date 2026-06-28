@@ -37,6 +37,12 @@ nonisolated enum ToolConstants {
                             tools: [TN.askSupervisor]),
         ToolCategoryDisplay(id: "vision", name: "Vision", icon: "eye",
                             tools: [TN.analyzeImage]),
+        // Shell tools are granted by default to the code-writing roles (Software
+        // Engineer, Coding Assistant, Coding Agent) and opt-in for everyone else;
+        // execution is gated by the bash-permission layer (Settings → Bash).
+        // Granting them lets a role run arbitrary shell commands subject to that policy.
+        ToolCategoryDisplay(id: "shell", name: "Shell", icon: "terminal",
+                            tools: [TN.bash, TN.bashOutput]),
         // Delegation tools (delegate_to_team + 3 companions) are NEVER manually
         // selectable — they auto-inject when the role's delegation settings
         // (`allowedDelegationTeamIDs` / `allowDelegationToGeneratedTeams`) are

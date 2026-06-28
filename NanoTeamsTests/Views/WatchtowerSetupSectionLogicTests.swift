@@ -8,6 +8,8 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
     // MARK: - All configured → empty
 
     func testVisible_allConfigured_returnsEmpty() {
+        // Bash always shows until dismissed, so hold it hidden to isolate the
+        // "everything configured" predicate.
         let visible = WatchtowerSetupSection.visibleTips(
             llmReachable: true,
             exploratorySearchEnabled: true,
@@ -15,12 +17,12 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             dictationLocalesEmpty: false,
             autovisorEnabled: true,
             hasWorkFolder: true,
-            dismissed: []
+            dismissed: ["bash"]
         )
         XCTAssertTrue(visible.isEmpty)
     }
 
-    // MARK: - Nothing configured → all five in shelf order
+    // MARK: - Nothing configured → all six in shelf order
 
     func testVisible_noneConfigured_returnsAllInShelfOrder() {
         let visible = WatchtowerSetupSection.visibleTips(
@@ -32,12 +34,12 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             hasWorkFolder: true,
             dismissed: []
         )
-        XCTAssertEqual(visible, [.llm, .exploratorySearch, .vision, .dictation, .autovisor])
+        XCTAssertEqual(visible, [.llm, .exploratorySearch, .vision, .dictation, .autovisor, .bash])
     }
 
     // MARK: - Per-tip predicates
-    // (Autovisor held hidden — autovisorEnabled: true, hasWorkFolder: false —
-    //  so each case isolates the tip under test.)
+    // (Autovisor held hidden via autovisorEnabled: true / hasWorkFolder: false, and
+    //  Bash held hidden via dismissed: ["bash"], so each case isolates the tip under test.)
 
     func testVisible_llmReachable_hidesLLMCardOnly() {
         let visible = WatchtowerSetupSection.visibleTips(
@@ -47,7 +49,7 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             dictationLocalesEmpty: true,
             autovisorEnabled: true,
             hasWorkFolder: false,
-            dismissed: []
+            dismissed: ["bash"]
         )
         XCTAssertEqual(visible, [.exploratorySearch, .vision, .dictation])
     }
@@ -60,7 +62,7 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             dictationLocalesEmpty: true,
             autovisorEnabled: true,
             hasWorkFolder: false,
-            dismissed: []
+            dismissed: ["bash"]
         )
         XCTAssertEqual(visible, [.llm, .vision, .dictation])
     }
@@ -73,7 +75,7 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             dictationLocalesEmpty: true,
             autovisorEnabled: true,
             hasWorkFolder: false,
-            dismissed: []
+            dismissed: ["bash"]
         )
         XCTAssertEqual(visible, [.llm, .exploratorySearch, .dictation])
     }
@@ -87,7 +89,7 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             dictationLocalesEmpty: false,
             autovisorEnabled: true,
             hasWorkFolder: false,
-            dismissed: []
+            dismissed: ["bash"]
         )
         XCTAssertEqual(visible, [.llm, .exploratorySearch, .vision])
     }
@@ -96,6 +98,7 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
 
     func testVisible_autovisorNeedsSetup_appendsCardLast() {
         // Everything else configured; FM off with a real work folder → only FM shows.
+        // (Bash held hidden via dismissal so it doesn't pollute the assertion.)
         let visible = WatchtowerSetupSection.visibleTips(
             llmReachable: true,
             exploratorySearchEnabled: true,
@@ -103,7 +106,7 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             dictationLocalesEmpty: false,
             autovisorEnabled: false,
             hasWorkFolder: true,
-            dismissed: []
+            dismissed: ["bash"]
         )
         XCTAssertEqual(visible, [.autovisor])
     }
@@ -117,7 +120,7 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             dictationLocalesEmpty: false,
             autovisorEnabled: false,
             hasWorkFolder: false,
-            dismissed: []
+            dismissed: ["bash"]
         )
         XCTAssertTrue(visible.isEmpty)
     }
@@ -131,7 +134,7 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             dictationLocalesEmpty: false,
             autovisorEnabled: true,
             hasWorkFolder: true,
-            dismissed: []
+            dismissed: ["bash"]
         )
         XCTAssertTrue(visible.isEmpty)
     }
@@ -144,7 +147,37 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             dictationLocalesEmpty: false,
             autovisorEnabled: false,
             hasWorkFolder: true,
-            dismissed: ["autovisor"]
+            dismissed: ["autovisor", "bash"]
+        )
+        XCTAssertTrue(visible.isEmpty)
+    }
+
+    // MARK: - Bash predicate (always offered until dismissed)
+
+    func testVisible_bash_alwaysShown_evenWhenEverythingElseConfigured() {
+        // Bash is ON by default, so its card is a discovery prompt that shows
+        // regardless of configuration state — only dismissal hides it.
+        let visible = WatchtowerSetupSection.visibleTips(
+            llmReachable: true,
+            exploratorySearchEnabled: true,
+            visionConfigured: true,
+            dictationLocalesEmpty: false,
+            autovisorEnabled: true,
+            hasWorkFolder: true,
+            dismissed: []
+        )
+        XCTAssertEqual(visible, [.bash])
+    }
+
+    func testVisible_bashDismissed_isHidden() {
+        let visible = WatchtowerSetupSection.visibleTips(
+            llmReachable: true,
+            exploratorySearchEnabled: true,
+            visionConfigured: true,
+            dictationLocalesEmpty: false,
+            autovisorEnabled: true,
+            hasWorkFolder: true,
+            dismissed: ["bash"]
         )
         XCTAssertTrue(visible.isEmpty)
     }
@@ -159,13 +192,13 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             dictationLocalesEmpty: true,
             autovisorEnabled: true,
             hasWorkFolder: false,
-            dismissed: ["llm"]
+            dismissed: ["llm", "bash"]
         )
         XCTAssertEqual(visible, [.exploratorySearch, .vision, .dictation])
     }
 
     func testVisible_dismissedAndConfigured_compose() {
-        // Two cards hidden via configure, two via dismiss → empty
+        // Two cards hidden via configure, two via dismiss (plus bash) → empty
         let visible = WatchtowerSetupSection.visibleTips(
             llmReachable: true,
             exploratorySearchEnabled: false,
@@ -173,7 +206,7 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             dictationLocalesEmpty: false,
             autovisorEnabled: true,
             hasWorkFolder: false,
-            dismissed: ["exploratorySearch", "vision"]
+            dismissed: ["exploratorySearch", "vision", "bash"]
         )
         XCTAssertTrue(visible.isEmpty)
     }
@@ -188,7 +221,7 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             dictationLocalesEmpty: false,
             autovisorEnabled: true,
             hasWorkFolder: false,
-            dismissed: ["unknown_future_tip"]
+            dismissed: ["unknown_future_tip", "bash"]
         )
         XCTAssertEqual(visible, [.llm])
     }
@@ -210,5 +243,6 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
         XCTAssertEqual(WatchtowerSetupSection.copy(for: .vision).tab, .vision)
         XCTAssertEqual(WatchtowerSetupSection.copy(for: .dictation).tab, .dictation)
         XCTAssertEqual(WatchtowerSetupSection.copy(for: .autovisor).tab, .autovisor)
+        XCTAssertEqual(WatchtowerSetupSection.copy(for: .bash).tab, .bash)
     }
 }

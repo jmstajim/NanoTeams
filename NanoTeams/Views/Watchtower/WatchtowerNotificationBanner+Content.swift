@@ -21,6 +21,9 @@ extension WatchtowerNotificationBanner {
 
         case .timedOut:
             timedOutContent
+
+        case .bashApprovalNeeded(_, _, let command, _, _):
+            bashApprovalContent(command: command)
         }
     }
 
@@ -135,6 +138,32 @@ extension WatchtowerNotificationBanner {
                     .controlSize(.small)
                 }
             }
+        }
+    }
+
+    /// Informational pointer: shows the held command and navigates to the task,
+    /// where the Allow/Deny/Always + "Ask AI" card (the single source of truth) lives.
+    func bashApprovalContent(command: String) -> some View {
+        VStack(alignment: .leading, spacing: Spacing.s) {
+            Text(command)
+                .font(Typography.monoCaption)
+                .foregroundStyle(Colors.textPrimary)
+                .textSelection(.enabled)
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(Spacing.xs)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle.squircle(CornerRadius.micro).fill(Colors.surfaceOverlay))
+
+            Button {
+                onViewDetails()
+            } label: {
+                Label("Open Task to Approve", systemImage: "arrow.right.circle")
+                    .font(Typography.subheadlineMedium)
+            }
+            .buttonStyle(.terminalSecondary)
+            .controlSize(.small)
         }
     }
 

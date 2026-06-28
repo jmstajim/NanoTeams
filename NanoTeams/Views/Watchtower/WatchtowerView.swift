@@ -151,6 +151,10 @@ struct WatchtowerView: View {
         .onChange(of: engineState.taskEngineStates) { _, _ in refreshNotifications() }
         .onChange(of: store.activeTaskID) { _, _ in refreshNotifications() }
         .onChange(of: config.dismissedNotificationIDs) { _, _ in refreshNotifications() }
+        // A held bash command keeps the step `.running`, so the engine-state watcher
+        // above never fires for it — observe the approval map directly so the banner
+        // surfaces (and clears) as commands are held/resolved across any task.
+        .onChange(of: store.bashApprovalRequests) { _, _ in refreshNotifications() }
     }
 
     // MARK: - Activity Timeline
@@ -190,7 +194,8 @@ struct WatchtowerView: View {
         let allNotifications = store.allLoadedTasks.flatMap { task -> [WatchtowerNotification] in
             guard let run = task.runs.last else { return [] }
             let team = store.resolvedTeam(for: task)
-            return run.allWatchtowerNotifications(task: task, teamRoles: team.roles)
+            let bashApprovals = store.bashApprovalRequests.values.filter { $0.taskID == task.id }
+            return run.allWatchtowerNotifications(task: task, teamRoles: team.roles, bashApprovals: bashApprovals)
                 .map { WatchtowerNotification(taskID: task.id, taskTitle: task.title, isChatMode: task.isChatMode, type: $0) }
         }
 

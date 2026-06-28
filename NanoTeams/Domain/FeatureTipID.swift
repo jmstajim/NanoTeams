@@ -11,4 +11,5 @@ enum FeatureTipID: String, CaseIterable, Hashable, Sendable {
     case vision
     case dictation
     case autovisor
+    case bash
 }

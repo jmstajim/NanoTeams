@@ -33,6 +33,22 @@ protocol LLMStateDelegate: TaskMutationDelegate {
     var maxLLMRetries: Int { get }
     /// Vision model configuration (nil = vision not configured).
     var visionLLMConfig: LLMConfig? { get }
+    /// Shell-command execution policy (mode, rules, restriction level, sandbox,
+    /// autonomous-approval gate). Consumed by the `bash` permission gate.
+    var bashPolicy: BashPolicy { get }
+    /// Published by the `bash` gate when it begins / ends HOLDING a command for the
+    /// human's in-loop Allow/Deny decision. The orchestrator mirrors these into an
+    /// observable (`bashApprovalRequests`) so the activity feed renders the approval
+    /// buttons. The decision returns via `LLMExecutionService.resolveBashApproval`
+    /// — the model is never asked to re-issue. `didEnd` carries the hold's `createdAt`
+    /// so a late end from a prior hold of the same command can't clear a fresh card.
+    func bashApprovalDidBegin(_ request: BashApprovalRequest)
+    func bashApprovalDidEnd(taskID: Int, stepID: String, commandKey: String, createdAt: Date)
+    /// Drops EVERY published bash-approval card (all tasks). Called on full execution
+    /// teardown (work-folder switch / close / reset) so a held-command card can't
+    /// outlive its run — and, since task IDs are reused across folders, can't be
+    /// mis-attributed to a same-ID task in the newly-opened folder.
+    func clearAllBashApprovalRequests()
     /// Returns the project snapshot (for project-level reads like settings, targets).
     var snapshot: WorkFolderContext? { get }
     /// Whether logging (network_log.json, conversation_log.md, tool_calls.jsonl) is enabled.

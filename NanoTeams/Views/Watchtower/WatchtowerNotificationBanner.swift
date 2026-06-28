@@ -34,6 +34,7 @@ struct WatchtowerNotificationBanner: View {
         case .failed:          return (TerminalGlyph.failed, "failed", color)
         case .taskDone:        return (TerminalGlyph.done, "done", color)
         case .timedOut:        return (TerminalGlyph.paused, "timed out", color)
+        case .bashApprovalNeeded: return (TerminalGlyph.prompt, "command", color)
         }
     }
 
@@ -63,13 +64,23 @@ struct WatchtowerNotificationBanner: View {
 
                 Spacer(minLength: Spacing.xs)
 
-                if case .supervisorInput = notification {
+                switch notification {
+                case .supervisorInput:
                     Button(action: onViewDetails) {
                         Image(systemName: "arrow.right.circle").font(Typography.termBase)
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(Colors.textTertiary)
                     .help(isChatMode ? "Open Chat" : "Open Task")
+                case .bashApprovalNeeded:
+                    Button(action: onViewDetails) {
+                        Image(systemName: "arrow.right.circle").font(Typography.termBase)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Colors.textTertiary)
+                    .help("Open Task")
+                default:
+                    EmptyView()
                 }
 
                 DismissButton(onDismiss: onDismiss)

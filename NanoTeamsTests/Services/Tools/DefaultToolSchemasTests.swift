@@ -78,16 +78,35 @@ final class DefaultToolSchemasTests: XCTestCase {
         XCTAssertEqual(count(in: .artifact), 1)
     }
 
+    func testShellToolsCount() {
+        // bash + bash_output
+        XCTAssertEqual(count(in: .shell), 2)
+    }
+
     // MARK: - Total Count
 
-    func testDefaultToolsCountIs43() {
-        // 33 prior (29 baseline + 4 delegation) + 10 Autovisor management
-        // tools (list_tasks, task_status, create_managed_task, control_task,
-        // manage_role, answer_task_question, message_task, schedule_task,
-        // set_work_folder_context, wait_for_events) — only offered to the hidden
-        // Manager role. Update this count whenever a tool is added/removed from
-        // `ToolHandlerRegistry.allTypes`.
-        XCTAssertEqual(tools.count, 43)
+    func testDefaultToolsCountIs45() {
+        // 33 prior (29 baseline + 4 delegation) + 10 Autovisor management tools
+        // + 2 shell tools (bash, bash_output — opt-in per role, gated by the
+        // bash-permission layer). Update this count whenever a tool is added /
+        // removed from `ToolHandlerRegistry.allTypes`.
+        XCTAssertEqual(tools.count, 45)
+    }
+
+    /// Shell tools must be blocked in default storage (no real work folder) and
+    /// excluded from meetings.
+    func testShellTools_blockedInDefaultStorageAndExcludedInMeetings() {
+        XCTAssertTrue(ToolHandlerRegistry.defaultStorageBlocked.contains(ToolNames.bash))
+        XCTAssertTrue(ToolHandlerRegistry.defaultStorageBlocked.contains(ToolNames.bashOutput))
+        XCTAssertTrue(ToolHandlerRegistry.meetingExcluded.contains(ToolNames.bash))
+        XCTAssertTrue(ToolHandlerRegistry.meetingExcluded.contains(ToolNames.bashOutput))
+    }
+
+    func testBash_propertyNames() {
+        XCTAssertEqual(
+            propertyNames(for: ToolNames.bash),
+            ["command", "timeout", "working_directory", "run_in_background"])
+        XCTAssertEqual(requiredFields(for: ToolNames.bash), ["command"])
     }
 
     /// `create_team` is in the registry (so handler tests can drive it via ToolRuntime),

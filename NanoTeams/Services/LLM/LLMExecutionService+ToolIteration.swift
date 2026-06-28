@@ -171,8 +171,30 @@ extension LLMExecutionService {
                 .consecutiveAdvisoryNoToolTurns = 0
         }
         let allowedToolNames = Set(toolsForIteration.map(\.name))
-        let toolResults = await executeToolCalls(
+
+        // 5a. Bash permission gate (pre-pass): intercept shell commands that must
+        // be denied or judged (Auto) BEFORE they reach `executeToolCalls`. Returns
+        // synthetic results (carrying each call's providerID — no orphan tool_call)
+        // for the calls it handles; everything else passes through to
+        // `executeToolCalls`. With a human present, an `.ask` command is HELD and the
+        // gate awaits the human's Allow/Deny in-loop (bypassing the model) — not
+        // surfaced as a supervisor question; with no human it is denied.
+        let gateResults = await gateBashCalls(
             resolvedToolCalls: streamResult.resolvedToolCalls,
+            allowedToolNames: allowedToolNames,
+            stepID: stepID,
+            taskID: task.id,
+            supervisorMode: supervisorMode,
+            task: task,
+            client: client,
+            config: config,
+            networkLogger: networkLogger
+        )
+        let callsToExecute = streamResult.resolvedToolCalls.enumerated()
+            .filter { gateResults[$0.offset] == nil }
+            .map(\.element)
+        let executedResults = await executeToolCalls(
+            resolvedToolCalls: callsToExecute,
             allowedToolNames: allowedToolNames,
             runtime: runtime,
             tracker: tracker,
@@ -180,6 +202,19 @@ extension LLMExecutionService {
             runIndex: runIndex,
             roleID: step.effectiveRoleID
         )
+        // Merge gate synthetics back into the original emit order so
+        // `processToolResults` can `zip(resolvedToolCalls, results)` by index.
+        var toolResults: [ToolExecutionResult] = []
+        toolResults.reserveCapacity(streamResult.resolvedToolCalls.count)
+        var executedIdx = 0
+        for (idx, _) in streamResult.resolvedToolCalls.enumerated() {
+            if let synth = gateResults[idx] {
+                toolResults.append(synth)
+            } else if executedIdx < executedResults.count {
+                toolResults.append(executedResults[executedIdx])
+                executedIdx += 1
+            }
+        }
 
         toolObserver?(streamResult.resolvedToolCalls, toolResults)
 

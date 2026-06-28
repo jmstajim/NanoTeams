@@ -61,6 +61,7 @@ nonisolated extension SystemTemplates {
                        TN.listFiles, TN.search, TN.updateScratchpad,
                        TN.gitAdd, TN.gitCommit,
                        TN.runXcodebuild, TN.runXcodetests,
+                       TN.bash, TN.bashOutput,
                        TN.requestTeamMeeting, TN.askTeammate, TN.askSupervisor],
              usePlanningPhase: true,
              requires: ["Implementation Plan", "Design Spec"], produces: ["Engineering Notes"]),
@@ -119,6 +120,7 @@ nonisolated extension SystemTemplates {
                        TN.gitAdd, TN.gitCommit, TN.gitCheckout, TN.gitBranch,
                        TN.gitMerge, TN.gitPull, TN.gitStash,
                        TN.runXcodebuild, TN.runXcodetests,
+                       TN.bash, TN.bashOutput,
                        TN.askSupervisor, TN.analyzeImage],
              requires: [supervisorTaskArtifactName]),
 
@@ -131,6 +133,7 @@ nonisolated extension SystemTemplates {
              toolIDs: [TN.readFile, TN.readLines, TN.listFiles, TN.search,
                        TN.writeFile, TN.editFile, TN.deleteFile,
                        TN.gitStatus, TN.gitDiff, TN.gitLog, TN.gitBranchList,
+                       TN.bash, TN.bashOutput,
                        TN.updateScratchpad,
                        TN.askSupervisor, TN.analyzeImage],
              requires: [supervisorTaskArtifactName]),

@@ -88,11 +88,14 @@ Describe a task in one line and an LLM designs a custom team for it — roles, a
 ### Team Delegation
 A peer-level role can hand a self-contained sub-task to another team and wait for its final artifacts to come back as the tool result. The ready-made example is the new **Coding Agent** team: it edits files directly for small, local changes and uses `delegate_to_team` to pass larger, multi-file work to another team — by default the **Engineering Team** or **Startup**, or a fresh team generated on the fly when nothing fits. While a delegation runs you can message the delegating role, which pauses the child team and lets the role choose `cancel_delegation`, `resume_delegation`, or `forward_to_team` to inject guidance and continue. Configure it per role in the *Delegation* tab of the role editor: check the allowed teams and/or toggle *Allow generating new teams on the fly* — selecting any target auto-injects the four-tool delegation pack and makes the role a peer of the Supervisor. Delegation chains are capped at depth 3, and each delegation times out after 30 minutes.
 
+### Shell Commands (Bash)
+Code-writing roles can run real shell commands through the `bash` and `bash_output` tools — including long-running ones you read incrementally — wrapped in a full safety layer. Bash ships **manual by default**: every command pauses for your one-tap **Allow / Deny / Always** right in the activity feed, and an **Ask AI** button gives a plain-language read of what a held command does and whether it's safe before you decide. Loosen it per work folder in **Settings → Bash** to **Semi-automatic** (read-only and previously-allowed commands run unattended; the rest pause) or **Auto** (an on-device LLM judge approves or denies for you). Every command is confined by a macOS Seatbelt sandbox that keeps writes inside your work folder and blocks credential reads, and a single Folder × {Read, Write} table plus a Deny/Ask/Allow rule list — authored once — drive both the sandbox and the judge. On by default for the **Software Engineer**, **Coding Assistant**, and **Coding Agent** roles; read-only and non-programmer roles stay shell-free.
+
 ### Global Context
 A single free-text box in **Settings → LLM** whose contents are appended to every LLM system prompt that runs a tool loop — step execution, teammate consultation, meetings, and planning. Use it for cross-cutting instructions you want every role in every team to follow. A character counter and a *Reset to Default* button are shown; edits apply to new sessions only, so a step already running keeps the value it started with.
 
-### 43 Built-in Tools
-Sandboxed tool system: file operations, git, Xcode build & test, team collaboration (`ask_teammate`, `request_team_meeting`, `request_changes`), team delegation (`delegate_to_team` with cancel/resume/forward follow-ups), team generation (`create_team`), task management for the Autovisor, artifact creation, supervisor Q&A, persistent memory, and image analysis.
+### 45 Built-in Tools
+Sandboxed tool system: file operations, shell command execution (`bash` / `bash_output`), git, Xcode build & test, team collaboration (`ask_teammate`, `request_team_meeting`, `request_changes`), team delegation (`delegate_to_team` with cancel/resume/forward follow-ups), team generation (`create_team`), task management for the Autovisor, artifact creation, supervisor Q&A, persistent memory, and image analysis.
 
 ### Documents In & Out
 Roles read PDF, DOCX, RTF, XLSX, PPTX, ODT, and HTML files directly — no manual conversion to plain text. Generated artifacts can be exported to PDF, Word, or RTF.
@@ -139,7 +142,7 @@ Create your own teams with custom roles, artifacts, prompts, dependencies, and h
 <img width="1280" height="1068" alt="NanoTeams — Themes" src="https://github.com/user-attachments/assets/7391d0d4-f482-4ae2-ac42-5952cda4010a" />
 
 ### Privacy & Security
-**NanoTeams** doesn't send your data anywhere. All processing happens locally via LM Studio. Debug logs are off by default. All file operations are sandboxed to the selected work folder — no arbitrary shell access.
+**NanoTeams** doesn't send your data anywhere. All processing happens locally via LM Studio. Debug logs are off by default. All file operations are sandboxed to the selected work folder. Shell access via the `bash` tool is **manual by default** — you approve every command before it runs — and is gated by a permission engine and an on-device LLM safety judge, then confined by a macOS Seatbelt sandbox that keeps writes inside your work folder and blocks credential reads.
 
 ## Built-in Teams
 

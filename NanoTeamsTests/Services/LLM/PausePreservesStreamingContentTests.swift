@@ -833,6 +833,10 @@ private final class StreamPersistingMockDelegate: LLMExecutionDelegate {
     var globalLLMContext: String = ""
     var maxLLMRetries: Int = 0
     var visionLLMConfig: LLMConfig?
+    var bashPolicy: BashPolicy = BashPolicy()
+    func bashApprovalDidBegin(_ request: BashApprovalRequest) {}
+    func bashApprovalDidEnd(taskID: Int, stepID: String, commandKey: String, createdAt: Date) {}
+    func clearAllBashApprovalRequests() {}
     var loggingEnabled: Bool = false
     var exploratorySearchEnabled: Bool = false
     var searchExploratoryByDefault: Bool = false

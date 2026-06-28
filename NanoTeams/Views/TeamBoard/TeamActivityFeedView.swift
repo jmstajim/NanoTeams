@@ -266,6 +266,15 @@ struct TeamActivityFeedView: View {
             .frame(maxHeight: .infinity)
             .animationWithReduceMotion(Animations.quick, value: viewModel.isNearBottom)
 
+            // Held-bash-command approval cards render INDEPENDENT of the composer gate:
+            // a command can be held while the Supervisor browses a historical run
+            // (`isReadOnly`, composer hidden), and the gate's await needs its
+            // Allow/Deny UI to stay reachable. Self-hides when nothing is held.
+            if let taskID = store.activeTaskID {
+                BashApprovalCardList(taskID: taskID, roleDefinitions: roleDefinitions)
+                    .padding(.horizontal, Spacing.s)
+            }
+
             if shouldShowComposer, let taskID = store.activeTaskID {
                 // Single unified input card. The "To:" menu lets the Supervisor choose
                 // between answering the pending question, queuing for the team, or

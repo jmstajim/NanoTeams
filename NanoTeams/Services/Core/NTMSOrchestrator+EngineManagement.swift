@@ -43,6 +43,11 @@ extension NTMSOrchestrator {
         engineState.removeEngine(for: taskID)
         engineState.clearMeetingParticipants(for: taskID)
         completionAwaiter.cancelAll(taskID: taskID)
+        // Kill any background `bash` commands this task started so a detached
+        // server/watcher doesn't outlive its task (close / removal / delegation
+        // stop / recurrence supersede). Pause does NOT route through here, so a
+        // paused-then-resumed run keeps its background commands.
+        BackgroundBashRegistry.shared.terminate(taskID: taskID)
     }
 
     func stopAllEngines() {
@@ -52,6 +57,8 @@ extension NTMSOrchestrator {
         taskEngines.removeAll()
         engineState.removeAllEngines()
         completionAwaiter.cancelAll()
+        // Work-folder switch / shutdown: nothing may keep running across folders.
+        BackgroundBashRegistry.shared.terminateAll()
     }
 
     /// Awaits the next terminal or supervisor-input transition for `taskID`.

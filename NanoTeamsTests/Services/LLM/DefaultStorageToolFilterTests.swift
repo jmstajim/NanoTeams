@@ -71,14 +71,15 @@ final class DefaultStorageToolFilterTests: XCTestCase {
         }
     }
 
-    func testDefaultStorageBlockedTools_containsAllWriteGitXcodeTools() {
+    func testDefaultStorageBlockedTools_containsAllWriteGitXcodeShellTools() {
         let blocked = ToolHandlerRegistry.defaultStorageBlocked
         let expected = ToolHandlerRegistry.fileWriteTools
             .union(ToolHandlerRegistry.gitReadTools)
             .union(ToolHandlerRegistry.gitWriteTools)
             .union(ToolHandlerRegistry.xcodeTools)
+            .union(ToolHandlerRegistry.shellTools)   // bash + bash_output run a login shell
 
-        XCTAssertEqual(blocked, expected, "Blocked set should exactly match write + git + xcode tools")
+        XCTAssertEqual(blocked, expected, "Blocked set should exactly match write + git + xcode + shell tools")
     }
 
     // MARK: - Registry behavior in default storage

@@ -62,6 +62,7 @@ extension LLMExecutionService {
         let toolCallsLogURL: URL? = delegate.loggingEnabled
             ? paths.toolCallsJSONL(taskID: task.id, runID: runID, ancestors: ancestors)
             : nil
+        let bashPolicy = delegate.bashPolicy
         let (_, runtime) = ToolRegistry.defaultRegistry(
             workFolderRoot: workFolderRoot, toolCallsLogURL: toolCallsLogURL,
             networkLogger: networkLogger,
@@ -70,7 +71,10 @@ extension LLMExecutionService {
             readFileMaxLines: delegate.readFileMaxLines,
             searchMaxResults: delegate.searchMaxResults,
             searchContextBefore: delegate.searchContextBefore,
-            searchContextAfter: delegate.searchContextAfter
+            searchContextAfter: delegate.searchContextAfter,
+            bashSandboxEnabled: bashPolicy.sandboxEnabled,
+            bashSandboxPermissions: bashPolicy.sandboxPermissions,
+            bashAllowUnsandboxedFallback: bashPolicy.allowUnsandboxedFallback
         )
 
         let fullConversation = buildChatMessages(

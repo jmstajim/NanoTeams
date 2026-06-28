@@ -249,6 +249,36 @@ final class ToolCallSummarizerTests: XCTestCase {
         XCTAssertEqual(result, "/src/main.swift")
     }
 
+    func testSummarizeArguments_bash_showsCommand() {
+        let json = """
+        {"command": "ls -la /src"}
+        """
+        XCTAssertEqual(ToolCallSummarizer.summarizeArguments(toolName: TN.bash, json: json), "ls -la /src")
+    }
+
+    func testSummarizeArguments_bash_collapsesMultilineCommand() {
+        let json = """
+        {"command": "echo a &&\\n  echo b"}
+        """
+        XCTAssertEqual(ToolCallSummarizer.summarizeArguments(toolName: TN.bash, json: json), "echo a && echo b")
+    }
+
+    func testSummarizeArguments_bash_resolvesAliasKey() {
+        // The gate + handler resolve the command via BashArguments.command(from:),
+        // which honors alias keys; the card must show the same command.
+        let json = """
+        {"text": "git status"}
+        """
+        XCTAssertEqual(ToolCallSummarizer.summarizeArguments(toolName: TN.bash, json: json), "git status")
+    }
+
+    func testSummarizeArguments_bash_missingCommand_returnsEmpty() {
+        let json = """
+        {"timeout": 1000}
+        """
+        XCTAssertEqual(ToolCallSummarizer.summarizeArguments(toolName: TN.bash, json: json), "")
+    }
+
     func testSummarizeArguments_unknownTool_returnsEmpty() {
         let json = """
         {"foo": "bar"}

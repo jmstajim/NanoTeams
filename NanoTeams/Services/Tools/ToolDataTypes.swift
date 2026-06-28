@@ -42,6 +42,15 @@ enum ToolErrorCode: String, Codable {
     /// on this code so downstream classifiers see one signal, not "command_failed
     /// that happens to mention 'cancelled'".
     case cancelled = "CANCELLED"
+    /// `bash` command blocked by the command-permission layer: a deny rule
+    /// matched, the Auto judge rejected it, or human approval was required but
+    /// unavailable (Manual mode in an autonomous / Autovisor / headless context —
+    /// Auto mode runs unattended). Distinct from `COMMAND_FAILED` (the command
+    /// ran and exited non-zero) — a denied command never executed. Routed to a
+    /// don't-retry guidance via `buildToolErrorGuidance`'s `bash_denied` case.
+    /// (A foreground timeout is surfaced as a success envelope with
+    /// `timed_out: true`, not an error code.)
+    case bashDenied = "BASH_DENIED"
 }
 
 // MARK: - Response Envelope Types

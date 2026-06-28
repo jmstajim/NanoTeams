@@ -91,6 +91,49 @@ final class WatchtowerDismissLifecycleTests: XCTestCase {
         XCTAssertEqual(notifications.count, 1)
     }
 
+    // MARK: - bashApprovalNeeded (held command, cross-task)
+
+    func testBashApprovalNeeded_appearsForHeldCommand() {
+        // The holding step is `.running` (in-loop hold), NOT .needsSupervisorInput —
+        // so only the bashApprovals param surfaces it.
+        let step = makeStep(id: "step_1", needsSupervisorInput: false, question: nil)
+        let run = makeRun(steps: [step])
+        let task = makeTask(runs: [run])   // task.id == 1
+        let req = BashApprovalRequest(
+            taskID: 1, stepID: "step_1", commandKey: "key", command: "rm -rf build",
+            workingDirectory: nil, offerAlways: true, createdAt: Date(timeIntervalSince1970: 100))
+
+        let notifications = run.allWatchtowerNotifications(task: task, teamRoles: [], bashApprovals: [req])
+        XCTAssertEqual(notifications.count, 1)
+        if case .bashApprovalNeeded(let stepID, let taskID, let command, let role, _) = notifications.first {
+            XCTAssertEqual(stepID, "step_1")
+            XCTAssertEqual(taskID, 1)
+            XCTAssertEqual(command, "rm -rf build")
+            XCTAssertEqual(role, .softwareEngineer, "role resolved from the holding step")
+        } else {
+            XCTFail("Expected bashApprovalNeeded notification")
+        }
+    }
+
+    func testBashApprovalNeeded_filtersByTaskID() {
+        let step = makeStep(id: "step_1", needsSupervisorInput: false, question: nil)
+        let run = makeRun(steps: [step])
+        let task = makeTask(runs: [run])   // id 1
+        let req = BashApprovalRequest(
+            taskID: 999, stepID: "step_1", commandKey: "key", command: "ls",
+            workingDirectory: nil, offerAlways: false, createdAt: Date(timeIntervalSince1970: 1))
+        let notifications = run.allWatchtowerNotifications(task: task, teamRoles: [], bashApprovals: [req])
+        XCTAssertTrue(notifications.isEmpty, "a request for a different task must not surface here")
+    }
+
+    func testBashApprovalNeeded_noApprovals_noNotification() {
+        let step = makeStep(id: "step_1", needsSupervisorInput: false, question: nil)
+        let run = makeRun(steps: [step])
+        let task = makeTask(runs: [run])
+        XCTAssertTrue(run.allWatchtowerNotifications(task: task, teamRoles: []).isEmpty,
+                      "default empty bashApprovals ⇒ no bash notification")
+    }
+
     // MARK: - timedOut visibility
 
     private func containsTimedOut(_ notifications: [WatchtowerNotificationType]) -> Bool {

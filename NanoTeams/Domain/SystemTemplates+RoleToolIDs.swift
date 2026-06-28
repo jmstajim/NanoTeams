@@ -47,12 +47,20 @@ nonisolated extension SystemTemplates {
     private static let gitReadOnlyTools: Set<String> = [
         TN.gitStatus, TN.gitDiff, TN.gitLog, TN.gitBranchList,
     ]
+    /// Shell access — `bash` + its `bash_output` companion (background-process
+    /// output reader). Granted by default ONLY to the code-writing roles
+    /// (Software Engineer, Coding Assistant, Coding Agent). Always paired: a
+    /// `run_in_background` process is unreadable without `bash_output`. The
+    /// bash-permission layer (mode/sandbox/judge) gates execution at call time.
+    private static let shellTools: Set<String> = [
+        TN.bash, TN.bashOutput,
+    ]
 
     /// Fallback tool IDs for roles without a team configuration.
     /// Custom roles default to readOnlyTools + memoryToolIDs + teammateToolIDs.
     static let fallbackToolIDs: [String: Set<String>] = [
         "supervisor": [],
-        "softwareEngineer": readOnlyTools.union(engineerOnlyTools).union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs).union(visionToolIDs),
+        "softwareEngineer": readOnlyTools.union(engineerOnlyTools).union(shellTools).union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs).union(visionToolIDs),
         "productManager": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs),
         "theAgreeable": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs),
         "tpm": teammateToolIDs.union(changeRequestToolIDs).union(supervisorToolIDs),
@@ -71,8 +79,8 @@ nonisolated extension SystemTemplates {
         "theExtrovert": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs),
         "theNeurotic": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs),
         "assistant": readOnlyTools.union(fileWriteTools).union(memoryToolIDs).union(supervisorToolIDs).union(visionToolIDs),
-        "codingAssistant": readOnlyTools.union(fileWriteTools).union(memoryToolIDs).union(engineerOnlyTools).union(supervisorToolIDs).union(visionToolIDs),
-        "codingAgent": readOnlyTools.union(fileWriteTools).union(memoryToolIDs).union(gitReadOnlyTools).union(supervisorToolIDs).union(visionToolIDs),
+        "codingAssistant": readOnlyTools.union(fileWriteTools).union(memoryToolIDs).union(engineerOnlyTools).union(shellTools).union(supervisorToolIDs).union(visionToolIDs),
+        "codingAgent": readOnlyTools.union(fileWriteTools).union(memoryToolIDs).union(gitReadOnlyTools).union(shellTools).union(supervisorToolIDs).union(visionToolIDs),
     ]
 
     /// Default fallback tool IDs for roles not in the map (custom roles).

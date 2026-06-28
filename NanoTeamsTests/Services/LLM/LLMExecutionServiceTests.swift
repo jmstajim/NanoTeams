@@ -12,6 +12,20 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     var globalLLMContext: String = ""
     var maxLLMRetries: Int = 0
     var visionLLMConfig: LLMConfig?
+    var bashPolicy: BashPolicy = BashPolicy()
+    /// Records in-loop bash-approval requests published by the gate — tests poll
+    /// this to know when a command is held, then resolve it.
+    var bashApprovalBeganRequests: [BashApprovalRequest] = []
+    func bashApprovalDidBegin(_ request: BashApprovalRequest) {
+        bashApprovalBeganRequests.append(request)
+    }
+    func bashApprovalDidEnd(taskID: Int, stepID: String, commandKey: String, createdAt: Date) {
+        bashApprovalBeganRequests.removeAll {
+            $0.taskID == taskID && $0.stepID == stepID
+                && $0.commandKey == commandKey && $0.createdAt == createdAt
+        }
+    }
+    func clearAllBashApprovalRequests() { bashApprovalBeganRequests.removeAll() }
     var loggingEnabled: Bool = false
     var exploratorySearchEnabled: Bool = false
     var searchExploratoryByDefault: Bool = false

@@ -353,6 +353,74 @@ final class StoreConfiguration {
         didSet { storage.set(globalContext, forKey: Keys.globalContext) }
     }
 
+    // MARK: - Bash (shell command execution)
+
+    /// How the `bash` tool resolves an "ask" command. Default `.semiAutomatic`.
+    var bashMode: BashExecutionMode {
+        didSet { storage.set(bashMode.rawValue, forKey: Keys.bashMode) }
+    }
+    /// Strictness fed to the Auto judge. Default `.standard`.
+    var bashRestrictionLevel: BashRestrictionLevel {
+        didSet { storage.set(bashRestrictionLevel.rawValue, forKey: Keys.bashRestrictionLevel) }
+    }
+    /// Patterns that force allow (after deny). Ordered list.
+    var bashAllowRules: [String] {
+        didSet { storage.set(bashAllowRules, forKey: Keys.bashAllowRules) }
+    }
+    /// Patterns that force review.
+    var bashAskRules: [String] {
+        didSet { storage.set(bashAskRules, forKey: Keys.bashAskRules) }
+    }
+    /// Patterns that force deny (highest priority).
+    var bashDenyRules: [String] {
+        didSet { storage.set(bashDenyRules, forKey: Keys.bashDenyRules) }
+    }
+    /// Confine commands in a macOS Seatbelt sandbox. Default on.
+    var bashSandboxEnabled: Bool {
+        didSet { storage.set(bashSandboxEnabled, forKey: Keys.bashSandboxEnabled) }
+    }
+    /// Per-folder read/write grants for the sandbox. Persisted as JSON.
+    var bashSandboxPermissions: BashSandboxPermissions {
+        didSet {
+            if let data = try? JSONCoderFactory.makePersistenceEncoder().encode(bashSandboxPermissions) {
+                storage.set(data, forKey: Keys.bashSandboxPermissions)
+            }
+        }
+    }
+    /// Fall back to running unsandboxed if the Seatbelt wrapper fails to launch. Default off.
+    var bashAllowUnsandboxedFallback: Bool {
+        didSet { storage.set(bashAllowUnsandboxedFallback, forKey: Keys.bashAllowUnsandboxedFallback) }
+    }
+    /// Optional dedicated LLM override (URL + model; token via Keychain by URL)
+    /// for the Auto judge. `nil` = use the role's / global config. Persisted as
+    /// JSON, mirroring `teamGenLLMOverride`.
+    var bashJudgeLLMOverride: LLMOverride? {
+        didSet {
+            if let o = bashJudgeLLMOverride, !o.isEmpty,
+               let data = try? JSONCoderFactory.makePersistenceEncoder().encode(o) {
+                storage.set(data, forKey: Keys.bashJudgeLLMOverride)
+            } else {
+                storage.removeObject(forKey: Keys.bashJudgeLLMOverride)
+            }
+        }
+    }
+
+    /// Assembled `BashPolicy` surfaced to the LLM execution layer via
+    /// `LLMStateDelegate.bashPolicy`.
+    var bashPolicy: BashPolicy {
+        BashPolicy(
+            mode: bashMode,
+            restrictionLevel: bashRestrictionLevel,
+            allowRules: bashAllowRules,
+            askRules: bashAskRules,
+            denyRules: bashDenyRules,
+            sandboxEnabled: bashSandboxEnabled,
+            sandboxPermissions: bashSandboxPermissions,
+            allowUnsandboxedFallback: bashAllowUnsandboxedFallback,
+            judgeOverride: bashJudgeLLMOverride
+        )
+    }
+
     // MARK: - App Update
 
     /// Timestamp of the last successful GitHub releases check. Used to throttle
@@ -675,6 +743,43 @@ final class StoreConfiguration {
             max(storedSearchIndexWatcherDebounce, AppDefaults.searchIndexWatcherDebounceSecondsMin),
             AppDefaults.searchIndexWatcherDebounceSecondsMax
         )
+        self.bashMode = storage.string(forKey: Keys.bashMode)
+            .flatMap(BashExecutionMode.init(rawValue:)) ?? BashConstants.defaultMode
+        self.bashRestrictionLevel = storage.string(forKey: Keys.bashRestrictionLevel)
+            .flatMap(BashRestrictionLevel.init(rawValue:)) ?? BashConstants.defaultRestrictionLevel
+        self.bashAllowRules = (storage.object(forKey: Keys.bashAllowRules) as? [String]) ?? []
+        self.bashAskRules = (storage.object(forKey: Keys.bashAskRules) as? [String]) ?? []
+        self.bashDenyRules = (storage.object(forKey: Keys.bashDenyRules) as? [String]) ?? []
+        // sandbox defaults ON — `object(forKey:) as? Bool` distinguishes "absent"
+        // (apply default true) from a stored `false`.
+        self.bashSandboxEnabled = (storage.object(forKey: Keys.bashSandboxEnabled) as? Bool)
+            ?? BashConstants.defaultSandboxEnabled
+        if let data = storage.data(forKey: Keys.bashSandboxPermissions),
+           let decoded = try? JSONCoderFactory.makeDateDecoder().decode(BashSandboxPermissions.self, from: data) {
+            self.bashSandboxPermissions = decoded
+        } else {
+            self.bashSandboxPermissions = BashSandboxPermissions()
+        }
+        self.bashAllowUnsandboxedFallback = storage.bool(forKey: Keys.bashAllowUnsandboxedFallback)
+        // Migrate the legacy plain `bashJudgeModel` string into the override struct.
+        if let data = storage.data(forKey: Keys.bashJudgeLLMOverride),
+           let decoded = try? JSONCoderFactory.makeDateDecoder().decode(LLMOverride.self, from: data),
+           !decoded.isEmpty {
+            self.bashJudgeLLMOverride = decoded
+        } else if let legacyModel = storage.string(forKey: Keys.bashJudgeModel),
+                  !legacyModel.trimmingCharacters(in: .whitespaces).isEmpty {
+            let migrated = LLMOverride(modelName: legacyModel)
+            self.bashJudgeLLMOverride = migrated
+            // Write through ONCE and drop the legacy key (didSet doesn't fire during
+            // init). Mirrors `migrateExpandedSearchKeys` — without this the migration
+            // re-runs every launch and could resurrect a later-cleared override.
+            if let data = try? JSONCoderFactory.makePersistenceEncoder().encode(migrated) {
+                storage.set(data, forKey: Keys.bashJudgeLLMOverride)
+            }
+            storage.removeObject(forKey: Keys.bashJudgeModel)
+        } else {
+            self.bashJudgeLLMOverride = nil
+        }
     }
 
     // MARK: - Migration
@@ -743,6 +848,16 @@ final class StoreConfiguration {
         storage.removeObject(forKey: Keys.searchContextAfter)
         storage.removeObject(forKey: Keys.searchIndexWatcherDebounceSeconds)
         storage.removeObject(forKey: Keys.globalContext)
+        storage.removeObject(forKey: Keys.bashMode)
+        storage.removeObject(forKey: Keys.bashRestrictionLevel)
+        storage.removeObject(forKey: Keys.bashAllowRules)
+        storage.removeObject(forKey: Keys.bashAskRules)
+        storage.removeObject(forKey: Keys.bashDenyRules)
+        storage.removeObject(forKey: Keys.bashSandboxEnabled)
+        storage.removeObject(forKey: Keys.bashSandboxPermissions)
+        storage.removeObject(forKey: Keys.bashAllowUnsandboxedFallback)
+        storage.removeObject(forKey: Keys.bashJudgeModel)
+        storage.removeObject(forKey: Keys.bashJudgeLLMOverride)
 
         let provider = LLMProvider.lmStudio
         llmProvider = provider
@@ -784,6 +899,15 @@ final class StoreConfiguration {
         searchContextAfter = AppDefaults.searchContextAfter
         searchIndexWatcherDebounceSeconds = AppDefaults.searchIndexWatcherDebounceSeconds
         globalContext = AppDefaults.globalContext
+        bashMode = BashConstants.defaultMode
+        bashRestrictionLevel = BashConstants.defaultRestrictionLevel
+        bashAllowRules = []
+        bashAskRules = []
+        bashDenyRules = []
+        bashSandboxEnabled = BashConstants.defaultSandboxEnabled
+        bashSandboxPermissions = BashSandboxPermissions()
+        bashAllowUnsandboxedFallback = false
+        bashJudgeLLMOverride = nil
     }
 
     // MARK: - Work Folder Path
