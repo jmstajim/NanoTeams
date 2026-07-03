@@ -82,6 +82,50 @@ final class PlanningPhasePolicyTests: XCTestCase {
         XCTAssertFalse(prompt.contains("## Tool Calling"))
     }
 
+    /// The swap replaces the base prompt's `## Deliverables` — the planning brief
+    /// must restate the artifact names the plan targets, or the plan is made blind.
+    func testBasePlanningPrompt_interpolatesExpectedArtifacts() {
+        let prompt = PlanningPhasePolicy.basePlanningPrompt(
+            roleName: "PM", expectedArtifacts: ["Product Requirements", "Research Report"])
+        XCTAssertTrue(prompt.contains("\"Product Requirements\""))
+        XCTAssertTrue(prompt.contains("\"Research Report\""))
+    }
+
+    func testBasePlanningPrompt_noArtifacts_omitsDeliverableLine() {
+        let prompt = PlanningPhasePolicy.basePlanningPrompt(roleName: "PM")
+        XCTAssertFalse(prompt.contains("must end with producing"))
+    }
+
+    /// Section shape: `## Role` header (not bare "You are X."), and the
+    /// load-bearing only-tool instruction lives in the tail `## Final reminder`
+    /// so `insertingGlobalGuidance` places user context ABOVE it.
+    func testBasePlanningPrompt_sectionShape_roleHeaderAndTailReminder() {
+        let prompt = PlanningPhasePolicy.basePlanningPrompt(roleName: "Tech Lead")
+        XCTAssertTrue(prompt.hasPrefix("## Role\n"), "persona rendered as `## Role`, matching the house sectioning")
+        XCTAssertFalse(prompt.contains("You are "))
+        guard let fr = prompt.range(of: "## Final reminder") else {
+            return XCTFail("planning prompt must end with a Final reminder section")
+        }
+        XCTAssertTrue(prompt[fr.upperBound...].contains("only tool available"),
+                      "the critical only-tool constraint must occupy the tail slot")
+    }
+
+    /// Global guidance inserted via `TemplateResolver.insertingGlobalGuidance`
+    /// lands BEFORE the planning `## Final reminder`, not after it.
+    func testBasePlanningPrompt_globalGuidanceInsertsBeforeFinalReminder() {
+        let combined = TemplateResolver.insertingGlobalGuidance(
+            "Always answer in Russian.",
+            into: PlanningPhasePolicy.basePlanningPrompt(roleName: "X")
+        )
+        guard let guidance = combined.range(of: "## Global guidance"),
+              let fr = combined.range(of: "## Final reminder") else {
+            return XCTFail("both sections must be present")
+        }
+        XCTAssertLessThan(guidance.lowerBound, fr.lowerBound,
+                          "user context must not displace the tail reminder")
+        XCTAssertTrue(combined.contains("Always answer in Russian."))
+    }
+
     // MARK: - isPlanningSystemPrompt (marker SSOT)
 
     func testIsPlanningSystemPrompt_markerDetection() {

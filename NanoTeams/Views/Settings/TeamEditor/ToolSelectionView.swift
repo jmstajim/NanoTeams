@@ -44,6 +44,8 @@ struct ToolSelectionView: View {
     let isNonProducingNonObserver: Bool
     let isMeetingCoordinator: Bool
     let isVisionConfigured: Bool
+    /// `StoreConfiguration.isComputerUseEnabled` — drives the computer-use tool hints.
+    let isComputerUseEnabled: Bool
     /// True iff the role has any delegation target configured — drives the
     /// auto-injection of the 4-tool delegation pack into the LLM schema.
     /// Mirrors `TeamRoleDefinition.hasDelegationConfigured`.
@@ -120,6 +122,11 @@ struct ToolSelectionView: View {
         hints[tn.analyzeImage] = isVisionConfigured
             ? "Vision model configured"
             : "Requires vision model"
+        for tool in ToolHandlerRegistry.computerUseTools {
+            hints[tool] = isComputerUseEnabled
+                ? "Computer Use enabled"
+                : "Off in Settings → Computer Use"
+        }
         let gitTools = ToolHandlerRegistry.gitReadTools.union(ToolHandlerRegistry.gitWriteTools)
         for tool in ToolHandlerRegistry.defaultStorageBlocked {
             // Git tools need the work folder to be an actual git repo (not just any
@@ -511,6 +518,7 @@ private struct ToolRow: View {
         isNonProducingNonObserver: false,
         isMeetingCoordinator: false,
         isVisionConfigured: true,
+        isComputerUseEnabled: true,
         canDelegate: false,
         delegationHint: ""
     )
@@ -525,6 +533,7 @@ private struct ToolRow: View {
         isNonProducingNonObserver: true,
         isMeetingCoordinator: false,
         isVisionConfigured: false,
+        isComputerUseEnabled: false,
         canDelegate: false,
         delegationHint: ""
     )
@@ -542,6 +551,7 @@ private struct ToolRow: View {
         isNonProducingNonObserver: false,
         isMeetingCoordinator: false,
         isVisionConfigured: true,
+        isComputerUseEnabled: true,
         canDelegate: false,
         delegationHint: ""
     )
@@ -560,6 +570,7 @@ private struct ToolRow: View {
         isNonProducingNonObserver: true,
         isMeetingCoordinator: false,
         isVisionConfigured: false,
+        isComputerUseEnabled: false,
         canDelegate: false,
         delegationHint: ""
     )

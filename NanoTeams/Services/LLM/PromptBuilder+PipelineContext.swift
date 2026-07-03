@@ -27,8 +27,11 @@ nonisolated extension PromptBuilder {
     ) -> String {
         guard upToStepIndex > 0 else { return "" }
 
+        // `##`/`###` markdown headers — the same sectioning system every sibling
+        // user message uses (`## Supervisor Task`, `## Required Artifacts`).
+        // This block was the one flat-colon-label holdout [Sclar2024].
         var lines: [String] = []
-        lines.append("Context from previous steps (for handoff):")
+        lines.append("## Prior Steps")
 
         // Statuses that mean "still in flight" — only these are noise candidates when
         // the step isn't a dependency. Failure / blocked states (`.failed`,
@@ -59,12 +62,9 @@ nonisolated extension PromptBuilder {
             }
 
             lines.append("")
-            if step.title != step.role.displayName && !step.title.isEmpty {
-                lines.append("Step \(idx + 1) — \(step.role.displayName): \(step.title)")
-            } else {
-                lines.append("Step \(idx + 1) — \(step.role.displayName)")
-            }
-            lines.append("Status: \(step.status.rawValue)")
+            let title = (step.title != step.role.displayName && !step.title.isEmpty)
+                ? ": \(step.title)" : ""
+            lines.append("### Step \(idx + 1) — \(step.role.displayName)\(title) — \(statusPhrase(step.status))")
 
             if let q = step.supervisorQuestion, let a = step.effectiveSupervisorAnswer, !q.isEmpty, !a.isEmpty {
                 lines.append("Supervisor Q: \(q)")
@@ -84,10 +84,14 @@ nonisolated extension PromptBuilder {
 
                     if shouldAutoInject {
                         lines.append("- \(artifact.name):")
-                        if let content = artifactReader(artifact) {
-                            lines.append("```")
+                        if let content = artifactReader(artifact),
+                           !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            // Same escape hardening as buildRequiredArtifactsSection:
+                            // fence outgrows any backtick run inside the body.
+                            let fence = artifactFence(for: content)
+                            lines.append(fence)
                             lines.append(content)
-                            lines.append("```")
+                            lines.append(fence)
                         } else {
                             lines.append("(content missing or unreadable)")
                         }
@@ -114,6 +118,20 @@ nonisolated extension PromptBuilder {
         }
 
         return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Plain-words status for the model — `step.status.rawValue` leaked internal
+    /// camelCase enum values (`needsSupervisorInput`) into the prompt.
+    private static func statusPhrase(_ status: StepStatus) -> String {
+        switch status {
+        case .pending: return "not started"
+        case .running: return "in progress"
+        case .paused: return "paused"
+        case .needsSupervisorInput: return "waiting for the Supervisor"
+        case .needsApproval: return "waiting for approval"
+        case .failed: return "failed"
+        case .done: return "done"
+        }
     }
 
     /// Returns the bare work-folder context body — `**{name}**\n\n{context}` —

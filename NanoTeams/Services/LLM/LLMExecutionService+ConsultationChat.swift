@@ -29,12 +29,21 @@ extension LLMExecutionService {
         }
 
         // Create new chat
-        let systemPrompt = buildConsultationSystemPrompt(
-            roleID: roleID, team: team, task: task
-        )
+        let systemPrompt = buildConsultationSystemPrompt(roleID: roleID, team: team)
 
         var messages: [LLMMessage] = []
         messages.append(LLMMessage(role: .system, content: systemPrompt))
+
+        // Task context as the first user turn — variant data stays out of the
+        // system prompt (stable prefix; the template is the invariant block).
+        messages.append(LLMMessage(
+            role: .user,
+            content: """
+                Current Task:
+                Title: \(task.title)
+                Supervisor Task: \(task.effectiveSupervisorBrief)
+                """
+        ))
 
         // Inject the role's own artifacts
         let roleStep = run.steps.first(where: { $0.effectiveRoleID == roleID })
@@ -74,31 +83,35 @@ extension LLMExecutionService {
         }
     }
 
-    /// Builds the system prompt for a role's consultation chat.
-    private func buildConsultationSystemPrompt(
-        roleID: String, team: Team?, task: NTMSTask
-    ) -> String {
+    /// Builds the system prompt for a role's consultation chat by resolving the
+    /// team's user-editable `consultationPromptTemplate` — the SAME template the
+    /// Settings preview renders (`PromptBuilder.buildWirePromptPreview(kind: .consultation)`).
+    /// Pre-fix, the runtime shipped an unrelated hand-built prose prompt while the
+    /// preview showed the template — the user-edited template never reached the wire.
+    ///
+    /// `{requestingRoleName}` resolves to a generic value: this persistent chat is
+    /// shared by every requester across the run, and each question turn already
+    /// names who is asking.
+    private func buildConsultationSystemPrompt(roleID: String, team: Team?) -> String {
         let roleDef = team?.findRole(byIdentifier: roleID)
         let roleName = roleDef?.name
             ?? (Role.builtInRole(for: roleID)?.displayName ?? roleID)
         let roleGuidance = roleDef?.prompt
             ?? (SystemTemplates.roles[roleID]?.prompt ?? "")
-        let teamDescription = team?.description ?? ""
+        let template = team?.consultationPromptTemplate
+            ?? SystemTemplates.genericConsultationTemplate
+        let globalContext = delegate?.globalLLMContext ?? ""
 
-        let base = """
-            You are \(roleName)\(teamDescription.isEmpty ? "" : " on a team: \(teamDescription)").
-
-            \(roleGuidance)
-
-            You answer questions from teammates, participate in team meetings, and provide your expertise.
-            Be concise and professional. Draw on your role's expertise to give specific, actionable answers.
-
-            Current task: \(task.title)
-            Supervisor Task: \(task.effectiveSupervisorBrief)
-            """
-        return TemplateResolver.appendingSeparator(
-            delegate?.globalLLMContext ?? "",
-            to: base
+        return TemplateResolver.resolveSystemPrompt(
+            template,
+            placeholders: [
+                "consultedRoleName": roleName,
+                "requestingRoleName": "a teammate",
+                "roleGuidance": roleGuidance,
+                "teamDescription": team?.description ?? "",
+                "globalContext": PromptBuilder.formatGlobalContext(globalContext),
+            ],
+            globalContext: globalContext
         )
     }
 

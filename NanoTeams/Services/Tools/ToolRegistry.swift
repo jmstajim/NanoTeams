@@ -65,6 +65,12 @@ nonisolated enum ToolSignal: Hashable {
     /// iteration boundary.
     /// Not a `AutovisorAction` — it mutates execution state, not task state.
     case waitForEvents
+
+    /// Computer-use action (screenshot / click / type / key / scroll). The handler
+    /// only validates args + emits this signal; the real OS work runs in the service
+    /// finalizer (`LLMExecutionService+ComputerUse.swift`), which has the per-step
+    /// state a detached `ToolHandler` cannot reach (last-capture conversion metadata).
+    case computerUse(ComputerUseAction)
 }
 
 /// Payload for a `exploratory: true` call on `SearchTool`. Threaded through

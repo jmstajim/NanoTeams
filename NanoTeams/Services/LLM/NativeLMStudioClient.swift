@@ -207,6 +207,31 @@ nonisolated struct NativeLMStudioClient: LLMClient {
         )
     }
 
+    /// Capability probe behind the auto-detected "can the MAIN model see
+    /// images?" decision (replaces the manual Settings toggle). Decodes ONLY
+    /// the native LM Studio model-list shape — the OpenAI-compatible fallback
+    /// carries no capability metadata, so this returns `nil` (undeterminable)
+    /// there instead of guessing. `nil` also on transport errors and when the
+    /// model isn't in the list; a listed model without `capabilities.vision`
+    /// is a definitive `false`.
+    func modelSupportsVision(config: LLMConfig) async -> Bool? {
+        guard let baseURL = URL(string: config.baseURLString) else { return nil }
+        let url = baseURL.appendingPathComponent("api/v1/models")
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 5
+        request.applyLMStudioBearer(baseURL: config.baseURLString, resolver: tokenResolver)
+
+        guard let (data, response) = try? await session.sessionData(for: request),
+              let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode),
+              let native = try? JSONCoderFactory.makeWireDecoder().decode(NativeModelListResponse.self, from: data)
+        else { return nil }
+
+        guard let info = native.models.first(where: { $0.key == config.modelName }) else { return nil }
+        return info.capabilities?.vision == true
+    }
+
     func fetchEmbeddingModels(config: LLMConfig) async throws -> [String] {
         // LM Studio reports embedding models with `type == "embeddings"`
         // (with the trailing `s`). Older builds emit `"embedding"` (singular)

@@ -19,23 +19,25 @@ nonisolated struct BashTool: ToolHandler {
             (supports pipes, &&, globs, redirection). A non-zero exit code is normal output, \
             not a tool error — read `exit_code`/`stderr`. Output is returned verbatim (text); \
             redirect binary output to a file. Commands run inside a sandbox that confines writes \
-            to the work folder and temp directories. Set `run_in_background: true` for \
-            long-running processes (servers, watchers).
+            to the work folder and temp directories.
             """,
         parameters: JS.object(
             properties: [
                 "command": JS.string("The shell command to run."),
-                "timeout": JS.integer("Timeout in milliseconds (default 120000, max 600000)."),
+                "timeout": JS.integer("Timeout in milliseconds (max 600000)."),
                 "working_directory": JS.string(
                     "Directory to run in, relative to the work folder. Defaults to the work folder root."),
                 "run_in_background": JS.boolean(
-                    "Run detached and return a command_id immediately."),
+                    "Run detached and return a command_id immediately — for servers, watchers, other long-running processes."),
             ],
             required: ["command"]
         )
     )
     static let category: ToolCategory = .shell
-    static let blockedInDefaultStorage = true
+    // Usable with no work folder open: in default-storage mode the sandbox root is the
+    // Application Support dir (a real, bootstrapped directory), and write scope is governed
+    // by the existing Settings → Bash sandbox permissions — no work folder is required.
+    static let blockedInDefaultStorage = false
     static let excludedInMeetings = true
 
     let workFolderRoot: URL
@@ -178,15 +180,17 @@ nonisolated struct BashOutputTool: ToolHandler {
             """,
         parameters: JS.object(
             properties: [
-                "command_id": JS.string("The command_id returned by bash when started in the background."),
-                "action": JS.string("'read' (default) to fetch new output, or 'stop' to terminate the command.",
+                "command_id": JS.string("Id of the background command."),
+                "action": JS.string("read fetches new output; stop terminates the command.",
                     enumValues: ["read", "stop"]),
             ],
             required: ["command_id"]
         )
     )
     static let category: ToolCategory = .shell
-    static let blockedInDefaultStorage = true
+    // Usable with no work folder open (mirrors `bash`) — reads the background command
+    // registry, needs no folder.
+    static let blockedInDefaultStorage = false
     static let excludedInMeetings = true
 
     static func makeInstance(dependencies _: ToolHandlerDependencies) -> Self { Self() }

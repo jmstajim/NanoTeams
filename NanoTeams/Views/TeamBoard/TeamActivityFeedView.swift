@@ -273,6 +273,8 @@ struct TeamActivityFeedView: View {
             if let taskID = store.activeTaskID {
                 BashApprovalCardList(taskID: taskID, roleDefinitions: roleDefinitions)
                     .padding(.horizontal, Spacing.s)
+                ComputerUseApprovalCardList(taskID: taskID, roleDefinitions: roleDefinitions)
+                    .padding(.horizontal, Spacing.s)
             }
 
             if shouldShowComposer, let taskID = store.activeTaskID {

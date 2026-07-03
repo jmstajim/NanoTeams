@@ -31,6 +31,12 @@ final class NTMSOrchestrator {
     /// `LLMStateDelegate` bash-approval hooks (see `NTMSOrchestrator+BashAdvice`).
     var bashApprovalRequests: [TaskStepKey: BashApprovalRequest] = [:]
 
+    /// Computer-use actions currently HELD awaiting the human's Allow/Deny/Always decision,
+    /// keyed by (taskID, stepID). Mirrors the gate's await state so the activity feed renders
+    /// the approval card (with a screenshot + crosshair preview). Mutated only via the
+    /// `LLMStateDelegate` computer-use approval hooks (see `NTMSOrchestrator+ComputerUseApproval`).
+    var computerUseApprovalRequests: [TaskStepKey: ComputerUseApprovalRequest] = [:]
+
     // MARK: - Computed Properties
 
     /// Engine states keyed by task ID.
@@ -61,6 +67,11 @@ final class NTMSOrchestrator {
     // periphery:ignore - protocol conformance (LLMStateDelegate)
     var bashPolicy: BashPolicy {
         configuration.bashPolicy
+    }
+
+    // periphery:ignore - protocol conformance (LLMStateDelegate)
+    var computerUsePolicy: ComputerUsePolicy {
+        configuration.computerUsePolicy
     }
 
     var loggingEnabled: Bool {

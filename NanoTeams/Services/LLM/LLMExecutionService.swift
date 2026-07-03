@@ -65,12 +65,50 @@ final class LLMExecutionService {
     /// command. Populated only for the duration of `awaitBashApproval`.
     var pendingBashApprovals: [TaskStepKey: PendingBashApproval] = [:]
 
+    /// Held computer-use actions awaiting the human's in-loop Allow / Deny / Always decision,
+    /// keyed by (taskID, stepID) → action key → waiter. Mirror of `bashApprovalWaiters`.
+    var computerUseApprovalWaiters: [TaskStepKey: [String: ComputerUseApprovalWaiter]] = [:]
+
+    /// Per-run "always allow in this app" grants for computer-use, keyed by taskID → set of
+    /// lowercased bundle ids / app names. Runtime only — never persisted (user chose per-run
+    /// scope). Cleared per-TASK (`clearComputerUseTaskState`), never per-step, so an
+    /// "always allow for the rest of the run" grant survives the granting role's step completing
+    /// (and any parallel sibling role finishing).
+    var computerUseSessionAllowedApps: [Int: Set<String>] = [:]
+
+    /// Number of `screen_capture` calls made this run, keyed by taskID. Per-TASK (not per-step)
+    /// so the "gate only the FIRST capture per run" prompt fires once per run, not once per role
+    /// / once after every pause. Cleared alongside `computerUseSessionAllowedApps`.
+    var computerUseCaptureCountByTask: [Int: Int] = [:]
+
+    /// Auto-detected "can the main model see images?" verdicts, keyed by
+    /// `"baseURL|model"`. Replaces the removed "Main model supports vision"
+    /// Settings toggle. Only DEFINITIVE probe results are cached (a model's
+    /// capabilities don't change while loaded); an undeterminable probe
+    /// (server unreachable, no capability metadata) is NOT cached so a
+    /// transient failure can't pin a wrong verdict for the service lifetime.
+    var mainModelVisionCache: [String: Bool] = [:]
+
     /// Tears a step's bash-approval state down: resumes any pending waiter with
     /// `.deny` (fail safe) and drops the pending record. Called from every teardown
     /// path that removes the `executionStates` entry.
     func clearBashState(stepID: String, taskID: Int) {
         failPendingBashApprovals(stepID: stepID, taskID: taskID)
         pendingBashApprovals[TaskStepKey(taskID: taskID, stepID: stepID)] = nil
+        // Computer-use PER-STEP teardown rides the same paths: fail any held approval (deny) so a
+        // paused step never leaves a hung waiter. The per-run app allowlist + capture count are
+        // per-TASK — cleared by `clearComputerUseTaskState`, NOT here (clearing them per-step
+        // wiped an "always allow for the rest of the run" grant the moment any step finished).
+        failPendingComputerUseApprovals(stepID: stepID, taskID: taskID)
+    }
+
+    /// Drops the per-TASK computer-use session state (the "always allow in app" grants and the
+    /// first-capture-per-run counter) when a task's run ends — task pause/stop/switch and full
+    /// teardown. Keyed by taskID; task IDs are reused across folders, so clearing here stops a
+    /// grant leaking into a same-numbered task in a newly-opened folder.
+    func clearComputerUseTaskState(taskID: Int) {
+        computerUseSessionAllowedApps[taskID] = nil
+        computerUseCaptureCountByTask[taskID] = nil
     }
     /// Team IDs for which we have already surfaced the "designated coordinator
     /// no longer exists" info message. Throttles
@@ -221,11 +259,21 @@ final class LLMExecutionService {
         bashApprovalWaiters.values.forEach { $0.values.forEach { $0.resolve(.deny) } }
         bashApprovalWaiters.removeAll()
         pendingBashApprovals.removeAll()
+        // Same teardown for computer-use: resolve every held waiter with `.deny` (fail safe),
+        // drop the per-run app grants + capture counts, and clear the published cards directly —
+        // `executionStates.removeAll()` above bypasses the per-key `clearBashState`, so without
+        // this a held action leaks a stale card into a newly-opened folder and an "always allow
+        // in app" grant survives into a same-numbered task there.
+        computerUseApprovalWaiters.values.forEach { $0.values.forEach { $0.resolve(.deny) } }
+        computerUseApprovalWaiters.removeAll()
+        computerUseSessionAllowedApps.removeAll()
+        computerUseCaptureCountByTask.removeAll()
         // Drop the orchestrator's published cards too — resolving the waiters above
         // resumes the orphaned awaits which will each call `bashApprovalDidEnd`, but
         // that may run AFTER a newly-opened folder has rendered; clear directly so no
         // stale card can show (and, with task-ID reuse, be mis-attributed).
         delegate?.clearAllBashApprovalRequests()
+        delegate?.clearAllComputerUseApprovalRequests()
     }
 
     /// Request graceful finish for an advisory role's step. At the next iteration
@@ -244,6 +292,9 @@ final class LLMExecutionService {
             clearBashState(stepID: key.stepID, taskID: key.taskID)
             delegate?.clearStreamingPreview(stepID: key.stepID, taskID: key.taskID)
         }
+        // The task's run is ending — drop its per-run computer-use grants + capture count so a
+        // restart re-prompts and a same-numbered task in another folder can't inherit them.
+        clearComputerUseTaskState(taskID: taskID)
     }
 
     /// Checks if a step is currently running.

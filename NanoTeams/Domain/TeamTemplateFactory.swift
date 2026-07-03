@@ -138,12 +138,14 @@ nonisolated enum TeamTemplateFactory {
         ) { roles in
             typealias TN = ToolNames
             // Document-focused: files (read + write) + scratchpad + supervisor + vision
+            // + computer use (screen control — gated per-action by the permission layer).
             // NO git, xcode, or teammate tools
             roles[1].toolIDs = [
                 TN.readFile, TN.readLines, TN.writeFile, TN.editFile, TN.deleteFile,
                 TN.listFiles, TN.search,
                 TN.updateScratchpad,
                 TN.askSupervisor, TN.analyzeImage,
+                TN.screenCapture, TN.uiClick, TN.uiType, TN.uiKey, TN.uiScroll,
             ]
             roles[1].dependencies.requiredArtifacts = [SystemTemplates.supervisorTaskArtifactName]
         }
@@ -198,7 +200,8 @@ nonisolated enum TeamTemplateFactory {
             supervisorMode: .manual
         ) { roles in
             typealias TN = ToolNames
-            // Full coding kit: files (read + write) + search + scratchpad + git + xcode + vision + supervisor
+            // Full coding kit: files (read + write) + search + scratchpad + git + xcode
+            // + vision + computer use (gated per-action by the permission layer) + supervisor
             // NO teammate tools (single-role team has no consultations)
             roles[1].toolIDs = [
                 TN.readFile, TN.readLines, TN.writeFile, TN.editFile, TN.deleteFile,
@@ -209,6 +212,7 @@ nonisolated enum TeamTemplateFactory {
                 TN.runXcodebuild, TN.runXcodetests,
                 TN.bash, TN.bashOutput,
                 TN.askSupervisor, TN.analyzeImage,
+                TN.screenCapture, TN.uiClick, TN.uiType, TN.uiKey, TN.uiScroll,
             ]
             roles[1].dependencies.requiredArtifacts = [SystemTemplates.supervisorTaskArtifactName]
         }

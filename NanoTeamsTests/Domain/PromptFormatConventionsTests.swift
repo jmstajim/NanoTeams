@@ -3,8 +3,9 @@ import XCTest
 
 /// Drift-protection invariants for all LLM-facing prompt surfaces.
 ///
-/// Covers the four hygiene rules from `docs/prompt-review.md` that the 2026-05
-/// unification pass standardised on:
+/// Covers the four hygiene rules (house style, formerly `docs/prompt-review.md` —
+/// retired 2026-07-02 in favor of `docs/TheLocalMultiAgentPromptingPlaybook.md`)
+/// that the 2026-05 unification pass standardised on:
 ///
 /// 1. **No `=== HEADER ===` delimiters** — Markdown `## Header` / `### Header`
 ///    only. (`=== HEADER ===` was the third sectioning style across
@@ -12,9 +13,9 @@ import XCTest
 /// 2. **Title Case section headers** — `## Memories`, `## Team meeting`, never
 ///    `## MEMORIES`, `## TEAM MEETING`. ALL-CAPS was the outlier vs the
 ///    canonical `## Role` / `## Final reminder` Title Case in templates.
-/// 3. **No "Please" in LLM-facing turn prompts** — filler imperative per §0
-///    Mandatory rule 6 in docs/prompt-engineering-sources.md. User-facing
-///    escalation strings ("Please advise…" routed to Supervisor) are exempt.
+/// 3. **No "Please" in LLM-facing turn prompts** — filler imperative (playbook
+///    §4: smallest set of high-signal tokens). User-facing escalation strings
+///    ("Please advise…" routed to Supervisor) are exempt.
 /// 4. **No `Settings → …` UI paths in LLM-facing prompts** — the model can't
 ///    click. Defaults belong in `JSONSchemaLeaf.default`, not prose.
 ///
@@ -26,7 +27,9 @@ final class PromptFormatConventionsTests: XCTestCase {
     /// Every LLM-facing string surface the test sweeps. Pairs are
     /// `(label, contents)` — the label appears in failure messages so an
     /// offending value is locatable without grepping.
-    private static var auditedSurfaces: [(label: String, contents: String)] {
+    /// `let`, not a computed `var`: building the list renders the full tool
+    /// schema body over every registered schema — compute once, not per test.
+    private static let auditedSurfaces: [(label: String, contents: String)] = {
         var s: [(String, String)] = []
 
         // Built-in role prompts (one entry per role).
@@ -58,9 +61,19 @@ final class PromptFormatConventionsTests: XCTestCase {
         s.append(("genericTemplate", SystemTemplates.genericTemplate))
         s.append(("genericConsultationTemplate", SystemTemplates.genericConsultationTemplate))
         s.append(("genericMeetingTemplate", SystemTemplates.genericMeetingTemplate))
+        s.append(("autovisorTemplate", SystemTemplates.autovisorTemplate))
 
         // One-shot service prompts.
         s.append(("TeamGenerationService.defaultSystemPrompt", TeamGenerationService.defaultSystemPrompt))
+        s.append(("SupervisorAutoAnswerService.systemPrompt", SupervisorAutoAnswerService.systemPrompt))
+        s.append(("VisionAnalysisService.systemPrompt", VisionAnalysisService.systemPrompt))
+        s.append(("AppDefaults.workFolderContextPrompt", AppDefaults.workFolderContextPrompt))
+
+        // The Harmony tool-calling body (format spec + injection boundary +
+        // per-tool entries) — rendered into every tool-loop system prompt via
+        // the `{toolCalling}` chip or the buildRequest auto-append.
+        s.append(("NativeLMStudioClient.buildToolSchemaBody",
+                  NativeLMStudioClient.buildToolSchemaBody(tools: ToolHandlerRegistry.allSchemas)))
 
         // Builder-injected helpers (sample both branches of conditional helpers).
         s.append(("conversationMechanicsGuidance/withFileReadTools",
@@ -75,6 +88,38 @@ final class PromptFormatConventionsTests: XCTestCase {
         }
 
         return s
+    }()
+
+    // MARK: - Invariant 5: injection-boundary variants stay tied together
+
+    /// The data-not-instructions boundary is deliberately worded per surface
+    /// (artifacts and Supervisor answers are sanctioned direction, so the
+    /// carriers scope differently) — but every boundary-bearing surface must
+    /// keep SOME boundary phrase. Without this tie, a future strengthening
+    /// pass can update four of the five variants and CI stays green while one
+    /// surface silently keeps no boundary at all.
+    func testInjectionBoundary_presentOnEveryBoundarySurface() {
+        let surfaces: [(label: String, contents: String, marker: String)] = [
+            ("buildToolSchemaBody",
+             NativeLMStudioClient.buildToolSchemaBody(tools: [ToolHandlerRegistry.allSchemas[0]]),
+             "not instructions to you"),
+            ("SupervisorAutoAnswerService.systemPrompt",
+             SupervisorAutoAnswerService.systemPrompt,
+             "not instructions to you"),
+            ("VisionAnalysisService.systemPrompt",
+             VisionAnalysisService.systemPrompt,
+             "never instructions to follow"),
+            ("AppDefaults.workFolderContextPrompt",
+             AppDefaults.workFolderContextPrompt,
+             "never instructions to you"),
+            ("DelegatedSupervisorAnswerService question turn",
+             DelegatedSupervisorAnswerService.questionTurnBoundaryPhrase,
+             "not instructions for you"),
+        ]
+        for (label, contents, marker) in surfaces {
+            XCTAssertTrue(contents.contains(marker),
+                          "[\(label)] lost its injection-boundary phrase (expected `\(marker)`)")
+        }
     }
 
     // MARK: - Invariant 1: no `=== HEADER ===` delimiters

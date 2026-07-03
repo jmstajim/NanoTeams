@@ -112,7 +112,7 @@ nonisolated struct ReadLinesTool: ToolHandler {
     static let name = TN.readLines
     static let schema = ToolSchema(
         name: TN.readLines,
-        description: "Read a line range from a file. Result reports `start_line`, `end_line`, `total_lines`.",
+        description: "Read a line range from a file. If `end_line` in the result is below `total_lines`, the range was capped — continue from `end_line + 1`.",
         parameters: JS.object(
             properties: [
                 "path": JS.string("Relative path to file"),
@@ -358,8 +358,8 @@ nonisolated struct SearchTool: ToolHandler {
                 "paths": JS.array(items: JS.string("Relative path under the work folder"), description: "Restrict scope. Folders walked recursively; files scanned in place."),
                 "file_glob": JS.string("Basename glob (e.g. *.swift, test_*.md)."),
                 "max_results": JS.integer("Cap on returned matches."),
-                "context_before": JS.integer("Lines before each match (2-5 typical)."),
-                "context_after": JS.integer("Lines after each match (2-5 typical)."),
+                "context_before": JS.integer("Lines of context before each match."),
+                "context_after": JS.integer("Lines of context after each match."),
                 "exploratory": JS.boolean("Vector-index pass for synonyms, cross-language, and camel/snake variants."),
             ],
             required: ["query"]

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Compile-time string constants for all 45 tool names.
+/// Compile-time string constants for all 50 tool names.
 /// Use these instead of string literals to get compile-time checking on tool identifiers.
 nonisolated enum ToolNames {
     // File System (7)
@@ -58,11 +58,20 @@ nonisolated enum ToolNames {
     static let scheduleTask = "schedule_task"
     static let setWorkFolderContext = "set_work_folder_context"
     static let waitForEvents = "wait_for_events"
-    // Shell (2) — direct system interaction. category=.shell, blockedInDefaultStorage,
-    // excludedInMeetings, default-on for the code-writing roles + opt-in for others.
-    // Gated by the command-permission layer.
+    // Shell (2) — direct system interaction. category=.shell, excludedInMeetings,
+    // blockedInDefaultStorage=false (usable with no work folder — sandboxed to the
+    // Application Support root). Default-on for the code-writing roles + opt-in for
+    // others. Gated by the command-permission layer.
     static let bash = "bash"
     static let bashOutput = "bash_output"
+    // Computer Use (5) — screenshot + mouse/keyboard control of the desktop. category=.computerUse,
+    // excludedInMeetings, blockedInDefaultStorage=false (controls the screen, not the work folder),
+    // default-OFF for every role. Gated by the computer-use permission layer.
+    static let screenCapture = "screen_capture"
+    static let uiClick = "ui_click"
+    static let uiType = "ui_type"
+    static let uiKey = "ui_key"
+    static let uiScroll = "ui_scroll"
 
     /// Every canonical tool name. Used where code must answer "is this string a
     /// known tool?" without reaching into the (`@MainActor`) handler registry —
@@ -85,5 +94,6 @@ nonisolated enum ToolNames {
         listTasks, taskStatus, createManagedTask, controlTask, manageRole,
         answerTaskQuestion, messageTask, scheduleTask, setWorkFolderContext, waitForEvents,
         bash, bashOutput,
+        screenCapture, uiClick, uiType, uiKey, uiScroll,
     ]
 }

@@ -57,25 +57,32 @@ nonisolated enum PlanningPhasePolicy {
         tools.filter { $0.name == ToolNames.updateScratchpad }
     }
 
-    /// The base PLANNING PHASE system prompt (the caller appends `globalContext` via
-    /// `TemplateResolver.appendingSeparator`). Intentionally omits an inline tool-call
-    /// example: `buildToolSchemaSection` already appends one `## Tool Calling` block to
-    /// every system prompt, and a second example in a different syntax produces
-    /// mixed-format output on smaller models.
-    static func basePlanningPrompt(roleName: String) -> String {
-        """
-        You are \(roleName).
+    /// The base PLANNING PHASE system prompt (the caller inserts `globalContext` via
+    /// `TemplateResolver.insertingGlobalGuidance` — before the `## Final reminder`).
+    /// Intentionally omits an inline tool-call example: `buildToolSchemaSection`
+    /// already appends one `## Tool Calling` block to every system prompt, and a
+    /// second example in a different syntax produces mixed-format output on
+    /// smaller models.
+    ///
+    /// `expectedArtifacts` interpolates the role's deliverable contract — the
+    /// swap replaces the base prompt's `## Deliverables`, so without it the
+    /// plan was made blind to the artifact names it must target.
+    static func basePlanningPrompt(roleName: String, expectedArtifacts: [String] = []) -> String {
+        let deliverables = expectedArtifacts.isEmpty
+            ? ""
+            : "\nYour plan must end with producing: "
+                + expectedArtifacts.map { "\"\($0)\"" }.joined(separator: ", ") + ".\n"
+        return """
+        ## Role
+        \(roleName)
 
         ## PLANNING PHASE
         Before starting work, create your plan.
 
-        Call `update_scratchpad` with a numbered list of steps you will take, for example:
-        1. Review the requirements
-        2. Research relevant context
-        3. Create an outline
-        4. Produce the deliverable
-
-        This is the only tool available now. After you create your plan, you will have access to all your tools.
+        Call `update_scratchpad` with a short numbered list of the concrete steps you will take.
+        \(deliverables)
+        ## Final reminder
+        update_scratchpad is the only tool available now. After you record your plan, you get your full toolset.
         """
     }
 

@@ -109,7 +109,8 @@ nonisolated extension SystemTemplates {
 
         // MARK: Personal Assistant
         role("assistant", name: "Assistant", icon: "bubble.left.and.text.bubble.right",
-             toolIDs: [TN.askSupervisor],
+             toolIDs: [TN.askSupervisor,
+                       TN.screenCapture, TN.uiClick, TN.uiType, TN.uiKey, TN.uiScroll],
              requires: [supervisorTaskArtifactName]),
 
         // MARK: Coding Assistant
@@ -121,7 +122,8 @@ nonisolated extension SystemTemplates {
                        TN.gitMerge, TN.gitPull, TN.gitStash,
                        TN.runXcodebuild, TN.runXcodetests,
                        TN.bash, TN.bashOutput,
-                       TN.askSupervisor, TN.analyzeImage],
+                       TN.askSupervisor, TN.analyzeImage,
+                       TN.screenCapture, TN.uiClick, TN.uiType, TN.uiKey, TN.uiScroll],
              requires: [supervisorTaskArtifactName]),
 
         // MARK: Coding Agent — hybrid: handles small edits directly, delegates complex work

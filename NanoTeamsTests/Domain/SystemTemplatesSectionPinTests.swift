@@ -49,9 +49,9 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
     }
 
     func testAssistantTemplate_doesNotOpenWithYouAre() {
-        // Anti-pattern called out in §10 of docs/prompt-engineering-sources.md
-        // and in CLAUDE.md (role identity is established via `{roleName}` in the
-        // template's `## Role` line, not a duplicate "You are X..." preamble).
+        // House anti-pattern (see CLAUDE.md; playbook §1 "right altitude"):
+        // role identity is established via `{roleName}` in the template's
+        // `## Role` line, not a duplicate "You are X..." preamble.
         let t = SystemTemplates.assistantTemplate.trimmingCharacters(in: .whitespacesAndNewlines)
         XCTAssertFalse(t.hasPrefix("You are"), "assistantTemplate must not open with 'You are X...'")
     }
@@ -329,17 +329,17 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
     // MARK: - Chat-mode FR restates output format (Liu2024 §0.3 / Issue 3)
 
     /// Chat-mode templates have an implicit output contract — reply by calling
-    /// `ask_supervisor`. Per Liu2024 §0.3 the most critical
-    /// constraint must occupy the tail attention-sink slot. The standalone
-    /// `## Output format` section sat mid-prompt with FR carrying unrelated
-    /// content — buried-in-middle output format violates `prompt-engineering-sources.md`
-    /// §2 rule 3 («Restate the output format at the END»).
+    /// `ask_supervisor`. Per Liu2024 §0.3 (house rule; playbook §1 «state the
+    /// exact format» + §5 skeleton) the most critical constraint must occupy
+    /// the tail attention-sink slot. The standalone `## Output format` section
+    /// sat mid-prompt with FR carrying unrelated content — a buried-in-middle
+    /// output format.
     ///
     /// Fix: FR text MUST mention `ask_supervisor` for chat-mode
     /// templates. Either as a dedicated restatement or by folding the entire
     /// output-format rule into FR (current approach). The tool is referenced by
-    /// NAME only (no `tool.param` dotted form) — §3 «reference tools by name only»
-    /// / §10 anti-pattern «duplicate schema»; the dotted `ask_supervisor.question`
+    /// NAME only (no `tool.param` dotted form — house rule, see the dotted-param
+    /// pin below); the dotted `ask_supervisor.question`
     /// made some models emit it verbatim as the tool-call name.
     func testChatModeTemplate_finalReminderRestatesOutputFormat() {
         for (name, template) in [
@@ -366,7 +366,8 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
     /// LLM-facing prompt string may reference a tool in dotted `` `tool.param` ``
     /// form. Some models copy that token verbatim as the tool-call NAME, no
     /// handler matches, and the step loops on `tool_not_authorized`. Reference
-    /// tools by NAME only (`prompt-engineering-sources.md` §3); name any parameter
+    /// tools by NAME only (house rule; playbook §3 — tool wording measurably
+    /// affects call quality); name any parameter
     /// as a separate token. Scans every step / consultation / meeting template and
     /// every role prompt against all registered tool names — the manual grep the
     /// fix relied on, codified so a future prompt edit can't silently reintroduce it.
@@ -400,7 +401,7 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
                 XCTAssertFalse(
                     text.contains("`\(tool)."),
                     "[\(surfaceName)] references `\(tool).<param>` in dotted form — reference tools "
-                    + "by NAME only (prompt-engineering-sources.md §3). The dotted token is copied "
+                    + "by NAME only (house rule). The dotted token is copied "
                     + "verbatim as the tool-call name by some models (tool_not_authorized loop)."
                 )
             }
@@ -438,6 +439,69 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
             XCTAssertFalse(
                 assistantPrompt.contains("### Safety"),
                 "assistant role must NOT contain `### Safety` — folded into template's FR per 2026-05 dedup"
+            )
+        }
+    }
+
+    // MARK: - Positive-instruction de-stack pins (playbook §1/§6)
+
+    /// codeReviewer's review-only rule is stated positively ("Review only… the
+    /// Software Engineer writes all code"), not as the 2026-05 four-negative
+    /// stack ("don't redo… don't provide… don't fill in…"). Negative-instruction
+    /// stacking degrades small local models (playbook §6); the single retained
+    /// self-check ("stop and reframe") is the strongest guard, kept by design.
+    func testCodeReviewerGuidance_positiveReviewOnlyRule() {
+        let p = SystemTemplates.rolePrompts["codeReviewer"] ?? ""
+        XCTAssertTrue(p.contains("Review only"), "positive lead")
+        XCTAssertTrue(p.contains("request_changes"), "fix routing stays explicit")
+        XCTAssertFalse(p.contains("don't redo"), "negative stack stays removed")
+        XCTAssertFalse(p.contains("don't provide rewritten"), "negative stack stays removed")
+    }
+
+    /// questMaster carries the compressed format contract instead of the
+    /// removed Good/Bad few-shot pair (few-shot degrades reasoning models —
+    /// playbook §1; the format rule itself is load-bearing and stays).
+    func testQuestMasterGuidance_formatRuleWithoutFewShotPair() {
+        let p = SystemTemplates.rolePrompts["questMaster"] ?? ""
+        XCTAssertTrue(p.contains("### ask_supervisor format"), "format contract section stays")
+        XCTAssertTrue(p.contains("ENTIRE scene"), "whole-scene-inside-question rule stays")
+        XCTAssertFalse(p.contains("Good example"), "few-shot pair stays removed")
+        XCTAssertFalse(p.contains("Bad example"), "few-shot pair stays removed")
+    }
+
+    // MARK: - Role guidance is a placeholder VALUE — it must not embed chips
+
+    /// `TemplateResolver.resolve` is single-pass: placeholder VALUES are data and
+    /// are never re-scanned for `{key}` tokens. A chip embedded in role guidance
+    /// therefore ships to the model as a literal `{expectedArtifacts}` string.
+    /// (Pre-fix this was worse: dictionary-order resolution made it random per
+    /// app launch whether the token expanded.) Guard the whole class.
+    func testNoRolePrompt_embedsTemplateChips() {
+        let chips = [
+            "roleName", "roleGuidance", "teamRoles", "teamDescription", "toolList",
+            "expectedArtifacts", "artifactInstructions", "stepInfo", "positionContext",
+            "globalContext", "conversationMechanics", "toolCalling", "workFolderContext",
+        ]
+        for (roleID, prompt) in SystemTemplates.rolePrompts {
+            for chip in chips {
+                XCTAssertFalse(
+                    prompt.contains("{\(chip)}"),
+                    "[\(roleID)] role guidance embeds `{\(chip)}` — values are never re-resolved; "
+                    + "the model would receive the literal token"
+                )
+            }
+        }
+    }
+
+    /// Role guidance lands mid-prompt under `## Guidance`; a `### Final reminder`
+    /// inside it competes with the template's real tail `## Final reminder`
+    /// (two "final" blocks, one in the worst recall zone — Liu2024).
+    func testNoRolePrompt_carriesItsOwnFinalReminder() {
+        for (roleID, prompt) in SystemTemplates.rolePrompts {
+            XCTAssertFalse(
+                prompt.localizedCaseInsensitiveContains("final reminder"),
+                "[\(roleID)] role guidance carries its own 'Final reminder' — rename the section; "
+                + "the template's tail `## Final reminder` must stay the single final block"
             )
         }
     }

@@ -89,6 +89,15 @@ nonisolated enum ToolHandlerRegistry {
         // the code-writing roles + opt-in for others, gated by the bash-permission layer)
         BashTool.self,
         BashOutputTool.self,
+
+        // Computer Use (excluded in meetings, NOT blocked in default storage — controls the
+        // screen, not the work folder; default-OFF for every role; gated by the
+        // computer-use permission layer)
+        ScreenCaptureTool.self,
+        UIClickTool.self,
+        UITypeTool.self,
+        UIKeyTool.self,
+        UIScrollTool.self,
     ]
 
     // MARK: - Schema & Metadata Queries (cached)
@@ -151,9 +160,14 @@ nonisolated enum ToolHandlerRegistry {
     /// Vision analysis tools.
     static var visionTools: Set<String> { names(in: .vision) }
 
-    /// Shell-command tools (`bash` + `bash_output`). Blocked in default storage and
-    /// excluded from meetings, like write/git/xcode tools.
+    /// Shell-command tools (`bash` + `bash_output`). Excluded from meetings, but — unlike
+    /// write/git/xcode tools — usable with no work folder open (sandboxed to the
+    /// Application Support root).
     static var shellTools: Set<String> { names(in: .shell) }
+
+    /// Computer-use tools (`screen_capture` + `ui_click`/`ui_type`/`ui_key`/`ui_scroll`).
+    /// Stripped from every role's LLM schema when `ComputerUsePolicy.mode == .off`.
+    static var computerUseTools: Set<String> { names(in: .computerUse) }
 
     // MARK: - Handler Instance Construction
 

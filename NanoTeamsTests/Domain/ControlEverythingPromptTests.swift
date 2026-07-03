@@ -110,8 +110,18 @@ final class ControlEverythingPromptTests: XCTestCase {
         let result = TemplateResolver.resolveSystemPrompt(
             template, placeholders: [:], globalContext: "RULE_X"
         )
-        XCTAssertTrue(result.hasSuffix("## Global guidance\n\nRULE_X"),
+        // 2026-07 contract: the legacy auto-append inserts the guidance BEFORE a
+        // trailing `## Final reminder` so user context never displaces the tail
+        // reminder from the closing attention-sink slot [Liu2024].
+        XCTAssertTrue(result.contains("## Global guidance\n\nRULE_X"),
                       "Template without the chip must fall back to auto-append; got:\n\(result)")
+        XCTAssertTrue(result.hasSuffix("Do the thing."),
+                      "`## Final reminder` must stay the LAST block; got:\n\(result)")
+        guard let guidance = result.range(of: "## Global guidance"),
+              let fr = result.range(of: "## Final reminder") else {
+            return XCTFail("both sections expected, got:\n\(result)")
+        }
+        XCTAssertLessThan(guidance.lowerBound, fr.lowerBound)
     }
 
     // MARK: - Empty globalContext value collapses the chip

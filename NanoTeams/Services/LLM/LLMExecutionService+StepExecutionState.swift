@@ -100,6 +100,26 @@ extension LLMExecutionService {
         /// on the next attempt.
         var consecutiveHarmonyParseFailureCount: Int = 0
 
+        /// Most-recent computer-use screenshot for this step: the conversion metadata
+        /// (region origin/size, pixel size) the `.click`/`.scroll` finalizers need, plus
+        /// the base64 for the approval-card preview. In-memory only — never persisted.
+        /// Legitimately per-step: a click's coordinates are only valid against the capture
+        /// taken in the SAME step. (The first-capture-per-RUN gate counter lives per-TASK on the
+        /// service — `computerUseCaptureCountByTask` — so it survives step/pause boundaries.)
+        var lastComputerUseCapture: CapturedScreen?
+
+        /// The (deduped) ax_elements advertised with `lastComputerUseCapture` — the click
+        /// finalizer's containment echo resolves against this exact list so the echo can
+        /// never contradict what the model was shown. Same lifecycle as the capture.
+        var lastComputerUseElements: [AXElementInfo] = []
+
+        /// UI-changing computer-use actions (click / type / key / scroll) executed since the
+        /// last `screen_capture`. Zero right after a capture; > 0 means the saved screenshot,
+        /// its element list, and the `element_at_point` echo may describe a UI that no longer
+        /// exists — pointer results then carry `staleCaptureWarning` steering the model to
+        /// re-capture instead of probing stale coordinates.
+        var computerUseActionsSinceCapture: Int = 0
+
         /// In-flight detached tool-batch task spawned by `executeToolCalls`.
         /// Stored so cancellation reaches the synchronous handler chain
         /// (`ToolRuntime.executeAll` observes `Task.isCancelled` between calls;
@@ -126,6 +146,9 @@ extension LLMExecutionService {
             consecutiveThinkingLoopBreaks = 0
             consecutiveAdvisoryNoToolTurns = 0
             consecutiveHarmonyParseFailureCount = 0
+            lastComputerUseCapture = nil
+            lastComputerUseElements = []
+            computerUseActionsSinceCapture = 0
         }
     }
 }

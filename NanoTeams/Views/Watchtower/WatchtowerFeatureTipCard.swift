@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// Horizontal Setup-shelf card promoting an unconfigured Settings feature.
-/// Small square gradient cover on the leading edge, title + description fill
-/// the trailing side. Tap opens the feature's Settings tab; X persists a dismiss.
+/// Small filled tinted glyph inline with the title, description below.
+/// Tap opens the feature's Settings tab; X persists a dismiss.
 struct WatchtowerFeatureTipCard: View {
     let icon: String
     let title: String
@@ -14,25 +14,31 @@ struct WatchtowerFeatureTipCard: View {
     @State private var isHovered = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private static let coverSize: CGFloat = 56
-    private static let glyphSize: CGFloat = 26
+    // Deliberately NOT @ScaledMetric: on macOS 26.5 (SwiftUICore 7.5.3) the wrapper's
+    // compiler-generated initializeWithCopy crashes with EXC_BAD_ACCESS (swift_retain on a
+    // garbage pointer) the moment this view value is copied inside WatchtowerSetupSection's
+    // ViewBuilder — the app dies at launch. Crash report 2026-07-02 19:09; see the CLAUDE.md
+    // gotcha before re-adding Dynamic-Type scaling here.
+    private static let glyphSize: CGFloat = 15
 
     var body: some View {
-        HStack(alignment: .top, spacing: Spacing.m) {
-            cover
-
-            VStack(alignment: .leading, spacing: Spacing.xxs) {
+        VStack(alignment: .leading, spacing: Spacing.xxs) {
+            HStack(spacing: Spacing.s) {
+                Image(systemName: icon)
+                    .font(.system(size: Self.glyphSize, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .accessibilityHidden(true)
                 Text(title)
                     .font(Typography.subheadlineSemibold)
                     .foregroundStyle(Colors.textPrimary)
                     .lineLimit(1)
-                Text(description)
-                    .font(Typography.caption)
-                    .foregroundStyle(Colors.textSecondary)
-                    .lineLimit(3)
-                    .fixedSize(horizontal: false, vertical: true)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.trailing, Spacing.standard) // keep clear of the dismiss X
+            Text(description)
+                .font(Typography.caption)
+                .foregroundStyle(Colors.textSecondary)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(Spacing.m)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -54,22 +60,6 @@ struct WatchtowerFeatureTipCard: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityAction(named: Text("Dismiss")) { onDismiss() }
         .help(description)
-    }
-
-    private var cover: some View {
-        // Solid tint (no gradient) — DS monochrome+1 prefers flat color tiles
-        // over decorative gradients. The icon glyph already provides the
-        // visual interest; gradients here read as marketing flourish.
-        Rectangle()
-            .fill(tint)
-            .frame(width: Self.coverSize, height: Self.coverSize)
-            .clipShape(RoundedRectangle.squircle(CornerRadius.small))
-        .overlay {
-            Image(systemName: icon)
-                .font(.system(size: Self.glyphSize, weight: .semibold))
-                .foregroundStyle(Colors.textOnAccent)
-                .accessibilityHidden(true)
-        }
     }
 
     private var dismissButton: some View {

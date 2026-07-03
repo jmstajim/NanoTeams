@@ -9,7 +9,7 @@ nonisolated struct WriteFileTool: ToolHandler {
     static let name = TN.writeFile
     static let schema = ToolSchema(
         name: TN.writeFile,
-        description: "Write content to a file. Creates parent directories if needed. Replaces the entire file with the new content — always include imports, class declaration, all methods.",
+        description: "Write content to a file, replacing the entire file (partial content loses the rest). Creates parent directories if needed.",
         parameters: JS.object(
             properties: [
                 "path": JS.string("Relative path to file"),

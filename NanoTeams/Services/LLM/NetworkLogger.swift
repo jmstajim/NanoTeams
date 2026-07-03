@@ -88,7 +88,7 @@ nonisolated final class NetworkLogger: @unchecked Sendable {
     ) -> NetworkLogRecord {
         let bodyString: String?
         if let body = body {
-            bodyString = String(data: body, encoding: .utf8)
+            bodyString = redactImageData(String(data: body, encoding: .utf8))
         } else {
             bodyString = nil
         }
@@ -107,6 +107,19 @@ nonisolated final class NetworkLogger: @unchecked Sendable {
             stepID: stepID,
             roleName: roleName
         )
+    }
+
+    /// Strips base64 image payloads (`data:image/...;base64,...`) from a logged body so a
+    /// screenshot the model saw isn't written to `network_log.json`. Privacy guard for
+    /// computer-use / vision. Regression-pinned by `ScreenshotRedactionTests`.
+    static func redactImageData(_ body: String?) -> String? {
+        guard let body, body.contains("base64,") else { return body }
+        guard let re = try? NSRegularExpression(
+            pattern: "data:image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+", options: []) else { return body }
+        let range = NSRange(body.startIndex..., in: body)
+        return re.stringByReplacingMatches(
+            in: body, options: [], range: range,
+            withTemplate: "data:image/redacted;base64,[redacted]")
     }
 
     /// Creates a `.toolCall` audit record for a single tool call. Used for both

@@ -460,6 +460,46 @@ struct SettingsItemHeader: View {
     }
 }
 
+// MARK: - Settings Disclosure Row
+
+/// Collapsed-by-default disclosure section for settings cards: full-width
+/// tappable header row (chevron + icon + label) with content below when
+/// expanded. Replaces native `DisclosureGroup`, whose macOS hit area is
+/// only the disclosure triangle — here the whole label row toggles.
+struct SettingsDisclosureRow<Content: View>: View {
+    let title: String
+    let icon: String
+    @Binding var isExpanded: Bool
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.xs) {
+            Button {
+                withAnimation(Animations.quick) { isExpanded.toggle() }
+            } label: {
+                HStack(spacing: Spacing.xs) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(Typography.caption2.weight(.semibold))
+                        .foregroundStyle(Colors.textTertiary)
+                    Image(systemName: icon)
+                        .font(Typography.caption)
+                        .foregroundStyle(Colors.textSecondary)
+                    Text(title)
+                        .font(Typography.caption.weight(.medium))
+                        .foregroundStyle(Colors.textSecondary)
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                content()
+            }
+        }
+    }
+}
+
 // MARK: - Sheet Header
 
 /// Standardized sheet header with icon, title, and subtitle.

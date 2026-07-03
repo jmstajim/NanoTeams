@@ -26,6 +26,22 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
         }
     }
     func clearAllBashApprovalRequests() { bashApprovalBeganRequests.removeAll() }
+    var computerUsePolicy: ComputerUsePolicy = ComputerUsePolicy()
+    var computerUseApprovalBeganRequests: [ComputerUseApprovalRequest] = []
+    var clearAllComputerUseApprovalRequestsCallCount = 0
+    func computerUseApprovalDidBegin(_ request: ComputerUseApprovalRequest) {
+        computerUseApprovalBeganRequests.append(request)
+    }
+    func computerUseApprovalDidEnd(taskID: Int, stepID: String, actionKey: String, createdAt: Date) {
+        computerUseApprovalBeganRequests.removeAll {
+            $0.taskID == taskID && $0.stepID == stepID
+                && $0.actionKey == actionKey && $0.createdAt == createdAt
+        }
+    }
+    func clearAllComputerUseApprovalRequests() {
+        clearAllComputerUseApprovalRequestsCallCount += 1
+        computerUseApprovalBeganRequests.removeAll()
+    }
     var loggingEnabled: Bool = false
     var exploratorySearchEnabled: Bool = false
     var searchExploratoryByDefault: Bool = false

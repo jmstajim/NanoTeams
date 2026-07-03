@@ -50,6 +50,7 @@ struct RoleEditorToolsTab: View {
             isNonProducingNonObserver: injectsAskSupervisor && isNonProducingNonObserver,
             isMeetingCoordinator: isMeetingCoordinator,
             isVisionConfigured: config.isVisionConfigured,
+            isComputerUseEnabled: config.isComputerUseEnabled,
             canDelegate: canDelegate,
             delegationHint: delegationHint,
             lockedTools: lockedTools,

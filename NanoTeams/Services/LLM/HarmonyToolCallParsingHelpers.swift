@@ -494,6 +494,33 @@ nonisolated enum ToolCallParsingHelpers {
         case noEnvelopeAttempt
     }
 
+    /// The shared locate-and-extract step for the JSON payload after the first
+    /// `<|call|>` marker — `classifyHarmonyCallIssue` and
+    /// `malformedJSONDiagnostic` both build on this single walk, so the
+    /// classifier and the retry diagnostic can never describe different byte
+    /// ranges of the same envelope.
+    enum PostCallJSON {
+        case noCallMarker
+        case noObject           // marker present, next non-whitespace is not `{`
+        case unbalanced         // braces never balance (beyond salvage)
+        case extracted(String)  // the braced value (pre-sanitize)
+    }
+
+    static func postCallJSON(in text: String) -> PostCallJSON {
+        guard let callRange = text.range(of: CallMarkerStrategy.callMarker) else {
+            return .noCallMarker
+        }
+        let tail = text[callRange.upperBound...]
+        let jsonStart = skipWhitespace(in: tail, from: tail.startIndex)
+        guard jsonStart < tail.endIndex, tail[jsonStart] == "{" else {
+            return .noObject
+        }
+        guard let (jsonText, _) = extractJSONBracedValue(in: tail, from: jsonStart) else {
+            return .unbalanced
+        }
+        return .extracted(jsonText)
+    }
+
     /// Scans the assistant's text for the first `<|call|>…<|end|>` block and
     /// reports the nature of the parse failure. Safe to call on responses where
     /// only `<|channel|>` markers appear (returns `.malformedJSON`).
@@ -501,16 +528,12 @@ nonisolated enum ToolCallParsingHelpers {
         if containsOnlyRoleMarkerStarts(in: text) {
             return .noEnvelopeAttempt
         }
-        let callMarker = CallMarkerStrategy.callMarker
-        guard let callRange = text.range(of: callMarker) else { return .malformedJSON }
-
-        let tail = text[callRange.upperBound...]
-        let jsonStart = skipWhitespace(in: tail, from: tail.startIndex)
-        guard jsonStart < tail.endIndex, tail[jsonStart] == "{" else {
+        let jsonText: String
+        switch postCallJSON(in: text) {
+        case .noCallMarker, .noObject, .unbalanced:
             return .malformedJSON
-        }
-        guard let (jsonText, _) = extractJSONBracedValue(in: tail, from: jsonStart) else {
-            return .malformedJSON
+        case .extracted(let extracted):
+            jsonText = extracted
         }
         let sanitized = JSONUtilities.sanitizeJSONControlCharacters(jsonText)
         let dict: [String: Any]
@@ -544,6 +567,46 @@ nonisolated enum ToolCallParsingHelpers {
 
         return .missingToolName(
             inferredToolName: ToolCallShapeRecognizer.inferToolNameFromShape(dict)?.name)
+    }
+
+    /// Re-derives a human-readable defect description for a `.malformedJSON`
+    /// classification, so the retry nudge can attach the ACTUAL parser error
+    /// instead of generic guesses. Kept separate from `classifyHarmonyCallIssue`
+    /// (which discards the parse error) so `HarmonyCallIssue` stays Equatable
+    /// and every switch site is untouched; both build on `postCallJSON` so the
+    /// walk cannot drift.
+    ///
+    /// Returns nil when no concrete single-line defect can be named: no
+    /// `<|call|>` marker at all, the JSON actually parses, OR the strict parse
+    /// fails but `parseAfterRepair` recovers it — in the repaired case classify
+    /// fell to `.malformedJSON` for a different reason (e.g. a reserved tool
+    /// name), and a strict-parse error would mislead the model about JSON the
+    /// pipeline can in fact accept. The caller keeps its generic hints for nil.
+    static func malformedJSONDiagnostic(in text: String) -> String? {
+        let jsonText: String
+        switch postCallJSON(in: text) {
+        case .noCallMarker:
+            return nil
+        case .noObject:
+            return "no JSON object follows `<|call|>`"
+        case .unbalanced:
+            return "the JSON object's braces never balance"
+        case .extracted(let extracted):
+            jsonText = extracted
+        }
+        let sanitized = JSONUtilities.sanitizeJSONControlCharacters(jsonText)
+        guard let data = sanitized.data(using: .utf8) else { return nil }
+        do {
+            _ = try JSONSerialization.jsonObject(with: data, options: [])
+            return nil
+        } catch let error as NSError {
+            if parseAfterRepair(sanitized) != nil { return nil }
+            let detail = ((error.userInfo[NSDebugDescriptionErrorKey] as? String)
+                ?? error.localizedDescription)
+                .components(separatedBy: .newlines).first?
+                .trimmingCharacters(in: .whitespaces) ?? ""
+            return detail.isEmpty ? nil : detail
+        }
     }
 
     /// Returns true when the buffer's only envelope-shaped markers are

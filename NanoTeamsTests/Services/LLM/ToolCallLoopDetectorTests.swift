@@ -110,4 +110,68 @@ final class ToolCallLoopDetectorTests: XCTestCase {
             XCTFail("Expected repetitiveTool for 3x identical write, got \(String(describing: result))")
         }
     }
+
+    // MARK: - Computer-use identity + advice (regression: LinkedIn run 2026-07-02)
+
+    /// Regression: 4 `ui_click` calls at DIFFERENT coordinates ((1257,55), (1257,90),
+    /// (1257,60), (1408,126)) were flagged as "identical arguments 4 times" — the summarizer
+    /// had no ui_click entry, every argumentsSummary was "", and all clicks collapsed onto
+    /// one identity key. The model was then told to "try different arguments" while it
+    /// already was. Distinct coordinates must not be a loop.
+    func testDetectLoopPattern_uiClicksAtDifferentCoordinates_notALoop() {
+        let coords = ["(1257, 55)", "(1257, 90)", "(1257, 60)", "(1408, 126)", "(587, 61)", "(834, 190)"]
+        let calls = coords.map { makeCall(TN.uiClick, args: $0) }
+        XCTAssertNil(ToolCallLoopDetector.detectLoopPattern(in: calls))
+    }
+
+    func testDetectLoopPattern_identicalUIClicks_adviseRecapture_notDifferentArguments() {
+        // For GUI tools the cure for a true identical-click loop is a fresh screenshot —
+        // the model is probing a UI it can no longer see.
+        let calls = [
+            makeCall(TN.uiClick, args: "(100, 200)"),
+            makeCall(TN.uiClick, args: "(100, 200)"),
+            makeCall(TN.uiClick, args: "(100, 200)"),
+            makeCall(TN.uiKey, args: "return"),
+            makeCall(TN.uiType, args: "hello"),
+            makeCall(TN.uiScroll, args: "(5, 5) d(0, -3)"),
+        ]
+        let result = ToolCallLoopDetector.detectLoopPattern(in: calls)
+        if case .repetitiveTool(let tool, _, let message) = result {
+            XCTAssertEqual(tool, TN.uiClick)
+            XCTAssertTrue(message.contains("screen_capture"), "GUI loop advice must be re-capture")
+            XCTAssertFalse(message.contains("try different arguments"))
+        } else {
+            XCTFail("Expected repetitiveTool, got \(String(describing: result))")
+        }
+    }
+
+    /// Regression: re-capturing the same target is the PRESCRIBED workflow (UI changes between
+    /// calls). Counting screen_capture flagged the canonical capture→click→capture loop AND made
+    /// the nudge advise the very action it flagged. It must be excluded like update_scratchpad.
+    func testDetectLoopPattern_repeatedScreenCapture_notALoop() {
+        let calls = [
+            makeCall(TN.screenCapture, args: "Safari"),
+            makeCall(TN.uiClick, args: "(10, 20)"),
+            makeCall(TN.screenCapture, args: "Safari"),
+            makeCall(TN.uiClick, args: "(30, 40)"),
+            makeCall(TN.screenCapture, args: "Safari"),
+            makeCall(TN.uiClick, args: "(50, 60)"),
+        ]
+        XCTAssertNil(ToolCallLoopDetector.detectLoopPattern(in: calls))
+    }
+
+    func testDetectLoopPattern_nonGUITool_keepsDifferentArgumentsAdvice() {
+        let calls = [
+            makeCall(TN.writeFile, args: "src/App.tsx"),
+            makeCall(TN.writeFile, args: "src/App.tsx"),
+            makeCall(TN.writeFile, args: "src/App.tsx"),
+            makeCall(TN.readFile, args: "a"), makeCall(TN.readFile, args: "b"),
+            makeCall(TN.search, args: "foo"),
+        ]
+        guard case .repetitiveTool(_, _, let message)? = ToolCallLoopDetector.detectLoopPattern(in: calls) else {
+            return XCTFail("Expected repetitiveTool")
+        }
+        XCTAssertTrue(message.contains("try different arguments"))
+        XCTAssertFalse(message.contains("screen_capture"))
+    }
 }

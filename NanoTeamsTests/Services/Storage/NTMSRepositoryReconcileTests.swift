@@ -182,6 +182,106 @@ final class NTMSRepositoryReconcileTests: XCTestCase {
         )
     }
 
+    /// Group delivery for existing managers: a stored manager from a build that
+    /// PREDATES an optional-tool group (zero tools of it present) receives the
+    /// whole group on version bump.
+    func testVersionBump_deliversNewOptionalToolGroup_toVirginManager() throws {
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        let store = AtomicJSONStore()
+        var teamsFile = try store.read(TeamsFile.self, from: paths.teamsJSON)
+        var autovisor = TeamTemplateFactory.autovisor()
+        let managerIdx = try XCTUnwrap(autovisor.roles.firstIndex {
+            $0.systemRoleID == AutovisorConstants.managerRoleSystemID
+        })
+        // Older build: no computer-use group at all.
+        let group = try XCTUnwrap(AutovisorConstants.managerOptionalToolGroups.first)
+        autovisor.roles[managerIdx].toolIDs.removeAll { group.contains($0) }
+        teamsFile.teams.append(autovisor)
+        try store.write(teamsFile, to: paths.teamsJSON)
+
+        var state = try store.read(WorkFolderState.self, from: paths.workFolderJSON)
+        state.lastAppliedAppVersion = ""
+        try store.write(state, to: paths.workFolderJSON)
+
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        let reconciled = try store.read(TeamsFile.self, from: paths.teamsJSON)
+        let manager = try XCTUnwrap(reconciled.teams
+            .first { $0.templateID == AutovisorConstants.teamTemplateID }?
+            .roles.first { $0.systemRoleID == AutovisorConstants.managerRoleSystemID })
+        XCTAssertTrue(Set(group).isSubset(of: Set(manager.toolIDs)),
+                      "version bump must deliver the whole never-offered group")
+    }
+
+    /// Two consecutive version bumps must not duplicate group members: the
+    /// first delivers (group absent), the second sees the group present and
+    /// skips. A duplicate toolID would double-render the tool row in the
+    /// role editor and silently break Set-based comparisons.
+    func testVersionBump_groupDelivery_isIdempotentAcrossBumps() throws {
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        let store = AtomicJSONStore()
+        var teamsFile = try store.read(TeamsFile.self, from: paths.teamsJSON)
+        var autovisor = TeamTemplateFactory.autovisor()
+        let managerIdx = try XCTUnwrap(autovisor.roles.firstIndex {
+            $0.systemRoleID == AutovisorConstants.managerRoleSystemID
+        })
+        let group = try XCTUnwrap(AutovisorConstants.managerOptionalToolGroups.first)
+        autovisor.roles[managerIdx].toolIDs.removeAll { group.contains($0) }
+        teamsFile.teams.append(autovisor)
+        try store.write(teamsFile, to: paths.teamsJSON)
+
+        // Two rewind → reopen cycles = two version-bump reconciles.
+        for _ in 0..<2 {
+            var state = try store.read(WorkFolderState.self, from: paths.workFolderJSON)
+            state.lastAppliedAppVersion = ""
+            try store.write(state, to: paths.workFolderJSON)
+            _ = try sut.openOrCreateWorkFolder(at: root)
+        }
+
+        let reconciled = try store.read(TeamsFile.self, from: paths.teamsJSON)
+        let manager = try XCTUnwrap(reconciled.teams
+            .first { $0.templateID == AutovisorConstants.teamTemplateID }?
+            .roles.first { $0.systemRoleID == AutovisorConstants.managerRoleSystemID })
+        for tool in group {
+            XCTAssertEqual(manager.toolIDs.filter { $0 == tool }.count, 1,
+                           "\(tool) must appear exactly once after repeated bumps")
+        }
+    }
+
+    /// The counterpart boundary: a PARTIALLY present group means the user has
+    /// seen it and pruned — the reconcile must not re-add the pruned member.
+    func testVersionBump_partiallyPrunedGroup_keepsUserToggles() throws {
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        let store = AtomicJSONStore()
+        var teamsFile = try store.read(TeamsFile.self, from: paths.teamsJSON)
+        var autovisor = TeamTemplateFactory.autovisor()
+        let managerIdx = try XCTUnwrap(autovisor.roles.firstIndex {
+            $0.systemRoleID == AutovisorConstants.managerRoleSystemID
+        })
+        // User switched off ONE tool of the group; the rest remain.
+        autovisor.roles[managerIdx].toolIDs.removeAll { $0 == ToolNames.uiScroll }
+        teamsFile.teams.append(autovisor)
+        try store.write(teamsFile, to: paths.teamsJSON)
+
+        var state = try store.read(WorkFolderState.self, from: paths.workFolderJSON)
+        state.lastAppliedAppVersion = ""
+        try store.write(state, to: paths.workFolderJSON)
+
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        let reconciled = try store.read(TeamsFile.self, from: paths.teamsJSON)
+        let manager = try XCTUnwrap(reconciled.teams
+            .first { $0.templateID == AutovisorConstants.teamTemplateID }?
+            .roles.first { $0.systemRoleID == AutovisorConstants.managerRoleSystemID })
+        XCTAssertFalse(manager.toolIDs.contains(ToolNames.uiScroll),
+                       "a pruned member of a seen group must stay pruned")
+        XCTAssertTrue(manager.toolIDs.contains(ToolNames.screenCapture),
+                      "the remaining group members are untouched")
+    }
+
     /// The Autovisor manager parks at `.needsSupervisorInput` at the end of every
     /// review pass while its role status stays `.working` — if that deferred
     /// reconcile like other teams, an enabled Autovisor would hold the watermark

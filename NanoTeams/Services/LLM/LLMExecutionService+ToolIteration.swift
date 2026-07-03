@@ -106,6 +106,19 @@ extension LLMExecutionService {
         }
         if let usage = streamResult.tokenUsage { cumulativeUsage.accumulate(usage) }
 
+        // Session-chain fix for image turns: LM Studio forces `store:false` when the request
+        // carries an image (RequestBuilder), so it returns a PHANTOM response.id it never
+        // persisted. Reusing that id as `previous_response_id` next iteration → HTTP 400.
+        // Force a stateless rebuild on the following iteration, AND drop the (single-use) image
+        // from the in-memory conversation so that rebuild carries no image → goes `store:true`
+        // again → the chain re-establishes. The model saw the screenshot exactly once.
+        if messagesToSend.contains(where: { !($0.imageContent?.isEmpty ?? true) }) {
+            session = nil
+            for i in conversationMessages.indices where !(conversationMessages[i].imageContent?.isEmpty ?? true) {
+                conversationMessages[i].imageContent = nil
+            }
+        }
+
         // 2c. Top-level thinking-loop break: the stream was aborted + the looping
         // generation discarded (no anchor in `conversationMessages`, nothing in
         // `step.messages`). Recover via `LoopRecoveryPolicy` — clean retry or a
@@ -179,7 +192,7 @@ extension LLMExecutionService {
         // `executeToolCalls`. With a human present, an `.ask` command is HELD and the
         // gate awaits the human's Allow/Deny in-loop (bypassing the model) — not
         // surfaced as a supervisor question; with no human it is denied.
-        let gateResults = await gateBashCalls(
+        var gateResults = await gateBashCalls(
             resolvedToolCalls: streamResult.resolvedToolCalls,
             allowedToolNames: allowedToolNames,
             stepID: stepID,
@@ -190,6 +203,22 @@ extension LLMExecutionService {
             config: config,
             networkLogger: networkLogger
         )
+        // 5a-bis. Computer-use gate (second pre-pass): intercept screenshot / click / type /
+        // key / scroll actions per `ComputerUsePolicy` (deny / judge / human Allow-Deny) BEFORE
+        // they reach `executeToolCalls`. Disjoint indices from the bash gate (different tools),
+        // so the merge is collision-free.
+        let computerUseGateResults = await gateComputerUseCalls(
+            resolvedToolCalls: streamResult.resolvedToolCalls,
+            allowedToolNames: allowedToolNames,
+            stepID: stepID,
+            taskID: task.id,
+            supervisorMode: supervisorMode,
+            task: task,
+            client: client,
+            config: config,
+            networkLogger: networkLogger
+        )
+        gateResults.merge(computerUseGateResults) { _, cu in cu }
         let callsToExecute = streamResult.resolvedToolCalls.enumerated()
             .filter { gateResults[$0.offset] == nil }
             .map(\.element)
@@ -277,6 +306,7 @@ extension LLMExecutionService {
             stepID: stepID,
             taskID: task.id,
             tracker: tracker,
+            allowedToolNames: allowedToolNames,
             conversationMessages: &conversationMessages
         )
 

@@ -45,10 +45,29 @@ nonisolated enum AutovisorConstants {
         // default via `managerDefaultToolIDs` — the user can switch it off and that
         // choice persists (it is NOT union-enforced on open).
         ToolNames.analyzeImage, ToolNames.updateScratchpad,
+        // Computer use (screen control) — desktop-level, not repo-mutation, so it
+        // doesn't violate the "pure supervisor" rule above. Delivered to EXISTING
+        // managers additively by the version-bump reconcile (see
+        // `NTMSRepository+Reconcile` autovisor branch); execution is gated by the
+        // computer-use permission layer at call time.
+        ToolNames.screenCapture, ToolNames.uiClick, ToolNames.uiType,
+        ToolNames.uiKey, ToolNames.uiScroll,
     ]
 
     /// Default toolset seeded into the Autovisor role template (mandatory + optional).
     static var managerDefaultToolIDs: [String] { managerMandatoryToolIDs + managerOptionalToolIDs }
+
+    /// Optional-tool GROUPS the version-bump reconcile delivers to EXISTING managers
+    /// all-or-nothing: a stored manager containing NONE of a group predates its
+    /// introduction and receives the whole group; a manager containing SOME of it has
+    /// seen the group and pruned — the per-tool choice is preserved (pinned by
+    /// `testVersionBump_refreshesAutovisorManagerPrompt_preservingToolToggles`).
+    /// Known edge: a user who disables an ENTIRE group is indistinguishable from
+    /// never-offered, so the next version bump re-delivers it once.
+    static let managerOptionalToolGroups: [[String]] = [
+        [ToolNames.screenCapture, ToolNames.uiClick, ToolNames.uiType,
+         ToolNames.uiKey, ToolNames.uiScroll],
+    ]
 
     /// Max new tasks the manager may create in ONE review pass. Enforced in
     /// `createManagedTask` against a per-pass counter (reset on each manager run

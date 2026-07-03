@@ -55,6 +55,25 @@ nonisolated extension PromptBuilder {
         return matchedArtifacts
     }
 
+    /// Fence line for wrapping an artifact body: one backtick longer than the
+    /// longest backtick run inside the content, minimum four. CommonMark closes
+    /// a fence only on an equal-or-longer run, so no body — markdown with ```
+    /// samples, or documentation that itself nests ````-fences — can close the
+    /// wrapper early and spill artifact text into prompt structure.
+    static func artifactFence(for content: String) -> String {
+        var longest = 0
+        var current = 0
+        for ch in content {
+            if ch == "`" {
+                current += 1
+                longest = max(longest, current)
+            } else {
+                current = 0
+            }
+        }
+        return String(repeating: "`", count: max(4, longest + 1))
+    }
+
     /// Builds the Required Artifacts section with full content.
     static func buildRequiredArtifactsSection(
         artifacts: [Artifact],
@@ -72,9 +91,10 @@ nonisolated extension PromptBuilder {
             if let content = artifactReader(artifact) {
                 let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty {
-                    lines.append("```")
+                    let fence = artifactFence(for: trimmed)
+                    lines.append(fence)
                     lines.append(trimmed)
-                    lines.append("```")
+                    lines.append(fence)
                 } else {
                     lines.append("(empty content)")
                 }

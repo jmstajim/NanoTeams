@@ -9,6 +9,7 @@ import XCTest
 ///   - `allTeams: []`            → delegation pack stripped (no catalog)
 ///   - `selectedScheme: nil`     → xcode tools stripped
 ///   - `isVisionConfigured: false` → analyze_image stripped
+///   - `isComputerUseEnabled: false` → the 5 computer-use tools stripped
 ///
 /// A future caller that forgets to pass any of these would silently ship a
 /// stripped tool set into a real run. These tests fail-loudly if the defaults
@@ -103,6 +104,75 @@ final class ResolveToolSchemasDefaultsTests: XCTestCase {
         let names = Set(schemas.map(\.name))
         XCTAssertTrue(names.contains(ToolNames.analyzeImage),
                       "isVisionConfigured=true must keep analyze_image")
+    }
+
+    // MARK: - isComputerUseEnabled default
+
+    func testDefaultIsComputerUseEnabled_stripsComputerUseTools() {
+        let tn = ToolNames.self
+        let agent = makeAgent(toolIDs: [
+            tn.screenCapture, tn.uiClick, tn.uiType, tn.uiKey, tn.uiScroll, tn.readFile,
+        ])
+        let team = makeTeam([agent])
+        let schemas = LLMExecutionService.resolveToolSchemas(
+            for: Role.fromDefinition(agent),
+            team: team,
+            allTeams: [team]
+            // isComputerUseEnabled intentionally omitted — defaults to false
+            // (the safe orchestrator-free default)
+        )
+        let names = Set(schemas.map(\.name))
+        for tool in ToolHandlerRegistry.computerUseTools {
+            XCTAssertFalse(names.contains(tool),
+                           "default isComputerUseEnabled=false must strip \(tool)")
+        }
+        XCTAssertTrue(names.contains(tn.readFile),
+                      "non-computer-use tools are unaffected")
+    }
+
+    func testExplicitIsComputerUseEnabled_keepsComputerUseTools() {
+        let tn = ToolNames.self
+        let agent = makeAgent(toolIDs: [
+            tn.screenCapture, tn.uiClick, tn.uiType, tn.uiKey, tn.uiScroll,
+        ])
+        let team = makeTeam([agent])
+        let schemas = LLMExecutionService.resolveToolSchemas(
+            for: Role.fromDefinition(agent),
+            team: team,
+            allTeams: [team],
+            isComputerUseEnabled: true
+        )
+        let names = Set(schemas.map(\.name))
+        for tool in ToolHandlerRegistry.computerUseTools {
+            XCTAssertTrue(names.contains(tool),
+                          "isComputerUseEnabled=true must keep \(tool)")
+        }
+    }
+
+    func testComputerUseTools_surviveDefaultStorageFilter() {
+        // Computer-use operates the DESKTOP, not the work folder — the tools are
+        // deliberately absent from `defaultStorageBlocked`, so a QuickCapture
+        // chat with no real folder open can still screen-control when the
+        // feature is enabled. Pins the resolver → default-storage filter chain.
+        let tn = ToolNames.self
+        let agent = makeAgent(toolIDs: [
+            tn.screenCapture, tn.uiClick, tn.uiType, tn.uiKey, tn.uiScroll, tn.writeFile,
+        ])
+        let team = makeTeam([agent])
+        let resolved = LLMExecutionService.resolveToolSchemas(
+            for: Role.fromDefinition(agent),
+            team: team,
+            allTeams: [team],
+            isComputerUseEnabled: true
+        )
+        let filtered = LLMExecutionService.filterForDefaultStorage(resolved, isDefaultStorage: true)
+        let names = Set(filtered.map(\.name))
+        for tool in ToolHandlerRegistry.computerUseTools {
+            XCTAssertTrue(names.contains(tool),
+                          "\(tool) must survive default-storage filtering")
+        }
+        XCTAssertFalse(names.contains(tn.writeFile),
+                       "sanity: the filter itself ran (write_file is blocked in default storage)")
     }
 
     // MARK: - allTeams default

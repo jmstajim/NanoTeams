@@ -26,7 +26,7 @@ nonisolated struct CreateArtifactTool: ToolHandler {
         JS.object(
             properties: [
                 "name": JS.string(
-                    "Name of the deliverable — must match one from the list below.",
+                    "Deliverable name.",
                     enumValues: nameEnum
                 ),
                 "content": JS.string(

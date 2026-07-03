@@ -352,4 +352,108 @@ final class TemplateResolverTests: XCTestCase {
                        "neighbouring blank line must collapse the same way `stripOrphanHeaders` "
                        + "handles empty `##` sections")
     }
+
+    // MARK: - resolve — single-pass semantics (values are data, never re-scanned)
+
+    /// A placeholder VALUE containing another `{key}` token must ship verbatim.
+    /// The prior implementation looped `for (key, value) in placeholders` with
+    /// `replacingOccurrences` — Swift Dictionary iteration order is re-randomized
+    /// per process, so whether the nested token expanded depended on hash seeding
+    /// at app launch (non-deterministic bytes on the wire, and a mild injection
+    /// vector: user-authored roleGuidance/globalContext mentioning `{toolCalling}`
+    /// could smuggle a second tool-catalog copy into the prompt).
+    func testResolve_valueContainingPlaceholderToken_isNotReExpanded() {
+        let out = TemplateResolver.resolve(
+            "{roleGuidance}\n{expectedArtifacts}",
+            placeholders: [
+                "roleGuidance": "Use the EXACT names from {expectedArtifacts}.",
+                "expectedArtifacts": "Release Notes",
+            ]
+        )
+        XCTAssertEqual(out, "Use the EXACT names from {expectedArtifacts}.\nRelease Notes")
+    }
+
+    /// Same-input resolution must be byte-identical across repeated calls —
+    /// no dependence on dictionary iteration order.
+    func testResolve_isDeterministic() {
+        let template = "{a}{b}{c}"
+        let placeholders = ["a": "{b}", "b": "{c}", "c": "X"]
+        let first = TemplateResolver.resolve(template, placeholders: placeholders)
+        for _ in 0..<50 {
+            XCTAssertEqual(TemplateResolver.resolve(template, placeholders: placeholders), first)
+        }
+        XCTAssertEqual(first, "{b}{c}X", "values are data — chained expansion must not occur")
+    }
+
+    func testResolve_adjacentPlaceholders() {
+        XCTAssertEqual(
+            TemplateResolver.resolve("{a}{b}", placeholders: ["a": "1", "b": "2"]),
+            "12"
+        )
+    }
+
+    func testResolve_placeholderAtStartAndEnd() {
+        XCTAssertEqual(
+            TemplateResolver.resolve("{a} mid {b}", placeholders: ["a": "S", "b": "E"]),
+            "S mid E"
+        )
+    }
+
+    func testResolve_emptyBraces_stayLiteral() {
+        XCTAssertEqual(TemplateResolver.resolve("{} {a}", placeholders: ["a": "x"]), "{} x")
+    }
+
+    func testResolve_unclosedBrace_staysLiteral() {
+        XCTAssertEqual(TemplateResolver.resolve("{a and {b}", placeholders: ["b": "x"]), "{a and x")
+    }
+
+    func testResolve_emptyTemplate() {
+        XCTAssertEqual(TemplateResolver.resolve("", placeholders: ["a": "x"]), "")
+    }
+
+    func testResolve_emptyPlaceholders_returnsTemplateUnchanged() {
+        XCTAssertEqual(TemplateResolver.resolve("{a} {b}", placeholders: [:]), "{a} {b}")
+    }
+
+    // MARK: - insertingGlobalGuidance (tail-slot preservation)
+
+    func testInsertingGlobalGuidance_beforeTrailingFinalReminder() {
+        let text = "## Role\nX\n\n## Final reminder\nSubmit once."
+        let out = TemplateResolver.insertingGlobalGuidance("ctx", into: text)
+        XCTAssertEqual(out, "## Role\nX\n\n## Global guidance\n\nctx\n\n## Final reminder\nSubmit once.")
+    }
+
+    func testInsertingGlobalGuidance_noFinalReminder_appends() {
+        let out = TemplateResolver.insertingGlobalGuidance("ctx", into: "## Role\nX")
+        XCTAssertEqual(out, "## Role\nX\n\n## Global guidance\n\nctx")
+    }
+
+    func testInsertingGlobalGuidance_emptySuffix_unchanged() {
+        let text = "## Role\nX\n\n## Final reminder\nY"
+        XCTAssertEqual(TemplateResolver.insertingGlobalGuidance("  \n ", into: text), text)
+    }
+
+    /// A "## Final reminder" mentioned mid-line (not at a line start) is prose,
+    /// not a header — must not trigger the insertion split.
+    func testInsertingGlobalGuidance_midLineMention_isNotAHeader() {
+        let text = "The section named ## Final reminder is special."
+        let out = TemplateResolver.insertingGlobalGuidance("ctx", into: text)
+        XCTAssertTrue(out.hasSuffix("## Global guidance\n\nctx"),
+                      "mid-line mention must be treated as prose; guidance appends at the end")
+    }
+
+    /// The legacy auto-append path in `resolveSystemPrompt` (template without a
+    /// `{globalContext}` chip) must not displace the tail reminder either.
+    func testResolveSystemPrompt_legacyAutoAppend_keepsFinalReminderLast() {
+        let template = "## Role\n{roleName}\n\n## Final reminder\nSubmit once."
+        let out = TemplateResolver.resolveSystemPrompt(
+            template, placeholders: ["roleName": "PM"], globalContext: "ctx"
+        )
+        guard let guidance = out.range(of: "## Global guidance"),
+              let fr = out.range(of: "## Final reminder") else {
+            return XCTFail("both sections expected, got:\n\(out)")
+        }
+        XCTAssertLessThan(guidance.lowerBound, fr.lowerBound)
+        XCTAssertTrue(out.hasSuffix("Submit once."))
+    }
 }

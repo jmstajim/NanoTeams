@@ -46,9 +46,13 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
         var maxLLMRetries: Int { 0 }
         var visionLLMConfig: LLMConfig? { nil }
         var bashPolicy: BashPolicy { BashPolicy() }
+        var computerUsePolicy: ComputerUsePolicy { ComputerUsePolicy() }
         func bashApprovalDidBegin(_ request: BashApprovalRequest) {}
         func bashApprovalDidEnd(taskID: Int, stepID: String, commandKey: String, createdAt: Date) {}
         func clearAllBashApprovalRequests() {}
+        func computerUseApprovalDidBegin(_ request: ComputerUseApprovalRequest) {}
+        func computerUseApprovalDidEnd(taskID: Int, stepID: String, actionKey: String, createdAt: Date) {}
+        func clearAllComputerUseApprovalRequests() {}
         var snapshot: WorkFolderContext? {
             guard let projection = workFolderProjection else { return nil }
             return WorkFolderContext(
@@ -488,4 +492,99 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
         XCTAssertFalse(success)
         XCTAssertEqual(client.captures.count, 0)
     }
+
+    // MARK: - Prompt contract: escalation is a tool call, not prose
+
+    /// The wire `tools` array offers ONLY `ask_supervisor`; escalation is detected
+    /// exclusively via that tool call. The question turn must therefore instruct
+    /// escalation AS a tool call — the prior wording "If outside your scope, say so
+    /// and the system will escalate" made a compliant model refuse in prose, which
+    /// was then delivered to the child as the Supervisor's final answer.
+    func testQuestionTurn_instructsToolCallEscalation_andSingleToolAvailability() async {
+        let delegate = MultiTaskDelegateStub()
+        let parentTeam = makeParentTeam()
+        delegate.workFolderProjection = makeProjection(teams: [parentTeam])
+        delegate.tasks[1] = makeParentTask(seedConversation: [LLMMessage(role: .system, content: "PM")])
+        delegate.tasks[2] = makeChildTask(question: "Q?")
+
+        let client = ScriptedLLMClient()
+        client.script = [.init(content: "A.", toolCalls: [], responseID: "r1")]
+
+        _ = await DelegatedSupervisorAnswerService.handleChildQuestion(
+            childTID: 2, parentTaskID: 1, parentRoleID: "pm",
+            parentTeam: parentTeam, targetTeamName: "Engineering",
+            client: client, globalConfig: delegate.globalLLMConfig, delegate: delegate
+        )
+
+        let turn = client.captures[0].messages.last?.content ?? ""
+        XCTAssertTrue(turn.contains("ask_supervisor"),
+                      "escalation must be instructed as an ask_supervisor tool call — got:\n\(turn)")
+        XCTAssertFalse(turn.contains("say so"),
+                       "prose escalation instruction contradicts the tool-call-only detection")
+        XCTAssertTrue(turn.localizedCaseInsensitiveContains("only"),
+                      "turn must state ask_supervisor is the only tool available in this exchange "
+                      + "(the seeded system prompt advertises the role's full toolset)")
+        XCTAssertFalse(turn.contains("«"), "guillemets are a one-off delimiter — use plain quotes")
+    }
+
+    // MARK: - Harmony-envelope escalation fallback
+
+    /// gpt-oss-class local models emit tool calls as Harmony text envelopes
+    /// (`<|channel|>commentary to=functions.X<|message|>{…}<|call|>`) instead of
+    /// OpenAI deltas. Without the parser fallback the escalation was invisible AND
+    /// the raw envelope leaked to the child as the Supervisor's answer.
+    func testEscalation_viaHarmonyEnvelope_isDetected_notLeakedAsAnswer() async {
+        let delegate = MultiTaskDelegateStub()
+        let parentTeam = makeParentTeam()
+        delegate.workFolderProjection = makeProjection(teams: [parentTeam])
+        delegate.tasks[1] = makeParentTask(seedConversation: [LLMMessage(role: .system, content: "PM")])
+        delegate.tasks[2] = makeChildTask(question: "Cannot answer from PM context")
+
+        let client = ScriptedLLMClient()
+        client.script = [
+            .init(
+                content: "<|channel|>commentary to=functions.ask_supervisor<|message|>"
+                    + "{\"question\": \"Need exec input\"}<|call|>",
+                toolCalls: [],
+                responseID: "r1"
+            ),
+        ]
+
+        let success = await DelegatedSupervisorAnswerService.handleChildQuestion(
+            childTID: 2, parentTaskID: 1, parentRoleID: "pm",
+            parentTeam: parentTeam, targetTeamName: "Engineering",
+            client: client, globalConfig: delegate.globalLLMConfig, delegate: delegate
+        )
+
+        XCTAssertFalse(success, "Harmony-envelope escalation at top of chain must abort, not answer")
+        XCTAssertEqual(delegate.answerSupervisorCalls.count, 0,
+                       "raw Harmony envelope must never be delivered to the child as an answer")
+        XCTAssertEqual(delegate.tasks[1]!.runs[0].steps[0].ancillaryQuestion, "Need exec input")
+    }
+
+    /// Stray `<|…|>` model tokens in a plain-text answer (no tool call anywhere)
+    /// are stripped before delivery to the child.
+    func testPlainAnswer_withStrayModelTokens_isCleaned() async {
+        let delegate = MultiTaskDelegateStub()
+        let parentTeam = makeParentTeam()
+        delegate.workFolderProjection = makeProjection(teams: [parentTeam])
+        delegate.tasks[1] = makeParentTask(seedConversation: [LLMMessage(role: .system, content: "PM")])
+        delegate.tasks[2] = makeChildTask(question: "Q?")
+
+        let client = ScriptedLLMClient()
+        client.script = [
+            .init(content: "<|channel|>final<|message|>Use approach B.", toolCalls: [], responseID: "r1"),
+        ]
+
+        _ = await DelegatedSupervisorAnswerService.handleChildQuestion(
+            childTID: 2, parentTaskID: 1, parentRoleID: "pm",
+            parentTeam: parentTeam, targetTeamName: "Engineering",
+            client: client, globalConfig: delegate.globalLLMConfig, delegate: delegate
+        )
+
+        XCTAssertEqual(delegate.answerSupervisorCalls.count, 1)
+        XCTAssertEqual(delegate.answerSupervisorCalls[0].answer, "Use approach B.",
+                       "model tokens must be stripped from the delivered answer")
+    }
+
 }

@@ -37,7 +37,10 @@ nonisolated extension PromptBuilder {
             if !uniqueConsumers.isEmpty {
                 parts.append("Feeds into: \(uniqueConsumers.joined(separator: ", "))")
             }
-            parts.append("Produces: \(produces.joined(separator: ", "))")
+            // No `Produces:` here — the produced-artifact names already have a
+            // dedicated `## Deliverables` section in the same resolved prompt
+            // (plus the enum inside the create_artifact schema). `Receives:` /
+            // `Feeds into:` carry the information unique to position context.
         }
 
         if parts.isEmpty {

@@ -979,4 +979,65 @@ final class HarmonyJSONDefectRepairTests: XCTestCase {
         XCTAssertEqual(args?["new_text"] as? String, "if (x < y) {")
         XCTAssertEqual(args?["path"] as? String, "app.js")
     }
+
+    // MARK: - malformedJSONDiagnostic (parse error attached to the retry nudge)
+
+    func testMalformedJSONDiagnostic_noCallMarker_returnsNil() {
+        // Only <|channel|> markers, no <|call|> — no concrete defect to name;
+        // the caller keeps its generic hint list.
+        XCTAssertNil(ToolCallParsingHelpers.malformedJSONDiagnostic(
+            in: "<|channel|>commentary some prose"))
+    }
+
+    func testMalformedJSONDiagnostic_noJSONAfterMarker_namesIt() {
+        XCTAssertEqual(
+            ToolCallParsingHelpers.malformedJSONDiagnostic(in: "<|call|>ping<|end|>"),
+            "no JSON object follows `<|call|>`")
+    }
+
+    func testMalformedJSONDiagnostic_unbalancedBraces_namesIt() {
+        // No closing brace anywhere — beyond even the salvage path.
+        XCTAssertEqual(
+            ToolCallParsingHelpers.malformedJSONDiagnostic(
+                in: #"<|call|>{"name":"write_file","arguments":{"path":"x"#),
+            "the JSON object's braces never balance")
+    }
+
+    func testMalformedJSONDiagnostic_strictParseError_surfacesParserMessage() {
+        // Braces balance but the object is invalid — an unescaped quote inside
+        // a string value, the canonical production defect (models emitting
+        // HTML/JS content inside create_artifact). The diagnostic carries the
+        // actual JSONSerialization error, single line. (NOT a trailing comma:
+        // macOS 26's swift-foundation JSONSerialization silently ACCEPTS
+        // trailing commas, so that input parses and yields nil.)
+        let diag = ToolCallParsingHelpers.malformedJSONDiagnostic(
+            in: #"<|call|>{"name":"x","arguments":{"content":"say "hi""}}<|end|>"#)
+        XCTAssertNotNil(diag, "a concrete parser error must be surfaced")
+        XCTAssertFalse(diag!.isEmpty)
+        XCTAssertFalse(diag!.contains("\n"), "diagnostic must be a single line")
+        XCTAssertNotEqual(diag, "no JSON object follows `<|call|>`")
+        XCTAssertNotEqual(diag, "the JSON object's braces never balance")
+    }
+
+    func testMalformedJSONDiagnostic_validJSON_returnsNil() {
+        XCTAssertNil(ToolCallParsingHelpers.malformedJSONDiagnostic(
+            in: #"<|call|>{"name":"x","arguments":{}}<|end|>"#))
+    }
+
+    /// Repair-recoverable envelope (strict parse fails, `parseAfterRepair`
+    /// succeeds): classify falls to `.malformedJSON` for a DIFFERENT reason,
+    /// so a confident strict-parse error would mislead the model about JSON
+    /// the pipeline can actually accept — the diagnostic must return nil and
+    /// let the generic hints stand. Uses the verbatim qwen fixture: its TWO
+    /// unescaped-quote defects keep quote parity, so the brace walk extracts
+    /// the object and the strict-parse/repair arms are genuinely exercised
+    /// (a single-defect payload dies earlier, in extraction).
+    func testMalformedJSONDiagnostic_repairRecoverableEnvelope_returnsNil() {
+        // Pre-conditions: strict-broken but repair-recoverable (pinned above by
+        // testStrictJSONSerialization_rejects… / testRepair_recovers…).
+        XCTAssertNotNil(ToolCallParsingHelpers.parseAfterRepair(Self.verbatimBrokenPayload))
+        let envelope = "<|call|>\(Self.verbatimBrokenPayload)<|end|>"
+        XCTAssertNil(ToolCallParsingHelpers.malformedJSONDiagnostic(in: envelope),
+                     "repair-recoverable envelope must not get a strict-parse diagnostic")
+    }
 }

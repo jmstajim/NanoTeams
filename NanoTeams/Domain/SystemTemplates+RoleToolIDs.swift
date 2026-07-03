@@ -55,6 +55,14 @@ nonisolated extension SystemTemplates {
     private static let shellTools: Set<String> = [
         TN.bash, TN.bashOutput,
     ]
+    /// Computer-use (screen control) tools — granted by default to the dialog-first
+    /// assistant roles (Assistant, Coding Assistant) and the Autovisor manager.
+    /// Execution stays gated by the computer-use permission layer at call time
+    /// (Approval mode / judge / human prompt); Approval = Off strips these from
+    /// every role's LLM schema entirely.
+    private static let computerUseToolIDs: Set<String> = [
+        TN.screenCapture, TN.uiClick, TN.uiType, TN.uiKey, TN.uiScroll,
+    ]
 
     /// Fallback tool IDs for roles without a team configuration.
     /// Custom roles default to readOnlyTools + memoryToolIDs + teammateToolIDs.
@@ -78,8 +86,8 @@ nonisolated extension SystemTemplates {
         "theConscientious": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs),
         "theExtrovert": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs),
         "theNeurotic": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs),
-        "assistant": readOnlyTools.union(fileWriteTools).union(memoryToolIDs).union(supervisorToolIDs).union(visionToolIDs),
-        "codingAssistant": readOnlyTools.union(fileWriteTools).union(memoryToolIDs).union(engineerOnlyTools).union(shellTools).union(supervisorToolIDs).union(visionToolIDs),
+        "assistant": readOnlyTools.union(fileWriteTools).union(memoryToolIDs).union(supervisorToolIDs).union(visionToolIDs).union(computerUseToolIDs),
+        "codingAssistant": readOnlyTools.union(fileWriteTools).union(memoryToolIDs).union(engineerOnlyTools).union(shellTools).union(supervisorToolIDs).union(visionToolIDs).union(computerUseToolIDs),
         "codingAgent": readOnlyTools.union(fileWriteTools).union(memoryToolIDs).union(gitReadOnlyTools).union(shellTools).union(supervisorToolIDs).union(visionToolIDs),
     ]
 

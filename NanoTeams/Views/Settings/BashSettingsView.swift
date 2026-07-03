@@ -136,7 +136,7 @@ struct BashSettingsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 // — Advanced (judge model override + unsandboxed fallback) —
-                disclosure(title: "Advanced", icon: "gearshape.2", isExpanded: $showSandboxAdvanced) {
+                SettingsDisclosureRow(title: "Advanced", icon: "gearshape.2", isExpanded: $showSandboxAdvanced) {
                     VStack(alignment: .leading, spacing: Spacing.m) {
                         SettingsToggleRow(
                             title: "Allow unsandboxed fallback",
@@ -174,7 +174,7 @@ struct BashSettingsView: View {
     private var rulesCard: some View {
         @Bindable var config = config
         return SettingsCard(header: "Rules", systemImage: "list.bullet.rectangle") {
-            disclosure(title: "Custom command rules", icon: "slider.horizontal.3", isExpanded: $showCustomRules) {
+            SettingsDisclosureRow(title: "Custom command rules", icon: "slider.horizontal.3", isExpanded: $showCustomRules) {
                 VStack(alignment: .leading, spacing: Spacing.m) {
                     Text("Each rule is a command pattern and what to do with it. A bare word matches a command's program (`rm` matches `rm -rf x`, not `rmdir`); add `*` for a prefix glob (`git push*`); include a space for a literal phrase (`npm run build`). Precedence: **deny → ask → allow**.")
                         .font(Typography.caption)
@@ -191,42 +191,6 @@ struct BashSettingsView: View {
         }
     }
 
-    // MARK: - Disclosure helper
-
-    /// Collapsed-by-default section header + body, matching the DS disclosure idiom
-    /// (chevron + icon + label). Used for the rarely-touched power-user knobs.
-    @ViewBuilder
-    private func disclosure<Content: View>(
-        title: String,
-        icon: String,
-        isExpanded: Binding<Bool>,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: Spacing.xs) {
-            Button {
-                withAnimation(Animations.quick) { isExpanded.wrappedValue.toggle() }
-            } label: {
-                HStack(spacing: Spacing.xs) {
-                    Image(systemName: isExpanded.wrappedValue ? "chevron.down" : "chevron.right")
-                        .font(Typography.caption2.weight(.semibold))
-                        .foregroundStyle(Colors.textTertiary)
-                    Image(systemName: icon)
-                        .font(Typography.caption)
-                        .foregroundStyle(Colors.textSecondary)
-                    Text(title)
-                        .font(Typography.caption.weight(.medium))
-                        .foregroundStyle(Colors.textSecondary)
-                    Spacer()
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            if isExpanded.wrappedValue {
-                content()
-            }
-        }
-    }
 }
 
 // MARK: - Preview

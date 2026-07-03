@@ -92,6 +92,31 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
         XCTAssertTrue(messages[0].content?.contains("malformed JSON") == true)
     }
 
+    func testMalformedJSONRetry_attachesConcreteParserDiagnostic() async {
+        // Envelope with no closing brace at all — the retry must name the
+        // ACTUAL defect (playbook: re-prompt with the parse error attached)
+        // instead of the generic brace/quote/comma guess list.
+        var messages: [ChatMessage] = []
+        let stop = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "<|call|>{\"name\":\"write_file\",\"arguments\":{\"path\":\"x\"",
+            sawHarmonyMarker: true,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages
+        )
+        guard case .continueLoop = stop else {
+            XCTFail("Expected .continueLoop, got \(stop)")
+            return
+        }
+        let retry = messages[0].content ?? ""
+        XCTAssertTrue(retry.contains("malformed JSON"))
+        XCTAssertTrue(retry.contains("parser error: the JSON object's braces never balance"),
+                      "retry must carry the concrete parser diagnostic, got: \(retry)")
+        XCTAssertFalse(retry.contains("e.g. a missing closing brace"),
+                       "generic hint list must be replaced when a concrete diagnostic exists")
+    }
+
     func testTokensOnlyWithoutHarmonyMarker_sendsTokensOnlyRetry() async {
         // Different scenario: content had some stray `<|foo|>` tokens but no actual
         // tool call marker. Should still send the tokens-only retry.
@@ -352,8 +377,8 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
             "Nudge must quote the exact artifact name; got: \(retry)"
         )
         XCTAssertTrue(
-            retry.lowercased().contains("do not add file extensions"),
-            "Nudge must forbid extensions; got: \(retry)"
+            retry.lowercased().contains("exactly as shown"),
+            "Nudge must demand the quoted name verbatim (positive form); got: \(retry)"
         )
     }
 
@@ -567,7 +592,7 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
         XCTAssertEqual(messages.count, 1)
         let nudge = messages[0].content ?? ""
         XCTAssertTrue(
-            nudge.contains("Internal reasoning is not a tool call"),
+            nudge.contains("reasoning alone cannot"),
             "Expected drift-specific nudge, got: \(nudge)"
         )
         XCTAssertTrue(
@@ -640,7 +665,7 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
         )
         let retry = messages[0].content ?? ""
         XCTAssertFalse(
-            retry.contains("Internal reasoning is not a tool call"),
+            retry.contains("reasoning alone cannot"),
             "Short thinking must not trip drift; got: \(retry)"
         )
         XCTAssertTrue(
@@ -666,7 +691,7 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
         )
         let retry = messages[0].content ?? ""
         XCTAssertFalse(
-            retry.contains("Internal reasoning is not a tool call"),
+            retry.contains("reasoning alone cannot"),
             "Drift should require empty content; got: \(retry)"
         )
         XCTAssertEqual(service._testDriftCounter(stepID: stepID, taskID: task.id), 0)
@@ -708,7 +733,7 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
         }
         XCTAssertEqual(service._testDriftCounter(stepID: stepID, taskID: task.id), 1)
         XCTAssertTrue(
-            (messages2[0].content ?? "").contains("Internal reasoning is not a tool call"),
+            (messages2[0].content ?? "").contains("reasoning alone cannot"),
             "Should send drift nudge, not escalation message"
         )
     }
@@ -750,7 +775,7 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
             "Counter must reset on revision-mode drift to prevent post-revision pre-arming"
         )
         XCTAssertFalse(
-            (messages.first?.content ?? "").contains("Internal reasoning is not a tool call"),
+            (messages.first?.content ?? "").contains("reasoning alone cannot"),
             "Drift nudge must not be sent during revision"
         )
     }

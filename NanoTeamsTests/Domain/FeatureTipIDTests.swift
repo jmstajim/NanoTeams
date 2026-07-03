@@ -21,7 +21,7 @@ final class FeatureTipIDTests: XCTestCase {
         // Display order in the Watchtower Setup shelf must put LLM first
         // because LLM reachability is the foundational setting — see
         // WatchtowerSetupSection.visibleTips.
-        XCTAssertEqual(FeatureTipID.allCases, [.llm, .exploratorySearch, .vision, .dictation, .autovisor, .bash])
+        XCTAssertEqual(FeatureTipID.allCases, [.llm, .exploratorySearch, .vision, .dictation, .autovisor, .bash, .computerUse])
     }
 
     func testRawValueRoundTrip() {

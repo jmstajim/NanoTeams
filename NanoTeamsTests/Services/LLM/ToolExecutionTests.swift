@@ -912,6 +912,7 @@ final class ToolExecutionTests: XCTestCase {
             stepID: stepID,
             taskID: 0,
             tracker: tracker,
+            allowedToolNames: [],
             conversationMessages: &messages
         )
 
@@ -939,14 +940,52 @@ final class ToolExecutionTests: XCTestCase {
             stepID: stepID,
             taskID: 0,
             tracker: tracker,
+            allowedToolNames: [ToolNames.askSupervisor],
             conversationMessages: &messages
         )
 
         // If loop was detected, a warning message should have been appended
         if !messages.isEmpty {
-            XCTAssertTrue(messages[0].content?.contains("LOOP DETECTED") ?? false)
+            XCTAssertTrue(messages[0].content?.contains("Loop detected") ?? false)
         }
         // Note: detectLoopPattern may require more iterations — test verifies the pipeline works
+    }
+
+    // MARK: - loopWarningMessage (pure, tool-aware)
+
+    /// The loop warning must name ONLY tools present in the role's schema —
+    /// the pre-fix text steered every role toward edit_file/git_commit/
+    /// create_artifact, sending read-only and chat roles into a
+    /// tool_not_authorized ping-pong.
+    func testLoopWarningMessage_scratchpadLoop_writerRole_namesEditFile() {
+        let msg = LLMExecutionService.loopWarningMessage(
+            loopDetection: .repetitiveTool(tool: ToolNames.updateScratchpad, count: 4, message: "m"),
+            allowedToolNames: [ToolNames.editFile, ToolNames.writeFile, ToolNames.askSupervisor]
+        )
+        XCTAssertTrue(msg.contains("edit_file"))
+        XCTAssertTrue(msg.contains("ask_supervisor"))
+        XCTAssertFalse(msg.contains("create_artifact"), "not in this role's schema")
+    }
+
+    func testLoopWarningMessage_scratchpadLoop_readOnlyRole_namesNoWriteTools() {
+        let msg = LLMExecutionService.loopWarningMessage(
+            loopDetection: .repetitiveTool(tool: ToolNames.updateScratchpad, count: 4, message: "m"),
+            allowedToolNames: [ToolNames.readFile, ToolNames.search]
+        )
+        XCTAssertFalse(msg.contains("edit_file"))
+        XCTAssertFalse(msg.contains("git_commit"))
+        XCTAssertFalse(msg.contains("create_artifact"))
+        XCTAssertFalse(msg.contains("ask_supervisor"), "not in schema → not suggested")
+    }
+
+    func testLoopWarningMessage_genericLoop_carriesDetectorMessage_noShouting() {
+        let msg = LLMExecutionService.loopWarningMessage(
+            loopDetection: .readOnlyLoop(message: "You re-read the same file 5 times."),
+            allowedToolNames: [ToolNames.askSupervisor]
+        )
+        XCTAssertTrue(msg.contains("You re-read the same file 5 times."))
+        XCTAssertFalse(msg.contains("⚠️"), "no emoji decoration")
+        XCTAssertFalse(msg.contains("LOOP DETECTED"), "no caps-shouting")
     }
 
     // MARK: - handleSupervisorAutoAnswer

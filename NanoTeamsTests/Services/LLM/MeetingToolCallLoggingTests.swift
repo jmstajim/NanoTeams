@@ -67,9 +67,6 @@ final class MeetingToolCallLoggingTests: XCTestCase {
         }
         let initial = TeamMeetingService.MeetingStreamResult(
             content: "", thinking: "", resolvedToolCalls: emitted)
-        let meeting = TeamMeetingService.createMeeting(
-            topic: "t", initiatedBy: .softwareEngineer,
-            participants: [.softwareEngineer, .productManager], context: nil)
         let task = NTMSTask(id: 7, title: "T", supervisorTask: "g", runs: [Run(id: 0, steps: [])])
         let context = TeamMeetingService.MeetingContext(
             topic: "t", initiatedBy: .softwareEngineer,
@@ -82,8 +79,7 @@ final class MeetingToolCallLoggingTests: XCTestCase {
 
         _ = try await MeetingToolExecutor.executeTurnToolLoop(
             initialResult: initial,
-            speaker: .softwareEngineer,
-            meeting: meeting,
+            conversationSoFar: [ChatMessage(role: .system, content: "meeting system prompt")],
             meetingContext: context,
             client: StubLLMClient(),
             config: LLMConfig(),

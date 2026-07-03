@@ -238,7 +238,7 @@ nonisolated struct GitStashTool: ToolHandler {
         parameters: JS.object(
             properties: [
                 "action": JS.string(
-                    "Action: push, pop, apply, list, drop",
+                    "Stash operation to perform.",
                     enumValues: ["push", "pop", "apply", "list", "drop"]),
                 "message": JS.string("Stash message"),
                 "index": JS.integer("Stash index"),

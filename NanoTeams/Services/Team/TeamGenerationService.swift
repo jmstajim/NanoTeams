@@ -260,9 +260,9 @@ nonisolated enum TeamGenerationService {
         | Review / plan / research / writing     | read_file + read_lines + list_files + search + ask_supervisor + update_scratchpad — NO writers, NO git |
         | Chat / assistant                       | read_file + write_file + edit_file + list_files + search + update_scratchpad + ask_supervisor + analyze_image |
 
-        Triggers for the writer rule include verbs in ANY language: `write/modify/fix/refactor/implement/patch/rewrite/update/add to/переписать/реализовать/исправить/изменить/обновить`. Artifact names like `calculator.js`, `js/app.js`, `Updated foo.py` always require writers — a producing role required to "produce calculator.js" without write_file CANNOT do its job and will loop forever.
+        The writer rule triggers on any request to change files, in any language (e.g. "fix", "implement", "переписать"). Artifact names that are file names (`calculator.js`, `Updated foo.py`) always require writers — a producing role without write_file cannot produce them and will loop forever.
 
-        Triggers for the Xcode rule include verbs like `implement/build/add/fix/refactor/plan/design/architect/document/research/audit/review/investigate` applied to Apple-ecosystem code. DO NOT include Xcode tools for Python / JS / TS / Node / Go / Rust / Java / .NET / Ruby / PHP.
+        The Xcode row applies to any work on Apple-ecosystem code (the technologies listed in its table row); every other stack ships without Xcode tools.
 
         Git write tools come as a set: `git_status + git_add + git_commit` together or omit all three.
         Add `analyze_image` only when the task plausibly involves image content.
@@ -271,9 +271,9 @@ nonisolated enum TeamGenerationService {
         Write role names, team name, team description, role prompts, and artifact names in the SAME language as the user's task. No force-translation to English.
 
         ## Output
-        Exactly one `create_team` tool call. No prose, no other tool calls. Emit strict valid JSON — every key and string value in double quotes, every brace balanced, every `"` pair closed.
+        Call `create_team` exactly once with the full config — no prose, no other tool calls. The payload is strict valid JSON.
 
         ## Final reminder
-        Use exact enum values: `supervisor_mode` ∈ {`autonomous`, `manual`}, `acceptance_mode` ∈ {`finalOnly`, `afterEachRole`, `afterEachArtifact`}. One `create_team` tool call, strict valid JSON, no prose.
+        Use exact enum values: `supervisor_mode` ∈ {`autonomous`, `manual`}, `acceptance_mode` ∈ {`finalOnly`, `afterEachRole`, `afterEachArtifact`}. One `create_team` tool call, strict valid JSON.
         """
 }

@@ -49,6 +49,16 @@ protocol LLMStateDelegate: TaskMutationDelegate {
     /// outlive its run — and, since task IDs are reused across folders, can't be
     /// mis-attributed to a same-ID task in the newly-opened folder.
     func clearAllBashApprovalRequests()
+    /// Computer-use control policy (mode, restriction, target-app allowlist, blocked patterns).
+    /// Consumed by the computer-use permission gate.
+    var computerUsePolicy: ComputerUsePolicy { get }
+    /// Published by the computer-use gate when it begins / ends HOLDING an action for the
+    /// human's in-loop Allow / Deny / Always decision. The orchestrator mirrors these into an
+    /// observable so the activity feed renders the approval card with a screenshot preview.
+    func computerUseApprovalDidBegin(_ request: ComputerUseApprovalRequest)
+    func computerUseApprovalDidEnd(taskID: Int, stepID: String, actionKey: String, createdAt: Date)
+    /// Drops EVERY published computer-use approval card (all tasks) on full execution teardown.
+    func clearAllComputerUseApprovalRequests()
     /// Returns the project snapshot (for project-level reads like settings, targets).
     var snapshot: WorkFolderContext? { get }
     /// Whether logging (network_log.json, conversation_log.md, tool_calls.jsonl) is enabled.

@@ -18,7 +18,7 @@ nonisolated struct ListTasksTool: ToolHandler {
     static let name = TN.listTasks
     static let schema = ToolSchema(
         name: TN.listTasks,
-        description: "List every task in this folder with its id, title, and status. Use at the start of each review pass to see what needs attention (especially tasks awaiting supervisor input).",
+        description: "List every task in this folder with its id, title, and status.",
         parameters: JS.object(properties: [:], required: [])
     )
     static let category: ToolCategory = .collaboration
@@ -45,7 +45,7 @@ nonisolated struct TaskStatusTool: ToolHandler {
     static let name = TN.taskStatus
     static let schema = ToolSchema(
         name: TN.taskStatus,
-        description: "Inspect one task in detail: its roles and their statuses, the artifacts it has produced (each a name + path; read_file the path for full content), any question it is waiting on, and its last error. Use before deciding to answer, close, restart, or stop a task.",
+        description: "Inspect one task: role statuses, produced artifacts (each a name + path; read_file the path for full content), any pending question, and last error.",
         parameters: JS.object(
             properties: ["task_id": JS.integer("The task's id.")],
             required: ["task_id"]
@@ -87,9 +87,8 @@ nonisolated struct CreateManagedTaskTool: ToolHandler {
 
     private static let baseDescription = """
         Create and start a new top-level task in this folder. It runs independently \
-        and shows in the sidebar like any task — you do NOT block waiting for it; \
-        check back on its status later. The team has no other context, \
-        so put everything they need into `brief`.
+        — you do NOT block waiting for it; check back on its status later. The team \
+        has no other context, so put everything they need into `brief`.
         """
 
     private static let parameterSchema = JS.object(
@@ -168,7 +167,7 @@ nonisolated struct ControlTaskTool: ToolHandler {
         parameters: JS.object(
             properties: [
                 "task_id": JS.integer("The task's id."),
-                "action": JS.string("One of: start, pause, resume, stop, close, delete, rename, set_timeout.", enumValues: verbs),
+                "action": JS.string("The lifecycle action.", enumValues: verbs),
                 "arg": JS.string("New title (rename) or seconds (set_timeout). Ignored otherwise."),
             ],
             required: ["task_id", "action"]
@@ -220,7 +219,7 @@ nonisolated struct ManageRoleTool: ToolHandler {
             properties: [
                 "task_id": JS.integer("The task's id."),
                 "role_id": JS.string("The role's id."),
-                "action": JS.string("One of: restart, accept, request_changes, correct, finish_advisory.", enumValues: verbs),
+                "action": JS.string("The role action.", enumValues: verbs),
                 "comment": JS.string("Guidance / feedback for restart, request_changes, or correct."),
             ],
             required: ["task_id", "role_id", "action"]
@@ -264,7 +263,7 @@ nonisolated struct AnswerTaskQuestionTool: ToolHandler {
     static let name = TN.answerTaskQuestion
     static let schema = ToolSchema(
         name: TN.answerTaskQuestion,
-        description: "Answer a task that is waiting on supervisor input (status `needsSupervisorInput`). You are the folder's Supervisor — answer using the goal, memory, and what you can read in the work folder. This unblocks and resumes the task.",
+        description: "Answer a task's pending supervisor question (status `needsSupervisorInput`). Unblocks and resumes the task.",
         parameters: JS.object(
             properties: [
                 "task_id": JS.integer("The waiting task's id."),
@@ -347,7 +346,7 @@ nonisolated struct ScheduleTaskTool: ToolHandler {
     static let name = TN.scheduleTask
     static let schema = ToolSchema(
         name: TN.scheduleTask,
-        description: "Make a task recur on a fixed interval (e.g. run it every N minutes). Set `interval_minutes` to 0 to clear an existing schedule. Minimum 1 minute.",
+        description: "Make a task recur on a fixed interval (minimum 1 minute).",
         parameters: JS.object(
             properties: [
                 "task_id": JS.integer("The task's id."),
@@ -389,7 +388,7 @@ nonisolated struct SetWorkFolderContextTool: ToolHandler {
         name: TN.setWorkFolderContext,
         description: "Replace the shared Work Folder Context — a project description (purpose, conventions, architecture, current state) injected into EVERY role's prompt on EVERY task. Write only durable facts about the project so all future work is better grounded. Worker roles read this and do NOT share your tools or Supervisor role — never include your own review-pass steps, role guidance, or tool names here.",
         parameters: JS.object(
-            properties: ["content": JS.string("The full new context — include everything that should remain, since it overwrites the existing one.")],
+            properties: ["content": JS.string("The full replacement text.")],
             required: ["content"]
         )
     )

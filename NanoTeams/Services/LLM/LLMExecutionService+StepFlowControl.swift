@@ -69,9 +69,9 @@ extension LLMExecutionService {
             }
             let nudge = """
             Your previous response had ~\(thinkingTrimmedLen / 1000)k characters of internal \
-            reasoning but no tool call. Internal reasoning is not a tool call — it cannot write \
-            files, read anything, or submit artifacts. Take one concrete action now. Keep \
-            reasoning brief next turn.
+            reasoning but no tool call — reasoning alone cannot read files, write files, or \
+            submit artifacts. Take one concrete action now: call the tool that advances your \
+            next step.
             """
             conversationMessages.append(ChatMessage(role: .user, content: nudge))
             await appendLLMMessage(stepID: stepID, taskID: task.id, role: .user, content: nudge)
@@ -107,12 +107,19 @@ extension LLMExecutionService {
                 return .needsSupervisorInput(question: question)
 
             case .repetitiveNonTool(let count):
-                let retryMessage = """
-                Your last \(count) responses were near-identical and contained no tool calls. \
-                If you've finished your work, call create_artifact to submit your deliverable. \
-                If you're blocked, call ask_supervisor with a specific question. \
-                Do not repeat this response again — take a concrete action.
-                """
+                // Branch on the role's completion type — `create_artifact` is only
+                // schema-injected for producing roles; steering an advisory/chat
+                // role toward it earns a `tool_not_authorized` ping-pong.
+                let action: String
+                if let roleDef = roleDefinition, !roleDef.dependencies.producesArtifacts.isEmpty {
+                    action = "If you've finished your work, call create_artifact to submit "
+                        + "your deliverable. If you're blocked, call ask_supervisor with a specific question."
+                } else {
+                    action = "If your reply is complete, send it via ask_supervisor and wait "
+                        + "for the Supervisor's response."
+                }
+                let retryMessage = "Your last \(count) responses were near-identical and "
+                    + "contained no tool calls. \(action) Do not repeat this response."
                 conversationMessages.append(ChatMessage(role: .user, content: retryMessage))
                 await appendLLMMessage(stepID: stepID, taskID: task.id, role: .user, content: retryMessage)
                 return .continueLoop
@@ -161,8 +168,9 @@ extension LLMExecutionService {
                 Your tool call JSON parsed, but it is missing the top-level `name` field. \
                 The top-level `name` identifies the tool to call (e.g. "create_artifact", \
                 "write_file", "ask_supervisor"); the `name` inside `arguments` is a tool \
-                *parameter* (e.g. the artifact name for create_artifact). Retry with:
-                `<|call|>{"name":"\(example)","arguments":{…}}<|end|>`
+                *parameter* (e.g. the artifact name for create_artifact). Retry, keeping \
+                your original arguments object:
+                `<|call|>{"name":"\(example)","arguments":{"param":"value"}}<|end|>`
                 """
             case .malformedJSON:
                 // Cap consecutive malformed-JSON retries — some models reproduce the
@@ -203,7 +211,14 @@ extension LLMExecutionService {
                         return .needsSupervisorInput(question: question)
                     }
                 }
-                retryMessage = "Your previous tool call had malformed JSON and could not be parsed (e.g. a missing closing brace `}`, an unescaped quote inside a string, or a trailing comma). Retry with valid JSON, e.g. `<|call|>{\"name\":\"TOOL_NAME\",\"arguments\":{…}}<|end|>` — note the two closing braces before `<|end|>`."
+                // Attach the ACTUAL parser error when one is derivable — a model
+                // that sees "unescaped control character around character 217"
+                // can fix THAT; the generic brace/quote/comma guesses stay as
+                // the fallback for envelopes with no single nameable defect.
+                let defect = ToolCallParsingHelpers.malformedJSONDiagnostic(in: envelopeSource)
+                    .map { "parser error: \($0)" }
+                    ?? "e.g. a missing closing brace `}`, an unescaped quote inside a string, or a trailing comma"
+                retryMessage = "Your previous tool call had malformed JSON and could not be parsed (\(defect)). Retry with valid JSON, e.g. `<|call|>{\"name\":\"TOOL_NAME\",\"arguments\":{\"param\":\"value\"}}<|end|>` — note the two closing braces before `<|end|>`."
             case .noEnvelopeAttempt:
                 // Inlined role turn (`<|start|>userhello<|end|>` and similar) —
                 // the model didn't try to call a tool, just emitted a role
@@ -279,7 +294,7 @@ extension LLMExecutionService {
                 // Missing artifacts — retry. Names must be quoted and verbatim;
                 // extensions / prefixes / rewordings cause name-resolution misses.
                 let quoted = expected.map { "\"\($0)\"" }.joined(separator: ", ")
-                let retryMessage = "You haven't submitted all expected artifacts yet. Missing deliverables: \(quoted). Submit each via create_artifact using the quoted name verbatim — do not add file extensions, prefixes, or rewordings."
+                let retryMessage = "You haven't submitted all expected artifacts yet. Missing deliverables: \(quoted). Submit each via create_artifact, copying the quoted name exactly as shown."
                 conversationMessages.append(ChatMessage(role: .user, content: retryMessage))
                 await appendLLMMessage(stepID: stepID, taskID: task.id, role: .user, content: retryMessage)
                 return .continueLoop
@@ -294,9 +309,15 @@ extension LLMExecutionService {
             return stop
         }
 
-        // No tool calls and no artifacts to produce — nudge to use tools.
-        // Roles never self-terminate here; only artifact completion or Supervisor's "Finish Role" ends a step.
-        let retryMessage = "You responded with text but did not call any tools. Use a tool to continue."
+        // No tool calls and no artifacts to produce — this branch is reached by
+        // advisory/chat roles (producing roles returned above), whose only reply
+        // channel is ask_supervisor. The pre-fix generic "Use a tool to continue"
+        // named no tool and no goal — the canonical loop-inducing nudge for
+        // small models. Roles never self-terminate here; only artifact
+        // completion or Supervisor's "Finish Role" ends a step.
+        let retryMessage = "You responded with text but did not call any tools — plain text "
+            + "does not reach the Supervisor. If your reply is complete, send it via "
+            + "ask_supervisor; otherwise call the next tool you need to continue."
         conversationMessages.append(ChatMessage(role: .user, content: retryMessage))
         await appendLLMMessage(stepID: stepID, taskID: task.id, role: .user, content: retryMessage)
         return .continueLoop
@@ -619,11 +640,20 @@ extension LLMExecutionService {
                 executionStates[stepKey]?.originalSystemPrompt = systemMsg.content
             }
 
+            // Deliverable names ride into the planning brief — the swap replaces
+            // the whole base prompt (## Deliverables included), so without them
+            // the plan is made blind to the artifacts it must target. Global
+            // guidance inserts BEFORE the planning `## Final reminder` so the
+            // load-bearing "only tool available" instruction keeps the tail slot.
             let basePlanningPrompt = PlanningPhasePolicy.basePlanningPrompt(
-                roleName: roleForMessage.displayName)
-            let planningSystemPrompt = TemplateResolver.appendingSeparator(
+                roleName: roleForMessage.displayName,
+                expectedArtifacts: step.expectedArtifacts.filter {
+                    $0 != ArtifactConstants.buildDiagnosticsName
+                }
+            )
+            let planningSystemPrompt = TemplateResolver.insertingGlobalGuidance(
                 delegate?.globalLLMContext ?? "",
-                to: basePlanningPrompt
+                into: basePlanningPrompt
             )
 
             if let systemIdx = conversationMessages.firstIndex(where: { $0.role == .system }) {

@@ -134,6 +134,87 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
         XCTAssertEqual(reason, .xcodeSchemeNotSelected)
     }
 
+    func testClassify_computerUseTools_disabled_returnsComputerUseDisabled() {
+        // All 5 computer-use tools route to the dedicated reason when the
+        // feature is off — regardless of git/vision/scheme state (they're
+        // disjoint categories).
+        for tool in ToolHandlerRegistry.computerUseTools {
+            let reason = LLMExecutionService.classifyUnavailability(
+                toolName: tool,
+                workFolderRoot: tempDir,
+                isDefaultStorage: false,
+                isVisionConfigured: true,
+                selectedScheme: "Foo",
+                isComputerUseEnabled: false,
+                fileManager: fm
+            )
+            XCTAssertEqual(reason, .computerUseDisabled, "expected .computerUseDisabled for \(tool)")
+        }
+    }
+
+    func testClassify_computerUseTool_disabled_inDefaultStorage_returnsComputerUseDisabled() {
+        // Computer-use tools are NOT in `defaultStorageBlocked` (they operate the
+        // desktop, not the work folder), so the default-storage branch — which is
+        // checked FIRST — must not swallow them; the envelope names the actual
+        // blocker (feature off), not a work-folder precondition.
+        XCTAssertTrue(
+            ToolHandlerRegistry.computerUseTools.isDisjoint(with: ToolHandlerRegistry.defaultStorageBlocked),
+            "precedence reasoning below assumes computer-use tools are never default-storage-blocked")
+        let reason = LLMExecutionService.classifyUnavailability(
+            toolName: ToolNames.screenCapture,
+            workFolderRoot: tempDir,
+            isDefaultStorage: true,
+            isVisionConfigured: true,
+            selectedScheme: nil,
+            isComputerUseEnabled: false,
+            fileManager: fm
+        )
+        XCTAssertEqual(reason, .computerUseDisabled)
+    }
+
+    func testClassify_computerUseTool_disabled_noGitRepo_returnsComputerUseDisabled() {
+        // tempDir has no .git — the git-missing branch is category-disjoint and
+        // must not claim a ui_* tool.
+        let reason = LLMExecutionService.classifyUnavailability(
+            toolName: ToolNames.uiType,
+            workFolderRoot: tempDir,
+            isDefaultStorage: false,
+            isVisionConfigured: false,
+            selectedScheme: nil,
+            isComputerUseEnabled: false,
+            fileManager: fm
+        )
+        XCTAssertEqual(reason, .computerUseDisabled)
+    }
+
+    func testClassify_computerUseTool_enabled_returnsNotInRoleConfig() {
+        // Feature is on but the tool still landed outside allowedToolNames →
+        // the role was never granted it. Genuine role-config mismatch.
+        let explicit = LLMExecutionService.classifyUnavailability(
+            toolName: ToolNames.screenCapture,
+            workFolderRoot: tempDir,
+            isDefaultStorage: false,
+            isVisionConfigured: true,
+            selectedScheme: "Foo",
+            isComputerUseEnabled: true,
+            fileManager: fm
+        )
+        XCTAssertEqual(explicit, .notInRoleConfig)
+        // Same call with the param omitted pins the default `true` — a caller
+        // that can't see the policy must NOT blame the Computer Use setting
+        // (mirrors the `xcodeSchemeKnown` "don't blame a setting you can't
+        // see" contract).
+        let defaulted = LLMExecutionService.classifyUnavailability(
+            toolName: ToolNames.uiClick,
+            workFolderRoot: tempDir,
+            isDefaultStorage: false,
+            isVisionConfigured: true,
+            selectedScheme: "Foo",
+            fileManager: fm
+        )
+        XCTAssertEqual(defaulted, .notInRoleConfig)
+    }
+
     func testClassify_unknownTool_returnsNotInRoleConfig() throws {
         try fm.createDirectory(
             at: tempDir.appendingPathComponent(".git"),
@@ -275,6 +356,28 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
         )
         XCTAssertTrue(envelope.outputJSON.contains("\"error\":\"precondition_failed\""))
         XCTAssertTrue(envelope.outputJSON.contains("Xcode scheme"))
+    }
+
+    func testEnvelope_computerUseDisabled_namesComputerUse() {
+        let call = StepToolCall(name: "ui_click", argumentsJSON: #"{"cx":10,"cy":10}"#)
+        let envelope = LLMExecutionService.makeUnavailableToolResult(
+            call: call,
+            canonicalName: "ui_click",
+            scope: "for this role",
+            reason: .computerUseDisabled
+        )
+        XCTAssertTrue(envelope.isError)
+        XCTAssertTrue(envelope.outputJSON.contains("\"error\":\"precondition_failed\""))
+        XCTAssertTrue(
+            envelope.outputJSON.contains("Computer Use"),
+            "message must name the disabled feature, got: \(envelope.outputJSON)"
+        )
+        XCTAssertFalse(
+            envelope.outputJSON.contains("not available for this role"),
+            "must NOT use the misleading role-config message — the role HAS the tool, the feature is off. Got: \(envelope.outputJSON)"
+        )
+        // Precondition envelopes keep the structured `tool` field.
+        XCTAssertTrue(envelope.outputJSON.contains("\"tool\":\"ui_click\""))
     }
 
     func testEnvelope_legacyHelperDelegatesToNotInRoleConfig() {

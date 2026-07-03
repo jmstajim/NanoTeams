@@ -87,8 +87,11 @@ nonisolated extension MemoryTagStore {
         invalidateBuilds(reason: tag)
         invalidateGit(reason: tag)
 
-        let base = currentReadTags[path] ?? "?"
-        let taggedContent = "{\"tag\":\"\(tag)\",\"status\":\"success\",\"path\":\(jsonEscape(path)),\"base\":\"\(base)\"}"
+        // `replaces_read` names the read tag this edit supersedes. Omitted
+        // entirely when the file was edited without a prior read — the old
+        // `"base":"?"` sentinel was an undefined token with no legend anywhere.
+        let replaces = currentReadTags[path].map { ",\"replaces_read\":\"\($0)\"" } ?? ""
+        let taggedContent = "{\"tag\":\"\(tag)\",\"status\":\"success\",\"path\":\(jsonEscape(path))\(replaces)}"
         return .tagged(content: taggedContent, tag: tag)
     }
 

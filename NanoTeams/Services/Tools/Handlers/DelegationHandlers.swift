@@ -15,10 +15,12 @@ private typealias JS = JSONSchema
 /// `allowDelegationToGeneratedTeams = true`) to generate a fresh team on the fly.
 nonisolated struct DelegateToTeamTool: ToolHandler {
     static let name = TN.delegateToTeam
+    // The static schema carries the base prose only — the runtime `buildSchema`
+    // variant appends the per-role team catalog before the LLM sees it, and the
+    // role-editor UI shows this string as-is.
     static let schema = ToolSchema(
         name: TN.delegateToTeam,
-        description: baseDescription
-            + "\n\nAvailable teams depend on this role's delegation settings — when this tool is offered to a role at runtime, the catalog of valid team_ids is appended to this description.",
+        description: baseDescription,
         parameters: parameterSchema
     )
     static let category: ToolCategory = .delegation
@@ -61,10 +63,8 @@ nonisolated struct DelegateToTeamTool: ToolHandler {
         }
         if role.allowDelegationToGeneratedTeams {
             lines.append(
-                "- `\(DelegationConstants.generatedTeamSentinel)` — \"Generate New Team (last resort)\": "
-                + "FALLBACK ONLY. Spawns a fresh team via an extra LLM round-trip — slower and less "
-                + "reliable than the curated teams above. Use this ONLY when none of the existing teams' "
-                + "specialties match the task. If any team above is a plausible fit (even imperfect), pick it instead."
+                "- `\(DelegationConstants.generatedTeamSentinel)` — assemble a new team "
+                + "(extra LLM call, slower). Use only when no listed team fits."
             )
         }
         let catalogSection = lines.isEmpty
@@ -150,17 +150,13 @@ nonisolated struct CancelDelegationTool: ToolHandler {
     static let schema = ToolSchema(
         name: TN.cancelDelegation,
         description: """
-            Abort a paused delegation. Use after `delegate_to_team` returned with \
-            `status: "paused_by_supervisor"` and you've decided the delegated team \
-            should NOT continue (e.g. it was looping, on the wrong track, or the \
-            Supervisor's message asks you to abandon the work). Stops the child \
-            engine and frees you to re-plan. Pair with `ask_supervisor` to report \
-            the abort outcome to the user.
+            Abort a delegation that is paused_by_supervisor. Stops the delegated \
+            team; the sub-task will not complete.
             """,
         parameters: JS.object(
             properties: [
-                "child_task_id": JS.integer("The child task id from the paused delegation envelope's `child_task_id` field."),
-                "reason": JS.string("Short rationale for the abort (surfaced to the user). Optional but recommended."),
+                "child_task_id": JS.integer("Child task id from the paused delegation envelope."),
+                "reason": JS.string("Short rationale for the abort (surfaced to the user)."),
             ],
             required: ["child_task_id"]
         )
@@ -201,17 +197,12 @@ nonisolated struct ResumeDelegationTool: ToolHandler {
     static let schema = ToolSchema(
         name: TN.resumeDelegation,
         description: """
-            Un-pause a paused delegation and continue waiting for the team to \
-            finish. Use after `delegate_to_team` returned with \
-            `status: "paused_by_supervisor"` when the Supervisor's message was \
-            informational (no change of direction needed). The team continues \
-            unchanged; you're re-blocked until it produces its artifacts or the \
-            Supervisor interrupts again. Returns the same envelope shape as the \
-            original `delegate_to_team` call.
+            Resume a delegation that is paused_by_supervisor and keep waiting for \
+            its artifacts. Use when no change of direction is needed.
             """,
         parameters: JS.object(
             properties: [
-                "child_task_id": JS.integer("The child task id from the paused delegation envelope's `child_task_id` field."),
+                "child_task_id": JS.integer("Child task id from the paused delegation envelope."),
             ],
             required: ["child_task_id"]
         )
@@ -250,19 +241,13 @@ nonisolated struct ForwardToTeamTool: ToolHandler {
     static let schema = ToolSchema(
         name: TN.forwardToTeam,
         description: """
-            Forward a guidance message into the paused delegated team and resume \
-            it. Use after `delegate_to_team` returned with \
-            `status: "paused_by_supervisor"` when the Supervisor's message is \
-            actionable course-correction (e.g. "use library X instead of Y", \
-            "the API endpoint is /v2 not /v1"). Phrase the message as instructions \
-            the team can act on — they'll see it on their next iteration. After \
-            forwarding you're re-blocked on the child until it produces its \
-            artifacts or the Supervisor interrupts again.
+            Send guidance into a delegation that is paused_by_supervisor and \
+            resume it.
             """,
         parameters: JS.object(
             properties: [
-                "child_task_id": JS.integer("The child task id from the paused delegation envelope's `child_task_id` field."),
-                "message": JS.string("The guidance message to inject into the team's flow. Phrase as instructions, not as a question."),
+                "child_task_id": JS.integer("Child task id from the paused delegation envelope."),
+                "message": JS.string("Instructions for the team (they cannot answer questions)."),
             ],
             required: ["child_task_id", "message"]
         )

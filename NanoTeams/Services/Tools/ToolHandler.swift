@@ -14,6 +14,7 @@ nonisolated enum ToolCategory: String, Codable {
     case vision
     case delegation
     case shell
+    case computerUse
 }
 
 // MARK: - ToolHandlerDependencies

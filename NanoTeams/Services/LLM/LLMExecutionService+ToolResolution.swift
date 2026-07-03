@@ -128,7 +128,8 @@ extension LLMExecutionService {
             team: team,
             allTeams: delegate.snapshot?.workFolder.teams ?? [],
             selectedScheme: delegate.snapshot?.workFolder.settings.selectedScheme,
-            isVisionConfigured: delegate.visionLLMConfig != nil
+            isVisionConfigured: delegate.visionLLMConfig != nil,
+            isComputerUseEnabled: delegate.computerUsePolicy.isEnabled
         )
     }
 
@@ -149,7 +150,8 @@ extension LLMExecutionService {
         team: Team?,
         allTeams: [Team] = [],
         selectedScheme: String? = nil,
-        isVisionConfigured: Bool = false
+        isVisionConfigured: Bool = false,
+        isComputerUseEnabled: Bool = false
     ) -> [ToolSchema] {
         // 1. Find role definition — findRole handles id, systemRoleID, and name (custom roles
         // created via Role.fromDefinition carry the role's name, not its id, in `.custom(id:)`).
@@ -218,6 +220,18 @@ extension LLMExecutionService {
         // 3.2 Remove analyze_image if no vision model is configured
         if !isVisionConfigured {
             allowedTools.removeAll { $0.name == tn.analyzeImage }
+        }
+
+        // 3.2-bis Remove the computer-use tools when the feature is off
+        // (Settings → Computer Use → Approval = Off). The permission gate
+        // denies every action at runtime anyway, but without this filter the
+        // 5 schemas keep being advertised to the model on every iteration and
+        // it burns turns getting denied. Default `false` — feature-off is the
+        // safe default for orchestrator-free callers (preview/renderer pass
+        // the real state explicitly).
+        if !isComputerUseEnabled {
+            let computerUse = ToolHandlerRegistry.computerUseTools
+            allowedTools.removeAll { computerUse.contains($0.name) }
         }
 
         // 3.3 Autovisor: embed the team catalog inline in create_managed_task's

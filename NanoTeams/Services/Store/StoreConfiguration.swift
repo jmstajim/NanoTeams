@@ -421,6 +421,66 @@ final class StoreConfiguration {
         )
     }
 
+    // MARK: - Computer Use (screen control)
+
+    /// How computer-use actions are resolved. Default `.off`.
+    var computerUseMode: ComputerUseMode {
+        didSet { storage.set(computerUseMode.rawValue, forKey: Keys.computerUseMode) }
+    }
+    /// Strictness fed to the Auto judge. Default `.standard`.
+    var computerUseRestrictionLevel: ComputerUseRestrictionLevel {
+        didSet { storage.set(computerUseRestrictionLevel.rawValue, forKey: Keys.computerUseRestrictionLevel) }
+    }
+    /// Bundle ids / app names the tools may target. Empty = any app.
+    var computerUseTargetAppAllowlist: [String] {
+        didSet { storage.set(computerUseTargetAppAllowlist, forKey: Keys.computerUseTargetAppAllowlist) }
+    }
+    /// Patterns that force-deny `ui_type`. Empty by default.
+    var computerUseBlockedTypingPatterns: [String] {
+        didSet { storage.set(computerUseBlockedTypingPatterns, forKey: Keys.computerUseBlockedTypingPatterns) }
+    }
+    /// Patterns that force-deny `ui_key`. Empty by default.
+    var computerUseBlockedKeyCombos: [String] {
+        didSet { storage.set(computerUseBlockedKeyCombos, forKey: Keys.computerUseBlockedKeyCombos) }
+    }
+    /// Activate + raise the target window before a click/type. Default on.
+    var computerUseRaiseTargetWindowBeforeClick: Bool {
+        didSet { storage.set(computerUseRaiseTargetWindowBeforeClick, forKey: Keys.computerUseRaiseTargetWindowBeforeClick) }
+    }
+    /// Gate only the first `screen_capture` per run, then auto-allow. Default on.
+    var computerUseGateFirstCaptureOnly: Bool {
+        didSet { storage.set(computerUseGateFirstCaptureOnly, forKey: Keys.computerUseGateFirstCaptureOnly) }
+    }
+    /// Optional dedicated LLM override for the Auto judge (token via Keychain by URL).
+    var computerUseJudgeLLMOverride: LLMOverride? {
+        didSet {
+            if let o = computerUseJudgeLLMOverride, !o.isEmpty,
+               let data = try? JSONCoderFactory.makePersistenceEncoder().encode(o) {
+                storage.set(data, forKey: Keys.computerUseJudgeLLMOverride)
+            } else {
+                storage.removeObject(forKey: Keys.computerUseJudgeLLMOverride)
+            }
+        }
+    }
+
+    /// Mirrors `ComputerUsePolicy.isEnabled` for view-layer callers that hold the
+    /// config, not the assembled policy (same convention as `isVisionConfigured`).
+    var isComputerUseEnabled: Bool { computerUseMode != .off }
+
+    /// Assembled `ComputerUsePolicy` surfaced to the LLM execution layer.
+    var computerUsePolicy: ComputerUsePolicy {
+        ComputerUsePolicy(
+            mode: computerUseMode,
+            restrictionLevel: computerUseRestrictionLevel,
+            targetAppAllowlist: computerUseTargetAppAllowlist,
+            blockedTypingPatterns: computerUseBlockedTypingPatterns,
+            blockedKeyCombos: computerUseBlockedKeyCombos,
+            raiseTargetWindowBeforeClick: computerUseRaiseTargetWindowBeforeClick,
+            gateFirstCaptureOnly: computerUseGateFirstCaptureOnly,
+            judgeOverride: computerUseJudgeLLMOverride
+        )
+    }
+
     // MARK: - App Update
 
     /// Timestamp of the last successful GitHub releases check. Used to throttle
@@ -780,6 +840,21 @@ final class StoreConfiguration {
         } else {
             self.bashJudgeLLMOverride = nil
         }
+        self.computerUseMode = storage.string(forKey: Keys.computerUseMode)
+            .flatMap(ComputerUseMode.init(rawValue:)) ?? .manual
+        self.computerUseRestrictionLevel = storage.string(forKey: Keys.computerUseRestrictionLevel)
+            .flatMap(ComputerUseRestrictionLevel.init(rawValue:)) ?? .standard
+        self.computerUseTargetAppAllowlist = (storage.object(forKey: Keys.computerUseTargetAppAllowlist) as? [String]) ?? []
+        self.computerUseBlockedTypingPatterns = (storage.object(forKey: Keys.computerUseBlockedTypingPatterns) as? [String]) ?? []
+        self.computerUseBlockedKeyCombos = (storage.object(forKey: Keys.computerUseBlockedKeyCombos) as? [String]) ?? []
+        self.computerUseRaiseTargetWindowBeforeClick = (storage.object(forKey: Keys.computerUseRaiseTargetWindowBeforeClick) as? Bool) ?? true
+        self.computerUseGateFirstCaptureOnly = (storage.object(forKey: Keys.computerUseGateFirstCaptureOnly) as? Bool) ?? true
+        if let data = storage.data(forKey: Keys.computerUseJudgeLLMOverride),
+           let decoded = try? JSONCoderFactory.makeDateDecoder().decode(LLMOverride.self, from: data), !decoded.isEmpty {
+            self.computerUseJudgeLLMOverride = decoded
+        } else {
+            self.computerUseJudgeLLMOverride = nil
+        }
     }
 
     // MARK: - Migration
@@ -858,6 +933,14 @@ final class StoreConfiguration {
         storage.removeObject(forKey: Keys.bashAllowUnsandboxedFallback)
         storage.removeObject(forKey: Keys.bashJudgeModel)
         storage.removeObject(forKey: Keys.bashJudgeLLMOverride)
+        storage.removeObject(forKey: Keys.computerUseMode)
+        storage.removeObject(forKey: Keys.computerUseRestrictionLevel)
+        storage.removeObject(forKey: Keys.computerUseTargetAppAllowlist)
+        storage.removeObject(forKey: Keys.computerUseBlockedTypingPatterns)
+        storage.removeObject(forKey: Keys.computerUseBlockedKeyCombos)
+        storage.removeObject(forKey: Keys.computerUseRaiseTargetWindowBeforeClick)
+        storage.removeObject(forKey: Keys.computerUseGateFirstCaptureOnly)
+        storage.removeObject(forKey: Keys.computerUseJudgeLLMOverride)
 
         let provider = LLMProvider.lmStudio
         llmProvider = provider
@@ -908,6 +991,14 @@ final class StoreConfiguration {
         bashSandboxPermissions = BashSandboxPermissions()
         bashAllowUnsandboxedFallback = false
         bashJudgeLLMOverride = nil
+        computerUseMode = .manual
+        computerUseRestrictionLevel = .standard
+        computerUseTargetAppAllowlist = []
+        computerUseBlockedTypingPatterns = []
+        computerUseBlockedKeyCombos = []
+        computerUseRaiseTargetWindowBeforeClick = true
+        computerUseGateFirstCaptureOnly = true
+        computerUseJudgeLLMOverride = nil
     }
 
     // MARK: - Work Folder Path

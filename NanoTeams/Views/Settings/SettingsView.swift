@@ -22,6 +22,7 @@ struct SettingsView: View {
         case exploratorySearch = "Exploratory Search"
         case toolBehavior = "Tool Behavior"
         case bash = "Bash"
+        case computerUse = "Computer Use"
         case debug = "Debug"
         case teams = "Teams"
         case generateTeam = "Generate Team"
@@ -37,6 +38,7 @@ struct SettingsView: View {
             .dictation: "mic", .vision: "eye", .exploratorySearch: "binoculars",
             .toolBehavior: "slider.horizontal.3",
             .bash: "terminal",
+            .computerUse: "cursorarrow.rays",
             .debug: "ladybug",
             .teams: "rectangle.3.group",
             .generateTeam: "wand.and.stars",
@@ -84,7 +86,7 @@ struct SettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 settingsSection("Configuration", tabs: [.general, .theme, .llm, .workFolder, .autovisor])
-                settingsSection("Advanced", tabs: [.exploratorySearch, .vision, .dictation, .toolBehavior, .bash, .debug])
+                settingsSection("Advanced", tabs: [.exploratorySearch, .vision, .dictation, .toolBehavior, .bash, .computerUse, .debug])
                 settingsSection("Team", tabs: [.teams, .generateTeam, .tools])
                 settingsSection("Support", tabs: [.updates, .help])
             }
@@ -139,6 +141,8 @@ struct SettingsView: View {
                 ToolBehaviorSettingsView()
             case .bash:
                 BashSettingsView()
+            case .computerUse:
+                ComputerUseSettingsView()
             case .debug:
                 DebugSettingsView()
             case .teams:

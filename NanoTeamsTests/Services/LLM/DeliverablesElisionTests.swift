@@ -10,9 +10,9 @@ import XCTest
 /// non-whitespace body and defeated the orphan-stripper, leaving
 /// `## Deliverables\n.\n` in the rendered prompt.
 ///
-/// See `docs/prompt-engineering-sources.md` §6 (no filler bytes) and §98
-/// (omit empty list sections) for the principle, and the chip-format
-/// contract docstring at the top of
+/// Principle: `docs/TheLocalMultiAgentPromptingPlaybook.md` §4 — "the smallest
+/// set of high-signal tokens" (no filler bytes, omit empty list sections).
+/// See also the chip-format contract docstring at the top of
 /// `Domain/SystemTemplates+PromptLibrary.swift`.
 @MainActor
 final class DeliverablesElisionTests: XCTestCase {

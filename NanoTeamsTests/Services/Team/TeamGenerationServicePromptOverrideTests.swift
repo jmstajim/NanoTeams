@@ -80,4 +80,17 @@ final class TeamGenerationServicePromptOverrideTests: XCTestCase {
 
         XCTAssertEqual(stub.capturedMessages.first?.content, TeamGenerationService.defaultSystemPrompt)
     }
+
+    // MARK: - No explicit CoT (reasoning-model default)
+
+    /// The default model is a reasoning model (gpt-oss-20b) — instructing prose
+    /// planning before the tool call degrades it AND feeds the jsonExtract
+    /// fallback parser. The `## Output` contract is a direct single tool call.
+    func testDefaultSystemPrompt_noExplicitCoTInstruction() {
+        let p = TeamGenerationService.defaultSystemPrompt
+        XCTAssertFalse(p.contains("First plan"), "no prose-planning instruction before the tool call")
+        XCTAssertFalse(p.contains("3-5 short lines"), "the 2026-07 plan-first experiment stays reverted")
+        XCTAssertTrue(p.contains("exactly once"), "output contract: one direct create_team call")
+        XCTAssertTrue(p.contains("no prose"), "output contract: no prose around the call")
+    }
 }

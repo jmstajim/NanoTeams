@@ -2,31 +2,11 @@ import XCTest
 
 @testable import NanoTeams
 
-/// Extended tests for TeammateConsultationService covering message building,
-/// artifact context construction, and consultation history edge cases.
+/// Extended tests for TeammateConsultationService covering limit validation
+/// and consultation record edge cases. (The legacy one-shot `generateResponse`
+/// path was production-dead and deleted — the live LLM exchange is the
+/// persistent consultation chat in `LLMExecutionService+TeammateConsultation`.)
 final class TeammateConsultationExtendedTests: XCTestCase {
-
-    // MARK: - generateResponse Error Path Tests
-
-    func testGenerateResponse_ReturnsEmptyOnConnectionError() async throws {
-        let context = makeConsultationContext()
-        let client = NativeLMStudioClient()
-        let config = LLMConfig(
-            baseURLString: "http://invalid-host-that-does-not-exist.test:9999",
-            modelName: "test-model"
-        )
-
-        do {
-            _ = try await TeammateConsultationService.generateResponse(
-                context: context,
-                client: client,
-                config: config
-            )
-            XCTFail("Should have thrown for unreachable server")
-        } catch {
-            // Expected error — connection failure propagates
-        }
-    }
 
     // MARK: - Consultation Limit Edge Cases
 
@@ -228,31 +208,6 @@ final class TeammateConsultationExtendedTests: XCTestCase {
     }
 
     // MARK: - Helpers
-
-    private func makeConsultationContext(
-        consultedRole: Role = .softwareEngineer,
-        requestingRole: Role = .productManager,
-        question: String = "How should we approach this?",
-        artifacts: [Artifact] = [],
-        consultationHistory: [TeammateConsultation] = []
-    ) -> TeammateConsultationService.ConsultationContext {
-        let task = NTMSTask(id: 0, title: "Test Task",
-            supervisorTask: "Build feature",
-            runs: [Run(id: 0)]
-        )
-
-        return TeammateConsultationService.ConsultationContext(
-            consultedRole: consultedRole,
-            requestingRole: requestingRole,
-            question: question,
-            additionalContext: nil,
-            task: task,
-            availableArtifacts: artifacts,
-            artifactReader: { _ in nil },
-            consultationHistory: consultationHistory,
-            team: Team.default
-        )
-    }
 
     private func makeConsultation(
         consultedRole: Role,

@@ -43,6 +43,12 @@ nonisolated enum ToolConstants {
         // Granting them lets a role run arbitrary shell commands subject to that policy.
         ToolCategoryDisplay(id: "shell", name: "Shell", icon: "terminal",
                             tools: [TN.bash, TN.bashOutput]),
+        // Computer-use tools (screenshot + mouse/keyboard control of the desktop).
+        // Default-OFF for every role; opt-in per role. Execution is gated by the
+        // computer-use permission layer (Settings → Computer Use). Requires a
+        // vision-capable main model for the screenshot to be useful.
+        ToolCategoryDisplay(id: "computerUse", name: "Computer Use", icon: "cursorarrow.rays",
+                            tools: [TN.screenCapture, TN.uiClick, TN.uiType, TN.uiKey, TN.uiScroll]),
         // Delegation tools (delegate_to_team + 3 companions) are NEVER manually
         // selectable — they auto-inject when the role's delegation settings
         // (`allowedDelegationTeamIDs` / `allowDelegationToGeneratedTeams`) are

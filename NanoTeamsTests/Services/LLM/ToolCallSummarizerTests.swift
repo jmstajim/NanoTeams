@@ -372,4 +372,85 @@ final class ToolCallSummarizerTests: XCTestCase {
     func testSummarizeResult_invalidJSON_returnsParseError() {
         XCTAssertEqual(ToolCallSummarizer.summarizeResult(toolName: TN.readFile, json: "broken"), "parse error")
     }
+
+    // MARK: - Computer-use arguments (identity keys for loop detection)
+
+    /// These summaries double as `ToolCallTracker`'s identity key — with no entry they were
+    /// all "", and clicks at DIFFERENT coordinates counted as an identical-arguments loop.
+
+    func testSummarizeArguments_uiClick_encodesCoordinatesButtonAndTarget() {
+        XCTAssertEqual(
+            ToolCallSummarizer.summarizeArguments(toolName: TN.uiClick, json: #"{"x": 834, "y": 250}"#),
+            "(834, 250)")
+        XCTAssertEqual(
+            ToolCallSummarizer.summarizeArguments(
+                toolName: TN.uiClick,
+                json: #"{"x": 10, "y": 20, "button": "right", "double": true, "target": "Safari"}"#),
+            "(10, 20) right double → Safari")
+    }
+
+    func testSummarizeArguments_uiClick_differentCoordinates_differentSummaries() {
+        // The D4 regression pin: distinct clicks must produce distinct identity keys.
+        let a = ToolCallSummarizer.summarizeArguments(toolName: TN.uiClick, json: #"{"x": 1257, "y": 55}"#)
+        let b = ToolCallSummarizer.summarizeArguments(toolName: TN.uiClick, json: #"{"x": 1257, "y": 90}"#)
+        XCTAssertNotEqual(a, b)
+        XCTAssertFalse(a.isEmpty)
+    }
+
+    func testSummarizeArguments_uiClick_fractionalCoordinates_coercedNotCollapsedToQuestionMark() {
+        // The handler truncates fractional NSNumber coords and RUNS the click; the summarizer
+        // must share that coercion or distinct fractional clicks all collapse to "?" and
+        // re-open the identical-loop misfire. optionalInt coerces Double the same way requiredInt does.
+        let a = ToolCallSummarizer.summarizeArguments(toolName: TN.uiClick, json: #"{"x": 834.5, "y": 250.2}"#)
+        let b = ToolCallSummarizer.summarizeArguments(toolName: TN.uiClick, json: #"{"x": 640.7, "y": 212.9}"#)
+        XCTAssertEqual(a, "(834, 250)")
+        XCTAssertNotEqual(a, b)
+        XCTAssertFalse(a.contains("?"))
+    }
+
+    func testSummarizeArguments_uiKey_showsKeys_honorsAliasKey() {
+        XCTAssertEqual(ToolCallSummarizer.summarizeArguments(toolName: TN.uiKey, json: #"{"keys": "cmd+s"}"#), "cmd+s")
+        XCTAssertEqual(ToolCallSummarizer.summarizeArguments(toolName: TN.uiKey, json: #"{"key": "return"}"#), "return")
+    }
+
+    func testSummarizeArguments_uiType_truncatesAt60() {
+        let long = String(repeating: "a", count: 80)
+        let out = ToolCallSummarizer.summarizeArguments(toolName: TN.uiType, json: #"{"text": "\#(long)"}"#)
+        XCTAssertTrue(out.hasSuffix("…"))
+        XCTAssertEqual(out.count, 61)
+    }
+
+    func testSummarizeArguments_uiScroll_encodesPointAndDelta() {
+        XCTAssertEqual(
+            ToolCallSummarizer.summarizeArguments(
+                toolName: TN.uiScroll, json: #"{"x": 5, "y": 6, "dy": -3}"#),
+            "(5, 6) d(0, -3)")
+    }
+
+    func testSummarizeArguments_uiClick_missingCoordinate_returnsQuestionMark() {
+        // Guard path: a malformed click (missing x or y) must not crash or emit a partial key
+        // that would false-collide in the loop-detector identity.
+        XCTAssertEqual(ToolCallSummarizer.summarizeArguments(toolName: TN.uiClick, json: #"{"y": 5}"#), "?")
+        XCTAssertEqual(ToolCallSummarizer.summarizeArguments(toolName: TN.uiClick, json: "{}"), "?")
+    }
+
+    func testSummarizeArguments_uiScroll_missingCoordinate_returnsQuestionMark() {
+        XCTAssertEqual(ToolCallSummarizer.summarizeArguments(toolName: TN.uiScroll, json: #"{"dx": 3}"#), "?")
+    }
+
+    func testSummarizeArguments_uiType_emptyText_returnsEmptyNotQuestionMark() {
+        // Empty typed text is a valid, non-loop identity — distinct from the "?" malformed marker.
+        XCTAssertEqual(ToolCallSummarizer.summarizeArguments(toolName: TN.uiType, json: #"{"text": ""}"#), "")
+        XCTAssertEqual(ToolCallSummarizer.summarizeArguments(toolName: TN.uiType, json: "{}"), "")
+    }
+
+    func testSummarizeArguments_screenCapture_showsTargetAndTitle() {
+        XCTAssertEqual(
+            ToolCallSummarizer.summarizeArguments(toolName: TN.screenCapture, json: "{}"),
+            "screen")
+        XCTAssertEqual(
+            ToolCallSummarizer.summarizeArguments(
+                toolName: TN.screenCapture, json: #"{"target": "Safari", "window_title": "LinkedIn"}"#),
+            "Safari · LinkedIn")
+    }
 }

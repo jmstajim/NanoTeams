@@ -29,13 +29,25 @@ nonisolated enum ConversationRepairService {
         let assistantMsg = messages[idx]
         guard assistantMsg.role == .assistant, assistantMsg.toolCalls != nil else { return }
 
-        // Found poisoned pattern — replace everything from assistant onwards
+        // Found poisoned pattern — replace everything from assistant onwards.
+        // The replacement message must restate WHICH call failed: the repair
+        // just deleted the assistant turn it refers to, so "your previous tool
+        // call" would point at nothing the model can see [Laban2025 — restate
+        // the critical context you removed].
+        let failedCalls = (assistantMsg.toolCalls ?? []).map { call in
+            let args = String(call.argumentsJSON.prefix(200))
+            return "\(call.name)(\(args))"
+        }
+        let callsDescription = failedCalls.isEmpty
+            ? "Your previous tool call"
+            : "Your \(failedCalls.joined(separator: ", ")) call"
         let removeCount = 1 + toolCount + 1 // assistant + tools + user
         messages.removeLast(removeCount)
         messages.append(
             ChatMessage(
                 role: .user,
-                content: "Your previous tool call had invalid arguments and caused a server error. Continue with your task without repeating the failed tool call."
+                content: "\(callsDescription) had invalid arguments and caused a server error. "
+                    + "Do not repeat that exact call — fix the arguments or take the next step of your task."
             )
         )
     }

@@ -191,9 +191,10 @@ final class SystemTemplatesTests: XCTestCase {
             TN.runXcodebuild, TN.runXcodetests,
             TN.bash, TN.bashOutput,
             TN.askSupervisor, TN.analyzeImage,
+            TN.screenCapture, TN.uiClick, TN.uiType, TN.uiKey, TN.uiScroll,
         ]
         XCTAssertEqual(Set(role.toolIDs), expected,
-                       "Coding Assistant factory must seed the full coding kit — git, xcode, shell, files, vision, supervisor")
+                       "Coding Assistant factory must seed the full coding kit — git, xcode, shell, files, vision, computer use, supervisor")
     }
 
     // MARK: - Default System Template

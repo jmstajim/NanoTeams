@@ -83,7 +83,15 @@ nonisolated struct PromptBuilder {
             "teamName": context.activeTeam?.name ?? "(unknown team)",
             "teamDescription": teamDescriptionLine,
             "teamRoles": teamRolesLine,
-            "stepInfo": "You are step \(stepIndex + 1) of \(run.steps.count).",
+            // `{stepInfo}` retired from the built-in templates (2026-07): the
+            // "step N of M" counter sat in the cache-critical FIRST line while
+            // `run.steps.count` grows lazily as parallel roles start — a
+            // mid-step stateless rebuild re-rendered line 1 with a different M
+            // (kills the KV prefix, and "step 2 of 3" was simply wrong for a
+            // run that ends up with 8 steps). `{positionContext}` carries the
+            // real position semantics (Receives/Feeds into). The chip resolves
+            // empty for user templates that still carry it.
+            "stepInfo": "",
             "positionContext": positionContext,
             "roleGuidance": roleGuidance,
             "conversationMechanics": conversationMechanics,
@@ -169,8 +177,11 @@ nonisolated struct PromptBuilder {
             }
         }
 
-        // 5. Supervisor Q/A context — inject as assistant tool call + tool result pair
-        // so the LLM recognizes it already asked and continues from the answer.
+        // 5. Supervisor Q/A context — replay the ask as the SAME Harmony envelope
+        // the `## Tool Calling` block teaches. The conversation acts as few-shot:
+        // the pre-fix plain-text `ask_supervisor: <question>` replay taught a
+        // format `HarmonyToolCallParser` cannot see, and small models imitate the
+        // most recent call shape (Sclar2024/Lu2022 — format drift teaches drift).
         let hasAnsweredSupervisorQuestion =
             (step.supervisorQuestion?.isEmpty == false)
             && (step.effectiveSupervisorAnswer?.isEmpty == false)
@@ -179,7 +190,7 @@ nonisolated struct PromptBuilder {
            let answer = step.effectiveSupervisorAnswer {
             messages.append(ChatMessage(
                 role: .assistant,
-                content: "ask_supervisor: \(question)"))
+                content: replayedAskSupervisorEnvelope(question: question)))
             messages.append(ChatMessage(
                 role: .user,
                 content: "Supervisor answer: \(answer)"))
@@ -195,9 +206,22 @@ nonisolated struct PromptBuilder {
             messages.append(ChatMessage(role: MessageRole(rawValue: messageRole) ?? .user, content: message.content))
         }
 
-        // Add minimal prompt if no messages
-        if messages.count == 1 {
-            messages.append(ChatMessage(role: .user, content: "Start the step."))
+        // 7. Closing turn — restate the deliverable contract at the TRUE end of
+        // the context [Liu2024]: on artifact-heavy steps the system prompt's
+        // `## Final reminder` ends up buried under tens of KB of injected
+        // artifacts, and the mid-context slot is the worst recall zone. The
+        // restatement is wire-only (never persisted) and sits in the variant
+        // tail, so it costs nothing in prefix-cache stability.
+        let expectedForContract = step.expectedArtifacts
+            .filter { $0 != ArtifactConstants.buildDiagnosticsName }
+        var closing = messages.count == 1 ? "Start the step." : ""
+        if !expectedForContract.isEmpty, step.revisionComment == nil {
+            let quoted = expectedForContract.map { "\"\($0)\"" }.joined(separator: ", ")
+            closing += (closing.isEmpty ? "" : " ")
+                + "Submit via create_artifact when ready: \(quoted)."
+        }
+        if !closing.isEmpty {
+            messages.append(ChatMessage(role: .user, content: closing))
         }
 
         // Note: Scratchpad planning phase is now handled in LLMExecutionService.runOneLLMToolIteration()
@@ -206,6 +230,21 @@ nonisolated struct PromptBuilder {
     }
 
     // MARK: - Private Helpers
+
+    /// Renders a replayed `ask_supervisor` call in the exact Harmony envelope
+    /// shape the wire teaches (`<|call|>{"name":…,"arguments":…}<|end|>`), with
+    /// the question JSON-encoded so quotes/newlines can't break the envelope.
+    /// Internal (not private) for test pinning.
+    static func replayedAskSupervisorEnvelope(question: String) -> String {
+        let envelope: [String: Any] = [
+            "name": ToolNames.askSupervisor,
+            "arguments": ["question": question],
+        ]
+        let json = (try? JSONSerialization.data(withJSONObject: envelope, options: [.sortedKeys]))
+            .flatMap { String(data: $0, encoding: .utf8) }
+            ?? #"{"arguments":{"question":""},"name":"ask_supervisor"}"#
+        return "<|call|>\(json)<|end|>"
+    }
 
     private static func rolePrompt(for role: Role, roleDefinition: TeamRoleDefinition?) -> String {
         if let roleDefinition {

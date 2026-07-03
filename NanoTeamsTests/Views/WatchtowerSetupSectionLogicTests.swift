@@ -17,7 +17,7 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             dictationLocalesEmpty: false,
             autovisorEnabled: true,
             hasWorkFolder: true,
-            dismissed: ["bash"]
+            dismissed: ["bash", "computerUse"]
         )
         XCTAssertTrue(visible.isEmpty)
     }
@@ -34,7 +34,7 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             hasWorkFolder: true,
             dismissed: []
         )
-        XCTAssertEqual(visible, [.llm, .exploratorySearch, .vision, .dictation, .autovisor, .bash])
+        XCTAssertEqual(visible, [.llm, .exploratorySearch, .vision, .dictation, .autovisor, .bash, .computerUse])
     }
 
     // MARK: - Per-tip predicates
@@ -49,7 +49,7 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             dictationLocalesEmpty: true,
             autovisorEnabled: true,
             hasWorkFolder: false,
-            dismissed: ["bash"]
+            dismissed: ["bash", "computerUse"]
         )
         XCTAssertEqual(visible, [.exploratorySearch, .vision, .dictation])
     }
@@ -62,7 +62,7 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             dictationLocalesEmpty: true,
             autovisorEnabled: true,
             hasWorkFolder: false,
-            dismissed: ["bash"]
+            dismissed: ["bash", "computerUse"]
         )
         XCTAssertEqual(visible, [.llm, .vision, .dictation])
     }
@@ -75,7 +75,7 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             dictationLocalesEmpty: true,
             autovisorEnabled: true,
             hasWorkFolder: false,
-            dismissed: ["bash"]
+            dismissed: ["bash", "computerUse"]
         )
         XCTAssertEqual(visible, [.llm, .exploratorySearch, .dictation])
     }
@@ -89,7 +89,7 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             dictationLocalesEmpty: false,
             autovisorEnabled: true,
             hasWorkFolder: false,
-            dismissed: ["bash"]
+            dismissed: ["bash", "computerUse"]
         )
         XCTAssertEqual(visible, [.llm, .exploratorySearch, .vision])
     }
@@ -106,7 +106,7 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             dictationLocalesEmpty: false,
             autovisorEnabled: false,
             hasWorkFolder: true,
-            dismissed: ["bash"]
+            dismissed: ["bash", "computerUse"]
         )
         XCTAssertEqual(visible, [.autovisor])
     }
@@ -120,7 +120,7 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             dictationLocalesEmpty: false,
             autovisorEnabled: false,
             hasWorkFolder: false,
-            dismissed: ["bash"]
+            dismissed: ["bash", "computerUse"]
         )
         XCTAssertTrue(visible.isEmpty)
     }
@@ -134,7 +134,7 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             dictationLocalesEmpty: false,
             autovisorEnabled: true,
             hasWorkFolder: true,
-            dismissed: ["bash"]
+            dismissed: ["bash", "computerUse"]
         )
         XCTAssertTrue(visible.isEmpty)
     }
@@ -147,16 +147,16 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             dictationLocalesEmpty: false,
             autovisorEnabled: false,
             hasWorkFolder: true,
-            dismissed: ["autovisor", "bash"]
+            dismissed: ["autovisor", "bash", "computerUse"]
         )
         XCTAssertTrue(visible.isEmpty)
     }
 
-    // MARK: - Bash predicate (always offered until dismissed)
+    // MARK: - Always-offered predicates (bash + computer use)
 
-    func testVisible_bash_alwaysShown_evenWhenEverythingElseConfigured() {
-        // Bash is ON by default, so its card is a discovery prompt that shows
-        // regardless of configuration state — only dismissal hides it.
+    func testVisible_bashAndComputerUse_alwaysShown_evenWhenEverythingElseConfigured() {
+        // Both are discovery prompts shown regardless of configuration state — only
+        // dismissal hides them.
         let visible = WatchtowerSetupSection.visibleTips(
             llmReachable: true,
             exploratorySearchEnabled: true,
@@ -166,7 +166,7 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             hasWorkFolder: true,
             dismissed: []
         )
-        XCTAssertEqual(visible, [.bash])
+        XCTAssertEqual(visible, [.bash, .computerUse])
     }
 
     func testVisible_bashDismissed_isHidden() {
@@ -177,7 +177,7 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             dictationLocalesEmpty: false,
             autovisorEnabled: true,
             hasWorkFolder: true,
-            dismissed: ["bash"]
+            dismissed: ["bash", "computerUse"]
         )
         XCTAssertTrue(visible.isEmpty)
     }
@@ -192,7 +192,7 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             dictationLocalesEmpty: true,
             autovisorEnabled: true,
             hasWorkFolder: false,
-            dismissed: ["llm", "bash"]
+            dismissed: ["llm", "bash", "computerUse"]
         )
         XCTAssertEqual(visible, [.exploratorySearch, .vision, .dictation])
     }
@@ -206,7 +206,7 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             dictationLocalesEmpty: false,
             autovisorEnabled: true,
             hasWorkFolder: false,
-            dismissed: ["exploratorySearch", "vision", "bash"]
+            dismissed: ["exploratorySearch", "vision", "bash", "computerUse"]
         )
         XCTAssertTrue(visible.isEmpty)
     }
@@ -221,7 +221,7 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
             dictationLocalesEmpty: false,
             autovisorEnabled: true,
             hasWorkFolder: false,
-            dismissed: ["unknown_future_tip", "bash"]
+            dismissed: ["unknown_future_tip", "bash", "computerUse"]
         )
         XCTAssertEqual(visible, [.llm])
     }
@@ -244,5 +244,6 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
         XCTAssertEqual(WatchtowerSetupSection.copy(for: .dictation).tab, .dictation)
         XCTAssertEqual(WatchtowerSetupSection.copy(for: .autovisor).tab, .autovisor)
         XCTAssertEqual(WatchtowerSetupSection.copy(for: .bash).tab, .bash)
+        XCTAssertEqual(WatchtowerSetupSection.copy(for: .computerUse).tab, .computerUse)
     }
 }

@@ -7,10 +7,32 @@ import Foundation
 nonisolated enum TemplateResolver {
 
     /// Resolves a template string by replacing `{key}` placeholders with values from the dictionary.
+    ///
+    /// Single-pass scan over the TEMPLATE only — substituted values are data and are never
+    /// re-scanned for `{key}` tokens. The prior `for (key, value) in placeholders` +
+    /// `replacingOccurrences` loop made nested-token expansion depend on Swift Dictionary
+    /// iteration order (re-randomized per process): a value containing `{otherKey}` was
+    /// expanded or left literal based on hash seeding, producing non-deterministic prompt
+    /// bytes and letting user-authored guidance smuggle chips like `{toolCalling}` into
+    /// the resolved prompt. Unknown placeholders stay literal, as before.
     static func resolve(_ template: String, placeholders: [String: String]) -> String {
-        var result = template
-        for (key, value) in placeholders {
-            result = result.replacingOccurrences(of: "{\(key)}", with: value)
+        guard !placeholders.isEmpty, template.contains("{") else { return template }
+        var result = String()
+        result.reserveCapacity(template.count)
+        var i = template.startIndex
+        while i < template.endIndex {
+            let ch = template[i]
+            if ch == "{",
+               case let afterBrace = template.index(after: i),
+               afterBrace < template.endIndex,
+               let close = template[afterBrace...].firstIndex(of: "}"),
+               let value = placeholders[String(template[afterBrace..<close])] {
+                result += value
+                i = template.index(after: close)
+            } else {
+                result.append(ch)
+                i = template.index(after: i)
+            }
         }
         return result
     }
@@ -33,6 +55,30 @@ nonisolated enum TemplateResolver {
     ) -> String {
         let trimmed = suffix.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return text }
+        return text + "\n\n" + header + "\n\n" + trimmed
+    }
+
+    /// Like `appendingSeparator`, but when `text` ends in a `## Final reminder`
+    /// section the guidance block is inserted BEFORE it — the tail attention
+    /// slot must keep the single most critical constraint [Liu2024]; an
+    /// arbitrary-length user context block appended after it displaces the
+    /// reminder from the position that makes it work.
+    static func insertingGlobalGuidance(
+        _ suffix: String,
+        into text: String,
+        header: String = "## Global guidance"
+    ) -> String {
+        let trimmed = suffix.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return text }
+        let frHeader = "## Final reminder"
+        if let range = text.range(of: frHeader, options: .backwards),
+           range.lowerBound == text.startIndex
+            || text[text.index(before: range.lowerBound)] == "\n" {
+            let head = String(text[..<range.lowerBound])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let tail = String(text[range.lowerBound...])
+            return head + "\n\n" + header + "\n\n" + trimmed + "\n\n" + tail
+        }
         return text + "\n\n" + header + "\n\n" + trimmed
     }
 
@@ -82,9 +128,11 @@ nonisolated enum TemplateResolver {
         result = result.trimmingCharacters(in: .whitespacesAndNewlines)
         // Only auto-append when the template doesn't already place the chip AND
         // the template isn't intentionally empty (a user-cleared template should
-        // ship empty — that's the "control whole prompt" contract).
+        // ship empty — that's the "control whole prompt" contract). Inserted
+        // BEFORE a trailing `## Final reminder` so the legacy-template path
+        // never displaces the tail reminder.
         if !hasExplicitGlobalContext && !result.isEmpty {
-            result = appendingSeparator(globalContext, to: result)
+            result = insertingGlobalGuidance(globalContext, into: result)
         }
         return result
     }

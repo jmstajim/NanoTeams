@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// Extension for handling vision analysis tool signals.
@@ -12,12 +13,36 @@ extension LLMExecutionService {
         stepID: String,
         taskID: Int,
         client: any LLMClient,
-        config _: LLMConfig,
+        config: LLMConfig,
         networkLogger: NetworkLogger?,
         conversationMessages: inout [ChatMessage],
         tracker: ToolCallTracker? = nil
     ) async {
         guard case .visionAnalysis(let imagePath, let prompt) = result.signal else { return }
+
+        // Unified in-chat vision: when Computer Use is enabled AND the main model is
+        // AUTO-DETECTED as vision-capable (`mainModelSeesImages`, replacing the manual
+        // toggle), feed the file image straight into the MAIN chat so the reasoning model
+        // answers in context — one brain, no second model. Only kicks in when Computer Use
+        // is on, so the default `analyze_image` sub-model behavior is unchanged for
+        // everyone else. Falls through to the sub-model path if the file can't be read.
+        if delegate?.computerUsePolicy.isEnabled == true,
+           await mainModelSeesImages(config: config, client: client),
+           let loaded = try? loadVisionImage(imagePath: imagePath) {
+            let rep = NSBitmapImageRep(data: loaded.data)
+            let envelope = makeSuccessEnvelope(data: [
+                "path": imagePath,
+                "status": "Image attached below — inspect it and answer.",
+            ])
+            await appendImageToMainChat(
+                envelope: envelope,
+                imageBase64: loaded.data.base64EncodedString(), imageMime: loaded.mimeType,
+                pixelWidth: rep?.pixelsWide ?? 0, pixelHeight: rep?.pixelsHigh ?? 0,
+                userCaption: "[Image for tool_call \(result.providerID ?? "")] \(prompt)",
+                result: result, toolCallID: toolCallID, stepID: stepID, taskID: taskID,
+                conversationMessages: &conversationMessages, tracker: tracker)
+            return
+        }
 
         var analysisText: String
         var isError = false
@@ -25,25 +50,11 @@ extension LLMExecutionService {
             guard let visionConfig = delegate?.visionLLMConfig else {
                 throw VisionError.notConfigured
             }
-            guard let workFolderRoot = delegate?.workFolderURL else {
-                throw VisionError.noProject
-            }
-            let internalDir = NTMSPaths(workFolderRoot: workFolderRoot).internalDir
-            let resolver = SandboxPathResolver(workFolderRoot: workFolderRoot, internalDir: internalDir)
-            let fileURL = try resolver.resolveFileURL(relativePath: imagePath)
-            guard let imageData = FileManager.default.contents(atPath: fileURL.path) else {
-                throw VisionError.fileNotFound(imagePath)
-            }
-            guard imageData.count <= VisionConstants.maxImageBytes else {
-                throw VisionError.fileTooLarge(imageData.count)
-            }
-            let ext = fileURL.pathExtension.lowercased()
-            let mimeType = VisionConstants.mimeTypes[ext] ?? "image/jpeg"
-
+            let loaded = try loadVisionImage(imagePath: imagePath)
             analysisText = try await VisionAnalysisService.analyze(
                 prompt: prompt,
-                imageBase64: imageData.base64EncodedString(),
-                mimeType: mimeType,
+                imageBase64: loaded.data.base64EncodedString(),
+                mimeType: loaded.mimeType,
                 config: visionConfig,
                 client: client,
                 logger: networkLogger
@@ -60,47 +71,38 @@ extension LLMExecutionService {
             isError = true
         }
 
-        let envelope: String
-        if isError {
-            envelope = makeErrorEnvelope(
-                code: .commandFailed, message: analysisText
-            )
-        } else {
-            envelope = makeSuccessEnvelope(data: ["path": imagePath, "analysis": analysisText])
+        let envelope = isError
+            ? makeErrorEnvelope(code: .commandFailed, message: analysisText)
+            : makeSuccessEnvelope(data: ["path": imagePath, "analysis": analysisText])
+
+        // Shared tool-result commit (append tool message, persist [CALL]/[RESULT], update the
+        // tool card, record the tracker). The tracker record matters because upstream
+        // `processToolResults` skips `.visionAnalysis` in its pre-record loop (it only has the
+        // interim `{"status":"analyzing"}` placeholder then), so without it the loop detector's
+        // next `recentCalls` snapshot would see the placeholder instead of the real envelope.
+        await finalizeToolResult(
+            envelope: envelope, isError: isError, result: result, toolCallID: toolCallID,
+            stepID: stepID, taskID: taskID, conversationMessages: &conversationMessages, tracker: tracker)
+    }
+
+    /// Resolves + reads an image file inside the work folder for vision, enforcing the size cap
+    /// and resolving the MIME type. Shared by the in-chat and sub-model paths. Throws the typed
+    /// `VisionError` cases (`.noProject` / `.fileNotFound` / `.fileTooLarge`) so the sub-model
+    /// path surfaces an accurate reason; the in-chat path uses `try?` and falls through on any
+    /// failure.
+    private func loadVisionImage(imagePath: String) throws -> (data: Data, mimeType: String) {
+        guard let workFolderRoot = delegate?.workFolderURL else { throw VisionError.noProject }
+        let internalDir = NTMSPaths(workFolderRoot: workFolderRoot).internalDir
+        let resolver = SandboxPathResolver(workFolderRoot: workFolderRoot, internalDir: internalDir)
+        let fileURL = try resolver.resolveFileURL(relativePath: imagePath)
+        guard let imageData = FileManager.default.contents(atPath: fileURL.path) else {
+            throw VisionError.fileNotFound(imagePath)
         }
-        conversationMessages.append(ChatMessage(
-            role: .tool, content: envelope, toolCallID: result.providerID
-        ))
-        await appendLLMMessage(stepID: stepID, taskID: taskID, role: .tool, content: """
-            [CALL] \(result.toolName)
-            Arguments: \(result.argumentsJSON)
-
-            [RESULT]
-            \(envelope)
-            """)
-
-        // Update the tool call record with the final result (replaces interim "analyzing" status)
-        let finalResult = ToolExecutionResult(
-            providerID: result.providerID,
-            toolName: result.toolName,
-            argumentsJSON: result.argumentsJSON,
-            outputJSON: envelope,
-            isError: isError
-        )
-        await updateToolCallResult(stepID: stepID, taskID: taskID, toolCallID: toolCallID, result: finalResult)
-
-        // Record the FINAL vision result in the tool-call tracker. The upstream
-        // `processToolResults` skips `.visionAnalysis` from its pre-record loop
-        // because it only has the interim `{"status":"analyzing"}` placeholder
-        // at that point — without this record, the next iteration's
-        // `recentCalls` snapshot for the loop detector would see the placeholder
-        // instead of the real envelope.
-        tracker?.record(
-            toolName: result.toolName,
-            argumentsJSON: result.argumentsJSON,
-            resultJSON: envelope,
-            isError: isError
-        )
+        guard imageData.count <= VisionConstants.maxImageBytes else {
+            throw VisionError.fileTooLarge(imageData.count)
+        }
+        let ext = fileURL.pathExtension.lowercased()
+        return (imageData, VisionConstants.mimeTypes[ext] ?? "image/jpeg")
     }
 }
 

@@ -201,7 +201,7 @@ nonisolated struct GitBranchTool: ToolHandler {
         parameters: JS.object(
             properties: [
                 "action": JS.string(
-                    "Action: create, delete, rename",
+                    "Branch operation to perform.",
                     enumValues: ["create", "delete", "rename"]),
                 "name": JS.string("Branch name"),
                 "from": JS.string("Start point"),

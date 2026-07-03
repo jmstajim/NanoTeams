@@ -9,7 +9,7 @@ nonisolated struct RunXcodebuildTool: ToolHandler {
     static let name = TN.runXcodebuild
     static let schema = ToolSchema(
         name: TN.runXcodebuild,
-        description: "Run xcodebuild command using project settings.",
+        description: "Build the Xcode project.",
         parameters: JS.object(properties: [:])
     )
     static let category: ToolCategory = .xcode
@@ -113,7 +113,7 @@ nonisolated struct RunXcodetestsTool: ToolHandler {
     static let name = TN.runXcodetests
     static let schema = ToolSchema(
         name: TN.runXcodetests,
-        description: "Run tests using xcodebuild using project settings.",
+        description: "Run the Xcode test suite.",
         parameters: JS.object(properties: [:])
     )
     static let category: ToolCategory = .xcode

@@ -71,11 +71,14 @@ extension LLMExecutionService {
             conversationMessages.append(ChatMessage(role: .user, content: memories))
             await appendLLMMessage(stepID: stepID, taskID: taskID, role: .user, content: memories)
         } else {
-            // Stateless: rebuild in-place so there's only ever one block.
+            // Stateless: rebuild in-place so there's only ever one block. The
+            // persisted copy is the block VERBATIM — a `[MEMORIES]` bracket
+            // sigil would mix a second delimiter system into the `##`-headed
+            // block on stateless rebuild [Sclar2024].
             if let existingIndex = executionStates[stepKey]?.memoriesMessageIndex,
                existingIndex < conversationMessages.count {
                 conversationMessages[existingIndex] = ChatMessage(role: .user, content: memories)
-                await appendLLMMessage(stepID: stepID, taskID: taskID, role: .user, content: "[MEMORIES]\n\(memories)")
+                await appendLLMMessage(stepID: stepID, taskID: taskID, role: .user, content: memories)
             } else {
                 executionStates[stepKey]?.memoriesMessageIndex = conversationMessages.count
                 conversationMessages.append(ChatMessage(role: .user, content: memories))
@@ -123,37 +126,53 @@ extension LLMExecutionService {
         stepID: String,
         taskID: Int,
         tracker: ToolCallTracker,
+        allowedToolNames: Set<String>,
         conversationMessages: inout [ChatMessage]
     ) async {
         guard let loopDetection = ToolCallLoopDetector.detectLoopPattern(in: tracker.recentCalls(limit: 6)) else { return }
 
-        let warningMessage: String
-        if case .repetitiveTool(let tool, let count, _) = loopDetection,
-           tool == ToolNames.updateScratchpad {
-            warningMessage = """
-            ⚠️ PLANNING LOOP DETECTED: You've updated the scratchpad \(count) times without implementing.
-
-            STOP planning. START implementing:
-            1. Your plan is already recorded - do NOT call update_scratchpad again
-            2. Execute step 1: Use edit_file or write_file to make the code change
-            3. Then git_add and git_commit
-            4. Submit your deliverables using create_artifact
-            """
-        } else {
-            warningMessage = """
-            ⚠️ LOOP DETECTED: \(loopDetection.message)
-
-            Suggestions to break out:
-            1. If code is already changed, commit with git_add and git_commit
-            2. If build is failing, read the error and fix the root cause
-            3. If unclear what to do, use 'ask_supervisor' for guidance
-            4. Submit your deliverables using create_artifact
-            """
-        }
+        let warningMessage = Self.loopWarningMessage(
+            loopDetection: loopDetection, allowedToolNames: allowedToolNames
+        )
         conversationMessages.append(
             ChatMessage(role: .user, content: warningMessage)
         )
-        await appendLLMMessage(stepID: stepID, taskID: taskID, role: .system, content: warningMessage)
+        // Persist with the SAME role that went over the wire. A `.system` copy
+        // (the pre-fix behavior) put a mid-conversation system message into
+        // every stateless rebuild (HTTP 400 fallback, resume, revision) —
+        // violating the one-system-message chain structure.
+        await appendLLMMessage(stepID: stepID, taskID: taskID, role: .user, content: warningMessage)
+    }
+
+    /// Builds the loop-break message. Tool-aware: names ONLY tools in the
+    /// role's current schema — the pre-fix text unconditionally steered every
+    /// role toward `edit_file`/`git_commit`/`create_artifact`, sending
+    /// read-only and chat roles into a `tool_not_authorized` ping-pong (the
+    /// error guidance says "don't retry" while the loop warning says "call
+    /// it"). One directive beats a conditional menu for small models.
+    /// Internal (not private) for test pinning.
+    static func loopWarningMessage(
+        loopDetection: LoopDetection,
+        allowedToolNames: Set<String>
+    ) -> String {
+        let escalation = allowedToolNames.contains(ToolNames.askSupervisor)
+            ? " If you are blocked, call ask_supervisor."
+            : ""
+        if case .repetitiveTool(let tool, let count, _) = loopDetection,
+           tool == ToolNames.updateScratchpad {
+            let firstStep: String
+            if allowedToolNames.contains(ToolNames.editFile) {
+                firstStep = "Execute step 1 of your plan now — start with edit_file or write_file."
+            } else if allowedToolNames.contains(ToolNames.createArtifact) {
+                firstStep = "Execute your plan now and submit the deliverable via create_artifact."
+            } else {
+                firstStep = "Execute step 1 of your plan now."
+            }
+            return "Plan already recorded (\(count) scratchpad updates) — do not call "
+                + "update_scratchpad again except to mark a completed step. \(firstStep)\(escalation)"
+        }
+        return "Loop detected: \(loopDetection.message) Do one of: change the arguments, "
+            + "or move on to the next step of your plan.\(escalation)"
     }
 
     // MARK: - Supervisor Auto-Answer in Tool Loop

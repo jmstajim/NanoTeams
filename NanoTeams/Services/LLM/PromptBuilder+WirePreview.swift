@@ -57,6 +57,9 @@ nonisolated extension PromptBuilder {
         let workFolderState: WireWorkFolder
         let selectedScheme: String?
         let isVisionConfigured: Bool
+        /// `ComputerUsePolicy.isEnabled` — mirrors `isVisionConfigured` threading
+        /// (strip semantics live at `resolveToolSchemas` step 3.2-bis).
+        let isComputerUseEnabled: Bool
         let globalContext: String
         /// `.meeting` kind only: preview the prompt the **coordinator** would
         /// see at turn 1 (mid- and late-meeting branches are runtime-dynamic
@@ -73,6 +76,7 @@ nonisolated extension PromptBuilder {
             workFolderState: WireWorkFolder,
             selectedScheme: String?,
             isVisionConfigured: Bool,
+            isComputerUseEnabled: Bool,
             globalContext: String,
             isCoordinator: Bool = false
         ) {
@@ -83,6 +87,7 @@ nonisolated extension PromptBuilder {
             self.workFolderState = workFolderState
             self.selectedScheme = selectedScheme
             self.isVisionConfigured = isVisionConfigured
+            self.isComputerUseEnabled = isComputerUseEnabled
             self.globalContext = globalContext
             self.isCoordinator = isCoordinator
         }
@@ -347,7 +352,7 @@ nonisolated extension PromptBuilder {
             "teamRoles": teamRolesLine,
             // Runtime emits this exact string on first iteration of a 1-step
             // run — must match for byte parity.
-            "stepInfo": "You are step 1 of 1.",
+            "stepInfo": "",  // retired chip — resolves empty (matches runtime)
             "positionContext": positionContext,
             "roleGuidance": roleGuidance,
             "conversationMechanics": conversationMechanics,
@@ -374,9 +379,13 @@ nonisolated extension PromptBuilder {
         let team = inputs.team
         return [
             "consultedRoleName": role.name,
-            "requestingRoleName": syntheticRequestingRoleName(team: team, consulted: role),
-            // Consultation's `getRolePrompt` returns roleDef.prompt as-is (no
-            // trim+fallback for empty strings). Match it.
+            // Runtime resolves `{requestingRoleName}` generically: the persistent
+            // consultation chat serves every requester and each question turn
+            // names who is asking. Byte-identical to
+            // `LLMExecutionService.buildConsultationSystemPrompt`.
+            "requestingRoleName": "a teammate",
+            // Consultation's role-guidance resolution returns roleDef.prompt
+            // as-is (no trim+fallback for empty strings). Match it.
             "roleGuidance": wirePreviewCollaborationRoleGuidance(role: role, team: team),
             "teamDescription": team?.description ?? "",
             "globalContext": PromptBuilder.formatGlobalContext(inputs.globalContext),
@@ -436,16 +445,6 @@ nonisolated extension PromptBuilder {
         return SystemTemplates.roles[builtIn.baseID]?.prompt ?? ""
     }
 
-    /// First non-consulted non-supervisor role's name. Falls back to a
-    /// clearly-marked example string for one-role teams.
-    private static func syntheticRequestingRoleName(
-        team: Team?,
-        consulted: TeamRoleDefinition
-    ) -> String {
-        let candidates = (team?.nonSupervisorRoles ?? []).filter { $0.id != consulted.id }
-        return candidates.first?.name ?? "(example: requesting role)"
-    }
-
     /// Production tool-resolution pipeline: `resolveToolSchemas` →
     /// `filterForDefaultStorage` → (for real folders) `filterForGitAvailability`.
     private static func runtimeToolPipeline(inputs: WirePreviewInputs) -> [ToolSchema] {
@@ -455,7 +454,8 @@ nonisolated extension PromptBuilder {
             team: inputs.team,
             allTeams: inputs.allTeams,
             selectedScheme: inputs.selectedScheme,
-            isVisionConfigured: inputs.isVisionConfigured
+            isVisionConfigured: inputs.isVisionConfigured,
+            isComputerUseEnabled: inputs.isComputerUseEnabled
         )
         switch inputs.workFolderState {
         case .defaultStorage:

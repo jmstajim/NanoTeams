@@ -140,6 +140,7 @@ struct TemplatePreviewSheet: View {
             workFolderState: PromptBuilder.WireWorkFolder.from(orchestratorURL: store.workFolderURL),
             selectedScheme: workFolder?.settings.selectedScheme,
             isVisionConfigured: store.visionLLMConfig != nil,
+            isComputerUseEnabled: config.isComputerUseEnabled,
             globalContext: config.globalContext,
             isCoordinator: previewAsCoordinator
         )

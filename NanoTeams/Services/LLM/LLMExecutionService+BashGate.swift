@@ -151,7 +151,7 @@ extension LLMExecutionService {
 
     // MARK: - Helpers
 
-    private func isUnderAutovisor(task: NTMSTask) -> Bool {
+    func isUnderAutovisor(task: NTMSTask) -> Bool {
         guard let settings = delegate?.snapshot?.workFolder.settings else { return false }
         return AutovisorPolicy.supervisesTask(
             taskID: task.id,

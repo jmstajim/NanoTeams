@@ -51,6 +51,12 @@ enum ToolErrorCode: String, Codable {
     /// (A foreground timeout is surfaced as a success envelope with
     /// `timed_out: true`, not an error code.)
     case bashDenied = "BASH_DENIED"
+    /// A computer-use action (`ui_click` / `ui_type` / `ui_key` / `ui_scroll` /
+    /// `screen_capture`) was blocked by the computer-use permission layer: mode Off,
+    /// a self-guard / allowlist / blocked-pattern deny, out-of-bounds coordinates,
+    /// the Auto judge rejected it, or human approval was required but unavailable.
+    /// Distinct from `COMMAND_FAILED` (the OS action ran and failed).
+    case computerUseDenied = "COMPUTER_USE_DENIED"
 }
 
 // MARK: - Response Envelope Types

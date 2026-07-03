@@ -12,10 +12,18 @@ enum MeetingToolExecutor {
 
     /// Executes tool calls for a single meeting turn. If the LLM returns tool calls,
     /// executes them and re-calls the LLM with results, up to maxToolIterationsPerTurn.
+    ///
+    /// `conversationSoFar` is the FULL stateless render of the conversation the
+    /// initial stream was grounded on (system prompt + artifact context + chat
+    /// history + the meeting turn). Follow-up calls CONTINUE that stack —
+    /// appending the assistant tool-call turn + tool results each iteration —
+    /// so the model keeps the exact system prompt and grounding it spoke from.
+    /// The pre-fix rebuild via `buildMeetingMessages` swapped in a different
+    /// system prompt mid-turn and dropped the artifact grounding, letting a
+    /// small model contradict its own pre-tool statement.
     static func executeTurnToolLoop(
         initialResult: TeamMeetingService.MeetingStreamResult,
-        speaker: Role,
-        meeting: TeamMeeting,
+        conversationSoFar: [ChatMessage],
         meetingContext: TeamMeetingService.MeetingContext,
         client: any LLMClient,
         config: LLMConfig,
@@ -25,8 +33,13 @@ enum MeetingToolExecutor {
         stepID: String? = nil,
         networkLogger: NetworkLogger? = nil,
         cancellationRegistrar: BatchCancellationRegistrar? = nil
-    ) async throws -> (content: String, thinking: String, toolSummaries: [MeetingToolSummary]) {
+    ) async throws -> (
+        content: String, thinking: String,
+        toolSummaries: [MeetingToolSummary], finalSession: LLMSession?
+    ) {
         var currentResult = initialResult
+        var conversation = conversationSoFar
+        var finalSession: LLMSession?
         var allThinking = initialResult.thinking
         var collectedToolSummaries: [MeetingToolSummary] = []
         var iteration = 0
@@ -100,20 +113,14 @@ enum MeetingToolExecutor {
                 ))
             }
 
-            // Build follow-up messages with tool results
-            var followUpMessages = MeetingStreamingService.buildMeetingMessages(
-                speaker: speaker,
-                meeting: meeting,
-                context: meetingContext,
-                tools: tools
-            )
-
             // Feed back every call the model made — both executed and rejected
             // — so the LLM sees why a tool was blocked and can self-correct.
+            // Appending to the RUNNING conversation (not a rebuild) keeps
+            // earlier iterations' tool results visible in later iterations.
             let allCalls = validCalls + currentResult.resolvedToolCalls.filter { call in
                 !allowedToolNames.contains(ToolRegistry.resolveToolName(call.name))
             }
-            followUpMessages.append(ChatMessage(
+            conversation.append(ChatMessage(
                 role: .assistant,
                 content: currentResult.content.isEmpty ? nil : currentResult.content,
                 toolCalls: allCalls.map { call in
@@ -128,28 +135,32 @@ enum MeetingToolExecutor {
             // Add tool results — pair by position (allCalls order matches
             // validCalls + rejectedCalls, and toolResults matches that order)
             for (call, result) in zip(allCalls, toolResults) {
-                followUpMessages.append(ChatMessage(
+                conversation.append(ChatMessage(
                     role: .tool,
                     content: result.outputJSON,
                     toolCallID: result.providerID ?? call.providerID ?? call.id.uuidString
                 ))
             }
 
-            // Re-call LLM with tool results
+            // Re-call LLM with tool results. Stateless full send (session nil):
+            // the response establishes a fresh chain that INCLUDES the tool
+            // results, and its id is returned as `finalSession` so the caller
+            // stores a chain consistent with the persisted chat.
             currentResult = try await MeetingStreamingService.streamParticipantResponse(
-                messages: followUpMessages,
+                messages: conversation,
                 client: client,
                 config: config,
                 tools: tools,
                 logger: networkLogger,
                 stepID: stepID
             )
+            if let s = currentResult.session { finalSession = s }
 
             if !currentResult.thinking.isEmpty {
                 allThinking += (allThinking.isEmpty ? "" : "\n") + currentResult.thinking
             }
         }
 
-        return (currentResult.content, allThinking, collectedToolSummaries)
+        return (currentResult.content, allThinking, collectedToolSummaries, finalSession)
     }
 }

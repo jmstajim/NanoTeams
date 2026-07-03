@@ -85,6 +85,7 @@ struct WatchtowerSetupSection: View {
             case .dictation: return dictationLocalesEmpty
             case .autovisor: return hasWorkFolder && !autovisorEnabled
             case .bash: return true   // always offered until dismissed; Bash is on by default
+            case .computerUse: return true   // always offered until dismissed; Manual approval by default
             }
         }
     }
@@ -147,9 +148,18 @@ struct WatchtowerSetupSection: View {
                 tint: Colors.warning,
                 tab: .bash
             )
+        case .computerUse:
+            return Copy(
+                icon: "cursorarrow.rays",
+                title: "Computer Use",
+                description: "Let roles see the screen and control the mouse and keyboard — with per-action approval.",
+                tint: Colors.warning,
+                tab: .computerUse
+            )
         }
     }
 }
+
 
 // MARK: - Preview
 

@@ -834,9 +834,13 @@ private final class StreamPersistingMockDelegate: LLMExecutionDelegate {
     var maxLLMRetries: Int = 0
     var visionLLMConfig: LLMConfig?
     var bashPolicy: BashPolicy = BashPolicy()
+    var computerUsePolicy: ComputerUsePolicy = ComputerUsePolicy()
     func bashApprovalDidBegin(_ request: BashApprovalRequest) {}
     func bashApprovalDidEnd(taskID: Int, stepID: String, commandKey: String, createdAt: Date) {}
     func clearAllBashApprovalRequests() {}
+    func computerUseApprovalDidBegin(_ request: ComputerUseApprovalRequest) {}
+    func computerUseApprovalDidEnd(taskID: Int, stepID: String, actionKey: String, createdAt: Date) {}
+    func clearAllComputerUseApprovalRequests() {}
     var loggingEnabled: Bool = false
     var exploratorySearchEnabled: Bool = false
     var searchExploratoryByDefault: Bool = false

@@ -127,7 +127,8 @@ final class FirstPromptRendererTests: XCTestCase {
             maxTokens: nil,
             globalContext: nil,
             selectedScheme: nil,
-            visionConfigured: nil
+            visionConfigured: nil,
+            computerUseEnabled: nil
         )
     }
 

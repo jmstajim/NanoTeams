@@ -36,7 +36,13 @@ final class MeetingCoordinatorTests: XCTestCase {
         // Shell tools run a login shell — never available in a meeting turn.
         XCTAssertTrue(excluded.contains(TN.bash))
         XCTAssertTrue(excluded.contains(TN.bashOutput))
-        XCTAssertEqual(excluded.count, 24)
+        // Computer-use tools drive the real desktop — never in a meeting turn.
+        XCTAssertTrue(excluded.contains(TN.screenCapture))
+        XCTAssertTrue(excluded.contains(TN.uiClick))
+        XCTAssertTrue(excluded.contains(TN.uiType))
+        XCTAssertTrue(excluded.contains(TN.uiKey))
+        XCTAssertTrue(excluded.contains(TN.uiScroll))
+        XCTAssertEqual(excluded.count, 29)
     }
 
     // MARK: - filterMeetingTools
@@ -136,7 +142,7 @@ final class MeetingCoordinatorTests: XCTestCase {
             meeting: meeting,
             context: context
         )
-        XCTAssertTrue(msg.contains("WRAP UP NOW"))
+        XCTAssertTrue(msg.contains("Final turns: summarize"))
     }
 
     func testBuildTurnMessage_nonCoordinator_genericMessage() {
@@ -194,7 +200,7 @@ final class MeetingCoordinatorTests: XCTestCase {
         let turn1 = MeetingCoordinator.buildTurnMessage(
             speaker: initiator, meeting: meeting, context: context
         )
-        XCTAssertFalse(turn1.contains("WRAP UP"))
+        XCTAssertFalse(turn1.contains("Final turns"))
         XCTAssertFalse(turn1.contains("As coordinator"))
 
         // Mid-meeting (turnNumber = 2+1 = 3, ≥ maxTurns/2 and < maxTurns-2)
@@ -211,7 +217,7 @@ final class MeetingCoordinatorTests: XCTestCase {
         )
         XCTAssertTrue(turnMid.contains("As coordinator"),
                       "Auto-mode initiator must receive coordinator steering past half-way")
-        XCTAssertFalse(turnMid.contains("WRAP UP"),
+        XCTAssertFalse(turnMid.contains("Final turns"),
                        "Wrap-up must NOT fire until last-2 turns")
 
         // Last-2 turns (turnNumber = 3+1 = 4, ≥ maxTurns-2) — wrap-up kicks in.
@@ -223,8 +229,8 @@ final class MeetingCoordinatorTests: XCTestCase {
         let turnLate = MeetingCoordinator.buildTurnMessage(
             speaker: initiator, meeting: meeting, context: context
         )
-        XCTAssertTrue(turnLate.contains("WRAP UP"),
-                      "Auto-mode initiator must receive WRAP UP at last-2 turns")
+        XCTAssertTrue(turnLate.contains("Final turns"),
+                      "Auto-mode initiator must receive the wrap-up directive at last-2 turns")
     }
 
     // A non-initiator participant must NOT receive coordinator-specific
@@ -247,7 +253,7 @@ final class MeetingCoordinatorTests: XCTestCase {
             speaker: .softwareEngineer, meeting: meeting, context: context
         )
         XCTAssertTrue(msg.contains("Provide your input"))
-        XCTAssertFalse(msg.contains("WRAP UP"))
+        XCTAssertFalse(msg.contains("Final turns"))
         XCTAssertFalse(msg.contains("As coordinator"))
     }
 

@@ -124,10 +124,25 @@ nonisolated extension NTMSRepository {
                 // `syncAutovisorTeamToTemplate` (runs on every open): it union-enforces the
                 // mandatory tools, preserves the user's choices among the allowed-optional
                 // tools, and strips any tool outside the allowed set (mandatory ∪ optional).
-                // Keep the stored toolIDs here instead of the bundled overwrite so that
-                // policy isn't fought by the reconcile.
-                let nextToolIDs = tid == AutovisorConstants.teamTemplateID
-                    ? role.toolIDs : bundled.toolIDs
+                // The reconcile therefore does NOT overwrite the manager's toolIDs — but it
+                // IS the delivery path for optional-tool GROUPS newly bundled in this app
+                // version (e.g. computer-use): a group entirely absent from the stored
+                // toolset predates its introduction and is added whole; a partially-present
+                // group means the user has seen it and pruned — their per-tool toggles are
+                // preserved (pinned by `testVersionBump_..._preservingToolToggles`).
+                let nextToolIDs: [String]
+                if tid == AutovisorConstants.teamTemplateID {
+                    let stored = Set(role.toolIDs)
+                    let bundledSet = Set(bundled.toolIDs)
+                    var toolIDs = role.toolIDs
+                    for group in AutovisorConstants.managerOptionalToolGroups
+                        where stored.isDisjoint(with: group) {
+                        toolIDs.append(contentsOf: group.filter { bundledSet.contains($0) })
+                    }
+                    nextToolIDs = toolIDs
+                } else {
+                    nextToolIDs = bundled.toolIDs
+                }
                 let nextDeps = bundled.dependencies
                 let nextIcon = bundled.icon
                 let nextIconColor = bundled.iconColor

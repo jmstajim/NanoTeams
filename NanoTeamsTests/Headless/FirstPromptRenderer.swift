@@ -109,7 +109,8 @@ enum FirstPromptRenderer {
             team: team,
             allTeams: snapshot.projection.teams,
             selectedScheme: config.selectedScheme,
-            isVisionConfigured: config.resolvedVisionConfigured
+            isVisionConfigured: config.resolvedVisionConfigured,
+            isComputerUseEnabled: config.resolvedComputerUseEnabled
         )
 
         // 5a. `URL ==` is the exact comparison `startStepExecution` uses;

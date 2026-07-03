@@ -57,4 +57,8 @@ nonisolated struct LLMClientRouter: LLMClient {
     func listLoadedInstances(baseURLString: String) async throws -> [LoadedModelInstance] {
         try await nativeClient.listLoadedInstances(baseURLString: baseURLString)
     }
+
+    func modelSupportsVision(config: LLMConfig) async -> Bool? {
+        await nativeClient.modelSupportsVision(config: config)
+    }
 }

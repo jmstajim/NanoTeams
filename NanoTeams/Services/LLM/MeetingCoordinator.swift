@@ -25,11 +25,16 @@ enum MeetingCoordinator {
         meeting: TeamMeeting,
         context: TeamMeetingService.MeetingContext
     ) -> String {
-        let speakerName = context.team?.findRole(byIdentifier: speaker.baseID)?.name
-            ?? speaker.displayName
+        // Every name in the turn resolves through the team (custom teams rename
+        // roles) — a mixed displayName/team-name rendering shows the same role
+        // under two names in one prompt.
+        func name(_ role: Role) -> String {
+            context.team?.findRole(byIdentifier: role.baseID)?.name ?? role.displayName
+        }
+        let speakerName = name(speaker)
         var msg = "## Team meeting\nTopic: \(meeting.topic)\n"
-        msg += "Initiated by: \(context.initiatedBy.displayName)\n"
-        msg += "Participants: \(context.participants.map(\.displayName).joined(separator: ", "))\n"
+        msg += "Initiated by: \(name(context.initiatedBy))\n"
+        msg += "Participants: \(context.participants.map(name).joined(separator: ", "))\n"
 
         if let additionalContext = meeting.context {
             msg += "Context: \(additionalContext)\n"
@@ -38,17 +43,33 @@ enum MeetingCoordinator {
         if !meeting.messages.isEmpty {
             msg += "\nDiscussion so far:\n"
             for prevMsg in meeting.messages {
-                let name = context.team?.findRole(byIdentifier: prevMsg.role.baseID)?.name
-                    ?? prevMsg.role.displayName
-                msg += "[\(name)]: \(prevMsg.content)\n"
+                msg += "[\(name(prevMsg.role))]: \(prevMsg.content)\n"
             }
         }
 
-        let turnNumber = meeting.turnCount + 1
-        let maxTurns = context.limits.maxMeetingTurns
-        let isCoordinator = speaker == context.coordinatorRole
+        msg += "\n" + Self.turnDirective(
+            speakerName: speakerName,
+            turnNumber: meeting.turnCount + 1,
+            maxTurns: context.limits.maxMeetingTurns,
+            isCoordinator: speaker == context.coordinatorRole,
+            isDiscussionClub: context.team?.templateID == "discussionClub"
+        )
 
-        if context.team?.templateID == "discussionClub" {
+        return msg
+    }
+
+    /// Single source of truth for the per-turn directive (conciseness ladder,
+    /// coordinator steering/wrap-up). Shared by `buildTurnMessage` (live path)
+    /// and `MeetingStreamingService.buildMeetingMessages` so the two renderings
+    /// of the same turn cannot drift apart.
+    nonisolated static func turnDirective(
+        speakerName: String,
+        turnNumber: Int,
+        maxTurns: Int,
+        isCoordinator: Bool,
+        isDiscussionClub: Bool
+    ) -> String {
+        if isDiscussionClub {
             let conciseness: String
             if turnNumber >= maxTurns - 1 {
                 conciseness = "1-2 sentences max. Final remarks only."
@@ -57,15 +78,14 @@ enum MeetingCoordinator {
             } else {
                 conciseness = "3-5 sentences."
             }
-            msg += "\nYour turn, \(speakerName). \(conciseness) Build on what was said — don't repeat your earlier points."
-        } else if isCoordinator && turnNumber >= maxTurns - 2 {
-            msg += "\nWRAP UP NOW. Summarize the key points and state the group's conclusion."
-        } else if isCoordinator && turnNumber >= maxTurns / 2 {
-            msg += "\nAs coordinator, start steering toward a conclusion."
-        } else {
-            msg += "\nProvide your input as \(speakerName). Be concise and focused on the topic."
+            return "Your turn, \(speakerName). \(conciseness) Build on what was said — don't repeat your earlier points."
         }
-
-        return msg
+        if isCoordinator && turnNumber >= maxTurns - 2 {
+            return "Final turns: summarize the key points and state the group's conclusion."
+        }
+        if isCoordinator && turnNumber >= maxTurns / 2 {
+            return "As coordinator, start steering toward a conclusion."
+        }
+        return "Provide your input as \(speakerName). Be concise and focused on the topic."
     }
 }

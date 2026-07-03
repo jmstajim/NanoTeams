@@ -40,6 +40,7 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
         isDefaultStorage: Bool = true,
         selectedScheme: String? = nil,
         isVisionConfigured: Bool = false,
+        isComputerUseEnabled: Bool = false,
         globalContext: String = "One tool call per response.",
         isCoordinator: Bool = false
     ) -> PromptBuilder.WirePreviewInputs {
@@ -60,6 +61,7 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
             workFolderState: state,
             selectedScheme: selectedScheme,
             isVisionConfigured: isVisionConfigured,
+            isComputerUseEnabled: isComputerUseEnabled,
             globalContext: globalContext,
             isCoordinator: isCoordinator
         )
@@ -79,7 +81,8 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
             team: team,
             allTeams: inputs.allTeams,
             selectedScheme: inputs.selectedScheme,
-            isVisionConfigured: inputs.isVisionConfigured
+            isVisionConfigured: inputs.isVisionConfigured,
+            isComputerUseEnabled: inputs.isComputerUseEnabled
         )
         let tools: [ToolSchema]
         switch inputs.workFolderState {
@@ -175,6 +178,32 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
                        "Preview must equal wire systemPrompt with real WF / git / scheme / vision enabled")
     }
 
+    /// The computer-use master switch must reach the preview exactly as it
+    /// reaches the wire: `isComputerUseEnabled: false` (the default, matching
+    /// `ComputerUsePolicy.mode == .off`) strips granted computer-use tools
+    /// from the rendered prompt; `true` surfaces them — byte-identical to the
+    /// production pipeline in the enabled state.
+    func testStepExecutionPreview_computerUseToggle_stripsAndKeepsTools() throws {
+        var role = codingAgent.nonSupervisorRoles.first!
+        role.toolIDs.append(contentsOf: [ToolNames.screenCapture, ToolNames.uiClick])
+        codingAgent.updateRole(role)
+
+        let disabled = makeInputs(role: role, team: codingAgent)
+        let disabledPreview = try PromptBuilder.buildWirePromptPreview(kind: .stepExecution, inputs: disabled)
+        XCTAssertFalse(disabledPreview.contains(ToolNames.screenCapture),
+                       "computer use off (default) must strip granted computer-use tools from the preview")
+        XCTAssertFalse(disabledPreview.contains(ToolNames.uiClick))
+
+        let enabled = makeInputs(role: role, team: codingAgent, isComputerUseEnabled: true)
+        let enabledPreview = try PromptBuilder.buildWirePromptPreview(kind: .stepExecution, inputs: enabled)
+        XCTAssertTrue(enabledPreview.contains(ToolNames.screenCapture),
+                      "computer use on must surface granted computer-use tools in the preview")
+        XCTAssertTrue(enabledPreview.contains(ToolNames.uiClick))
+
+        let wire = buildProductionWireSystemPrompt(team: codingAgent, roleDefinition: role, inputs: enabled)
+        XCTAssertEqual(enabledPreview, wire, "enabled-path preview must equal wire byte-for-byte")
+    }
+
     /// Byte-identity for the consultation kind. Builds the runtime body by
     /// constructing the placeholders dict the same way
     /// `TeammateConsultationService.buildSystemPrompt` does and running it
@@ -188,14 +217,13 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
 
         let preview = try PromptBuilder.buildWirePromptPreview(kind: .consultation, inputs: inputs)
 
-        // Construct the runtime-equivalent placeholders using the same
-        // synthetic requesting role the wire-preview uses (first non-consulted
-        // non-supervisor role per `syntheticRequestingRoleName`).
-        let candidates = faang.nonSupervisorRoles.filter { $0.id != pm.id }
-        let requestingName = candidates.first?.name ?? "(example: requesting role)"
+        // Construct the runtime-equivalent placeholders. `{requestingRoleName}`
+        // resolves to the generic "a teammate" in BOTH the preview and
+        // `buildConsultationSystemPrompt` — the persistent chat serves every
+        // requester; each question turn names who is asking.
         let placeholders: [String: String] = [
             "consultedRoleName": pm.name,
-            "requestingRoleName": requestingName,
+            "requestingRoleName": "a teammate",
             "roleGuidance": pm.prompt,
             "teamDescription": faang.description,
             "globalContext": PromptBuilder.formatGlobalContext(inputs.globalContext),
@@ -422,34 +450,25 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
         XCTAssertFalse(preview.contains("<|call|>"))
     }
 
-    func testConsultationPreview_synthesizesRequestingRole_multiRoleTeam() throws {
-        let pm = faang.roles.first(where: { $0.name == "Product Manager" })!
-        let inputs = makeInputs(role: pm, team: faang)
+    /// `{requestingRoleName}` resolves to the generic "a teammate" in BOTH the
+    /// preview and the runtime chat (the persistent consultation chat serves
+    /// every requester; each question turn names who is asking). A user
+    /// template carrying the chip must never render a synthetic role name or
+    /// a placeholder-looking fallback.
+    func testConsultationPreview_requestingRoleResolvesGenerically() throws {
+        // The built-in templates no longer carry the chip — use a custom
+        // template that does, so the resolution itself is pinned.
+        var team = faang!
+        team.consultationPromptTemplate = "## Role\n{consultedRoleName}. {requestingRoleName} asks."
+        let pm = team.roles.first(where: { $0.name == "Product Manager" })!
+        let inputs = makeInputs(role: pm, team: team)
 
         let preview = try PromptBuilder.buildWirePromptPreview(kind: .consultation, inputs: inputs)
 
-        // The synthetic requestingRoleName is the first non-consulted
-        // non-supervisor role. For FAANG with PM consulted, that's whichever
-        // appears first after PM in nonSupervisorRoles.
-        let candidates = faang.nonSupervisorRoles.filter { $0.id != pm.id }
-        let expected = candidates.first!.name
-        XCTAssertTrue(preview.contains(expected),
-                      "Expected requestingRoleName=\(expected) in preview")
+        XCTAssertTrue(preview.contains("a teammate asks."),
+                      "chip must resolve to the generic requester. Got:\n\(preview)")
         XCTAssertFalse(preview.contains("(example: requesting role)"),
-                       "Multi-role team should use a real teammate name, not the fallback")
-    }
-
-    func testConsultationPreview_synthesizesRequestingRole_singleRoleTeam() throws {
-        // Build a single-role team so the synthesizer hits the fallback branch.
-        var soloTeam = TeamTemplateFactory.codingAssistant()
-        let solo = soloTeam.nonSupervisorRoles.first!
-        // Strip every other role so only one remains.
-        soloTeam.roles = soloTeam.roles.filter { $0.id == solo.id || $0.name == "Supervisor" }
-
-        let inputs = makeInputs(role: solo, team: soloTeam)
-        let preview = try PromptBuilder.buildWirePromptPreview(kind: .consultation, inputs: inputs)
-
-        XCTAssertTrue(preview.contains("(example: requesting role)"))
+                       "the synthetic-role fallback is gone")
     }
 
     // MARK: - Meeting

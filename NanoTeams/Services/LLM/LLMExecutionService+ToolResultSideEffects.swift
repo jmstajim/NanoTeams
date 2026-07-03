@@ -29,46 +29,37 @@ extension LLMExecutionService {
            isAutovisorStep(stepID: stepID, taskID: taskID) {
             let persisted = await delegate?.persistAutovisorMemory(content) ?? false
             if !persisted {
-                let warning = "⚠️ Failed to persist your memory to disk — it may NOT survive the next run. Retry update_scratchpad, or report this if it keeps failing."
+                let warning = "Memory write to disk failed — it may not survive the next run. Retry update_scratchpad, or report this if it keeps failing."
                 conversationMessages.append(ChatMessage(role: .user, content: warning))
-                await appendLLMMessage(stepID: stepID, taskID: taskID, role: .system, content: warning)
+                // Persist with the wire role (.user) — a `.system` copy corrupts
+                // stateless rebuilds with a mid-conversation system message.
+                await appendLLMMessage(stepID: stepID, taskID: taskID, role: .user, content: warning)
             }
         }
 
         memoryStore.registerPlanUpdate(content: content, iteration: memoryStore.currentIteration)
 
-        // Log the plan FIRST (before TRANSITION message)
-        let planMessage = """
-            Your current implementation plan:
-            \(content)
-
-            Update the plan after each completed action using update_scratchpad.
-            Mark completed items with ~~strikethrough~~.
-            """
+        // ONE acknowledgement per update. The plan itself is NOT echoed back —
+        // it is verbatim in the model's own tool-call turn one message earlier
+        // (a stateful chain carries it; echoing was pure duplication), and the
+        // pre-fix pair "Update the plan after each completed action" +
+        // "Do NOT call update_scratchpad again" landed back-to-back with
+        // opposite surface readings.
         let stepKey = TaskStepKey(taskID: taskID, stepID: stepID)
-        executionStates[stepKey]?.planMessageIndex = conversationMessages.count
-        conversationMessages.append(
-            ChatMessage(role: .user, content: planMessage)
-        )
-        await appendLLMMessage(stepID: stepID, taskID: taskID, role: .user, content: planMessage)
-
-        // Inject transition message only on the FIRST scratchpad update (planning → implementation).
-        // Subsequent scratchpad updates (marking items done) skip this to avoid redundant messages.
+        let ackMessage: String
         if executionStates[stepKey]?.planningTransitionDone != true {
             executionStates[stepKey]?.planningTransitionDone = true
-            let transitionMessage = """
-            ✅ Plan recorded. Now proceeding to IMPLEMENTATION PHASE.
-
-            You now have access to all tools. Execute your plan step by step.
-            Do NOT call update_scratchpad again unless marking items complete with ~~strikethrough~~.
-
-            Start with step 1 of your plan.
-            """
-            conversationMessages.append(
-                ChatMessage(role: .user, content: transitionMessage)
-            )
-            await appendLLMMessage(stepID: stepID, taskID: taskID, role: .user, content: transitionMessage)
+            ackMessage = "Plan recorded — proceeding to IMPLEMENTATION PHASE with your full toolset. "
+                + "Execute step 1 of your plan now. Call update_scratchpad again only to mark a "
+                + "completed step with ~~strikethrough~~."
+        } else {
+            ackMessage = "Plan updated. Continue with the next step."
         }
+        executionStates[stepKey]?.planMessageIndex = conversationMessages.count
+        conversationMessages.append(
+            ChatMessage(role: .user, content: ackMessage)
+        )
+        await appendLLMMessage(stepID: stepID, taskID: taskID, role: .user, content: ackMessage)
     }
 
     // MARK: - Create Artifact Result Processing
@@ -313,8 +304,23 @@ extension LLMExecutionService {
             // `DELEGATION_TIMED_OUT` (maybe retry later) vs `INVALID_ARGS`
             // (fix args). Only handler-shape envelopes carry `code`; the
             // legacy `{message:...}` shape gets no prefix to avoid `[]` artifacts.
-            let codePrefix = (errorObj?["code"] as? String).map { "[\($0)] " } ?? ""
-            return "Tool '\(result.toolName)' failed: \(codePrefix)\(msg). Retry the tool call with the correct arguments."
+            let code = errorObj?["code"] as? String
+            let codePrefix = code.map { "[\($0)] " } ?? ""
+            // The recovery direction must match the code family. The pre-fix
+            // fixed suffix always blamed arguments — actively misleading weaker
+            // models on timeouts/denials where arguments are not the cause.
+            let direction: String
+            switch code {
+            case "INVALID_ARGS":
+                direction = "Fix the arguments and retry."
+            case let c? where c.hasSuffix("_TIMED_OUT") || c == "TIMEOUT":
+                direction = "This may be transient — retry once; if it fails again, choose a different approach."
+            case let c? where c.hasSuffix("_DENIED") || c == "tool_not_authorized":
+                direction = "Do not retry this call — choose a different approach."
+            default:
+                direction = "If the message indicates bad arguments, fix them and retry; otherwise choose a different approach."
+            }
+            return "Tool '\(result.toolName)' failed: \(codePrefix)\(msg). \(direction)"
         }
     }
 

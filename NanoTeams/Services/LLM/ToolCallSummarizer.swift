@@ -95,6 +95,41 @@ nonisolated enum ToolCallSummarizer {
                 }
                 return ""
             },
+            // Computer-use tools MUST summarize their distinguishing arguments: the summary is
+            // also `ToolCallTracker`'s identity key for loop detection. With no entry it
+            // collapsed to "" — clicks at DIFFERENT coordinates counted as "identical
+            // arguments" and the loop nudge misfired with the wrong advice (observed: 4
+            // distinct clicks flagged as a loop after 4 calls).
+            TN.screenCapture: { dict in
+                let target = (dict["target"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "screen"
+                if let title = dict["window_title"] as? String, !title.isEmpty {
+                    return "\(target) · \(title)"
+                }
+                return target
+            },
+            // Coordinates resolved via `optionalInt` — the SAME coercion the handler/gate use, so
+            // a fractional NSNumber ({"x":834.5}) the handler truncates-and-runs doesn't collapse
+            // the summary (and thus the loop-detector identity key) to "?" and re-open the
+            // distinct-clicks-flagged-as-identical misfire this whole entry exists to prevent.
+            TN.uiClick: { dict in
+                guard let x = optionalInt(dict, "x"), let y = optionalInt(dict, "y") else { return "?" }
+                var parts = ["(\(x), \(y))"]
+                if (dict["button"] as? String)?.lowercased() == "right" { parts.append("right") }
+                if (dict["double"] as? Bool) == true { parts.append("double") }
+                if let target = dict["target"] as? String, !target.isEmpty { parts.append("→ \(target)") }
+                return parts.joined(separator: " ")
+            },
+            TN.uiType: { dict in
+                let text = (dict["text"] as? String) ?? resolveContentString(dict) ?? ""
+                return text.count > 60 ? String(text.prefix(60)) + "…" : text
+            },
+            TN.uiKey: { ($0["keys"] as? String) ?? ($0["key"] as? String) ?? "?" },
+            TN.uiScroll: { dict in
+                guard let x = optionalInt(dict, "x"), let y = optionalInt(dict, "y") else { return "?" }
+                let dx = optionalInt(dict, "dx") ?? 0
+                let dy = optionalInt(dict, "dy") ?? 0
+                return "(\(x), \(y)) d(\(dx), \(dy))"
+            },
             TN.delegateToTeam: { dict in
                 let teamID = (dict["team_id"] as? String) ?? ""
                 let brief = (dict["task_brief"] as? String) ?? ""

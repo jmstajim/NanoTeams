@@ -51,6 +51,11 @@ enum MeetingStreamingService {
 
     // MARK: - Message Construction
 
+    /// Builds the full conversation for one meeting turn: the team's MEETING
+    /// template as system prompt, upstream artifact grounding, and ONE
+    /// consolidated user turn (meeting header + discussion-so-far + turn
+    /// directive, via `MeetingCoordinator.buildTurnMessage`). Each turn is a
+    /// stateless full re-consolidation — no cross-turn chain to drift.
     static func buildMeetingMessages(
         speaker: Role,
         meeting: TeamMeeting,
@@ -67,39 +72,37 @@ enum MeetingStreamingService {
         )
         messages.append(ChatMessage(role: .system, content: systemPrompt))
 
-        var meetingCtx = "Initiated by: \(roleName(meeting.initiatedBy, team: context.team))\nParticipants: \(context.participants.map { roleName($0, team: context.team) }.joined(separator: ", "))"
-        if let additionalContext = meeting.context {
-            meetingCtx += "\nContext: \(additionalContext)"
-        }
-        messages.append(ChatMessage(role: .user, content: meetingCtx))
-
-        if !meeting.messages.isEmpty {
-            var discussionHistory = "Discussion so far:\n"
-            for msg in meeting.messages {
-                discussionHistory += "\n[\(roleName(msg.role, team: context.team))]: \(msg.content)\n"
-            }
-            messages.append(ChatMessage(role: .user, content: discussionHistory))
+        if let artifactContext = buildArtifactGrounding(context: context) {
+            messages.append(ChatMessage(role: .user, content: artifactContext))
         }
 
-        let turnNumber = meeting.turnCount + 1
-        let maxTurns = context.limits.maxMeetingTurns
-        let turnPrompt: String
-        if context.team?.templateID == "discussionClub" {
-            let conciseness: String
-            if turnNumber >= maxTurns - 1 {
-                conciseness = "1-2 sentences max. Final remarks only."
-            } else if turnNumber > maxTurns / 2 {
-                conciseness = "2-3 sentences. Be very concise."
-            } else {
-                conciseness = "3-5 sentences."
-            }
-            turnPrompt = "Your turn, \(roleName(speaker, team: context.team)). \(conciseness) Build on what was said — don't repeat your earlier points."
-        } else {
-            turnPrompt = "Provide your input as \(roleName(speaker, team: context.team)). Be concise and focused on the topic."
-        }
-        messages.append(ChatMessage(role: .user, content: turnPrompt))
+        messages.append(ChatMessage(
+            role: .user,
+            content: MeetingCoordinator.buildTurnMessage(
+                speaker: speaker, meeting: meeting, context: context
+            )
+        ))
 
         return messages
+    }
+
+    /// Upstream artifact grounding for meeting speakers — same shape and cap as
+    /// the consultation chat's artifact context. `nil` when there is nothing
+    /// to ground on (no empty user turns).
+    private static func buildArtifactGrounding(
+        context: TeamMeetingService.MeetingContext
+    ) -> String? {
+        guard !context.availableArtifacts.isEmpty else { return nil }
+        var artifactContext = "Available team artifacts:\n"
+        for artifact in context.availableArtifacts {
+            artifactContext += "\n[\(artifact.name)]:"
+            if let content = context.artifactReader(artifact) {
+                let cap = ArtifactConstants.maxConsultationChars
+                let truncated = String(content.prefix(cap))
+                artifactContext += "\n```\n\(truncated)\(content.count > cap ? "\n... (truncated)" : "")\n```"
+            }
+        }
+        return artifactContext
     }
 
     // MARK: - Turn Orchestration
@@ -139,7 +142,7 @@ enum MeetingStreamingService {
         let maxTurns = context.limits.maxMeetingTurns
         let coordinatorHint: String
         if isCoordinator && turnNumber >= maxTurns - 2 {
-            coordinatorHint = "- WRAP UP NOW. Summarize the key points and state the group's conclusion. This is one of the final turns."
+            coordinatorHint = "- Final turns: summarize the key points and state the group's conclusion."
         } else if isCoordinator && turnNumber >= maxTurns / 2 {
             coordinatorHint = "- As the coordinator, start steering toward a conclusion. Summarize agreements and remaining disagreements."
         } else if isCoordinator {

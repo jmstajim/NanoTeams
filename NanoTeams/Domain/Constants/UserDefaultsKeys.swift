@@ -76,4 +76,14 @@ nonisolated enum UserDefaultsKeys {
     /// Legacy plain judge-model key; migrated into `bashJudgeLLMOverride` on read.
     static let bashJudgeModel = "NanoTeams.bash.judgeModel.v1"
     static let bashJudgeLLMOverride = "NanoTeams.bash.judgeLLMOverride.v1"
+    // Computer Use (screen control) policy. Declared here (not as inline literals) so the
+    // token-leak guard's `UserDefaultsKeys` scan covers them, matching every other setting.
+    static let computerUseMode = "NanoTeams.computerUse.mode.v1"
+    static let computerUseRestrictionLevel = "NanoTeams.computerUse.restrictionLevel.v1"
+    static let computerUseTargetAppAllowlist = "NanoTeams.computerUse.targetAppAllowlist.v1"
+    static let computerUseBlockedTypingPatterns = "NanoTeams.computerUse.blockedTypingPatterns.v1"
+    static let computerUseBlockedKeyCombos = "NanoTeams.computerUse.blockedKeyCombos.v1"
+    static let computerUseRaiseTargetWindowBeforeClick = "NanoTeams.computerUse.raiseTargetWindow.v1"
+    static let computerUseGateFirstCaptureOnly = "NanoTeams.computerUse.gateFirstCapture.v1"
+    static let computerUseJudgeLLMOverride = "NanoTeams.computerUse.judgeLLMOverride.v1"
 }

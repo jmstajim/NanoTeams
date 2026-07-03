@@ -67,12 +67,17 @@ struct FirstPromptRendererConfig: Codable {
     /// `analyze_image` survives the step 3.2 filter. Default `false`.
     let visionConfigured: Bool?
 
+    /// Mirrors `ComputerUsePolicy.isEnabled` (same threading as `visionConfigured`).
+    /// Default `false` — the safe orchestrator-free default.
+    let computerUseEnabled: Bool?
+
     // MARK: - Resolved helpers
 
     var resolvedModelName: String { modelName ?? "render-only" }
     var resolvedMaxTokens: Int { maxTokens ?? LLMProvider.lmStudio.defaultMaxTokens }
     var resolvedGlobalContext: String { globalContext ?? "" }
     var resolvedVisionConfigured: Bool { visionConfigured ?? false }
+    var resolvedComputerUseEnabled: Bool { computerUseEnabled ?? false }
 }
 
 // MARK: - Targets

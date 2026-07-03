@@ -17,7 +17,7 @@ extension LLMExecutionService {
     /// in the pre-record loop, since their `outputJSON` is final at this point.
     nonisolated static func shouldRecordInTrackerPreFinalize(signal: ToolSignal?) -> Bool {
         switch signal {
-        case .exploratorySearch, .visionAnalysis:
+        case .exploratorySearch, .visionAnalysis, .computerUse:
             return false
         default:
             return true
@@ -169,6 +169,19 @@ extension LLMExecutionService {
                     toolCallID: toolCallID,
                     stepID: stepID,
                     taskID: task.id,
+                    conversationMessages: &conversationMessages,
+                    tracker: tracker
+                )
+            case .computerUse:
+                let toolCallID = resolvedToolCalls[idx].id
+                await appendComputerUseResult(
+                    result: result,
+                    toolCallID: toolCallID,
+                    stepID: stepID,
+                    taskID: task.id,
+                    client: client,
+                    config: config,
+                    networkLogger: networkLogger,
                     conversationMessages: &conversationMessages,
                     tracker: tracker
                 )

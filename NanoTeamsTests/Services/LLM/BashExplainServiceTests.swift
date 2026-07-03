@@ -97,6 +97,20 @@ final class BashExplainServiceTests: XCTestCase {
         XCTAssertEqual(client.lastConfig?.modelName, "dedicated-judge-model",
                        "explainer must reuse the dedicated judge model override")
     }
+
+    /// The verdict path pins temperature to 0 (strict-JSON extraction); the
+    /// advisory is GENERATIVE prose and must keep the operator's temperature —
+    /// the explainer uses `JudgeConfig.applying`, never `configForJudge`.
+    func testExplain_keepsOperatorTemperature_noVerdictPin() async {
+        let client = StubExplainClient(content: "x")
+        var policy = BashPolicy()
+        policy.judgeOverride = LLMOverride(modelName: "dedicated-judge-model")
+        _ = await BashExplainService.explain(
+            command: "ls", workingDirectory: nil, policy: policy,
+            config: LLMConfig(modelName: "global-model", temperature: 0.7), client: client)
+        XCTAssertEqual(client.lastConfig?.temperature, 0.7,
+                       "advisory stream must not inherit the verdict temp-0 pin")
+    }
 }
 
 // MARK: - Stub

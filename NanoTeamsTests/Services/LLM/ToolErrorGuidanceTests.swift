@@ -449,7 +449,7 @@ final class ToolErrorGuidanceTests: XCTestCase {
 
     /// Handler-shape envelope (`{"error":{"code":"...","message":"..."}}`) is
     /// what every `ToolErrorHandler.execute` body emits. Args ARE the cause for
-    /// `INVALID_ARGS`, so "retry with correct arguments" is correct guidance.
+    /// `INVALID_ARGS`, so fix-the-arguments is correct guidance.
     func testGuidance_genericInvalidArgs_keepsRetryWording() {
         let envelope = ToolExecutionResult(
             toolName: "edit_file",
@@ -461,8 +461,8 @@ final class ToolErrorGuidanceTests: XCTestCase {
         let guidance = sut.buildToolErrorGuidance(result: envelope)
 
         XCTAssertTrue(
-            guidance.contains("Retry the tool call with the correct arguments"),
-            "default branch must preserve generic retry wording for handler-shape errors, got: \(guidance)"
+            guidance.contains("Fix the arguments and retry"),
+            "INVALID_ARGS must direct to fixing the arguments, got: \(guidance)"
         )
         XCTAssertTrue(
             guidance.contains("missing required field 'path'"),
@@ -533,8 +533,42 @@ final class ToolErrorGuidanceTests: XCTestCase {
         let guidance = sut.buildToolErrorGuidance(result: envelope)
 
         XCTAssertTrue(
-            guidance.hasSuffix("unknown error. Retry the tool call with the correct arguments."),
-            "fallback for malformed envelope should end with 'unknown error. Retry...', got: \(guidance)"
+            guidance.contains("unknown error."),
+            "fallback for malformed envelope should report unknown error, got: \(guidance)"
         )
+        XCTAssertTrue(
+            guidance.contains("otherwise choose a different approach"),
+            "unknown code must hedge, not blame arguments unconditionally, got: \(guidance)"
+        )
+    }
+
+    // MARK: - default branch: direction keyed on code family
+
+    /// A timeout is not an argument problem — the pre-fix fixed suffix
+    /// ("Retry with the correct arguments") actively misled weaker models.
+    func testGuidance_timedOutCode_directsTransientRetry_notArgs() {
+        let envelope = ToolExecutionResult(
+            toolName: "delegate_to_team",
+            argumentsJSON: "{}",
+            outputJSON: #"{"error":{"code":"DELEGATION_TIMED_OUT","message":"timed out after 30 minutes"}}"#,
+            isError: true
+        )
+        let guidance = sut.buildToolErrorGuidance(result: envelope)
+        XCTAssertTrue(guidance.contains("transient"),
+                      "timeout must be framed as possibly transient, got: \(guidance)")
+        XCTAssertFalse(guidance.contains("correct arguments"),
+                       "timeout must not blame arguments, got: \(guidance)")
+    }
+
+    func testGuidance_deniedCode_directsNoRetry() {
+        let envelope = ToolExecutionResult(
+            toolName: "delegate_to_team",
+            argumentsJSON: "{}",
+            outputJSON: #"{"error":{"code":"DELEGATION_DENIED","message":"role is not a top-level delegator"}}"#,
+            isError: true
+        )
+        let guidance = sut.buildToolErrorGuidance(result: envelope)
+        XCTAssertTrue(guidance.contains("Do not retry"),
+                      "a denial is permanent — must direct away from retrying, got: \(guidance)")
     }
 }

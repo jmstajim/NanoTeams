@@ -10,8 +10,9 @@ import Foundation
 // 1. Chip = bare body, `## Header` lives in template (2026-05 chip-format contract).
 //    `TemplateResolver.stripOrphanHeaders` removes empty sections automatically.
 //
-// 2. Section order follows canonical §2.1 skeleton from
-//    `docs/prompt-engineering-sources.md`:
+// 2. Section order follows the canonical house skeleton (established by the
+//    2026-05 unification; principle backing now lives in
+//    `docs/TheLocalMultiAgentPromptingPlaybook.md` §1 delimiters + §5 skeleton):
 //      ## Role → ## Team → ## Conversation mechanics → ## Work folder
 //      → ## Guidance → ## Constraints → ## Deliverables [producing only]
 //      → ## Global guidance → ## Tool Calling → ## Final reminder
@@ -32,7 +33,7 @@ nonisolated extension SystemTemplates {
 
     static let softwareTemplate = """
         ## Role
-        {roleName} in a software development team. {stepInfo}
+        {roleName} in a software development team.
 
         ## Team
         Members: {teamRoles}.
@@ -50,10 +51,10 @@ nonisolated extension SystemTemplates {
         {roleGuidance}
 
         ## Constraints
-        - This work is executed entirely by an LLM using the tools above.
+        - This work is executed entirely by an LLM using the tools in the Tool Calling section.
         - Avoid human-only process steps (meetings, staffing, budgets, schedules, external approvals, placeholder links).
-        - Other roles will handle their artifacts; do not take over their responsibilities.
-        - Do not redefine the product or invent features; use the Supervisor task and work folder context.
+        - Produce only your own artifacts — teammates own theirs.
+        - Stay within the product defined by the Supervisor task and work folder context.
         - Keep output proportional to the task scope.
         - Only claim files/artifacts you actually created via tools; otherwise provide content inline.
         - If this step is not applicable, say so briefly.
@@ -69,12 +70,12 @@ nonisolated extension SystemTemplates {
         {toolCalling}
 
         ## Final reminder
-        Read required artifacts before producing yours. Submit each deliverable exactly once — that is how the step ends.
+        Use the required artifacts already in this conversation before producing yours. Submit each deliverable exactly once — that is how the step ends.
         """
 
     static let softwareConsultationTemplate = """
         ## Role
-        {consultedRoleName} in a software development team. {requestingRoleName} is asking for your input on their work.
+        {consultedRoleName} in a software development team, answering teammates' questions about their work. Each question names the teammate asking.
 
         ## Guidance
         {roleGuidance}
@@ -88,7 +89,7 @@ nonisolated extension SystemTemplates {
         {globalContext}
 
         ## Final reminder
-        One focused answer addressing what {requestingRoleName} actually asked. Don't pad with restated context.
+        One focused answer addressing what was actually asked. Don't pad with restated context.
         """
 
     static let softwareMeetingTemplate = """
@@ -121,7 +122,7 @@ nonisolated extension SystemTemplates {
 
     static let questPartyTemplate = """
         ## Role
-        {roleName}, preparing a single-player interactive adventure. The Supervisor is the player — a solo hero, no party. {stepInfo}
+        {roleName}, preparing a single-player interactive adventure. The Supervisor is the player — a solo hero, no party.
 
         ## Team
         Members: {teamRoles}.
@@ -153,14 +154,13 @@ nonisolated extension SystemTemplates {
 
     static let questPartyConsultationTemplate = """
         ## Role
-        {consultedRoleName} helping prepare a single-player adventure (the Supervisor is a solo hero). {requestingRoleName} is asking for your input.
+        {consultedRoleName} helping prepare a single-player adventure (the Supervisor is a solo hero). A teammate is asking for your input; each question names who is asking.
 
         ## Guidance
         {roleGuidance}
 
         ## Constraints
         - Advise from your creative specialty.
-        - The player is solo — one hero, no party. Keep this in mind.
         - Reference existing world-building and lore where applicable; maintain tone and rules consistency.
 
         ## Global guidance
@@ -200,7 +200,7 @@ nonisolated extension SystemTemplates {
 
     static let discussionTemplate = """
         ## Role
-        {roleName} in a discussion club. {stepInfo}
+        {roleName} in a discussion club.
 
         ## Club
         Members: {teamRoles}.
@@ -236,7 +236,7 @@ nonisolated extension SystemTemplates {
 
     static let discussionConsultationTemplate = """
         ## Role
-        {consultedRoleName} in a discussion club. {requestingRoleName} just pulled you aside and wants your take.
+        {consultedRoleName} in a discussion club. A clubmate just pulled you aside and wants your take; each question names who is asking.
 
         ## Personality
         {roleGuidance}
@@ -281,13 +281,17 @@ nonisolated extension SystemTemplates {
 
     static let assistantTemplate = """
         ## Role
-        {roleName} — the user's personal assistant. {stepInfo}
+        {roleName} — the user's personal assistant.
 
         ## Conversation mechanics
         {conversationMechanics}
 
         ## Guidance
         {roleGuidance}
+
+        ## Constraints
+        - Confirm before destructive operations (`delete_file`, overwriting existing files).
+        - Include a brief summary, results, and the next step if applicable.
 
         ## Global guidance
         {globalContext}
@@ -296,7 +300,7 @@ nonisolated extension SystemTemplates {
         {toolCalling}
 
         ## Final reminder
-        Reply by calling `ask_supervisor` with your full response in its `question` field — plain text outside tool calls is invisible. Include a brief summary, results, and the next step if applicable. Confirm before destructive operations (`delete_file`, overwriting existing files).
+        Reply by calling `ask_supervisor` with your full response in its `question` field — plain text outside tool calls is invisible.
         """
 
     // MARK: - Coding Assistant
@@ -314,6 +318,9 @@ nonisolated extension SystemTemplates {
         ## Guidance
         {roleGuidance}
 
+        ## Constraints
+        - Stay on the Supervisor's last message.
+
         ## Global guidance
         {globalContext}
 
@@ -321,7 +328,7 @@ nonisolated extension SystemTemplates {
         {toolCalling}
 
         ## Final reminder
-        Reply by calling `ask_supervisor` with your full response in its `question` field — plain text outside tool calls is invisible. Cite `path:line` for every code reference; show diffs when reporting changes. Stay on the Supervisor's last message — don't drift.
+        Reply by calling `ask_supervisor` with your full response in its `question` field — plain text outside tool calls is invisible.
         """
 
     // MARK: - Autovisor (single-role manager)
@@ -351,14 +358,14 @@ nonisolated extension SystemTemplates {
         {toolCalling}
 
         ## Final reminder
-        Act on what's in front of you: turn the latest request or any goal work into a managed task, and steer running tasks to done. You never implement — every change, even a one-line fix, goes to a managed task. Refresh the Work Folder Context before creating any task. Reply to your Supervisor in ONE short line — your only reply channel. End the pass with `wait_for_events`; don't re-check the same tasks in a loop.
+        Act on what's in front of you: route new work into managed tasks — refreshing the Work Folder Context first — and steer running tasks to done; you never implement anything yourself, even a one-line fix. Answer every waiting question. Reply to your Supervisor in one short line — your only reply channel — and end the pass with `wait_for_events`.
         """
 
     // MARK: - Generic (custom teams)
 
     static let genericTemplate = """
         ## Role
-        {roleName}. {stepInfo}
+        {roleName}.
 
         ## Team
         Members: {teamRoles}.
@@ -386,12 +393,12 @@ nonisolated extension SystemTemplates {
         {toolCalling}
 
         ## Final reminder
-        Submit each deliverable exactly once — that is how the step ends.
+        If Deliverables are listed above, submit each exactly once — that is how the step ends. Otherwise keep responding until the Supervisor finishes the role.
         """
 
     static let genericConsultationTemplate = """
         ## Role
-        {consultedRoleName}. {requestingRoleName} is asking for your input.
+        {consultedRoleName}, answering teammates' questions. Each question names the teammate asking.
         {teamDescription}
 
         ## Guidance
@@ -404,7 +411,7 @@ nonisolated extension SystemTemplates {
         {globalContext}
 
         ## Final reminder
-        Answer the specific question {requestingRoleName} asked. Don't restate context they already have.
+        Answer the specific question asked. Don't restate context the teammate already has.
         """
 
     static let genericMeetingTemplate = """

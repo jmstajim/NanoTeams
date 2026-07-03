@@ -56,5 +56,13 @@ extension StoreConfiguration {
         static let bashAllowUnsandboxedFallback = UserDefaultsKeys.bashAllowUnsandboxedFallback
         static let bashJudgeModel = UserDefaultsKeys.bashJudgeModel
         static let bashJudgeLLMOverride = UserDefaultsKeys.bashJudgeLLMOverride
+        static let computerUseMode = UserDefaultsKeys.computerUseMode
+        static let computerUseRestrictionLevel = UserDefaultsKeys.computerUseRestrictionLevel
+        static let computerUseTargetAppAllowlist = UserDefaultsKeys.computerUseTargetAppAllowlist
+        static let computerUseBlockedTypingPatterns = UserDefaultsKeys.computerUseBlockedTypingPatterns
+        static let computerUseBlockedKeyCombos = UserDefaultsKeys.computerUseBlockedKeyCombos
+        static let computerUseRaiseTargetWindowBeforeClick = UserDefaultsKeys.computerUseRaiseTargetWindowBeforeClick
+        static let computerUseGateFirstCaptureOnly = UserDefaultsKeys.computerUseGateFirstCaptureOnly
+        static let computerUseJudgeLLMOverride = UserDefaultsKeys.computerUseJudgeLLMOverride
     }
 }

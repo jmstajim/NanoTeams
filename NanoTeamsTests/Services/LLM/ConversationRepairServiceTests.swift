@@ -33,6 +33,48 @@ final class ConversationRepairServiceTests: XCTestCase {
         XCTAssertTrue(messages.last?.content?.contains("server error") ?? false)
     }
 
+    /// The repair deletes the assistant turn the recovery message refers to —
+    /// the message must therefore NAME the failed call (tool + args) so the
+    /// model knows what not to repeat [Laban2025].
+    func testRepairConversation_recoveryMessageNamesFailedCall() {
+        var messages: [ChatMessage] = [
+            ChatMessage(role: .system, content: "System prompt"),
+            ChatMessage(role: .user, content: "Build a feature"),
+            ChatMessage(
+                role: .assistant,
+                content: nil,
+                toolCalls: [ChatToolCall(id: "tc1", name: "edit_file", argumentsJSON: "{\"path\":\"/x\"}")]
+            ),
+            ChatMessage(role: .tool, content: "Error", toolCallID: "tc1", isToolError: true),
+            ChatMessage(role: .user, content: "guidance"),
+        ]
+        ConversationRepairService.repairConversationIfNeeded(&messages)
+
+        let recovery = messages.last?.content ?? ""
+        XCTAssertTrue(recovery.contains("edit_file"), "must name the failed tool. Got: \(recovery)")
+        XCTAssertTrue(recovery.contains("/x"), "must quote the failing arguments")
+        XCTAssertFalse(recovery.contains("Your previous tool call"),
+                       "generic phrasing only when the tool list is unavailable")
+    }
+
+    /// Oversized arguments are truncated in the recovery message — the repair
+    /// must not re-inject a huge payload it just removed.
+    func testRepairConversation_recoveryMessageTruncatesLongArgs() {
+        let longArgs = "{\"content\":\"" + String(repeating: "a", count: 1000) + "\"}"
+        var messages: [ChatMessage] = [
+            ChatMessage(role: .system, content: "s"),
+            ChatMessage(role: .user, content: "u"),
+            ChatMessage(
+                role: .assistant, content: nil,
+                toolCalls: [ChatToolCall(id: "tc1", name: "write_file", argumentsJSON: longArgs)]
+            ),
+            ChatMessage(role: .tool, content: "Error", toolCallID: "tc1", isToolError: true),
+            ChatMessage(role: .user, content: "g"),
+        ]
+        ConversationRepairService.repairConversationIfNeeded(&messages)
+        XCTAssertLessThan(messages.last?.content?.count ?? .max, 500)
+    }
+
     func testRepairConversation_leavesHealthyConversationUnchanged() {
         var messages: [ChatMessage] = [
             ChatMessage(role: .system, content: "System prompt"),

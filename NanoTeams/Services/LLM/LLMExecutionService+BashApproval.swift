@@ -24,37 +24,9 @@ nonisolated struct BashApprovalRequest: Identifiable, Hashable, Sendable {
     var id: String { "\(taskID):\(stepID):\(commandKey)" }
 }
 
-/// Thread-safe one-shot bridge between the gate's `await` and the resolution that
-/// ends it (a human Allow/Deny tap, or a Pause cancellation). The continuation is
-/// resumed EXACTLY once — whichever resolution arrives first wins; later calls and
-/// a resolve that races ahead of `attach` are absorbed. `@unchecked Sendable`
-/// because the lock serializes all access to the mutable state.
-nonisolated final class BashApprovalWaiter: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<BashApprovalDecision, Never>?
-    private var settled: BashApprovalDecision?
-
-    /// Registers the gate's continuation. If a decision already arrived (resolve
-    /// raced ahead of the await registering), resume immediately with it.
-    func attach(_ cont: CheckedContinuation<BashApprovalDecision, Never>) {
-        let early: BashApprovalDecision? = lock.withLock {
-            if let settled { return settled }
-            continuation = cont
-            return nil
-        }
-        if let early { cont.resume(returning: early) }
-    }
-
-    func resolve(_ decision: BashApprovalDecision) {
-        let toResume: CheckedContinuation<BashApprovalDecision, Never>? = lock.withLock {
-            guard settled == nil else { return nil }
-            settled = decision
-            defer { continuation = nil }
-            return continuation
-        }
-        toResume?.resume(returning: decision)
-    }
-}
+/// One-shot approval bridge for `bash` — the generic `ApprovalWaiter` specialized to a
+/// `BashApprovalDecision` (see `ApprovalWaiter` for the lock/race semantics).
+typealias BashApprovalWaiter = ApprovalWaiter<BashApprovalDecision>
 
 extension LLMExecutionService {
 

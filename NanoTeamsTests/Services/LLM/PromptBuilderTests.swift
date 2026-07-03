@@ -204,7 +204,7 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertTrue(result.contains("Step 1"), "Should reference step number")
         XCTAssertTrue(result.contains("Product Manager"), "Should include role display name")
         XCTAssertTrue(result.contains("done"), "Should include step status")
-        XCTAssertTrue(result.contains("Context from previous steps"), "Should include header")
+        XCTAssertTrue(result.contains("## Prior Steps"), "Should include the markdown section header")
     }
 
     func testBuildPipelineContext_excludesSpecifiedArtifacts() {
@@ -656,6 +656,84 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertFalse(result!.contains("truncated"))
     }
 
+    /// Fence-escape hardening: artifact bodies are markdown-heavy and routinely
+    /// contain ``` — the section must wrap them in a four-backtick fence so an
+    /// embedded triple-backtick run cannot close the fence early (CommonMark:
+    /// a fence closes only on an equal-or-longer run).
+    func testBuildRequiredArtifactsSection_bodyWithTripleBacktick_staysInsideIntactFence() {
+        let artifact = Artifact(name: "Implementation Plan", relativePath: "plan.md")
+        let content = "Intro\n```swift\nlet x = 1\n```\nOutro"
+
+        let result = PromptBuilder.buildRequiredArtifactsSection(
+            artifacts: [artifact],
+            artifactReader: { _ in content }
+        )
+
+        let lines = result!.components(separatedBy: "\n")
+        XCTAssertEqual(lines.filter { $0 == "````" }.count, 2,
+                       "Body must be wrapped in a four-backtick open+close fence pair")
+        XCTAssertTrue(result!.contains(content),
+                      "Embedded ``` runs stay verbatim inside the fence")
+        // The wrapper fence lines are exactly ```` — the body's ``` lines must
+        // not be promoted or confused with the wrapper.
+        XCTAssertEqual(lines.first { $0.hasPrefix("````") }, "````")
+    }
+
+    func testBuildRequiredArtifactsSection_emptyBody_noFenceEmitted() {
+        let artifact = Artifact(name: "Implementation Plan", relativePath: "plan.md")
+        let result = PromptBuilder.buildRequiredArtifactsSection(
+            artifacts: [artifact],
+            artifactReader: { _ in "   \n  " }
+        )
+        XCTAssertTrue(result!.contains("(empty content)"))
+        XCTAssertFalse(result!.contains("````"), "Empty body must not emit a fence")
+    }
+
+    /// A body that itself contains a four-backtick fence (nested-fence docs are
+    /// exactly the content class that produces ````) must not close the wrapper:
+    /// the fence outgrows the longest backtick run inside the body.
+    func testBuildRequiredArtifactsSection_bodyWithFourBacktickRun_fenceOutgrowsIt() {
+        let artifact = Artifact(name: "Implementation Plan", relativePath: "plan.md")
+        let content = "Docs:\n````\n```swift\nlet x = 1\n```\n````\nDone"
+
+        let result = PromptBuilder.buildRequiredArtifactsSection(
+            artifacts: [artifact],
+            artifactReader: { _ in content }
+        )
+
+        let lines = result!.components(separatedBy: "\n")
+        XCTAssertEqual(lines.filter { $0 == "`````" }.count, 2,
+                       "wrapper must be a five-backtick pair when the body carries a four-backtick run")
+        XCTAssertTrue(result!.contains(content), "body stays verbatim inside the fence")
+    }
+
+    func testArtifactFence_scalesWithLongestRun() {
+        XCTAssertEqual(PromptBuilder.artifactFence(for: "no backticks"), "````")
+        XCTAssertEqual(PromptBuilder.artifactFence(for: "inline `code` only"), "````")
+        XCTAssertEqual(PromptBuilder.artifactFence(for: "```\nfence\n```"), "````")
+        XCTAssertEqual(PromptBuilder.artifactFence(for: "````"), "`````")
+        XCTAssertEqual(PromptBuilder.artifactFence(for: "``````"), "```````",
+                       "six-backtick run needs a seven-backtick wrapper")
+        XCTAssertEqual(PromptBuilder.artifactFence(for: ""), "````", "empty content keeps the four-backtick floor")
+    }
+
+    /// Pipeline path: an artifact whose reader returns empty/whitespace must get
+    /// the placeholder, not an empty fenced block.
+    func testBuildPipelineContext_supervisorArtifact_emptyBody_showsPlaceholderNotEmptyFence() {
+        var step = StepExecution(id: "supervisor", role: .supervisor, title: "Supervisor", status: .done)
+        step.artifacts = [Artifact(name: "Supervisor Task", relativePath: "task.md")]
+        let run = Run(id: 0, steps: [step, StepExecution(id: "pm", role: .productManager, title: "PM", status: .running)])
+
+        let context = PromptBuilder.buildPipelineContext(
+            run: run, upToStepIndex: 1,
+            artifactReader: { _ in "   " }
+        )
+
+        XCTAssertTrue(context.contains("(content missing or unreadable)"),
+                      "empty body must surface the placeholder")
+        XCTAssertFalse(context.contains("````"), "no empty fence pair for an empty body")
+    }
+
     // MARK: - buildPipelineContext — Supervisor artifact full content
 
     func testBuildPipelineContext_supervisorArtifact_notTruncated() {
@@ -952,5 +1030,51 @@ final class PromptBuilderTests: XCTestCase {
 
     func testBuildTeamDescriptionLine_nilTeam_returnsEmpty() {
         XCTAssertEqual(PromptBuilder.buildTeamDescriptionLine(team: nil), "")
+    }
+
+    // MARK: - Closing turn: deliverable contract at the true end [Liu2024]
+
+    /// On artifact-heavy steps the system prompt's `## Final reminder` is buried
+    /// mid-context by injected artifacts — the LAST message must restate the
+    /// deliverable contract for producing roles.
+    func testBuildChatMessages_producingRole_lastMessageRestatesContract() {
+        let task = NTMSTask(id: 0, title: "T", supervisorTask: "Build it", runs: [])
+        let step = StepExecution(
+            id: "swe", role: .softwareEngineer, title: "Step",
+            expectedArtifacts: ["Engineering Notes"]
+        )
+        let run = Run(id: 0, steps: [step])
+        let context = PromptBuilder.Context(
+            task: task, step: step, stepIndex: 0, run: run,
+            workFolder: nil, artifactReader: { _ in nil },
+            activeTeam: nil, roleDefinition: nil
+        )
+
+        let messages = PromptBuilder.buildChatMessages(context: context, tools: [])
+
+        let last = messages.last?.content ?? ""
+        XCTAssertEqual(messages.last?.role, .user)
+        XCTAssertTrue(last.contains("create_artifact") && last.contains("\"Engineering Notes\""),
+                      "closing turn must restate the deliverable contract, got: \(last)")
+        XCTAssertFalse(last.contains("Start the step."),
+                       "supervisor task present → no 'Start the step.' filler")
+    }
+
+    /// Advisory roles (no deliverables) get no contract line — and no empty
+    /// closing turn.
+    func testBuildChatMessages_advisoryRole_noContractTurn() {
+        let task = NTMSTask(id: 0, title: "T", supervisorTask: "Chat with me", runs: [])
+        let step = StepExecution(id: "assistant", role: .custom(id: "assistant"), title: "Step")
+        let run = Run(id: 0, steps: [step])
+        let context = PromptBuilder.Context(
+            task: task, step: step, stepIndex: 0, run: run,
+            workFolder: nil, artifactReader: { _ in nil },
+            activeTeam: nil, roleDefinition: nil
+        )
+
+        let messages = PromptBuilder.buildChatMessages(context: context, tools: [])
+        XCTAssertFalse(messages.last?.content?.contains("create_artifact") ?? false)
+        XCTAssertFalse(messages.contains { $0.content?.isEmpty == true },
+                       "no empty closing turn may be appended")
     }
 }

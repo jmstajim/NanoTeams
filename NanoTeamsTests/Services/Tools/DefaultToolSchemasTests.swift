@@ -83,23 +83,37 @@ final class DefaultToolSchemasTests: XCTestCase {
         XCTAssertEqual(count(in: .shell), 2)
     }
 
-    // MARK: - Total Count
-
-    func testDefaultToolsCountIs45() {
-        // 33 prior (29 baseline + 4 delegation) + 10 Autovisor management tools
-        // + 2 shell tools (bash, bash_output — opt-in per role, gated by the
-        // bash-permission layer). Update this count whenever a tool is added /
-        // removed from `ToolHandlerRegistry.allTypes`.
-        XCTAssertEqual(tools.count, 45)
+    func testComputerUseToolsCount() {
+        // screen_capture, ui_click, ui_type, ui_key, ui_scroll
+        XCTAssertEqual(count(in: .computerUse), 5)
     }
 
-    /// Shell tools must be blocked in default storage (no real work folder) and
-    /// excluded from meetings.
-    func testShellTools_blockedInDefaultStorageAndExcludedInMeetings() {
-        XCTAssertTrue(ToolHandlerRegistry.defaultStorageBlocked.contains(ToolNames.bash))
-        XCTAssertTrue(ToolHandlerRegistry.defaultStorageBlocked.contains(ToolNames.bashOutput))
+    // MARK: - Total Count
+
+    func testDefaultToolsCountIs50() {
+        // 45 prior + 5 computer-use tools (screen_capture, ui_click, ui_type,
+        // ui_key, ui_scroll — default-OFF per role, gated by the computer-use
+        // permission layer). Update whenever a tool is added / removed from
+        // `ToolHandlerRegistry.allTypes`.
+        XCTAssertEqual(tools.count, 50)
+    }
+
+    /// Shell tools stay usable with no work folder open (unlike write/git/xcode) but
+    /// remain excluded from meetings.
+    func testShellTools_availableInDefaultStorage_excludedInMeetings() {
+        XCTAssertFalse(ToolHandlerRegistry.defaultStorageBlocked.contains(ToolNames.bash))
+        XCTAssertFalse(ToolHandlerRegistry.defaultStorageBlocked.contains(ToolNames.bashOutput))
         XCTAssertTrue(ToolHandlerRegistry.meetingExcluded.contains(ToolNames.bash))
         XCTAssertTrue(ToolHandlerRegistry.meetingExcluded.contains(ToolNames.bashOutput))
+    }
+
+    /// Computer-use tools must be excluded from meetings and — unlike bash — must NOT be
+    /// blocked in default storage (they control the screen, not the work folder).
+    func testComputerUseTools_excludedInMeetings_notBlockedInDefaultStorage() {
+        for name in [ToolNames.screenCapture, ToolNames.uiClick, ToolNames.uiType, ToolNames.uiKey, ToolNames.uiScroll] {
+            XCTAssertTrue(ToolHandlerRegistry.meetingExcluded.contains(name), "\(name) must be excludedInMeetings")
+            XCTAssertFalse(ToolHandlerRegistry.defaultStorageBlocked.contains(name), "\(name) must stay available with no work folder")
+        }
     }
 
     func testBash_propertyNames() {
@@ -149,6 +163,12 @@ final class DefaultToolSchemasTests: XCTestCase {
             ToolNames.scheduleTask,
             ToolNames.setWorkFolderContext,
             ToolNames.waitForEvents,
+            // Computer-use tools (all excludedInMeetings).
+            ToolNames.screenCapture,
+            ToolNames.uiClick,
+            ToolNames.uiType,
+            ToolNames.uiKey,
+            ToolNames.uiScroll,
         ]
         XCTAssertTrue(
             ToolHandlerRegistry.meetingExcluded.isSuperset(of: requiredSignalingTools),

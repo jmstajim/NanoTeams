@@ -87,6 +87,21 @@ nonisolated protocol LLMClient: Sendable {
     /// against `EmbeddingConfig.modelName`; `instanceID` is the raw id
     /// to pass to `unloadModel`.
     func listLoadedInstances(baseURLString: String) async throws -> [LoadedModelInstance]
+
+    /// Whether `config.modelName` can see images, per the provider's model
+    /// metadata. `nil` = undeterminable (no capability metadata / transport
+    /// failure / model not listed) — callers must fail toward the "cannot see
+    /// images" path (vision-model fallback), never assume vision. Auto-detected
+    /// replacement for the removed "Main model supports vision" toggle.
+    func modelSupportsVision(config: LLMConfig) async -> Bool?
+}
+
+nonisolated extension LLMClient {
+    /// Default: undeterminable — keeps existing test doubles compiling and
+    /// deterministic (they exercise the no-vision fallback path unless they
+    /// override). `NativeLMStudioClient` implements the real probe;
+    /// `LLMClientRouter` forwards.
+    func modelSupportsVision(config: LLMConfig) async -> Bool? { nil }
 }
 
 /// Server-side record of a loaded model instance. Returned by

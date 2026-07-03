@@ -180,28 +180,26 @@ extension LLMExecutionService {
                     )
                 )
 
-                // Get speaker's consultation chat
-                var chat = getOrCreateConsultationChat(
-                    roleID: speaker.baseID, task: task, runIndex: runIndex, team: team
+                // Build the speaker's meeting conversation: the team's MEETING
+                // template as system prompt + artifact grounding + one
+                // consolidated turn (header, discussion so far, directive).
+                // Meetings run on their own per-turn stateless stack — NOT the
+                // role's consultation chat, whose system prompt is the
+                // consultation template. Pre-fix, the user-editable meeting
+                // template never reached the wire on the initial call, and the
+                // tool follow-up swapped system prompts mid-turn.
+                let turnMessages = MeetingStreamingService.buildMeetingMessages(
+                    speaker: speaker,
+                    meeting: meeting,
+                    context: meetingContext,
+                    tools: speakerTools
                 )
 
-                // Build meeting turn message for the chat
-                let meetingTurnMsg = MeetingCoordinator.buildTurnMessage(
-                    speaker: speaker, meeting: meeting, context: meetingContext
-                )
-                chat.messages.append(LLMMessage(role: .user, content: meetingTurnMsg))
-
-                // Resolve session
-                let chatSession = chat.sessionID.map { LLMSession(responseID: $0) }
-                let messagesToSend = chat.messagesToSend(session: chatSession)
-
-                // Stream initial response via consultation chat
                 let streamResult = try await MeetingStreamingService.streamParticipantResponse(
-                    messages: messagesToSend,
+                    messages: turnMessages,
                     client: client,
                     config: speakerConfig,
                     tools: speakerTools,
-                    session: chatSession,
                     logger: networkLogger,
                     stepID: stepID
                 )
@@ -210,11 +208,16 @@ extension LLMExecutionService {
                 // on the in-flight detached batch so `cancelAllExecutions` can
                 // stop a meeting tool turn mid-run — without it, pause-during-
                 // meeting would silently run the batch to completion.
+                //
+                // Tool follow-ups CONTINUE the same conversation the initial
+                // stream was grounded on (full stateless render of the chat,
+                // including its system prompt and artifact context) — never a
+                // rebuilt stack with a different system prompt.
                 let meetingStepKey = TaskStepKey(taskID: tid, stepID: stepID)
-                let (finalContent, allThinking, toolSummaries) = try await MeetingToolExecutor.executeTurnToolLoop(
+                let (finalContent, allThinking, toolSummaries, _) =
+                    try await MeetingToolExecutor.executeTurnToolLoop(
                     initialResult: streamResult,
-                    speaker: speaker,
-                    meeting: meeting,
+                    conversationSoFar: turnMessages,
                     meetingContext: meetingContext,
                     client: client,
                     config: speakerConfig,
@@ -231,16 +234,6 @@ extension LLMExecutionService {
                             self.executionStates[meetingStepKey]?.currentToolBatchTask = nil
                         }
                     }
-                )
-
-                // Save speaker's response to consultation chat
-                chat.messages.append(LLMMessage(role: .assistant, content: finalContent))
-                if let newSession = streamResult.session {
-                    chat.sessionID = newSession.responseID
-                }
-                chat.updatedAt = MonotonicClock.shared.now()
-                await saveConsultationChat(
-                    stepID: stepID, taskID: tid, runIndex: runIndex, roleID: speaker.baseID, chat: chat
                 )
 
                 // Complete the turn

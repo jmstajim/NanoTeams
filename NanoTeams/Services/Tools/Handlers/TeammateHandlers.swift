@@ -255,8 +255,8 @@ nonisolated struct RequestChangesTool: ToolHandler {
         parameters: JS.object(
             properties: [
                 "target_role": JS.string("The teammate's name, as listed under Members."),
-                "changes": JS.string("Detailed description of the changes needed"),
-                "reasoning": JS.string("Explanation of why these changes are necessary"),
+                "changes": JS.string("What must change."),
+                "reasoning": JS.string("Why the change is necessary."),
             ],
             required: ["target_role", "changes", "reasoning"]
         )

@@ -77,7 +77,8 @@ extension LLMExecutionService {
                     isDefaultStorage: isDefault,
                     isVisionConfigured: delegate.visionLLMConfig != nil,
                     selectedScheme: scheme,
-                    xcodeSchemeKnown: snapshot != nil
+                    xcodeSchemeKnown: snapshot != nil,
+                    isComputerUseEnabled: delegate.computerUsePolicy.isEnabled
                 )
                 let rejected = Self.makeUnavailableToolResult(
                     call: call, canonicalName: name, scope: "for this role", reason: reason
@@ -174,6 +175,7 @@ extension LLMExecutionService {
         case gitRepoMissing         // work folder has no `.git` directory
         case visionNotConfigured    // analyze_image without a vision LLM config
         case xcodeSchemeNotSelected // run_xcodebuild/run_xcodetests without a scheme
+        case computerUseDisabled    // screen_capture/ui_* with ComputerUsePolicy.mode == .off
     }
 
     /// Maps a rejected tool name to the most-specific precondition that
@@ -195,6 +197,7 @@ extension LLMExecutionService {
         isVisionConfigured: Bool,
         selectedScheme: String?,
         xcodeSchemeKnown: Bool = true,
+        isComputerUseEnabled: Bool = true,
         fileManager: FileManager = .default
     ) -> ToolUnavailabilityReason {
         let registry = ToolHandlerRegistry.self
@@ -208,6 +211,9 @@ extension LLMExecutionService {
         }
         if registry.visionTools.contains(toolName) && !isVisionConfigured {
             return .visionNotConfigured
+        }
+        if registry.computerUseTools.contains(toolName) && !isComputerUseEnabled {
+            return .computerUseDisabled
         }
         let tn = ToolNames.self
         if (toolName == tn.runXcodebuild || toolName == tn.runXcodetests)
@@ -250,6 +256,9 @@ extension LLMExecutionService {
         case .xcodeSchemeNotSelected:
             errorCode = "precondition_failed"
             msg = "Tool '\(call.name)' requires a selected Xcode scheme. No scheme is configured for this work folder."
+        case .computerUseDisabled:
+            errorCode = "precondition_failed"
+            msg = "Tool '\(call.name)' requires Computer Use, which is turned off in this app's settings. Continue without screen control, or ask the supervisor to enable Computer Use."
         }
         let escapedMsg = msg.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
