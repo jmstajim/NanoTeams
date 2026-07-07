@@ -33,10 +33,20 @@ nonisolated enum BashExecutionMode: String, Codable, CaseIterable, Hashable {
 
 /// How strict the Auto judge should be when ruling on an "ask" command.
 /// Threaded verbatim into the judge's system prompt.
+///
+/// `.off` disables the judge entirely — in Auto mode every command that passes
+/// the deny rules runs without review (`BashPermissionService.evaluate` step 1c
+/// short-circuits to allow before anything can ask). Scoped to Auto: Manual and
+/// Semi-automatic always route their asks to the human, regardless of the
+/// stored level. Mirrors `ComputerUseRestrictionLevel.off`.
 nonisolated enum BashRestrictionLevel: String, Codable, CaseIterable, Hashable {
-    case strict
-    case standard
+    // Declaration order = allCases order = the Settings picker order:
+    // Off first, then ascending strictness (loosest → strictest). Matches
+    // `ComputerUseRestrictionLevel`'s Off-first ordering.
+    case off
     case permissive
+    case standard
+    case strict
 
     private static let metadata: [BashRestrictionLevel: (displayName: String, description: String, guidance: String)] = [
         .strict: (
@@ -63,6 +73,16 @@ nonisolated enum BashRestrictionLevel: String, Codable, CaseIterable, Hashable {
             "Approve most development commands, including network installs and broad file operations within "
                 + "the project. Deny only clearly destructive or malicious actions: wiping the disk, exfiltrating "
                 + "secrets, disabling security protections, fork bombs, or privilege escalation."
+        ),
+        .off: (
+            "Off",
+            "No review — in Auto mode, every command that isn't blocked by a deny rule runs without "
+                + "the judge. Manual and Semi-automatic still ask you.",
+            // Never reaches the Auto judge (`BashPermissionService.evaluate` short-circuits
+            // to allow before the gate consults it) and the on-demand "Ask AI" advice
+            // short-circuits in `BashAdviceService`. Non-empty only to satisfy the
+            // metadata-completeness contract (mirrors `ComputerUseRestrictionLevel.off`).
+            "Approve every command."
         ),
     ]
 

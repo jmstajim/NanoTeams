@@ -89,6 +89,14 @@ nonisolated extension SystemTemplates {
         "assistant": readOnlyTools.union(fileWriteTools).union(memoryToolIDs).union(supervisorToolIDs).union(visionToolIDs).union(computerUseToolIDs),
         "codingAssistant": readOnlyTools.union(fileWriteTools).union(memoryToolIDs).union(engineerOnlyTools).union(shellTools).union(supervisorToolIDs).union(visionToolIDs).union(computerUseToolIDs),
         "codingAgent": readOnlyTools.union(fileWriteTools).union(memoryToolIDs).union(gitReadOnlyTools).union(shellTools).union(supervisorToolIDs).union(visionToolIDs),
+        // The Autovisor manager: its real default toolset, which contains NO
+        // ask_supervisor (the manager IS the top Supervisor — no one to escalate
+        // to). Without this key a role-lookup miss fell through to
+        // `fallbackCustomRoleToolIDs`, which GRANTS ask_supervisor — with the
+        // resolver's autovisor auto-inject gate skipped entirely (it only runs
+        // when the role definition was found). Using the real defaults so a
+        // lookup-miss run degrades to a working manager, not a toolless one.
+        AutovisorConstants.managerRoleSystemID: Set(AutovisorConstants.managerDefaultToolIDs),
     ]
 
     /// Default fallback tool IDs for roles not in the map (custom roles).

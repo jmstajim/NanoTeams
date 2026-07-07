@@ -43,7 +43,7 @@ nonisolated enum StepMessagingService {
         if !clean.isEmpty {
             let answerMessage = LLMMessage(
                 role: .user,
-                content: "Supervisor answer: \(clean)",
+                content: "\(MessageSourceContext.supervisorAnswerPrefix)\(clean)",
                 sourceRole: .supervisor,
                 sourceContext: .supervisorAnswer
             )

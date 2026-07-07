@@ -113,6 +113,29 @@ final class BashAdviceServiceTests: XCTestCase {
                        "Lists files in the current directory. It looks safe — it only reads.")
     }
 
+    func testAdvise_strictnessOff_shortCircuits_noLLMCall() async {
+        // With the judge strictness Off, the configured judge approves everything
+        // without review — advice "identical to what Auto would conclude" is a
+        // constant, so advise must return canned allow verdicts without spending
+        // a single LLM round-trip (neither judge nor explainer).
+        let client = ScriptedJudgeClient { _ in #"{"decision":"DENY","reason":"must never be consulted"}"# }
+        let advices = await BashAdviceService.advise(
+            commands: ["make install", "rm -rf build"],
+            workingDirectories: [nil, nil],
+            policy: BashPolicy(mode: .auto, restrictionLevel: .off),
+            config: LLMConfig(),
+            client: client)
+
+        XCTAssertEqual(client.callCount, 0, "strictness Off must not issue any LLM call")
+        XCTAssertEqual(advices.count, 2)
+        XCTAssertEqual(advices.map(\.id), [0, 1])
+        for advice in advices {
+            XCTAssertTrue(advice.allowed)
+            XCTAssertFalse(advice.reason.isEmpty)
+            XCTAssertEqual(advice.explanation, "")
+        }
+    }
+
     func testAdvise_cancellationStopsTheLoopEarly_doesNotDrainTheBatch() async {
         // "Stop" cancels the consuming Task. Because judge/explain swallow
         // CancellationError, the loop's `if Task.isCancelled { break }` is what actually

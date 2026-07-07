@@ -22,6 +22,9 @@ final class SelectableMessageTextTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
+        // Static-state hygiene: the process-wide fallback width must not
+        // leak between test cases (any setFrameSize ≥ 50 records it).
+        SelfSizingTextView.resetFallbackWidthForTesting()
         textView = SelfSizingTextView()
         SelectableMessageText.configure(textView)
         attributes = SelectableMessageText.defaultAttributes
@@ -30,6 +33,7 @@ final class SelectableMessageTextTests: XCTestCase {
     }
 
     override func tearDown() {
+        SelfSizingTextView.resetFallbackWidthForTesting()
         textView = nil
         attributes = nil
         previousContent = ""
@@ -482,6 +486,219 @@ final class SelectableMessageTextTests: XCTestCase {
             previousContent: "abc",
             to: view, attributes: attributes
         ), "Same-content no-op must return true (caller can safely record-applied).")
+    }
+
+    // MARK: - Fresh-realization height (blank-feed regression)
+    //
+    // A fresh `SelfSizingTextView`'s explicit TextKit-1 container defaults
+    // to width 1e7 (`NSTextContainer()`), and `setFrameSize` is the ONLY
+    // writer of the container width. When `LazyVStack` re-realizes an
+    // offscreen cell, SwiftUI can read `intrinsicContentSize` BEFORE the
+    // real frame lands — pre-fix that measured the text UNWRAPPED: a
+    // ~1280pt paragraph reported ~16pt (80x under), realized rows collapsed
+    // to slivers, and the feed rendered blank until a user scroll delivered
+    // real frames. These tests pin the fallback ladder: fresh + fallback
+    // available → measure at the feed's last real width; fresh + no
+    // fallback → legacy unwrapped measure (graceful degradation); synced →
+    // the live container always wins.
+
+    /// Long single-paragraph prose (no newlines): unwrapped it is ONE line
+    /// (~16pt); wrapped at feed width it is a genuinely tall cell (>500pt).
+    /// The gap between the two is what makes every assertion unambiguous.
+    private func longSingleParagraph() -> String {
+        String(repeating: "wave spawner config lorem ipsum ", count: 180)
+    }
+
+    /// Seed the process-wide fallback width the way production does — a
+    /// sibling cell receiving a real frame from a layout pass.
+    private func seedFallbackWidth(_ width: CGFloat) {
+        let throwaway = SelfSizingTextView()
+        SelectableMessageText.configure(throwaway)
+        throwaway.setFrameSize(NSSize(width: width, height: 0))
+    }
+
+    func testIntrinsicContentSize_freshUnsyncedView_withFallback_measuresAtLastPlausibleWidth() async {
+        seedFallbackWidth(566)
+
+        let view = SelfSizingTextView()
+        SelectableMessageText.configure(view)
+        let coordinator = SelectableMessageText.Coordinator()
+        view.fallbackMeasureCache = coordinator.measureCache
+        SelectableMessageText.applyContent(
+            longSingleParagraph(), previousContent: "", to: view, attributes: attributes
+        )
+
+        guard let storage = view.textStorage else { return XCTFail("storage missing") }
+        let expected = coordinator.measureCache.measure(textStorage: storage, width: 566)
+        XCTAssertGreaterThan(expected, 500, "Fixture must be a genuinely tall cell at feed width.")
+
+        let size = view.intrinsicContentSize
+        XCTAssertEqual(size.width, NSView.noIntrinsicMetric)
+        XCTAssertEqual(size.height, expected,
+                       "A fresh cell (frame not landed, container at the 1e7 default) must measure at the feed's last real width — unwrapped it reports one line and blanks the feed.")
+    }
+
+    func testIntrinsicContentSize_subMinWidthContainer_freshView_withFallback_isNonZero() async {
+        seedFallbackWidth(566)
+
+        let view = SelfSizingTextView()
+        SelectableMessageText.configure(view)
+        let coordinator = SelectableMessageText.Coordinator()
+        view.fallbackMeasureCache = coordinator.measureCache
+        SelectableMessageText.applyContent(
+            longSingleParagraph(), previousContent: "", to: view, attributes: attributes
+        )
+        view.textContainer?.size = NSSize(width: 10, height: CGFloat.greatestFiniteMagnitude)
+
+        guard let storage = view.textStorage else { return XCTFail("storage missing") }
+        let height = view.intrinsicContentSize.height
+        XCTAssertGreaterThan(height, 0,
+                             "Fresh view + sub-50 container returned lastGoodIntrinsicHeight == 0 pre-fix — the literal zero-height hole.")
+        XCTAssertEqual(height, coordinator.measureCache.measure(textStorage: storage, width: 566))
+    }
+
+    func testIntrinsicContentSize_freshView_noFallbackWidth_fallsBackToLegacyMeasure() async {
+        // No width recorded anywhere in the process (first-ever layout).
+        let view = SelfSizingTextView()
+        SelectableMessageText.configure(view)
+        let coordinator = SelectableMessageText.Coordinator()
+        view.fallbackMeasureCache = coordinator.measureCache
+        SelectableMessageText.applyContent(
+            longSingleParagraph(), previousContent: "", to: view, attributes: attributes
+        )
+
+        let height = view.intrinsicContentSize.height
+        XCTAssertGreaterThan(height, 0, "Graceful degradation: no fallback width → legacy measure, never zero.")
+        XCTAssertLessThan(height, 100,
+                          "Legacy measure is unwrapped (1e7-wide container) — a single paragraph is one line.")
+    }
+
+    func testIntrinsicContentSize_freshView_nilCache_legacyBehavior() async {
+        seedFallbackWidth(566)
+
+        // Cache NOT wired — production requires BOTH the width and the cache.
+        let view = SelfSizingTextView()
+        SelectableMessageText.configure(view)
+        SelectableMessageText.applyContent(
+            longSingleParagraph(), previousContent: "", to: view, attributes: attributes
+        )
+
+        let height = view.intrinsicContentSize.height
+        XCTAssertGreaterThan(height, 0)
+        XCTAssertLessThan(height, 100, "Without the measure cache the legacy unwrapped path applies.")
+    }
+
+    func testIntrinsicContentSize_emptyContent_freshView_doesNotUseFallback() async {
+        seedFallbackWidth(566)
+
+        let view = SelfSizingTextView()
+        SelectableMessageText.configure(view)
+        let coordinator = SelectableMessageText.Coordinator()
+        view.fallbackMeasureCache = coordinator.measureCache
+
+        let height = view.intrinsicContentSize.height
+        XCTAssertLessThan(height, 50, "Empty content must not produce a bogus tall height.")
+        XCTAssertEqual(coordinator.measureCache.computeCount, 0,
+                       "Fallback must skip empty storage — nothing to measure.")
+    }
+
+    func testIntrinsicContentSize_afterRealWidthSync_measuresLiveContainer_notFallback() async {
+        seedFallbackWidth(566)
+
+        let view = SelfSizingTextView()
+        SelectableMessageText.configure(view)
+        let coordinator = SelectableMessageText.Coordinator()
+        view.fallbackMeasureCache = coordinator.measureCache
+        SelectableMessageText.applyContent(
+            longSingleParagraph(), previousContent: "", to: view, attributes: attributes
+        )
+        guard let storage = view.textStorage else { return XCTFail("storage missing") }
+        let h566 = coordinator.measureCache.measure(textStorage: storage, width: 566)
+
+        view.setFrameSize(NSSize(width: 300, height: 0))
+        let live = view.intrinsicContentSize.height
+        let h300 = coordinator.measureCache.measure(textStorage: storage, width: 300)
+
+        XCTAssertNotEqual(h300, h566,
+                          "Fixture: the two widths must produce different heights for this comparison to mean anything.")
+        XCTAssertEqual(live, h300, accuracy: 1.0,
+                       "After a real frame lands, the live container measure wins — the fallback never overrides a synced width.")
+    }
+
+    func testSetFrameSize_plausibleWidth_recordsStaticFallbackWidth() async {
+        let view = SelfSizingTextView()
+        SelectableMessageText.configure(view)
+        // Boundary: exactly minMeasurementWidth (50) records.
+        view.setFrameSize(NSSize(width: 50, height: 0))
+        XCTAssertTrue(view.hasSyncedRealWidth)
+        XCTAssertEqual(SelfSizingTextView.lastPlausibleMeasureWidth, 50)
+    }
+
+    func testSetFrameSize_subMinWidth_doesNotRecord() async {
+        let view = SelfSizingTextView()
+        SelectableMessageText.configure(view)
+        view.setFrameSize(NSSize(width: 49.9, height: 0))
+        XCTAssertFalse(view.hasSyncedRealWidth)
+        XCTAssertNil(SelfSizingTextView.lastPlausibleMeasureWidth,
+                     "Sub-50 frames are transient layout noise — they must not become the fallback width.")
+    }
+
+    func testIntrinsicContentSize_subMinWidthAfterSync_returnsLastGoodHeight() async {
+        // No cache wired — pins the pre-existing defensive branch in isolation.
+        let view = SelfSizingTextView()
+        SelectableMessageText.configure(view)
+        SelectableMessageText.applyContent(
+            longSingleParagraph(), previousContent: "", to: view, attributes: attributes
+        )
+        view.setFrameSize(NSSize(width: 566, height: 0))
+        let synced = view.intrinsicContentSize.height
+        XCTAssertGreaterThan(synced, 500)
+
+        view.textContainer?.size = NSSize(width: 10, height: CGFloat.greatestFiniteMagnitude)
+        XCTAssertEqual(view.intrinsicContentSize.height, synced,
+                       "Transient sub-50 container width must return the last good height, not re-measure at ~1 glyph per line.")
+    }
+
+    func testIntrinsicContentSize_fallbackPath_doesNotRunLiveEnsureLayout() async {
+        seedFallbackWidth(566)
+
+        let view = SelfSizingTextView()
+        SelectableMessageText.configure(view)
+        let coordinator = SelectableMessageText.Coordinator()
+        view.fallbackMeasureCache = coordinator.measureCache
+        SelectableMessageText.applyContent(
+            longSingleParagraph(), previousContent: "", to: view, attributes: attributes
+        )
+        view.resetTestCountersForTesting() // applyContent's settle-pass bumped it
+
+        _ = view.intrinsicContentSize
+        _ = view.intrinsicContentSize
+        XCTAssertEqual(view.ensureLayoutCallCountForTesting, 0,
+                       "Fresh-realization reads must route through the measure cache, never shape the live 1e7-wide container.")
+    }
+
+    func testFreshRealization_afterPriorCellLayout_reportsTrueHeightImmediately() async {
+        let content = longSingleParagraph()
+
+        // Cell A: laid out normally at the feed width.
+        let viewA = SelfSizingTextView()
+        SelectableMessageText.configure(viewA)
+        SelectableMessageText.applyContent(content, previousContent: "", to: viewA, attributes: attributes)
+        viewA.setFrameSize(NSSize(width: 566, height: 0))
+        let settled = viewA.intrinsicContentSize.height
+        XCTAssertGreaterThan(settled, 500)
+
+        // Cell B: freshly re-realized by LazyVStack — new view, new
+        // Coordinator, frame not landed. The FIRST intrinsic read must
+        // already report the true height (the user-visible invariant).
+        let coordinatorB = SelectableMessageText.Coordinator()
+        let viewB = SelfSizingTextView()
+        SelectableMessageText.configure(viewB)
+        viewB.fallbackMeasureCache = coordinatorB.measureCache
+        SelectableMessageText.applyContent(content, previousContent: "", to: viewB, attributes: attributes)
+
+        XCTAssertEqual(viewB.intrinsicContentSize.height, settled, accuracy: 1.0,
+                       "A re-realized cell must report its true height on the FIRST intrinsic read — this is the blank-feed regression.")
     }
 }
 

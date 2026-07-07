@@ -397,6 +397,21 @@ final class QuickCaptureFormState {
     var _testSavedSupervisorTask: String? { savedSupervisorTask }
     var _testAnswerDrafts: [Int: AnswerDraft] { answerDrafts }
     func _testClearAnswerDrafts() { answerDrafts.removeAll() }
+
+    /// Full form-state reset for test isolation, driven by `QuickCaptureController._testReset()`.
+    /// `exitAnswerMode()` already clears `pendingAnswer` / `isInAnswerMode` / `savedSupervisorTask`.
+    func _testReset() {
+        if isInAnswerMode { exitAnswerMode() }
+        title = ""
+        supervisorTask = ""
+        selectedTeamID = nil
+        attachments = []
+        clippedTexts = []
+        answerAttachments = []
+        answerClippedTexts = []
+        answerDrafts.removeAll()
+        queuedChatMessages.removeAll()
+    }
     #endif
     nonisolated deinit {}
 }

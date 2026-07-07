@@ -92,6 +92,61 @@ final class ComputerUsePermissionServiceTests: XCTestCase {
         XCTAssertTrue(isAsk(ComputerUsePermissionService.evaluate(input(click, bounds: true), policy: policy(mode: .auto))))
     }
 
+    // MARK: - Semi-automatic (read-only auto-allowed, mutating asks human)
+
+    func testSemiAutomatic_capture_allowsWithoutPrompt() {
+        // "Only reading is allowed" — every capture auto-allows in Semi (no
+        // first-capture privacy prompt; the user opted into auto reads), unlike
+        // Manual which confirms the first screen-share.
+        let capture = ComputerUseAction.capture(target: "screen", windowTitle: nil)
+        XCTAssertTrue(isAllow(ComputerUsePermissionService.evaluate(
+            input(capture, captured: false), policy: policy(mode: .semiAutomatic))))
+        XCTAssertTrue(isAllow(ComputerUsePermissionService.evaluate(
+            input(capture, captured: true), policy: policy(mode: .semiAutomatic))))
+        // Even with per-capture gating off, Semi never prompts for a read.
+        XCTAssertTrue(isAllow(ComputerUsePermissionService.evaluate(
+            input(capture, captured: false), policy: policy(mode: .semiAutomatic, gateFirstCaptureOnly: false))))
+    }
+
+    func testSemiAutomatic_scroll_allows() {
+        let scroll = ComputerUseAction.scroll(x: 5, y: 5, dx: 0, dy: -3, target: nil)
+        XCTAssertTrue(isAllow(ComputerUsePermissionService.evaluate(
+            input(scroll, bounds: true), policy: policy(mode: .semiAutomatic))))
+    }
+
+    func testSemiAutomatic_mutatingActions_ask() {
+        // click / type / key are NOT read-only → review (the gate routes these to
+        // the human in Semi-automatic, exactly like Manual).
+        let mutating: [ComputerUseAction] = [
+            .click(x: 10, y: 10, button: "left", double: false, target: nil),
+            .typeText(text: "hello", target: nil),
+            .pressKey(keys: "cmd+s", target: nil),
+        ]
+        for action in mutating {
+            XCTAssertTrue(isAsk(ComputerUsePermissionService.evaluate(
+                input(action, bounds: true), policy: policy(mode: .semiAutomatic))),
+                "\(action) must ask in Semi-automatic (not read-only)")
+        }
+    }
+
+    func testSemiAutomatic_hardDenyRulesStillApply() {
+        // The read-only auto-allow sits BELOW every deny tier.
+        let p = policy(mode: .semiAutomatic, typing: ["password"], keys: ["cmd\\+q"], gateFirstCaptureOnly: false)
+        // Self-guard.
+        let selfClick = ComputerUseAction.click(x: 1, y: 1, button: "left", double: false, target: "NanoTeams")
+        XCTAssertTrue(isDeny(ComputerUsePermissionService.evaluate(input(selfClick, isSelf: true), policy: p)))
+        // Blocked typing.
+        let type = ComputerUseAction.typeText(text: "my password", target: nil)
+        XCTAssertTrue(isDeny(ComputerUsePermissionService.evaluate(input(type), policy: p)))
+        // Blocked key combo.
+        let key = ComputerUseAction.pressKey(keys: "cmd+q", target: nil)
+        XCTAssertTrue(isDeny(ComputerUsePermissionService.evaluate(input(key), policy: p)))
+        // Off master switch (mode off) — N/A here, but allowlist violation must deny.
+        let click = ComputerUseAction.click(x: 1, y: 1, button: "left", double: false, target: "SomeApp")
+        XCTAssertTrue(isDeny(ComputerUsePermissionService.evaluate(
+            input(click, allowed: false, bounds: true), policy: policy(mode: .semiAutomatic, allowlist: ["Safari"]))))
+    }
+
     // MARK: - Precedence & ordering corners
 
     private func reason(_ d: ComputerUsePermissionDecision) -> String? {
@@ -220,12 +275,12 @@ final class ComputerUsePermissionServiceTests: XCTestCase {
 
     // MARK: - Scroll (deterministic allow)
 
-    func testScroll_allowsWithoutReview_inManualAndAuto() {
+    func testScroll_allowsWithoutReview_inEveryEnabledMode() {
         // A scroll is a read-oriented viewport move — reviewing it burned 2–15 s of judge
-        // latency per action for rubber-stamp OKs. Deterministic allow in both modes,
-        // at every restriction level.
+        // latency per action for rubber-stamp OKs. Deterministic allow in every enabled
+        // mode (Manual, Semi-automatic, Auto), at every restriction level.
         let scroll = ComputerUseAction.scroll(x: 5, y: 5, dx: 0, dy: -3, target: nil)
-        for mode: ComputerUseMode in [.manual, .auto] {
+        for mode: ComputerUseMode in [.manual, .semiAutomatic, .auto] {
             for level: ComputerUseRestrictionLevel in [.off, .permissive, .standard, .strict] {
                 let d = ComputerUsePermissionService.evaluate(
                     input(scroll, bounds: true), policy: policy(mode: mode, restriction: level))

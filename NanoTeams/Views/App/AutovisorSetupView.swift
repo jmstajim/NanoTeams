@@ -64,20 +64,25 @@ struct AutovisorSetupView: View {
     private var goalSection: some View {
         VStack(alignment: .leading, spacing: Spacing.s) {
             MonoLabel(text: "Goal", marker: true)
-            // Plain TextField in vertical-axis mode — this is a one-shot setup
-            // surface, not a sustained editor (CLAUDE.md #32's bounded-height
-            // critique doesn't apply: we let the field grow with content).
-            TextField(
-                "What should the Autovisor pursue in this folder?",
-                text: $goalDraft,
-                axis: .vertical
-            )
-            .textFieldStyle(.plain)
-            .font(Typography.termBase)
-            .lineLimit(4...10)
-            .focused($goalFocused)
+            // Same editor as the Work Folder Context field (and Settings → Autovisor's
+            // goal, which edits the identical string): PromptMarker + TextEditor.
+            // TextEditor inserts a newline on Return and tracks the caret — a
+            // TextField(axis:.vertical) treated Return as "end editing", which broke
+            // multi-line goal authoring (the reported bug). It grows to minHeight,
+            // then scrolls internally past it.
+            HStack(alignment: .top, spacing: Spacing.xs) {
+                PromptMarker()
+                TextEditor(text: $goalDraft)
+                    .font(Typography.termBase)
+                    .scrollContentBackground(.hidden)
+                    .focused($goalFocused)
+                    .frame(minHeight: 120)
+            }
             .padding(Spacing.s)
-            .background(Colors.surfaceCard)
+            .background(
+                RoundedRectangle.squircle(CornerRadius.small)
+                    .fill(Colors.surfaceElevated)
+            )
             .overlay {
                 RoundedRectangle.squircle(CornerRadius.small)
                     .strokeBorder(

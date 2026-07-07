@@ -360,7 +360,15 @@ final class QuickCaptureController {
 
     /// `internal` so `+TaskCreation` can rebuild the panel content after a submit.
     func updatePanelContent() {
-        guard let panel, let store else { return }
+        // panel / store / dictation are all prerequisites for building the form
+        // view. `dictation` is folded into the same graceful skip as panel/store
+        // (not a hard precondition) so tests that legitimately drive the panel
+        // path without a DictationService — which SFSpeechRecognizer can't safely
+        // construct on CI (CLAUDE.md #47) — no-op instead of crashing the process.
+        // In production `setup(store:dictation:)` sets all three at launch, so this
+        // never skips; an async `showPanel` Task firing before setup would crash
+        // here purely as a test artifact.
+        guard let panel, let store, let dictation else { return }
 
         let currentMode: QuickCaptureMode
         if pendingWorkingMode {
@@ -387,10 +395,6 @@ final class QuickCaptureController {
             submitAction = { [weak self] in
                 Task { @MainActor in await self?.createTask() }
             }
-        }
-
-        guard let dictation else {
-            preconditionFailure("QuickCaptureController.setup(store:dictation:) must run before the panel is shown.")
         }
 
         let formView = QuickCaptureFormView(
@@ -444,6 +448,31 @@ final class QuickCaptureController {
     /// Drives the synchronous show pipeline from a test, bypassing the async
     /// `showPanel`/`togglePanel` paths' clipboard capture and hotkey wiring.
     func _testPresentPanelSync() { presentPanelSync() }
+
+    /// Full transient-state reset for test isolation. `QuickCaptureController.shared`
+    /// is a process-global singleton; without this, state a sibling test class leaves
+    /// on it — most importantly a `panel` created by `presentPanelSync` (`dismissPanel`
+    /// reuses, never nils, the NSPanel) — contaminates the next class. A leaked panel
+    /// with `store != nil`, `dictation == nil` (weak, unset in tests) crashes
+    /// `updatePanelContent`'s setup precondition. Call at the top of every QuickCapture
+    /// test's setUp.
+    func _testReset() {
+        panel = nil
+        isPanelVisible = false
+        currentVisualMode = .newTask
+        pendingWorkingMode = false
+        forceNewTaskMode = false
+        lastRefreshedTaskID = nil
+        isTaskSelected = false
+        store = nil
+        dictation = nil
+        pendingResumeForQueueFlush.removeAll()
+        failedResumeAttemptedMessageIDs.removeAll()
+        chatStartAttemptedMessageIDs.removeAll()
+        resumeRunForTesting = nil
+        startRunForTesting = nil
+        formState._testReset()
+    }
     #endif
     nonisolated deinit {}
 }

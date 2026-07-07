@@ -227,12 +227,12 @@ extension LLMExecutionService {
         } else {
             // Fallback: append as user message
             conversationMessages.append(
-                ChatMessage(role: .user, content: "Supervisor answer: \(answer)")
+                ChatMessage(role: .user, content: "\(MessageSourceContext.supervisorAnswerPrefix)\(answer)")
             )
         }
         await appendLLMMessage(
             stepID: stepID, taskID: task.id, role: .user,
-            content: "Supervisor answer: \(answer)",
+            content: "\(MessageSourceContext.supervisorAnswerPrefix)\(answer)",
             sourceRole: .supervisor,
             sourceContext: .supervisorAnswer)
         return .continueLoop

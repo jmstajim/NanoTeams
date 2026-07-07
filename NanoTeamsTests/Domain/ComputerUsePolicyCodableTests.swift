@@ -52,10 +52,19 @@ final class ComputerUsePolicyCodableTests: XCTestCase {
         }
     }
 
+    func testModeAllCases_orderPinsThePicker() {
+        // Declaration order = allCases = the Settings segmented picker's left-to-right
+        // order. ComputerUseSettingsView builds it via `ComputerUseMode.allCases.map`,
+        // so a case reorder silently reorders the production UI — pin it (the bash
+        // siblings have the equivalent pin).
+        XCTAssertEqual(ComputerUseMode.allCases, [.off, .manual, .semiAutomatic, .auto])
+    }
+
     func testModeRawValues_areFrozen() {
         // Persisted by rawValue — these must not drift or existing configs break.
         XCTAssertEqual(ComputerUseMode.off.rawValue, "off")
         XCTAssertEqual(ComputerUseMode.manual.rawValue, "manual")
+        XCTAssertEqual(ComputerUseMode.semiAutomatic.rawValue, "semiAutomatic")
         XCTAssertEqual(ComputerUseMode.auto.rawValue, "auto")
         XCTAssertEqual(ComputerUseRestrictionLevel.strict.rawValue, "strict")
         XCTAssertEqual(ComputerUseRestrictionLevel.standard.rawValue, "standard")
@@ -68,6 +77,7 @@ final class ComputerUsePolicyCodableTests: XCTestCase {
         // classifier, and UI all key off this.
         XCTAssertFalse(ComputerUsePolicy(mode: .off).isEnabled)
         XCTAssertTrue(ComputerUsePolicy(mode: .manual).isEnabled)
+        XCTAssertTrue(ComputerUsePolicy(mode: .semiAutomatic).isEnabled)
         XCTAssertTrue(ComputerUsePolicy(mode: .auto).isEnabled)
     }
 

@@ -48,6 +48,14 @@ nonisolated enum MessageSourceContext: String, Codable {
     /// and the read side (`LLMMessage.displayContent`) can't drift on rename.
     static let supervisorMessagePrefix = "Supervisor:\n"
 
+    /// Attribution marker prepended to supervisor ANSWER turns (`.supervisorAnswer`).
+    /// Single source of truth across the write sides
+    /// (`StepMessagingService.answerSupervisorQuestion`, the auto-answer append in
+    /// `LLMExecutionService+ToolLoopState`, the stateless rebuild in `PromptBuilder`)
+    /// and the read sides (`LLMMessage.displayContent`, the answered-notification
+    /// extraction in `ActivityFeedBuilder.emitItems`).
+    static let supervisorAnswerPrefix = "Supervisor answer: "
+
     /// Attribution marker for revision/correction feedback turns. `step.revisionComment`
     /// holds the RAW text; this prefix is attached exactly once where the feedback
     /// reaches the LLM — at the stateful send site (`LLMExecutionService+StepLifecycle`)
@@ -138,17 +146,31 @@ nonisolated struct LLMMessage: Codable, Identifiable, Hashable {
     ///
     /// Also accepts the legacy single-line `"Supervisor: "` form so messages
     /// persisted by earlier builds still render cleanly after upgrade.
+    ///
+    /// `.supervisorAnswer` turns strip `supervisorAnswerPrefix` the same way —
+    /// unpaired answers (escalation / Autovisor idle park) render as durable
+    /// Supervisor bubbles whose header already attributes the speaker.
     var displayContent: String {
-        guard sourceContext == .supervisorMessage else { return content }
-        let multiline = MessageSourceContext.supervisorMessagePrefix
-        if content.hasPrefix(multiline) {
-            return String(content.dropFirst(multiline.count))
+        switch sourceContext {
+        case .supervisorMessage:
+            let multiline = MessageSourceContext.supervisorMessagePrefix
+            if content.hasPrefix(multiline) {
+                return String(content.dropFirst(multiline.count))
+            }
+            let inline = "Supervisor: "
+            if content.hasPrefix(inline) {
+                return String(content.dropFirst(inline.count))
+            }
+            return content
+        case .supervisorAnswer:
+            let prefix = MessageSourceContext.supervisorAnswerPrefix
+            if content.hasPrefix(prefix) {
+                return String(content.dropFirst(prefix.count))
+            }
+            return content
+        default:
+            return content
         }
-        let inline = "Supervisor: "
-        if content.hasPrefix(inline) {
-            return String(content.dropFirst(inline.count))
-        }
-        return content
     }
 
     init(from decoder: Decoder) throws {

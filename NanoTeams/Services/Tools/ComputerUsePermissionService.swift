@@ -64,8 +64,11 @@ nonisolated enum ComputerUsePermissionService {
             if input.captureAlreadyOccurredThisRun, policy.gateFirstCaptureOnly {
                 return .allow
             }
-            if policy.mode == .auto {
-                return .allow  // capture doesn't need the judge — it's a read.
+            // Read-only tier: auto-allowed without review in Auto (no judge for a
+            // read) and Semi-automatic (the user opted into auto-allowing reads).
+            // Manual confirms the first screen-share for privacy.
+            if policy.mode == .auto || policy.mode == .semiAutomatic {
+                return .allow
             }
             return .ask(reason: "First screen capture this run — confirm sharing your screen.")
         }
@@ -88,7 +91,10 @@ nonisolated enum ComputerUsePermissionService {
             return .allow
         }
 
-        // 10. Actions → review. The gate decides manual (human) vs auto (judge).
+        // 10. Mutating action (click / type / key) → review. The gate dispatches:
+        // Auto → judge; Manual / Semi-automatic → human Allow/Deny (denied when no
+        // human is available). Semi-automatic reaches here only for mutating
+        // actions — its read-only tier (capture, scroll) already allowed above.
         return .ask(reason: "Confirm this action.")
     }
 

@@ -67,6 +67,11 @@ struct SelectableMessageText: NSViewRepresentable {
     func makeNSView(context: Context) -> SelfSizingTextView {
         let textView = SelfSizingTextView()
         Self.configure(textView)
+        // Wire the Coordinator-owned measure cache so `intrinsicContentSize`
+        // can answer a fresh-realization read (frame not landed yet) with a
+        // measurement at the feed's last real width instead of the
+        // container's unwrapped 1e7 default.
+        textView.fallbackMeasureCache = context.coordinator.measureCache
         textView.textStorage?.setAttributedString(
             NSAttributedString(string: content, attributes: Self.defaultAttributes)
         )
@@ -291,12 +296,36 @@ final class SelfSizingTextView: NSTextView {
     /// keep the last good width until a plausible one arrives.
     static let minMeasurementWidth: CGFloat = 50
 
+    /// Process-wide last frame width (≥ `minMeasurementWidth`) any instance
+    /// received from a real layout pass. Used as the fallback measure width
+    /// for a freshly-realized cell whose own frame hasn't landed yet — all
+    /// consumers (MessageBubbleView, SupervisorTaskItemView,
+    /// MeetingMessageItemView) are feed cells laid out at near-identical
+    /// widths, so the last real width is an excellent estimate and exact in
+    /// the common case.
+    private(set) static var lastPlausibleMeasureWidth: CGFloat?
+
+    /// True once this instance has received a real (≥ `minMeasurementWidth`)
+    /// frame from a layout pass — the discriminator between "container width
+    /// came from a real frame" and "container still holds `NSTextContainer`'s
+    /// 1e7 default". Do NOT replace with a magic upper-bound width check.
+    private(set) var hasSyncedRealWidth = false
+
+    /// Measure-side cache owned by the representable's `Coordinator` (wired
+    /// in `makeNSView`). Weak: the Coordinator owns the cache; this back-
+    /// reference must not extend its lifetime.
+    weak var fallbackMeasureCache: MessageTextLayoutCache?
+
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         guard let textContainer else { return }
         // Ignore transient sub-`minMeasurementWidth` frames from intermediate layout
         // passes — measuring at a near-zero width is the feed's `contentSize` 9x spike.
         guard newSize.width >= Self.minMeasurementWidth else { return }
+        // Record the plausible width even when the 0.5pt epsilon below skips
+        // the container write — the width is real either way.
+        hasSyncedRealWidth = true
+        Self.lastPlausibleMeasureWidth = newSize.width
         // Half-pixel epsilon: SwiftUI/AppKit float math can produce
         // sub-pixel deltas (e.g. 379.999... vs 380.0) that would otherwise
         // trigger spurious `invalidateIntrinsicContentSize`, and combined
@@ -313,9 +342,12 @@ final class SelfSizingTextView: NSTextView {
         }
     }
 
-    /// Last height measured at a plausible width. Returned by `intrinsicContentSize`
-    /// when the container width is transiently sub-`minMeasurementWidth`, so a near-zero
-    /// width can't report a ~10x-tall height (the feed's `contentSize` spike).
+    /// Last height measured at a live, real-frame-synced plausible width.
+    /// Returned by `intrinsicContentSize` when the container width is
+    /// transiently sub-`minMeasurementWidth`, so a near-zero width can't
+    /// report a ~10x-tall height (the feed's `contentSize` spike). Never
+    /// recorded from an unsynced (1e7-default) measure — that would poison
+    /// the defense value with an unwrapped height.
     private var lastGoodIntrinsicHeight: CGFloat = 0
 
     override var intrinsicContentSize: NSSize {
@@ -325,14 +357,33 @@ final class SelfSizingTextView: NSTextView {
             #endif
             return super.intrinsicContentSize
         }
-        // The third measurement path (used when `sizeThatFits` returns nil for a tiny
-        // proposal). A `textContainer.width` of ~0 — from a fresh bubble whose real
-        // frame hasn't landed, or a transient relayout — wraps every line to ~1 glyph
-        // and reports a ~10x-tall height. Hold the last good height until a plausible
-        // width arrives, so the feed's contentSize stays stable and the auto-scroll
-        // doesn't thrash.
-        guard textContainer.size.width >= Self.minMeasurementWidth else {
-            return NSSize(width: NSView.noIntrinsicMetric, height: lastGoodIntrinsicHeight)
+        // The third measurement path (used when `sizeThatFits` returns nil
+        // for a nil/non-finite/tiny proposal). Two implausible-width cases,
+        // both real:
+        // - FRESH cell: the explicit TextKit-1 container defaults to width
+        //   1e7 (`NSTextContainer()`), and `setFrameSize` is the only
+        //   writer. Measuring there lays text out UNWRAPPED — a ~1280pt
+        //   paragraph reports ~16pt (80x under), which collapsed realized
+        //   LazyVStack rows to slivers and blanked the feed until a scroll
+        //   delivered real frames (the blank-feed regression).
+        // - TRANSIENT sub-50 width: wraps every line to ~1 glyph and
+        //   reports a ~10x-tall height (the historical contentSize 9x
+        //   spike, 2700→24012).
+        // The invariant: never report a height measured at a width no real
+        // layout pass proposed. Fallback ladder: measure at the feed's last
+        // real width via the Coordinator's cache → last good height (sub-50
+        // only) → legacy unwrapped measure (first-ever layout, no fallback).
+        let livePlausible = hasSyncedRealWidth
+            && textContainer.size.width >= Self.minMeasurementWidth
+        if !livePlausible {
+            if let fallback = fallbackMeasuredHeight() {
+                return NSSize(width: NSView.noIntrinsicMetric, height: fallback)
+            }
+            if textContainer.size.width < Self.minMeasurementWidth {
+                return NSSize(width: NSView.noIntrinsicMetric, height: lastGoodIntrinsicHeight)
+            }
+            // Fresh 1e7-default container with no fallback available —
+            // fall through to the legacy unwrapped measure below.
         }
         layoutManager.ensureLayout(for: textContainer)
         #if DEBUG
@@ -345,8 +396,26 @@ final class SelfSizingTextView: NSTextView {
         // width; our `setFrameSize` syncs `textContainer`; the next
         // `intrinsicContentSize` read returns the right height.
         let h = ceil(used.height)
-        lastGoodIntrinsicHeight = h
+        if livePlausible {
+            lastGoodIntrinsicHeight = h
+        }
         return NSSize(width: NSView.noIntrinsicMetric, height: h)
+    }
+
+    /// Height for a cell whose live container width is not (yet) real,
+    /// measured at the feed's last real width through the Coordinator-owned
+    /// `MessageTextLayoutCache` — zero new `NSLayoutManager` allocations,
+    /// memoized by `(length, ceil(width))`, and never touching the live
+    /// container (so no `ensureLayout` over an unwrapped 1e7-wide line).
+    /// Returns `nil` when no fallback is possible (no cache wired, empty
+    /// storage, or no real width seen in the process yet).
+    private func fallbackMeasuredHeight() -> CGFloat? {
+        guard let cache = fallbackMeasureCache,
+              let storage = textStorage,
+              storage.length > 0,
+              let width = Self.lastPlausibleMeasureWidth
+        else { return nil }
+        return cache.measure(textStorage: storage, width: width)
     }
 
     #if DEBUG
@@ -359,6 +428,11 @@ final class SelfSizingTextView: NSTextView {
     func resetTestCountersForTesting() {
         invalidationCountForTesting = 0
         ensureLayoutCallCountForTesting = 0
+    }
+    /// Reset the process-wide fallback width between test cases — static
+    /// state hygiene so test order can't leak a seeded width.
+    static func resetFallbackWidthForTesting() {
+        lastPlausibleMeasureWidth = nil
     }
     #endif
 

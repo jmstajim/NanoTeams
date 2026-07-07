@@ -346,6 +346,26 @@ extension LLMExecutionService {
             }
         }
 
+        // 8. Autovisor hard gate: the manager IS the top Supervisor — ask_supervisor
+        // must NEVER ship in its schema regardless of origin (planted stored toolIDs,
+        // the roleDefinition-miss fallback, or any future auto-inject step). The
+        // step-4 gate only refuses to ADD the tool; this strip is the structural
+        // guarantee, mirroring the step-3.0 delegation strip. Keyed on BOTH the team
+        // templateID and the role's builtin id so a stored team that lost its
+        // templateID still strips (the builtin `.autovisor` survives via
+        // `Role.fromDefinition`'s systemRoleID resolution), and `team == nil` is
+        // covered by the role arm. Runtime rejection follows for free:
+        // `allowedToolNames` in +ToolIteration derives from this schema set, so a
+        // hallucinated call gets `tool_not_authorized` with NO signal — the
+        // supervisorQuestion machinery (self-answer loop / un-wakeable park) can't
+        // fire. Residual: team == nil AND a `.custom` role identity would still take
+        // the generic custom fallback, but the manager's runtime step role is always
+        // the builtin `.autovisor`, and with no team the step fails at the engine.
+        if team?.templateID == AutovisorConstants.teamTemplateID
+            || role.baseID == AutovisorConstants.managerRoleSystemID {
+            allowedTools.removeAll { $0.name == tn.askSupervisor }
+        }
+
         return allowedTools
     }
 

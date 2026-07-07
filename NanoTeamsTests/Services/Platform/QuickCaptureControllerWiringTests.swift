@@ -20,6 +20,7 @@ final class QuickCaptureControllerWiringTests: XCTestCase {
     override func setUp() {
         super.setUp()
         sut = QuickCaptureController.shared
+        sut._testReset()
         if sut._testIsInAnswerMode { sut._testExitAnswerMode() }
         sut.formState._testClearAnswerDrafts()
         sut.formState.supervisorTask = ""

@@ -320,9 +320,16 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let stepID = "test_step"
         let messageID = UUID()
 
-        let before = Date()
+        // Bracket with MonotonicClock — the SAME clock `append` stamps `createdAt`
+        // with (max(Date(), lastTimestamp+1ms), strictly increasing process-wide).
+        // Mixing Date() bounds with a MonotonicClock value flakes: any concurrent
+        // now() call elsewhere in the process pushes the monotonic clock sub-second
+        // ahead of wall-clock, so createdAt can exceed a Date()-sourced `after`.
+        // MonotonicClock's strict global ordering makes before < createdAt < after
+        // hold deterministically.
+        let before = MonotonicClock.shared.now()
         manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "Test")
-        let after = Date()
+        let after = MonotonicClock.shared.now()
 
         let preview = manager.preview(stepID: stepID, taskID: 0)
         XCTAssertNotNil(preview?.createdAt)

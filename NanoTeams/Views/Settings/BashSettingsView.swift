@@ -89,7 +89,9 @@ struct BashSettingsView: View {
 
                 Text(config.bashRestrictionLevel.settingDescription)
                     .font(Typography.caption)
-                    .foregroundStyle(Colors.textSecondary)
+                    // "Off" removes the only review layer of Auto mode — surface that
+                    // in warning color so disabling the judge is a visible act.
+                    .foregroundStyle(config.bashRestrictionLevel == .off ? Colors.warning : Colors.textSecondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 Text("Applies to Auto verdicts and the on-demand “Ask AI” advice while you approve a command.")

@@ -51,6 +51,18 @@ nonisolated enum BashAdviceService {
             // of cancellation from them — check here so Stop actually stops issuing further
             // per-command calls instead of draining the whole batch.
             if Task.isCancelled { break }
+            // Strictness Off: the configured judge approves everything without
+            // review, so advice "identical to what Auto would conclude" (the
+            // contract above) is a constant — return it without spending an LLM
+            // round-trip. The explain pass is skipped too; the reason is
+            // self-explanatory.
+            if policy.restrictionLevel == .off {
+                results.append(BashAdvice(
+                    id: index, command: command, allowed: true,
+                    reason: "Judge strictness is Off — every command is approved without review. Decide yourself.",
+                    explanation: ""))
+                continue
+            }
             // Parallel array, defensively bounded: a length mismatch falls back to
             // the project root rather than crashing.
             let workingDirectory = index < workingDirectories.count ? workingDirectories[index] : nil

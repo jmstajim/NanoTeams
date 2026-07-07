@@ -233,7 +233,13 @@ extension TeamActivityFeedView {
                 isStreamingToolCall: streaming.isStreamingToolCall
             )
         }
+        // `.supervisorAnswer` joins `.supervisorMessage`: unpaired answers
+        // (escalation / Autovisor idle park) render as durable Supervisor
+        // bubbles, and an answer embedding `## Attached Files` / clip markers
+        // must surface thumbnail cards, not raw marker text. (Paired answers
+        // never reach a bubble outside debug mode.)
         let isSupervisorMsg = msg.sourceContext == .supervisorMessage
+            || msg.sourceContext == .supervisorAnswer
         let inputs = ActivityFeedBuilder.bubbleDisplayInputs(
             raw: msg.displayContent,
             isSupervisorMessage: isSupervisorMsg

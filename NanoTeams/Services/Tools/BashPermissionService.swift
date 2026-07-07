@@ -39,6 +39,16 @@ nonisolated enum BashPermissionService {
             return .ask(reason: "Manual mode — every command needs your approval.")
         }
 
+        // 1c. Auto mode with judge strictness Off — every command that survives the
+        //     deny rules runs without review: ask rules, allow rules, and the
+        //     read-only bypass are all moot (everything not denied is allowed).
+        //     Scoped to `.auto`: Manual/Semi-automatic still route "ask" outcomes to
+        //     the human, and mode Off (top of the function) still disables the tool
+        //     entirely. Mirrors `ComputerUsePermissionService.evaluate` step 9.
+        if policy.mode == .auto, policy.restrictionLevel == .off {
+            return .allow
+        }
+
         // 2. Ask rules force review even if an allow rule or the read-only bypass
         //    would otherwise pass it.
         let askMatched = firstMatch(rules: policy.askRules, command: trimmed, segments: segments, programs: programs) != nil

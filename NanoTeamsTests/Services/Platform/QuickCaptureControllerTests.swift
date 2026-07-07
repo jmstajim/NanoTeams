@@ -95,6 +95,7 @@ final class QuickCaptureControllerStateTests: XCTestCase {
     override func setUp() {
         super.setUp()
         sut = QuickCaptureController.shared
+        sut._testReset()
         if sut._testIsInAnswerMode { sut._testExitAnswerMode() }
         sut.formState._testClearAnswerDrafts()
         sut.formState.supervisorTask = ""
@@ -183,6 +184,7 @@ final class QuickCaptureModeResolutionTests: NTMSOrchestratorTestBase {
     override func setUp() {
         super.setUp()
         controller = QuickCaptureController.shared
+        controller._testReset()
         controller.store = sut
         controller.isTaskSelected = false
         controller._testForceNewTaskMode = false
@@ -664,6 +666,7 @@ final class QuickCaptureAnswerModeTests: XCTestCase {
     override func setUp() {
         super.setUp()
         sut = QuickCaptureController.shared
+        sut._testReset()
         if sut._testIsInAnswerMode { sut._testExitAnswerMode() }
         sut.formState._testClearAnswerDrafts()
         sut.formState.supervisorTask = ""
@@ -902,6 +905,7 @@ final class QuickCaptureTeamSelectionTests: NTMSOrchestratorTestBase {
     override func setUp() {
         super.setUp()
         controller = QuickCaptureController.shared
+        controller._testReset()
         controller.store = sut
         controller.formState.selectedTeamID = nil
         controller.formState.supervisorTask = "Test goal"
@@ -1030,6 +1034,7 @@ final class QuickCaptureChatWorkingComposerTests: NTMSOrchestratorTestBase {
     override func setUp() {
         super.setUp()
         controller = QuickCaptureController.shared
+        controller._testReset()
         controller.store = sut
         if controller._testIsInAnswerMode { controller._testExitAnswerMode() }
         controller.formState._testClearAnswerDrafts()

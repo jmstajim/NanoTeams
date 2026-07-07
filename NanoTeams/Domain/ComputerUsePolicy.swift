@@ -12,19 +12,27 @@ nonisolated enum ComputerUseConstants {
 // MARK: - Execution Mode
 
 /// How the computer-use tools resolve an action that requires review.
+/// Declaration order = `allCases` = the Settings picker order:
+/// [Off | Manual | Semi-automatic | Auto], mirroring the bash Execution picker.
 nonisolated enum ComputerUseMode: String, Codable, CaseIterable, Hashable, Sendable {
     /// Computer-use is disabled — every action is denied.
     case off
-    /// Every click / type / key / scroll pauses for human Allow/Deny. In a no-human
+    /// Every click / type / key pauses for human Allow/Deny. In a no-human
     /// context (autonomous / Autovisor / headless) the action is denied.
     case manual
+    /// Read-only actions (screen capture, scroll) run automatically; every
+    /// click / type / key still pauses for human Allow/Deny. The middle ground
+    /// between Manual and Auto — like the bash Semi-automatic mode, only reading
+    /// is auto-allowed. No-human context denies the mutating actions.
+    case semiAutomatic
     /// Actions are resolved by the one-shot LLM judge (`ComputerUseJudgeService`) —
     /// no human in the loop.
     case auto
 
     private static let metadata: [ComputerUseMode: (displayName: String, description: String)] = [
         .off: ("Off", "Computer Use is disabled. Roles cannot see or control the screen."),
-        .manual: ("Manual", "You approve every click, keystroke, and scroll before it happens — with a preview of the target."),
+        .manual: ("Manual", "You approve every click, keystroke, and key press before it happens — with a preview of the target. Scrolling runs automatically."),
+        .semiAutomatic: ("Semi-automatic", "Screenshots and scrolling run automatically — only reading is auto-allowed. You still approve every click, keystroke, and key press."),
         .auto: ("Auto", "An LLM judge approves or denies each action for you, at the strictness set below."),
     ]
 

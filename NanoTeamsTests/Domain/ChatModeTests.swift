@@ -353,7 +353,11 @@ final class ChatModeTests: XCTestCase {
 
     func testFallbackToolIDs_allNonSupervisorRolesHaveAskSupervisor() {
         let askSupervisor = ToolNames.askSupervisor
-        for (stepID, toolIDs) in SystemTemplates.fallbackToolIDs where stepID != "supervisor" {
+        // The Autovisor manager IS the top Supervisor — it deliberately has no
+        // ask_supervisor (pinned by AutovisorAskSupervisorGateTests). Exclude it
+        // alongside "supervisor".
+        for (stepID, toolIDs) in SystemTemplates.fallbackToolIDs
+        where stepID != "supervisor" && stepID != AutovisorConstants.managerRoleSystemID {
             XCTAssertTrue(
                 toolIDs.contains(askSupervisor),
                 "Role '\(stepID)' should have ask_supervisor in fallback toolIDs"

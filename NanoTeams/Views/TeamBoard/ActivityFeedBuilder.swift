@@ -339,6 +339,24 @@ nonisolated enum ActivityFeedBuilder {
             // nil = cache not loaded yet → don't filter (messages stay visible until cache ready)
             let artifactContents: Set<String> = debugModeEnabled ? [] : (stepArtifactContentCache[step.id] ?? [])
 
+            // Pairing-aware `.supervisorAnswer` suppression. The first
+            // `askCallCount` answer messages (conversation order — the SAME index
+            // rule the answered-notification loop below uses, so the two surfaces
+            // can't disagree) pair with `ask_supervisor` tool calls and render
+            // inside their Q&A cards. The escalation card (no ask calls — drift
+            // caps / Autovisor idle park) owns at most the LATEST answer, and only
+            // while its gate holds (`escalationCard(for:)`). Every OTHER answer is
+            // UNPAIRED and falls through to a durable Supervisor bubble — without
+            // this, a re-park clearing `step.supervisorAnswer` (single-slot) made
+            // the user's answer vanish from the feed entirely, even though the LLM
+            // had already consumed it.
+            let askCallCount = step.toolCalls.filter { $0.name == ToolNames.askSupervisor }.count
+            let answerMessageIDs = step.llmConversation
+                .filter { $0.sourceContext == .supervisorAnswer }
+                .map(\.id)
+            let pairedAnswerIDs = Set(answerMessageIDs.prefix(askCallCount))
+            let cardOwnedAnswerID = Self.escalationCard(for: step)?.answerMessage?.id
+
             for msg in step.llmConversation where msg.role != .system && msg.role != .tool {
                 let hasThinking = msg.thinking.map {
                     !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -351,7 +369,10 @@ nonisolated enum ActivityFeedBuilder {
                 }
                 if !debugModeEnabled && msg.role == .user {
                     if msg.sourceRole == nil && msg.sourceContext == nil { continue }
-                    if msg.sourceContext == .supervisorAnswer { continue }
+                    if msg.sourceContext == .supervisorAnswer,
+                       pairedAnswerIDs.contains(msg.id) || msg.id == cardOwnedAnswerID {
+                        continue  // rendered inside its ask card / the escalation Q&A card
+                    }
                 }
                 if !debugModeEnabled && !msg.content.isEmpty
                     && artifactContents.contains(msg.content) && !hasThinking
@@ -428,8 +449,9 @@ nonisolated enum ActivityFeedBuilder {
                 let rawAnswer: String?
                 if index < answerMessages.count {
                     let content = answerMessages[index].content
-                    rawAnswer = content.hasPrefix("Supervisor answer: ")
-                        ? String(content.dropFirst("Supervisor answer: ".count))
+                    let prefix = MessageSourceContext.supervisorAnswerPrefix
+                    rawAnswer = content.hasPrefix(prefix)
+                        ? String(content.dropFirst(prefix.count))
                         : content
                 } else if isLast {
                     rawAnswer = step.supervisorAnswer
@@ -461,8 +483,8 @@ nonisolated enum ActivityFeedBuilder {
             }
 
             // Escalation-path answered Q&A: `setNeedsSupervisorInput` from a
-            // drift / refusal-loop / parse-failure cap writes
-            // `supervisorQuestion` + flag-true WITHOUT appending an
+            // drift / refusal-loop / parse-failure cap (or the Autovisor idle
+            // park) writes `supervisorQuestion` + flag-true WITHOUT appending an
             // `ask_supervisor` tool call, then `answerSupervisorQuestion` writes
             // `supervisorAnswer` + flips the flag to false. Without this
             // synthesized notification, the answered Q&A would vanish from feed
@@ -470,12 +492,13 @@ nonisolated enum ActivityFeedBuilder {
             // for the escalation path). Active state is owned by
             // `activeSupervisorQuestions` (composer chip), so we only emit
             // history once the step is no longer active.
-            if askCalls.isEmpty,
-               !stepIsActive,
-               let escalationQ = step.supervisorQuestion?
-                   .trimmingCharacters(in: .whitespacesAndNewlines),
-               !escalationQ.isEmpty,
-               step.supervisorAnswer != nil {
+            //
+            // Gate + answer message come from `escalationCard(for:)` — the SAME
+            // helper the message loop's bubble suppression consults, so the card
+            // and the durable answer bubble can never both render (or both drop).
+            // Once a re-park clears `supervisorAnswer`, the helper returns nil:
+            // this card yields and the answer survives as a Supervisor bubble.
+            if let card = Self.escalationCard(for: step) {
                 // Latest answer turn = the stable anchor for sort position, item
                 // identity, AND the thinking bound. `step.updatedAt` is re-stamped
                 // by every later mutation (tool calls, messages), which made the
@@ -489,7 +512,7 @@ nonisolated enum ActivityFeedBuilder {
                 // `supervisorAnswer` — every live escalation-path writer routes
                 // through it, so legacy data keeps the old behavior and new data
                 // never hits the fallback.
-                let answerMsg = answerMessages.last
+                let answerMsg = card.answerMessage
                 let anchor = answerMsg?.createdAt ?? step.updatedAt
                 let thinking = step.llmConversation
                     .last(where: {
@@ -499,7 +522,7 @@ nonisolated enum ActivityFeedBuilder {
                     into: &items,
                     step: step,
                     rawAnswer: step.supervisorAnswer,
-                    question: escalationQ,
+                    question: card.question,
                     toolCallID: answerMsg?.id ?? UUID(),
                     thinking: thinking,
                     timestamp: anchor,
@@ -518,6 +541,44 @@ nonisolated enum ActivityFeedBuilder {
                 ))
             }
         }
+    }
+
+    /// Gate + payload for the synthesized escalation Q&A card — the single
+    /// source of truth shared by the message-loop bubble suppression and the
+    /// card emission in `emitItems`, so the two surfaces can never double-render
+    /// an answer or both drop it.
+    ///
+    /// The card fronts a PURE-escalation step's latest answered Q&A: no
+    /// `ask_supervisor` tool calls at all (drift / refusal-loop / parse-failure
+    /// caps and the Autovisor idle park write `supervisorQuestion` + the flag
+    /// directly), not currently awaiting input, non-empty stored question, and
+    /// `supervisorAnswer` still set. The moment a RE-park clears
+    /// `supervisorAnswer` (single-slot — see `setNeedsSupervisorInput`), this
+    /// returns nil: the card yields and every unpaired `.supervisorAnswer`
+    /// message renders as a durable Supervisor bubble instead. That handoff is
+    /// the fix for answers vanishing from the feed across the Autovisor's
+    /// park → answer → re-park cycle.
+    struct EscalationCard {
+        let question: String
+        /// The `.supervisorAnswer` conversation message the card absorbs — nil
+        /// only for legacy task.json persisted before
+        /// `StepMessagingService.answerSupervisorQuestion` started appending the
+        /// message (the card then falls back to `step.supervisorAnswer` alone).
+        let answerMessage: LLMMessage?
+    }
+
+    static func escalationCard(for step: StepExecution) -> EscalationCard? {
+        guard !step.toolCalls.contains(where: { $0.name == ToolNames.askSupervisor }),
+              !stepHasActiveSupervisorInput(step),
+              let question = step.supervisorQuestion?
+                  .trimmingCharacters(in: .whitespacesAndNewlines),
+              !question.isEmpty,
+              step.supervisorAnswer != nil
+        else { return nil }
+        return EscalationCard(
+            question: question,
+            answerMessage: step.llmConversation.last(where: { $0.sourceContext == .supervisorAnswer })
+        )
     }
 
     /// Reverse-extracts the failure reason for a `.failed` step's bubble.

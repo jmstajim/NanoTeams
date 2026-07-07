@@ -186,6 +186,42 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
         XCTAssertEqual(clips, ["let x = 1"])
     }
 
+    /// Committed `.supervisorAnswer` (the durable bubble an unpaired
+    /// escalation / Autovisor idle-park answer renders as): the leading
+    /// `Supervisor answer: ` marker strips via `displayContent`, and embedded
+    /// attachment/clip marker sections extract into structured fields —
+    /// same treatment as `.supervisorMessage`.
+    func testResolveBubbleInputs_supervisorAnswer_stripsAttachmentMarkers() async {
+        let raw = """
+        Supervisor answer: Проверь этот файл
+
+        ## Clipped Text
+        let x = 1
+
+        ## Attached Files
+        - /path/to/file.swift
+        """
+        let msg = LLMMessage(
+            role: .user, content: raw,
+            sourceRole: .supervisor, sourceContext: .supervisorAnswer
+        )
+        let snap = StreamingSnapshot(
+            isStreaming: false, content: nil, thinking: nil,
+            processingProgress: nil, hasStreamActivity: false,
+            isStreamingToolCall: false
+        )
+        let inputs = TeamActivityFeedView.resolveBubbleInputs(msg: msg, streaming: snap)
+        guard case .committed(let content, _, let paths, let clips) = inputs else {
+            return XCTFail("Expected .committed case")
+        }
+        XCTAssertFalse(content.contains("Supervisor answer:"),
+                       "Leading answer marker must be stripped via displayContent.")
+        XCTAssertFalse(content.contains("## Attached Files"))
+        XCTAssertFalse(content.contains("## Clipped Text"))
+        XCTAssertEqual(paths, ["/path/to/file.swift"])
+        XCTAssertEqual(clips, ["let x = 1"])
+    }
+
     /// Committed non-supervisor messages must NOT strip marker text. A
     /// regular assistant message that happens to contain
     /// "## Attached Files" verbatim renders verbatim — the strip

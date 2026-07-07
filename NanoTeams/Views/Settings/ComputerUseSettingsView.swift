@@ -18,7 +18,12 @@ struct ComputerUseSettingsView: View {
                 introCard
                 executionCard
                 if config.isComputerUseEnabled {
-                    safetyCard
+                    // The judge (strictness) only rules in Auto mode — omit the
+                    // card entirely in Manual so it never renders header-only.
+                    if mode == .auto {
+                        judgeCard
+                    }
+                    behaviorCard
                     advancedCard
                 }
             }
@@ -58,36 +63,50 @@ struct ComputerUseSettingsView: View {
         }
     }
 
-    // MARK: - Safety
+    // MARK: - Judge
 
-    private var safetyCard: some View {
+    /// Auto-mode only (gated in `body`): the strictness the LLM judge applies to
+    /// each action. Off disables review entirely.
+    private var judgeCard: some View {
         @Bindable var config = config
-        return SettingsCard(header: "Safety", systemImage: "shield.lefthalf.filled") {
+        return SettingsCard(header: "Judge", systemImage: "shield.lefthalf.filled") {
             VStack(alignment: .leading, spacing: Spacing.m) {
-                if mode == .auto {
-                    TerminalSegmentedPicker(
-                        selection: $config.computerUseRestrictionLevel,
-                        options: ComputerUseRestrictionLevel.allCases.map { ($0, $0.displayName) })
-                    // "Off" removes the only review layer of Auto mode — surface
-                    // that in warning color so disabling the judge is a visible act.
-                    Text(config.computerUseRestrictionLevel.settingDescription)
-                        .font(Typography.caption)
-                        .foregroundStyle(
-                            config.computerUseRestrictionLevel == .off
-                                ? Colors.warning : Colors.textSecondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Divider().background(Colors.borderSubtle)
-                }
+                TerminalSegmentedPicker(
+                    selection: $config.computerUseRestrictionLevel,
+                    options: ComputerUseRestrictionLevel.allCases.map { ($0, $0.displayName) })
+                // "Off" removes the only review layer of Auto mode — surface
+                // that in warning color so disabling the judge is a visible act.
+                Text(config.computerUseRestrictionLevel.settingDescription)
+                    .font(Typography.caption)
+                    .foregroundStyle(
+                        config.computerUseRestrictionLevel == .off
+                            ? Colors.warning : Colors.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
 
+    // MARK: - Behavior
+
+    /// Tool-operation toggles orthogonal to the judge. "Raise the target window"
+    /// applies in every enabled mode; the first-capture gate only changes anything
+    /// in Manual (Auto and Semi-automatic auto-allow every capture — the read-only
+    /// tier), so it's shown only there rather than as a silent no-op.
+    private var behaviorCard: some View {
+        @Bindable var config = config
+        return SettingsCard(header: "Behavior", systemImage: "gearshape") {
+            VStack(alignment: .leading, spacing: Spacing.m) {
                 SettingsToggleRow(
                     title: "Raise the target window before acting",
                     icon: "macwindow.on.rectangle",
                     isOn: $config.computerUseRaiseTargetWindowBeforeClick)
 
-                SettingsToggleRow(
-                    title: "Only ask before the first screenshot each run",
-                    icon: "camera.viewfinder",
-                    isOn: $config.computerUseGateFirstCaptureOnly)
+                if mode == .manual {
+                    SettingsToggleRow(
+                        title: "Only ask before the first screenshot each run",
+                        icon: "camera.viewfinder",
+                        isOn: $config.computerUseGateFirstCaptureOnly)
+                }
             }
         }
     }

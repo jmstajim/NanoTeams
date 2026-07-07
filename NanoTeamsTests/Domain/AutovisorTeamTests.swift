@@ -62,6 +62,13 @@ final class AutovisorTeamTests: XCTestCase {
         }
         // … and it never delegates via delegate_to_team (it IS the top Supervisor).
         XCTAssertFalse(ids.contains(ToolNames.delegateToTeam))
+        // … and it never escalates via ask_supervisor — there is no one above it.
+        // (A schema-level strip + the "autovisor" fallbackToolIDs key enforce this
+        // at resolve time; this pins the factory toolset itself.)
+        XCTAssertFalse(ids.contains(ToolNames.askSupervisor),
+                       "the manager IS the top Supervisor — never ask_supervisor")
+        XCTAssertFalse(AutovisorConstants.managerDefaultToolIDs.contains(ToolNames.askSupervisor),
+                       "managerDefaultToolIDs feeds fallbackToolIDs[\"autovisor\"] — must exclude ask_supervisor")
     }
 
     /// The manager prompt must tell it to FINALIZE reviewed work via `control_task close`

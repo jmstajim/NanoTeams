@@ -368,20 +368,24 @@ struct TeamActivityFeedView: View {
 
     @ScaledMetric(relativeTo: .body) private var scrollButtonSize: CGFloat = 26
 
-    /// Offset-based scroll position. `scrollTo(edge:.bottom)` is the only mechanism that
-    /// reliably scrolls ANY distance in this LazyVStack — an `id` scroll can't reach a
-    /// sentinel that streaming pushed out of the lazy-realization window, so the feed
-    /// fell behind and the gate latched out of follow. The edge-scroll's only hazard is
-    /// the transient mid-commit content-size (overshoot); the burst-resets below gate
-    /// every fire to AFTER the commit's spike→collapse settles.
+    /// Offset-based scroll position. The settle-scroll targets an EXACT `scrollTo(y:)`
+    /// computed from live geometry (see `bottomTargetY`); `scrollTo(edge:.bottom)` is
+    /// the fallback when no geometry tick has stashed a target yet (fresh task switch).
+    /// Historical (LazyVStack era): an `id`-based scroll couldn't reach a sentinel
+    /// pushed out of the lazy-realization window, and edge-scrolls overshot from the
+    /// transient mid-commit content-size — the burst-resets below still gate every
+    /// fire to AFTER a commit's spike→collapse settles.
     @State private var scrollPosition = ScrollPosition(edge: .bottom)
     @State private var scrollSettleTask: Task<Void, Never>?
     /// Start of the current coalesced follow burst — drives the max-wait force-fire.
     @State private var settleBurstStart: Date?
     /// Exact bottom content-offset computed from the accurate SwiftUI geometry each tick;
     /// the deferred scroll sets this directly so it can't land short/over from the
-    /// NSScrollView's lagging content-size.
-    @State private var lastBottomTargetY: CGFloat = 0
+    /// NSScrollView's lagging content-size. `nil` until the first geometry tick after a
+    /// task switch — the settle falls back to `scrollTo(edge: .bottom)` then, so a
+    /// stale target stashed from the PREVIOUS task's feed can never fly the offset
+    /// past the new (shorter) feed's end.
+    @State private var lastBottomTargetY: CGFloat?
     /// Debounce for releasing the bottom-pin — a transient container/cH blip must NOT
     /// drop follow; only a sustained departure does.
     @State private var gateReleaseTask: Task<Void, Never>?
@@ -401,7 +405,22 @@ struct TeamActivityFeedView: View {
 
     private var timelineScrollView: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
+            // NON-lazy on purpose (was LazyVStack — reverted 2026-07-07 after two
+            // live blank-feed reproductions). LazyVStack ESTIMATES unrealized row
+            // heights from the average of REALIZED ones; one >viewport realized row
+            // (a long supervisor brief / LLM message) skews every estimate 4-12x
+            // (trace: ~2200px/item vs ~186px real), and the bottom-pin's
+            // `scrollTo(y:)` then parks the offset inside estimated "phantom" space
+            // where no realized row exists → blank feed. From geometry alone that
+            // state is indistinguishable from the user scrolling up (dist large
+            // positive), so the follow gate releases and NOTHING recovers until a
+            // manual scroll forces realization. A plain VStack realizes every row:
+            // contentSize is always exact, phantom space cannot exist. Cost is
+            // bounded: text shaping is memoized per (length, width) by
+            // MessageTextLayoutCache, rows are Equatable-wrapped so streaming ticks
+            // re-evaluate only the live bubble, and non-text rows are lineLimit-
+            // capped cards. Pinned by TeamActivityFeedContainerInvariantTests.
+            VStack(alignment: .leading, spacing: 0) {
                 ForEach(viewModel.cachedTimelineItems) { tagged in
                     let isFirst = tagged.id == viewModel.cachedTimelineItems.first?.id
                     let isToolCall: Bool = {
@@ -535,6 +554,7 @@ struct TeamActivityFeedView: View {
             scrollSettleTask?.cancel()
             gateReleaseTask?.cancel()
             settleBurstStart = nil
+            lastBottomTargetY = nil
             viewModel.resetForTaskSwitch()
         }
         .onReceive(NotificationCenter.default.publisher(for: .scrollFeedToBottom)) { _ in
@@ -571,8 +591,14 @@ struct TeamActivityFeedView: View {
             guard !Task.isCancelled else { return }
             settleBurstStart = nil
             guard viewModel.isNearBottom else { return }
-            // Set the EXACT bottom offset from accurate geometry (not edge, which lags).
-            scrollPosition.scrollTo(y: lastBottomTargetY)
+            // Set the EXACT bottom offset from accurate geometry (not edge, which
+            // lags). Edge-scroll only when no tick has stashed a target yet (fresh
+            // task switch) — a stale cross-task target must never be applied.
+            if let targetY = lastBottomTargetY {
+                scrollPosition.scrollTo(y: targetY)
+            } else {
+                scrollPosition.scrollTo(edge: .bottom)
+            }
         }
     }
 

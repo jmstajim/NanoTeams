@@ -12,11 +12,12 @@ final class BashPermissionServiceTests: XCTestCase {
     /// stricter `.manual` (always confirm) mode is covered in its own section.
     private func policy(
         mode: BashExecutionMode = .semiAutomatic,
+        restriction: BashRestrictionLevel = BashConstants.defaultRestrictionLevel,
         allow: [String] = [],
         ask: [String] = [],
         deny: [String] = []
     ) -> BashPolicy {
-        BashPolicy(mode: mode, allowRules: allow, askRules: ask, denyRules: deny)
+        BashPolicy(mode: mode, restrictionLevel: restriction, allowRules: allow, askRules: ask, denyRules: deny)
     }
 
     private func isAllow(_ d: BashPermissionDecision) -> Bool { d == .allow }
@@ -87,6 +88,60 @@ final class BashPermissionServiceTests: XCTestCase {
         // An ask rule and the always-confirm default agree — still asks.
         XCTAssertTrue(isAsk(BashPermissionService.evaluate(
             command: "npm test", policy: policy(mode: .manual, ask: ["npm"]))))
+    }
+
+    // MARK: - Judge strictness Off (mirrors ComputerUsePermissionServiceTests' Safety-Off quartet)
+
+    func testJudgeOff_autoMode_unknownCommand_allows() {
+        // Off disables the judge: in Auto mode an unknown command that survives the
+        // deny rules runs without review instead of routing to the (disabled) judge.
+        XCTAssertTrue(isAllow(BashPermissionService.evaluate(
+            command: "make install", policy: policy(mode: .auto, restriction: .off))))
+    }
+
+    func testJudgeOff_autoMode_denyRuleStillDenies() {
+        // Deny rules are ABOVE the off short-circuit — Off never bypasses them.
+        XCTAssertTrue(isDeny(BashPermissionService.evaluate(
+            command: "rm -rf /", policy: policy(mode: .auto, restriction: .off, deny: ["rm"]))))
+        // …including a denied program smuggled into a later segment.
+        XCTAssertTrue(isDeny(BashPermissionService.evaluate(
+            command: "cat x && rm -rf /", policy: policy(mode: .auto, restriction: .off, deny: ["rm"]))))
+    }
+
+    func testJudgeOff_autoMode_askRuleBypassed() {
+        // Decision pin: Off means NO review at all in Auto — a custom ask rule is
+        // moot (it exists to route a command to review; with the judge off there is
+        // no reviewer). Only deny rules act. Mirrors CU's "hard denies only".
+        XCTAssertTrue(isAllow(BashPermissionService.evaluate(
+            command: "npm publish", policy: policy(mode: .auto, restriction: .off, ask: ["npm"]))))
+    }
+
+    func testJudgeOff_manualMode_stillAsks() {
+        // The strictness picker is meaningful only for Auto verdicts — a stored
+        // `.off` must never bypass the human approval Manual mode promises.
+        XCTAssertTrue(isAsk(BashPermissionService.evaluate(
+            command: "make install", policy: policy(mode: .manual, restriction: .off))))
+        XCTAssertTrue(isAsk(BashPermissionService.evaluate(
+            command: "ls -la", policy: policy(mode: .manual, restriction: .off))))
+    }
+
+    func testJudgeOff_semiAutomaticMode_unknownCommand_stillAsks() {
+        // Semi-automatic routes "ask" outcomes to the human, not the judge — Off
+        // (a judge setting) must not swallow that ask.
+        XCTAssertTrue(isAsk(BashPermissionService.evaluate(
+            command: "make install", policy: policy(mode: .semiAutomatic, restriction: .off))))
+    }
+
+    func testJudgeOff_modeOff_stillDeniesEverything() {
+        // The mode master switch outranks the strictness level.
+        XCTAssertTrue(isDeny(BashPermissionService.evaluate(
+            command: "ls", policy: policy(mode: .off, restriction: .off))))
+    }
+
+    func testJudgeOff_autoMode_emptyCommand_stillDenied() {
+        // The empty-command guard precedes the off short-circuit.
+        XCTAssertTrue(isDeny(BashPermissionService.evaluate(
+            command: "   ", policy: policy(mode: .auto, restriction: .off))))
     }
 
     // MARK: - Precedence: deny > ask > allow

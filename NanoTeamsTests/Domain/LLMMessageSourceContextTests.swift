@@ -208,6 +208,47 @@ final class LLMMessageSourceContextTests: XCTestCase {
         XCTAssertEqual(msg.displayContent, "no header here")
     }
 
+    // MARK: - displayContent strip for .supervisorAnswer
+
+    func testSupervisorAnswerPrefix_constantValue() {
+        // The wire/persistence contract: write sides (StepMessagingService,
+        // the auto-answer append, PromptBuilder's stateless rebuild) and read
+        // sides (displayContent, ActivityFeedBuilder's answer extraction)
+        // share this constant.
+        XCTAssertEqual(MessageSourceContext.supervisorAnswerPrefix, "Supervisor answer: ")
+    }
+
+    func testDisplayContent_supervisorAnswer_stripsPrefix() {
+        // Unpaired escalation/idle-park answers render as Supervisor bubbles —
+        // the header already attributes the speaker, so the LLM-facing marker
+        // must not show inline.
+        let msg = LLMMessage(
+            role: .user,
+            content: "Supervisor answer: проверь задачу №5",
+            sourceRole: .supervisor,
+            sourceContext: .supervisorAnswer
+        )
+        XCTAssertEqual(msg.displayContent, "проверь задачу №5")
+    }
+
+    func testDisplayContent_supervisorAnswer_withoutPrefix_returnsContentUnchanged() {
+        // Defensive: an answer message that somehow lacks the marker renders raw.
+        let msg = LLMMessage(
+            role: .user,
+            content: "no marker here",
+            sourceRole: .supervisor,
+            sourceContext: .supervisorAnswer
+        )
+        XCTAssertEqual(msg.displayContent, "no marker here")
+    }
+
+    func testDisplayContent_nonAnswerMessage_keepsAnswerLookalikePrefix() {
+        // The strip applies ONLY to `.supervisorAnswer` — a regular user turn
+        // whose content happens to start with the marker is user content.
+        let msg = LLMMessage(role: .user, content: "Supervisor answer: looks like one")
+        XCTAssertEqual(msg.displayContent, "Supervisor answer: looks like one")
+    }
+
     func testLLMMessage_WithSupervisorMessageContext_CodableRoundTrip() throws {
         // Regression guard for the queued-message injection path: saved tasks must
         // round-trip LLMMessages carrying `.supervisorMessage` without loss so the

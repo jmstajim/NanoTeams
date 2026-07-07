@@ -193,7 +193,7 @@ nonisolated struct PromptBuilder {
                 content: replayedAskSupervisorEnvelope(question: question)))
             messages.append(ChatMessage(
                 role: .user,
-                content: "Supervisor answer: \(answer)"))
+                content: "\(MessageSourceContext.supervisorAnswerPrefix)\(answer)"))
         } else if let question = step.supervisorQuestion, !question.isEmpty {
             messages.append(ChatMessage(
                 role: .user,

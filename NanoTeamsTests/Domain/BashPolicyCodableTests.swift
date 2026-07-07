@@ -61,6 +61,20 @@ final class BashPolicyCodableTests: XCTestCase {
         XCTAssertEqual(decoded.mode, .semiAutomatic)
     }
 
+    func testRestrictionLevelOff_roundTrips() throws {
+        // `.off` is a plain raw-string case — it must survive a full policy
+        // round-trip AND decode from raw JSON (mirrors
+        // ComputerUsePolicyCodableTests.testRestrictionLevelOff_decodesFromRawJSON).
+        let p = BashPolicy(mode: .auto, restrictionLevel: .off)
+        let data = try JSONEncoder().encode(p)
+        let decoded = try JSONDecoder().decode(BashPolicy.self, from: data)
+        XCTAssertEqual(decoded.restrictionLevel, .off)
+
+        let raw = try JSONDecoder().decode(
+            BashPolicy.self, from: Data(#"{"restrictionLevel":"off"}"#.utf8))
+        XCTAssertEqual(raw.restrictionLevel, .off)
+    }
+
     func testEncodedJSON_carriesNoCredential() throws {
         // The bearer token lives only in the Keychain; an encoded policy (even with a
         // judge override) must never serialize a credential key. (We avoid the bare

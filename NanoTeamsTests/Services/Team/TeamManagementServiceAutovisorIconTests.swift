@@ -148,6 +148,29 @@ final class TeamManagementServiceAutovisorIconTests: XCTestCase {
                        "the disallowed git-write tool is stripped in the same pass")
     }
 
+    /// The manager IS the top Supervisor: a planted `ask_supervisor` (hand-edited
+    /// teams.json / older build) is outside `mandatory ∪ optional` and must be
+    /// stripped on open — the persisted layer of the same invariant the schema
+    /// resolver enforces at request time (`AutovisorAskSupervisorGateTests`).
+    func testSync_stripsPlantedAskSupervisorFromManagerToolIDs() {
+        var team = TeamTemplateFactory.autovisor()
+        if let idx = team.roles.firstIndex(where: { $0.systemRoleID == AutovisorConstants.managerRoleSystemID }) {
+            team.roles[idx].toolIDs.append(ToolNames.askSupervisor)
+        }
+        var teams = [team]
+
+        XCTAssertTrue(TeamManagementService.syncAutovisorTeamToTemplate(teams: &teams),
+                      "stripping a planted ask_supervisor must report a change so the persist fires")
+
+        let ids = Set(teams[0].roles.first { $0.systemRoleID == AutovisorConstants.managerRoleSystemID }?.toolIDs ?? [])
+        XCTAssertFalse(ids.contains(ToolNames.askSupervisor),
+                       "ask_supervisor must be stripped from the manager's stored toolIDs")
+
+        // Idempotence: a second run has nothing left to change.
+        XCTAssertFalse(TeamManagementService.syncAutovisorTeamToTemplate(teams: &teams),
+                       "second sync is a no-op (idempotent)")
+    }
+
     /// The strip is GENERAL — it removes any tool outside the allowed set, not only file/git
     /// write. delegate_to_team and run_xcodebuild don't apply to the manager (it IS the top
     /// Supervisor and has no build step), so a manager that somehow carried them must be pruned.
