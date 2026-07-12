@@ -2379,6 +2379,105 @@ final class ActivityFeedBuilderTests: XCTestCase {
         XCTAssertEqual(result.paths, [".nanoteams/tasks/1/attachments/image.png"])
     }
 
+    // MARK: - stripAttachedFiles Skills
+
+    func testStripAttachedFiles_extractsSkillSection_reEncodedAsSkillClip() {
+        let input = "please help\n\n## Skill: code-review\n# Review\nCheck for bugs."
+        let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
+        XCTAssertEqual(result.text, "please help")
+        XCTAssertEqual(result.clippedTexts.count, 1)
+        let parsed = SkillClip.parse(result.clippedTexts[0])
+        XCTAssertEqual(parsed?.name, "code-review")
+        XCTAssertEqual(parsed?.body, "# Review\nCheck for bugs.")
+        // Feed re-extraction carries no agent/origin (they weren't in the prompt section).
+        XCTAssertNil(parsed?.agentLabel)
+        XCTAssertNil(parsed?.origin)
+    }
+
+    func testStripAttachedFiles_skillOnly_returnsEmptyText() {
+        let input = "## Skill: review\nskill body"
+        let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
+        XCTAssertNil(result.text)
+        XCTAssertEqual(SkillClip.parse(result.clippedTexts.first ?? "")?.name, "review")
+    }
+
+    func testStripAttachedFiles_multipleSkills_eachReExtracted() {
+        let input = "hi\n\n## Skill: alpha\nbody a\n\n## Skill: beta\nbody b"
+        let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
+        XCTAssertEqual(result.text, "hi")
+        let names = result.clippedTexts.compactMap { SkillClip.parse($0)?.name }
+        XCTAssertEqual(names, ["alpha", "beta"])
+    }
+
+    func testStripAttachedFiles_skillClipFileAndPaths_allExtracted() {
+        let input = """
+        My answer
+
+        ## Skill: review
+        skill body
+
+        ## Clipped Text \u{2014} src.swift:1-5
+        import Foundation
+
+        ## Attached File: helper.swift
+        func helper() {}
+
+        ## Attached Files
+        - path/img.png
+        """
+        let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
+        XCTAssertEqual(result.text, "My answer")
+        XCTAssertEqual(result.paths, ["path/img.png"])
+        // One plain clip + one re-encoded skill.
+        let skillNames = result.clippedTexts.compactMap { SkillClip.parse($0)?.name }
+        XCTAssertEqual(skillNames, ["review"])
+        let plainClips = result.clippedTexts.filter { SkillClip.parse($0) == nil }
+        XCTAssertEqual(plainClips.count, 1)
+        XCTAssertTrue(plainClips[0].contains("import Foundation"))
+        XCTAssertFalse(result.clippedTexts.contains { $0.contains("func helper") })
+    }
+
+    func testStripAttachedFiles_skillPhraseMidLine_notExtracted() {
+        // Line-anchored: `## Skill:` must start a line to be a section header.
+        let input = "I want to use ## Skill: review here"
+        let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
+        XCTAssertEqual(result.text, "I want to use ## Skill: review here")
+        XCTAssertTrue(result.clippedTexts.isEmpty)
+    }
+
+    func testStripAttachedFiles_skillBodyWithMarkdownHeaders_survivesIntact() {
+        // The common case: a SKILL.md body contains ordinary "## Heading" lines.
+        // They match neither the clip nor the skill regex, so the body is preserved.
+        let body = "## Usage\nrun it\n\n## Examples\n`foo bar`"
+        let built = AnswerTextBuilder.build(text: "", clips: [SkillClip(name: "guide", body: body).encoded()]).answer
+        let result = ActivityFeedBuilder.stripAttachedFiles(from: built)
+        let parsed = SkillClip.parse(result.clippedTexts.first ?? "")
+        XCTAssertEqual(parsed?.name, "guide")
+        XCTAssertEqual(parsed?.body, body)
+    }
+
+    func testStripAttachedFiles_skillBodyWithExactClipMarkerLine_knownDisplayEdge() {
+        // Documented display-only limitation: a skill body containing a line that
+        // is EXACTLY "## Clipped Text" is mis-split by the line-anchored clip block
+        // (the same tradeoff the app already accepts for embedded markers). The LLM
+        // always receives the full skill via `build`; only the FEED render splits.
+        let input = "## Skill: x\nbefore\n## Clipped Text\nafter"
+        let result = ActivityFeedBuilder.stripAttachedFiles(from: input)
+        // The skill name is still recovered; the body is truncated at the marker.
+        let names = result.clippedTexts.compactMap { SkillClip.parse($0)?.name }
+        XCTAssertEqual(names, ["x"])
+        XCTAssertTrue(result.clippedTexts.contains { SkillClip.parse($0)?.body == "before" })
+    }
+
+    func testBuildStripRoundTrip_skill_preservesNameAndBody() {
+        let staged = SkillClip(name: "review", agentLabel: "Claude Code", origin: .project, body: "do the review").encoded()
+        let built = AnswerTextBuilder.build(text: "", clips: [staged]).answer
+        let result = ActivityFeedBuilder.stripAttachedFiles(from: built)
+        let parsed = SkillClip.parse(result.clippedTexts.first ?? "")
+        XCTAssertEqual(parsed?.name, "review")
+        XCTAssertEqual(parsed?.body, "do the review")
+    }
+
     // MARK: - Supervisor Task Embedded Content Stripping
 
     func testSupervisorTask_embeddedFileContent_strippedFromDisplay() {

@@ -65,6 +65,27 @@ nonisolated extension NTMSRepository {
         }
     }
 
+    /// Copies one staged draft file into the folder-level Autovisor goal store
+    /// (`.nanoteams/autovisor/attachments/`) and returns its project-relative
+    /// path. Unlike `finalizeAttachments`, this is NOT task-scoped — the goal's
+    /// attachments outlive any manager task. Collision-safe via `uniqueFileURL`.
+    func finalizeAutovisorGoalAttachment(
+        at workFolderRoot: URL,
+        stagedRelativePath: String
+    ) throws -> String {
+        let paths = try preparePaths(at: workFolderRoot)
+        let destDir = paths.autovisorAttachmentsDir
+        try fileManager.createDirectory(at: destDir, withIntermediateDirectories: true)
+
+        let stagedURL = try resolvedProjectRelativeURL(
+            workFolderRoot: workFolderRoot,
+            relativePath: stagedRelativePath
+        )
+        let destinationURL = uniqueFileURL(in: destDir, preferredName: stagedURL.lastPathComponent)
+        try fileManager.copyItem(at: stagedURL, to: destinationURL)
+        return paths.relativePathFromProjectRoot(for: destinationURL)
+    }
+
     func removeStagedItem(at workFolderRoot: URL, relativePath: String) throws {
         let itemURL = try resolvedProjectRelativeURL(workFolderRoot: workFolderRoot, relativePath: relativePath)
         guard fileManager.fileExists(atPath: itemURL.path) else { return }

@@ -81,6 +81,63 @@ final class WorkFolderContextGenerationFailureTests: XCTestCase {
                         "as a fully empty one")
     }
 
+    // MARK: - Real failure → error banner (NOT the generic info banner)
+
+    func testGenerate_streamError_setsLastErrorMessage_notInfoBanner() async {
+        await sut.openWorkFolder(tempDir)
+        stubClient.errorToThrow = LLMClientError.providerError("Model exploded")
+
+        sut.startGeneratingWorkFolderContext()
+        await sut.workFolderContextGenerationTask?.value
+
+        XCTAssertFalse(sut.isGeneratingWorkFolderContext)
+        XCTAssertNotNil(sut.lastErrorMessage,
+                        "A real generation failure must surface the RED error banner with the cause.")
+        XCTAssertTrue(sut.lastErrorMessage?.contains("Model exploded") ?? false)
+        XCTAssertNil(sut.lastInfoMessage,
+                     "A real failure must NOT be masked by the generic 'no usable context' info banner.")
+    }
+
+    func testGenerate_contextOverflow_surfacesActionableError() async {
+        await sut.openWorkFolder(tempDir)
+        stubClient.errorToThrow = LLMClientError.providerError(
+            "The number of tokens to keep from the initial prompt is greater than the context length."
+        )
+
+        sut.startGeneratingWorkFolderContext()
+        await sut.workFolderContextGenerationTask?.value
+
+        let message = sut.lastErrorMessage ?? ""
+        XCTAssertTrue(message.contains("context window"),
+                      "A persistent context overflow must surface the actionable 'increase context length' error.")
+        XCTAssertNil(sut.lastInfoMessage)
+    }
+
+    func testGenerate_cancelled_showsNeitherBanner() async {
+        await sut.openWorkFolder(tempDir)
+        stubClient.errorToThrow = CancellationError()
+
+        sut.startGeneratingWorkFolderContext()
+        await sut.workFolderContextGenerationTask?.value
+
+        XCTAssertFalse(sut.isGeneratingWorkFolderContext)
+        XCTAssertNil(sut.lastErrorMessage, "A cancellation is not an error — no red banner.")
+        XCTAssertNil(sut.lastInfoMessage, "A cancellation is not empty output — no info banner.")
+    }
+
+    func testGenerate_success_persistsContext() async {
+        await sut.openWorkFolder(tempDir)
+        stubClient.events = [StreamEvent(contentDelta: "GENERATED FOLDER CONTEXT")]
+
+        sut.startGeneratingWorkFolderContext()
+        await sut.workFolderContextGenerationTask?.value
+
+        XCTAssertEqual(sut.workFolder?.settings.context, "GENERATED FOLDER CONTEXT",
+                       "A successful generation must persist the context.")
+        XCTAssertNil(sut.lastErrorMessage)
+        XCTAssertNil(sut.lastInfoMessage)
+    }
+
     // MARK: - Cancel → restart race
 
     /// The cancel-then-restart race fix introduces a generation counter that
@@ -151,6 +208,9 @@ final class WorkFolderContextGenerationFailureTests: XCTestCase {
 private final class ControllableStubLLMClient: LLMClient, @unchecked Sendable {
 
     var events: [StreamEvent] = []
+    /// When set, every `streamChat` call finishes with this error instead of
+    /// yielding `events` — drives the failure-routing tests.
+    var errorToThrow: Error?
 
     func streamChat(
         config: LLMConfig,
@@ -162,9 +222,14 @@ private final class ControllableStubLLMClient: LLMClient, @unchecked Sendable {
         roleName: String?
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         let captured = events
+        let error = errorToThrow
         return AsyncThrowingStream { continuation in
-            for event in captured { continuation.yield(event) }
-            continuation.finish()
+            if let error {
+                continuation.finish(throwing: error)
+            } else {
+                for event in captured { continuation.yield(event) }
+                continuation.finish()
+            }
         }
     }
 

@@ -49,6 +49,32 @@ struct SettingsView: View {
         var icon: String { Self.iconMap[self] ?? "questionmark" }
     }
 
+    nonisolated struct SettingsSection: Identifiable {
+        let id: String
+        /// `nil` renders the section with no `MonoLabel` header (a pinned, header-less group).
+        let title: String?
+        let tabs: [SettingsTab]
+    }
+
+    /// Single source of truth for the sidebar grouping (pinned by `SettingsSidebarSectionsTests`).
+    /// Membership rules — so sections don't regrow into a grab-bag like the old 7-tab "Advanced":
+    /// - (pinned) Updates: header-less quick-access row at the very top
+    /// - Workspace: who does the work in this folder and how it's produced (Generate Team is
+    ///   app-scoped defaults but lives here by association with Teams — the question that leads
+    ///   to it is team-shaped)
+    /// - Models: points the app at a model server/runtime (enable + URL + model picker)
+    /// - Agent Tools: governs what agents may execute and how far tools reach (gates → caps → registry)
+    /// - Application: personal app-shell preferences (Dictation is input, not a model)
+    /// - Support: reached reactively — maintenance and diagnostics
+    nonisolated static let sidebarSections: [SettingsSection] = [
+        SettingsSection(id: "pinned", title: nil, tabs: [.updates]),
+        SettingsSection(id: "workspace", title: "Workspace", tabs: [.workFolder, .autovisor, .teams, .generateTeam]),
+        SettingsSection(id: "models", title: "Models", tabs: [.llm, .vision, .exploratorySearch]),
+        SettingsSection(id: "agentTools", title: "Agent Tools", tabs: [.bash, .computerUse, .toolBehavior, .tools]),
+        SettingsSection(id: "application", title: "Application", tabs: [.general, .theme, .dictation]),
+        SettingsSection(id: "support", title: "Support", tabs: [.debug, .help]),
+    ]
+
     @AppStorage(UserDefaultsKeys.selectedSettingsTab) private var storedTab: SettingsTab = .llm
 
     var body: some View {
@@ -85,24 +111,25 @@ struct SettingsView: View {
     private var settingsSidebar: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                settingsSection("Configuration", tabs: [.general, .theme, .llm, .workFolder, .autovisor])
-                settingsSection("Advanced", tabs: [.exploratorySearch, .vision, .dictation, .toolBehavior, .bash, .computerUse, .debug])
-                settingsSection("Team", tabs: [.teams, .generateTeam, .tools])
-                settingsSection("Support", tabs: [.updates, .help])
+                ForEach(Self.sidebarSections) { section in
+                    settingsSection(section)
+                }
             }
             .padding(.top, Spacing.standard)
         }
         .background(Colors.surfaceBackground)
     }
 
-    private func settingsSection(_ title: String, tabs: [SettingsTab]) -> some View {
+    private func settingsSection(_ section: SettingsSection) -> some View {
         VStack(alignment: .leading, spacing: Spacing.xxs) {
-            MonoLabel(text: title, rule: true)
-                .padding(.horizontal, Spacing.standard)
-                .padding(.top, Spacing.l)
-                .padding(.bottom, Spacing.xs)
+            if let title = section.title {
+                MonoLabel(text: title, rule: true)
+                    .padding(.horizontal, Spacing.standard)
+                    .padding(.top, Spacing.l)
+                    .padding(.bottom, Spacing.xs)
+            }
 
-            ForEach(tabs) { tab in
+            ForEach(section.tabs) { tab in
                 SettingsRowView(tab: tab, isSelected: storedTab == tab) {
                     storedTab = tab
                 }

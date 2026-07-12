@@ -292,4 +292,187 @@ final class ProjectSettingsMigrationTests: XCTestCase {
         XCTAssertFalse(json.contains("\"selectedScheme\""),
                        "absent optional must not be serialized")
     }
+    // MARK: - Agent-instruction override fields (additive, tolerant)
+
+    func testDecode_missingAgentInstructionKeys_defaultsEmpty() throws {
+        // settings.json written before the agent-instructions feature has none
+        // of the three override keys — decode must default all to [].
+        let json = #"""
+        {
+          "schemaVersion": 3,
+          "context": "ctx",
+          "contextPrompt": "prompt"
+        }
+        """#
+        let settings = try decoder.decode(ProjectSettings.self, from: json.data(using: .utf8)!)
+
+        XCTAssertEqual(settings.agentInstructionExtraPaths, [])
+        XCTAssertEqual(settings.agentInstructionExcludedPaths, [])
+        XCTAssertEqual(settings.agentInstructionInjectedPaths, [])
+    }
+
+    func testEncodeDecode_agentInstructionOverrides_roundTrip() throws {
+        let original = ProjectSettings(
+            context: "ctx",
+            agentInstructionExtraPaths: ["docs/style.md", "mockup.png"],
+            agentInstructionExcludedPaths: ["CLAUDE.md"],
+            agentInstructionInjectedPaths: ["sub/AGENTS.md"]
+        )
+        let data = try encoder.encode(original)
+        let roundTrip = try decoder.decode(ProjectSettings.self, from: data)
+
+        XCTAssertEqual(roundTrip.agentInstructionExtraPaths, ["docs/style.md", "mockup.png"],
+                       "order is user-attachment order — must survive the round trip")
+        XCTAssertEqual(roundTrip.agentInstructionExcludedPaths, ["CLAUDE.md"])
+        XCTAssertEqual(roundTrip.agentInstructionInjectedPaths, ["sub/AGENTS.md"])
+    }
+
+    func testDecode_legacyFile_gainsAgentInstructionDefaults() throws {
+        // Legacy schemaVersion-1 file: rename migration AND the new additive
+        // fields must both apply in one decode.
+        let json = #"""
+        {
+          "schemaVersion": 1,
+          "description": "Legacy description"
+        }
+        """#
+        let settings = try decoder.decode(ProjectSettings.self, from: json.data(using: .utf8)!)
+
+        XCTAssertEqual(settings.context, "Legacy description")
+        XCTAssertEqual(settings.agentInstructionExtraPaths, [])
+        XCTAssertEqual(settings.agentInstructionExcludedPaths, [])
+        XCTAssertEqual(settings.agentInstructionInjectedPaths, [])
+    }
+
+    // MARK: - Autovisor goal-attachment fields (additive, tolerant)
+
+    func testDecode_missingGoalAttachmentKeys_defaultsEmpty() throws {
+        // A settings.json written before the goal-composer attachments feature
+        // lacks both keys — decode must default them to [], never throw.
+        let json = #"""
+        {
+          "schemaVersion": 3,
+          "context": "ctx",
+          "autovisorGoal": "Keep docs current"
+        }
+        """#
+        let settings = try decoder.decode(ProjectSettings.self, from: json.data(using: .utf8)!)
+
+        XCTAssertEqual(settings.autovisorGoalAttachmentPaths, [])
+        XCTAssertEqual(settings.autovisorGoalClips, [])
+    }
+
+    func testEncodeDecode_goalAttachmentFields_roundTrip() throws {
+        let original = ProjectSettings(
+            context: "ctx",
+            autovisorGoal: "Keep docs current",
+            autovisorGoalAttachmentPaths: [".nanoteams/autovisor/attachments/spec.pdf", "src/notes.md"],
+            autovisorGoalClips: ["\u{200B}// Skill: refactor\nbody", "plain clip"]
+        )
+        let data = try encoder.encode(original)
+        let roundTrip = try decoder.decode(ProjectSettings.self, from: data)
+
+        XCTAssertEqual(roundTrip.autovisorGoalAttachmentPaths,
+                       [".nanoteams/autovisor/attachments/spec.pdf", "src/notes.md"],
+                       "path order (user attach order) must survive the round trip")
+        XCTAssertEqual(roundTrip.autovisorGoalClips,
+                       ["\u{200B}// Skill: refactor\nbody", "plain clip"])
+
+        let json = String(data: data, encoding: .utf8) ?? ""
+        XCTAssertTrue(json.contains("\"autovisorGoalAttachmentPaths\""))
+        XCTAssertTrue(json.contains("\"autovisorGoalClips\""))
+    }
+
+    func testDecode_legacyV1File_gainsGoalAttachmentDefaults() throws {
+        // A legacy schemaVersion-1 file predates the goal-attachment fields — the
+        // rename migration AND the new additive `[]` defaults must both apply.
+        let json = #"""
+        {
+          "schemaVersion": 1,
+          "description": "Legacy"
+        }
+        """#
+        let settings = try decoder.decode(ProjectSettings.self, from: json.data(using: .utf8)!)
+
+        XCTAssertEqual(settings.autovisorGoalAttachmentPaths, [])
+        XCTAssertEqual(settings.autovisorGoalClips, [])
+    }
+
+    // MARK: - Autovisor team-generation permission (additive, tolerant, default-ON)
+
+    func testDecode_missingTeamGenerationKey_defaultsTrue() throws {
+        // Every settings.json written before this field lacks the key — decode must
+        // default it to `true` (historical always-on behaviour), never throw.
+        let json = #"""
+        {
+          "schemaVersion": 3,
+          "context": "ctx",
+          "autovisorGoal": "Keep docs current"
+        }
+        """#
+        let settings = try decoder.decode(ProjectSettings.self, from: json.data(using: .utf8)!)
+
+        XCTAssertTrue(settings.autovisorAllowTeamGeneration,
+                      "absent key must default to allowed — preserves existing behaviour")
+    }
+
+    func testDecode_legacyV1File_gainsTeamGenerationDefaultTrue() throws {
+        let json = #"""
+        {
+          "schemaVersion": 1,
+          "description": "Legacy"
+        }
+        """#
+        let settings = try decoder.decode(ProjectSettings.self, from: json.data(using: .utf8)!)
+        XCTAssertTrue(settings.autovisorAllowTeamGeneration)
+    }
+
+    func testEncodeDecode_teamGenerationDisabled_roundTrip() throws {
+        let original = ProjectSettings(
+            context: "ctx",
+            autovisorAllowTeamGeneration: false
+        )
+        let data = try encoder.encode(original)
+        let roundTrip = try decoder.decode(ProjectSettings.self, from: data)
+
+        XCTAssertFalse(roundTrip.autovisorAllowTeamGeneration,
+                       "an explicit disable must survive the round trip")
+        let json = String(data: data, encoding: .utf8) ?? ""
+        XCTAssertTrue(json.contains("\"autovisorAllowTeamGeneration\""),
+                      "the flag must be serialized so the disable persists")
+    }
+
+    func testDecode_explicitFalseKey_isRespected() throws {
+        // A field present-and-false must NOT be overridden by the default-true fallback.
+        let json = #"""
+        {
+          "schemaVersion": 3,
+          "context": "ctx",
+          "autovisorAllowTeamGeneration": false
+        }
+        """#
+        let settings = try decoder.decode(ProjectSettings.self, from: json.data(using: .utf8)!)
+        XCTAssertFalse(settings.autovisorAllowTeamGeneration)
+    }
+
+    func testDecode_explicitNullValue_fallsBackToDefaultTrue() throws {
+        // A partially-written file with an explicit JSON `null` must NOT throw —
+        // decodeIfPresent returns nil for null, and the `?? true` default applies.
+        let json = #"""
+        {
+          "schemaVersion": 3,
+          "context": "ctx",
+          "autovisorAllowTeamGeneration": null
+        }
+        """#
+        let settings = try decoder.decode(ProjectSettings.self, from: json.data(using: .utf8)!)
+        XCTAssertTrue(settings.autovisorAllowTeamGeneration,
+                      "explicit null must decode to the default, not throw")
+    }
+
+    func testMemberwiseDefault_isAllowed() {
+        // The struct's own default (used by every ProjectSettings() construction,
+        // incl. fresh folders) must be allowed — preserves historical behaviour.
+        XCTAssertTrue(ProjectSettings().autovisorAllowTeamGeneration)
+    }
 }

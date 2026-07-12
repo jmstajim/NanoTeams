@@ -122,6 +122,16 @@ nonisolated struct NTMSPaths: Hashable {
             .appendingPathComponent("attachments", isDirectory: true)
     }
 
+    /// Folder-level Autovisor store — deliberately OUTSIDE `internal/` so the
+    /// manager's file tools (`read_file`, `read_lines`, …) can read the goal's
+    /// attachments. Not task-scoped: it survives manager delete/recreate, matching
+    /// the lifecycle of the goal string it belongs to.
+    var autovisorDir: URL { nanoteamsDir.appendingPathComponent("autovisor", isDirectory: true) }
+
+    var autovisorAttachmentsDir: URL {
+        autovisorDir.appendingPathComponent("attachments", isDirectory: true)
+    }
+
     // MARK: - LLM-Accessible Run Paths (nested under task)
 
     func runDir(taskID: Int, runID: Int, ancestors: [Int] = []) -> URL {

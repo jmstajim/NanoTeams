@@ -288,8 +288,10 @@ final class DefaultToolSchemasTests: XCTestCase {
         XCTAssertEqual(requiredFields(for: "delete_file"), ["path"])
     }
 
-    func testSearchProjectRequiresQuery() {
-        XCTAssertEqual(requiredFields(for: "search"), ["query"])
+    func testSearchProjectHasNoRequiredFields() {
+        // `query` is optional: an empty/omitted query paired with file_glob or
+        // paths is the "list matching files" trigger, so nothing is required.
+        XCTAssertTrue(requiredFields(for: "search").isEmpty)
     }
 
     func testListDirectoryHasNoRequiredFields() {
@@ -460,6 +462,7 @@ final class DefaultToolSchemasTests: XCTestCase {
         let props = tool(named: "list_files")?.parameters.properties
         XCTAssertEqual(props?["path"]?.type, "string")
         XCTAssertEqual(props?["depth"]?.type, "integer")
+        XCTAssertEqual(props?["name_glob"]?.type, "string")
     }
 
     func testReadFilePropertyTypes() {
@@ -532,8 +535,8 @@ final class DefaultToolSchemasTests: XCTestCase {
 
     // MARK: - Property Counts
 
-    func testListDirectoryHasTwoProperties() {
-        XCTAssertEqual(propertyNames(for: "list_files").count, 2)
+    func testListDirectoryHasThreeProperties() {
+        XCTAssertEqual(propertyNames(for: "list_files").count, 3)
     }
 
     func testReadFileHasOneProperty() {
@@ -603,7 +606,7 @@ final class DefaultToolSchemasTests: XCTestCase {
     func testListDirectoryPropertyNames() {
         XCTAssertEqual(
             propertyNames(for: "list_files"),
-            ["path", "depth"])
+            ["path", "depth", "name_glob"])
     }
 
     func testSearchProjectPropertyNames() {

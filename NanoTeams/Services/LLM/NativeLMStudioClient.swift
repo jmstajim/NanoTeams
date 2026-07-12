@@ -232,6 +232,45 @@ nonisolated struct NativeLMStudioClient: LLMClient {
         return info.capabilities?.vision == true
     }
 
+    /// Best-effort probe of the context-window size (tokens) of `config.modelName`,
+    /// used to size the one-shot work-folder-context prompt so it fits the loaded
+    /// model. Uses `/api/v0/models` (the per-instance route that carries
+    /// `loaded_context_length` / `max_context_length`; `/api/v1/models` does not).
+    ///
+    /// `nil` on any transport/decode/HTTP failure or when the model isn't listed
+    /// (nil = undeterminable, never a guess). Preference order: a `loaded` entry's
+    /// `loadedContextLength` (the window it was actually loaded with — a model can
+    /// be loaded below its max) → a `loaded` entry's `maxContextLength` → any
+    /// matching entry's `maxContextLength`. Matching is by `canonicalModelName`
+    /// so `:N` duplicate-instance suffixes on either side don't defeat it.
+    ///
+    /// Deliberately does NOT reuse `listLoadedInstances` — that filters to loaded
+    /// entries only and drops the context-length fields.
+    func modelContextLength(config: LLMConfig) async -> Int? {
+        guard let baseURL = URL(string: config.baseURLString) else { return nil }
+        let url = baseURL.appendingPathComponent("api/v0/models")
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 5
+        request.applyLMStudioBearer(baseURL: config.baseURLString, resolver: tokenResolver)
+
+        guard let (data, response) = try? await session.sessionData(for: request),
+              let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode),
+              let decoded = try? JSONCoderFactory.makeWireDecoder().decode(V0ModelListResponse.self, from: data)
+        else { return nil }
+
+        let target = Self.canonicalModelName(config.modelName)
+        let matches = decoded.data.filter { Self.canonicalModelName($0.id) == target }
+        guard !matches.isEmpty else { return nil }
+
+        if let loaded = matches.first(where: { $0.state == "loaded" }) {
+            if let ctx = loaded.loadedContextLength { return ctx }
+            if let ctx = loaded.maxContextLength { return ctx }
+        }
+        return matches.compactMap(\.maxContextLength).first
+    }
+
     func fetchEmbeddingModels(config: LLMConfig) async throws -> [String] {
         // LM Studio reports embedding models with `type == "embeddings"`
         // (with the trailing `s`). Older builds emit `"embedding"` (singular)

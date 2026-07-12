@@ -690,6 +690,13 @@ final class StoreConfiguration {
 #endif
     }
 
+    /// Vision is ON out of the box: with an empty `visionModelName` the
+    /// request-time fallback in `visionLLMConfig` inherits the global model,
+    /// so enabling by default makes `analyze_image` work as soon as the
+    /// global LLM is configured. An explicitly stored toggle value always
+    /// wins over this default.
+    private static let defaultVisionEnabled = true
+
     init(storage: any ConfigurationStorage = UserDefaults.standard) {
         self.storage = storage
         Self.migrateExpandedSearchKeys(storage)
@@ -709,15 +716,15 @@ final class StoreConfiguration {
         self.maxLLMRetries = (storage.object(forKey: Keys.maxLLMRetries) as? Int) ?? LLMConstants.defaultMaxLLMRetries
         self.llmRequestTimeoutSeconds = (storage.object(forKey: Keys.llmRequestTimeoutSeconds) as? Int) ?? LLMConstants.defaultLLMRequestTimeoutSeconds
         self.timelineClearedUpToDate = storage.object(forKey: Keys.timelineClearedUpToDate) as? Date
-        let storedVisionModel = storage.string(forKey: Keys.visionModelName) ?? ""
-        self.visionModelName = storedVisionModel
+        self.visionModelName = storage.string(forKey: Keys.visionModelName) ?? ""
         self.visionBaseURLString = storage.string(forKey: Keys.visionBaseURL) ?? ""
         self.visionMaxTokens = (storage.object(forKey: Keys.visionMaxTokens) as? Int) ?? 0
-        // Back-compat: existing installs with a configured vision model but no
-        // explicit `visionEnabled` flag yet should default to ON so users don't
-        // lose their working setup on upgrade.
+        // An explicitly stored toggle value (user touched the setting) always
+        // wins; while the key is absent — fresh installs and upgrades that
+        // never opened Vision settings — Vision defaults to ON. This subsumes
+        // the old back-compat rule (ON only when a vision model was stored).
         self.visionEnabled = (storage.object(forKey: Keys.visionEnabled) as? Bool)
-            ?? !storedVisionModel.isEmpty
+            ?? Self.defaultVisionEnabled
         let rawIDs = (storage.object(forKey: Keys.dismissedNotificationIDs) as? [String]) ?? []
         self.dismissedNotificationIDs = Set(rawIDs)
         let rawTipIDs = (storage.object(forKey: Keys.dismissedFeatureTipIDs) as? [String]) ?? []
@@ -954,7 +961,7 @@ final class StoreConfiguration {
         loggingEnabled = Self.defaultLoggingEnabled
         maxLLMRetries = LLMConstants.defaultMaxLLMRetries
         llmRequestTimeoutSeconds = LLMConstants.defaultLLMRequestTimeoutSeconds
-        visionEnabled = false
+        visionEnabled = Self.defaultVisionEnabled
         visionModelName = ""
         visionBaseURLString = ""
         visionMaxTokens = 0

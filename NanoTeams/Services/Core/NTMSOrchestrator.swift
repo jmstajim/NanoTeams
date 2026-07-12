@@ -162,6 +162,34 @@ final class NTMSOrchestrator {
     /// triggered from either surface lights up the other.
     var isGeneratingWorkFolderContext: Bool = false
 
+    /// Agent instruction files for the open work folder: auto-discovered
+    /// (CLAUDE.md, AGENTS.md, …) composed with the user's persisted overrides
+    /// (`settings.agentInstructionExtraPaths` / `…ExcludedPaths`). In-memory
+    /// only (derived from disk, can be large — never persisted). Refreshed on
+    /// work-folder open, at each top-level `startRun`, on the Work Folder
+    /// settings tab appear, and after add/remove/restore edits. `nil` in
+    /// default storage / no folder. Injected content + listed paths ride the
+    /// `{workFolderContext}` placeholder into every role's system prompt.
+    /// Satisfies `LLMStateDelegate.agentInstructions`.
+    var agentInstructions: AgentInstructionsSnapshot?
+
+    /// CLAUDE.md #38 generation counter for `refreshAgentInstructions` — a
+    /// completed scan only lands when no newer refresh started meanwhile, so
+    /// concurrent same-folder refreshes can't clobber fresh results with stale
+    /// ones (folder switch/close bump it too, dropping in-flight old-folder scans).
+    @ObservationIgnored var agentInstructionsScanGeneration: Int = 0
+    /// Inputs + completion time of the last landed scan — short-TTL memo so
+    /// back-to-back run starts (recurrence tick firing several tasks, Autovisor
+    /// passes) don't re-walk an unchanged folder within seconds.
+    @ObservationIgnored var agentInstructionsLastScanKey: AgentInstructionsScanKey?
+    @ObservationIgnored var agentInstructionsLastScanAt: Date?
+
+    /// Tasks whose `startRun` is currently between its guards and `engine.start()`
+    /// — the engine-state double-start guard can't see a run that is still being
+    /// created across `startRun`'s suspension points (instructions rescan, task
+    /// load, run creation), so a concurrent second call would double-create runs.
+    @ObservationIgnored var startingRunTaskIDs: Set<Int> = []
+
     @ObservationIgnored var workFolderContextGenerationTask: Task<Void, Never>?
 
     /// Generation counter for `startGeneratingWorkFolderContext`. The spawned

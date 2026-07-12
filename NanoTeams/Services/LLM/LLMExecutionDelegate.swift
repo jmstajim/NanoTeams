@@ -61,6 +61,11 @@ protocol LLMStateDelegate: TaskMutationDelegate {
     func clearAllComputerUseApprovalRequests()
     /// Returns the project snapshot (for project-level reads like settings, targets).
     var snapshot: WorkFolderContext? { get }
+    /// Auto-discovered agent instruction files (CLAUDE.md, AGENTS.md, …) for the
+    /// open work folder — the main file's content + the other paths ride the
+    /// `{workFolderContext}` placeholder into the step system prompt. `nil` in
+    /// default storage / no folder.
+    var agentInstructions: AgentInstructionsSnapshot? { get }
     /// Whether logging (network_log.json, conversation_log.md, tool_calls.jsonl) is enabled.
     var loggingEnabled: Bool { get }
     /// Loads a task by ID (active or background).

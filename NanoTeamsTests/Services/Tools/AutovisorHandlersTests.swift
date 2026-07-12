@@ -291,4 +291,75 @@ final class AutovisorHandlersTests: XCTestCase {
         let r = try invoke(makeRuntime(), ToolNames.setWorkFolderContext, [:])
         XCTAssertTrue(r.isError)
     }
+
+    // MARK: - create_managed_task team-generation gate (buildSchema)
+
+    /// A non-hidden probe team so the catalog has a real entry regardless of the flag.
+    private func probeTeam() -> Team {
+        Team(id: "catalog-probe", name: "Catalog Probe", roles: [], artifacts: [],
+             settings: TeamSettings(), graphLayout: TeamGraphLayout())
+    }
+
+    func testBuildSchema_allowGeneratedTrue_advertisesGeneratedSentinel() async throws {
+        let schema = CreateManagedTaskTool.buildSchema(allTeams: [probeTeam()], allowGenerated: true)
+        XCTAssertTrue(schema.description.contains("`\(DelegationConstants.generatedTeamSentinel)`"),
+                      "the catalog must carry the `generated` bullet when allowed")
+        let teamIDDesc = schema.parameters.properties?["team_id"]?.description ?? ""
+        XCTAssertTrue(teamIDDesc.contains("generated"),
+                      "the team_id param description must mention \"generated\" when allowed")
+    }
+
+    func testBuildSchema_allowGeneratedFalse_hidesGeneratedSentinel() async throws {
+        let schema = CreateManagedTaskTool.buildSchema(allTeams: [probeTeam()], allowGenerated: false)
+        XCTAssertFalse(schema.description.contains("generated"),
+                       "the catalog must NOT mention generation when disallowed")
+        XCTAssertTrue(schema.description.contains("catalog-probe"),
+                      "an existing team must still be listed when generation is off")
+        let teamIDDesc = schema.parameters.properties?["team_id"]?.description ?? ""
+        XCTAssertFalse(teamIDDesc.contains("generated"),
+                       "the team_id param description must not mention \"generated\" when disallowed")
+    }
+
+    func testBuildSchema_defaultAllowsGenerated() async throws {
+        // The default arg preserves the historical always-on behaviour for callers
+        // (e.g. offline preview / renderer) that don't pass the flag.
+        let schema = CreateManagedTaskTool.buildSchema(allTeams: [])
+        XCTAssertTrue(schema.description.contains("generated"),
+                      "buildSchema must default to advertising generation")
+    }
+
+    /// Hidden teams (Autovisor + the `generated` placeholder) must never leak into
+    /// the catalog. With ONLY a hidden team and generation off, the catalog has no
+    /// bullet entries at all — just the header — and the manager falls back to the
+    /// active team (documented in the team_id description).
+    func testBuildSchema_hiddenOnlyTeams_disabled_emitsNoBullets() async throws {
+        let hidden = TeamTemplateFactory.autovisor()   // isHiddenFromPickers == true
+        let schema = CreateManagedTaskTool.buildSchema(allTeams: [hidden], allowGenerated: false)
+        XCTAssertTrue(schema.description.contains("Available teams:"),
+                      "the catalog header is always present")
+        XCTAssertFalse(schema.description.contains("- `"),
+                       "a hidden-only catalog with generation off must list no teams")
+        XCTAssertFalse(schema.description.contains("generated"))
+    }
+
+    /// Enabled + only a hidden team → the sole bullet is `generated` (the hidden
+    /// team is still filtered out).
+    func testBuildSchema_hiddenOnlyTeams_enabled_showsOnlyGenerated() async throws {
+        let hidden = TeamTemplateFactory.autovisor()
+        let schema = CreateManagedTaskTool.buildSchema(allTeams: [hidden], allowGenerated: true)
+        XCTAssertTrue(schema.description.contains("`\(DelegationConstants.generatedTeamSentinel)`"))
+        XCTAssertFalse(schema.description.contains(hidden.id),
+                       "a hidden team must not appear even when generation is on")
+    }
+
+    /// Empty catalog + generation off: still a valid schema — required params intact,
+    /// team_id present without a generation mention.
+    func testBuildSchema_emptyTeams_disabled_isValidSchema() async throws {
+        let schema = CreateManagedTaskTool.buildSchema(allTeams: [], allowGenerated: false)
+        XCTAssertEqual(schema.parameters.required ?? [], ["title", "brief"],
+                       "required params must be preserved regardless of the flag")
+        XCTAssertNotNil(schema.parameters.properties?["team_id"],
+                        "team_id stays available (for existing/active-team selection)")
+        XCTAssertFalse((schema.parameters.properties?["team_id"]?.description ?? "").contains("generated"))
+    }
 }

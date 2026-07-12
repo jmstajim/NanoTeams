@@ -218,6 +218,118 @@ final class TeamConfigParserTests: XCTestCase {
         XCTAssertNil(TeamConfigParser.repairMissingArrayClose(#"{"k":[{"a":"b"}]}"#))
     }
 
+    // MARK: - repairStructuralCloserDrop (qwen3.5-35b-a3b single-dropped-closer)
+
+    func testRepairStructuralCloserDrop_typeA_droppedObjectClose_isRepaired() {
+        // The last array element's `}` was dropped (`]]` where `]}]` expected),
+        // with a compensating extra `}` at the very end (count balances, position
+        // is wrong). Verbatim shape from qwen3.5-35b-a3b `chat-only`.
+        let buggy = #"{"roles":[{"t":["x"]],"s":[]}}"#
+        XCTAssertEqual(
+            TeamConfigParser.repairStructuralCloserDrop(buggy),
+            #"{"roles":[{"t":["x"]}],"s":[]}"#
+        )
+    }
+
+    func testRepairStructuralCloserDrop_typeB_droppedArrayClose_beforeStrayKey_isRepaired() {
+        // The `roles` array's `]` was dropped: a sibling key sits inside the
+        // still-open array (`},"s":` where `}],"s":` expected), plus a
+        // compensating trailing `}`. Verbatim shape from `build-claude-5`.
+        let buggy = #"{"roles":[{"a":1},"s":2}}"#
+        XCTAssertEqual(
+            TeamConfigParser.repairStructuralCloserDrop(buggy),
+            #"{"roles":[{"a":1}],"s":2}"#
+        )
+    }
+
+    func testRepairStructuralCloserDrop_subsumesMissingArrayClose() {
+        // The R4 `"}]` case (`}` while an array is open) is ALSO covered by the
+        // general repair → insert `]`. (repairMissingArrayClose still runs first
+        // in the chain; this documents the generalization.)
+        let buggy = #"{"items":[{"tags":["x"}]}"#
+        XCTAssertEqual(
+            TeamConfigParser.repairStructuralCloserDrop(buggy),
+            #"{"items":[{"tags":["x"]}]}"#
+        )
+    }
+
+    func testRepairStructuralCloserDrop_validObject_returnsNil() {
+        XCTAssertNil(TeamConfigParser.repairStructuralCloserDrop(#"{"a":1,"b":[1,2]}"#))
+    }
+
+    func testRepairStructuralCloserDrop_validNestedArrays_returnsNil() {
+        // `]]` closing genuinely-nested arrays must NOT read as a dropped `}`.
+        XCTAssertNil(TeamConfigParser.repairStructuralCloserDrop(#"{"k":[["a"],["b"]]}"#))
+    }
+
+    func testRepairStructuralCloserDrop_validArrayOfObjects_returnsNil() {
+        XCTAssertNil(TeamConfigParser.repairStructuralCloserDrop(#"{"k":[{"a":"b"}]}"#))
+    }
+
+    func testRepairStructuralCloserDrop_legitObjectThenSiblingKey_returnsNil() {
+        // `]},"b"` is valid when a nested object holding an array closes before a
+        // sibling key — the repair must not fire on it.
+        XCTAssertNil(TeamConfigParser.repairStructuralCloserDrop(#"{"outer":{"a":[1]},"b":2}"#))
+    }
+
+    func testRepairStructuralCloserDrop_structuralCharsInsideStrings_returnsNil() {
+        // Brackets/braces/colons/commas inside string values must not perturb the stack.
+        XCTAssertNil(TeamConfigParser.repairStructuralCloserDrop(#"{"p":"a[b]{c}:d,e","q":[1]}"#))
+    }
+
+    // MARK: - repairStructuralCloserDrop — degenerate & boundary inputs
+
+    func testRepairStructuralCloserDrop_emptyString_returnsNil() {
+        XCTAssertNil(TeamConfigParser.repairStructuralCloserDrop(""))
+    }
+
+    func testRepairStructuralCloserDrop_nonJSONText_returnsNil() {
+        XCTAssertNil(TeamConfigParser.repairStructuralCloserDrop("not json at all"))
+    }
+
+    func testRepairStructuralCloserDrop_truncatedOpen_returnsNil() {
+        // Pure EOF truncation (unclosed, no mid-string mismatch) is
+        // scanBalancedObject's salvage job — this repair must decline, not guess.
+        XCTAssertNil(TeamConfigParser.repairStructuralCloserDrop(#"{"a":[1"#))
+    }
+
+    func testRepairStructuralCloserDrop_loneCloser_returnsNil() {
+        XCTAssertNil(TeamConfigParser.repairStructuralCloserDrop("}"))
+        XCTAssertNil(TeamConfigParser.repairStructuralCloserDrop("]"))
+    }
+
+    func testRepairStructuralCloserDrop_typeA_noCompensatingBrace_isRepaired() {
+        // Dropped role `}` with NO extra trailing brace (brace count already off
+        // by one) — scanBalancedObject closes cleanly after the single insertion.
+        let buggy = #"{"roles":[{"t":1]}"#
+        XCTAssertEqual(
+            TeamConfigParser.repairStructuralCloserDrop(buggy),
+            #"{"roles":[{"t":1}]}"#
+        )
+    }
+
+    func testRepairStructuralCloserDrop_twoDrops_failsClosed_returnsNil() {
+        // Two independent dropped closers can't be fixed by a single insertion, so
+        // the candidate still fails to parse → nil (never a half-repaired result).
+        XCTAssertNil(TeamConfigParser.repairStructuralCloserDrop(#"{"roles":[{"a":[1]],"b":[{"c":2]]}}"#))
+    }
+
+    func testRepairStructuralCloserDrop_escapedQuoteWithStructuralChars_returnsNil() {
+        // Escaped quote inside a string value that itself contains `]}:,` must not
+        // desync the stack — guards the isEscaped branch.
+        XCTAssertNil(TeamConfigParser.repairStructuralCloserDrop(#"{"a":"x\"]}:,y","b":[1]}"#))
+    }
+
+    func testRepairStructuralCloserDrop_deeplyNestedValid_returnsNil() {
+        XCTAssertNil(TeamConfigParser.repairStructuralCloserDrop(#"{"a":[[[1]]],"b":{"c":[{"d":2}]}}"#))
+    }
+
+    func testRepairStructuralCloserDrop_colonInObjectInsideArray_returnsNil() {
+        // The `:` in `{"k":"v"}` sits while top-of-stack is the object, NOT the
+        // array — must not trip the Type-B `:`-while-array rule.
+        XCTAssertNil(TeamConfigParser.repairStructuralCloserDrop(#"{"list":[{"k":"v"},{"k2":"v2"}]}"#))
+    }
+
     // MARK: - repairUnescapedInteriorQuotes
 
     func testRepairUnescapedInteriorQuotes_escapesInteriorQuotes() {

@@ -129,6 +129,74 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase {
         XCTAssertEqual(taskCount, before, "no task should be created for an unresolvable team_id")
     }
 
+    // MARK: - Team-generation permission (runtime backstop)
+
+    /// With `autovisorAllowTeamGeneration` off, a `team_id: "generated"` must be
+    /// rejected loudly BEFORE any task/team is materialized — the runtime backstop
+    /// for a model that emits the sentinel despite the schema no longer offering it.
+    func testCreateManagedTask_generationDisabled_rejectsSentinelWithoutCreating() async {
+        _ = await pinManager()
+        await sut.setAutovisorAllowTeamGeneration(false)
+        let tasksBefore = taskCount
+        let teamsBefore = sut.snapshot?.workFolder.teams.count ?? 0
+
+        let r = await sut.performAutovisorAction(
+            .createManagedTask(title: "T", brief: "B",
+                               teamID: DelegationConstants.generatedTeamSentinel)
+        )
+
+        XCTAssertFalse(r.ok, "generation is disabled → the sentinel must be rejected")
+        XCTAssertTrue(r.message.lowercased().contains("disabled"),
+                      "the failure must explain generation is disabled")
+        XCTAssertEqual(taskCount, tasksBefore, "no task may be created")
+        XCTAssertEqual(sut.snapshot?.workFolder.teams.count ?? 0, teamsBefore,
+                       "the placeholder generated team must NOT be lazily created")
+    }
+
+    /// The setter persists the per-folder flag into `settings`.
+    func testSetAutovisorAllowTeamGeneration_persists() async {
+        _ = await pinManager()
+        XCTAssertTrue(sut.snapshot?.workFolder.settings.autovisorAllowTeamGeneration ?? false,
+                      "precondition: defaults to allowed")
+        await sut.setAutovisorAllowTeamGeneration(false)
+        XCTAssertFalse(sut.snapshot?.workFolder.settings.autovisorAllowTeamGeneration ?? true,
+                       "the setter must persist the disable")
+        await sut.setAutovisorAllowTeamGeneration(true)
+        XCTAssertTrue(sut.snapshot?.workFolder.settings.autovisorAllowTeamGeneration ?? false,
+                      "re-enabling must persist too")
+    }
+
+    /// A model emitting the sentinel with surrounding whitespace (`"  generated  "`)
+    /// is trimmed before classification, so the disable gate must still catch it.
+    func testCreateManagedTask_generationDisabled_rejectsPaddedSentinel() async {
+        _ = await pinManager()
+        await sut.setAutovisorAllowTeamGeneration(false)
+        let before = taskCount
+        let padded = "  \(DelegationConstants.generatedTeamSentinel)  "
+        let r = await sut.performAutovisorAction(
+            .createManagedTask(title: "T", brief: "B", teamID: padded)
+        )
+        XCTAssertFalse(r.ok, "a padded sentinel must still be rejected when disabled")
+        XCTAssertTrue(r.message.lowercased().contains("disabled"))
+        XCTAssertEqual(taskCount, before)
+    }
+
+    /// The disable gate is specific to the sentinel: an unknown team_id while
+    /// generation is off must still fail as UNKNOWN (naming the raw id), not be
+    /// mislabelled as "generation disabled". Guards against the gate over-firing.
+    func testCreateManagedTask_generationDisabled_unknownTeam_reportsUnknownNotDisabled() async {
+        _ = await pinManager()
+        await sut.setAutovisorAllowTeamGeneration(false)
+        let r = await sut.performAutovisorAction(
+            .createManagedTask(title: "T", brief: "B", teamID: "no-such-team")
+        )
+        XCTAssertFalse(r.ok)
+        XCTAssertTrue(r.message.contains("no-such-team"),
+                      "an unknown team must be reported as unknown, naming the id")
+        XCTAssertFalse(r.message.lowercased().contains("disabled"),
+                       "the disable gate must not swallow the unknown-team case")
+    }
+
     // MARK: - F7: per-review creation cap
 
     func testCreateManagedTask_perReviewCap_blocksFurtherCreation() async {

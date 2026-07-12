@@ -98,11 +98,54 @@ final class FirstPromptRendererTests: XCTestCase {
         XCTAssertTrue(missing.isEmpty, "git tools must be present in wire when workfolder has .git: missing \(missing)")
     }
 
+    // MARK: - Agent instruction file discovery parity
+
+    /// The renderer must discover agent instruction files (CLAUDE.md, …) off the
+    /// on-disk workfolder exactly as `NTMSOrchestrator.refreshAgentInstructions`
+    /// does at run start, so the MAIN file's content is injected into the wire
+    /// system_prompt and the OTHER files are listed as paths.
+    func testRender_workfolderWithAgentInstructions_injectsContentAndPaths() throws {
+        let (tmpDir, outputPath) = try makeIsolatedWorkfolder()
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        try "# Project rules\nBe terse and correct."
+            .write(to: tmpDir.appendingPathComponent("CLAUDE.md"), atomically: true, encoding: .utf8)
+        let docs = tmpDir.appendingPathComponent("docs", isDirectory: true)
+        try FileManager.default.createDirectory(at: docs, withIntermediateDirectories: true)
+        try "nested agents".write(to: docs.appendingPathComponent("AGENTS.md"),
+                                  atomically: true, encoding: .utf8)
+
+        let config = makeCodingAgentConfig(workfolder: tmpDir, outputPath: outputPath)
+        _ = try FirstPromptRenderer.run(config: config)
+
+        let systemPrompt = try readWireSystemPrompt(at: outputPath)
+        XCTAssertTrue(systemPrompt.contains("### Agent instructions (CLAUDE.md)"),
+                      "main file section missing from wire system_prompt")
+        XCTAssertTrue(systemPrompt.contains("Be terse and correct."),
+                      "main file CONTENT must be injected in full")
+        XCTAssertTrue(systemPrompt.contains("### Other agent instruction files"),
+                      "other files section missing")
+        XCTAssertTrue(systemPrompt.contains("- docs/AGENTS.md"),
+                      "nested instruction file must be listed as a path")
+    }
+
     // MARK: - Helpers
 
     private static let gitTools: Set<String> = [
         "git_status", "git_diff", "git_log", "git_branch_list",
     ]
+
+    private func readWireSystemPrompt(at path: String) throws -> String {
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let parsed = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard
+            let wire = parsed?["wire"] as? [String: Any],
+            let systemPrompt = wire["system_prompt"] as? String
+        else {
+            throw RenderTestError.missingToolList
+        }
+        return systemPrompt
+    }
 
     /// Default workfolder has no `.git` — the positive test adds it explicitly.
     private func makeIsolatedWorkfolder() throws -> (workfolder: URL, outputPath: String) {

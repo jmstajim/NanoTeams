@@ -47,7 +47,8 @@ extension LLMExecutionService {
             },
             activeTeam: resolvedTeam,
             roleDefinition: resolvedTeam?.findRole(byIdentifier: step.effectiveRoleID),
-            globalContext: stepGlobalContext
+            globalContext: stepGlobalContext,
+            agentInstructions: delegate.agentInstructions
         )
 
         return PromptBuilder.buildChatMessages(context: context, tools: tools)

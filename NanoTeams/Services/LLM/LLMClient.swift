@@ -94,6 +94,13 @@ nonisolated protocol LLMClient: Sendable {
     /// images" path (vision-model fallback), never assume vision. Auto-detected
     /// replacement for the removed "Main model supports vision" toggle.
     func modelSupportsVision(config: LLMConfig) async -> Bool?
+
+    /// The context-window size (in tokens) of `config.modelName`, per the
+    /// provider's model metadata. `nil` = undeterminable (no metadata /
+    /// transport failure / model not listed) — callers must degrade to a
+    /// conservative fallback, never assume a large window. Used to size the
+    /// one-shot work-folder-context prompt so it fits the loaded model.
+    func modelContextLength(config: LLMConfig) async -> Int?
 }
 
 nonisolated extension LLMClient {
@@ -102,6 +109,11 @@ nonisolated extension LLMClient {
     /// override). `NativeLMStudioClient` implements the real probe;
     /// `LLMClientRouter` forwards.
     func modelSupportsVision(config: LLMConfig) async -> Bool? { nil }
+
+    /// Default: undeterminable — test doubles inherit this and callers fall
+    /// back to their conservative context assumption. `NativeLMStudioClient`
+    /// implements the real probe; `LLMClientRouter` forwards.
+    func modelContextLength(config: LLMConfig) async -> Int? { nil }
 }
 
 /// Server-side record of a loaded model instance. Returned by

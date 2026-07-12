@@ -32,6 +32,12 @@ struct EditableMessageTextView: NSViewRepresentable {
     /// newline at the caret natively.
     let onReturnKey: (_ hasShift: Bool, _ hasCommand: Bool) -> Bool
 
+    /// Locks manual input while the "improve prompt" stream writes into the
+    /// binding (defaulted + declared last so existing call sites — which pass
+    /// `onReturnKey` as the final argument — are untouched). Enforced at the
+    /// `EditableNSTextView.shouldChangeText` funnel — see its doc.
+    var isInputLocked: Bool = false
+
     // Monospaced system font (SF Mono) — pinned at the AppKit boundary so the
     // composer's typed text stays on the same mono grid as the rest of the DS
     // (DS "Mono everywhere" rule). SwiftUI's `.fontDesign(.monospaced)` does
@@ -62,6 +68,14 @@ struct EditableMessageTextView: NSViewRepresentable {
             onReturnKey: onReturnKey
         )
         textView.placeholderText = placeholder
+        // Clear the undo stack on unlock: the improve stream wrote via
+        // `.string =`, which doesn't register undo actions, so a Cmd+Z after
+        // a stream would surface incoherent partial states. The Revert chip
+        // is the sanctioned undo for an improve.
+        if textView.isInputLocked && !isInputLocked {
+            textView.undoManager?.removeAllActions()
+        }
+        textView.isInputLocked = isInputLocked
         context.coordinator.applyText(text, to: textView)
     }
 
@@ -184,6 +198,7 @@ struct EditableMessageTextView: NSViewRepresentable {
         let textView = Self.buildTextView()
         textView.string = text
         textView.placeholderText = placeholder
+        textView.isInputLocked = isInputLocked
         textView.delegate = coordinator
 
         coordinator.configure(

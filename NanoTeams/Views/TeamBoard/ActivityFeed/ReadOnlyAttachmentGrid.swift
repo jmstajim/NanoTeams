@@ -20,9 +20,11 @@ struct ReadOnlyAttachmentGrid: View {
     }
 
     var body: some View {
+        // Filter empties but keep the RAW clip strings — trimming would strip the
+        // zero-width-space sentinel a `SkillClip` / `SourceContext` clip carries,
+        // so the cell must parse the untrimmed text.
         let nonEmptyClips = clippedTexts
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
         if !resolvedFiles.isEmpty || !nonEmptyClips.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
@@ -108,34 +110,15 @@ private struct ClipCell: View {
     @State private var isShowingPopover = false
 
     var body: some View {
-        let parsed = SourceContext.parse(text)
-        let displayText = parsed?.body ?? text
-        let label = parsed?.source ?? String(text.prefix(20))
+        let kind = ClipCellPresentation.resolve(text)
 
         VStack(spacing: Spacing.xxs) {
-            Text(displayText)
-                .font(.system(size: 6, weight: .ultraLight))
-                .foregroundStyle(Colors.textSecondary)
-                .lineLimit(5)
-                .lineSpacing(0)
-                .multilineTextAlignment(.leading)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .padding(Spacing.xs)
-                .frame(width: 48, height: 48)
-                .background(Colors.surfacePrimary)
-                .overlay {
-                    RoundedRectangle.squircle(CornerRadius.micro)
-                        .strokeBorder(
-                            parsed != nil ? Colors.accentBorder : Colors.borderSubtle,
-                            style: StrokeStyle(lineWidth: 1, dash: [4, 3])
-                        )
-                }
-                .clipShape(RoundedRectangle.squircle(CornerRadius.micro))
+            tile(kind: kind)
                 .onTapGesture { isShowingPopover = true }
 
-            Text(label)
+            Text(label(kind: kind))
                 .font(Typography.term2xs)
-                .foregroundStyle(parsed != nil ? .primary : .secondary)
+                .foregroundStyle(isPlain(kind) ? .secondary : .primary)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(width: 64)
@@ -144,6 +127,58 @@ private struct ClipCell: View {
         .popover(isPresented: $isShowingPopover) {
             ClipPopoverContent(text: text)
         }
+    }
+
+    @ViewBuilder
+    private func tile(kind: ClipCellPresentation.Kind) -> some View {
+        switch kind {
+        case .skill:
+            Text("/")
+                .font(Typography.termLg)
+                .foregroundStyle(Colors.accent)
+                .frame(width: 48, height: 48)
+                .background(Colors.surfacePrimary)
+                .overlay {
+                    RoundedRectangle.squircle(CornerRadius.micro)
+                        .strokeBorder(Colors.accentBorder, lineWidth: 1)
+                }
+                .clipShape(RoundedRectangle.squircle(CornerRadius.micro))
+        case .sourced(_, let body):
+            bodyTile(text: body, border: Colors.accentBorder)
+        case .plain(let body):
+            bodyTile(text: body, border: Colors.borderSubtle)
+        }
+    }
+
+    private func bodyTile(text: String, border: Color) -> some View {
+        Text(text)
+            .font(.system(size: 6, weight: .ultraLight))
+            .foregroundStyle(Colors.textSecondary)
+            .lineLimit(5)
+            .lineSpacing(0)
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(Spacing.xs)
+            .frame(width: 48, height: 48)
+            .background(Colors.surfacePrimary)
+            .overlay {
+                RoundedRectangle.squircle(CornerRadius.micro)
+                    .strokeBorder(border, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+            }
+            .clipShape(RoundedRectangle.squircle(CornerRadius.micro))
+    }
+
+    private func label(kind: ClipCellPresentation.Kind) -> String {
+        switch kind {
+        case .skill(let skill): return "/\(skill.name)"
+        case .sourced(let source, _): return source
+        case .plain(let body): return String(body.prefix(20))
+        }
+    }
+
+    private func isPlain(_ kind: ClipCellPresentation.Kind) -> Bool {
+        if case .plain = kind { return true }
+        return false
     }
 }
 

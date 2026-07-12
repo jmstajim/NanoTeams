@@ -42,7 +42,8 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
         isVisionConfigured: Bool = false,
         isComputerUseEnabled: Bool = false,
         globalContext: String = "One tool call per response.",
-        isCoordinator: Bool = false
+        isCoordinator: Bool = false,
+        agentInstructions: AgentInstructionsSnapshot? = nil
     ) -> PromptBuilder.WirePreviewInputs {
         // Translate the (URL?, Bool) tuple test helpers use into the typed
         // `WorkFolderState` enum the production API now requires. Tests with
@@ -63,7 +64,8 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
             isVisionConfigured: isVisionConfigured,
             isComputerUseEnabled: isComputerUseEnabled,
             globalContext: globalContext,
-            isCoordinator: isCoordinator
+            isCoordinator: isCoordinator,
+            agentInstructions: agentInstructions
         )
     }
 
@@ -106,7 +108,8 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
             artifactReader: { _ in nil },
             activeTeam: team,
             roleDefinition: roleDefinition,
-            globalContext: inputs.globalContext
+            globalContext: inputs.globalContext,
+            agentInstructions: inputs.agentInstructions
         )
         let messages = PromptBuilder.buildChatMessages(context: context, tools: tools)
         let llmConfig = LLMConfig(
@@ -135,6 +138,74 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
         let wire = buildProductionWireSystemPrompt(team: codingAgent, roleDefinition: role, inputs: inputs)
 
         XCTAssertEqual(preview, wire, "Preview must equal wire systemPrompt byte-for-byte")
+    }
+
+    /// Auto-discovered agent instructions (main file content + other paths)
+    /// must reach the preview exactly as they reach the wire — both ride the
+    /// `{workFolderContext}` placeholder through `buildWorkFolderContextMessage`.
+    func testStepExecutionPreview_byteIdenticalToWire_withAgentInstructions() throws {
+        let wf = WorkFolderProjection(
+            state: WorkFolderState(name: "MyApp"),
+            settings: ProjectSettings(context: "Existing context."),
+            teams: []
+        )
+        let snap = AgentInstructionsSnapshot(items: [
+            .init(relativePath: "CLAUDE.md", source: .discovered,
+                  isExcluded: false, injectedContent: "# Project rules\nBe terse."),
+            .init(relativePath: "docs/AGENTS.md", source: .discovered,
+                  isExcluded: false, injectedContent: nil),
+            .init(relativePath: "sub/GEMINI.md", source: .discovered,
+                  isExcluded: false, injectedContent: nil),
+        ])
+        let role = codingAgent.nonSupervisorRoles.first!
+        let inputs = makeInputs(role: role, team: codingAgent, workFolder: wf, agentInstructions: snap)
+
+        let preview = try PromptBuilder.buildWirePromptPreview(kind: .stepExecution, inputs: inputs)
+        let wire = buildProductionWireSystemPrompt(team: codingAgent, roleDefinition: role, inputs: inputs)
+
+        XCTAssertEqual(preview, wire, "agent-instructions content must be byte-identical preview↔wire")
+        XCTAssertTrue(preview.contains("### Agent instructions (CLAUDE.md)"))
+        XCTAssertTrue(preview.contains("Be terse."))
+        XCTAssertTrue(preview.contains("### Other agent instruction files"))
+        XCTAssertTrue(preview.contains("- docs/AGENTS.md"))
+    }
+
+    // MARK: - Autovisor team-generation gate (preview ↔ wire parity)
+
+    /// The Autovisor's `autovisorAllowTeamGeneration` per-folder flag must reach the
+    /// preview via the projection so the Manager role's `create_managed_task` block
+    /// stays byte-identical to the wire: OFF hides the `generated` sentinel, ON shows
+    /// it. Guards the `inputs.workFolder?.settings` read in `runtimeToolPipeline`.
+    func testAutovisorManagerPreview_generationFlag_gatesGeneratedSentinel() throws {
+        let autovisor = TeamTemplateFactory.autovisor()
+        let manager = autovisor.nonSupervisorRoles.first!
+
+        func preview(generationOn: Bool) throws -> String {
+            let wf = WorkFolderProjection(
+                state: WorkFolderState(name: "MyApp"),
+                settings: ProjectSettings(autovisorAllowTeamGeneration: generationOn),
+                teams: [autovisor]
+            )
+            let inputs = makeInputs(role: manager, team: autovisor, workFolder: wf)
+            return try PromptBuilder.buildWirePromptPreview(kind: .stepExecution, inputs: inputs)
+        }
+
+        XCTAssertFalse(try preview(generationOn: false).contains("`generated`"),
+                       "generation off → create_managed_task preview must omit the 'generated' sentinel")
+        XCTAssertTrue(try preview(generationOn: true).contains("`generated`"),
+                      "generation on → create_managed_task preview must advertise the 'generated' sentinel")
+    }
+
+    /// With no projection (`workFolder == nil`), the preview falls back to the
+    /// default (`?? true`) and advertises generation — the pipeline must not crash
+    /// or silently strip it on the nil path.
+    func testAutovisorManagerPreview_nilWorkFolder_defaultsToAdvertising() throws {
+        let autovisor = TeamTemplateFactory.autovisor()
+        let manager = autovisor.nonSupervisorRoles.first!
+        let inputs = makeInputs(role: manager, team: autovisor, workFolder: nil)
+        let preview = try PromptBuilder.buildWirePromptPreview(kind: .stepExecution, inputs: inputs)
+        XCTAssertTrue(preview.contains("`generated`"),
+                      "nil projection → default-true → generation advertised")
     }
 
     func testStepExecutionPreview_byteIdenticalToWire_faangPM() throws {

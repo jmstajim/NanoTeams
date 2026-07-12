@@ -20,28 +20,74 @@ nonisolated enum AttachmentItem: Identifiable {
     }
 }
 
+// MARK: - Clip Cell Presentation
+
+/// Pure resolver deciding how a `clippedTexts` entry renders. A single branch
+/// point shared by every clip cell (`MessageComposer.clipCell`,
+/// `ReadOnlyAttachmentGrid.ClipCell`, `ClipPopoverContent`) so skill vs
+/// source-enriched vs plain clips look consistent everywhere. `SkillClip`
+/// is tried first (distinct sentinel prefix), then `SourceContext`.
+nonisolated enum ClipCellPresentation {
+    enum Kind: Equatable {
+        case skill(SkillClip)
+        case sourced(source: String, body: String)
+        case plain(String)
+    }
+
+    static func resolve(_ text: String) -> Kind {
+        if let skill = SkillClip.parse(text) { return .skill(skill) }
+        if let parsed = SourceContext.parse(text) { return .sourced(source: parsed.source, body: parsed.body) }
+        return .plain(text)
+    }
+}
+
 // MARK: - Clip Popover Content
 
-/// Shared popover for displaying clipped text with optional source context header.
+/// Shared popover for displaying a clipped text / skill with its header.
 struct ClipPopoverContent: View {
     let text: String
     @State private var contentHeight: CGFloat = .infinity
 
     var body: some View {
-        let parsed = SourceContext.parse(text)
-        let displayText = parsed?.body ?? text
-
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.xs) {
-                if let source = parsed?.source {
+                switch ClipCellPresentation.resolve(text) {
+                case .skill(let skill):
+                    HStack(spacing: Spacing.xs) {
+                        Label("/\(skill.name)", systemImage: "terminal")
+                            .font(Typography.caption)
+                            .foregroundStyle(Colors.accent)
+                            .lineLimit(1)
+                        if let origin = skill.origin {
+                            TerminalStatusBadge(
+                                glyph: TerminalGlyph.prompt,
+                                label: origin.badgeLabel,
+                                color: origin == .project ? Colors.accent : Colors.info,
+                                bordered: false
+                            )
+                        }
+                    }
+                    if let agent = skill.agentLabel {
+                        Text(agent)
+                            .font(Typography.caption2)
+                            .foregroundStyle(Colors.textSecondary)
+                    }
+                    Text(skill.body)
+                        .font(Typography.termBase)
+                        .textSelection(.enabled)
+                case .sourced(let source, let body):
                     Label(source, systemImage: "doc.text")
                         .font(Typography.caption)
                         .foregroundStyle(Colors.accent)
                         .lineLimit(2)
+                    Text(body)
+                        .font(Typography.termBase)
+                        .textSelection(.enabled)
+                case .plain(let body):
+                    Text(body)
+                        .font(Typography.termBase)
+                        .textSelection(.enabled)
                 }
-                Text(displayText)
-                    .font(Typography.termBase)
-                    .textSelection(.enabled)
             }
             .padding(Spacing.m)
             .frame(width: 280, alignment: .leading)

@@ -235,6 +235,53 @@ final class VisionConfigurationTests: XCTestCase {
                 + "→ visionLLMConfig was nil → analyze_image silently dropped)"
         )
     }
+
+    // MARK: - Default value (fresh install / reset)
+
+    /// Vision is ON by default: a fresh install (no `visionEnabled` key in
+    /// storage, no stored model) must come up enabled. `async` per I7 above —
+    /// constructing `@MainActor` types inline in a sync test aborts on
+    /// Xcode 26.3.
+    func testDefault_freshStorage_visionEnabledIsTrue() async {
+        let fresh = StoreConfiguration(storage: InMemoryStorage())
+        XCTAssertTrue(fresh.visionEnabled)
+    }
+
+    /// An explicitly stored `false` (user toggled Vision off) must survive —
+    /// the default only applies while the key is absent.
+    func testDefault_storedFalse_wins() async {
+        let seeded = InMemoryStorage()
+        seeded.set(false, forKey: UserDefaultsKeys.visionEnabled)
+        let cfg = StoreConfiguration(storage: seeded)
+        XCTAssertFalse(cfg.visionEnabled)
+    }
+
+    func testDefault_storedTrue_wins() async {
+        let seeded = InMemoryStorage()
+        seeded.set(true, forKey: UserDefaultsKeys.visionEnabled)
+        let cfg = StoreConfiguration(storage: seeded)
+        XCTAssertTrue(cfg.visionEnabled)
+    }
+
+    /// Legacy upgrade path: an install with a configured vision model but no
+    /// `visionEnabled` key yet (pre-toggle builds) must stay ON.
+    func testDefault_legacyModelConfigured_noKey_staysEnabled() async {
+        let seeded = InMemoryStorage()
+        seeded.set("qwen-vl", forKey: UserDefaultsKeys.visionModelName)
+        let cfg = StoreConfiguration(storage: seeded)
+        XCTAssertTrue(cfg.visionEnabled)
+    }
+
+    /// `resetToDefaults()` must land on the same ON default. The `didSet`
+    /// re-persists the assigned default immediately, so assert the RELOADED
+    /// value — never key absence (see Грабли 2026-06-27).
+    func testResetToDefaults_visionEnabledIsTrue() async {
+        config.visionEnabled = false
+        config.resetToDefaults()
+        XCTAssertTrue(config.visionEnabled)
+        let reloaded = StoreConfiguration(storage: storage)
+        XCTAssertTrue(reloaded.visionEnabled)
+    }
 }
 
 // MARK: - Test Helpers

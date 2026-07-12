@@ -28,7 +28,7 @@ extension WatchtowerNotificationBanner {
     }
 
     private var canSubmitAnswer: Bool {
-        !answerText.isEmpty || !answerAttachments.isEmpty
+        !answerText.isEmpty || !answerAttachments.isEmpty || !answerClippedTexts.isEmpty
     }
 
     func supervisorInputContent(stepID: String, question: String) -> some View {
@@ -44,12 +44,14 @@ extension WatchtowerNotificationBanner {
             MessageComposer(
                 text: $answerText,
                 attachments: $answerAttachments,
+                clips: $answerClippedTexts,
                 placeholder: "Type your answer...",
                 canSubmit: canSubmitAnswer,
                 isSubmitting: isSubmitting,
                 onSubmit: { submitAnswer(stepID: stepID) },
                 onStageAttachment: { url in onStageAttachment(stepID, url) },
-                onRemoveAttachment: { attachment in onRemoveAttachment(attachment) }
+                onRemoveAttachment: { attachment in onRemoveAttachment(attachment) },
+                skillsProjectRoot: skillsProjectRoot
             )
         }
     }
@@ -192,12 +194,13 @@ extension WatchtowerNotificationBanner {
 
         isSubmitting = true
         Task {
-            let success = await onSubmitAnswer(stepID, answerText, answerAttachments)
+            let success = await onSubmitAnswer(stepID, answerText, answerAttachments, answerClippedTexts)
             await MainActor.run {
                 isSubmitting = false
                 if success {
                     answerText = ""
                     answerAttachments = []
+                    answerClippedTexts = []
                     onDismiss()
                 }
             }

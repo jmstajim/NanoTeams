@@ -77,6 +77,31 @@ nonisolated enum FilenameMatcher {
         return combined
     }
 
+    /// Roster mode: return every candidate (deduped, lexicographically sorted,
+    /// capped at `limit`) as a `.basename` match. Used by the empty-query "list
+    /// files" path in `SearchExecutor`, where the walk has already glob-filtered
+    /// the candidates and there is no query term to match against — so every
+    /// visited path is, by construction, a hit.
+    ///
+    /// Kept separate from `match(...)` on purpose: that matcher's "skip empty
+    /// query terms" contract (`:34-37`) is load-bearing for the exploratory
+    /// path (which always carries a non-empty original query). Folding "empty
+    /// query = match all" into `match` would silently widen it there.
+    static func matchAll(candidates: [String], limit: Int) -> [FilenameMatch] {
+        guard limit > 0 else { return [] }
+        var seen: Set<String> = []
+        var hits: [FilenameMatch] = []
+        for path in candidates {
+            guard seen.insert(path).inserted else { continue }
+            hits.append(FilenameMatch(path: path, matched_on: .basename))
+        }
+        hits.sort { $0.path < $1.path }
+        if hits.count > limit {
+            hits.removeLast(hits.count - limit)
+        }
+        return hits
+    }
+
     // MARK: - Private
 
     private static func matches(query: String, against candidate: String) -> Bool {

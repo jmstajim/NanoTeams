@@ -541,4 +541,54 @@ final class FilenameMatcherTests: XCTestCase {
             XCTAssertEqual(pattern, GlobMatcher._testUncompilableGlobSentinel)
         }
     }
+
+    // MARK: - matchAll (roster / empty-query list mode)
+
+    func testMatchAll_returnsEveryCandidateAsBasename() {
+        // Roster mode: the walk already glob-filtered candidates, so every one
+        // is a hit — tagged `.basename` (the glob is basename-oriented).
+        let matches = FilenameMatcher.matchAll(
+            candidates: ["scenes/Player.gd", "enemies/Slime.gd"],
+            limit: 10
+        )
+        XCTAssertEqual(matches.map(\.path), ["enemies/Slime.gd", "scenes/Player.gd"])
+        XCTAssertTrue(matches.allSatisfy { $0.matched_on == .basename })
+    }
+
+    func testMatchAll_sortsLexicographically() {
+        let matches = FilenameMatcher.matchAll(
+            candidates: ["z/zebra.gd", "a/alpha.gd", "m/middle.gd"],
+            limit: 10
+        )
+        XCTAssertEqual(matches.map(\.path), ["a/alpha.gd", "m/middle.gd", "z/zebra.gd"])
+    }
+
+    func testMatchAll_dedupesByPath() {
+        let matches = FilenameMatcher.matchAll(
+            candidates: ["a.gd", "a.gd", "b.gd", "a.gd"],
+            limit: 10
+        )
+        XCTAssertEqual(matches.map(\.path), ["a.gd", "b.gd"])
+    }
+
+    func testMatchAll_respectsLimit_afterSort() {
+        // Cap applies AFTER the lexicographic sort, so the smallest paths win.
+        let matches = FilenameMatcher.matchAll(
+            candidates: ["c.gd", "a.gd", "b.gd"],
+            limit: 2
+        )
+        XCTAssertEqual(matches.map(\.path), ["a.gd", "b.gd"])
+    }
+
+    func testMatchAll_zeroLimit_returnsEmpty() {
+        XCTAssertTrue(FilenameMatcher.matchAll(candidates: ["a.gd"], limit: 0).isEmpty)
+    }
+
+    func testMatchAll_negativeLimit_returnsEmpty() {
+        XCTAssertTrue(FilenameMatcher.matchAll(candidates: ["a.gd"], limit: -3).isEmpty)
+    }
+
+    func testMatchAll_emptyCandidates_returnsEmpty() {
+        XCTAssertTrue(FilenameMatcher.matchAll(candidates: [], limit: 10).isEmpty)
+    }
 }

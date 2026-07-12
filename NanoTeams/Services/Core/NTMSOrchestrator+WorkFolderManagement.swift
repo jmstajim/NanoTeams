@@ -1,5 +1,16 @@
 import Foundation
 
+/// Typed result of a work-folder-context generation pass. Lets the caller
+/// route the generic "no usable context" info banner ONLY to a genuinely-empty
+/// model response, while a real failure (e.g. a context-window overflow)
+/// surfaces its own message. Defined next to its single consumer.
+nonisolated enum WorkFolderContextGenerationOutcome: Equatable {
+    case success(String)
+    case emptyOutput
+    case cancelled
+    case failure(String)
+}
+
 /// Work folder lifecycle: open/close folders, update settings, manage teams and tools.
 extension NTMSOrchestrator {
 
@@ -62,6 +73,13 @@ extension NTMSOrchestrator {
 
             apply(snapshot)
 
+            // Discover agent instruction files (CLAUDE.md, AGENTS.md, …) for the
+            // freshly opened folder BEFORE the Autovisor open-time review so the
+            // manager's first step already sees them in its system prompt. Runs
+            // AGAIN outside the do/catch (cheap: TTL memo) so an open failure
+            // can't strand the PREVIOUS folder's snapshot on the new URL.
+            await refreshAgentInstructions()
+
             // Pass the whole task so chat-mode awareness in
             // `derivedStatusFromActiveRun` participates.
             if let activeTask = self.activeTask {
@@ -119,6 +137,13 @@ extension NTMSOrchestrator {
         } catch {
             self.lastErrorMessage = error.localizedDescription
         }
+        // Keep the instructions snapshot honest on BOTH paths: if the open threw
+        // above, `workFolderURL` already points at the new folder while the
+        // in-memory snapshot still belongs to the previous one — rescan (or
+        // clear, for default storage) so Settings/previews can't render the old
+        // folder's files against the new URL. On the happy path the TTL memo
+        // makes this a no-op.
+        await refreshAgentInstructions()
         // Sync the LM Studio embed-model state to whatever the coordinator
         // ended up at. Lives outside the do/catch so it runs on both happy
         // and error paths — if openOrCreateWorkFolder threw, the coordinator
@@ -420,6 +445,149 @@ extension NTMSOrchestrator {
         await openWorkFolder(defaultURL)
     }
 
+    // MARK: - Agent Instruction Files
+
+    /// Skip re-scanning when the last scan used identical inputs and finished
+    /// this recently — collapses back-to-back run starts (a recurrence tick
+    /// firing several tasks, Autovisor passes) into one walk. Any add/remove/
+    /// restore edit changes the scan key, bypassing the memo automatically.
+    private static let agentInstructionsScanTTL: TimeInterval = 5
+
+    /// Rescan the open work folder for agent instruction files (auto-discovered
+    /// CLAUDE.md/AGENTS.md/… + user-attached extras − exclusions) and refresh
+    /// the in-memory `agentInstructions` snapshot. The walk runs off the main
+    /// actor. Called on work-folder open, at each top-level `startRun`, on the
+    /// Work Folder settings tab appear, before prompt-preview renders, and after
+    /// instruction add/remove/restore. In default storage / no folder there is
+    /// nothing to scan → snapshot cleared to `nil`.
+    func refreshAgentInstructions() async {
+        guard hasRealWorkFolder, let root = workFolderURL else {
+            agentInstructionsScanGeneration += 1  // drop in-flight old-folder scans
+            agentInstructionsLastScanKey = nil
+            if agentInstructions != nil { agentInstructions = nil }
+            return
+        }
+        let extras = workFolder?.settings.agentInstructionExtraPaths ?? []
+        let excluded = workFolder?.settings.agentInstructionExcludedPaths ?? []
+        let injected = workFolder?.settings.agentInstructionInjectedPaths ?? []
+        let key = AgentInstructionsScanKey(
+            root: root, extraPaths: extras, excludedPaths: excluded, injectedPaths: injected)
+        if key == agentInstructionsLastScanKey,
+           let lastScanAt = agentInstructionsLastScanAt,
+           Date().timeIntervalSince(lastScanAt) < Self.agentInstructionsScanTTL {
+            return
+        }
+
+        agentInstructionsScanGeneration += 1
+        let expected = agentInstructionsScanGeneration
+        let scanned = await Task.detached(priority: .utility) {
+            AgentInstructionsScanner.scan(
+                workFolderRoot: root, manualPaths: extras,
+                excludedPaths: excluded, injectedPaths: injected)
+        }.value
+        // CLAUDE.md #38: a newer refresh started during the await (or the folder
+        // switched/closed, which also bumps the generation) supersedes this scan.
+        guard agentInstructionsScanGeneration == expected else { return }
+        agentInstructionsLastScanKey = key
+        agentInstructionsLastScanAt = Date()
+        // Equality guard: @Observable fires on every write regardless of value;
+        // skipping no-op writes keeps open preview sheets / Settings from
+        // re-rendering on every run start (CLAUDE.md View Conventions #9/#11).
+        if agentInstructions != scanned { agentInstructions = scanned }
+    }
+
+    /// Attach files as agent instructions (Settings grid "+" / file picker).
+    /// Only files INSIDE the work folder qualify — the sandbox refuses
+    /// `read_file` outside it, so an outside path would be uninjectable dead
+    /// weight; `internal/` is likewise rejected (hidden from LLM tools).
+    /// Accepted paths persist to `settings.agentInstructionExtraPaths`.
+    func addAgentInstructions(urls: [URL]) async {
+        guard hasRealWorkFolder, let root = workFolderURL else { return }
+        let paths = NTMSPaths(workFolderRoot: root)
+        var accepted: [String] = []
+        var rejected: [String] = []
+        for url in urls {
+            let rel = paths.relativePathFromProjectRoot(for: url)
+            var isDir: ObjCBool = false
+            let exists = fileManager.fileExists(atPath: url.path, isDirectory: &isDir)
+            if rel.isEmpty || paths.isInternalURL(url) || !exists || isDir.boolValue {
+                rejected.append(url.lastPathComponent)
+            } else {
+                accepted.append(rel)
+            }
+        }
+        if !accepted.isEmpty {
+            await mutateWorkFolder { projection in
+                var extras = projection.settings.agentInstructionExtraPaths
+                for rel in accepted where !extras.contains(rel) { extras.append(rel) }
+                projection.settings.agentInstructionExtraPaths = extras
+                // Re-attaching a previously excluded file means "inject it again".
+                projection.settings.agentInstructionExcludedPaths.removeAll { accepted.contains($0) }
+            }
+            await refreshAgentInstructions()
+        }
+        if !rejected.isEmpty {
+            lastErrorMessage =
+                "Only files inside the work folder can be attached — skipped: \(rejected.joined(separator: ", "))"
+        }
+    }
+
+    /// Remove an instruction from CONTENT injection (Settings grid "×"). A
+    /// manually attached file is dropped from the extras entirely; an
+    /// auto-discovered file is added to the persisted exclusions — it stays in
+    /// the grid (dimmed, restorable) AND in the prompt's path list, it just
+    /// stops riding the system prompt as content.
+    func removeAgentInstruction(relativePath: String) async {
+        await mutateWorkFolder { projection in
+            projection.settings.agentInstructionInjectedPaths.removeAll { $0 == relativePath }
+            if let idx = projection.settings.agentInstructionExtraPaths.firstIndex(of: relativePath) {
+                projection.settings.agentInstructionExtraPaths.remove(at: idx)
+                projection.settings.agentInstructionExcludedPaths.removeAll { $0 == relativePath }
+            } else if !projection.settings.agentInstructionExcludedPaths.contains(relativePath) {
+                projection.settings.agentInstructionExcludedPaths.append(relativePath)
+            }
+        }
+        await refreshAgentInstructions()
+    }
+
+    /// Quick injection toggle from the "All files" list. `injected: true`
+    /// promotes a listed file into content injection (readable text only —
+    /// a binary is reported and stays listed); `false` demotes it back to the
+    /// path list.
+    func setAgentInstructionInjected(relativePath: String, injected: Bool) async {
+        await mutateWorkFolder { projection in
+            if injected {
+                projection.settings.agentInstructionExcludedPaths.removeAll { $0 == relativePath }
+                if !projection.settings.agentInstructionInjectedPaths.contains(relativePath) {
+                    projection.settings.agentInstructionInjectedPaths.append(relativePath)
+                }
+            } else {
+                projection.settings.agentInstructionInjectedPaths.removeAll { $0 == relativePath }
+                if !projection.settings.agentInstructionExcludedPaths.contains(relativePath) {
+                    projection.settings.agentInstructionExcludedPaths.append(relativePath)
+                }
+            }
+        }
+        await refreshAgentInstructions()
+        if injected,
+           !(agentInstructions?.injectedFiles.contains { $0.relativePath == relativePath } ?? false) {
+            // The file didn't read as text — drop the dangling override and
+            // tell the user why nothing visibly changed.
+            await mutateWorkFolder { projection in
+                projection.settings.agentInstructionInjectedPaths.removeAll { $0 == relativePath }
+            }
+            lastInfoMessage = "\(relativePath) isn't readable text — it stays listed for on-demand reading."
+        }
+    }
+
+    /// Re-include a previously excluded auto-discovered instruction file.
+    func restoreAgentInstruction(relativePath: String) async {
+        await mutateWorkFolder { projection in
+            projection.settings.agentInstructionExcludedPaths.removeAll { $0 == relativePath }
+        }
+        await refreshAgentInstructions()
+    }
+
     // MARK: - Work Folder Settings
 
     func updateWorkFolderContext(_ context: String) async {
@@ -442,19 +610,28 @@ extension NTMSOrchestrator {
         }
     }
 
-    func generateWorkFolderContext() async -> String? {
-        guard let workFolderRoot = workFolderURL else { return nil }
+    /// Runs one context-generation pass and reports a typed outcome so the
+    /// caller can distinguish a genuinely-empty model response (generic info
+    /// banner) from a real failure whose message — e.g. a context-window
+    /// overflow — must reach the user verbatim. Does NOT set any banner itself;
+    /// the caller owns that so the routing is in one place.
+    func generateWorkFolderContext() async -> WorkFolderContextGenerationOutcome {
+        guard let workFolderRoot = workFolderURL else {
+            return .failure("No work folder is open.")
+        }
         do {
-            return try await workFolderManagementService.generateWorkFolderContext(
+            if let context = try await workFolderManagementService.generateWorkFolderContext(
                 workFolderRoot: workFolderRoot,
                 config: globalLLMConfig,
                 customPrompt: workFolder?.settings.contextPrompt
-            )
+            ) {
+                return .success(context)
+            }
+            return .emptyOutput
         } catch is CancellationError {
-            return nil
+            return .cancelled
         } catch {
-            self.lastErrorMessage = error.localizedDescription
-            return nil
+            return .failure(error.localizedDescription)
         }
     }
 
@@ -476,20 +653,25 @@ extension NTMSOrchestrator {
         let myGeneration = workFolderContextGenerationGeneration
         workFolderContextGenerationTask = Task { [weak self] in
             guard let self else { return }
-            let context = await self.generateWorkFolderContext()
+            let outcome = await self.generateWorkFolderContext()
             // Only the lambda for the most recent start is allowed to write back.
             guard self.workFolderContextGenerationGeneration == myGeneration else { return }
             if !Task.isCancelled {
-                if let context {
+                switch outcome {
+                case let .success(context):
                     await self.updateWorkFolderContext(context)
-                } else {
-                    // Distinguish "cancelled" (silent — already handled by
-                    // cancelWorkFolderContextGeneration's info toast) from
-                    // "model produced nothing usable" — the second branch is
-                    // reachable only when the model legitimately returned
-                    // empty/whitespace, and the user otherwise sees a spinner
+                case .emptyOutput:
+                    // Reachable ONLY when the model legitimately returned
+                    // empty/whitespace — otherwise the user sees a spinner
                     // disappear with no insertion and no explanation.
                     self.lastInfoMessage = "Model returned no usable context. Try a more descriptive prompt or check that your LLM is responding."
+                case let .failure(message):
+                    // Surface the real cause (e.g. a context-window overflow)
+                    // instead of masking it behind the generic info banner.
+                    self.lastErrorMessage = message
+                case .cancelled:
+                    // Silent — cancelWorkFolderContextGeneration already toasted.
+                    break
                 }
             }
             self.isGeneratingWorkFolderContext = false
@@ -523,20 +705,10 @@ extension NTMSOrchestrator {
             proj.settings.autovisorGoal = goal
         }
         // The manager's brief (rendered as "## Supervisor Goal") IS its goal —
-        // keep the task's `supervisorTask` in lock-step so the prompt and the
-        // manager's own activity feed reflect the edited goal immediately. The
-        // manager is a background task that can be evicted from `loadedTasks`, so
-        // load it first (mirrors `updateTaskTitle`): without this, `mutateTask`'s
-        // background branch fails with a misleading "task not loaded" banner and
-        // the brief silently diverges from the persisted goal until the next
-        // `ensureAutovisorTask`.
-        if let id = autovisorTaskID {
-            await ensureTaskLoaded(id)
-            guard loadedTask(id) != nil else { return }  // load error already surfaced
-            await mutateTask(taskID: id) { task in
-                if task.supervisorTask != goal { task.supervisorTask = goal }
-            }
-        }
+        // `syncAutovisorGoalToManagerBrief` keeps the task's `supervisorTask` (plus
+        // goal clips + attachment paths) in lock-step. It owns the manager-loaded
+        // guard and the `autovisorTaskID == nil` (pre-Enable) no-op.
+        await syncAutovisorGoalToManagerBrief()
     }
 
     /// Persists the Autovisor's standing memory. Used by both the Settings
@@ -670,4 +842,16 @@ extension NTMSOrchestrator {
             task.runs[runIndex] = run
         }
     }
+}
+
+// MARK: - Agent Instructions Scan Key
+
+/// Inputs of one `AgentInstructionsScanner.scan` call — the memo key for
+/// `refreshAgentInstructions`' short-TTL skip. Any change to the folder or the
+/// user's instruction overrides produces a different key, bypassing the memo.
+nonisolated struct AgentInstructionsScanKey: Equatable {
+    let root: URL
+    let extraPaths: [String]
+    let excludedPaths: [String]
+    let injectedPaths: [String]
 }

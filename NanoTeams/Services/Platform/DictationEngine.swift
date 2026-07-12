@@ -188,7 +188,17 @@ final class DictationEngine: DictationEngineProtocol {
         }
 
         let box = BridgesBox(bridges: tapBridges)
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: nativeFormat) { buffer, _ in
+        // `@Sendable` is MANDATORY here — do not remove. The app target builds
+        // with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, and
+        // `@preconcurrency import AVFoundation` strips the `@Sendable` from
+        // `AVAudioNodeTapBlock`, so without this marker the closure is inferred
+        // `@MainActor`. AVAudioEngine invokes the tap on its realtime audio
+        // thread, where a main-actor executor check aborts the process
+        // (`dispatch_assert_queue`). The file still COMPILES without `@Sendable`
+        // (the closure just re-becomes MainActor), so this comment is the only
+        // guard against re-removal. `TapBridge`/`BridgesBox` are `nonisolated`
+        // so the tap path is safe to run off the main actor.
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: nativeFormat) { @Sendable buffer, _ in
             for bridge in box.bridges {
                 bridge.feed(buffer)
             }
@@ -304,8 +314,15 @@ final class DictationEngine: DictationEngineProtocol {
 /// Per-slot conversion state for the audio tap. Feeds converted buffers
 /// into the analyzer's `AsyncStream`. Reference type so `AVAudioConverter`
 /// internal state persists across tap-block invocations.
+///
+/// `nonisolated` is REQUIRED: the app target defaults every type to
+/// `@MainActor`, but `feed` is called from AVAudioEngine's realtime audio
+/// thread (via the `@Sendable` tap closure in `start(locales:)`). Without
+/// `nonisolated`, `feed` would be main-actor-isolated and the executor check
+/// would crash the process. `internal` (not `private`) so the nonisolation
+/// regression test can construct it via `@testable import`.
 @available(macOS 26, iOS 26, visionOS 26, *)
-private final class TapBridge: @unchecked Sendable {
+nonisolated final class TapBridge: @unchecked Sendable {
     let continuation: AsyncStream<AnalyzerInput>.Continuation
     let converter: AVAudioConverter?
     let outputFormat: AVAudioFormat
@@ -382,8 +399,13 @@ private final class TapBridge: @unchecked Sendable {
     }
 }
 
+/// `nonisolated` for the same realtime-thread reason as `TapBridge`: the tap
+/// closure reads `box.bridges` off the main actor. Redundant for compilation
+/// today (a `Sendable let` is already implicitly nonisolated), but kept so a
+/// future mutable/non-`Sendable` member can't silently reintroduce a
+/// main-actor hop on the realtime path.
 @available(macOS 26, iOS 26, visionOS 26, *)
-private final class BridgesBox: @unchecked Sendable {
+nonisolated private final class BridgesBox: @unchecked Sendable {
     let bridges: [TapBridge]
     init(bridges: [TapBridge]) {
         self.bridges = bridges

@@ -513,23 +513,9 @@ nonisolated extension NTMSTask {
             sections.append(trimmedTask)
         }
 
-        let nonEmptyClips = clippedTexts
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        for (i, clip) in nonEmptyClips.enumerated() {
-            let parsed = SourceContext.parse(clip)
-            let header: String
-            if let parsed {
-                header = nonEmptyClips.count == 1
-                    ? "## Clipped Text — \(parsed.source)"
-                    : "## Clipped Text — \(i + 1) of \(nonEmptyClips.count), \(parsed.source)"
-            } else {
-                header = nonEmptyClips.count == 1
-                    ? "## Clipped Text"
-                    : "## Clipped Text — \(i + 1) of \(nonEmptyClips.count)"
-            }
-            sections.append("\(header)\n\(parsed?.body ?? clip)")
-        }
+        // Shared with AnswerTextBuilder.build so skill + clip section formatting
+        // stays identical across the live-submit and persisted-task paths.
+        sections.append(contentsOf: AnswerTextBuilder.clipSections(from: clippedTexts))
 
         if !attachmentPaths.isEmpty {
             let pathList = attachmentPaths

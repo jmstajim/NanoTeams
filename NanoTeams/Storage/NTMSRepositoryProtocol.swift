@@ -72,6 +72,7 @@ nonisolated protocol ArtifactRepository: Sendable {
 nonisolated protocol AttachmentRepository: Sendable {
     func stageAttachment(at workFolderRoot: URL, draftID: UUID, sourceURL: URL) throws -> String
     func finalizeAttachments(at workFolderRoot: URL, taskID: Int, stagedEntries: [(path: String, isProjectReference: Bool)]) throws -> [String]
+    func finalizeAutovisorGoalAttachment(at workFolderRoot: URL, stagedRelativePath: String) throws -> String
     func removeStagedItem(at workFolderRoot: URL, relativePath: String) throws
     func cleanupStagedDraft(at workFolderRoot: URL, draftID: UUID) throws
     func cleanupAllStagedDrafts(at workFolderRoot: URL) throws

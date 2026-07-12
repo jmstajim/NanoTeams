@@ -101,6 +101,10 @@ struct TemplatePreviewSheet: View {
         // a running task no longer fire body re-evals here. Refreshes on
         // role selection or coordinator-toggle change.
         .task(id: TaskFingerprint(selectedRoleID: selectedRoleID, isCoordinator: previewAsCoordinator)) {
+            // Rescan agent instruction files first — the wire rescans at every
+            // startRun, so a preview rendered from a stale snapshot would be
+            // byte-identical to the PREVIOUS wire, not the upcoming one.
+            await store.refreshAgentInstructions()
             rendered = renderFromEnv()
         }
     }
@@ -142,7 +146,8 @@ struct TemplatePreviewSheet: View {
             isVisionConfigured: store.visionLLMConfig != nil,
             isComputerUseEnabled: config.isComputerUseEnabled,
             globalContext: config.globalContext,
-            isCoordinator: previewAsCoordinator
+            isCoordinator: previewAsCoordinator,
+            agentInstructions: store.agentInstructions
         )
         return renderWirePreview(kind: templateType.kind, inputs: inputs)
     }

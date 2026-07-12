@@ -238,7 +238,8 @@ struct TeamActivityComposer: View {
                 onStageAttachment: { url in store.stageAttachment(url: url, draftID: UUID()) },
                 onRemoveAttachment: { staged in store.removeStagedAttachment(staged) },
                 minLineCount: 1,
-                maxTextFieldHeight: messageFieldMaxHeight
+                maxTextFieldHeight: messageFieldMaxHeight,
+                skillsProjectRoot: store.hasRealWorkFolder ? store.workFolderURL : nil
             )
         }
         // Lock the recipient on first keystroke. Without this, `selectedRecipient`
@@ -844,11 +845,6 @@ private struct BashApprovalAdviceView<Actions: View>: View {
                 glyph: verdict.allowed ? TerminalGlyph.done : TerminalGlyph.failed,
                 color: verdict.allowed ? Colors.success : Colors.error)
             VStack(alignment: .leading, spacing: Spacing.xxs) {
-                Text(verdict.command)
-                    .font(Typography.monoCaption)
-                    .foregroundStyle(Colors.textSecondary)
-                    .lineLimit(2)
-                    .truncationMode(.middle)
                 // The AI's read — what the command does + a safety opinion. Marked with
                 // the Ask AI sparkles so it's clearly the SECOND OPINION; the ✅/❌ glyph
                 // and the gate rationale below are the authoritative verdict. Hidden when

@@ -211,4 +211,59 @@ final class ResolveToolSchemasStaleRegistryTests: XCTestCase {
             "a user-customized tool description must override the live default (complete registry)"
         )
     }
+
+    // MARK: - F. Autovisor team-generation gate (autovisorAllowTeamGeneration)
+
+    private func resolveManager(allTeams: [Team], allowGenerated: Bool) -> [ToolSchema] {
+        let team = TeamTemplateFactory.autovisor()
+        let managerName = team.nonSupervisorRoles.first?.name ?? "Manager"
+        return LLMExecutionService.resolveToolSchemas(
+            for: .custom(id: managerName), team: team, allTeams: allTeams,
+            autovisorAllowTeamGeneration: allowGenerated
+        )
+    }
+
+    /// Default/enabled: the manager's `create_managed_task` schema advertises the
+    /// `"generated"` sentinel.
+    func testCreateManagedTask_generationEnabled_advertisesGeneratedSentinel() {
+        let createManaged = resolveManager(allTeams: [], allowGenerated: true)
+            .first { $0.name == ToolNames.createManagedTask }
+        XCTAssertNotNil(createManaged)
+        XCTAssertTrue(createManaged?.description.contains("generated") ?? false,
+                      "generation enabled → create_managed_task must advertise the 'generated' sentinel")
+    }
+
+    /// Disabled: the `"generated"` sentinel is stripped from BOTH the inline catalog
+    /// and the `team_id` param description (so the model never sees it as an option).
+    func testCreateManagedTask_generationDisabled_hidesGeneratedSentinel() {
+        let probe = Team(id: "catalog-probe", name: "Catalog Probe", roles: [], artifacts: [],
+                         settings: TeamSettings(), graphLayout: TeamGraphLayout())
+        let createManaged = resolveManager(allTeams: [probe], allowGenerated: false)
+            .first { $0.name == ToolNames.createManagedTask }
+        XCTAssertNotNil(createManaged, "create_managed_task must still resolve when generation is off")
+        XCTAssertFalse(createManaged?.description.contains("generated") ?? true,
+                       "generation disabled → the catalog must not mention 'generated'")
+        XCTAssertTrue(createManaged?.description.contains("catalog-probe") ?? false,
+                      "existing teams must still be listed when generation is off")
+        XCTAssertFalse(createManaged?.parameters.properties?["team_id"]?.description?.contains("generated") ?? true,
+                       "the team_id param description must not mention 'generated' when disabled")
+    }
+
+    /// The flag only touches `create_managed_task` (the Autovisor Manager's tool).
+    /// A normal role that doesn't carry it must be completely unaffected — no
+    /// create_managed_task appears whether the flag is on or off.
+    func testNonAutovisorRole_generationFlag_isInert() {
+        let faang = TeamTemplateFactory.faang()
+        guard let pm = faang.roles.first(where: { $0.name == "Product Manager" }) else {
+            return XCTFail("FAANG must have a Product Manager")
+        }
+        for allow in [true, false] {
+            let schemas = LLMExecutionService.resolveToolSchemas(
+                for: .custom(id: pm.name), team: faang,
+                autovisorAllowTeamGeneration: allow
+            )
+            XCTAssertFalse(schemas.contains { $0.name == ToolNames.createManagedTask },
+                           "a non-Autovisor role never gets create_managed_task (allow=\(allow))")
+        }
+    }
 }

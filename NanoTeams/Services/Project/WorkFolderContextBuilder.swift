@@ -4,6 +4,13 @@ nonisolated struct WorkFolderContextInput: Hashable {
     struct FileExcerpt: Hashable {
         var path: String
         var content: String
+        /// Matched one of `priorityNames` (README / manifest / entry point).
+        /// The planner gives priority excerpts a larger share of the budget.
+        var isPriority: Bool = false
+        /// The raw read hit the byte window, so the file may continue past
+        /// `content` and the true line count is unknown. Drives the honest
+        /// "file continues" truncation marker instead of "first N of M lines".
+        var wasReadCapped: Bool = false
     }
 
     var rootName: String
@@ -16,7 +23,11 @@ struct WorkFolderContextBuilder {
     nonisolated static func buildInput(
         workFolderRoot: URL,
         maxExcerpts: Int = 6,
-        maxBytesPerExcerpt: Int = 3000,
+        // Raw read window per excerpt. Generous (64 KB) because the planner
+        // trims the excerpt down to first-N-lines under the model's context
+        // budget — big-context models get long excerpts, small ones hit the
+        // 50-line floor. Memory stays bounded at maxExcerpts × this.
+        maxBytesPerExcerpt: Int = 65_536,
         fileManager: FileManager = .default
     ) -> WorkFolderContextInput {
         // Standardize path to resolve symlinks (e.g., /var -> /private/var on macOS)
@@ -113,28 +124,33 @@ struct WorkFolderContextBuilder {
         var usedPaths: Set<String> = []
         var usedFilenames: Set<String> = []
 
-        func addExcerpt(from url: URL) {
+        func addExcerpt(from url: URL, isPriority: Bool) {
             guard excerpts.count < maxExcerpts else { return }
             let rel = url.standardizedFileURL.path.replacingOccurrences(of: basePrefix, with: "")
             guard !usedPaths.contains(rel) else { return }
             // Only one excerpt per unique filename (first found wins)
             let filename = url.lastPathComponent
             guard !usedFilenames.contains(filename) else { return }
-            guard let content = readExcerpt(from: url, maxBytes: maxBytesPerExcerpt) else { return }
-            excerpts.append(WorkFolderContextInput.FileExcerpt(path: rel, content: content))
+            guard let read = readExcerpt(from: url, maxBytes: maxBytesPerExcerpt) else { return }
+            excerpts.append(WorkFolderContextInput.FileExcerpt(
+                path: rel,
+                content: read.content,
+                isPriority: isPriority,
+                wasReadCapped: read.wasReadCapped
+            ))
             usedPaths.insert(rel)
             usedFilenames.insert(filename)
         }
 
         for name in priorityNames {
             if let url = filesByName[name] {
-                addExcerpt(from: url)
+                addExcerpt(from: url, isPriority: true)
             }
         }
 
         for url in excerptCandidates {
             if excerpts.count >= maxExcerpts { break }
-            addExcerpt(from: url)
+            addExcerpt(from: url, isPriority: false)
         }
 
         return WorkFolderContextInput(
@@ -145,16 +161,24 @@ struct WorkFolderContextBuilder {
         )
     }
 
-    nonisolated private static func readExcerpt(from url: URL, maxBytes: Int) -> String? {
+    /// Reads up to `maxBytes` of `url` as UTF-8 text. `wasReadCapped` is true
+    /// when the read filled the whole window (the file may continue past it),
+    /// so the planner can mark the excerpt honestly. `nil` for unreadable /
+    /// empty / non-UTF-8 files (unchanged contract).
+    nonisolated private static func readExcerpt(
+        from url: URL,
+        maxBytes: Int
+    ) -> (content: String, wasReadCapped: Bool)? {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
 
         guard let dataChunk = try? handle.read(upToCount: maxBytes) else { return nil }
         guard !dataChunk.isEmpty else { return nil }
+        let wasReadCapped = dataChunk.count >= maxBytes
         guard var text = decodeUTF8TrimmingPartialTail(dataChunk) else { return nil }
 
         text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return text.isEmpty ? nil : text
+        return text.isEmpty ? nil : (text, wasReadCapped)
     }
 
     /// Decodes `data` as UTF-8. If the read terminated mid-multibyte-sequence

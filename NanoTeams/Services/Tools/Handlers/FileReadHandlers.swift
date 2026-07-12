@@ -251,6 +251,7 @@ nonisolated struct ListFilesTool: ToolHandler {
             properties: [
                 "path": JS.string("Relative path to directory"),
                 "depth": JS.integer("Traversal depth (1-5)"),
+                "name_glob": JS.string("Only include entries whose name matches this basename glob (e.g. *.gd). Combine with depth to list a file type recursively."),
             ]
         )
     )
@@ -272,6 +273,30 @@ nonisolated struct ListFilesTool: ToolHandler {
             let includeFiles = optionalBool(args, "include_files", default: true)
             let includeDirs = optionalBool(args, "include_dirs", default: true)
             let sortBy = optionalString(args, "sort") ?? "name"
+            // Trim to content and treat empty/whitespace as "no filter": an
+            // untrimmed `"*.gd "` anchors to `^.*\.gd $` (matches nothing) and a
+            // literal `""` anchors to `^$` (matches only empty names) — both
+            // silently exclude every entry.
+            let nameGlob = optionalString(args, "name_glob").flatMap {
+                let trimmed = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
+            }
+            // Validate up front so a bad glob surfaces as a typed error instead
+            // of fail-closing on every entry. Translate the file_glob-scoped
+            // SearchExecutorError into a name_glob-named message — surfacing it
+            // verbatim would tell the model to fix a `file_glob` arg that
+            // `list_files` doesn't have (a loop hazard for weaker models).
+            if let nameGlob {
+                do {
+                    try GlobMatcher.validate(glob: nameGlob)
+                } catch {
+                    return makeErrorResult(
+                        toolName: Self.name, args: args,
+                        code: .invalidArgs,
+                        message: "name_glob '\(nameGlob)' is not a valid glob (only * is a wildcard)."
+                    )
+                }
+            }
 
             let dirURL = try resolver.resolveFileURL(relativePath: path)
 
@@ -308,8 +333,15 @@ nonisolated struct ListFilesTool: ToolHandler {
                     let entryPath = relativePath.isEmpty ? name : "\(relativePath)/\(name)"
                     let entryType = itemIsDir.boolValue ? "dir" : "file"
 
+                    // `name_glob` filters which entries are LISTED; recursion
+                    // below is unconditional so nested matches under a non-
+                    // matching subdirectory are still reachable (mirrors
+                    // SearchExecutor's file-glob-filters-files / always-recurse).
+                    let matchesGlob = nameGlob == nil
+                        || GlobMatcher.matches(name: name, glob: nameGlob!, caseInsensitive: false)
                     let shouldInclude =
-                        (itemIsDir.boolValue && includeDirs) || (!itemIsDir.boolValue && includeFiles)
+                        ((itemIsDir.boolValue && includeDirs) || (!itemIsDir.boolValue && includeFiles))
+                        && matchesGlob
 
                     if shouldInclude {
                         entries.append(Entry(path: entryPath, name: name, type: entryType))
@@ -351,18 +383,17 @@ nonisolated struct SearchTool: ToolHandler {
     static let name = TN.search
     static let schema = ToolSchema(
         name: TN.search,
-        description: "Search the work folder for text. Auto-extracts PDF/DOCX/RTF/RTFD/ODT/XLSX/PPTX. Returns content `matches` and `filename_matches` (basename hits first).",
+        description: "Search the work folder for text, or list files when `query` is omitted. Auto-extracts PDF/DOCX/RTF/RTFD/ODT/XLSX/PPTX. Returns content `matches` and `filename_matches` (basename hits first).",
         parameters: JS.object(
             properties: [
-                "query": JS.string("Case-insensitive literal substring. One keyword per call for distinct concepts."),
+                "query": JS.string("Case-insensitive literal substring; one keyword per call for distinct concepts. Omit to list all files matching file_glob or paths."),
                 "paths": JS.array(items: JS.string("Relative path under the work folder"), description: "Restrict scope. Folders walked recursively; files scanned in place."),
                 "file_glob": JS.string("Basename glob (e.g. *.swift, test_*.md)."),
                 "max_results": JS.integer("Cap on returned matches."),
                 "context_before": JS.integer("Lines of context before each match."),
                 "context_after": JS.integer("Lines of context after each match."),
                 "exploratory": JS.boolean("Vector-index pass for synonyms, cross-language, and camel/snake variants."),
-            ],
-            required: ["query"]
+            ]
         )
     )
     static let category: ToolCategory = .fileRead
@@ -399,21 +430,58 @@ nonisolated struct SearchTool: ToolHandler {
         canonicalArgs["exploratory"] = exploratory
 
         return ToolErrorHandler.execute(toolName: Self.name, args: canonicalArgs) {
-            let query = try requiredString(canonicalArgs, "query")
+            // `query` is optional: an empty/omitted query is the "list files"
+            // trigger (paired with file_glob or paths). `requiredString` would
+            // reject an omitted key and block that path.
+            let query = optionalString(canonicalArgs, "query") ?? ""
             let mode = SearchMode(raw: optionalString(canonicalArgs, "mode"))
-            let paths = optionalStringArray(canonicalArgs, "paths")
-            let fileGlob = optionalString(canonicalArgs, "file_glob")
+            // Normalize constraints so a present-but-empty value can't pose as a
+            // real one: drop blank/whitespace `paths` entries and treat an empty
+            // `file_glob` as absent. Otherwise `paths: [""]` (which resolves to
+            // the work-folder root) or `file_glob: ""` (which compiles to `^$`,
+            // matching nothing) would slip an empty query past the constraint
+            // guard below into a whole-tree walk / silent zero — the exact two
+            // outcomes that guard exists to prevent. The normalized values flow
+            // to the executor too, so the guard and the walk stay consistent.
+            let paths = optionalStringArray(canonicalArgs, "paths")?
+                .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            // Trim the glob to its content: `GlobMatcher` anchors with `^…$`, so
+            // a padded `"*.gd "` compiles to `^.*\.gd $` and matches nothing —
+            // a silent zero. Store the trimmed value (nil when empty).
+            let fileGlob = optionalString(canonicalArgs, "file_glob").flatMap {
+                let trimmed = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
+            }
             let maxResults = optionalInt(canonicalArgs, "max_results") ?? defaultMaxResults
             let contextBefore = optionalInt(canonicalArgs, "context_before") ?? defaultContextBefore
             let contextAfter = optionalInt(canonicalArgs, "context_after") ?? defaultContextAfter
             let maxMatchLines = optionalInt(canonicalArgs, "max_match_lines") ?? 40
 
-            // Exploratory-search mode: hand off to the processor via a signal.
-            // Body of the final result is produced in `appendExploratorySearchResult`.
-            // Payload init throws on empty query and clamps out-of-range
-            // numerics — `ToolErrorHandler.execute` turns the throw into a
-            // standard error envelope for the LLM.
-            if exploratory {
+            let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            let hasConstraint = fileGlob != nil || (paths?.isEmpty == false)
+
+            // Empty query + a narrowing constraint = "list matching files".
+            // Handled here, BEFORE the exploratory branch, because an empty
+            // query has nothing to expand semantically — it must reach the
+            // plain executor's list mode (`queries: [""]`) even when
+            // `exploratory` is the default-on setting, not hit the exploratory
+            // `emptyQuery` throw. Empty query with NO constraint is a typed
+            // error — never a silent zero, never a whole-tree dump.
+            if trimmedQuery.isEmpty {
+                guard hasConstraint else {
+                    return makeErrorResult(
+                        toolName: Self.name, args: canonicalArgs,
+                        code: .invalidArgs,
+                        message: "empty query requires file_glob or paths to list files; otherwise provide a search keyword"
+                    )
+                }
+                // Falls through to the plain executor below in list mode.
+            } else if exploratory {
+                // Exploratory-search mode: hand off to the processor via a
+                // signal. Body of the final result is produced in
+                // `appendExploratorySearchResult`. Payload init throws on empty
+                // query and clamps out-of-range numerics — `ToolErrorHandler`
+                // turns the throw into a standard error envelope for the LLM.
                 let payload = try ExploratorySearchPayload(
                     query: query,
                     mode: mode,

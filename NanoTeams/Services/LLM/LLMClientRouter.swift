@@ -61,4 +61,8 @@ nonisolated struct LLMClientRouter: LLMClient {
     func modelSupportsVision(config: LLMConfig) async -> Bool? {
         await nativeClient.modelSupportsVision(config: config)
     }
+
+    func modelContextLength(config: LLMConfig) async -> Int? {
+        await nativeClient.modelContextLength(config: config)
+    }
 }

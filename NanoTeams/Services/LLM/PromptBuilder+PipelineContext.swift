@@ -134,25 +134,63 @@ nonisolated extension PromptBuilder {
         }
     }
 
-    /// Returns the bare work-folder context body — `**{name}**\n\n{context}` —
-    /// for injection via the `{workFolderContext}` template placeholder. The
-    /// `## Work folder` header lives in the template so the author can rename
-    /// or reposition it. Empty context returns `nil` so the surrounding
-    /// template header collapses via `TemplateResolver.stripOrphanHeaders`.
-    static func buildWorkFolderContextMessage(workFolder: WorkFolderProjection?) -> String? {
+    /// Returns the bare work-folder context body for injection via the
+    /// `{workFolderContext}` template placeholder. The `## Work folder` header
+    /// lives in the template so the author can rename or reposition it — and so
+    /// it collapses via `TemplateResolver.stripOrphanHeaders` when the body is
+    /// empty.
+    ///
+    /// Body = bold folder name, then sections joined with a blank line, each
+    /// omitted when its source is empty:
+    /// 1. the user-written `settings.context` (trimmed, capped at
+    ///    `ArtifactConstants.maxDescriptionChars`);
+    /// 2. one `### Agent instructions (<path>)` section per content-injected
+    ///    file (auto-discovered main first, then user-attached text files),
+    ///    **uncapped** — content is pre-trimmed at scan time;
+    /// 3. `### Other agent instruction files` + a bullet list of the remaining
+    ///    instruction-file paths (read on demand via `read_file`).
+    ///
+    /// Returns `nil` only when ALL sources are empty. When no instruction files
+    /// exist (`agentInstructions == nil`/`.empty`), the output is byte-identical
+    /// to the legacy `**{name}**\n\n{context}` form so existing folders see zero
+    /// prompt diff.
+    static func buildWorkFolderContextMessage(
+        workFolder: WorkFolderProjection?,
+        agentInstructions: AgentInstructionsSnapshot? = nil
+    ) -> String? {
         guard let wf = workFolder else { return nil }
+
+        var sections: [String] = []
 
         var context = wf.settings.context.trimmingCharacters(in: .whitespacesAndNewlines)
         if context.count > ArtifactConstants.maxDescriptionChars {
             context =
                 String(context.prefix(ArtifactConstants.maxDescriptionChars)) + "..."
         }
-        if context.isEmpty {
+        if !context.isEmpty { sections.append(context) }
+
+        if let snapshot = agentInstructions {
+            for file in snapshot.injectedFiles {
+                // Scanner stores trimmed non-empty content; the whitespace probe
+                // (O(1) for real content) is defense against hand-built values —
+                // no re-trim of a possibly-100KB string per render.
+                guard let content = file.injectedContent,
+                      content.contains(where: { !$0.isWhitespace }) else { continue }
+                sections.append("### Agent instructions (\(file.relativePath))\n\n\(content)")
+            }
+            let listed = snapshot.listedPaths
+            if !listed.isEmpty {
+                let bullets = listed.map { "- \($0)" }.joined(separator: "\n")
+                sections.append("### Other agent instruction files\n\nRead with read_file when relevant:\n\(bullets)")
+            }
+        }
+
+        if sections.isEmpty {
             return nil  // No useful work folder context to send
         }
 
         // Bold name + blank line + body. Avoids flat-colon `Name:` /
         // `Description:` labels that would re-introduce mixed label style.
-        return "**\(wf.name)**\n\n\(context)"
+        return "**\(wf.name)**\n\n\(sections.joined(separator: "\n\n"))"
     }
 }

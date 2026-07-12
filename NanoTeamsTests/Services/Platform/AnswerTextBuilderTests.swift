@@ -60,6 +60,118 @@ final class AnswerTextBuilderTests: XCTestCase {
         XCTAssertFalse(result.answer.contains("\u{200B}"))
     }
 
+    // MARK: - Skills
+
+    private func skillClip(_ name: String, agent: String? = "Claude Code", origin: AgentSkillOrigin? = .project, body: String) -> String {
+        SkillClip(name: name, agentLabel: agent, origin: origin, body: body).encoded()
+    }
+
+    func testSkillClip_emitsSkillSection_withFullBody() {
+        let clip = skillClip("code-review", body: "# Review\nCheck for bugs.")
+        let result = AnswerTextBuilder.build(text: "please help", clips: [clip])
+        XCTAssertTrue(result.answer.contains("## Skill: code-review"))
+        XCTAssertTrue(result.answer.contains("# Review\nCheck for bugs."))
+        XCTAssertFalse(result.answer.contains("## Clipped Text"))
+        // Sentinel consumed by parse — never reaches the LLM.
+        XCTAssertFalse(result.answer.contains("\u{200B}"))
+        XCTAssertTrue(result.answer.hasPrefix("please help"))
+    }
+
+    func testSkills_emittedBeforeClips() {
+        let skill = skillClip("review", body: "skill body")
+        let result = AnswerTextBuilder.build(text: "", clips: [skill, "plain clip"])
+        let skillIdx = result.answer.range(of: "## Skill: review")!.lowerBound
+        let clipIdx = result.answer.range(of: "## Clipped Text")!.lowerBound
+        XCTAssertLessThan(skillIdx, clipIdx)
+    }
+
+    func testClipNumbering_excludesSkills() {
+        let skill = skillClip("review", body: "skill body")
+        let result = AnswerTextBuilder.build(text: "", clips: [skill, "clip A", "clip B"])
+        // Numbering counts only the two non-skill clips.
+        XCTAssertTrue(result.answer.contains("1 of 2"))
+        XCTAssertTrue(result.answer.contains("2 of 2"))
+        XCTAssertFalse(result.answer.contains("1 of 3"))
+        XCTAssertFalse(result.answer.contains("## Skill: review\u{2014}"))
+    }
+
+    func testSkillPlusClipPlusEmbeddedFile_sectionOrder() {
+        let tempURL = createTempFile(name: "data.txt", content: "file body")
+        let attachment = makeStagedAttachment(url: tempURL)
+        let skill = skillClip("review", body: "skill body")
+        let result = AnswerTextBuilder.build(
+            text: "user text",
+            clips: [skill, "a clip"],
+            attachments: [attachment],
+            embedFiles: true
+        )
+        let textIdx = result.answer.range(of: "user text")!.lowerBound
+        let skillIdx = result.answer.range(of: "## Skill: review")!.lowerBound
+        let clipIdx = result.answer.range(of: "## Clipped Text")!.lowerBound
+        let fileIdx = result.answer.range(of: "## Attached File: data.txt")!.lowerBound
+        XCTAssertLessThan(textIdx, skillIdx)
+        XCTAssertLessThan(skillIdx, clipIdx)
+        XCTAssertLessThan(clipIdx, fileIdx)
+    }
+
+    func testEmptySkillBody_dropped() {
+        let emptyBodySkill = "\u{200B}// Skill: review\n   \n  "
+        let result = AnswerTextBuilder.build(text: "hi", clips: [emptyBodySkill])
+        XCTAssertFalse(result.answer.contains("## Skill:"))
+        XCTAssertEqual(result.answer, "hi")
+    }
+
+    func testMultipleSkills_eachGetsSection() {
+        let a = skillClip("alpha", body: "body a")
+        let b = skillClip("beta", body: "body b")
+        let result = AnswerTextBuilder.build(text: "", clips: [a, b])
+        XCTAssertTrue(result.answer.contains("## Skill: alpha"))
+        XCTAssertTrue(result.answer.contains("## Skill: beta"))
+    }
+
+    func testSkillPlusRawSourceContextClip_skillStaysSkill_sourceDegradesToPlain() {
+        // A raw SourceContext clip's sentinel is stripped by the clip trim, so it
+        // renders as a plain "## Clipped Text"; the skill keeps its own section.
+        let skill = skillClip("review", body: "skill body")
+        let sourceClip = "\u{200B}// Source: main.swift:1-2\nlet x = 1"
+        let result = AnswerTextBuilder.build(text: "", clips: [skill, sourceClip]).answer
+        XCTAssertTrue(result.contains("## Skill: review"))
+        XCTAssertTrue(result.contains("## Clipped Text"))
+        XCTAssertTrue(result.contains("let x = 1"))
+        XCTAssertFalse(result.contains("\u{200B}"))
+    }
+
+    func testTwoSkillsPlusThreeClips_numberingOverClipsOnly() {
+        let a = skillClip("alpha", body: "a")
+        let b = skillClip("beta", body: "b")
+        let result = AnswerTextBuilder.build(text: "", clips: [a, "c1", b, "c2", "c3"]).answer
+        XCTAssertTrue(result.contains("## Skill: alpha"))
+        XCTAssertTrue(result.contains("## Skill: beta"))
+        XCTAssertTrue(result.contains("1 of 3"))
+        XCTAssertTrue(result.contains("3 of 3"))
+        XCTAssertFalse(result.contains("of 5"))
+    }
+
+    func testClipSections_skillOnly_returnsSingleSection() {
+        let sections = AnswerTextBuilder.clipSections(from: [skillClip("x", body: "y")])
+        XCTAssertEqual(sections.count, 1)
+        XCTAssertTrue(sections[0].hasPrefix("## Skill: x"))
+    }
+
+    func testClipSections_empty_returnsEmpty() {
+        XCTAssertTrue(AnswerTextBuilder.clipSections(from: ["", "   "]).isEmpty)
+    }
+
+    func testClipSections_parity_withEffectiveSupervisorBrief() {
+        let skill = skillClip("review", body: "skill body")
+        let clips = [skill, "plain clip"]
+        let sections = AnswerTextBuilder.clipSections(from: clips)
+        let task = NTMSTask(id: 1, title: "T", supervisorTask: "", clippedTexts: clips)
+        // With no supervisorTask and no attachments, the brief is exactly the
+        // shared clip sections joined — parity by construction.
+        XCTAssertEqual(task.effectiveSupervisorBrief, sections.joined(separator: "\n\n"))
+    }
+
     // MARK: - File Embedding
 
     func testEmbedFiles_false_ignoresAttachments() {
@@ -224,6 +336,60 @@ final class AnswerTextBuilderTests: XCTestCase {
         XCTAssertTrue(answerRange!.lowerBound < clipRange!.lowerBound)
         XCTAssertTrue(clipRange!.lowerBound < fileRange!.lowerBound)
         XCTAssertTrue(result.failedFiles.isEmpty)
+    }
+
+    // MARK: - embedSection(url:) primitive
+    // The shared read+format primitive that both build() (above) and EmbedFilesButton use.
+
+    func testEmbedSection_textFile_returnsEmbeddedSection() {
+        let url = createTempFile(name: "note.txt", content: "hello world")
+        guard case .embedded(let section) = AnswerTextBuilder.embedSection(url: url) else {
+            return XCTFail("expected .embedded")
+        }
+        XCTAssertEqual(section, "## Attached File: note.txt\nhello world")
+    }
+
+    func testEmbedSection_imageExtension_returnsSkippedBinary() {
+        let url = createTempFile(name: "pic.png", content: "not really a png")
+        XCTAssertEqual(AnswerTextBuilder.embedSection(url: url), .skippedBinary,
+                       "image extensions are skipped before any read — they belong as paths, not inline text")
+    }
+
+    func testEmbedSection_unreadableFile_returnsFailed() {
+        let url = createTempFile(name: "gone.txt", content: "temp")
+        try! FileManager.default.removeItem(at: url)
+        XCTAssertEqual(AnswerTextBuilder.embedSection(url: url), .failed(fileName: "gone.txt"))
+    }
+
+    func testEmbedSection_extractorFailureMessage_returnsFailed() {
+        let url = createTempFile(name: "broken.pdf", content: "[Could not extract text from broken.pdf: reason]")
+        XCTAssertEqual(AnswerTextBuilder.embedSection(url: url), .failed(fileName: "broken.pdf"))
+    }
+
+    func testEmbedSection_uppercaseImageExtension_returnsSkippedBinary() {
+        // The image-skip check lowercases the extension, so `.PNG` is skipped just like `.png`.
+        let url = createTempFile(name: "PHOTO.PNG", content: "not a real png")
+        XCTAssertEqual(AnswerTextBuilder.embedSection(url: url), .skippedBinary)
+    }
+
+    func testEmbedSection_emptyFile_embedsEmptyContent() {
+        // A readable 0-byte file is a valid (if empty) embed — not a failure.
+        let url = createTempFile(name: "empty.txt", content: "")
+        XCTAssertEqual(AnswerTextBuilder.embedSection(url: url), .embedded(section: "## Attached File: empty.txt\n"))
+    }
+
+    func testEmbedSection_noExtension_embedsAsText() {
+        // No extension → not an image, not a document format → UTF-8 read succeeds.
+        let url = createTempFile(name: "README", content: "plain readme body")
+        XCTAssertEqual(AnswerTextBuilder.embedSection(url: url), .embedded(section: "## Attached File: README\nplain readme body"))
+    }
+
+    func testEmbedSection_markdownFile_embedsRawMarkup() {
+        // Source-like formats (.md) are NOT run through DocumentTextExtractor — the raw
+        // markup is embedded verbatim (headings/backticks preserved).
+        let md = "# Title\n\n- `code`\n"
+        let url = createTempFile(name: "spec.md", content: md)
+        XCTAssertEqual(AnswerTextBuilder.embedSection(url: url), .embedded(section: "## Attached File: spec.md\n\(md)"))
     }
 
     // MARK: - Helpers

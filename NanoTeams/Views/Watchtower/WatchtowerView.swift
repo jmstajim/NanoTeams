@@ -69,10 +69,11 @@ struct WatchtowerView: View {
                                 if success { refreshNotifications() }
                                 return success
                             },
-                            onSubmitAnswer: { stepID, answer, attachments in
+                            onSubmitAnswer: { stepID, answer, attachments, clips in
                                 let embedFiles = config.embedFilesInPrompt
                                 let built = AnswerTextBuilder.build(
                                     text: answer,
+                                    clips: clips,
                                     attachments: attachments,
                                     embedFiles: embedFiles
                                 )
@@ -93,7 +94,8 @@ struct WatchtowerView: View {
                             },
                             onRemoveAttachment: { attachment in
                                 store.removeStagedAttachment(attachment)
-                            }
+                            },
+                            skillsProjectRoot: store.hasRealWorkFolder ? store.workFolderURL : nil
                         )
                         .transition(.scale(scale: 0.95, anchor: .center).combined(with: .opacity))
                     }

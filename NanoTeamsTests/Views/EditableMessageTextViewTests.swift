@@ -524,6 +524,76 @@ final class EditableMessageTextViewTests: XCTestCase {
         wait(for: [expectation], timeout: 1.0)
     }
 
+    // MARK: - Input lock (improve-prompt streaming)
+
+    /// Default is unlocked — existing composer surfaces keep full editing.
+    func testInputLock_defaultsFalse() {
+        let textView = makeStandaloneEditableNSTextView()
+        XCTAssertFalse(textView.isInputLocked)
+    }
+
+    /// While locked, the `shouldChangeText` funnel refuses interactive edits
+    /// (keyboard, paste, delete). This is what blocks the user from typing a
+    /// half-improved prompt mid-stream.
+    func testInputLock_locked_refusesInteractiveEdits() {
+        let textView = makeStandaloneEditableNSTextView()
+        textView.string = "original"
+        textView.isInputLocked = true
+
+        let allowed = textView.shouldChangeText(
+            in: NSRange(location: 8, length: 0), replacementString: "!")
+
+        XCTAssertFalse(allowed, "a locked field must reject user edits at the shouldChangeText gate")
+    }
+
+    /// Unlocked, the gate defers to NSTextView's default (permits the edit).
+    func testInputLock_unlocked_permitsInteractiveEdits() {
+        let textView = makeStandaloneEditableNSTextView()
+        textView.string = "original"
+        textView.isInputLocked = false
+
+        let allowed = textView.shouldChangeText(
+            in: NSRange(location: 8, length: 0), replacementString: "!")
+
+        XCTAssertTrue(allowed)
+    }
+
+    /// The improve stream writes via `.string =` (through the Coordinator's
+    /// `applyText`), which bypasses `shouldChangeText` — so a locked field
+    /// still receives programmatic stream writes.
+    func testInputLock_programmaticApplyText_landsWhileLocked() async {
+        let coordinator = EditableMessageTextView.Coordinator()
+        let textView = makeStandaloneEditableNSTextView()
+        textView.string = "original"
+        textView.isInputLocked = true
+        coordinator.absorbInitialText("original")
+
+        coordinator.applyText("streamed rewrite", to: textView)
+
+        XCTAssertEqual(textView.string, "streamed rewrite",
+                       "programmatic stream writes must land even while manual input is locked")
+    }
+
+    /// `makeNSView` threads the initial `isInputLocked` onto the text view.
+    func testMakeNSView_appliesInitialInputLock() {
+        let textBinding = MutableBoxBinding(initial: "x")
+        let focusBinding = MutableBoxBinding(initial: false)
+        let view = EditableMessageTextView(
+            text: textBinding.binding,
+            isFocused: focusBinding.binding,
+            placeholder: "",
+            maxHeight: 220,
+            minLineCount: 1,
+            autofocusOnAppear: false,
+            onReturnKey: { _, _ in false },
+            isInputLocked: true
+        )
+        let coordinator = view.makeCoordinator()
+        let scrollView = view.testHooks_makeNSView(coordinator: coordinator)
+
+        XCTAssertEqual((scrollView.documentView as? EditableNSTextView)?.isInputLocked, true)
+    }
+
     // MARK: - Test fixtures
 
     private func makeStandaloneTextView(initialText: String) -> NSTextView {

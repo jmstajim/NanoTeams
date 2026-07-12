@@ -69,6 +69,10 @@ struct PromptPreviewSheet: View {
         // to pick up settings changes. Trade-off: zero observation overhead
         // during runs.
         .task(id: roleDefinition.id) {
+            // Rescan agent instruction files first — the wire rescans at every
+            // startRun, so a preview rendered from a stale snapshot would be
+            // byte-identical to the PREVIOUS wire, not the upcoming one.
+            await store.refreshAgentInstructions()
             rendered = renderFromEnv()
         }
     }
@@ -88,7 +92,8 @@ struct PromptPreviewSheet: View {
             selectedScheme: workFolder?.settings.selectedScheme,
             isVisionConfigured: store.visionLLMConfig != nil,
             isComputerUseEnabled: config.isComputerUseEnabled,
-            globalContext: config.globalContext
+            globalContext: config.globalContext,
+            agentInstructions: store.agentInstructions
         )
         return renderWirePreview(kind: .stepExecution, inputs: inputs)
     }

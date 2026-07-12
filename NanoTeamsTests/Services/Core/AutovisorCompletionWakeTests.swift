@@ -254,4 +254,155 @@ final class AutovisorCompletionWakeTests: NTMSOrchestratorTestBase {
         XCTAssertFalse(sut.autovisorLastPassAttentionKeys.contains(stuckKey),
                        "a no-longer-stuck task's stale key must be dropped by the recompute")
     }
+
+    // MARK: - engine-less `.failed` wakes the manager (create_team generation failure)
+
+    /// A top-level task with a single step of `status` on `teamID` (default the
+    /// Startup team) and NO `taskEngineStates` entry — the exact shape a `create_team`
+    /// generation outcome leaves behind: `runTeamGeneration` mutates the step but
+    /// creates an engine only on success, so nothing ever writes `taskEngineStates[id]`.
+    /// This is the case the immediate event-wake used to miss (it observed only
+    /// engine-state changes) and that the `allTaskStatuses` observer now covers by
+    /// driving the same wake.
+    private func makeEnginelessTask(status: StepStatus, teamID: NTMSID? = nil) async -> Int {
+        let taskID = await sut.createTask(title: "Gen", supervisorTask: "build",
+                                          preferredTeamID: teamID ?? startupTeamID(), makeActive: false)!
+        await sut.ensureTaskLoaded(taskID)
+        await sut.mutateTask(taskID: taskID) { task in
+            let step = StepExecution(id: "team_generation_X", role: .supervisor,
+                                     title: "Generate Team", status: status)
+            task.runs = [Run(id: 0, steps: [step], roleStatuses: [:])]
+        }
+        // Deliberately DO NOT set `sut.engineState[taskID]`: a generation failure
+        // starts an engine only on success, so `taskEngineStates` has no entry.
+        return taskID
+    }
+
+    /// The reported bug's shape: an engine-less `.failed` task.
+    private func makeEnginelessFailedTask() async -> Int {
+        await makeEnginelessTask(status: .failed)
+    }
+
+    func testFailedTask_noEngineEntry_wakesParkedManager() async {
+        let mgrID = await parkedManager()
+        let failedID = await makeEnginelessFailedTask()
+
+        XCTAssertEqual(sut.snapshot?.tasksIndex.tasks.first(where: { $0.id == failedID })?.status,
+                       .failed, "an engine-less failed step must derive to .failed in the index")
+        XCTAssertNil(sut.taskEngineStates[failedID],
+                     "precondition: no engine-state entry (a generation failure creates none)")
+        let before = runCount(mgrID)
+
+        await sut.wakeAutovisorForEvents()
+
+        XCTAssertGreaterThan(runCount(mgrID), before,
+                             "a failed task with no engine entry must wake the parked manager — the create_team-failure case")
+        sut.stopEngineForTask(mgrID)
+    }
+
+    func testFailedTask_autovisorDisabled_noWake() async {
+        let mgrID = await parkedManager()
+        await sut.mutateWorkFolder { $0.settings.autovisorEnabled = false }
+        _ = await makeEnginelessFailedTask()
+        let before = runCount(mgrID)
+
+        await sut.wakeAutovisorForEvents()
+
+        XCTAssertEqual(runCount(mgrID), before,
+                       "with the Autovisor disabled the wake must self-guard to a no-op")
+    }
+
+    func testFailedTask_alreadyInBaseline_notReWaked() async {
+        let mgrID = await parkedManager()
+        let failedID = await makeEnginelessFailedTask()
+        sut.autovisorLastPassAttentionKeys = [
+            NTMSOrchestrator.AutovisorAttentionKey(taskID: failedID, trigger: .failed)
+        ]
+        let before = runCount(mgrID)
+
+        await sut.wakeAutovisorForEvents()
+
+        XCTAssertEqual(runCount(mgrID), before,
+                       "an already-reviewed failed condition is not re-delivered (deliver-once)")
+    }
+
+    /// The no-double-wake guarantee the fix relies on: a `create_team` failure now
+    /// fires BOTH the `allTaskStatuses` observer AND (for a normal failure) the
+    /// engine-state observer, and the ≤60s poll can fire too. The fresh-pass wake
+    /// records the `.failed` condition into `autovisorLastPassAttentionKeys`
+    /// SYNCHRONOUSLY (before the await), so a concurrent second wake for the same
+    /// failure sees it as not-fresh and bails — no second `createNewRun`. Mirrors
+    /// `testFreshWake_recordsPassSnapshot_forConcurrentWakeSerialization` for `.failed`.
+    func testFailedTask_freshWake_recordsBaselineForSerialization() async {
+        let mgrID = await parkedManager()
+        let failedID = await makeEnginelessFailedTask()
+
+        await sut.wakeAutovisorForEvents()
+
+        XCTAssertTrue(
+            sut.autovisorLastPassAttentionKeys.contains(
+                NTMSOrchestrator.AutovisorAttentionKey(taskID: failedID, trigger: .failed)),
+            "the fresh-pass wake must record the failed condition as the deliver-once baseline")
+        sut.stopEngineForTask(mgrID)
+    }
+
+    /// The real `create_team` failure sits on a CHAT-mode placeholder team. The
+    /// chat-mode status override touches only a `.done` base, so a `.failed` step
+    /// still derives `.failed` and wakes the manager — a chat-mode override must
+    /// never swallow a failure.
+    func testFailedTask_chatModeTask_derivesFailedAndWakes() async {
+        let mgrID = await parkedManager()
+        guard let chatID = sut.snapshot?.workFolder.teams
+            .first(where: { $0.isChatMode && !$0.isHiddenFromPickers })?.id else {
+            XCTFail("a bundled chat-mode team must exist"); return
+        }
+        let failedID = await makeEnginelessTask(status: .failed, teamID: chatID)
+
+        XCTAssertEqual(sut.loadedTask(failedID)?.isChatMode, true, "precondition: chat-mode task")
+        XCTAssertEqual(sut.snapshot?.tasksIndex.tasks.first(where: { $0.id == failedID })?.status,
+                       .failed, "a chat-mode failure still derives .failed (override is .done-only)")
+        let before = runCount(mgrID)
+
+        await sut.wakeAutovisorForEvents()
+
+        XCTAssertGreaterThan(runCount(mgrID), before,
+                             "a chat-mode failed task must still wake the manager")
+        sut.stopEngineForTask(mgrID)
+    }
+
+    /// The manager may have NO engine entry at all (idle after app restart, or a
+    /// pass that fully ended). A fresh `.failed` condition must still wake it — the
+    /// `startAutovisorPass` idle path (no parked engine to stop) reaches `startRun`.
+    func testFailedTask_idleManagerNoEngineEntry_wakesFreshPass() async {
+        let mgrID = await parkedManager()
+        sut.engineState[mgrID] = nil   // fully idle — not parked, not running
+        _ = await makeEnginelessFailedTask()
+        let before = runCount(mgrID)
+
+        await sut.wakeAutovisorForEvents()
+
+        XCTAssertGreaterThan(runCount(mgrID), before,
+                             "an idle (no-engine-entry) manager must wake on a fresh failure")
+        sut.stopEngineForTask(mgrID)
+    }
+
+    /// Safety of the broadened trigger: the new `allTaskStatuses` observer fires on
+    /// ANY derived-status change, but the wake only ACTS on real conditions. The
+    /// intermediate generating state (a `.running` engine-less step, before the run
+    /// succeeds or fails) matches no trigger, so it must NOT wake the manager — only
+    /// the terminal `.failed` does. Guards against the observer over-waking.
+    func testRunningEnginelessTask_doesNotWake() async {
+        let mgrID = await parkedManager()
+        let runningID = await makeEnginelessTask(status: .running)
+        sut.autovisorSeenTaskIDs.insert(runningID)   // defensive: onTaskCreated can't fire
+
+        XCTAssertEqual(sut.snapshot?.tasksIndex.tasks.first(where: { $0.id == runningID })?.status,
+                       .running, "precondition: a still-generating task derives .running, not .failed")
+        let before = runCount(mgrID)
+
+        await sut.wakeAutovisorForEvents()
+
+        XCTAssertEqual(runCount(mgrID), before,
+                       "a still-generating (.running) task matches no trigger — the status-change observer must not spuriously wake the manager")
+    }
 }

@@ -129,7 +129,8 @@ extension LLMExecutionService {
             allTeams: delegate.snapshot?.workFolder.teams ?? [],
             selectedScheme: delegate.snapshot?.workFolder.settings.selectedScheme,
             isVisionConfigured: delegate.visionLLMConfig != nil,
-            isComputerUseEnabled: delegate.computerUsePolicy.isEnabled
+            isComputerUseEnabled: delegate.computerUsePolicy.isEnabled,
+            autovisorAllowTeamGeneration: delegate.snapshot?.workFolder.settings.autovisorAllowTeamGeneration ?? true
         )
     }
 
@@ -151,7 +152,8 @@ extension LLMExecutionService {
         allTeams: [Team] = [],
         selectedScheme: String? = nil,
         isVisionConfigured: Bool = false,
-        isComputerUseEnabled: Bool = false
+        isComputerUseEnabled: Bool = false,
+        autovisorAllowTeamGeneration: Bool = true
     ) -> [ToolSchema] {
         // 1. Find role definition — findRole handles id, systemRoleID, and name (custom roles
         // created via Role.fromDefinition carry the role's name, not its id, in `.custom(id:)`).
@@ -238,7 +240,8 @@ extension LLMExecutionService {
         // description (per-build, same pattern as delegate_to_team) so the manager knows
         // valid team_ids. Only the hidden Manager role carries create_managed_task.
         if let idx = allowedTools.firstIndex(where: { $0.name == tn.createManagedTask }) {
-            allowedTools[idx] = CreateManagedTaskTool.buildSchema(allTeams: allTeams)
+            allowedTools[idx] = CreateManagedTaskTool.buildSchema(
+                allTeams: allTeams, allowGenerated: autovisorAllowTeamGeneration)
         }
 
         // 4. Auto-inject ask_supervisor for non-producing, non-observer roles —

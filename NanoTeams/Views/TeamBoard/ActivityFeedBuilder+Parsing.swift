@@ -68,6 +68,37 @@ nonisolated extension ActivityFeedBuilder {
             }
         }
 
+        // Extract "## Skill: <name>" sections (line-anchored). Runs AFTER the clip
+        // block: skills precede clips in built strings, so cutting clips first
+        // leaves [text][skills]. Each section is re-encoded as a SkillClip
+        // (display form) and appended to clippedTexts, so the same cell renderers
+        // that parse staged clips render feed chips — the tuple shape is unchanged.
+        if let regex = try? NSRegularExpression(pattern: SkillConstants.stripPattern, options: [.anchorsMatchLines]) {
+            let nsRemaining = remaining as NSString
+            let matches = regex.matches(in: remaining, range: NSRange(location: 0, length: nsRemaining.length))
+            if !matches.isEmpty {
+                for i in 0..<matches.count {
+                    let headerRange = matches[i].range
+                    let headerLine = nsRemaining.substring(with: headerRange)
+                    let name = String(headerLine.dropFirst(SkillConstants.promptHeaderPrefix.count))
+                        .trimmingCharacters(in: .whitespaces)
+                    let contentStart = headerRange.upperBound
+                    let contentEnd = i + 1 < matches.count
+                        ? matches[i + 1].range.location
+                        : nsRemaining.length
+                    let body = nsRemaining
+                        .substring(with: NSRange(location: contentStart, length: contentEnd - contentStart))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !name.isEmpty, !body.isEmpty {
+                        clippedTexts.append(SkillClip(name: name, body: body).encoded())
+                    }
+                }
+                if let firstMatch = matches.first {
+                    remaining = nsRemaining.substring(to: firstMatch.range.location)
+                }
+            }
+        }
+
         let trimmed = remaining.trimmingCharacters(in: .whitespacesAndNewlines)
         return (trimmed.isEmpty ? nil : trimmed, paths, clippedTexts)
     }

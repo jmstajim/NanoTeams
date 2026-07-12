@@ -19,6 +19,9 @@ struct AutovisorSettingsView: View {
     @State private var goalSaveTask: Task<Void, Never>?
     @State private var memorySaveTask: Task<Void, Never>?
     @State private var tuningSaveTask: Task<Void, Never>?
+    /// Mirrored from `AutovisorGoalComposer`'s improve stream — suspends this card's
+    /// debounced goal autosave while the rewrite streams.
+    @State private var isImprovingGoal = false
     @State private var isAutoOffRowHovered = false
 
     var body: some View {
@@ -166,21 +169,45 @@ struct AutovisorSettingsView: View {
             systemImage: "target"
         ) {
             VStack(spacing: 0) {
-                HStack(alignment: .top, spacing: Spacing.xs) {
-                    PromptMarker()
-                    editor($goalDraft, minHeight: 90) { newValue in
-                        goalSaveTask?.cancel()
-                        goalSaveTask = Task {
-                            try? await Task.sleep(for: .milliseconds(500))
-                            guard !Task.isCancelled else { return }
-                            if store.workFolder?.settings.autovisorGoal != newValue {
-                                await store.updateAutovisorGoal(newValue)
-                            }
-                        }
-                    }
-                }
+                // Quick Capture-style composer minus the send button. Attachments
+                // + skill/clip cards persist to the folder goal store; the goal
+                // text keeps this card's debounced autosave (`scheduleGoalSave`).
+                AutovisorGoalComposer(
+                    text: $goalDraft,
+                    isImproving: $isImprovingGoal
+                )
 
                 rowCaption("What you want Autovisor to pursue in this folder — injected into its system prompt.", indented: false)
+            }
+            .onChange(of: goalDraft) { _, newValue in
+                // Suppress debounced autosave while the improve stream mutates
+                // goalDraft — a stall > 500ms would otherwise persist a half-improved
+                // goal into the manager's live brief. The trailing save fires once
+                // on stream end (onChange below).
+                guard !isImprovingGoal else { return }
+                scheduleGoalSave(newValue)
+            }
+            .onChange(of: isImprovingGoal) { _, improving in
+                if improving {
+                    goalSaveTask?.cancel()
+                } else {
+                    // Persist the final rewrite (or the restored original) in
+                    // one save now that the stream is done.
+                    scheduleGoalSave(goalDraft)
+                }
+            }
+        }
+    }
+
+    /// Debounced write-through to `settings.autovisorGoal`. Extracted so the
+    /// editor's onChange and the improve-stream end both funnel here.
+    private func scheduleGoalSave(_ newValue: String) {
+        goalSaveTask?.cancel()
+        goalSaveTask = Task {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            if store.workFolder?.settings.autovisorGoal != newValue {
+                await store.updateAutovisorGoal(newValue)
             }
         }
     }
@@ -344,8 +371,24 @@ struct AutovisorSettingsView: View {
                     zeroLabel: nil
                 )
                 rowCaption("Cap on tasks Autovisor may create in a single review pass.")
+
+                SettingsToggleRow(
+                    title: "Let Autovisor generate new teams",
+                    icon: "wand.and.stars",
+                    isOn: allowTeamGenerationBinding
+                )
+                rowCaption("On: Autovisor may run team generation. Off: existing teams only.")
             }
         }
+    }
+
+    /// Persists immediately (no debounced draft — it's a plain flag) via the
+    /// orchestrator setter, mirroring the Model card's `baseURLBinding` pattern.
+    private var allowTeamGenerationBinding: Binding<Bool> {
+        Binding(
+            get: { store.workFolder?.settings.autovisorAllowTeamGeneration ?? true },
+            set: { newValue in Task { await store.setAutovisorAllowTeamGeneration(newValue) } }
+        )
     }
 
     // MARK: - Stuck detection

@@ -174,6 +174,180 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertNil(result, "Should return nil when work folder has no context")
     }
 
+    // MARK: - buildWorkFolderContextMessage + agent instructions
+
+    private func wf(name: String = "MyApp", context: String) -> WorkFolderProjection {
+        WorkFolderProjection(
+            state: WorkFolderState(name: name),
+            settings: ProjectSettings(context: context),
+            teams: []
+        )
+    }
+
+    /// Snapshot builder for prompt-format tests: optional discovered main
+    /// (content-injected), path-listed discovered files, content-injected
+    /// manual text files.
+    private func snap(
+        main: (path: String, content: String)? = nil,
+        listed: [String] = [],
+        manualTexts: [(path: String, content: String)] = []
+    ) -> AgentInstructionsSnapshot {
+        var items: [AgentInstructionsSnapshot.Item] = []
+        if let main {
+            items.append(.init(relativePath: main.path, source: .discovered,
+                               isExcluded: false, injectedContent: main.content))
+        }
+        items.append(contentsOf: listed.map {
+            .init(relativePath: $0, source: .discovered, isExcluded: false, injectedContent: nil)
+        })
+        items.append(contentsOf: manualTexts.map {
+            .init(relativePath: $0.path, source: .manual, isExcluded: false, injectedContent: $0.content)
+        })
+        return AgentInstructionsSnapshot(items: items)
+    }
+
+    func testBuildWFC_contextPlusMainPlusOthers_exactBytes() {
+        let result = PromptBuilder.buildWorkFolderContextMessage(
+            workFolder: wf(context: "Ctx line"),
+            agentInstructions: snap(main: ("CLAUDE.md", "Main body"),
+                                    listed: ["docs/AGENTS.md", "z/GEMINI.md"]))
+
+        XCTAssertEqual(result, """
+        **MyApp**
+
+        Ctx line
+
+        ### Agent instructions (CLAUDE.md)
+
+        Main body
+
+        ### Other agent instruction files
+
+        Read with read_file when relevant:
+        - docs/AGENTS.md
+        - z/GEMINI.md
+        """)
+    }
+
+    func testBuildWFC_multipleInjectedFiles_sectionEach() {
+        let result = PromptBuilder.buildWorkFolderContextMessage(
+            workFolder: wf(context: ""),
+            agentInstructions: snap(main: ("CLAUDE.md", "Main body"),
+                                    listed: ["mockup.png"],
+                                    manualTexts: [("docs/style.md", "Use tabs.")]))
+
+        XCTAssertEqual(result, """
+        **MyApp**
+
+        ### Agent instructions (CLAUDE.md)
+
+        Main body
+
+        ### Agent instructions (docs/style.md)
+
+        Use tabs.
+
+        ### Other agent instruction files
+
+        Read with read_file when relevant:
+        - mockup.png
+        """)
+    }
+
+    func testBuildWFC_emptyContextWithMain_rendersMainSection() {
+        let result = PromptBuilder.buildWorkFolderContextMessage(
+            workFolder: wf(context: ""),
+            agentInstructions: snap(main: ("CLAUDE.md", "Main body")))
+
+        XCTAssertEqual(result, """
+        **MyApp**
+
+        ### Agent instructions (CLAUDE.md)
+
+        Main body
+        """)
+    }
+
+    func testBuildWFC_othersOnly_rendersOthersSection() {
+        let result = PromptBuilder.buildWorkFolderContextMessage(
+            workFolder: wf(context: ""),
+            agentInstructions: snap(listed: ["CLAUDE.md"]))
+
+        XCTAssertEqual(result, """
+        **MyApp**
+
+        ### Other agent instruction files
+
+        Read with read_file when relevant:
+        - CLAUDE.md
+        """)
+    }
+
+    func testBuildWFC_mainContentNotCapped_contextCapped() {
+        let bigContext = String(repeating: "c", count: 3000)
+        let bigMain = String(repeating: "m", count: 5000)
+        let result = PromptBuilder.buildWorkFolderContextMessage(
+            workFolder: wf(context: bigContext),
+            agentInstructions: snap(main: ("CLAUDE.md", bigMain)))
+
+        XCTAssertNotNil(result)
+        XCTAssertTrue(result!.contains(bigMain), "main content must NOT be capped")
+        XCTAssertTrue(result!.contains("..."), "context beyond 2000 chars is capped with ellipsis")
+        XCTAssertFalse(result!.contains(String(repeating: "c", count: 2001)),
+                       "context is capped at maxDescriptionChars (2000)")
+    }
+
+    func testBuildWFC_nilSnapshot_byteIdenticalToLegacy() {
+        let withNil = PromptBuilder.buildWorkFolderContextMessage(
+            workFolder: wf(context: "Hello"), agentInstructions: nil)
+        let withEmpty = PromptBuilder.buildWorkFolderContextMessage(
+            workFolder: wf(context: "Hello"), agentInstructions: .empty)
+
+        XCTAssertEqual(withNil, "**MyApp**\n\nHello")
+        XCTAssertEqual(withEmpty, withNil, "empty snapshot == nil snapshot")
+    }
+
+    func testBuildWFC_emptyEverything_returnsNil() {
+        let result = PromptBuilder.buildWorkFolderContextMessage(
+            workFolder: wf(context: ""), agentInstructions: .empty)
+        XCTAssertNil(result)
+    }
+
+    func testBuildWFC_excludedItem_demotedToPathList() {
+        // Exclusion stops CONTENT injection but never hides the file — it must
+        // render in the path list so roles can still read it on demand.
+        let items: [AgentInstructionsSnapshot.Item] = [
+            .init(relativePath: "CLAUDE.md", source: .discovered, isExcluded: true, injectedContent: nil)
+        ]
+        let result = PromptBuilder.buildWorkFolderContextMessage(
+            workFolder: wf(context: "Ctx"),
+            agentInstructions: AgentInstructionsSnapshot(items: items))
+        XCTAssertEqual(result, """
+        **MyApp**
+
+        Ctx
+
+        ### Other agent instruction files
+
+        Read with read_file when relevant:
+        - CLAUDE.md
+        """)
+    }
+
+    func testBuildWFC_mainWhitespaceOnly_droppedFromRender() {
+        // Defense-in-depth: the scanner stores trimmed non-empty content, but a
+        // hand-built whitespace-only value must still not render an empty
+        // `### Agent instructions` section.
+        let items: [AgentInstructionsSnapshot.Item] = [
+            .init(relativePath: "CLAUDE.md", source: .discovered, isExcluded: false,
+                  injectedContent: "   \n ")
+        ]
+        let result = PromptBuilder.buildWorkFolderContextMessage(
+            workFolder: wf(context: "Ctx"),
+            agentInstructions: AgentInstructionsSnapshot(items: items))
+        XCTAssertEqual(result, "**MyApp**\n\nCtx")
+    }
+
     // MARK: - buildPipelineContext
 
     func testBuildPipelineContext_stepIndexZero_returnsEmpty() {

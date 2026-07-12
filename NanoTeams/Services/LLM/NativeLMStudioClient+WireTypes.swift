@@ -230,8 +230,9 @@ nonisolated extension NativeLMStudioClient {
     /// distinct from the OpenAI-shaped `/api/v1/models` (which has no
     /// per-instance state). Used by `listLoadedInstances` to detect models
     /// already loaded server-side and avoid creating duplicates on app
-    /// restart. Only `id` and `state` are consumed; other fields decoded
-    /// best-effort.
+    /// restart, and by `modelContextLength` to size prompts to the model's
+    /// context window. `id`/`state`/context-length fields are consumed;
+    /// other fields decoded best-effort.
     struct V0ModelListResponse: Decodable {
         let data: [Entry]
 
@@ -246,6 +247,29 @@ nonisolated extension NativeLMStudioClient {
             /// Optional category — `"embeddings"`, `"llm"`, `"vlm"`, etc.
             /// Decoded best-effort.
             let type: String?
+            /// The model's maximum supported context length (`max_context_length`).
+            /// Present for both loaded and not-loaded entries. Best-effort optional.
+            let maxContextLength: Int?
+            /// The context length the model was actually loaded with
+            /// (`loaded_context_length`) — can be SMALLER than `maxContextLength`
+            /// when the user loads the model with a reduced window. Present ONLY
+            /// on `state == "loaded"` entries. **Undocumented by LM Studio** —
+            /// observed on a live server; decoded best-effort so its absence on
+            /// older builds degrades to `maxContextLength`.
+            let loadedContextLength: Int?
+
+            // Explicit keys: the wire decoder (`JSONCoderFactory.makeWireDecoder`)
+            // has NO snake_case strategy, so the context-length keys must be
+            // mapped by hand. `capabilities` is deliberately absent — in v0 it
+            // is an array of strings (unlike v1's object with `.vision`), so
+            // decoding it here would be wrong; it is simply not consumed.
+            enum CodingKeys: String, CodingKey {
+                case id
+                case state
+                case type
+                case maxContextLength = "max_context_length"
+                case loadedContextLength = "loaded_context_length"
+            }
         }
     }
 }

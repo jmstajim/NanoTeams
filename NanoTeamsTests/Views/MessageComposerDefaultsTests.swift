@@ -86,6 +86,98 @@ final class MessageComposerDefaultsTests: XCTestCase {
 
     // MARK: - explicit override
 
+    // MARK: - Editor-field mode (Autovisor Goal composer)
+
+    /// The regular (message) inits must default `isEditorField` to false so every
+    /// existing send-capable surface keeps its send button + keyhint + submit-on-Return.
+    func testMessageInits_defaultIsEditorFieldFalse() {
+        let convenience = MessageComposer(
+            text: .constant(""), attachments: .constant([]),
+            placeholder: "", canSubmit: false, isSubmitting: false,
+            onSubmit: {}, onStageAttachment: { _ in nil }, onRemoveAttachment: { _ in }
+        )
+        XCTAssertFalse(convenience.isEditorField)
+
+        let memberwise = MessageComposer(
+            text: .constant(""), attachments: .constant([]), clips: nil,
+            placeholder: "", canSubmit: false, isSubmitting: false,
+            onSubmit: {}, onStageAttachment: { _ in nil }, onRemoveAttachment: { _ in },
+            filePickerBinding: nil, autofocusOnAppear: false, minLineCount: 1
+        ) { EmptyView() }
+        XCTAssertFalse(memberwise.isEditorField)
+    }
+
+    /// The editor convenience init opts into send-less mode: `isEditorField` true,
+    /// `canSubmit` false (nothing to submit), and a taller default `minLineCount`.
+    func testEditorInit_configuresSendlessEditorMode() {
+        let composer = MessageComposer(
+            editorText: .constant(""),
+            attachments: .constant([]),
+            onStageAttachment: { _ in nil },
+            onRemoveAttachment: { _ in }
+        )
+        XCTAssertTrue(composer.isEditorField)
+        XCTAssertFalse(composer.canSubmit, "Editor mode has nothing to submit.")
+        XCTAssertEqual(composer.minLineCount, 3)
+        XCTAssertEqual(
+            composer.maxTextFieldHeight,
+            MessageComposerLayout.defaultMaxTextFieldHeight,
+            "Editor init's default must read from MessageComposerLayout, not a literal."
+        )
+    }
+
+    // MARK: - returnAction
+
+    /// Editor mode always inserts a newline — the send button is gone, so Return
+    /// must never submit regardless of the `enterSendsMessage` preference or modifiers.
+    func testReturnAction_editorMode_alwaysInsertsNewline() {
+        for enterSends in [true, false] {
+            for shift in [true, false] {
+                for command in [true, false] {
+                    for canSubmit in [true, false] {
+                        let action = MessageComposer<EmptyView>.returnAction(
+                            isEditorField: true,
+                            enterSendsMessage: enterSends,
+                            hasShift: shift,
+                            hasCommand: command,
+                            canSubmit: canSubmit,
+                            isSubmitting: false
+                        )
+                        XCTAssertEqual(action, .insertNewline,
+                            "editor mode must insert newline (enterSends=\(enterSends) shift=\(shift) cmd=\(command) canSubmit=\(canSubmit))")
+                    }
+                }
+            }
+        }
+    }
+
+    /// Non-editor mode delegates verbatim to `MessageKeyPolicy` — the shared submit
+    /// semantics for every message surface stay unchanged.
+    func testReturnAction_nonEditor_delegatesToMessageKeyPolicy() {
+        for enterSends in [true, false] {
+            for shift in [true, false] {
+                for command in [true, false] {
+                    for canSubmit in [true, false] {
+                        for submitting in [true, false] {
+                            let via = MessageComposer<EmptyView>.returnAction(
+                                isEditorField: false,
+                                enterSendsMessage: enterSends,
+                                hasShift: shift, hasCommand: command,
+                                canSubmit: canSubmit, isSubmitting: submitting
+                            )
+                            let direct = MessageKeyPolicy.resolveReturnKey(
+                                enterSendsMessage: enterSends,
+                                hasShift: shift, hasCommand: command,
+                                canSubmit: canSubmit, isSubmitting: submitting
+                            )
+                            XCTAssertEqual(via, direct)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     func testConvenienceInit_explicitOverride_passesThrough() {
         let composer = MessageComposer(
             text: .constant(""),

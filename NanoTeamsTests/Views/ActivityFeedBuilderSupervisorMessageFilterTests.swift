@@ -59,6 +59,17 @@ final class ActivityFeedBuilderSupervisorMessageFilterTests: XCTestCase {
         XCTAssertFalse(ActivityFeedBuilder.shouldSuppressEmptySupervisorMessage(msg))
     }
 
+    /// `.supervisorMessage` carrying only a skill (no typed text) — the skill
+    /// re-extracts into `clippedTexts`, so the message is NOT empty.
+    func testShouldSuppress_supervisorMessage_skillOnly_isFalse() async {
+        let msg = LLMMessage(
+            createdAt: date(0), role: .user,
+            content: "Supervisor:\n## Skill: review\nskill body",
+            sourceRole: .supervisor, sourceContext: .supervisorMessage
+        )
+        XCTAssertFalse(ActivityFeedBuilder.shouldSuppressEmptySupervisorMessage(msg))
+    }
+
     /// `.supervisorMessage` with no body but attached files — the
     /// attachment cards are real content, must NOT suppress.
     func testShouldSuppress_supervisorMessage_attachmentsOnly_isFalse() async {

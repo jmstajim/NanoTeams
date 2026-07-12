@@ -8,6 +8,7 @@ import XCTest
 final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     var workFolderURL: URL?
     var snapshot: WorkFolderContext?
+    var agentInstructions: AgentInstructionsSnapshot?
     var globalLLMConfig: LLMConfig = LLMConfig()
     var globalLLMContext: String = ""
     var maxLLMRetries: Int = 0

@@ -91,18 +91,32 @@ nonisolated struct CreateManagedTaskTool: ToolHandler {
         has no other context, so put everything they need into `brief`.
         """
 
-    private static let parameterSchema = JS.object(
-        properties: [
-            "title": JS.string("Short task title."),
-            "brief": JS.string("Self-contained description of what the team should produce, including paths/constraints."),
-            "team_id": JS.string("A team id from the catalog in this description, or \"generated\" to assemble a new team. Omit to use the folder's active team."),
-        ],
-        required: ["title", "brief"]
-    )
+    private static let parameterSchema = parameters(allowGenerated: true)
+
+    /// The `team_id` param description varies with whether on-the-fly team
+    /// generation is allowed for this folder (the `"generated"` sentinel is only
+    /// mentioned when it's a valid value).
+    private static func parameters(allowGenerated: Bool) -> JSONSchema {
+        let teamIDDescription = allowGenerated
+            ? "A team id from the catalog in this description, or \"generated\" to assemble a new team. Omit to use the folder's active team."
+            : "A team id from the catalog in this description. Omit to use the folder's active team."
+        return JS.object(
+            properties: [
+                "title": JS.string("Short task title."),
+                "brief": JS.string("Self-contained description of what the team should produce, including paths/constraints."),
+                "team_id": JS.string(teamIDDescription),
+            ],
+            required: ["title", "brief"]
+        )
+    }
 
     /// Per-build schema embedding the team catalog inline (same pattern as
     /// `delegate_to_team`). The manager has no other way to discover team ids.
-    static func buildSchema(allTeams: [Team]) -> ToolSchema {
+    /// `allowGenerated` gates the `"generated"` sentinel (Settings → Autovisor →
+    /// "Let Autovisor generate new teams"); when off, the bullet AND the `team_id`
+    /// description drop it so the model never sees generation as an option. Runtime
+    /// enforcement lives in `classifyManagedTeamID` (defense in depth).
+    static func buildSchema(allTeams: [Team], allowGenerated: Bool = true) -> ToolSchema {
         var lines: [String] = []
         for team in allTeams where !team.isHiddenFromPickers {
             let roleNames = team.nonSupervisorRoles.map(\.name).joined(separator: ", ")
@@ -110,9 +124,15 @@ nonisolated struct CreateManagedTaskTool: ToolHandler {
             let rolesPart = roleNames.isEmpty ? "" : ". Roles: \(roleNames)"
             lines.append("- `\(team.id)` — \"\(team.name)\"\(descPart)\(rolesPart)")
         }
-        lines.append("- `\(DelegationConstants.generatedTeamSentinel)` — assemble a fresh team for a novel task (slower; prefer an existing team when one fits).")
+        if allowGenerated {
+            lines.append("- `\(DelegationConstants.generatedTeamSentinel)` — assemble a fresh team for a novel task (slower; prefer an existing team when one fits).")
+        }
         let catalog = "Available teams:\n" + lines.joined(separator: "\n")
-        return ToolSchema(name: TN.createManagedTask, description: baseDescription + "\n\n" + catalog, parameters: parameterSchema)
+        return ToolSchema(
+            name: TN.createManagedTask,
+            description: baseDescription + "\n\n" + catalog,
+            parameters: parameters(allowGenerated: allowGenerated)
+        )
     }
 
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self { Self() }

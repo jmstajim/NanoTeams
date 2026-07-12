@@ -64,6 +64,7 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
                 loadedTasks: tasks
             )
         }
+        var agentInstructions: AgentInstructionsSnapshot? { nil }
         var loggingEnabled: Bool { false }
         func loadedTask(_ taskID: Int) -> NTMSTask? { tasks[taskID] }
         func consumeQueuedSupervisorMessage(taskID _: Int, roleID _: String, stepID _: String) async -> String? { nil }

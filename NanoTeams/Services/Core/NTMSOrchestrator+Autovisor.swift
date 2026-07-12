@@ -117,10 +117,10 @@ extension NTMSOrchestrator {
                 proj.settings.autovisorMemory = AutovisorConstants.defaultMemory
             }
         }
-        let currentGoal = snapshot?.workFolder.settings.autovisorGoal ?? AutovisorConstants.defaultGoal
-        await mutateTask(taskID: managerID) { task in
-            if task.supervisorTask != currentGoal { task.supervisorTask = currentGoal }
-        }
+        // Project the goal (+ clips + attachments) onto the manager's brief via the
+        // single mirror seam — also migrates an existing manager whose brief still
+        // holds the old hardcoded "Oversee this work folder…" text.
+        await syncAutovisorGoalToManagerBrief()
     }
 
     /// Toggles the Autovisor. Enabling lazily creates the manager task;
@@ -265,6 +265,155 @@ extension NTMSOrchestrator {
         snapshot?.workFolder.teams
             .first(where: { $0.templateID == AutovisorConstants.teamTemplateID })?
             .roles.first(where: { !$0.isSupervisor })
+    }
+
+    // MARK: - Goal composer attachments + clips
+
+    /// The persisted goal attachments as `StagedAttachment` cards, reconstructed
+    /// from `settings.autovisorGoalAttachmentPaths`. Files missing on disk are
+    /// skipped (self-heal happens in `syncAutovisorGoalToManagerBrief`).
+    /// `isProjectReference` is derived from whether the path lives inside the
+    /// app-managed `autovisor/attachments/` store (a copy — deletable) vs a
+    /// user file elsewhere in the folder (a reference — never deleted).
+    var autovisorGoalAttachments: [StagedAttachment] {
+        guard let root = workFolderURL else { return [] }
+        let paths = NTMSPaths(workFolderRoot: root)
+        return snapshot?.workFolder.settings.autovisorGoalAttachmentPaths.compactMap { rel in
+            let url = root.appendingPathComponent(rel, isDirectory: false).standardizedFileURL
+            let isRef = !SandboxPathResolver.isWithin(candidate: url, container: paths.autovisorAttachmentsDir)
+            return try? StagedAttachment(url: url, stagedRelativePath: rel, isProjectReference: isRef)
+        } ?? []
+    }
+
+    /// Stages a file for the goal composer and returns its card **synchronously**
+    /// (so it appears immediately). In-project files become references (no copy);
+    /// everything else is copied into the folder-level `autovisor/attachments/`
+    /// store. Persisting the path to settings + the manager re-mirror happen when
+    /// the host observes the attachment-list change (via `setAutovisorGoalAttachmentPaths`).
+    func stageAutovisorGoalAttachment(url: URL) -> StagedAttachment? {
+        guard let root = workFolderURL else {
+            lastErrorMessage = "No work folder available for staging attachments."
+            return nil
+        }
+        let standardized = url.standardizedFileURL
+        let paths = NTMSPaths(workFolderRoot: root)
+
+        // In-project file (outside .nanoteams/) → reference it directly, no copy.
+        if SandboxPathResolver.isWithin(candidate: standardized, container: root)
+            && !SandboxPathResolver.isWithin(candidate: standardized, container: paths.nanoteamsDir)
+            && fileManager.fileExists(atPath: standardized.path) {
+            let rel = paths.relativePathFromProjectRoot(for: standardized)
+            do {
+                return try StagedAttachment(url: standardized, stagedRelativePath: rel, isProjectReference: true)
+            } catch {
+                lastErrorMessage = error.localizedDescription
+                return nil
+            }
+        }
+
+        // External file → stage to a throwaway draft dir, finalize into the goal
+        // store, discard the draft, and return the finalized copy (deletable).
+        let draftID = UUID()
+        do {
+            let stagedRel = try repository.stageAttachment(at: root, draftID: draftID, sourceURL: url)
+            let finalRel = try repository.finalizeAutovisorGoalAttachment(at: root, stagedRelativePath: stagedRel)
+            try? repository.cleanupStagedDraft(at: root, draftID: draftID)
+            let finalURL = root.appendingPathComponent(finalRel, isDirectory: false).standardizedFileURL
+            return try StagedAttachment(url: finalURL, stagedRelativePath: finalRel, isProjectReference: false)
+        } catch {
+            try? repository.cleanupStagedDraft(at: root, draftID: draftID)
+            lastErrorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    /// Deletes a goal attachment's backing file. No-op for project references
+    /// (points at the user's real file — never delete it); the path is dropped
+    /// from settings by the host's list-change observer.
+    func removeAutovisorGoalFile(_ attachment: StagedAttachment) {
+        guard !attachment.isProjectReference else { return }
+        guard let root = workFolderURL else { return }
+        do {
+            try repository.removeStagedItem(at: root, relativePath: attachment.stagedRelativePath)
+        } catch {
+            lastErrorMessage = error.localizedDescription
+        }
+    }
+
+    /// Persists the goal attachment path list, then re-mirrors to the manager brief.
+    func setAutovisorGoalAttachmentPaths(_ paths: [String]) async {
+        await mutateWorkFolder { $0.settings.autovisorGoalAttachmentPaths = paths }
+        await syncAutovisorGoalToManagerBrief()
+    }
+
+    /// Persists the goal skill/clip cards, then re-mirrors to the manager brief.
+    func setAutovisorGoalClips(_ clips: [String]) async {
+        await mutateWorkFolder { $0.settings.autovisorGoalClips = clips }
+        await syncAutovisorGoalToManagerBrief()
+    }
+
+    /// Toggles whether the Autovisor may assemble a new team on the fly
+    /// (`create_managed_task team_id: "generated"`). Gated at both the schema
+    /// (`CreateManagedTaskTool.buildSchema`) and runtime (`classifyManagedTeamID`)
+    /// layers. Per-folder, no engine restart: the manager's next review pass
+    /// rebuilds its tool schema from the fresh setting (schemas are built once per
+    /// step in `runStep`), and the runtime gate enforces the change immediately for
+    /// a pass already in flight.
+    func setAutovisorAllowTeamGeneration(_ allow: Bool) async {
+        await mutateWorkFolder { $0.settings.autovisorAllowTeamGeneration = allow }
+    }
+
+    /// The single seam that projects the persisted goal (+ clips + attachments)
+    /// onto the manager task's brief. Called by `updateAutovisorGoal`,
+    /// `seedAutovisorDefaultsAndSyncBrief`, and the attachment/clip setters.
+    ///
+    /// Embed OFF (default): keeps `supervisorTask == goal` byte-for-byte and lets
+    /// `effectiveSupervisorBrief` append clips + the `## Attached Files` path list.
+    /// Embed ON: bakes readable file text inline via `AnswerTextBuilder.build`
+    /// (mirrors `consumeQueuedSupervisorMessage`); non-embeddable files (images)
+    /// stay in `attachmentPaths` as paths.
+    func syncAutovisorGoalToManagerBrief() async {
+        guard let id = autovisorTaskID else { return }  // no manager yet (pre-Enable) → no-op
+        guard let settings = snapshot?.workFolder.settings else { return }
+
+        // Self-heal: drop paths whose files no longer exist, persisting the cleaned
+        // list so the schedule/UI stay honest. `autovisorGoalAttachments` already
+        // skips missing files, so its paths are the surviving set.
+        let surviving = autovisorGoalAttachments
+        let survivingPaths = surviving.map(\.stagedRelativePath)
+        if survivingPaths != settings.autovisorGoalAttachmentPaths {
+            await mutateWorkFolder { $0.settings.autovisorGoalAttachmentPaths = survivingPaths }
+        }
+
+        let goal = settings.autovisorGoal
+        let clips = settings.autovisorGoalClips
+        let embed = configuration.embedFilesInPrompt
+
+        let newSupervisorTask: String
+        let newClips: [String]
+        let newPaths: [String]
+        if embed {
+            let built = AnswerTextBuilder.build(
+                text: goal, clips: clips, attachments: surviving, embedFiles: true
+            )
+            newSupervisorTask = built.answer
+            newClips = []
+            newPaths = surviving
+                .filter { !built.embeddedAttachmentIDs.contains($0.id) }
+                .map(\.stagedRelativePath)
+        } else {
+            newSupervisorTask = goal
+            newClips = clips
+            newPaths = survivingPaths
+        }
+
+        await ensureTaskLoaded(id)
+        guard loadedTask(id) != nil else { return }  // load error already surfaced
+        await mutateTask(taskID: id) { task in
+            if task.supervisorTask != newSupervisorTask { task.supervisorTask = newSupervisorTask }
+            if task.clippedTexts != newClips { task.clippedTexts = newClips }
+            if task.attachmentPaths != newPaths { task.attachmentPaths = newPaths }
+        }
     }
 
 

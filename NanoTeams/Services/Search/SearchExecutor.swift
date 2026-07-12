@@ -88,8 +88,13 @@ nonisolated enum SearchExecutorError: Error, Equatable, LocalizedError {
         switch self {
         case .regexCompileFailed(let query, let message):
             return "regex compile failed for pattern '\(query)': \(message)"
-        case .invalidFileGlob(let pattern, let message):
-            return "file_glob '\(pattern)' did not compile: \(message)"
+        case .invalidFileGlob(let pattern, _):
+            // Corrective glob vocabulary, matching `list_files`'s name_glob
+            // message — NOT the raw NSRegularExpression detail. Surfacing the
+            // compile error taught weaker models nothing (globs aren't regex to
+            // them) and drove self-correction loops. `message` is retained on
+            // the case for diagnostics/Equatable, just not shown to the model.
+            return "file_glob '\(pattern)' is not a valid glob (only * is a wildcard)."
         }
     }
 }
@@ -194,11 +199,62 @@ nonisolated enum SearchExecutor {
         // budget that gates the walk, so on saturated searches the filename
         // hit list reflects "what we walked" rather than the entire tree.
         var visitedPaths: [String] = []
+        // Dedup the roster on insert. Overlapping/duplicate `paths` entries
+        // (e.g. `["src", "src/utils"]` or `["a.txt", "a.txt"]`) would otherwise
+        // append the same file twice — inflating `visitedPaths.count`, which in
+        // list mode gates the walk and would stop it early (dropping genuinely-
+        // distinct files and spuriously marking `truncated`). Content mode also
+        // benefits: a file reachable via two paths is searched once instead of
+        // twice (matches were already deduped by `(path, line)`).
+        var visitedSet: Set<String> = []
+        // Set once list mode discovers a distinct candidate BEYOND `maxResults`
+        // (see `admitToRoster`). Distinguishes "stopped early, more exist" from
+        // "finished with exactly maxResults" so `truncated` is never a false
+        // positive on a roster that happens to equal the cap.
+        var rosterTruncated = false
+
+        // List mode: an all-empty query set means "enumerate files, don't grep".
+        // The walk still builds `visitedPaths` (glob-filtered) but skips the
+        // content read entirely, and the roster is returned as filename matches.
+        // Triggered only via `queries: [""]` from the plain `SearchTool` path;
+        // the exploratory path always carries a non-empty original query.
+        //
+        // The `!isEmpty` guard is load-bearing: `[].allSatisfy` is vacuously
+        // TRUE, so a degenerate empty query ARRAY (no terms at all — distinct
+        // from one empty term) must NOT enumerate the whole tree. It stays a
+        // zero-result search, matching `FilenameMatcher.match(queries: [])`.
+        let listMode = !input.queries.isEmpty && input.queries.allSatisfy {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
 
         func totalMatches() -> Int { perQueryMatches.reduce(0) { $0 + $1.count } }
 
         func budgetExhausted() -> Bool {
             totalMatches() >= input.maxResults || totalMatchLines >= input.maxMatchLines
+        }
+
+        // In list mode there are no content matches, so `budgetExhausted` never
+        // trips. Instead the walk halts once `admitToRoster` has confirmed one
+        // distinct candidate beyond the cap (`rosterTruncated`) — so a rare glob
+        // still walks the tree to find matches, but the walk stops one candidate
+        // past `maxResults` rather than enumerating everything after the cap.
+        func walkShouldStop() -> Bool {
+            listMode ? rosterTruncated : budgetExhausted()
+        }
+
+        // Central roster gate: dedups on insert and, in list mode, enforces the
+        // result cap. Returns true when `path` was newly admitted (the caller
+        // then decides whether to also grep it). At capacity, the first distinct
+        // over-cap candidate flips `rosterTruncated` and returns false, which
+        // halts the walk via `walkShouldStop` — nothing past the cap is added.
+        func admitToRoster(_ path: String) -> Bool {
+            guard visitedSet.insert(path).inserted else { return false }
+            if listMode && visitedPaths.count >= input.maxResults {
+                rosterTruncated = true
+                return false
+            }
+            visitedPaths.append(path)
+            return true
         }
 
         func searchFile(at url: URL, relativePath: String) {
@@ -296,12 +352,12 @@ nonisolated enum SearchExecutor {
         }
 
         func searchDirectory(at url: URL, relativePath: String) {
-            guard !budgetExhausted() else { return }
+            guard !walkShouldStop() else { return }
             if Task.isCancelled { return }
             guard let contents = try? fm.contentsOfDirectory(atPath: url.path) else { return }
 
             for name in contents.sorted() {
-                if budgetExhausted() { return }
+                if walkShouldStop() { return }
                 if Task.isCancelled { return }
                 guard !WalkSkipRules.skipped.contains(name) else { continue }
 
@@ -317,8 +373,9 @@ nonisolated enum SearchExecutor {
 
                 // RTFD is a file-bundle directory — treat as a single document.
                 if isDir.boolValue && name.hasSuffix(".rtfd") {
-                    visitedPaths.append(itemPath)
-                    searchFile(at: itemURL, relativePath: itemPath)
+                    if admitToRoster(itemPath), !listMode {
+                        searchFile(at: itemURL, relativePath: itemPath)
+                    }
                     continue
                 }
 
@@ -326,8 +383,8 @@ nonisolated enum SearchExecutor {
                     searchDirectory(at: itemURL, relativePath: itemPath)
                 } else {
                     if !GlobMatcher.matches(name: name, glob: input.fileGlob ?? "*", caseInsensitive: false) { continue }
-                    visitedPaths.append(itemPath)
-                    searchFile(at: itemURL, relativePath: itemPath)
+                    guard admitToRoster(itemPath) else { continue }
+                    if !listMode { searchFile(at: itemURL, relativePath: itemPath) }
                 }
             }
         }
@@ -335,15 +392,15 @@ nonisolated enum SearchExecutor {
         // Walk either the constrained set or the directory tree.
         if let constrained = input.constrainToFiles {
             for relative in constrained {
-                if budgetExhausted() { break }
+                if walkShouldStop() { break }
                 let url = workFolderRoot.appendingPathComponent(relative)
                 var isDir: ObjCBool = false
                 guard fm.fileExists(atPath: url.path, isDirectory: &isDir) else { continue }
                 // Treat .rtfd bundles as single files; otherwise skip directories.
                 if isDir.boolValue && !url.pathExtension.lowercased().hasSuffix("rtfd") { continue }
                 if !GlobMatcher.matches(name: url.lastPathComponent, glob: input.fileGlob ?? "*", caseInsensitive: false) { continue }
-                visitedPaths.append(relative)
-                searchFile(at: url, relativePath: relative)
+                guard admitToRoster(relative) else { continue }
+                if !listMode { searchFile(at: url, relativePath: relative) }
             }
         } else {
             var searchDirs: [URL] = []
@@ -363,15 +420,24 @@ nonisolated enum SearchExecutor {
                             of: workFolderRoot.path + "/", with: "")
                         searchDirectory(at: dir, relativePath: rel == dir.path ? "" : rel)
                     } else {
+                        // Apply `file_glob` uniformly: a single-file `paths`
+                        // entry is filtered by the glob just like a file found
+                        // in a directory walk, so a non-matching named file
+                        // doesn't slip past the filter.
+                        guard GlobMatcher.matches(name: dir.lastPathComponent, glob: input.fileGlob ?? "*", caseInsensitive: false) else { continue }
                         let rel = dir.path.replacingOccurrences(
                             of: workFolderRoot.path + "/", with: "")
                         // Mirror the dir-walk: also feed single-file `paths`
                         // entries into `visitedPaths` so filename matching
                         // sees them. Without this, `paths: ["foo.swift"]`
                         // would silently omit the only candidate from the
-                        // filename-match scan.
-                        visitedPaths.append(rel)
-                        searchFile(at: dir, relativePath: rel)
+                        // filename-match scan. No `walkShouldStop` gate here:
+                        // list mode is already bounded by `admitToRoster`, and
+                        // an explicitly-named file stays visible for filename
+                        // matching even once the content budget is full.
+                        if admitToRoster(rel), !listMode {
+                            searchFile(at: dir, relativePath: rel)
+                        }
                     }
                 }
             }
@@ -395,13 +461,17 @@ nonisolated enum SearchExecutor {
             if !progress { break }
         }
 
-        let truncated = totalMatches() >= input.maxResults || totalMatchLines >= input.maxMatchLines
+        let truncated = listMode
+            ? rosterTruncated
+            : (totalMatches() >= input.maxResults || totalMatchLines >= input.maxMatchLines)
 
-        let filenameMatches = FilenameMatcher.match(
-            candidates: visitedPaths,
-            queries: input.queries,
-            limit: input.maxResults
-        )
+        let filenameMatches = listMode
+            ? FilenameMatcher.matchAll(candidates: visitedPaths, limit: input.maxResults)
+            : FilenameMatcher.match(
+                candidates: visitedPaths,
+                queries: input.queries,
+                limit: input.maxResults
+            )
 
         return SearchExecutorOutput(
             matches: combined,

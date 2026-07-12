@@ -66,7 +66,31 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
                 return
             }
             XCTAssertEqual(pattern, GlobMatcher._testUncompilableGlobSentinel)
+            // The thrown error's description is what reaches the envelope's
+            // `search_error` field — assert the model sees corrective glob
+            // vocabulary, not the raw compile detail.
+            XCTAssertEqual(
+                searchErr.errorDescription,
+                "file_glob '\(GlobMatcher._testUncompilableGlobSentinel)' is not a valid glob (only * is a wildcard)."
+            )
         }
+    }
+
+    /// The `file_glob` compile failure surfaces to the LLM via the envelope's
+    /// `search_error` field (`errorDescription` is that text). It must give
+    /// corrective glob vocabulary — matching `list_files`'s `name_glob` message
+    /// — instead of leaking the raw NSRegularExpression detail ("did not
+    /// compile: …"), which taught weaker models nothing (globs aren't regex to
+    /// them) and drove self-correction loops. Playbook §1 (corrective errors).
+    func testInvalidFileGlob_errorDescription_isCorrectiveGlobWording() {
+        let desc = SearchExecutorError
+            .invalidFileGlob(pattern: "[bad", message: "raw regex detail")
+            .errorDescription
+        XCTAssertEqual(desc, "file_glob '[bad' is not a valid glob (only * is a wildcard).")
+        // Corner: neither the regex-leaking phrasing nor the raw compile detail
+        // may reach the model.
+        XCTAssertFalse(desc?.contains("did not compile") ?? true)
+        XCTAssertFalse(desc?.contains("raw regex detail") ?? true)
     }
 
     // MARK: - Empty input

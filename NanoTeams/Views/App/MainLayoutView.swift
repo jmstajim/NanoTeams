@@ -91,6 +91,20 @@ struct MainLayoutView: View {
                 activeStatuses: newStatuses,
                 workFolderID: store.snapshot?.projection.id
             )
+            // Immediate Autovisor wake on ANY derived task-status change. The
+            // itemizer (`autovisorAttentionItems`) reads BOTH live engine state
+            // (needsSupervisor) AND derived summary status (failed / completed /
+            // created); the sibling `taskEngineStates` observer below covers only
+            // the former. A team-generation failure flips the task to `.failed`
+            // WITHOUT an engine transition (no engine is ever created), so without
+            // this it would reach the manager only via the ≤60s poll backstop.
+            // Mirror the itemizer here so no watchable condition depends on the
+            // poll for delivery. Cheap + safe to over-fire: `wakeAutovisorForEvents`
+            // self-guards (feature off / no manager → no-op) and is deliver-once —
+            // a `.running` transition matches no trigger and no-ops, and a duplicate
+            // wake for a condition already recorded in `autovisorLastPassAttentionKeys`
+            // bails (the same synchronous serialization the two observers already rely on).
+            Task { await store.wakeAutovisorForEvents() }
         }
         .task {
             await store.bootstrapDefaultStorageIfNeeded()

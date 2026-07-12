@@ -124,6 +124,48 @@ final class TeamGenerationServiceTests: XCTestCase {
         XCTAssertEqual(result.team.name, "Trailing Junk Team")
     }
 
+    func testDecodeTeamConfig_qwen35b_droppedLastRoleObjectClose_typeA_recovers() throws {
+        // VERBATIM qwen3.5-35b-a3b `chat-only` tool arguments (run 2026-07-12).
+        // Defect: the last role object's `}` is dropped — `…"ask_supervisor"]]`
+        // where `…"ask_supervisor"]}]` was intended — plus a compensating extra
+        // `}` at the very end. Previously fell to json_extract and failed with
+        // "Could not parse tool arguments as JSON". repairStructuralCloserDrop
+        // now inserts the missing `}` and trims the trailing brace.
+        let json = #"{"name":"create_team","arguments":{"team_config":{"name":"SaaS Name Brainstorm Team","description":"Generates and discusses creative names for a meal planning SaaS product through collaborative dialogue","supervisor_mode":"manual","acceptance_mode":"finalOnly","roles":[{"name":"Name Generator","prompt":"You are a creative naming specialist for SaaS products focused on meal planning. Your job is to generate catchy, memorable, and relevant product names that convey the value of meal planning (organization, health, convenience, time-saving). Generate 5-10 new name ideas per turn and explain your reasoning for each. Use ask_supervisor if you need clarification about the target audience or brand direction.","requires_artifacts":["Supervisor Task"],"produces_artifacts":[],"tools":["read_file","write_file","edit_file","list_files","search","update_scratchpad","ask_supervisor"]},{"name":"Name Critic","prompt":"You are a branding and marketing expert who evaluates SaaS product names. Your job is to provide critical feedback on name ideas - checking for memorability, brandability, domain availability hints, relevance to meal planning, and potential confusion with existing products. Provide constructive criticism and suggest improvements or alternatives. Use ask_supervisor if you need more context about the product vision.","requires_artifacts":["Supervisor Task"],"produces_artifacts":[],"tools":["read_file","write_file","edit_file","list_files","search","update_scratchpad","ask_supervisor"]},{"name":"Discussion Facilitator","prompt":"You facilitate the brainstorming conversation between Name Generator and Name Critic. Help synthesize ideas, keep the discussion productive, and ensure both creative generation and critical evaluation happen in balance. Use ask_supervisor to get feedback on the direction of naming ideas.","requires_artifacts":["Supervisor Task"],"produces_artifacts":[],"tools":["read_file","write_file","edit_file","list_files","search","update_scratchpad","ask_supervisor"]],"supervisor_requires":[]}}}}"#
+        let result = try TeamConfigParser.decodeTeamConfig(from: json)
+        XCTAssertEqual(result.team.name, "SaaS Name Brainstorm Team")
+        for name in ["Name Generator", "Name Critic", "Discussion Facilitator"] {
+            XCTAssertTrue(result.team.roles.contains { $0.name == name }, "missing role \(name)")
+        }
+    }
+
+    func testDecodeTeamConfig_qwen35b_droppedRolesArrayClose_typeB_recovers() throws {
+        // VERBATIM qwen3.5-35b-a3b `build-claude-5` tool arguments (run 2026-07-12).
+        // Defect: the `roles` array's `]` is dropped — the last role `}` is
+        // immediately followed by `,"artifacts":[]` INSIDE the still-open array.
+        // repairStructuralCloserDrop closes the array before the stray key.
+        // Also exercises the Russian-language path end-to-end.
+        let json = #"{"name":"create_team","arguments":{"team_config":{"name":"Claude Model Analysis Team","description":"Анализирует запрос на создание Claude Opus 5.0 и предоставляет разъяснения о возможностях системы","supervisor_mode":"autonomous","acceptance_mode":"finalOnly","roles":[{"name":"Аналитик запроса","type":"Chat","prompt":"Твоя задача — проанализировать запрос пользователя на создание новой версии Claude Opus 5.0. Определи, что это невозможно выполнить (ты не можешь создавать или модифицировать AI-модели). Подготовь вежливое разъяснение о том, что ты не можешь создавать новые модели Claude, но готов помочь с другими задачами. Используй ask_supervisor для уточнения деталей.","requires_artifacts":["Supervisor Task"],"produces_artifacts":[],"tools":["read_file","list_files","search","ask_supervisor"]},{"name":"Консультант по возможностям","type":"Chat","prompt":"Твоя задача — предоставить пользователю информацию о том, что ты можешь делать вместо создания Claude Opus 5.0. Объясни свои возможности и предложи альтернативные решения для задач пользователя.","requires_artifacts":["Supervisor Task"],"produces_artifacts":[],"tools":["read_file","list_files","search","ask_supervisor"]},{"name":"Координатор коммуникации","type":"Chat","prompt":"Собери ответы от всех ролей и сформируй итоговое сообщение для пользователя. Объясни невозможность выполнения запроса о создании Claude Opus 5.0 и предложи помощь в других задачах.","requires_artifacts":["Supervisor Task"],"produces_artifacts":[],"tools":["read_file","list_files","search","ask_supervisor"]},"artifacts":[],"supervisor_requires":[]}}}"#
+        let result = try TeamConfigParser.decodeTeamConfig(from: json)
+        XCTAssertEqual(result.team.name, "Claude Model Analysis Team")
+        for name in ["Аналитик запроса", "Консультант по возможностям", "Координатор коммуникации"] {
+            XCTAssertTrue(result.team.roles.contains { $0.name == name }, "missing role \(name)")
+        }
+    }
+
+    func testDecodeTeamConfig_flatConfigNoWrapper_droppedCloser_recovers() throws {
+        // A model that returns the config as bare content — no create_team /
+        // team_config wrapper — with a dropped last-role `}` (Type A) plus a
+        // compensating trailing `}`. `extractInnerTeamConfig` finds no
+        // `team_config` to isolate, so this only decodes via the whole-payload
+        // repair fallback in `decodeTeamConfig`. Without that fallback the repair
+        // chain is never reached and decode throws.
+        let json = #"{"name":"Flat Team","description":"d","roles":[{"name":"Eng","prompt":"p","produces_artifacts":["Spec"],"requires_artifacts":["Supervisor Task"],"tools":["read_file","write_file"]],"artifacts":[{"name":"Spec","description":"d"}],"supervisor_requires":["Spec"]}}"#
+        let result = try TeamConfigParser.decodeTeamConfig(from: json)
+        XCTAssertEqual(result.team.name, "Flat Team")
+        XCTAssertTrue(result.team.roles.contains { $0.name == "Eng" })
+    }
+
     func testExtractJSON_shallowTruncation_salvagedWithSyntheticClose() {
         // Shallow unbalanced object (depth=1) is now salvaged by appending
         // a synthetic `}` — handles LLM stream truncation.

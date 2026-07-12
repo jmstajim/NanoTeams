@@ -16,6 +16,12 @@ nonisolated struct PromptBuilder {
         /// App-wide instruction appended to the resolved system prompt.
         /// Default `""` keeps existing test call sites compiling.
         let globalContext: String
+        /// Auto-discovered agent instruction files (CLAUDE.md, AGENTS.md, …).
+        /// The main file's content + the other paths ride the
+        /// `{workFolderContext}` placeholder alongside `settings.context`.
+        /// Default `nil` keeps existing test call sites compiling and renders
+        /// byte-identically to the legacy work-folder-context output.
+        let agentInstructions: AgentInstructionsSnapshot?
 
         init(
             task: NTMSTask,
@@ -26,7 +32,8 @@ nonisolated struct PromptBuilder {
             artifactReader: @escaping (Artifact) -> String?,
             activeTeam: Team?,
             roleDefinition: TeamRoleDefinition?,
-            globalContext: String = ""
+            globalContext: String = "",
+            agentInstructions: AgentInstructionsSnapshot? = nil
         ) {
             self.task = task
             self.step = step
@@ -37,6 +44,7 @@ nonisolated struct PromptBuilder {
             self.activeTeam = activeTeam
             self.roleDefinition = roleDefinition
             self.globalContext = globalContext
+            self.agentInstructions = agentInstructions
         }
     }
 
@@ -77,7 +85,10 @@ nonisolated struct PromptBuilder {
 
         // Resolve system prompt from team template
         let template = context.activeTeam?.systemPromptTemplate ?? SystemTemplates.genericTemplate
-        let workFolderContext = buildWorkFolderContextMessage(workFolder: context.workFolder) ?? ""
+        let workFolderContext = buildWorkFolderContextMessage(
+            workFolder: context.workFolder,
+            agentInstructions: context.agentInstructions
+        ) ?? ""
         let placeholders: [String: String] = [
             "roleName": context.roleDefinition?.name ?? step.role.displayName,
             "teamName": context.activeTeam?.name ?? "(unknown team)",

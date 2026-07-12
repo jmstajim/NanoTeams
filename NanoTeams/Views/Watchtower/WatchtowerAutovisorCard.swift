@@ -12,16 +12,22 @@ struct WatchtowerAutovisorCard: View {
 
     @State private var messageDraft = ""
     @State private var attachments: [StagedAttachment] = []
+    @State private var clippedTexts: [String] = []
     @State private var composerDraftID = UUID()
     @State private var goalDraft = ""
     @State private var goalSaveTask: Task<Void, Never>?
     @State private var memoryDraft = ""
     @State private var memorySaveTask: Task<Void, Never>?
+    /// Mirrored from `AutovisorGoalComposer`'s improve stream — suspends this card's
+    /// debounced goal autosave while the rewrite streams.
+    @State private var isImprovingGoal = false
 
     private var isEnabled: Bool { store.workFolder?.settings.autovisorEnabled ?? false }
 
     private var canSubmit: Bool {
-        !messageDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
+        !messageDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !attachments.isEmpty
+            || !clippedTexts.isEmpty
     }
 
     var body: some View {
@@ -64,13 +70,27 @@ struct WatchtowerAutovisorCard: View {
     private var goalSection: some View {
         VStack(alignment: .leading, spacing: Spacing.xxs) {
             MonoLabel(text: "Goal", size: .xs)
-            // Capped like MEMORY so a long goal scrolls internally instead of
-            // ballooning the card inside the Watchtower ScrollView.
-            TextEditor(text: $goalDraft)
-                .font(Typography.termBase)
-                .borderedTextEditorStyle(minHeight: 60)
-                .frame(maxHeight: 180)
-                .onChange(of: goalDraft) { _, newValue in commitGoal(newValue) }
+            // Quick Capture-style composer minus the send button. Capped like MEMORY
+            // so a long goal scrolls internally instead of ballooning the card inside
+            // the Watchtower ScrollView. Attachments persist to the folder goal store.
+            AutovisorGoalComposer(
+                text: $goalDraft,
+                isImproving: $isImprovingGoal,
+                maxTextFieldHeight: 180
+            )
+            // Suppress debounced autosave while the improve stream mutates
+            // goalDraft; the trailing save fires once on stream end.
+            .onChange(of: goalDraft) { _, newValue in
+                guard !isImprovingGoal else { return }
+                commitGoal(newValue)
+            }
+        }
+        .onChange(of: isImprovingGoal) { _, improving in
+            if improving {
+                goalSaveTask?.cancel()
+            } else {
+                commitGoal(goalDraft)
+            }
         }
     }
 
@@ -91,12 +111,14 @@ struct WatchtowerAutovisorCard: View {
         MessageComposer(
             text: $messageDraft,
             attachments: $attachments,
+            clips: $clippedTexts,
             placeholder: "Message Autovisor…",
             canSubmit: canSubmit,
             isSubmitting: false,
             onSubmit: { send() },
             onStageAttachment: { url in store.stageAttachment(url: url, draftID: composerDraftID) },
-            onRemoveAttachment: { attachment in store.removeStagedAttachment(attachment) }
+            onRemoveAttachment: { attachment in store.removeStagedAttachment(attachment) },
+            skillsProjectRoot: store.hasRealWorkFolder ? store.workFolderURL : nil
         )
     }
 
@@ -138,11 +160,13 @@ struct WatchtowerAutovisorCard: View {
         let outcome = AutovisorComposerSend.evaluate(
             text: messageDraft,
             hasAttachments: !attachments.isEmpty,
-            queue: { trimmed in store.sendMessageToAutovisor(trimmed, attachments: attachments) }
+            hasClips: !clippedTexts.isEmpty,
+            queue: { trimmed in store.sendMessageToAutovisor(trimmed, attachments: attachments, clippedTexts: clippedTexts) }
         )
         guard outcome == .cleared else { return }
         messageDraft = ""
         attachments = []
+        clippedTexts = []
         composerDraftID = UUID()   // fresh staging dir for the next message
         // "queued", not "delivered": the manager drains the queue on its next
         // iteration (matches TeamActivityComposer's wording for the same mechanism).

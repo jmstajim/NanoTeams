@@ -110,7 +110,11 @@ enum FirstPromptRenderer {
             allTeams: snapshot.projection.teams,
             selectedScheme: config.selectedScheme,
             isVisionConfigured: config.resolvedVisionConfigured,
-            isComputerUseEnabled: config.resolvedComputerUseEnabled
+            isComputerUseEnabled: config.resolvedComputerUseEnabled,
+            // Read from the on-disk folder settings (the renderer scans the real
+            // folder) so a create_managed_task render for the Autovisor Manager
+            // reflects whether generation is enabled for this folder.
+            autovisorAllowTeamGeneration: snapshot.projection.settings.autovisorAllowTeamGeneration
         )
 
         // 5a. `URL ==` is the exact comparison `startStepExecution` uses;
@@ -126,6 +130,13 @@ enum FirstPromptRenderer {
             fileManager: fileManager
         )
 
+        // 5b. Discover agent instruction files the same way production does at
+        //     run start (`NTMSOrchestrator.refreshAgentInstructions`). Skipped
+        //     for default storage — mirrors the runtime gate on `hasRealWorkFolder`.
+        let agentInstructions: AgentInstructionsSnapshot? = isDefaultStorage
+            ? nil
+            : AgentInstructionsScanner.scan(workFolderRoot: workfolderURL, fileManager: fileManager)
+
         // 6. Build chat messages via the production PromptBuilder. No artifacts
         //    exist on first call, so artifactReader returns nil for everything.
         let promptContext = PromptBuilder.Context(
@@ -137,7 +148,8 @@ enum FirstPromptRenderer {
             artifactReader: { _ in nil },
             activeTeam: team,
             roleDefinition: roleDefinition,
-            globalContext: config.resolvedGlobalContext
+            globalContext: config.resolvedGlobalContext,
+            agentInstructions: agentInstructions
         )
         let messages = PromptBuilder.buildChatMessages(context: promptContext, tools: toolSchemas)
 

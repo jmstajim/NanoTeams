@@ -20,12 +20,16 @@ extension NTMSOrchestrator {
     /// message), or the payload is entirely empty, so the caller can keep the
     /// draft intact.
     @discardableResult
-    func sendMessageToAutovisor(_ text: String, attachments: [StagedAttachment] = []) -> Bool {
+    func sendMessageToAutovisor(
+        _ text: String,
+        attachments: [StagedAttachment] = [],
+        clippedTexts: [String] = []
+    ) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let id = autovisorTaskID,
               let formState = quickCaptureFormState,
               let message = QuickCaptureFormState.QueuedChatMessage(
-                  text: trimmed, attachments: attachments, clippedTexts: [], targetRoleID: autovisorRole?.id
+                  text: trimmed, attachments: attachments, clippedTexts: clippedTexts, targetRoleID: autovisorRole?.id
               ) else { return false }
         formState.appendQueuedMessage(message, for: id)
         switch Self.autovisorMessageWake(for: taskEngineStates[id]) {

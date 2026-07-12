@@ -245,7 +245,8 @@ nonisolated enum TeamGenerationService {
 
         ## Design rules
         - `Supervisor Task` is always the first dependency. The Supervisor produces it automatically.
-        - The final artifact(s) go into `supervisor_requires` for review. Chat teams use `supervisor_requires: []`.
+        - The final deliverable(s) go into `supervisor_requires` for review — list them there even when a review role also requires them. Use `supervisor_requires: []` only for open-ended dialogue with no requested deliverable (Chat mode).
+        - Artifact names are conceptual deliverables (`API Specification`, `Deployment Runbook`), never file names (`server.js`, `convert.py`, `overview.json`) — the runtime rejects file-shaped names and degrades them to a generic label. Roles still write the real source files with write_file.
         - Give every role a detailed `prompt` for THIS task and tools matching its responsibility.
         - Include `ask_supervisor` for roles that may need clarification.
         - Add `ask_teammate` / `request_team_meeting` for roles that benefit from collaboration.
@@ -260,7 +261,7 @@ nonisolated enum TeamGenerationService {
         | Review / plan / research / writing     | read_file + read_lines + list_files + search + ask_supervisor + update_scratchpad — NO writers, NO git |
         | Chat / assistant                       | read_file + write_file + edit_file + list_files + search + update_scratchpad + ask_supervisor + analyze_image |
 
-        The writer rule triggers on any request to change files, in any language (e.g. "fix", "implement", "переписать"). Artifact names that are file names (`calculator.js`, `Updated foo.py`) always require writers — a producing role without write_file cannot produce them and will loop forever.
+        The writer rule triggers on any request to change files, in any language (e.g. "fix", "implement", "переписать") — such roles need write_file to produce their output.
 
         The Xcode row applies to any work on Apple-ecosystem code (the technologies listed in its table row); every other stack ships without Xcode tools.
 

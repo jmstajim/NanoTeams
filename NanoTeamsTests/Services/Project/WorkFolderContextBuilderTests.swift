@@ -67,6 +67,55 @@ final class WorkFolderContextBuilderTests: XCTestCase {
         XCTAssertTrue(input.fileList.contains("README.md"))
     }
 
+    // MARK: - Excerpt flags (isPriority / wasReadCapped)
+
+    func testBuildInput_priorityFileExcerpt_isFlaggedPriority() throws {
+        try createFile(named: "README.md", content: "# Project\nDetails here")
+        try createFile(named: "other.swift", content: "let a = 1")
+
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
+
+        let readme = input.excerpts.first { $0.path == "README.md" }
+        XCTAssertEqual(readme?.isPriority, true, "README.md matches priorityNames → isPriority.")
+        let other = input.excerpts.first { $0.path == "other.swift" }
+        XCTAssertEqual(other?.isPriority, false)
+    }
+
+    func testBuildInput_shortFile_notReadCapped() throws {
+        try createFile(named: "small.swift", content: "let a = 1")
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir)
+        XCTAssertEqual(input.excerpts.first?.wasReadCapped, false)
+    }
+
+    func testBuildInput_fileLargerThanWindow_isReadCapped() throws {
+        // Content exceeds the tiny read window → the excerpt is flagged capped.
+        let big = String(repeating: "x", count: 5000)
+        try createFile(named: "huge.swift", content: big)
+
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir, maxBytesPerExcerpt: 1000)
+
+        let excerpt = try XCTUnwrap(input.excerpts.first { $0.path == "huge.swift" })
+        XCTAssertTrue(excerpt.wasReadCapped, "A file bigger than the read window must be flagged capped.")
+        XCTAssertLessThanOrEqual(excerpt.content.count, 1000)
+    }
+
+    func testBuildInput_fileExactlyAtWindow_isReadCapped() throws {
+        // Boundary: a file whose size EQUALS the window fills the read exactly —
+        // `>= maxBytes` must treat it as capped (there may be no more, but we
+        // can't tell, so the honest flag is "capped").
+        try createFile(named: "exact.swift", content: String(repeating: "y", count: 1000))
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir, maxBytesPerExcerpt: 1000)
+        let excerpt = try XCTUnwrap(input.excerpts.first { $0.path == "exact.swift" })
+        XCTAssertTrue(excerpt.wasReadCapped)
+    }
+
+    func testBuildInput_fileOneByteUnderWindow_notCapped() throws {
+        try createFile(named: "under.swift", content: String(repeating: "z", count: 999))
+        let input = WorkFolderContextBuilder.buildInput(workFolderRoot: tempDir, maxBytesPerExcerpt: 1000)
+        let excerpt = try XCTUnwrap(input.excerpts.first { $0.path == "under.swift" })
+        XCTAssertFalse(excerpt.wasReadCapped)
+    }
+
     func testBuildInput_countsFileTypes() throws {
         try createFile(named: "a.swift")
         try createFile(named: "b.swift")

@@ -10,6 +10,17 @@ final class EditableNSTextView: NSTextView {
 
     var placeholderText: String?
 
+    /// When true, user-originated edits (keystrokes, paste, delete, smart
+    /// substitutions) are refused via `shouldChangeText(in:replacementString:)`
+    /// — the single funnel every interactive mutation passes through.
+    /// Programmatic writes (`textView.string =` from the Coordinator's
+    /// `applyText`) bypass that funnel, so the live "improve" stream still
+    /// lands while manual input is locked. `isEditable` stays `true` so
+    /// focus / caret / selection / copy keep working (and the QuickCapture
+    /// panel's focusable-field walker, which keys on `isEditable`, isn't
+    /// tripped mid-stream).
+    var isInputLocked: Bool = false
+
     /// Called from `becomeFirstResponder` / `resignFirstResponder` with
     /// the resulting responder state.
     var focusUpdateHandler: ((Bool) -> Void)?
@@ -49,6 +60,17 @@ final class EditableNSTextView: NSTextView {
             guard let self, let window, window === self.window else { return }
             _ = window.makeFirstResponder(self)
         }
+    }
+
+    // MARK: - Input lock
+
+    /// Canonical gate for ALL interactive text mutations. Refusing here blocks
+    /// keyboard, paste, delete, and smart-substitution edits without touching
+    /// `isEditable`. Programmatic `.string =` assignments do not route through
+    /// `shouldChangeText`, so the improve stream is unaffected.
+    override func shouldChangeText(in affectedCharRange: NSRange, replacementString: String?) -> Bool {
+        if isInputLocked { return false }
+        return super.shouldChangeText(in: affectedCharRange, replacementString: replacementString)
     }
 
     // MARK: - Responder bridge

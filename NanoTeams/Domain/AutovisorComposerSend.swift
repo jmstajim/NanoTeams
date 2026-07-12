@@ -29,15 +29,17 @@ nonisolated enum AutovisorComposerSend {
 
     /// - parameter text: the raw composer text (trimmed internally for the gate).
     /// - parameter hasAttachments: whether any staged attachments are present.
+    /// - parameter hasClips: whether any clips / skills are staged.
     /// - parameter queue: performs the actual enqueue, returning `true` iff the message
     ///   was queued. Receives the trimmed text. Invoked only when the payload is non-empty.
     static func evaluate(
         text: String,
         hasAttachments: Bool,
+        hasClips: Bool = false,
         queue: (_ trimmed: String) -> Bool
     ) -> Outcome {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty || hasAttachments else { return .empty }
+        guard !trimmed.isEmpty || hasAttachments || hasClips else { return .empty }
         return queue(trimmed) ? .cleared : .kept
     }
 }

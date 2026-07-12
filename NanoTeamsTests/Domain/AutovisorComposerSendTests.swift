@@ -54,4 +54,19 @@ final class AutovisorComposerSendTests: XCTestCase {
         let outcome = AutovisorComposerSend.evaluate(text: "  ", hasAttachments: true) { _ in false }
         XCTAssertEqual(outcome, .kept, "An attachment-only send that fails must preserve the staged files")
     }
+
+    func testClipOnly_emptyText_queued_isCleared() {
+        var queueCalled = false
+        let outcome = AutovisorComposerSend.evaluate(text: "", hasAttachments: false, hasClips: true) { _ in
+            queueCalled = true
+            return true
+        }
+        XCTAssertEqual(outcome, .cleared, "A skill/clip-only payload is sendable")
+        XCTAssertTrue(queueCalled)
+    }
+
+    func testAllEmpty_noClips_isEmpty() {
+        let outcome = AutovisorComposerSend.evaluate(text: "  ", hasAttachments: false, hasClips: false) { _ in true }
+        XCTAssertEqual(outcome, .empty)
+    }
 }

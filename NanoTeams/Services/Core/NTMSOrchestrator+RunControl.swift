@@ -14,6 +14,24 @@ extension NTMSOrchestrator {
         // Without this, `createNewRun` below would wipe the placeholder Supervisor
         // step and a second concurrent `runTeamGeneration` would be spawned.
         if isGeneratingTeam(taskID: taskID) { return }
+        // Re-entrancy guard: everything below suspends (instructions rescan,
+        // task load, run creation) BEFORE the engine-state guard above can see
+        // the new run — a concurrent second call for the same task (Play +
+        // queue-flush backstop / recurrence fire) would double-create runs.
+        guard !startingRunTaskIDs.contains(taskID) else { return }
+        startingRunTaskIDs.insert(taskID)
+        defer { startingRunTaskIDs.remove(taskID) }
+
+        // Refresh agent instruction files so this run's first prompt reflects
+        // the current disk state (a CLAUDE.md edited since open is picked up).
+        // Delegation children skip the refresh: `startRunForTask` routes here
+        // too, and rescanning mid-parent-run would swap the shared snapshot's
+        // bytes under the parent's already-running steps.
+        let isChildTask =
+            snapshot?.tasksIndex.tasks.first(where: { $0.id == taskID })?.parentTaskID != nil
+        if !isChildTask {
+            await refreshAgentInstructions()
+        }
 
         await ensureTaskLoaded(taskID)
         await createNewRun(taskID: taskID)

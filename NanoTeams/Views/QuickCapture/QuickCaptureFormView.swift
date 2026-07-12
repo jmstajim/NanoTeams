@@ -250,7 +250,8 @@ struct QuickCaptureFormView: View {
                 onStageAttachment: { url in store.stageAttachment(url: url, draftID: activeDraftID) },
                 onRemoveAttachment: { attachment in store.removeStagedAttachment(attachment) },
                 filePickerBinding: $isShowingFilePicker,
-                maxTextFieldHeight: taskFieldMaxHeight
+                maxTextFieldHeight: taskFieldMaxHeight,
+                skillsProjectRoot: store.hasRealWorkFolder ? store.workFolderURL : nil
             ) {
                 quickCaptureSettingsMenu
             }
@@ -283,7 +284,8 @@ struct QuickCaptureFormView: View {
                 onRemoveAttachment: { attachment in store.removeStagedAttachment(attachment) },
                 filePickerBinding: $isShowingFilePicker,
                 autofocusOnAppear: true,
-                maxTextFieldHeight: taskFieldMaxHeight
+                maxTextFieldHeight: taskFieldMaxHeight,
+                skillsProjectRoot: store.hasRealWorkFolder ? store.workFolderURL : nil
             ) {
                 quickCaptureSettingsMenu
             }
@@ -477,7 +479,8 @@ struct QuickCaptureFormView: View {
                     onStageAttachment: { url in store.stageAttachment(url: url, draftID: activeDraftID) },
                     onRemoveAttachment: { attachment in store.removeStagedAttachment(attachment) },
                     filePickerBinding: $isShowingFilePicker,
-                    maxTextFieldHeight: taskFieldMaxHeight
+                    maxTextFieldHeight: taskFieldMaxHeight,
+                    skillsProjectRoot: store.hasRealWorkFolder ? store.workFolderURL : nil
                 ) {
                     quickCaptureSettingsMenu
                 }

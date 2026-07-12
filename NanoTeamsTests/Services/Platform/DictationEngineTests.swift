@@ -1,4 +1,9 @@
 import XCTest
+// `@preconcurrency` mirrors DictationEngine.swift: the tap-isolation test
+// captures non-`Sendable` `AVAudioFormat`/`AVAudioPCMBuffer` into a `@Sendable`
+// `Task.detached` closure, which `@preconcurrency` allows.
+@preconcurrency import AVFoundation
+import Speech
 @testable import NanoTeams
 
 /// Scaffold for `DictationEngine`. The audio pipeline (AVAudioEngine +
@@ -82,5 +87,59 @@ final class DictationEngineTests: XCTestCase {
         let message = DictationEngine.EngineError.noInstalledModel.errorDescription ?? ""
         XCTAssertTrue(message.contains("Settings"), "Must direct user to settings to download a model")
         XCTAssertTrue(message.contains("Dictation"), "Must name the settings tab")
+    }
+
+    // MARK: - Tap-path isolation (regression: mic-button crash)
+
+    /// Pins that `TapBridge.feed` is `nonisolated`. AVAudioEngine invokes the
+    /// installTap block — which calls `feed` — on its realtime audio thread; if
+    /// `feed` were main-actor-isolated (the app target's default), the executor
+    /// check aborts the process (`dispatch_assert_queue`). This is the crash the
+    /// mic button hit before the fix.
+    ///
+    /// The test is BOTH a compile-time and a runtime proof:
+    /// - COMPILE-TIME: `bridge.feed(buffer)` is called SYNCHRONOUSLY from a
+    ///   `Task.detached` (nonisolated) context. If `feed` ever regresses to
+    ///   `@MainActor`, this line fails to build. It MUST stay synchronous — do
+    ///   NOT add `await` (that would compile from an async nonisolated context
+    ///   and silently destroy the proof).
+    /// - RUNTIME: the fed buffer is yielded into the stream without crashing.
+    ///   `continuation.finish()` makes a silent drop FAIL (nil) instead of
+    ///   hanging on `next()`.
+    ///
+    /// Scope: this covers the `TapBridge`/`feed` half of the fix. The tap
+    /// closure's own `@Sendable` marker can't be unit-tested (it only crashes
+    /// with a live AVAudioEngine tap on real hardware, unavailable on CI) — a
+    /// load-bearing comment guards it at the installTap call site instead.
+    func testTapBridge_feed_isNonisolated_yieldsWithoutCrashingOffMainActor() async throws {
+        try skipIfUnavailable()
+        guard #available(macOS 26, iOS 26, visionOS 26, *) else { return }
+
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1024))
+        buffer.frameLength = 1024
+
+        let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream(bufferingPolicy: .unbounded)
+        // `converter: nil` takes `feed`'s deterministic early-return yield branch.
+        let bridge = TapBridge(
+            continuation: continuation,
+            converter: nil,
+            outputFormat: format,
+            slotIndex: 0,
+            onDropsExceeded: { _ in }
+        )
+
+        let feeder = Task.detached {
+            // MUST stay a synchronous call — do NOT add `await`. This is the
+            // nonisolation assertion: it only compiles because `feed` (and
+            // `TapBridge`) are `nonisolated`.
+            bridge.feed(buffer)
+            continuation.finish()
+        }
+        await feeder.value
+
+        var iterator = stream.makeAsyncIterator()
+        let first = await iterator.next()
+        XCTAssertNotNil(first, "feed() on the realtime path must yield the buffer into the analyzer stream")
     }
 }

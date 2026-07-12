@@ -54,6 +54,8 @@ extension NTMSOrchestrator {
                 resolvedTeamID = id
             case .generated:
                 resolvedTeamID = await ensureGeneratedTeamID()
+            case .generationDisabled:
+                return .failure("Team generation is disabled for the Autovisor in this folder. Pick an existing team from the catalog in create_managed_task's description, or omit team_id to use the active team.")
             case .unknown(let raw):
                 return .failure("Unknown team_id '\(raw)'. Pick one from the catalog in create_managed_task's description, omit it for the active team, or use 'generated'.")
             }
@@ -250,16 +252,24 @@ extension NTMSOrchestrator {
         case useActiveTeam            // omitted/empty → the folder's active team
         case team(NTMSID)             // an existing, non-hidden team
         case generated                // the `"generated"` sentinel
+        case generationDisabled       // sentinel, but generation is off for this folder
         case unknown(String)          // provided but unresolvable → must fail loudly
     }
 
     /// Classifies a team_id without side effects (testable). The `generated` case is
     /// materialized separately by `ensureGeneratedTeamID` so this stays pure.
+    /// The `"generated"` sentinel resolves to `.generationDisabled` when the folder's
+    /// `autovisorAllowTeamGeneration` is off — a runtime backstop for a model that
+    /// emits the sentinel despite the schema (built via `buildSchema(allowGenerated:)`)
+    /// no longer advertising it.
     private func classifyManagedTeamID(_ raw: String?) -> ManagedTeamResolution {
         guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
             return .useActiveTeam
         }
-        if raw == DelegationConstants.generatedTeamSentinel { return .generated }
+        if raw == DelegationConstants.generatedTeamSentinel {
+            let allowed = snapshot?.workFolder.settings.autovisorAllowTeamGeneration ?? true
+            return allowed ? .generated : .generationDisabled
+        }
         if let team = snapshot?.workFolder.teams.first(where: { $0.id == raw }), !team.isHiddenFromPickers {
             return .team(team.id)
         }

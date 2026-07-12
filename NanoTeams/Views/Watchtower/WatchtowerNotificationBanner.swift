@@ -13,12 +13,16 @@ struct WatchtowerNotificationBanner: View {
     let onViewDetails: () -> Void
     let onAcceptRole: (String) async -> Bool
     let onAcceptTask: (Int) async -> Bool
-    let onSubmitAnswer: (String, String, [StagedAttachment]) async -> Bool
+    let onSubmitAnswer: (String, String, [StagedAttachment], [String]) async -> Bool
     let onStageAttachment: (String, URL) -> StagedAttachment?
     let onRemoveAttachment: (StagedAttachment) -> Void
 
+    /// Work-folder root for the composer's "/" skills picker (nil → global only).
+    var skillsProjectRoot: URL? = nil
+
     @State var answerText = ""
     @State var answerAttachments: [StagedAttachment] = []
+    @State var answerClippedTexts: [String] = []
     @State var isSubmitting = false
 
     /// Inbox-card styling, 1:1 with the design's `INBOX_CFG`: a terminal glyph +
@@ -152,7 +156,7 @@ private struct DismissButton: View {
             onViewDetails: {},
             onAcceptRole: { _ in true },
             onAcceptTask: { _ in true },
-            onSubmitAnswer: { _, _, _ in true },
+            onSubmitAnswer: { _, _, _, _ in true },
             onStageAttachment: { _, _ in nil },
             onRemoveAttachment: { _ in }
         )
@@ -167,7 +171,7 @@ private struct DismissButton: View {
             onViewDetails: {},
             onAcceptRole: { _ in true },
             onAcceptTask: { _ in true },
-            onSubmitAnswer: { _, _, _ in true },
+            onSubmitAnswer: { _, _, _, _ in true },
             onStageAttachment: { _, _ in nil },
             onRemoveAttachment: { _ in }
         )
@@ -182,7 +186,7 @@ private struct DismissButton: View {
             onViewDetails: {},
             onAcceptRole: { _ in true },
             onAcceptTask: { _ in true },
-            onSubmitAnswer: { _, _, _ in true },
+            onSubmitAnswer: { _, _, _, _ in true },
             onStageAttachment: { _, _ in nil },
             onRemoveAttachment: { _ in }
         )
@@ -196,7 +200,7 @@ private struct DismissButton: View {
             onViewDetails: {},
             onAcceptRole: { _ in true },
             onAcceptTask: { _ in true },
-            onSubmitAnswer: { _, _, _ in true },
+            onSubmitAnswer: { _, _, _, _ in true },
             onStageAttachment: { _, _ in nil },
             onRemoveAttachment: { _ in }
         )

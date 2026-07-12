@@ -141,6 +141,27 @@ final class ConsumeQueuedSupervisorMessageTests: NTMSOrchestratorTestBase {
                       "consumeQueuedSupervisorMessage must not append to step.messages — llmConversation is the single source")
     }
 
+    func testConsume_skillClip_drainsIntoSkillSection() async {
+        let (taskID, stepID) = await createTaskWithRunningStep()
+        let skill = SkillClip(name: "code-review", agentLabel: "Claude Code", origin: .project,
+                              body: "# Review\nCheck for bugs.").encoded()
+        _ = queue(taskID: taskID, text: "please apply this", targetRoleID: "pm", clippedTexts: [skill])
+
+        let prompt = await sut.consumeQueuedSupervisorMessage(
+            taskID: taskID, roleID: "pm", stepID: stepID
+        )
+
+        let unwrapped = try? XCTUnwrap(prompt)
+        XCTAssertTrue(unwrapped?.contains("## Skill: code-review") ?? false,
+                      "Queued skill clip drains into a ## Skill: section")
+        XCTAssertTrue(unwrapped?.contains("# Review\nCheck for bugs.") ?? false,
+                      "The skill's full body reaches the LLM")
+        XCTAssertFalse(unwrapped?.contains("## Clipped Text") ?? true,
+                       "A skill clip is NOT rendered as a clipped-text section")
+        let convo = sut.activeTask?.runs.last?.steps.first?.llmConversation ?? []
+        XCTAssertTrue(convo.last?.content.contains("## Skill: code-review") ?? false)
+    }
+
     // MARK: - Batching — drain everything eligible at once
 
     func testConsume_drainsAllEligibleMessages_targetedBeforeUntargeted() async {

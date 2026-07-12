@@ -104,6 +104,30 @@ nonisolated struct ProjectSettings: Codable, Hashable {
     var autovisorEnabled: Bool
     var autovisorActivation: AutovisorActivation
     var autovisorTuning: AutovisorTuning
+    // Whether the Autovisor may assemble a new team on the fly via
+    // `create_managed_task team_id: "generated"`. Additive, tolerant decode (no
+    // version bump — same policy as the goal/clip fields below). Default `true`
+    // preserves the historical always-on behaviour; an absent key on an existing
+    // `settings.json` reads as allowed. Gated at BOTH the schema
+    // (`CreateManagedTaskTool.buildSchema`) and runtime (`classifyManagedTeamID`)
+    // layers when off.
+    var autovisorAllowTeamGeneration: Bool
+    // Goal-composer attachments + skill/clip cards (additive, tolerant decode — no
+    // version bump, same policy as the agent-instruction fields below). Project-
+    // relative paths into the folder-level `.nanoteams/autovisor/attachments/` store
+    // (survives manager delete/recreate, like the goal string). Mirrored onto the
+    // manager task's `attachmentPaths`/`clippedTexts` by `syncAutovisorGoalToManagerBrief`.
+    var autovisorGoalAttachmentPaths: [String]
+    var autovisorGoalClips: [String]
+    // Agent-instruction overrides (additive, tolerant decode — no version bump).
+    // `extra` = user-added files (relative paths within the work folder) that
+    // join the auto-discovered set; `excluded` = paths the user X'd out of
+    // CONTENT injection (the file stays in the list — demoted to path listing;
+    // for a main file the next priority candidate takes over); `injected` =
+    // listed files the user promoted INTO content injection from the list.
+    var agentInstructionExtraPaths: [String]
+    var agentInstructionExcludedPaths: [String]
+    var agentInstructionInjectedPaths: [String]
 
     init(
         schemaVersion: Int = 3,
@@ -114,7 +138,13 @@ nonisolated struct ProjectSettings: Codable, Hashable {
         autovisorMemory: String = "",
         autovisorEnabled: Bool = false,
         autovisorActivation: AutovisorActivation = .default,
-        autovisorTuning: AutovisorTuning = .default
+        autovisorTuning: AutovisorTuning = .default,
+        autovisorAllowTeamGeneration: Bool = true,
+        autovisorGoalAttachmentPaths: [String] = [],
+        autovisorGoalClips: [String] = [],
+        agentInstructionExtraPaths: [String] = [],
+        agentInstructionExcludedPaths: [String] = [],
+        agentInstructionInjectedPaths: [String] = []
     ) {
         self.schemaVersion = schemaVersion
         self.context = context
@@ -125,6 +155,12 @@ nonisolated struct ProjectSettings: Codable, Hashable {
         self.autovisorEnabled = autovisorEnabled
         self.autovisorActivation = autovisorActivation
         self.autovisorTuning = autovisorTuning
+        self.autovisorAllowTeamGeneration = autovisorAllowTeamGeneration
+        self.autovisorGoalAttachmentPaths = autovisorGoalAttachmentPaths
+        self.autovisorGoalClips = autovisorGoalClips
+        self.agentInstructionExtraPaths = agentInstructionExtraPaths
+        self.agentInstructionExcludedPaths = agentInstructionExcludedPaths
+        self.agentInstructionInjectedPaths = agentInstructionInjectedPaths
     }
 
     enum CodingKeys: String, CodingKey {
@@ -137,6 +173,12 @@ nonisolated struct ProjectSettings: Codable, Hashable {
         case autovisorEnabled
         case autovisorActivation
         case autovisorTuning
+        case autovisorAllowTeamGeneration
+        case autovisorGoalAttachmentPaths
+        case autovisorGoalClips
+        case agentInstructionExtraPaths
+        case agentInstructionExcludedPaths
+        case agentInstructionInjectedPaths
         // Legacy keys (schemaVersion 1). Read-only fallback so existing
         // settings.json files continue to load after the rename.
         case legacyDescription = "description"
@@ -163,6 +205,18 @@ nonisolated struct ProjectSettings: Codable, Hashable {
         self.autovisorEnabled = try c.decodeIfPresent(Bool.self, forKey: .autovisorEnabled) ?? false
         self.autovisorActivation = try c.decodeIfPresent(AutovisorActivation.self, forKey: .autovisorActivation) ?? .default
         self.autovisorTuning = try c.decodeIfPresent(AutovisorTuning.self, forKey: .autovisorTuning) ?? .default
+        self.autovisorAllowTeamGeneration =
+            try c.decodeIfPresent(Bool.self, forKey: .autovisorAllowTeamGeneration) ?? true
+        self.autovisorGoalAttachmentPaths =
+            try c.decodeIfPresent([String].self, forKey: .autovisorGoalAttachmentPaths) ?? []
+        self.autovisorGoalClips =
+            try c.decodeIfPresent([String].self, forKey: .autovisorGoalClips) ?? []
+        self.agentInstructionExtraPaths =
+            try c.decodeIfPresent([String].self, forKey: .agentInstructionExtraPaths) ?? []
+        self.agentInstructionExcludedPaths =
+            try c.decodeIfPresent([String].self, forKey: .agentInstructionExcludedPaths) ?? []
+        self.agentInstructionInjectedPaths =
+            try c.decodeIfPresent([String].self, forKey: .agentInstructionInjectedPaths) ?? []
     }
 
     func encode(to encoder: Encoder) throws {
@@ -176,6 +230,12 @@ nonisolated struct ProjectSettings: Codable, Hashable {
         try c.encode(autovisorEnabled, forKey: .autovisorEnabled)
         try c.encode(autovisorActivation, forKey: .autovisorActivation)
         try c.encode(autovisorTuning, forKey: .autovisorTuning)
+        try c.encode(autovisorAllowTeamGeneration, forKey: .autovisorAllowTeamGeneration)
+        try c.encode(autovisorGoalAttachmentPaths, forKey: .autovisorGoalAttachmentPaths)
+        try c.encode(autovisorGoalClips, forKey: .autovisorGoalClips)
+        try c.encode(agentInstructionExtraPaths, forKey: .agentInstructionExtraPaths)
+        try c.encode(agentInstructionExcludedPaths, forKey: .agentInstructionExcludedPaths)
+        try c.encode(agentInstructionInjectedPaths, forKey: .agentInstructionInjectedPaths)
     }
 
     static let defaults = ProjectSettings()

@@ -757,4 +757,200 @@ final class SearchExecutorTests: XCTestCase {
         XCTAssertEqual(out.matches.first?.line, 2,
                        "The unterminated last line must be reachable as line 2.")
     }
+
+    // MARK: - List mode (empty query enumerates files)
+
+    func testListMode_emptyQueryWithGlob_listsAllMatchingFiles() throws {
+        try write("scenes/Player.gd", content: "extends Node\n")
+        try write("enemies/Slime.gd", content: "extends KinematicBody2D\n")
+        try write("readme.md", content: "docs\n")
+
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: [""],
+            fileGlob: "*.gd",
+            internalDir: internalDir
+        ))
+        // No content matches on an empty query...
+        XCTAssertTrue(out.matches.isEmpty)
+        // ...but every .gd file is listed, and the .md is excluded.
+        XCTAssertEqual(out.filenameMatches.map(\.path), ["enemies/Slime.gd", "scenes/Player.gd"])
+        XCTAssertTrue(out.filenameMatches.allSatisfy { $0.matched_on == .basename })
+    }
+
+    func testListMode_whitespaceOnlyQuery_alsoListsMode() throws {
+        try write("a.gd", content: "x\n")
+        try write("b.gd", content: "y\n")
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: ["  \n"],
+            fileGlob: "*.gd",
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(out.filenameMatches.map(\.path), ["a.gd", "b.gd"])
+    }
+
+    func testListMode_emptyQueryWithPaths_listsFilesInScope() throws {
+        try write("src/a.txt", content: "x\n")
+        try write("src/b.txt", content: "y\n")
+        try write("other/c.txt", content: "z\n")
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: [""],
+            paths: ["src"],
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(out.filenameMatches.map(\.path), ["src/a.txt", "src/b.txt"])
+    }
+
+    func testListMode_doesNotReadFileContent() throws {
+        // A binary file matching the glob would be counted in `skippedBinaryCount`
+        // if content were read. In list mode we never open it — so the counter
+        // stays 0, proving `searchFile` was skipped.
+        let bytes: [UInt8] = [0xFF, 0xFE, 0xFD, 0x00, 0xAB, 0xCD]
+        try Data(bytes).write(to: tempDir.appendingPathComponent("blob.gd"))
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: [""],
+            fileGlob: "*.gd",
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(out.filenameMatches.map(\.path), ["blob.gd"])
+        XCTAssertEqual(out.skippedBinaryCount, 0,
+            "List mode must not open file content — the binary is listed, never read.")
+        XCTAssertTrue(out.skipped.isEmpty)
+    }
+
+    func testListMode_rosterCappedAtMaxResults_marksTruncated() throws {
+        for i in 0..<5 { try write("f\(i).gd", content: "x\n") }
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: [""],
+            fileGlob: "*.gd",
+            maxResults: 3,
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(out.filenameMatches.count, 3)
+        XCTAssertTrue(out.truncated, "Hitting the roster cap must mark the result truncated.")
+    }
+
+    func testListMode_overlappingPaths_dedupeRoster_noPrematureStop() throws {
+        // Overlapping paths must not double-count files against the roster cap.
+        // `src/utils` has a,b,c; `src` also directly has zzz1,zzz2. With
+        // maxResults=5 the deduped roster must be 5 DISTINCT files — not stop
+        // early after re-counting a,b,c when `src` re-walks into `utils`.
+        try write("src/utils/a.txt", content: "x\n")
+        try write("src/utils/b.txt", content: "x\n")
+        try write("src/utils/c.txt", content: "x\n")
+        try write("src/zzz1.txt", content: "x\n")
+        try write("src/zzz2.txt", content: "x\n")
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: [""],
+            paths: ["src/utils", "src"],
+            maxResults: 5,
+            internalDir: internalDir
+        ))
+        let paths = Set(out.filenameMatches.map(\.path))
+        XCTAssertEqual(out.filenameMatches.count, 5,
+            "Roster must hold 5 DISTINCT files, not stop early on duplicate appends.")
+        XCTAssertEqual(out.filenameMatches.count, paths.count, "No duplicate entries in the roster.")
+        XCTAssertTrue(paths.isSuperset(of: ["src/zzz1.txt", "src/zzz2.txt"]),
+            "Files reachable only via the second path must not be dropped by duplicate inflation.")
+    }
+
+    func testListMode_singleFilePathEntry_respectsFileGlob() throws {
+        // A single-file `paths` entry must be filtered by file_glob, just like
+        // files found in a directory walk — a non-matching named file must not
+        // slip into the roster past the filter.
+        try write("notes.txt", content: "x\n")
+        try write("scene.gd", content: "x\n")
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: [""],
+            paths: ["notes.txt", "scene.gd"],
+            fileGlob: "*.gd",
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(out.filenameMatches.map(\.path), ["scene.gd"],
+            "file_glob must exclude the non-matching single-file path entry.")
+    }
+
+    func testContentSearch_singleFilePathEntry_filenameMatchSurvivesBudgetExhaustion() throws {
+        // A directory path that exhausts the content-match budget must not drop
+        // the filename match of a co-listed single-file `paths` entry (explicit
+        // files stay visible for name matching even once the budget is full).
+        try write("bigdir/hits.txt", content: "needle\nneedle\nneedle\n")
+        try write("target_needle.txt", content: "unrelated\n")
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: ["needle"],
+            paths: ["bigdir", "target_needle.txt"],
+            maxResults: 3,
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(out.matches.count, 3, "bigdir should fill the content-match budget")
+        XCTAssertTrue(out.filenameMatches.contains { $0.path == "target_needle.txt" },
+            "An explicitly-named file's filename match must survive a budget-exhausting sibling path.")
+    }
+
+    func testListMode_duplicatePathEntries_countedOnce() throws {
+        try write("a.txt", content: "x\n")
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: [""],
+            paths: ["a.txt", "a.txt", "a.txt"],
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(out.filenameMatches.map(\.path), ["a.txt"],
+            "A repeated single-file path entry must appear once, not thrice.")
+    }
+
+    func testListMode_emptyQueriesArray_isNotListMode_evenWithGlob() throws {
+        // Distinct from `queries: [""]`: an EMPTY ARRAY (no terms) must not
+        // enumerate — `[].allSatisfy` is vacuously true, so without the
+        // `!isEmpty` guard this would wrongly list every .gd file.
+        try write("a.gd", content: "x\n")
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: [],
+            fileGlob: "*.gd",
+            internalDir: internalDir
+        ))
+        XCTAssertTrue(out.matches.isEmpty)
+        XCTAssertTrue(out.filenameMatches.isEmpty,
+            "An empty queries ARRAY is a no-op search, not list mode.")
+    }
+
+    func testListMode_exactlyMaxResults_notTruncated() throws {
+        // Exactly maxResults matching files and no more → `truncated` MUST be
+        // false (nothing was dropped). A naive `count >= maxResults` check
+        // reports a false positive here and tells the LLM to keep narrowing a
+        // search that already returned everything.
+        for i in 0..<3 { try write("f\(i).gd", content: "x\n") }
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: [""],
+            fileGlob: "*.gd",
+            maxResults: 3,
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(out.filenameMatches.count, 3)
+        XCTAssertFalse(out.truncated,
+            "Exactly maxResults files with none dropped must not be marked truncated.")
+    }
+
+    func testListMode_respectsInternalDirSkip() throws {
+        try write("a.gd", content: "x\n")
+        // A .gd inside the internal dir must never be listed.
+        let internalGd = internalDir.appendingPathComponent("secret.gd")
+        try "hidden\n".write(to: internalGd, atomically: true, encoding: .utf8)
+        let out = try SearchExecutor.run(SearchExecutorInput(
+            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
+            queries: [""],
+            fileGlob: "*.gd",
+            internalDir: internalDir
+        ))
+        XCTAssertEqual(out.filenameMatches.map(\.path), ["a.gd"])
+    }
 }

@@ -341,6 +341,23 @@ struct SettingsPillButton: View {
     }
 }
 
+// MARK: - Saving Indicator
+
+/// Inline "debounced save in flight" hint — loader + "Saving...". Shared by the
+/// Work Folder context card and its edit sheet so the two surfaces can't drift
+/// (`private` helpers are file-scoped and couldn't be reused across them).
+/// Callers gate visibility: `if isSaving { SavingIndicator() }`.
+struct SavingIndicator: View {
+    var body: some View {
+        HStack(spacing: Spacing.xs) {
+            NTMSLoader(.inline)
+            Text("Saving...")
+                .font(Typography.caption)
+                .foregroundStyle(Colors.textTertiary)
+        }
+    }
+}
+
 // MARK: - Settings Stepper Control
 
 /// Right-aligned numeric value cell + native `Stepper`. The shared atom used by

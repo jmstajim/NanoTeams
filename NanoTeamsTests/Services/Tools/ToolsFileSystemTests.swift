@@ -1090,4 +1090,163 @@ final class ToolsFileSystemTests: XCTestCase {
         XCTAssertFalse(results[0].outputJSON.contains("skipped_binary_count"),
                        "no binaries → field must be absent: \(results[0].outputJSON)")
     }
+
+    // MARK: - search: empty-query "list files" mode
+
+    func testSearch_emptyQueryWithGlob_listsFilenameMatches() throws {
+        try fileManager.createDirectory(at: tempDir.appendingPathComponent("scenes"), withIntermediateDirectories: true)
+        try "extends Node".write(to: tempDir.appendingPathComponent("scenes/Player.gd"), atomically: true, encoding: .utf8)
+        try "extends Body".write(to: tempDir.appendingPathComponent("Slime.gd"), atomically: true, encoding: .utf8)
+        try "# docs".write(to: tempDir.appendingPathComponent("readme.md"), atomically: true, encoding: .utf8)
+
+        let call = StepToolCall(name: "search", argumentsJSON: "{\"query\": \"\", \"file_glob\": \"*.gd\"}")
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError, results[0].outputJSON)
+        XCTAssertTrue(results[0].outputJSON.contains("filename_matches"))
+        XCTAssertTrue(results[0].outputJSON.contains("Player.gd"))
+        XCTAssertTrue(results[0].outputJSON.contains("Slime.gd"))
+        XCTAssertFalse(results[0].outputJSON.contains("readme.md"),
+                       "The *.gd glob must exclude the .md file.")
+    }
+
+    func testSearch_emptyQueryNoConstraint_returnsError() throws {
+        let call = StepToolCall(name: "search", argumentsJSON: "{\"query\": \"\"}")
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertTrue(results[0].isError, "Empty query with no file_glob/paths must be an error, not a silent zero.")
+        XCTAssertTrue(results[0].outputJSON.contains("empty query requires file_glob or paths"),
+                      results[0].outputJSON)
+    }
+
+    func testSearch_emptyQuery_blankPathsEntry_returnsError() throws {
+        // paths:[""] resolves to the work-folder root — a present-but-empty
+        // constraint must NOT slip an empty query into a whole-tree walk.
+        try "x".write(to: tempDir.appendingPathComponent("some.gd"), atomically: true, encoding: .utf8)
+        let argsData = try JSONSerialization.data(withJSONObject: ["query": "", "paths": [""]])
+        let call = StepToolCall(name: "search", argumentsJSON: String(data: argsData, encoding: .utf8)!)
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertTrue(results[0].isError, "paths:[\"\"] is not a real constraint: \(results[0].outputJSON)")
+        XCTAssertTrue(results[0].outputJSON.contains("empty query requires file_glob or paths"))
+    }
+
+    func testSearch_emptyQuery_paddedFileGlob_stillLists() throws {
+        // A whitespace-padded glob (common LLM emission artifact) must be
+        // trimmed, not silently match nothing.
+        try "x".write(to: tempDir.appendingPathComponent("Player.gd"), atomically: true, encoding: .utf8)
+        let call = StepToolCall(name: "search", argumentsJSON: "{\"query\": \"\", \"file_glob\": \"*.gd \"}")
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError, results[0].outputJSON)
+        XCTAssertTrue(results[0].outputJSON.contains("Player.gd"),
+                      "A padded glob must be trimmed, not silently match nothing: \(results[0].outputJSON)")
+    }
+
+    func testSearch_emptyQuery_emptyFileGlob_returnsError() throws {
+        // file_glob:"" compiles to ^$ (matches nothing) — treat as no constraint
+        // (typed error), not a silent zero.
+        try "x".write(to: tempDir.appendingPathComponent("some.gd"), atomically: true, encoding: .utf8)
+        let call = StepToolCall(name: "search", argumentsJSON: "{\"query\": \"\", \"file_glob\": \"\"}")
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertTrue(results[0].isError, "file_glob:\"\" is not a real constraint: \(results[0].outputJSON)")
+        XCTAssertTrue(results[0].outputJSON.contains("empty query requires file_glob or paths"))
+    }
+
+    func testSearch_emptyQueryWithGlob_exploratoryDefaultOn_stillListsViaPlainPath() throws {
+        // With exploratory default ON, a non-empty query would route to the
+        // vector pass. An empty query has nothing to expand, so it must fall
+        // through to the plain list path BEFORE the exploratory branch — not
+        // hit the exploratory `emptyQuery` throw.
+        try "extends Node".write(to: tempDir.appendingPathComponent("Player.gd"), atomically: true, encoding: .utf8)
+        let paths = NTMSPaths(workFolderRoot: tempDir)
+        let (_, exploratoryRuntime) = ToolRegistry.defaultRegistry(
+            workFolderRoot: tempDir,
+            toolCallsLogURL: paths.toolCallsJSONL(taskID: 0, runID: 1),
+            searchExploratoryByDefault: true
+        )
+
+        let call = StepToolCall(name: "search", argumentsJSON: "{\"query\": \"\", \"file_glob\": \"*.gd\"}")
+        let results = exploratoryRuntime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError, results[0].outputJSON)
+        XCTAssertTrue(results[0].outputJSON.contains("Player.gd"))
+        XCTAssertFalse(results[0].outputJSON.contains("exploring"),
+                       "Empty query must NOT enter the exploratory pass.")
+    }
+
+    // MARK: - list_files: name_glob filter
+
+    func testListFiles_nameGlob_filtersToMatchingFiles() throws {
+        try "a".write(to: tempDir.appendingPathComponent("a.gd"), atomically: true, encoding: .utf8)
+        try "b".write(to: tempDir.appendingPathComponent("b.txt"), atomically: true, encoding: .utf8)
+
+        let call = StepToolCall(name: "list_files", argumentsJSON: "{\"path\": \".\", \"name_glob\": \"*.gd\"}")
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError)
+        XCTAssertTrue(results[0].outputJSON.contains("a.gd"))
+        XCTAssertFalse(results[0].outputJSON.contains("b.txt"),
+                       "name_glob *.gd must exclude b.txt.")
+    }
+
+    func testListFiles_nameGlob_recursesButFiltersEntries() throws {
+        // A non-matching subdirectory is still traversed so nested matches are
+        // reachable; the subdirectory itself is filtered out of the listing.
+        try fileManager.createDirectory(at: tempDir.appendingPathComponent("scenes"), withIntermediateDirectories: true)
+        try "deep".write(to: tempDir.appendingPathComponent("scenes/Enemy.gd"), atomically: true, encoding: .utf8)
+        try "top".write(to: tempDir.appendingPathComponent("Main.gd"), atomically: true, encoding: .utf8)
+
+        let call = StepToolCall(name: "list_files", argumentsJSON: "{\"path\": \".\", \"depth\": 3, \"name_glob\": \"*.gd\"}")
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError)
+        XCTAssertTrue(results[0].outputJSON.contains("Main.gd"))
+        XCTAssertTrue(results[0].outputJSON.contains("Enemy.gd"),
+                      "Nested match must be reachable even though its parent dir doesn't match the glob.")
+    }
+
+    func testListFiles_invalidNameGlob_returnsError() throws {
+        // The uncompilable-glob sentinel must surface as a typed error, not a
+        // fail-closed empty listing.
+        let argsData = try JSONSerialization.data(
+            withJSONObject: ["path": ".", "name_glob": GlobMatcher._testUncompilableGlobSentinel])
+        let argsJSON = String(data: argsData, encoding: .utf8)!
+        let call = StepToolCall(name: "list_files", argumentsJSON: argsJSON)
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertTrue(results[0].isError, "An uncompilable name_glob must error, not fail-close silently.")
+        XCTAssertTrue(results[0].outputJSON.contains("name_glob"),
+                      "Error must name the actual parameter: \(results[0].outputJSON)")
+        XCTAssertFalse(results[0].outputJSON.contains("file_glob"),
+                       "Error must NOT name file_glob — list_files has no such parameter: \(results[0].outputJSON)")
+    }
+
+    func testListFiles_paddedNameGlob_stillFilters() throws {
+        // A whitespace-padded name_glob must be trimmed, not silently exclude
+        // every entry.
+        try "x".write(to: tempDir.appendingPathComponent("a.gd"), atomically: true, encoding: .utf8)
+        try "x".write(to: tempDir.appendingPathComponent("b.txt"), atomically: true, encoding: .utf8)
+        let call = StepToolCall(name: "list_files", argumentsJSON: "{\"path\": \".\", \"name_glob\": \"*.gd \"}")
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError, results[0].outputJSON)
+        XCTAssertTrue(results[0].outputJSON.contains("a.gd"),
+                      "Padded name_glob must be trimmed: \(results[0].outputJSON)")
+        XCTAssertFalse(results[0].outputJSON.contains("b.txt"))
+    }
+
+    func testListFiles_emptyNameGlob_listsAll() throws {
+        // name_glob:"" must mean "no filter", not "match nothing" (^$).
+        try "x".write(to: tempDir.appendingPathComponent("a.gd"), atomically: true, encoding: .utf8)
+        try "x".write(to: tempDir.appendingPathComponent("b.txt"), atomically: true, encoding: .utf8)
+        let call = StepToolCall(name: "list_files", argumentsJSON: "{\"path\": \".\", \"name_glob\": \"\"}")
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError, results[0].outputJSON)
+        XCTAssertTrue(results[0].outputJSON.contains("a.gd"),
+                      "Empty name_glob must not silently exclude everything: \(results[0].outputJSON)")
+        XCTAssertTrue(results[0].outputJSON.contains("b.txt"))
+    }
 }

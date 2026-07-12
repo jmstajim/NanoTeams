@@ -58,6 +58,26 @@ struct MessageComposer<SettingsMenu: View>: View {
     /// override with a computed value that tracks their pane.
     var maxTextFieldHeight: CGFloat = MessageComposerLayout.defaultMaxTextFieldHeight
 
+    /// Work-folder root used by the "/" skills picker to discover project-level
+    /// agent skills. `nil` (default storage / no folder) → global skills only.
+    /// Threaded in by hosts that have the orchestrator so the shared composer
+    /// stays orchestrator-free. The picker shows only when a `clips` pipe exists.
+    var skillsProjectRoot: URL?
+
+    /// Editor-field mode: the composer becomes a plain multi-line text editor
+    /// with the QC affordance row (`+` attach / `/` skills / gear / … / sparkles
+    /// / mic) but **no send button and no keyhint chip** — used by the Autovisor
+    /// Goal editors, where there is nothing to "send". Return always inserts a
+    /// newline (the `enterSendsMessage` preference is ignored). Default `false`
+    /// keeps every existing message-surface call site byte-identical.
+    var isEditorField: Bool = false
+
+    /// Optional host mirror of the internal `ImprovePromptButton` streaming state.
+    /// Editor-mode hosts (the Autovisor Goal editors) pass one to lock their Enable
+    /// button + suspend goal autosave while the rewrite streams. Precedent:
+    /// `filePickerBinding`.
+    var externalIsImproving: Binding<Bool>?
+
     // Declared last so QuickCapture's trailing-closure call sites bind to
     // `settingsMenu` via SE-0286 forward-scan. Other surfaces use the
     // `EmbedFilesSettingsButton<EmptyView>` convenience init below.
@@ -82,6 +102,17 @@ struct MessageComposer<SettingsMenu: View>: View {
     @State private var pasteMonitorOwnerID = UUID()
     @State private var hasRegisteredMonitor: Bool = false
 
+    /// True while `ImprovePromptButton` streams a rewrite into `text`. Gates
+    /// every submit path and locks the field so a half-streamed prompt can't
+    /// be sent, edited, or dictated over.
+    @State private var isImprovingPrompt = false
+
+    /// Submit is blocked while the improve stream is mutating `text` — the
+    /// host's `canSubmit` can't know about the in-flight rewrite, so the gate
+    /// lives here (feeds the return-key policy, the send button, and the
+    /// keyhint chip alike).
+    private var effectiveCanSubmit: Bool { canSubmit && !isImprovingPrompt }
+
     private var clipTexts: [String] {
         clips?.wrappedValue ?? []
     }
@@ -96,6 +127,28 @@ struct MessageComposer<SettingsMenu: View>: View {
     /// Static so tests can pin the clamp without rendering the view.
     nonisolated static func clampMinLines(_ value: Int) -> Int {
         max(1, value)
+    }
+
+    /// Pure Return-key decision. In editor-field mode the key ALWAYS inserts a
+    /// newline (there is nothing to submit, so the `enterSendsMessage` preference
+    /// is bypassed); otherwise it delegates to the shared `MessageKeyPolicy`.
+    /// Static so tests pin it without rendering the view.
+    nonisolated static func returnAction(
+        isEditorField: Bool,
+        enterSendsMessage: Bool,
+        hasShift: Bool,
+        hasCommand: Bool,
+        canSubmit: Bool,
+        isSubmitting: Bool
+    ) -> MessageKeyPolicy.KeyAction {
+        guard !isEditorField else { return .insertNewline }
+        return MessageKeyPolicy.resolveReturnKey(
+            enterSendsMessage: enterSendsMessage,
+            hasShift: hasShift,
+            hasCommand: hasCommand,
+            canSubmit: canSubmit,
+            isSubmitting: isSubmitting
+        )
     }
 
     var body: some View {
@@ -135,11 +188,19 @@ struct MessageComposer<SettingsMenu: View>: View {
 
     private var composerBody: some View {
         VStack(alignment: .leading, spacing: Spacing.xs) {
-            if hasAttachments {
+            // Editor-field surfaces (Autovisor Goal) put the text first and the
+            // attachment/clip cards BELOW it — the goal prose is primary, its
+            // references secondary. Message surfaces keep cards on top (the caption
+            // is what you're about to send, so the attachments preview above it).
+            if !isEditorField && hasAttachments {
                 attachmentGrid
             }
 
             messageField
+
+            if isEditorField && hasAttachments {
+                attachmentGrid
+            }
 
             HStack {
                 Button {
@@ -152,6 +213,10 @@ struct MessageComposer<SettingsMenu: View>: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Attach files")
+
+                if let clips {
+                    SkillsPickerButton(projectRoot: skillsProjectRoot, clips: clips)
+                }
 
                 settingsMenu
 
@@ -170,7 +235,7 @@ struct MessageComposer<SettingsMenu: View>: View {
                 // something submittable so it doesn't compete with the empty
                 // resting state. Tracks `enterSendsMessage` so the glyph stays
                 // in lockstep with the active key binding.
-                if canSubmit && !isSubmitting {
+                if !isEditorField && effectiveCanSubmit && !isSubmitting {
                     Text(config.enterSendsMessage ? "⏎" : "⌘⏎")
                         .font(Typography.term2xs)
                         .foregroundStyle(Colors.textQuaternary)
@@ -178,14 +243,24 @@ struct MessageComposer<SettingsMenu: View>: View {
                         .accessibilityHidden(true)
                 }
 
-                DictationMicButton(text: $text)
+                ImprovePromptButton(text: $text, isImproving: $isImprovingPrompt)
 
-                MessageSendButton(
-                    canSubmit: canSubmit,
-                    isSubmitting: isSubmitting,
-                    onSubmit: handleSubmit
-                )
+                DictationMicButton(text: $text)
+                    .disabled(isImprovingPrompt)
+
+                // Editor-field mode has nothing to send — the row is a pure
+                // affordance strip (attach / skills / gear / improve / dictate).
+                if !isEditorField {
+                    MessageSendButton(
+                        canSubmit: effectiveCanSubmit,
+                        isSubmitting: isSubmitting,
+                        onSubmit: handleSubmit
+                    )
+                }
             }
+        }
+        .onChange(of: isImprovingPrompt) { _, improving in
+            externalIsImproving?.wrappedValue = improving
         }
         .dropDestination(for: URL.self) { urls, _ in
             guard !urls.isEmpty else { return false }
@@ -262,11 +337,12 @@ struct MessageComposer<SettingsMenu: View>: View {
             minLineCount: Self.clampMinLines(minLineCount),
             autofocusOnAppear: autofocusOnAppear,
             onReturnKey: { hasShift, hasCommand in
-                let action = MessageKeyPolicy.resolveReturnKey(
+                let action = Self.returnAction(
+                    isEditorField: isEditorField,
                     enterSendsMessage: config.enterSendsMessage,
                     hasShift: hasShift,
                     hasCommand: hasCommand,
-                    canSubmit: canSubmit,
+                    canSubmit: effectiveCanSubmit,
                     isSubmitting: isSubmitting
                 )
                 switch action {
@@ -278,7 +354,8 @@ struct MessageComposer<SettingsMenu: View>: View {
                 case .ignore:
                     return true
                 }
-            }
+            },
+            isInputLocked: isImprovingPrompt
         )
         .overlay(
             RoundedRectangle.squircle(CornerRadius.small)
@@ -311,30 +388,11 @@ struct MessageComposer<SettingsMenu: View>: View {
     }
 
     private func clipCell(index: Int, text: String) -> some View {
-        let parsed = SourceContext.parse(text)
-        let displayText = parsed?.body ?? text
-        let label = parsed?.source ?? String(text.prefix(20))
+        let kind = ClipCellPresentation.resolve(text)
 
         return VStack(spacing: Spacing.xxs) {
             ZStack(alignment: .topTrailing) {
-                Text(displayText)
-                    .font(.system(size: 6, weight: .ultraLight))
-                    .foregroundStyle(Colors.textSecondary)
-                    .lineLimit(5)
-                    .lineSpacing(0)
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .padding(Spacing.xs)
-                    .frame(width: 40, height: 40)
-                    .background(Colors.surfacePrimary)
-                    .overlay {
-                        RoundedRectangle.squircle(CornerRadius.micro)
-                            .strokeBorder(
-                                parsed != nil ? Colors.accentBorder : Colors.borderSubtle,
-                                style: StrokeStyle(lineWidth: 1, dash: [4, 3])
-                            )
-                    }
-                    .clipShape(RoundedRectangle.squircle(CornerRadius.micro))
+                clipTile(kind: kind)
                     .onTapGesture { popoverClipIndex = index }
 
                 RemoveBadgeButton {
@@ -345,9 +403,9 @@ struct MessageComposer<SettingsMenu: View>: View {
                 }
             }
 
-            Text(label)
+            Text(clipLabel(kind: kind))
                 .font(Typography.caption2)
-                .foregroundStyle(parsed != nil ? Colors.textPrimary : Colors.textSecondary)
+                .foregroundStyle(clipLabelIsTinted(kind) ? Colors.textPrimary : Colors.textSecondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(width: 52)
@@ -358,6 +416,60 @@ struct MessageComposer<SettingsMenu: View>: View {
         )) {
             ClipPopoverContent(text: text)
         }
+    }
+
+    /// Skill clips get a distinct `/`-glyph tile with a SOLID accent border;
+    /// clipboard clips keep the body-preview tile with a dashed border.
+    @ViewBuilder
+    private func clipTile(kind: ClipCellPresentation.Kind) -> some View {
+        switch kind {
+        case .skill:
+            Text("/")
+                .font(Typography.termLg)
+                .foregroundStyle(Colors.accent)
+                .frame(width: 40, height: 40)
+                .background(Colors.surfacePrimary)
+                .overlay {
+                    RoundedRectangle.squircle(CornerRadius.micro)
+                        .strokeBorder(Colors.accentBorder, lineWidth: 1)
+                }
+                .clipShape(RoundedRectangle.squircle(CornerRadius.micro))
+        case .sourced(_, let body):
+            clipBodyTile(text: body, border: Colors.accentBorder)
+        case .plain(let body):
+            clipBodyTile(text: body, border: Colors.borderSubtle)
+        }
+    }
+
+    private func clipBodyTile(text: String, border: Color) -> some View {
+        Text(text)
+            .font(.system(size: 6, weight: .ultraLight))
+            .foregroundStyle(Colors.textSecondary)
+            .lineLimit(5)
+            .lineSpacing(0)
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(Spacing.xs)
+            .frame(width: 40, height: 40)
+            .background(Colors.surfacePrimary)
+            .overlay {
+                RoundedRectangle.squircle(CornerRadius.micro)
+                    .strokeBorder(border, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+            }
+            .clipShape(RoundedRectangle.squircle(CornerRadius.micro))
+    }
+
+    private func clipLabel(kind: ClipCellPresentation.Kind) -> String {
+        switch kind {
+        case .skill(let skill): return "/\(skill.name)"
+        case .sourced(let source, _): return source
+        case .plain(let body): return String(body.prefix(20))
+        }
+    }
+
+    private func clipLabelIsTinted(_ kind: ClipCellPresentation.Kind) -> Bool {
+        if case .plain = kind { return false }
+        return true
     }
 
     private func fileCell(_ attachment: StagedAttachment) -> some View {
@@ -552,7 +664,8 @@ extension MessageComposer where SettingsMenu == EmbedFilesSettingsButton<EmptyVi
         onRemoveAttachment: @escaping (StagedAttachment) -> Void,
         autofocusOnAppear: Bool = false,
         minLineCount: Int = 1,
-        maxTextFieldHeight: CGFloat = MessageComposerLayout.defaultMaxTextFieldHeight
+        maxTextFieldHeight: CGFloat = MessageComposerLayout.defaultMaxTextFieldHeight,
+        skillsProjectRoot: URL? = nil
     ) {
         self._text = text
         self._attachments = attachments
@@ -566,6 +679,44 @@ extension MessageComposer where SettingsMenu == EmbedFilesSettingsButton<EmptyVi
         self.autofocusOnAppear = autofocusOnAppear
         self.minLineCount = minLineCount
         self.maxTextFieldHeight = maxTextFieldHeight
+        self.skillsProjectRoot = skillsProjectRoot
+        self.settingsMenu = EmbedFilesSettingsButton()
+    }
+
+    /// Editor-field convenience init: the QC bottom panel WITHOUT the send button
+    /// or keyhint chip. Used by the Autovisor Goal editors — a multi-line text
+    /// field where Return inserts a newline and files/skills/dictation/improve all
+    /// work. Keeps the default embed-files gear so the panel matches Quick Capture;
+    /// the gear's "Embed files in prompt" toggle governs whether the attachments'
+    /// text is inlined vs listed as paths in the manager's prompt.
+    init(
+        editorText: Binding<String>,
+        attachments: Binding<[StagedAttachment]>,
+        clips: Binding<[String]>? = nil,
+        placeholder: String = "",
+        onStageAttachment: @escaping (URL) -> StagedAttachment?,
+        onRemoveAttachment: @escaping (StagedAttachment) -> Void,
+        isImproving: Binding<Bool>? = nil,
+        autofocusOnAppear: Bool = false,
+        minLineCount: Int = 3,
+        maxTextFieldHeight: CGFloat = MessageComposerLayout.defaultMaxTextFieldHeight,
+        skillsProjectRoot: URL? = nil
+    ) {
+        self._text = editorText
+        self._attachments = attachments
+        self.clips = clips
+        self.placeholder = placeholder
+        self.canSubmit = false
+        self.isSubmitting = false
+        self.onSubmit = {}
+        self.onStageAttachment = onStageAttachment
+        self.onRemoveAttachment = onRemoveAttachment
+        self.autofocusOnAppear = autofocusOnAppear
+        self.minLineCount = minLineCount
+        self.maxTextFieldHeight = maxTextFieldHeight
+        self.skillsProjectRoot = skillsProjectRoot
+        self.isEditorField = true
+        self.externalIsImproving = isImproving
         self.settingsMenu = EmbedFilesSettingsButton()
     }
 }

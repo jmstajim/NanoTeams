@@ -67,6 +67,11 @@ nonisolated extension PromptBuilder {
         /// toggle this; default `false` matches the non-coordinator branch.
         /// Ignored for `.stepExecution` / `.consultation`.
         let isCoordinator: Bool
+        /// Auto-discovered agent instruction files — mirrors the runtime
+        /// `PromptBuilder.Context.agentInstructions` so the `{workFolderContext}`
+        /// preview is byte-identical to the wire. Default `nil` keeps existing
+        /// call sites compiling and renders as the legacy work-folder-context.
+        let agentInstructions: AgentInstructionsSnapshot?
 
         init(
             role: TeamRoleDefinition,
@@ -78,7 +83,8 @@ nonisolated extension PromptBuilder {
             isVisionConfigured: Bool,
             isComputerUseEnabled: Bool,
             globalContext: String,
-            isCoordinator: Bool = false
+            isCoordinator: Bool = false,
+            agentInstructions: AgentInstructionsSnapshot? = nil
         ) {
             self.role = role
             self.team = team
@@ -90,6 +96,7 @@ nonisolated extension PromptBuilder {
             self.isComputerUseEnabled = isComputerUseEnabled
             self.globalContext = globalContext
             self.isCoordinator = isCoordinator
+            self.agentInstructions = agentInstructions
         }
     }
 
@@ -342,7 +349,10 @@ nonisolated extension PromptBuilder {
         let toolList = renderToolListPlaceholder(toolNames: toolNames)
         let hasFileReadTools = !Set(toolNames).isDisjoint(with: ToolHandlerRegistry.fileReadTools)
         let conversationMechanics = buildConversationMechanicsGuidance(hasFileReadTools: hasFileReadTools)
-        let workFolderContext = buildWorkFolderContextMessage(workFolder: inputs.workFolder) ?? ""
+        let workFolderContext = buildWorkFolderContextMessage(
+            workFolder: inputs.workFolder,
+            agentInstructions: inputs.agentInstructions
+        ) ?? ""
         let roleGuidance = wirePreviewStepRoleGuidance(role: roleDef, builtIn: role)
 
         return [
@@ -455,7 +465,11 @@ nonisolated extension PromptBuilder {
             allTeams: inputs.allTeams,
             selectedScheme: inputs.selectedScheme,
             isVisionConfigured: inputs.isVisionConfigured,
-            isComputerUseEnabled: inputs.isComputerUseEnabled
+            isComputerUseEnabled: inputs.isComputerUseEnabled,
+            // Sourced from the real projection (single source of truth) so the
+            // Autovisor Manager role's create_managed_task preview stays
+            // byte-identical to the wire when generation is disabled for the folder.
+            autovisorAllowTeamGeneration: inputs.workFolder?.settings.autovisorAllowTeamGeneration ?? true
         )
         switch inputs.workFolderState {
         case .defaultStorage:

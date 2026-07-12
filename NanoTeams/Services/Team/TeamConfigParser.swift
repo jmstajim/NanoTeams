@@ -103,6 +103,14 @@ nonisolated enum TeamConfigParser {
                   let parsed = parseDictionaryStripping(extracted) {
             // Inner extraction path: skip wrapper unwrapping, treat as flat config.
             return try decodeFromConfigDict(parsed)
+        } else if let parsed = parseDictionaryStripping(argumentsJSON) {
+            // No `team_config` substring for the extractor to isolate — e.g. a
+            // model that returned the config as bare content (no tool-call
+            // wrapper) with a dropped structural closer. Run the full repair
+            // chain on the WHOLE payload, then unwrap normally. Without this a
+            // wrapper-less single-drop config would throw even though the repair
+            // could recover it.
+            dict = parsed
         } else {
             throw TeamGenerationService.GenerationError.invalidResponse("Could not parse tool arguments as JSON")
         }
@@ -360,6 +368,16 @@ nonisolated enum TeamConfigParser {
            let parsed = JSONUtilities.parseJSONDictionary(injected) {
             return parsed
         }
+        // Single dropped structural closer at the roles boundary (Type A/B) —
+        // the general repair `repairMissingArrayClose`'s `"}]` case does not cover.
+        if let injected = repairStructuralCloserDrop(s),
+           let parsed = JSONUtilities.parseJSONDictionary(injected) {
+            return parsed
+        }
+        if let injected = repairStructuralCloserDrop(repaired),
+           let parsed = JSONUtilities.parseJSONDictionary(injected) {
+            return parsed
+        }
         return nil
     }
 
@@ -389,6 +407,86 @@ nonisolated enum TeamConfigParser {
             if JSONUtilities.parseJSONDictionary(candidate) != nil { return candidate }
         }
         return nil
+    }
+
+    /// Recovers from a SINGLE dropped structural closer (`}` or `]`) that the
+    /// model emitted mid-payload — in practice at the `roles` array boundary —
+    /// while STILL emitting a compensating extra closer at the very end. Brace
+    /// COUNT then balances but POSITION is wrong, which defeats the `{`-only
+    /// `scanBalancedObject` (it reaches depth 0 on a structurally-invalid span).
+    ///
+    /// Walks `s` string/escape-aware with a `{`/`[` stack and, at the FIRST
+    /// structural mismatch, inserts the one correct missing closer:
+    ///   - `]` while an object is open → the object lost its `}`
+    ///     (Type A: `…["x"]]` → `…["x"]}]`)
+    ///   - `}` while an array is open  → the array lost its `]`
+    ///     (subsumes `repairMissingArrayClose`: `…["x"}]` → `…["x"]}]`)
+    ///   - `:` while an array is open  → the array lost its `]` before a stray
+    ///     key (Type B: `…{…},"artifacts":…` → `…{…}],"artifacts":…`)
+    /// then trims the compensating trailing closer via `scanBalancedObject` and
+    /// returns the candidate ONLY if it now parses. Returns `nil` when the input
+    /// is already well-formed (no mismatch) or when a single insertion doesn't
+    /// recover it (more than one drop — deliberately out of scope).
+    ///
+    /// Observed on `qwen3.5-35b-a3b`, which drops exactly one closer at the roles
+    /// boundary on ~45% of corpus cases (3 unhandled variants beyond the `"}]`
+    /// case `repairMissingArrayClose` already covered). Runs AFTER
+    /// `repairMissingArrayClose` in the chain, so R4's pinned behavior is
+    /// untouched — this is additive coverage for the two new variants.
+    static func repairStructuralCloserDrop(_ s: String) -> String? {
+        let chars = Array(s)
+        var stack: [Character] = []
+        var inString = false
+        var isEscaped = false
+        var arrayCommaIndex: Int?     // most recent `,` while an array is top-of-stack
+        var lastStringOpenIndex: Int? // start of the most recently opened top-level string
+        var insertAt: Int?
+        var closer: Character = "}"
+        var i = 0
+        while i < chars.count {
+            let c = chars[i]
+            if isEscaped { isEscaped = false; i += 1; continue }
+            if inString {
+                if c == "\\" { isEscaped = true }
+                else if c == "\"" { inString = false }
+                i += 1
+                continue
+            }
+            switch c {
+            case "\"":
+                inString = true
+                lastStringOpenIndex = i
+            case "{", "[":
+                stack.append(c)
+                arrayCommaIndex = nil
+            case "}":
+                if stack.last == "{" { stack.removeLast(); arrayCommaIndex = nil }
+                else if stack.last == "[" { insertAt = i; closer = "]" }
+                // else: excess `}` (trailing junk) — not our drop, ignore.
+            case "]":
+                if stack.last == "[" { stack.removeLast(); arrayCommaIndex = nil }
+                else if stack.last == "{" { insertAt = i; closer = "}" }
+                // else: excess `]` — ignore.
+            case ":":
+                if stack.last == "[" {
+                    // A key:value inside an array is impossible — the array's `]`
+                    // was dropped before the preceding key. Close it before the
+                    // separating `,` (or, absent one, before the key itself).
+                    insertAt = arrayCommaIndex ?? lastStringOpenIndex
+                    closer = "]"
+                }
+            case ",":
+                if stack.last == "[" { arrayCommaIndex = i }
+            default:
+                break
+            }
+            if insertAt != nil { break }
+            i += 1
+        }
+        guard let at = insertAt, at <= chars.count else { return nil }
+        let candidate = String(chars[0..<at]) + String(closer) + String(chars[at...])
+        let trimmed = scanBalancedObject(in: candidate) ?? candidate
+        return JSONUtilities.parseJSONDictionary(trimmed) != nil ? trimmed : nil
     }
 
     /// Escapes `"` characters that appear inside string values but shouldn't

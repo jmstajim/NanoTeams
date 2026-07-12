@@ -20,7 +20,9 @@ struct AutovisorSetupView: View {
 
     @State private var goalDraft: String = ""
     @State private var isEnabling = false
-    @FocusState private var goalFocused: Bool
+    /// Mirrored from `AutovisorGoalComposer`'s improve stream — blocks Enable so a
+    /// half-improved goal can't be persisted + activate the manager.
+    @State private var isImprovingGoal = false
 
     var body: some View {
         ScrollView {
@@ -64,32 +66,15 @@ struct AutovisorSetupView: View {
     private var goalSection: some View {
         VStack(alignment: .leading, spacing: Spacing.s) {
             MonoLabel(text: "Goal", marker: true)
-            // Same editor as the Work Folder Context field (and Settings → Autovisor's
-            // goal, which edits the identical string): PromptMarker + TextEditor.
-            // TextEditor inserts a newline on Return and tracks the caret — a
-            // TextField(axis:.vertical) treated Return as "end editing", which broke
-            // multi-line goal authoring (the reported bug). It grows to minHeight,
-            // then scrolls internally past it.
-            HStack(alignment: .top, spacing: Spacing.xs) {
-                PromptMarker()
-                TextEditor(text: $goalDraft)
-                    .font(Typography.termBase)
-                    .scrollContentBackground(.hidden)
-                    .focused($goalFocused)
-                    .frame(minHeight: 120)
-            }
-            .padding(Spacing.s)
-            .background(
-                RoundedRectangle.squircle(CornerRadius.small)
-                    .fill(Colors.surfaceElevated)
+
+            // Quick Capture-style composer (attach / skills / gear / improve /
+            // dictate) minus the send button. Return inserts a newline, files
+            // attach with cards, and `isImprovingGoal` still gates Enable.
+            AutovisorGoalComposer(
+                text: $goalDraft,
+                isImproving: $isImprovingGoal,
+                autofocus: true
             )
-            .overlay {
-                RoundedRectangle.squircle(CornerRadius.small)
-                    .strokeBorder(
-                        goalFocused ? Colors.accent : Colors.borderSubtle,
-                        lineWidth: 1
-                    )
-            }
 
             Text("Injected into the manager's system prompt. You can edit this any time from the chat or Settings → Autovisor.")
                 .font(Typography.caption)
@@ -122,7 +107,7 @@ struct AutovisorSetupView: View {
                 )
             }
             .buttonStyle(.plain)
-            .disabled(isEnabling)
+            .disabled(isEnabling || isImprovingGoal)
             .keyboardShortcut(.return, modifiers: .command)
             .help("Enable Autovisor and open its chat (⌘↩)")
 
@@ -142,7 +127,6 @@ struct AutovisorSetupView: View {
         goalDraft = persisted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? AutovisorConstants.defaultGoal
             : persisted
-        goalFocused = true
     }
 
     /// Persist the edited goal, then flip the enable flag. Ordering matters:
@@ -169,5 +153,6 @@ struct AutovisorSetupView: View {
         .environment(store.engineState)
         .environment(store.configuration)
         .environment(store.streamingPreviewManager)
+        .environment(DictationService())
         .frame(width: 800, height: 600)
 }
