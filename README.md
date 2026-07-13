@@ -15,7 +15,7 @@
 
 **NanoTeams is a free, open-source, local-first AI coding agent and multi-agent AI team app for macOS.** It runs 100% on-device through [LM Studio](https://lmstudio.ai) — no cloud, no API keys, no subscription, no telemetry — so the local models you already run can read and edit your files, run git and Xcode, control the screen, and coordinate specialized AI roles inside a sandboxed work folder.
 
-Chat with the **Coding Assistant** to read and edit your files, or let the **Coding Agent** make small changes itself and hand the heavy lifting to a full team of AI roles that plan, build, review, and ship. It's universal, too: because a team is just AI roles you configure, the same engine drafts documents, plans projects, or runs research. Flip on the **Autovisor** and it runs the whole folder on its own. Your code and your ideas stay on your machine — and because NanoTeams is free and open-source, you can [verify that yourself](#privacy--security).
+Chat with the **Coding Assistant** to read and edit your files, or let the **Coding Agent** make small changes itself and hand the heavy lifting to a full team of AI roles that plan, build, review, and ship. It's universal, too: because a team is just AI roles you configure, the same engine drafts documents, plans projects, or runs research. Flip on the **Autovisor** and it runs the whole folder on its own. Your code and your ideas stay on your machine.
 
 *Built for Mac developers who run local models in LM Studio and anyone whose code can't leave the machine — privacy-first, NDA, or air-gapped work.*
 
