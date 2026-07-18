@@ -446,8 +446,8 @@ final class SandboxPathResolverTests: XCTestCase {
 
     /// The check is on the STANDARDIZED path, not the raw string: `/a/..` collapses to `/`
     /// lexically (root's parent is root), so a non-literal-`/` input that resolves there
-    /// still lands on the work-folder root. Documents that `absURL.path == "/"` — not
-    /// `raw == "/"` — is the condition.
+    /// still lands on the work-folder root. Documents that `addressesFilesystemRoot(absURL)` —
+    /// not `raw == "/"` — is the condition.
     func testResolveDotDotCollapsingToRoot_returnsRoot() throws {
         let url = try resolver.resolveFileURL(relativePath: "/a/..")
         XCTAssertEqual(url, tempProjectRoot.standardizedFileURL)
@@ -461,6 +461,187 @@ final class SandboxPathResolverTests: XCTestCase {
         let r = SandboxPathResolver(workFolderRoot: tempProjectRoot, internalDir: internalDir)
         let url = try r.resolveFileURL(relativePath: "/")
         XCTAssertEqual(url, tempProjectRoot.standardizedFileURL)
+    }
+
+    // MARK: - Cross-Foundation Root Detection (macOS 15 runtime vs macOS 26 runtime)
+
+    /// Every spelling that must mean "the work-folder root".
+    private static let rootishSpellings = [
+        "/", "//", "/.", "/./", "/./.", "//.", "/.//", "/..", "/../.", "/./..", "/a/..",
+    ]
+
+    /// Legacy CFURL-backed standardization — what macOS 15's Foundation does. Still reachable on
+    /// macOS 26 through `NSURL`, which is what makes the CI runner's semantics testable locally.
+    private func legacyStandardized(_ path: String) throws -> URL {
+        try XCTUnwrap(NSURL(fileURLWithPath: path).standardizingPath as URL?)
+    }
+
+    /// THE CROSS-VERSION PIN. `URL.standardizedFileURL` is not the same function on every macOS:
+    /// macOS 26's swift-foundation standardizes via RFC-3986 `remove_dot_segments` and strips a
+    /// terminal `.`; macOS 15's CFURL-backed `URL` does not (swift-corelibs-foundation #3725 /
+    /// SR-7289). So `/.` and `/./` arrive on macOS 15 as `["/", "."]`, the old `absURL.path == "/"`
+    /// check missed, and the work-folder root was rejected with `absolutePathNotAllowed` — for
+    /// every user on the deployment-target OS, and on CI (which runs `macos-15`).
+    ///
+    /// Asserting THROUGH `resolveFileURL` cannot catch this locally: it inherits whichever
+    /// Foundation the host happens to ship. Driving the predicate with BOTH standardizers does.
+    func testAddressesFilesystemRoot_agreesUnderLegacyAndModernStandardization() throws {
+        for raw in Self.rootishSpellings {
+            let modern = URL(fileURLWithPath: raw).standardizedFileURL
+            let legacy = try legacyStandardized(raw)
+            XCTAssertTrue(
+                SandboxPathResolver.addressesFilesystemRoot(modern),
+                "modern standardization of \(raw) → \(modern.pathComponents) must classify as root")
+            XCTAssertTrue(
+                SandboxPathResolver.addressesFilesystemRoot(legacy),
+                "legacy standardization of \(raw) → \(legacy.pathComponents) must classify as root")
+        }
+    }
+
+    /// The negative half — the boundary between "root" and "a real path" must hold under both
+    /// standardizers too, otherwise tolerating a residual `.` would start swallowing real paths.
+    /// `/../x` is the escape boundary; `/...` and `..foo` are ordinary filenames, not dot-segments.
+    func testAddressesFilesystemRoot_negatives_underBothStandardizations() throws {
+        let nonRoot = [
+            "/../x", "/x", "/...", "/a/./b", "/etc/hosts",
+            tempProjectRoot.path, tempProjectRoot.path + "/.", tempProjectRoot.path + "/..foo",
+        ]
+        for raw in nonRoot {
+            let modern = URL(fileURLWithPath: raw).standardizedFileURL
+            let legacy = try legacyStandardized(raw)
+            XCTAssertFalse(
+                SandboxPathResolver.addressesFilesystemRoot(modern),
+                "modern standardization of \(raw) → \(modern.pathComponents) must NOT be root")
+            XCTAssertFalse(
+                SandboxPathResolver.addressesFilesystemRoot(legacy),
+                "legacy standardization of \(raw) → \(legacy.pathComponents) must NOT be root")
+        }
+    }
+
+    /// A terminal `.` on a NON-root path is not the root — it addresses that directory. Both
+    /// Foundations agree here (`/a/.` → `/a`); pinned so a future widening of the root predicate
+    /// cannot start collapsing real directories onto the work-folder root.
+    func testResolveTrailingDotUnderRoot_resolvesToThatDirectory() throws {
+        let src = tempProjectRoot.appendingPathComponent("src", isDirectory: true)
+        try FileManager.default.createDirectory(at: src, withIntermediateDirectories: true)
+
+        XCTAssertEqual(
+            try resolver.resolveFileURL(relativePath: tempProjectRoot.path + "/."),
+            tempProjectRoot.standardizedFileURL)
+        XCTAssertEqual(
+            try resolver.resolveFileURL(relativePath: tempProjectRoot.path + "/./src"),
+            src.standardizedFileURL)
+    }
+
+    /// Why the tool-execution fallback sandbox root is a non-existent sentinel and never `/`
+    /// (`LLMExecutionService+ToolExecution`): with `/` as the root, containment is universally
+    /// true and every absolute path on the machine resolves — the sandbox stops being a sandbox.
+    /// Pins the property, not the sentinel string.
+    func testRootOfSlash_exposesWholeFilesystem_whileDeadSentinelRootDoesNot() throws {
+        let wideOpen = SandboxPathResolver(workFolderRoot: URL(fileURLWithPath: "/"))
+        XCTAssertEqual(try wideOpen.resolveFileURL(relativePath: "/etc/hosts").path, "/etc/hosts")
+
+        let sentinel = SandboxPathResolver(
+            workFolderRoot: URL(fileURLWithPath: "/dev/null/nanoteams-no-work-folder", isDirectory: true))
+        XCTAssertThrowsError(try sentinel.resolveFileURL(relativePath: "/etc/hosts")) { error in
+            guard case SandboxPathError.absolutePathNotAllowed = error else {
+                return XCTFail("Expected absolutePathNotAllowed, got \(error)")
+            }
+        }
+    }
+
+    // MARK: - Tilde That Does Not Expand
+
+    /// `expandingTildeInPath` returns the string UNCHANGED for an unknown user, so the expanded
+    /// value is not absolute and `URL(fileURLWithPath:)` used to resolve it against the PROCESS
+    /// working directory — making the verdict depend on where the app happens to be running, and
+    /// accepting the path outright if the CWD sat inside the work folder. Pinned with the CWD
+    /// deliberately moved inside the root: the one configuration where the old code could resolve.
+    func testResolveUnknownTilde_throws_regardlessOfProcessWorkingDirectory() throws {
+        let fm = FileManager.default
+        let previousCWD = fm.currentDirectoryPath
+        defer { fm.changeCurrentDirectoryPath(previousCWD) }
+
+        for cwd in [tempProjectRoot.path, previousCWD] {
+            XCTAssertTrue(fm.changeCurrentDirectoryPath(cwd), "could not chdir to \(cwd)")
+            XCTAssertThrowsError(try resolver.resolveFileURL(relativePath: "~nosuchuser999/x")) { error in
+                guard case SandboxPathError.absolutePathNotAllowed(let p) = error else {
+                    return XCTFail("Expected absolutePathNotAllowed, got \(error)")
+                }
+                XCTAssertEqual(p, "~nosuchuser999/x")  // original raw string preserved
+            }
+        }
+    }
+
+    // MARK: - Foundation-Owned Resolution (characterization — do NOT hand-roll these)
+
+    /// macOS reports many paths in the `/private`-prefixed form (a shell's `pwd` under `/tmp`, for
+    /// instance), so a model can legitimately paste one back. `standardizedFileURL` collapses that
+    /// prefix only for paths that EXIST: an existing file resolves into the (already collapsed)
+    /// root, while a not-yet-created one keeps `/private`, falls outside the root, and is rejected.
+    ///
+    /// CHARACTERIZATION of today's Foundation-owned behavior — the axis a hand-rolled dot-segment
+    /// normalizer would silently break, and previously covered by no test at all. The same-named
+    /// subdirectory is deliberate: without it the redundant-work-folder-name strip loop would mask
+    /// a component-space offset and this test would pass even with the relativization broken.
+    func testAbsolutePathWithPrivatePrefix_existingResolves_missingThrows() throws {
+        let fm = FileManager.default
+        let root = URL(fileURLWithPath: "/tmp")
+            .appendingPathComponent("nt_private_\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+        try fm.createDirectory(
+            at: root.appendingPathComponent(root.lastPathComponent, isDirectory: true),
+            withIntermediateDirectories: true)
+
+        let existing = root.appendingPathComponent("real.txt")
+        try "x".write(to: existing, atomically: true, encoding: .utf8)
+        let r = SandboxPathResolver(workFolderRoot: root)
+
+        XCTAssertEqual(
+            try r.resolveFileURL(relativePath: "/private" + existing.path),
+            existing.standardizedFileURL)
+
+        let missing = root.appendingPathComponent("missing.txt")
+        XCTAssertThrowsError(try r.resolveFileURL(relativePath: "/private" + missing.path)) { error in
+            guard case SandboxPathError.absolutePathNotAllowed = error else {
+                return XCTFail("Expected absolutePathNotAllowed, got \(error)")
+            }
+        }
+    }
+
+    /// Foundation resolves SYMLINKS when (and only when) the path contains `..`, so a `..` that
+    /// steps back out of a symlinked component lands where the link pointed — not where the
+    /// lexical parent would be. `<root>/link/../<rootName>/real.txt` therefore comes back INSIDE
+    /// the root, and `<root>/link/../<outsideName>/secret.txt` lands outside it and is rejected.
+    ///
+    /// CHARACTERIZATION: a lexical `..`-popping normalizer answers differently for BOTH of these,
+    /// and re-standardizing afterwards cannot recover the difference. That is why the resolver
+    /// keeps `.standardizedFileURL` and overrides only ROOT DETECTION.
+    func testAbsolutePathThroughSymlinkAndDotDot_keepsFoundationSymlinkAwareResolution() throws {
+        let fm = FileManager.default
+        let base = tempProjectRoot.appendingPathComponent("symlink_case", isDirectory: true)
+        let root = base.appendingPathComponent("root", isDirectory: true)
+        let outside = base.appendingPathComponent("outside", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        try fm.createDirectory(at: outside, withIntermediateDirectories: true)
+        try "r".write(to: root.appendingPathComponent("real.txt"), atomically: true, encoding: .utf8)
+        try "s".write(to: outside.appendingPathComponent("secret.txt"), atomically: true, encoding: .utf8)
+        try fm.createSymbolicLink(at: root.appendingPathComponent("link"), withDestinationURL: outside)
+
+        let r = SandboxPathResolver(workFolderRoot: root)
+
+        XCTAssertEqual(
+            try r.resolveFileURL(relativePath: root.path + "/link/../root/real.txt"),
+            root.appendingPathComponent("real.txt").standardizedFileURL)
+
+        XCTAssertThrowsError(
+            try r.resolveFileURL(relativePath: root.path + "/link/../outside/secret.txt")
+        ) { error in
+            guard case SandboxPathError.absolutePathNotAllowed = error else {
+                return XCTFail("Expected absolutePathNotAllowed, got \(error)")
+            }
+        }
     }
 
     // MARK: - Redundant Work-Folder-Name Prefix (existence-aware strip)
@@ -703,6 +884,12 @@ final class SandboxPathResolverTests: XCTestCase {
     /// verbatim (same bare-root guard as "/"), never broadened to ".".
     func testRelativizePathspec_doubleSlash_returnsRaw() {
         XCTAssertEqual(resolver.relativizePathspec("//"), "//")
+    }
+
+    /// `/.` is the spelling macOS 15's Foundation leaves as `["/", "."]` — it must reach the same
+    /// bare-root guard as "/" and "//" rather than falling through the `try?` as unresolvable.
+    func testRelativizePathspec_slashDot_returnsRaw() {
+        XCTAssertEqual(resolver.relativizePathspec("/."), "/.")
     }
 
     /// Redundant prefix that resolves to bare root → empty relative → returns raw (don't

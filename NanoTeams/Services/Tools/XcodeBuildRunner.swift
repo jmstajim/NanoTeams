@@ -169,6 +169,31 @@ nonisolated enum XcodeBuildRunner {
 
     // MARK: - Output Processing
 
+    /// Relativizes one path emitted by xcodebuild against the work-folder root, for BOTH the
+    /// build-issue parser below and the test-failure parser in `XcodeHandlers`.
+    ///
+    /// Component-wise containment, never a string prefix: `URL.path` carries no trailing slash, so
+    /// `hasPrefix` matched any sibling whose name merely EXTENDS the root's (the same defect class
+    /// as `…/Application Supportive` matching `…/Application Support`), and the paired
+    /// `dropFirst(count + 1)` separator-eater then consumed a real character of that sibling's own
+    /// name — emitting `rivate/Sources/A.swift` for a file under `/Users/x/NanoTeamsPrivate`. That
+    /// path has never existed, so the model chased a `read_file` that could not resolve while the
+    /// true out-of-folder origin of the issue was hidden. Delegating to
+    /// `NTMSPaths.relativePathFromProjectRoot` also buys symlink-aware containment, which a string
+    /// prefix misses for the `/var`↔`/private/var` spellings xcodebuild mixes freely.
+    ///
+    /// A path that is NOT under the root is returned unchanged (absolute) rather than truncated or
+    /// emptied: an honest absolute path keeps the origin visible, where the old truncation produced
+    /// a plausible-but-nonexistent relative one. Same reasoning for the degenerate
+    /// `file == workFolderRoot` case, where `dropFirst` past the end silently yielded "" and erased
+    /// the issue's location entirely. Pinned by `XcodeIssuePathRelativizationTests`.
+    static func relativizeIssuePath(_ file: String, workFolderRoot: URL) -> String {
+        guard file.hasPrefix("/") else { return file }   // non-path token / already relative
+        let relative = NTMSPaths(workFolderRoot: workFolderRoot)
+            .relativePathFromProjectRoot(for: URL(fileURLWithPath: file))
+        return relative.isEmpty ? file : relative
+    }
+
     /// Parse xcodebuild output for error/warning/note issues.
     static func parseIssues(from output: String, workFolderRoot: URL) -> [XcodeIssue] {
         var issues: [XcodeIssue] = []
@@ -200,11 +225,8 @@ nonisolated enum XcodeBuildRunner {
                 ? String(output[Range(match.range(at: 5), in: output)!])
                 : ""
 
-            // Make path relative
-            var relativePath = file
-            if let file = file, file.hasPrefix(workFolderRoot.path) {
-                relativePath = String(file.dropFirst(workFolderRoot.path.count + 1))
-            }
+            // Make path relative (component-wise — see `relativizeIssuePath`).
+            let relativePath = file.map { relativizeIssuePath($0, workFolderRoot: workFolderRoot) }
 
             issues.append(XcodeIssue(
                 file: relativePath, line: line, column: column,

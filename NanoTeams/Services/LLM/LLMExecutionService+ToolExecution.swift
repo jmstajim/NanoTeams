@@ -3,6 +3,22 @@ import Foundation
 /// Extension for tool call execution: authorization, identical-write rejection, and runtime dispatch.
 extension LLMExecutionService {
 
+    /// Sandbox root used when the delegate has no work folder. Defensive only: `workFolderURL` is
+    /// assigned exactly once in production (`openWorkFolder`) and is never set back to nil —
+    /// `closeProject()` swaps to default storage through that same call, so it lowers the root
+    /// rather than clearing it, and it cancels in-flight executions first. The one real nil window
+    /// is before `bootstrapDefaultStorageIfNeeded` on launch, when no snapshot (and therefore no
+    /// run) exists for a tool batch to belong to. Treat a hit here as a bug elsewhere, not a
+    /// supported mode.
+    ///
+    /// MUST NOT be `/`: `SandboxPathResolver.isWithin` against `/` is universally true and the
+    /// relativization drops a single component, so a `/` root silently turns the sandbox into the
+    /// whole filesystem. This points below a non-directory, so the path can never exist — every
+    /// resolve stays inside a dead root and every file operation fails not-found (fail closed).
+    /// Single consumer, so it lives next to it (Information Expert).
+    private static let noWorkFolderSandboxRoot = URL(
+        fileURLWithPath: "/dev/null/nanoteams-no-work-folder", isDirectory: true)
+
     // MARK: - Tool Execution
 
     /// Executes resolved tool calls (with authorization and identical-write rejection) and
@@ -28,7 +44,7 @@ extension LLMExecutionService {
         let expectedArtifacts = task.runs[runIndex].steps
             .first(where: { $0.id == roleID })?.expectedArtifacts ?? []
         let context = ToolExecutionContext(
-            workFolderRoot: delegate.workFolderURL ?? URL(fileURLWithPath: "/"),
+            workFolderRoot: delegate.workFolderURL ?? Self.noWorkFolderSandboxRoot,
             taskID: task.id,
             runID: task.runs[runIndex].id,
             roleID: roleID,
@@ -60,7 +76,7 @@ extension LLMExecutionService {
                 // at all — semantically equivalent to default storage for the
                 // purpose of this classifier (file writes / git / xcode are
                 // all blocked). The bare URL equality below would be false
-                // for the `URL(fileURLWithPath: "/")` fallback and silently
+                // for the `noWorkFolderSandboxRoot` fallback and silently
                 // misroute to `gitRepoMissing`.
                 let isDefault = delegate.workFolderURL == nil
                     || context.workFolderRoot == NTMSOrchestrator.defaultStorageURL

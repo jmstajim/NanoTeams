@@ -48,12 +48,20 @@ nonisolated struct SandboxPathResolver {
 
         if raw.hasPrefix("/") || raw.hasPrefix("~") {
             let expanded = (raw as NSString).expandingTildeInPath
+            // `expandingTildeInPath` returns the string UNCHANGED for an unknown user
+            // (`~nosuchuser/x`), and `URL(fileURLWithPath:)` would then resolve it against the
+            // PROCESS working directory — a global this resolver does not own, so the same input
+            // would be accepted or rejected depending on where the process happens to be running
+            // (and accepted outright if the CWD sat inside the work folder). Fail closed instead.
+            guard expanded.hasPrefix("/") else {
+                throw SandboxPathError.absolutePathNotAllowed(raw)
+            }
             let absURL = URL(fileURLWithPath: expanded).standardizedFileURL
             // Chroot-style root: models often address the work folder as "/" (also
-            // "//", "/.", "/.."). Anything standardizing to the filesystem root means
+            // "//", "/.", "/.."). Anything addressing the filesystem root means
             // the work-folder root — the literal volume root is outside the sandbox
             // and useless to the model anyway. Mirrors the empty-path early return.
-            if absURL.path == "/" { return workFolderRoot }
+            if Self.addressesFilesystemRoot(absURL) { return workFolderRoot }
             guard Self.isWithin(candidate: absURL, container: workFolderRoot) else {
                 // Preserve the ORIGINAL raw string in the error payload.
                 throw SandboxPathError.absolutePathNotAllowed(raw)
@@ -122,6 +130,25 @@ nonisolated struct SandboxPathResolver {
         guard comps.count >= rootCount else { return raw }
         let rel = comps.dropFirst(rootCount).joined(separator: "/")
         return rel.isEmpty ? raw : rel   // bare-root pathspec: leave as-is, don't over-broaden
+    }
+
+    /// True when `url` addresses the filesystem root under EITHER Foundation implementation.
+    ///
+    /// macOS 26's swift-foundation standardizes via RFC-3986 `remove_dot_segments` and strips a
+    /// terminal `.`; macOS 15's CFURL-backed `URL` does NOT (swift-corelibs-foundation #3725 /
+    /// SR-7289), so `/.`, `/./`, `/./.`, `//.` and `/.//` arrive there as `["/", "."]`, while every
+    /// other root-ish spelling (`/`, `//`, `/..`, `/a/..`) collapses to `["/"]` on both. The
+    /// deployment target is macOS 15, so both must classify as root — a plain `path == "/"` test
+    /// rejects the work-folder root for every user on the older OS (and broke CI, which runs
+    /// `macos-15`). Pinned against BOTH standardizers by
+    /// `SandboxPathResolverTests.testAddressesFilesystemRoot_*`.
+    ///
+    /// Exact `== "."` equality is deliberate: `/...` and `..foo` are ordinary components. `..` is
+    /// deliberately NOT tolerated — both Foundations resolve it before we see it, and `/../x` must
+    /// stay an escape rather than becoming the root.
+    static func addressesFilesystemRoot(_ url: URL) -> Bool {
+        let components = url.pathComponents
+        return !components.isEmpty && components.allSatisfy { $0 == "/" || $0 == "." }
     }
 
     /// Checks whether `candidate` is equal to or contained within `container` using path components.

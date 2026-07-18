@@ -84,6 +84,32 @@ final class SandboxPathResolverIsWithinTests: XCTestCase {
         XCTAssertTrue(SandboxPathResolver.isWithin(candidate: candidate, container: container))
     }
 
+    /// A terminal `.` survives standardization ONLY when stripping it would leave bare root —
+    /// exactly `{/., /./, /./., //., /.//}` under macOS 15's CFURL-backed Foundation
+    /// (swift-corelibs-foundation #3725 / SR-7289). Every other spelling, `<dir>/.` included, is
+    /// stripped by BOTH implementations, so a non-root candidate can never carry a residual `.`
+    /// into the comparison and asserting on one pins nothing.
+    ///
+    /// The root-ish form is therefore the only interesting case, and it must be driven through the
+    /// LEGACY standardizer: going through `URL.standardizedFileURL` alone inherits whichever
+    /// Foundation the host ships, which is the very dependence this class of test exists to break
+    /// (same idiom as `SandboxPathResolverTests.testAddressesFilesystemRoot_agreesUnder…`).
+    /// Asserting the invariant — not the component list — keeps the pin honest if Apple ever fixes
+    /// SR-7289 and the residual component stops being produced at all.
+    func testIsWithin_toleratesResidualDotComponent_underBothStandardizations() throws {
+        let root = URL(fileURLWithPath: "/")
+        for raw in ["/.", "/./", "/./.", "//.", "/.//"] {
+            let modern = URL(fileURLWithPath: raw).standardizedFileURL
+            let legacy = try XCTUnwrap(NSURL(fileURLWithPath: raw).standardizingPath as URL?)
+            XCTAssertTrue(
+                SandboxPathResolver.isWithin(candidate: modern, container: root),
+                "modern standardization of \(raw) → \(modern.pathComponents)")
+            XCTAssertTrue(
+                SandboxPathResolver.isWithin(candidate: legacy, container: root),
+                "legacy standardization of \(raw) → \(legacy.pathComponents)")
+        }
+    }
+
     // MARK: - Real-world internal-dir check
 
     /// Mirrors the real call-site in `NTMSPaths.isInternalURL` — the internal

@@ -38,7 +38,7 @@ It's a native Mac app — pure Swift/SwiftUI, with zero third-party dependencies
 > Requires **macOS 15.0+** and **[LM Studio 0.4.0+](https://lmstudio.ai)**
 
 1. **[Download NanoTeams.app.zip](https://github.com/jmstajim/NanoTeams/releases/latest/download/NanoTeams.app.zip)** ([all releases](https://github.com/jmstajim/NanoTeams/releases)), extract it, and drag `NanoTeams.app` into Applications.
-2. **First launch:** macOS will warn that it "can't verify" the app — expected for an unsigned open-source app. Open **System Settings → Privacy & Security → Open Anyway**.
+2. **First launch:** macOS will warn that it "can't verify" the app, because it isn't notarized yet. Open **System Settings → Privacy & Security → Open Anyway**.
 3. Open **LM Studio** and load a model (see [Recommended Models](#recommended-models)).
 4. Launch **NanoTeams** and select a work folder (where AI roles read and write files).
 5. Pick a team. **Coding Assistant** is the default (chat-mode with files, git, and Xcode tools); the new **Coding Agent** edits small changes itself and delegates bigger work to another team.

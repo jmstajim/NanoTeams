@@ -205,11 +205,9 @@ nonisolated struct RunXcodetestsTool: ToolHandler {
                         if match.range(at: 1).location != NSNotFound,
                             let fileRange = Range(match.range(at: 1), in: output)
                         {
-                            var file = String(output[fileRange])
-                            if file.hasPrefix(workFolderRoot.path) {
-                                file = String(file.dropFirst(workFolderRoot.path.count + 1))
-                            }
-                            failure["file"] = file
+                            let file = String(output[fileRange])
+                            failure["file"] = XcodeBuildRunner.relativizeIssuePath(
+                                file, workFolderRoot: workFolderRoot)
                         }
 
                         if match.range(at: 2).location != NSNotFound,

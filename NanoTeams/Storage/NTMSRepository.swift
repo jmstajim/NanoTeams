@@ -277,9 +277,10 @@ nonisolated struct NTMSRepository: WorkFolderRepository, TaskRepository, ToolRep
         let url = paths.nanoteamsDir.appendingPathComponent(".gitignore")
         guard !fileManager.fileExists(atPath: url.path) else { return }
         // Skip for default storage (Application Support)
+        // Component-wise containment, not `hasPrefix`: the string form matches
+        // `…/Application Supportive` against `…/Application Support`.
         if let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first,
-           paths.workFolderRoot.standardizedFileURL.path
-               .hasPrefix(appSupport.standardizedFileURL.path) { return }
+           SandboxPathResolver.isWithin(candidate: paths.workFolderRoot, container: appSupport) { return }
         let content = "# NanoTeams internal data (logs, conversations, network traces)\ninternal/\n"
         try? content.data(using: .utf8)?.write(to: url, options: .atomic)
     }
