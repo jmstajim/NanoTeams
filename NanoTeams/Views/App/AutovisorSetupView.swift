@@ -23,11 +23,14 @@ struct AutovisorSetupView: View {
     /// Mirrored from `AutovisorGoalComposer`'s improve stream — blocks Enable so a
     /// half-improved goal can't be persisted + activate the manager.
     @State private var isImprovingGoal = false
+    /// Goal-preset disclosure — collapsed by default, same as Settings.
+    @State private var showPresets = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.l) {
                 header
+                presetSection
                 goalSection
                 enableButton
             }
@@ -60,6 +63,21 @@ struct AutovisorSetupView: View {
                 .font(Typography.termBase)
                 .foregroundStyle(Colors.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var presetSection: some View {
+        // Same collapsed control as Settings → Autovisor's goal card — the
+        // grid stays out of the way until asked for.
+        SettingsDisclosureRow(
+            title: "Start from a preset",
+            icon: "sparkles",
+            isExpanded: $showPresets
+        ) {
+            // The seeded draft is the defaultGoal placeholder, so the common
+            // first-run tap applies silently (goalIsUnset) — no dialog.
+            AutovisorGoalPresetPicker(goalText: $goalDraft, isDisabled: isImprovingGoal)
+                .padding(.top, Spacing.xs)
         }
     }
 

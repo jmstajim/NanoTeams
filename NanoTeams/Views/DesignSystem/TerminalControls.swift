@@ -392,6 +392,11 @@ struct TerminalPicker<Value: Hashable>: View {
     @Binding var selection: Value
     let options: [(value: Value, label: String)]
     var placeholder: String = "—"
+    /// When true the picker fills the width offered by its container and the
+    /// label head-truncates instead of hugging its content. Opt-in so the
+    /// default (hug + `.fixedSize`) is preserved for short-option pickers;
+    /// used for long model slugs that would otherwise blow out the row.
+    var fillsWidth: Bool = false
 
     private var currentLabel: String {
         options.first { $0.value == selection }?.label ?? placeholder
@@ -416,6 +421,7 @@ struct TerminalPicker<Value: Hashable>: View {
                     .font(Typography.termSm)
                     .foregroundStyle(Colors.textPrimary)
                     .lineLimit(1)
+                    .truncationMode(.head)
                 Spacer(minLength: Spacing.xs)
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.system(size: 9, weight: .semibold))
@@ -423,7 +429,7 @@ struct TerminalPicker<Value: Hashable>: View {
             }
             .padding(.horizontal, Spacing.s)
             .padding(.vertical, Spacing.xs + 1)
-            .frame(minHeight: Spacing.l + Spacing.s)
+            .frame(maxWidth: fillsWidth ? .infinity : nil, minHeight: Spacing.l + Spacing.s, alignment: .leading)
             .background(Colors.surfaceElevated, in: RoundedRectangle.squircle(CornerRadius.small))
             .overlay(
                 RoundedRectangle.squircle(CornerRadius.small)
@@ -434,7 +440,8 @@ struct TerminalPicker<Value: Hashable>: View {
         .menuStyle(.borderlessButton)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
-        .fixedSize(horizontal: true, vertical: false)
+        .fixedSize(horizontal: !fillsWidth, vertical: false)
+        .help(currentLabel)
     }
 }
 

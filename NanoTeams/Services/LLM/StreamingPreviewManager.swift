@@ -113,7 +113,7 @@ final class StreamingPreviewManager {
         processingProgress[key] = nil
         // The activity CLOCK is stamped, not cleared — stream begin is
         // server activity for the stuck-detector's hang heuristic.
-        lastStreamActivityAt[key] = Date()
+        lastStreamActivityAt[key] = MonotonicClock.shared.now()
         if isNew { structuralVersion &+= 1 }
     }
 
@@ -194,7 +194,7 @@ final class StreamingPreviewManager {
         // phase (big context on a slow machine) emits these before the first
         // token, so it must refresh the activity clock or the stuck-detector would
         // mis-read the silent pre-token window as a hang.
-        lastStreamActivityAt[key] = Date()
+        lastStreamActivityAt[key] = MonotonicClock.shared.now()
     }
 
     /// Clears the prompt processing progress for a step.
@@ -211,7 +211,7 @@ final class StreamingPreviewManager {
     func markStreamActivity(stepID: String, taskID: Int) {
         let key = TaskStepKey(taskID: taskID, stepID: stepID)
         hasStreamActivity[key] = true
-        lastStreamActivityAt[key] = Date()
+        lastStreamActivityAt[key] = MonotonicClock.shared.now()
     }
 
     /// Polled by `MessageBubbleStreamingIndicator` to distinguish "Waiting"

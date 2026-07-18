@@ -82,6 +82,16 @@ final class AutovisorTeamTests: XCTestCase {
                       "manager prompt must instruct `control_task close` to finalize reviewed work (not a bare 'close' substring)")
     }
 
+    /// The manager prompt must explain that a chat-mode task never finishes on its own and
+    /// how to end it — so it doesn't leave a chat task it created reading `running` forever.
+    func testManagerPrompt_explainsChatModeTaskTermination() {
+        let prompt = SystemTemplates.rolePrompts["autovisor"] ?? ""
+        XCTAssertTrue(prompt.contains("chat_mode"),
+                      "prompt must reference the chat_mode signal")
+        XCTAssertTrue(prompt.contains("control_task close"),
+                      "prompt must tell the manager how to end a chat task")
+    }
+
     /// Regression pin for the "accepts every done role" bug: the prompt must NOT tell the
     /// manager to accept every role of a finished task, and must point it at the explicit
     /// `roles_needing_acceptance` signal so it only accepts roles that genuinely await it.

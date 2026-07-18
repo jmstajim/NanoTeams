@@ -306,6 +306,94 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
             "only the latest run is reflected; the old run's .needsAcceptance must not leak")
     }
 
+    // MARK: - list_tasks chat_mode
+
+    func testHandleListTasks_reportsChatModePerTask() async throws {
+        let index = TasksIndex(tasks: [
+            TaskSummary(id: 1, title: "Chat", status: .running, isChatMode: true),
+            TaskSummary(id: 2, title: "Pipe", status: .running, isChatMode: false),
+        ])
+        let projection = WorkFolderProjection(
+            state: WorkFolderState(name: "t"), settings: ProjectSettings(), teams: [])
+        mockDelegate.snapshot = WorkFolderContext(
+            projection: projection, tasksIndex: index, toolDefinitions: [])
+
+        struct Row: Decodable { let id: Int; let chat_mode: Bool }
+        struct Env: Decodable { struct D: Decodable { let tasks: [Row] }; let data: D }
+        let rows = try JSONDecoder().decode(Env.self, from: Data(await service.handleListTasks().utf8)).data.tasks
+        let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0.chat_mode) })
+        XCTAssertEqual(byID[1], true)
+        XCTAssertEqual(byID[2], false)
+    }
+
+    // MARK: - chat_mode / role_kind wire fields
+
+    func testHandleTaskStatus_chatModeTask_reportsChatModeTrue() async throws {
+        let task = NTMSTask(id: 1, title: "Chat", supervisorTask: "...",
+                            runs: [Run(id: 0, steps: [], roleStatuses: [:])], isChatMode: true)
+        mockDelegate.taskToMutate = task
+        let status = try Self.decodeStatus(from: await service.handleTaskStatus(taskID: 1))
+        XCTAssertTrue(status.chat_mode)
+    }
+
+    func testHandleTaskStatus_nonChatTask_reportsChatModeFalse() async throws {
+        let status = try await decodedStatus(steps: [], roleStatuses: [:])
+        XCTAssertFalse(status.chat_mode)
+    }
+
+    func testHandleTaskStatus_exposesRoleKindPerStep() async throws {
+        // Snapshot with a resolvable active team so `role_kind` can be populated.
+        let advisory = TeamRoleDefinition(
+            id: "adv", name: "Advisor", prompt: "", toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies(requiredArtifacts: ["Ctx"]))
+        let team = Team(id: "kind-team", name: "Kind", roles: [advisory],
+                        artifacts: [], settings: TeamSettings(), graphLayout: TeamGraphLayout())
+        var projection = WorkFolderProjection(
+            state: WorkFolderState(name: "t"), settings: ProjectSettings(), teams: [team])
+        projection.setActiveTeam("kind-team")
+        mockDelegate.snapshot = WorkFolderContext(
+            projection: projection, tasksIndex: TasksIndex(), toolDefinitions: [])
+
+        let step = StepExecution(id: "adv", role: .custom(id: "adv"), title: "Advisor", status: .running)
+        mockDelegate.taskToMutate = NTMSTask(id: 1, title: "T", supervisorTask: "...",
+                                             runs: [Run(id: 0, steps: [step], roleStatuses: ["adv": .working])])
+
+        let status = try Self.decodeStatus(from: await service.handleTaskStatus(taskID: 1))
+        XCTAssertEqual(status.steps.first?.role_kind, "advisory",
+                       "role_kind must expose the resolved role's completion type")
+    }
+
+    func testHandleTaskStatus_duplicateRoleIDs_doesNotCrash() async throws {
+        // Role ids are name-derived, so two same-named roles in one team collide on id.
+        // The roleKindByID dict build must NOT trap (uniquingKeysWith, last-wins).
+        let r1 = TeamRoleDefinition(id: "dup", name: "Dup", prompt: "", toolIDs: [], usePlanningPhase: false,
+                                    dependencies: RoleDependencies(requiredArtifacts: ["Ctx"]))  // advisory
+        let r2 = TeamRoleDefinition(id: "dup", name: "Dup", prompt: "", toolIDs: [], usePlanningPhase: false,
+                                    dependencies: RoleDependencies(producesArtifacts: ["Out"]))   // producing
+        let team = Team(id: "dup-team", name: "Dup", roles: [r1, r2],
+                        artifacts: [], settings: TeamSettings(), graphLayout: TeamGraphLayout())
+        var projection = WorkFolderProjection(
+            state: WorkFolderState(name: "t"), settings: ProjectSettings(), teams: [team])
+        projection.setActiveTeam("dup-team")
+        mockDelegate.snapshot = WorkFolderContext(
+            projection: projection, tasksIndex: TasksIndex(), toolDefinitions: [])
+        mockDelegate.taskToMutate = NTMSTask(id: 1, title: "T", supervisorTask: "...",
+            runs: [Run(id: 0, steps: [StepExecution(id: "dup", role: .custom(id: "dup"), title: "Dup", status: .running)],
+                       roleStatuses: ["dup": .working])])
+
+        // Reaching this assertion at all proves no fatalError trap fired.
+        let status = try Self.decodeStatus(from: await service.handleTaskStatus(taskID: 1))
+        XCTAssertEqual(status.steps.first?.role_kind, "advisory", "last-wins keeps the first role's kind")
+    }
+
+    func testHandleTaskStatus_unresolvableTeam_omitsRoleKind() async throws {
+        // No snapshot → resolveTeam returns nil → role_kind is omitted (not "unknown").
+        let status = try await decodedStatus(
+            steps: [StepExecution(id: "r", role: .softwareEngineer, title: "R", status: .running)],
+            roleStatuses: ["r": .working])
+        XCTAssertNil(status.steps.first?.role_kind)
+    }
+
     // MARK: - Helpers
 
     /// Builds a single-run task from `steps`/`roleStatuses`, wires it into the mock, and returns
@@ -335,12 +423,14 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
     private struct StuckDTO: Decodable { let kind: String; let detail: String? }
     private struct StepRowDTO: Decodable {
         let role_id: String
+        let role_kind: String?
         let elapsed_seconds: Int
         let idle_seconds: Int?
         let running_tool: String?
         let stuck: StuckDTO?
     }
     private struct StatusDTO: Decodable {
+        let chat_mode: Bool
         let steps: [StepRowDTO]
         let stuck: StuckDTO?
         let timed_out: Bool

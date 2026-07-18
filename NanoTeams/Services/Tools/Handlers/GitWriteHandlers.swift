@@ -29,21 +29,15 @@ nonisolated struct GitAddTool: ToolHandler {
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            let paths: [String]
-            if let p = try? requiredStringArray(args, "paths") {
-                paths = p
-            } else if let p = try? requiredStringArray(args, "files") {
-                paths = p
-            } else if let single = optionalString(args, "path") {
-                paths = [single]
-            } else if let single = optionalString(args, "file") {
-                paths = [single]
-            } else {
-                // I4: surface every accepted alias so a model that emits
-                // an unrecognized argument shape ({"foos": [...]}) sees the
-                // full set of acceptable keys instead of just `paths`.
-                throw ToolArgumentError.missingRequired("paths (or files / path / file)")
-            }
+            // I4: surface every accepted alias so a model that emits an
+            // unrecognized argument shape ({"foos": [...]}) sees the full set of
+            // acceptable keys instead of just `paths`. The single-valued aliases
+            // ride the same resolver — a bare string coerces to a one-element list.
+            let paths = try requiredStringArray(
+                args,
+                aliases: ["paths", "files", "path", "file"],
+                display: "paths (or files / path / file)"
+            )
 
             // Tolerate absolute + redundant-work-folder-name path forms (globs/pathspec
             // magic pass through untouched) so git_add behaves like the file tools.

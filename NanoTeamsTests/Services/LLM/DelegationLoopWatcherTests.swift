@@ -43,7 +43,7 @@ final class DelegationLoopWatcherTests: XCTestCase {
     ) {
         w.considerCommitted(
             taskID: taskID,
-            recentAssistant: [(thinking: thinking, content: content, createdAt: Date())],
+            recentAssistant: [(thinking: thinking, content: content, createdAt: MonotonicClock.shared.now())],
             toolCalls: []
         )
     }
@@ -51,7 +51,7 @@ final class DelegationLoopWatcherTests: XCTestCase {
     /// Drives the across-messages path: N finalized assistant turns (content-only).
     private func commitAcross(_ w: DelegationLoopWatcher, _ taskID: Int, messages: [String]) {
         let tuples: [(thinking: String?, content: String, createdAt: Date)] =
-            messages.map { (thinking: nil, content: $0, createdAt: Date()) }
+            messages.map { (thinking: nil, content: $0, createdAt: MonotonicClock.shared.now()) }
         w.considerCommitted(taskID: taskID, recentAssistant: tuples, toolCalls: [])
     }
 
@@ -251,7 +251,13 @@ final class DelegationLoopWatcherTests: XCTestCase {
     /// re-scanning while the parent role's reaction plays out) without firing again.
     func testWatcher_noteStreamLoop_inCooldown_returnsTrue_doesNotRefire() async {
         let (store, childID) = await makeChildTaskWithAwaiter()
-        store.delegationLoopWatcher._testForceTrigger(forTaskID: childID, at: Date())
+        // MUST be a MonotonicClock stamp: `isInCooldown` compares it against
+        // `MonotonicClock.shared.now()`, which drifts arbitrarily far ahead of wall
+        // clock over a test worker's lifetime. A `Date()` here reads as expired once
+        // that drift exceeds the cooldown window — the old parallel-run flake.
+        // See `testWatcher_cooldown_holdsUnderMonotonicClockDrift`.
+        store.delegationLoopWatcher._testForceTrigger(
+            forTaskID: childID, at: MonotonicClock.shared.now())
         let trigger = store.delegationLoopWatcher._testLastTrigger(forTaskID: childID)
 
         let advance = store.delegationLoopWatcher.noteStreamLoop(
@@ -260,6 +266,44 @@ final class DelegationLoopWatcherTests: XCTestCase {
         XCTAssertTrue(advance, "In cooldown → advance the in-stream throttle (returns true)")
         XCTAssertEqual(store.delegationLoopWatcher._testLastTrigger(forTaskID: childID), trigger,
                        "Cooldown must suppress a re-fire (trigger timestamp unchanged)")
+    }
+
+    /// The shared `MonotonicClock` returns `max(Date(), last + 1ms)` and only
+    /// `reset()` heals it, so it runs ahead of wall clock by
+    /// (rapid calls × 1ms − elapsed wall time) — roughly 20,000× faster than real
+    /// time. By the time a long-running test worker reaches this class the shared
+    /// clock can be tens of seconds ahead of `Date()`. A cooldown stamp planted on
+    /// the WRONG clock then reads as already-expired, `isInCooldown` returns false,
+    /// the watcher fires, finds no waiter, and `noteStreamLoop` returns false.
+    ///
+    /// That was the mechanism behind the long-standing parallel-run flake in
+    /// `testWatcher_noteStreamLoop_inCooldown_returnsTrue_doesNotRefire` (green in
+    /// isolation and serially, ~3/10 in parallel — purely a function of how much
+    /// drift the worker accumulated before scheduling this class). This test forces
+    /// the condition instead of leaving it to scheduling luck.
+    func testWatcher_cooldown_holdsUnderMonotonicClockDrift() async {
+        // Never leak drift into whatever class runs next in this worker process.
+        defer { MonotonicClock.shared.reset() }
+
+        // Simulate a worker that already pushed the shared clock past the cooldown
+        // window. Each saturated call advances it 1ms; the burst costs ~ms of wall time.
+        let burst = Int(DelegationConstants.repetitionCooldownSeconds / 0.001) + 10_000
+        for _ in 0..<burst { _ = MonotonicClock.shared.now() }
+        XCTAssertGreaterThan(
+            MonotonicClock.shared.now().timeIntervalSince(Date()),
+            DelegationConstants.repetitionCooldownSeconds,
+            "Setup invariant: drift must exceed the cooldown window to exercise the regression")
+
+        let (store, childID) = await makeChildTaskWithAwaiter()
+        store.delegationLoopWatcher._testForceTrigger(
+            forTaskID: childID, at: MonotonicClock.shared.now())
+
+        let advance = store.delegationLoopWatcher.noteStreamLoop(
+            taskID: childID, stepID: "engineer", signal: .withinMessage(diagnostic: "loop"))
+
+        XCTAssertTrue(
+            advance,
+            "Cooldown must hold under monotonic drift — the planted stamp and the comparison must come from the same clock")
     }
 
     /// Top-level (non-delegated) task must NOT fire from `noteStreamLoop` — same
@@ -405,7 +449,7 @@ final class DelegationLoopWatcherTests: XCTestCase {
         XCTAssertTrue(store.completionAwaiter.hasWaiters(for: childID),
                       "Test setup invariant: awaiter must be registered before we fire")
 
-        let now = Date()
+        let now = MonotonicClock.shared.now()
         let calls: [(name: String, argsJSON: String, createdAt: Date)] = [
             (name: "read_file", argsJSON: #"{"path":"script.js"}"#, createdAt: now.addingTimeInterval(-4)),
             (name: "read_file", argsJSON: #"{"path":"script.js"}"#, createdAt: now.addingTimeInterval(-2)),
@@ -439,7 +483,7 @@ final class DelegationLoopWatcherTests: XCTestCase {
         let parentID = await store.createTask(title: "Parent", supervisorTask: "...")
         guard let parentID else { return XCTFail("task creation failed") }
 
-        let now = Date()
+        let now = MonotonicClock.shared.now()
         let calls: [(name: String, argsJSON: String, createdAt: Date)] = Array(
             repeating: (name: "read_file", argsJSON: #"{"path":"x"}"#, createdAt: now),
             count: 100
@@ -487,7 +531,7 @@ final class DelegationLoopWatcherTests: XCTestCase {
             try? await Task.sleep(for: .milliseconds(1))
             attempts += 1
         }
-        let now = Date()
+        let now = MonotonicClock.shared.now()
         let calls: [(name: String, argsJSON: String, createdAt: Date)] = Array(
             repeating: (name: "read_file", argsJSON: #"{"path":"x"}"#, createdAt: now),
             count: 3
@@ -517,7 +561,7 @@ final class DelegationLoopWatcherTests: XCTestCase {
 
         // Manually plant a `lastTrigger` to simulate "we already fired once
         // on this child a moment ago, cooldown has since expired".
-        let firstTriggerAt = Date(timeIntervalSinceNow: -120) // 2 min ago, well past 30s cooldown
+        let firstTriggerAt = MonotonicClock.shared.now().addingTimeInterval(-120) // 2 min ago, well past 30s cooldown
         store.delegationLoopWatcher._testForceTrigger(forTaskID: childID, at: firstTriggerAt)
 
         // Simulate revision-retained history: 5 identical calls all from
@@ -575,7 +619,7 @@ final class DelegationLoopWatcherTests: XCTestCase {
         let (store, childID) = await makeChildTaskWithAwaiter()
 
         // Plant lastTrigger in the past, well past the 30s cooldown.
-        let firstTriggerAt = Date(timeIntervalSinceNow: -120)
+        let firstTriggerAt = MonotonicClock.shared.now().addingTimeInterval(-120)
         store.delegationLoopWatcher._testForceTrigger(forTaskID: childID, at: firstTriggerAt)
 
         // 3 fresh calls after the trigger.
@@ -621,7 +665,7 @@ final class DelegationLoopWatcherTests: XCTestCase {
     /// this pins the new, stricter — and correct — behavior.)
     func testWatcher_considerCommitted_withinMessage_preTriggerLoop_filteredOut() async {
         let (store, childID) = await makeChildTaskWithAwaiter()
-        let firstTriggerAt = Date(timeIntervalSinceNow: -120)  // past 30s cooldown
+        let firstTriggerAt = MonotonicClock.shared.now().addingTimeInterval(-120)  // past 30s cooldown
         store.delegationLoopWatcher._testForceTrigger(forTaskID: childID, at: firstTriggerAt)
 
         let outcomeBox = OutcomeBox()
@@ -651,7 +695,7 @@ final class DelegationLoopWatcherTests: XCTestCase {
     /// cooldown expired) DOES fire via `considerCommitted`.
     func testWatcher_considerCommitted_withinMessage_freshLoop_fires() async {
         let (store, childID) = await makeChildTaskWithAwaiter()
-        let firstTriggerAt = Date(timeIntervalSinceNow: -120)
+        let firstTriggerAt = MonotonicClock.shared.now().addingTimeInterval(-120)
         store.delegationLoopWatcher._testForceTrigger(forTaskID: childID, at: firstTriggerAt)
 
         let outcomeBox = OutcomeBox()

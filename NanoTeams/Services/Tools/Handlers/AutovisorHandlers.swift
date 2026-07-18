@@ -122,7 +122,11 @@ nonisolated struct CreateManagedTaskTool: ToolHandler {
             let roleNames = team.nonSupervisorRoles.map(\.name).joined(separator: ", ")
             let descPart = team.description.isEmpty ? "" : ": \(team.description)"
             let rolesPart = roleNames.isEmpty ? "" : ". Roles: \(roleNames)"
-            lines.append("- `\(team.id)` — \"\(team.name)\"\(descPart)\(rolesPart)")
+            // Chat teams are usable (the manager can close them — unlike a blocking
+            // delegate_to_team), but marked so the model knows the task won't finish on
+            // its own and it must `control_task close` when done.
+            let chatPart = team.isChatMode ? " [chat — open-ended dialog, no deliverables; you must control_task close it]" : ""
+            lines.append("- `\(team.id)` — \"\(team.name)\"\(descPart)\(rolesPart)\(chatPart)")
         }
         if allowGenerated {
             lines.append("- `\(DelegationConstants.generatedTeamSentinel)` — assemble a fresh team for a novel task (slower; prefer an existing team when one fits).")
@@ -230,7 +234,7 @@ nonisolated struct ManageRoleTool: ToolHandler {
         description: """
             Act on a specific role within a task. `action`:
             - restart — re-run the role (and downstream dependents); `comment` = guidance
-            - accept — accept a role that is awaiting acceptance
+            - accept — accept a role awaiting acceptance; on a chat-mode task's advisory role this finishes the role and closes the task once no other role is active
             - request_changes — send a role that finished its work back for revision; `comment` = what to change
             - correct — feed mid-run correction to a paused role; `comment` = the correction
             - finish_advisory — finish an advisory (chat) role

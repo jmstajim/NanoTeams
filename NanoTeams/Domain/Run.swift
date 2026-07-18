@@ -215,14 +215,52 @@ nonisolated extension Run {
 // MARK: - Role Status Queries
 
 nonisolated extension Run {
-    /// Roles with advisory completion type that are currently finishable (ready or working).
+    /// Role IDs of non-supervisor, non-observer roles that have NOT reached a terminal
+    /// (`isComplete`) status — the roles still doing or owing work. Iterates `definitions`
+    /// (not the status dict) so a role with no status entry counts as active (`.idle`).
+    /// Single source of truth for "is this team finished": `TeamEngine.allRolesComplete`
+    /// and the Autovisor's chat-task close decision both read `.isEmpty` on this.
+    static func activeWorkRoleIDs(
+        roleStatuses: [String: RoleExecutionStatus],
+        definitions: [TeamRoleDefinition]
+    ) -> [String] {
+        definitions.compactMap { role in
+            guard !role.isSupervisor, !role.isObserver else { return nil }
+            let status = roleStatuses[role.id] ?? .idle
+            return status.isComplete ? nil : role.id
+        }
+    }
+
+    /// `activeWorkRoleIDs` with resolved display names, sorted by name — for
+    /// manager-facing "Still active: …" messages.
+    func activeWorkRoles(definitions: [TeamRoleDefinition]) -> [(roleID: String, roleName: String)] {
+        let activeIDs = Set(Run.activeWorkRoleIDs(roleStatuses: roleStatuses, definitions: definitions))
+        return definitions
+            .filter { activeIDs.contains($0.id) }
+            .map { ($0.id, $0.name) }
+            .sorted { $0.1 < $1.1 }
+    }
+
+    /// Finalizes every non-terminal role status to `.done` when the task is closed —
+    /// closing is an implicit acceptance of completed work AND a finalization of roles
+    /// that never ran. `.failed` is preserved (a failed role stays failed for the record).
+    /// `RunService` seeds `initialRoleStatuses` for ALL roles up front while steps are
+    /// created on demand, so a mid-run close otherwise strands idle / ready /
+    /// revisionRequested / needsAcceptance pills on the team graph (it reads `roleStatuses`
+    /// raw). Supersedes the old needsAcceptance-only pass in `closeTask`.
+    mutating func finalizeRoleStatusesForClose() {
+        for (roleID, status) in roleStatuses where !status.isComplete && status != .failed {
+            roleStatuses[roleID] = .done
+        }
+    }
+
+    /// Roles the graph's "Finish Role" affordance is offered for. Routes the predicate
+    /// through `RoleFinishPolicy.canFinish` so this and the two view sites pin one rule.
     func finishableAdvisoryRoles(definitions: [TeamRoleDefinition], isChatMode: Bool = false) -> [(roleID: String, roleName: String)] {
-        guard !isChatMode else { return [] }
-        let activeStatuses: Set<RoleExecutionStatus> = [.ready, .working]
-        return roleStatuses.compactMap { (roleID, status) -> (String, String)? in
-            guard activeStatuses.contains(status),
-                  let roleDef = definitions.first(where: { $0.id == roleID }),
-                  roleDef.isAdvisory else { return nil }
+        roleStatuses.compactMap { (roleID, status) -> (String, String)? in
+            guard let roleDef = definitions.first(where: { $0.id == roleID }),
+                  RoleFinishPolicy.canFinish(roleDef: roleDef, status: status, isChatMode: isChatMode)
+            else { return nil }
             return (roleID, roleDef.name)
         }
         .sorted { $0.1 < $1.1 }

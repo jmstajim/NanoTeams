@@ -122,6 +122,7 @@ struct TerminalStatusBar: View {
                     .tracking(Typography.labelTracking)
                     .foregroundStyle(Colors.textSecondary)
                     .lineLimit(1)
+                    .truncationMode(.head)
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.system(size: 8, weight: .semibold))
                     .foregroundStyle(Colors.textQuaternary)
@@ -130,8 +131,8 @@ struct TerminalStatusBar: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .fixedSize()
-        .help("Switch model")
+        .fixedSize(horizontal: false, vertical: true)
+        .help(modelName.isEmpty ? "Switch model" : modelName)
         .accessibilityLabel("Model: \(displayModel)")
     }
 

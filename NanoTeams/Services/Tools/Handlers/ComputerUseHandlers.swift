@@ -73,16 +73,13 @@ nonisolated struct UIClickTool: ToolHandler {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let x = try requiredInt(args, "x")
             let y = try requiredInt(args, "y")
-            let button = normalizeButton(optionalString(args, "button"))
+            let button = ComputerUseAction.normalizedButton(optionalString(args, "button"))
             let double = optionalBool(args, "double")
-            let target = optionalString(args, "target").flatMap { $0.isEmpty ? nil : $0 }
+            let target = ComputerUseAction.normalizedTargetSpec(optionalString(args, "target"))
             return signalResult(args: args, action: .click(x: x, y: y, button: button, double: double, target: target))
         }
     }
 
-    private func normalizeButton(_ raw: String?) -> String {
-        (raw?.lowercased() == "right") ? "right" : "left"
-    }
 }
 
 // MARK: - ui_type

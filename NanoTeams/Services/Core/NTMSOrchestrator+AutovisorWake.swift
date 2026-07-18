@@ -177,7 +177,7 @@ extension NTMSOrchestrator {
     /// the per-minute poll backstop. The hot engine-state observer leaves it `false`
     /// so the per-running-task loop/LCS detector never runs on that high-frequency
     /// path; a hung role runs forever anyway, so ≤~60 s latency is immaterial.
-    func wakeAutovisorForEvents(now: Date = Date(), includeStuck: Bool = false) async {
+    func wakeAutovisorForEvents(now: Date = MonotonicClock.shared.now(), includeStuck: Bool = false) async {
         guard hasRealWorkFolder,
               let settings = snapshot?.workFolder.settings,
               settings.autovisorEnabled,
@@ -312,7 +312,7 @@ extension NTMSOrchestrator {
         // (once per pass — cheap next to the LLM call) so a stuck task the manager just
         // reviewed isn't re-delivered every poll, while a no-longer-stuck one is dropped
         // (a fresh stuck episode re-wakes).
-        let stuck = act.onTaskStuck ? computeStuckTaskIDs(watchable: watchable, now: Date()) : []
+        let stuck = act.onTaskStuck ? computeStuckTaskIDs(watchable: watchable, now: MonotonicClock.shared.now()) : []
         autovisorLastPassAttentionKeys = Set(Self.autovisorAttentionItems(
             watchable: watchable, engineStates: taskEngineStates,
             activation: act, seen: autovisorSeenTaskIDs, stuck: stuck

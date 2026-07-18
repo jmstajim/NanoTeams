@@ -56,6 +56,8 @@ extension NTMSOrchestrator {
                 resolvedTeamID = await ensureGeneratedTeamID()
             case .generationDisabled:
                 return .failure("Team generation is disabled for the Autovisor in this folder. Pick an existing team from the catalog in create_managed_task's description, or omit team_id to use the active team.")
+            case .activeTeamIsChat(let name):
+                return .failure("The folder's active team \"\(name)\" is a chat team — a managed task on it never finishes on its own. Pass a pipeline team_id from the catalog in create_managed_task's description explicitly.")
             case .unknown(let raw):
                 return .failure("Unknown team_id '\(raw)'. Pick one from the catalog in create_managed_task's description, omit it for the active team, or use 'generated'.")
             }
@@ -224,9 +226,7 @@ extension NTMSOrchestrator {
                 await self.restartRole(taskID: taskID, roleID: roleID, comment: comment)
             }
         case .accept:
-            let ok = await acceptRole(taskID: taskID, roleID: roleID)
-            return ok ? .success("Accepted role \(roleID) on task #\(taskID).")
-                      : .failure(lastErrorMessage ?? "Could not accept role \(roleID).")
+            return await applyAcceptRole(taskID: taskID, roleID: roleID)
         case .requestChanges(let comment):
             return await reportingError("Requested changes from role \(roleID) on task #\(taskID).") {
                 await self.requestRevision(taskID: taskID, roleID: roleID, comment: comment)
@@ -241,10 +241,90 @@ extension NTMSOrchestrator {
                 await self.correctRole(taskID: taskID, roleID: roleID, comment: comment)
             }
         case .finishAdvisory:
-            let ok = await finishAdvisoryRoleAwaiting(taskID: taskID, roleID: roleID)
-            return ok ? .success("Finished advisory role \(roleID) on task #\(taskID).")
-                      : .failure(lastErrorMessage ?? "Could not finish advisory role \(roleID).")
+            // Already-closed short-circuit — `finishRoleAndMaybeClose` can call `closeTask`,
+            // so without this a finish_advisory on a closed task would re-stamp `closedAt`
+            // and report a fresh "closed" success (mirrors `applyAcceptRole`'s guard, which
+            // protects the `.finishChatRole` route into the same method).
+            guard loadedTask(taskID)?.closedAt == nil else {
+                return .failure("Task #\(taskID) is already closed.")
+            }
+            // Producing roles own artifact deliverables; force-finishing one strands the
+            // pipeline (the engine then deadlocks with a misattributed "check Team Editor"
+            // error). Reject at this seam — the manager's finish_advisory is the only
+            // untrusted caller of the finish path (the UI wrapper is view-gated).
+            if resolvedTeam(for: loadedTask(taskID)).completionType(forRoleID: roleID) == .producing {
+                return .failure("finish_advisory only applies to chat/advisory roles; \(roleID) on task #\(taskID) is a producing role — accept it when task_status lists it in roles_needing_acceptance, or restart it with guidance.")
+            }
+            return await finishRoleAndMaybeClose(taskID: taskID, roleID: roleID)
         }
+    }
+
+    /// `manage_role accept` dispatch. `AcceptanceService.routeAccept` decides between
+    /// ordinary acceptance, the chat-mode finish-and-maybe-close exit, and rejection.
+    private func applyAcceptRole(taskID: Int, roleID: String) async -> AutovisorActionResult {
+        // Idempotence: a closed task's accept must report "already closed", not re-stamp
+        // closedAt and report a fresh success (which would invite a third call).
+        guard loadedTask(taskID)?.closedAt == nil else {
+            return .failure("Task #\(taskID) is already closed.")
+        }
+        guard let task = loadedTask(taskID), let run = task.runs.last else {
+            return .failure("Task #\(taskID) has no active run.")
+        }
+        // `isChatModeTask` reads `task.isChatMode` — NOT `resolvedTeam.isChatMode`. The
+        // predicate we need is "can this task reach .done without closeTask?", decided by
+        // task.isChatMode at NTMSTask.derivedStatusFromActiveRun; the two agree where they
+        // diverge (team edited post-creation). Role kind lives only on the definition, so
+        // `resolvedTeam` is the only source for `roleIsProducing`.
+        let isChatModeTask = task.isChatMode
+        let roleIsProducing = resolvedTeam(for: task).completionType(forRoleID: roleID) == .producing
+
+        switch AcceptanceService.routeAccept(
+            roleID: roleID,
+            roleStatuses: run.roleStatuses,
+            isChatModeTask: isChatModeTask,
+            roleIsProducing: roleIsProducing
+        ) {
+        case .accept:
+            let ok = await acceptRole(taskID: taskID, roleID: roleID)
+            return ok ? .success("Accepted role \(roleID) on task #\(taskID).")
+                      : .failure(lastErrorMessage ?? "Could not accept role \(roleID).")
+        case .reject(let reason):
+            return .failure(reason)
+        case .finishChatRole:
+            return await finishRoleAndMaybeClose(taskID: taskID, roleID: roleID)
+        }
+    }
+
+    /// Finishes an advisory role, then — for a chat-mode task with no other active work
+    /// role — closes the task (chat tasks never reach `.done` on their own). Shared by the
+    /// accept-route chat exit and the `finish_advisory` verb. Returns the manager-facing
+    /// result directly, so no stale `lastErrorMessage` is ever echoed.
+    private func finishRoleAndMaybeClose(taskID: Int, roleID: String) async -> AutovisorActionResult {
+        guard await finishAdvisoryRoleAwaiting(taskID: taskID, roleID: roleID) else {
+            return .failure("Could not finish role \(roleID) on task #\(taskID).")
+        }
+        // Re-read AFTER the finish — the close decision must derive from persisted state,
+        // not a pre-mutation guess (`mutateTask == true` ≠ the closure ran).
+        guard let task = loadedTask(taskID), task.isChatMode, let run = task.runs.last else {
+            // Non-chat advisory finish: role is done, task stays open (the engine drives
+            // it to completion without an acceptance flow).
+            return .success("Finished advisory role \(roleID) on task #\(taskID).")
+        }
+        let active = run.activeWorkRoles(definitions: resolvedTeam(for: task).roles)
+        guard active.isEmpty else {
+            let names = active.map(\.roleName).joined(separator: ", ")
+            return .success("Finished role \(roleID) on chat task #\(taskID). Still active: \(names). A chat task never finishes on its own — use control_task close when you want to end it.")
+        }
+        // No active work left → end the chat task. Recursive stop FIRST so in-flight
+        // delegation children aren't orphaned (closeTask's own stopEngine is
+        // non-recursive), matching the control_task .close arm. Both writes go through
+        // mutateTask on @MainActor, so the race with the engine's own chat-done arm
+        // (stopped just above) is benign.
+        stopEngineForTask(taskID)
+        let closed = await closeTask(taskID: taskID)
+        return closed
+            ? .success("Finished role \(roleID) and closed chat task #\(taskID) — no other roles were active.")
+            : .failure("Finished role \(roleID) on chat task #\(taskID), but closing it failed: \(lastErrorMessage ?? "unknown"). Retry with control_task close.")
     }
 
     /// Outcome of classifying a `create_managed_task` team_id.
@@ -253,6 +333,7 @@ extension NTMSOrchestrator {
         case team(NTMSID)             // an existing, non-hidden team
         case generated                // the `"generated"` sentinel
         case generationDisabled       // sentinel, but generation is off for this folder
+        case activeTeamIsChat(String) // omitted, but the active team is chat → fail loudly
         case unknown(String)          // provided but unresolvable → must fail loudly
     }
 
@@ -264,6 +345,15 @@ extension NTMSOrchestrator {
     /// no longer advertising it.
     private func classifyManagedTeamID(_ raw: String?) -> ManagedTeamResolution {
         guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            // Omitted team_id → the folder's active team. But omission means "use the
+            // default", not an intentional "I want an open-ended chat", and a chat active
+            // team would spawn a task that never terminates on its own (occupying a
+            // concurrency slot until a human closes it). Fail loudly so the manager picks
+            // a pipeline team explicitly. (An explicit chat team_id IS allowed — it's a
+            // marked, intentional choice, and the manager can `control_task close` it.)
+            if let active = snapshot?.workFolder.activeTeam, active.isChatMode {
+                return .activeTeamIsChat(active.name)
+            }
             return .useActiveTeam
         }
         if raw == DelegationConstants.generatedTeamSentinel {

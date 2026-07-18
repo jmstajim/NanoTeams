@@ -206,15 +206,27 @@ final class BashHandlersTests: XCTestCase {
         XCTAssertTrue(r.isError, "a non-string command resolves to nil → missing command error")
     }
 
-    func testRunInBackground_nonBoolean_runsForeground() {
-        // A non-bool `run_in_background` defaults to false → foreground (returns an
-        // exit_code, not a background command_id).
+    func testRunInBackground_ambiguousValue_runsForeground() {
+        // Coercion honors only unambiguous boolean spellings; anything else
+        // keeps the default (false → foreground, so an exit_code comes back
+        // rather than a background command_id).
         let r = makeTool().handle(
-            context: context(), args: ["command": "echo fg", "run_in_background": "yes"])
+            context: context(), args: ["command": "echo fg", "run_in_background": "later"])
         XCTAssertFalse(r.isError)
         let data = successData(r.outputJSON)
-        XCTAssertEqual(data?["exit_code"] as? Int, 0, "a non-bool run_in_background must default to foreground")
+        XCTAssertEqual(data?["exit_code"] as? Int, 0, "an ambiguous run_in_background must default to foreground")
         XCTAssertNil(data?["command_id"], "a foreground result must not carry a background command_id")
         XCTAssertTrue((data?["stdout"] as? String ?? "").contains("fg"))
+    }
+
+    func testRunInBackground_stringEncodedTrue_runsInBackground() {
+        // `"yes"` / `"true"` are the quoting habit, not a different intent —
+        // silently running in the foreground would strand a model that expects
+        // a command_id to poll.
+        let r = makeTool().handle(
+            context: context(), args: ["command": "echo bg", "run_in_background": "yes"])
+        XCTAssertFalse(r.isError)
+        let data = successData(r.outputJSON)
+        XCTAssertNotNil(data?["command_id"], "string-encoded true must run in background. Got: \(r.outputJSON)")
     }
 }

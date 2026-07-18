@@ -166,12 +166,7 @@ nonisolated struct RequestTeamMeetingTool: ToolHandler {
     func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let topic = try requiredString(args, "topic")
-            let participants: [String]
-            if let p = try? requiredStringArray(args, "participants") {
-                participants = p
-            } else {
-                participants = try requiredStringArray(args, "members")
-            }
+            let participants = try requiredStringArray(args, aliases: ["participants", "members"])
             let ctx = optionalString(args, "context")
 
             if participants.isEmpty {

@@ -85,12 +85,6 @@ nonisolated struct ToolResultMeta: Codable {
 
 // MARK: - FileSystem Data Types
 
-nonisolated struct Entry: Codable {
-    var path: String
-    var name: String
-    var type: String  // "file" | "dir"
-}
-
 nonisolated struct LineRef: Codable {
     var line: Int
     var text: String
@@ -177,11 +171,18 @@ nonisolated struct AskSupervisorData: Codable {
 
 enum ToolArgumentError: LocalizedError {
     case missingRequired(String)
+    /// The key was present but its value could not be interpreted. Distinct
+    /// from `missingRequired` so the model is told what's actually wrong —
+    /// reporting "Missing" for an argument it just sent sends it hunting for
+    /// a phantom omission instead of fixing the type.
+    case invalidValue(key: String, detail: String)
 
     var errorDescription: String? {
         switch self {
         case .missingRequired(let key):
             "Missing required argument: \(key)"
+        case .invalidValue(let key, let detail):
+            "Argument '\(key)' \(detail)"
         }
     }
 }

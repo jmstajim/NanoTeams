@@ -100,7 +100,13 @@ final class AppUpdateState {
 
         do {
             let release = try await checker.fetchLatestRelease()
-            config.lastAppUpdateCheckAt = MonotonicClock.shared.now()
+            // Deliberately `Date()`, NOT `MonotonicClock`: this is an elapsed-time
+            // cadence marker, not a model timestamp needing strict ordering — and the
+            // gate above measures it with `Date().timeIntervalSince(last)`. Stamping it
+            // from the monotonic clock (which drifts ahead of wall clock and only heals
+            // via `reset()`) makes the measured elapsed time smaller than reality, so
+            // background checks stay suppressed past their configured interval.
+            config.lastAppUpdateCheckAt = Date()
             // A successful refresh resolves any prior stale failure, even when
             // the user opened Settings after the failure but never re-clicked.
             lastCheckFailure = nil

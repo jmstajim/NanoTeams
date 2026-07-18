@@ -191,8 +191,12 @@ extension NTMSOrchestrator {
     /// the fire-and-forget `Task` succeeded.
     @discardableResult
     func finishAdvisoryRoleAwaiting(taskID: Int, roleID: String) async -> Bool {
-        // 1. Cancel running LLM task if step is active
-        if let step = loadedTask(taskID)?.runs.last?.stepsByRoleBaseID()[roleID] {
+        // 1. Cancel running LLM task if step is active. Resolve by `effectiveRoleID` —
+        // the same predicate stages 2/3 use — so cancel and mutate can't target
+        // different steps when a role has (legacy) duplicate effectiveRoleIDs; the
+        // `stepsByRoleBaseID()` dict kept the LAST such step while the mutation keeps
+        // the FIRST.
+        if let step = loadedTask(taskID)?.runs.last?.steps.first(where: { $0.effectiveRoleID == roleID }) {
             await llmExecutionService.cancelStepExecution(stepID: step.id, taskID: taskID)
             clearStreamingPreview(stepID: step.id, taskID: taskID)
         }

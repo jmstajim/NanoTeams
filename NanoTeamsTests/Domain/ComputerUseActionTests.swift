@@ -80,4 +80,40 @@ final class ComputerUseActionTests: XCTestCase {
         XCTAssertTrue(ComputerUseAction.scroll(x: 5, y: 6, dx: 0, dy: -40, target: nil).summary.contains("(0, -40)"))
         XCTAssertTrue(ComputerUseAction.pressKey(keys: "cmd+s", target: nil).summary.contains("cmd+s"))
     }
+
+    // MARK: - Shared button / target normalization
+    //
+    // The permission gate and the handler each used to resolve these two on their
+    // own. Duplicated resolution is how the judge approves "left-click" while a
+    // right-click opens a context menu — so both now call these, and these are
+    // what the pins below protect.
+
+    func testNormalizedButton_onlyExplicitRightIsRight() {
+        XCTAssertEqual(ComputerUseAction.normalizedButton("right"), "right")
+        XCTAssertEqual(ComputerUseAction.normalizedButton("RIGHT"), "right")
+        XCTAssertEqual(ComputerUseAction.normalizedButton(" Right "), "right")
+    }
+
+    func testNormalizedButton_anythingElseIsLeft() {
+        // A spelling the model invented must not become the more disruptive
+        // action — unknown resolves to the safe default, never to right.
+        XCTAssertEqual(ComputerUseAction.normalizedButton(nil), "left")
+        XCTAssertEqual(ComputerUseAction.normalizedButton(""), "left")
+        XCTAssertEqual(ComputerUseAction.normalizedButton("left"), "left")
+        XCTAssertEqual(ComputerUseAction.normalizedButton("secondary"), "left")
+        XCTAssertEqual(ComputerUseAction.normalizedButton("rightclick"), "left")
+        XCTAssertEqual(ComputerUseAction.normalizedButton("2"), "left")
+    }
+
+    func testNormalizedTargetSpec_blankFormsCollapseToNil() {
+        XCTAssertNil(ComputerUseAction.normalizedTargetSpec(nil))
+        XCTAssertNil(ComputerUseAction.normalizedTargetSpec(""))
+        XCTAssertNil(ComputerUseAction.normalizedTargetSpec("   "))
+        XCTAssertNil(ComputerUseAction.normalizedTargetSpec("\n\t"))
+    }
+
+    func testNormalizedTargetSpec_trimsButPreservesInnerText() {
+        XCTAssertEqual(ComputerUseAction.normalizedTargetSpec("  Safari  "), "Safari")
+        XCTAssertEqual(ComputerUseAction.normalizedTargetSpec("Google Chrome"), "Google Chrome")
+    }
 }

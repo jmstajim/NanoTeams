@@ -115,7 +115,7 @@ struct LLMModelPickerSection: View {
             Text("Model")
                 .font(Typography.subheadline)
                 .foregroundStyle(Colors.textSecondary)
-            TerminalPicker(selection: $modelName, options: modelOptions)
+            TerminalPicker(selection: $modelName, options: modelOptions, fillsWidth: true)
 
             if !modelName.isEmpty {
                 Button {
@@ -128,8 +128,6 @@ struct LLMModelPickerSection: View {
                 .help("Use default model")
                 .accessibilityLabel("Reset to default model")
             }
-
-            Spacer()
 
             SettingsPillButton(
                 title: "Refresh",

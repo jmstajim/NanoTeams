@@ -163,14 +163,14 @@ extension TeamEngine {
                     // Waiting for Supervisor
                     transition(to: .needsAcceptance)
                     return
-                } else if isChatMode && allRolesComplete(roleStatuses: roleStatuses, roles: teamRoles, isChatMode: false) {
+                } else if isChatMode && Run.activeWorkRoleIDs(roleStatuses: roleStatuses, definitions: teamRoles).isEmpty {
                     // Chat-mode auto-complete arm: every non-supervisor non-observer role
                     // has reached a terminal status (advisory auto-finish in autonomous
-                    // mode is the only existing producer). `allRolesComplete(isChatMode:)`
-                    // hard-returns false in chat mode, so we re-call with `false` to use
-                    // the underlying check. Without this arm, the only chat-mode path out
-                    // of this block is the deadlock else, which transitions to `.failed`
-                    // — wrong, since the team genuinely is done.
+                    // mode is the only existing producer). `allRolesComplete` hard-returns
+                    // false in chat mode, so we read the shared `activeWorkRoleIDs` helper
+                    // directly — same predicate the Autovisor's chat-task close uses, so
+                    // the two can never disagree. Without this arm, the only chat-mode path
+                    // out of this block is the deadlock else → `.failed`, wrong when done.
                     await markObserversComplete()
                     transition(to: .done)
                     return
@@ -203,18 +203,10 @@ extension TeamEngine {
     ) -> Bool {
         // Chat-mode teams never auto-complete — advisory roles run indefinitely
         if isChatMode { return false }
-
-        // Only check roles that are active team members (skip Supervisor and observers)
-        for role in roles {
-            guard !role.isSupervisor && !role.isObserver else { continue }
-
-            let status = roleStatuses[role.id] ?? .idle
-            if !status.isComplete {
-                return false
-            }
-        }
-
-        return true
+        // Delegate the "every non-supervisor non-observer role is terminal" check to
+        // the shared domain helper so the engine's `.done` condition and the Autovisor's
+        // chat-task close condition can't drift apart.
+        return Run.activeWorkRoleIDs(roleStatuses: roleStatuses, definitions: roles).isEmpty
     }
 
     /// Marks all observer roles as .done when the run completes.

@@ -44,7 +44,9 @@ struct ToolCallItemView: View {
     private var isExploratorySearch: Bool {
         guard canonicalName == ToolNames.search else { return false }
         guard let args = JSONUtilities.parseJSONDictionary(call.argumentsJSON) else { return false }
-        return args["exploratory"] as? Bool == true
+        // Same resolver the handler uses, so the badge reflects the search that
+        // actually ran rather than the literal type the model happened to emit.
+        return optionalBool(args, "exploratory")
     }
 
     // MARK: - Body
@@ -168,7 +170,7 @@ private struct ToolCallCustomSummaryView: View {
         case ToolNames.requestTeamMeeting:
             if let args = JSONUtilities.parseJSONDictionary(argumentsJSON) {
                 let topic = (args["topic"] as? String) ?? ""
-                let participantIDs = (args["participants"] as? [String]) ?? []
+                let participantIDs = optionalStringArray(args, "participants") ?? []
                 let names = participantIDs.compactMap { Role.builtInRole(for: $0)?.displayName }
                 VStack(alignment: .leading, spacing: 3) {
                     if !topic.isEmpty {

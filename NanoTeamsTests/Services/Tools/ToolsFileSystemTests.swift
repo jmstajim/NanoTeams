@@ -113,6 +113,19 @@ final class ToolsFileSystemTests: XCTestCase {
         XCTAssertTrue(results[0].outputJSON.contains("NOT_A_FILE"))
     }
 
+    /// With "/" resolving to the work-folder root, `read_file {"path": "/"}` composes with
+    /// the existing directory rejection: NOT_A_FILE + a `next: list_files` hint whose
+    /// suggested call now works (previously the whole path form was PERMISSION_DENIED).
+    func testReadFile_slashPath_returnsNotAFileWithListFilesHint() throws {
+        let call = StepToolCall(name: "read_file", argumentsJSON: "{\"path\": \"/\"}")
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertEqual(results.count, 1)
+        XCTAssertTrue(results[0].isError)
+        XCTAssertTrue(results[0].outputJSON.contains("NOT_A_FILE"), results[0].outputJSON)
+        XCTAssertTrue(results[0].outputJSON.contains("list_files"), "directory rejection must steer to list_files: \(results[0].outputJSON)")
+    }
+
     func testReadFile_largeFile_returnsErrorPointingToReadLines() throws {
         // File over the configured limit → hard-block error pointing at `read_lines`.
         let limit = AppDefaults.readFileMaxLines
@@ -477,6 +490,590 @@ final class ToolsFileSystemTests: XCTestCase {
         XCTAssertTrue(results[0].outputJSON.contains("NOT_A_DIRECTORY"))
     }
 
+    /// The exact call from the reported bug: `list_files {"path": "/", "depth": 1}` —
+    /// chroot-style "/" means the work-folder root and must list it, not PERMISSION_DENIED.
+    func testListDirectory_slashPath_listsRootContents() throws {
+        try "One".write(to: tempDir.appendingPathComponent("file1.txt"), atomically: true, encoding: .utf8)
+        try fileManager.createDirectory(
+            at: tempDir.appendingPathComponent("subdir"), withIntermediateDirectories: false
+        )
+
+        let call = StepToolCall(
+            name: "list_files",
+            argumentsJSON: "{\"path\": \"/\", \"depth\": 1}"
+        )
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError, "\"/\" must resolve to the work-folder root: \(results[0].outputJSON)")
+        XCTAssertTrue(results[0].outputJSON.contains("file1.txt"))
+        XCTAssertTrue(results[0].outputJSON.contains("subdir"))
+    }
+
+    // MARK: - list_files Result Shape
+
+    /// `data` of a successful `list_files` result.
+    private func listData(_ json: String) throws -> [String: Any] {
+        let root = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
+            "not a JSON object: \(json)"
+        )
+        return try XCTUnwrap(root["data"] as? [String: Any], "no data in: \(json)")
+    }
+
+    private func runListFiles(_ argumentsJSON: String) -> ToolExecutionResult {
+        runtime.executeAll(
+            context: context,
+            toolCalls: [StepToolCall(name: "list_files", argumentsJSON: argumentsJSON)]
+        )[0]
+    }
+
+    func testListFiles_splitsFilesAndDirs() throws {
+        // Listed from a dedicated subdirectory, not the work-folder root: the root
+        // also holds the fixture's `.nanoteams`, which would make exact-array
+        // assertions couple to setUp instead of to the split behaviour.
+        let proj = tempDir.appendingPathComponent("proj", isDirectory: true)
+        try fileManager.createDirectory(at: proj, withIntermediateDirectories: true)
+        try "A".write(to: proj.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        try fileManager.createDirectory(
+            at: proj.appendingPathComponent("sub"), withIntermediateDirectories: false
+        )
+
+        let result = runListFiles("{\"path\": \"proj\"}")
+        let data = try listData(result.outputJSON)
+
+        XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["proj/a.txt"])
+        XCTAssertEqual(try XCTUnwrap(data["dirs"] as? [String]), ["proj/sub"])
+        // The redundant per-entry fields are gone from the whole envelope.
+        XCTAssertFalse(result.outputJSON.contains("\"name\""), result.outputJSON)
+        XCTAssertFalse(result.outputJSON.contains("\"type\""), result.outputJSON)
+    }
+
+    /// THE regression this change exists for: an entry taken verbatim out of a
+    /// subdirectory listing must be a valid `read_file` argument. Before the fix
+    /// entries were relative to the REQUESTED directory while `read_file` resolves
+    /// from the work-folder root, so this round-trip silently missed.
+    func testListFiles_subdirEntry_feedsDirectlyIntoReadFile() throws {
+        let sources = tempDir.appendingPathComponent("Sources")
+        try fileManager.createDirectory(at: sources, withIntermediateDirectories: true)
+        try "let x = 1".write(
+            to: sources.appendingPathComponent("Calculator.swift"), atomically: true, encoding: .utf8
+        )
+
+        let listing = try listData(runListFiles("{\"path\": \"Sources\"}").outputJSON)
+        let entry = try XCTUnwrap((listing["files"] as? [String])?.first)
+
+        let readCall = StepToolCall(
+            name: "read_file",
+            argumentsJSON: "{\"path\": \"\(entry)\"}"
+        )
+        let read = runtime.executeAll(context: context, toolCalls: [readCall])[0]
+
+        XCTAssertFalse(read.isError, "entry '\(entry)' must feed straight into read_file: \(read.outputJSON)")
+        XCTAssertTrue(read.outputJSON.contains("let x = 1"), read.outputJSON)
+    }
+
+    func testListFiles_pathsAreWorkFolderRootRelative() throws {
+        let sources = tempDir.appendingPathComponent("Sources")
+        try fileManager.createDirectory(at: sources, withIntermediateDirectories: true)
+        try "x".write(to: sources.appendingPathComponent("Calculator.swift"), atomically: true, encoding: .utf8)
+
+        let data = try listData(runListFiles("{\"path\": \"Sources\"}").outputJSON)
+
+        XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["Sources/Calculator.swift"])
+    }
+
+    /// The residual risk of the root-relative fix: a model that habitually joins
+    /// `data.path` with an entry would produce `Sources/Sources/…`. The shape must
+    /// make the join structurally unnecessary — entries already carry the prefix.
+    func testListFiles_entryAlreadyContainsRequestedPath() throws {
+        let nested = tempDir.appendingPathComponent("a/b")
+        try fileManager.createDirectory(at: nested, withIntermediateDirectories: true)
+        try "x".write(to: nested.appendingPathComponent("deep.txt"), atomically: true, encoding: .utf8)
+
+        let data = try listData(runListFiles("{\"path\": \"a/b\"}").outputJSON)
+        let echoed = try XCTUnwrap(data["path"] as? String)
+
+        XCTAssertEqual(echoed, "a/b")
+        for entry in try XCTUnwrap(data["files"] as? [String]) {
+            XCTAssertTrue(entry.hasPrefix(echoed + "/"), "entry '\(entry)' should already start with '\(echoed)'")
+        }
+    }
+
+    func testListFiles_countMatchesArrays() throws {
+        let proj = tempDir.appendingPathComponent("proj", isDirectory: true)
+        try fileManager.createDirectory(at: proj, withIntermediateDirectories: true)
+        try "A".write(to: proj.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        try "B".write(to: proj.appendingPathComponent("b.txt"), atomically: true, encoding: .utf8)
+        try fileManager.createDirectory(
+            at: proj.appendingPathComponent("sub"), withIntermediateDirectories: false
+        )
+
+        let data = try listData(runListFiles("{\"path\": \"proj\"}").outputJSON)
+        let files = try XCTUnwrap(data["files"] as? [String])
+        let dirs = try XCTUnwrap(data["dirs"] as? [String])
+
+        XCTAssertEqual(try XCTUnwrap(data["count"] as? Int), files.count + dirs.count)
+        XCTAssertEqual(try XCTUnwrap(data["count"] as? Int), 3)
+    }
+
+    /// Stable shape beats a shape that varies: an empty `dirs` is the real answer
+    /// "no subdirectories here", not an exception marker to be omitted.
+    func testListFiles_emptyDirsArrayStillEmitted() throws {
+        let proj = tempDir.appendingPathComponent("proj", isDirectory: true)
+        try fileManager.createDirectory(at: proj, withIntermediateDirectories: true)
+        try "A".write(to: proj.appendingPathComponent("only.txt"), atomically: true, encoding: .utf8)
+
+        let data = try listData(runListFiles("{\"path\": \"proj\"}").outputJSON)
+
+        XCTAssertEqual(try XCTUnwrap(data["dirs"] as? [String]), [])
+        XCTAssertNotNil(data["files"])
+    }
+
+    func testListFiles_slashPath_echoesNormalizedPath() throws {
+        try "One".write(to: tempDir.appendingPathComponent("file1.txt"), atomically: true, encoding: .utf8)
+
+        let data = try listData(runListFiles("{\"path\": \"/\"}").outputJSON)
+
+        XCTAssertEqual(try XCTUnwrap(data["path"] as? String), ".")
+    }
+
+    /// `.withoutEscapingSlashes` is load-bearing: escaped `\/` in paths makes small
+    /// models emit literal backslashes in edit_file anchors. Nested paths make it
+    /// more load-bearing than before, so pin it here too.
+    func testListFiles_forwardSlashesUnescaped() throws {
+        let nested = tempDir.appendingPathComponent("a/b")
+        try fileManager.createDirectory(at: nested, withIntermediateDirectories: true)
+        try "x".write(to: nested.appendingPathComponent("deep.txt"), atomically: true, encoding: .utf8)
+
+        let json = runListFiles("{\"path\": \".\", \"depth\": 3}").outputJSON
+
+        XCTAssertTrue(json.contains("a/b/deep.txt"), json)
+        XCTAssertFalse(json.contains("\\/"), "forward slashes must not be escaped: \(json)")
+    }
+
+    // MARK: - list_files Truncation
+
+    private func seedFlatFiles(_ count: Int) throws {
+        let dir = tempDir.appendingPathComponent("many", isDirectory: true)
+        try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+        for i in 0..<count {
+            fileManager.createFile(atPath: dir.appendingPathComponent("f\(i).txt").path, contents: Data())
+        }
+    }
+
+    /// Off-by-one regression: a directory holding EXACTLY the cap is a complete
+    /// listing and must not claim truncation — the old `>=` provoked a needless
+    /// narrowing re-call.
+    func testListFiles_exactlyAtCap_notReportedTruncated() throws {
+        try seedFlatFiles(ToolConstants.maxDirectoryEntries)
+
+        let result = runListFiles("{\"path\": \"many\"}")
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.outputJSON.utf8)) as? [String: Any])
+        let data = try XCTUnwrap(root["data"] as? [String: Any])
+        let meta = try XCTUnwrap(root["meta"] as? [String: Any])
+
+        XCTAssertEqual(try XCTUnwrap(data["count"] as? Int), ToolConstants.maxDirectoryEntries)
+        XCTAssertEqual(meta["truncated"] as? Bool, false)
+    }
+
+    func testListFiles_overCap_reportsTruncatedWithWarning() throws {
+        try seedFlatFiles(ToolConstants.maxDirectoryEntries + 5)
+
+        let result = runListFiles("{\"path\": \"many\"}")
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.outputJSON.utf8)) as? [String: Any])
+        let data = try XCTUnwrap(root["data"] as? [String: Any])
+        let meta = try XCTUnwrap(root["meta"] as? [String: Any])
+
+        XCTAssertEqual(try XCTUnwrap(data["count"] as? Int), ToolConstants.maxDirectoryEntries)
+        XCTAssertEqual(meta["truncated"] as? Bool, true)
+        // No-silent-caps: the cut must come with a way out, not just a flag.
+        let warnings = try XCTUnwrap(meta["warnings"] as? [String])
+        XCTAssertTrue(warnings.contains { $0.contains("name_glob") }, "\(warnings)")
+    }
+
+    // MARK: - list_files Corners: path base resolution
+
+    /// Builds the args JSON through JSONSerialization so non-ASCII and quoted
+    /// names can't be broken by hand-escaping.
+    private func runList(_ args: [String: Any]) throws -> ToolExecutionResult {
+        let data = try JSONSerialization.data(withJSONObject: args, options: [.sortedKeys])
+        let json = try XCTUnwrap(String(data: data, encoding: .utf8))
+        return runtime.executeAll(
+            context: context, toolCalls: [StepToolCall(name: "list_files", argumentsJSON: json)]
+        )[0]
+    }
+
+    private func seed(_ relativePaths: [String]) throws {
+        for rel in relativePaths {
+            let url = tempDir.appendingPathComponent(rel)
+            if rel.hasSuffix("/") {
+                try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+            } else {
+                try fileManager.createDirectory(
+                    at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+                )
+                try "x".write(to: url, atomically: true, encoding: .utf8)
+            }
+        }
+    }
+
+    func testListFiles_pathOmitted_listsRootWithNoPrefix() throws {
+        try seed(["top.txt"])
+
+        let data = try listData(try runList([:]).outputJSON)
+
+        XCTAssertEqual(try XCTUnwrap(data["path"] as? String), ".")
+        XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["top.txt"])
+    }
+
+    func testListFiles_emptyStringPath_listsRoot() throws {
+        try seed(["top.txt"])
+
+        let data = try listData(try runList(["path": ""]).outputJSON)
+
+        XCTAssertEqual(try XCTUnwrap(data["path"] as? String), ".")
+        XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["top.txt"])
+    }
+
+    func testListFiles_trailingSlashPath_normalizesPrefix() throws {
+        try seed(["Sources/a.swift"])
+
+        let data = try listData(try runList(["path": "Sources/"]).outputJSON)
+
+        XCTAssertEqual(try XCTUnwrap(data["path"] as? String), "Sources")
+        XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["Sources/a.swift"])
+    }
+
+    func testListFiles_dotSlashPath_normalizesPrefix() throws {
+        try seed(["Sources/a.swift"])
+
+        let data = try listData(try runList(["path": "./Sources"]).outputJSON)
+
+        XCTAssertEqual(try XCTUnwrap(data["path"] as? String), "Sources")
+        XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["Sources/a.swift"])
+    }
+
+    /// The prefix is derived from the RESOLVED url, so an absolute in-sandbox path
+    /// (models paste these) comes back relativized rather than absolute.
+    func testListFiles_absoluteInSandboxPath_prefixIsRelativized() throws {
+        try seed(["Sources/a.swift"])
+
+        let data = try listData(
+            try runList(["path": tempDir.appendingPathComponent("Sources").path]).outputJSON
+        )
+
+        XCTAssertEqual(try XCTUnwrap(data["path"] as? String), "Sources")
+        XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["Sources/a.swift"])
+    }
+
+    /// Deriving the prefix from the resolved url (not the raw arg) means a
+    /// redundant work-folder-name component is echoed back in canonical form —
+    /// the model sees the spelling that its next call should use.
+    func testListFiles_redundantWorkFolderNamePrefix_echoesCanonicalPath() throws {
+        try seed(["Sources/a.swift"])
+        let folderName = tempDir.lastPathComponent
+
+        let data = try listData(try runList(["path": "\(folderName)/Sources"]).outputJSON)
+
+        XCTAssertEqual(try XCTUnwrap(data["path"] as? String), "Sources")
+        XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["Sources/a.swift"])
+    }
+
+    func testListFiles_deeplyNestedRequest_prefixesEveryComponent() throws {
+        try seed(["a/b/c/leaf.txt"])
+
+        let data = try listData(try runList(["path": "a/b/c"]).outputJSON)
+
+        XCTAssertEqual(try XCTUnwrap(data["path"] as? String), "a/b/c")
+        XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["a/b/c/leaf.txt"])
+    }
+
+    // MARK: - list_files Corners: shape and ordering
+
+    func testListFiles_emptyDirectory_zeroCountBothArraysPresent() throws {
+        try seed(["empty/"])
+
+        let data = try listData(try runList(["path": "empty"]).outputJSON)
+
+        XCTAssertEqual(try XCTUnwrap(data["count"] as? Int), 0)
+        XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), [])
+        XCTAssertEqual(try XCTUnwrap(data["dirs"] as? [String]), [])
+    }
+
+    func testListFiles_onlyDirectories_filesArrayEmptyButPresent() throws {
+        try seed(["only/one/", "only/two/"])
+
+        let data = try listData(try runList(["path": "only"]).outputJSON)
+
+        XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), [])
+        XCTAssertEqual(try XCTUnwrap(data["dirs"] as? [String]), ["only/one", "only/two"])
+    }
+
+    /// Ordering is by PATH, so each subtree stays contiguous. Under the old
+    /// basename key this returned ["b/apple.txt", "a/zebra.txt"], which reads as
+    /// unsorted once the per-entry `name` is gone.
+    func testListFiles_ordering_isByPathNotBasename() throws {
+        try seed(["a/zebra.txt", "b/apple.txt"])
+
+        let data = try listData(try runList(["path": ".", "depth": 2]).outputJSON)
+
+        XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["a/zebra.txt", "b/apple.txt"])
+    }
+
+    /// `localizedStandardCompare` survives the switch to the path key, so numbered
+    /// files stay in natural order rather than lexicographic.
+    func testListFiles_ordering_isNaturalNotLexicographic() throws {
+        try seed(["n/f2.txt", "n/f10.txt"])
+
+        let data = try listData(try runList(["path": "n"]).outputJSON)
+
+        XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["n/f2.txt", "n/f10.txt"])
+    }
+
+    /// A file and a directory sharing a name are distinguishable by ARRAY, with no
+    /// in-band marker to misread — the property that ruled out the trailing-slash
+    /// encoding.
+    func testListFiles_sameNameAsFileAndDirectory_noAmbiguity() throws {
+        try seed(["x/report/", "y/report"])
+
+        let data = try listData(try runList(["path": ".", "depth": 2]).outputJSON)
+
+        XCTAssertTrue(try XCTUnwrap(data["dirs"] as? [String]).contains("x/report"))
+        XCTAssertTrue(try XCTUnwrap(data["files"] as? [String]).contains("y/report"))
+    }
+
+    func testListFiles_nonASCIIAndSpacedNames_roundTripIntact() throws {
+        try seed(["Ресурсы/файл тест.txt"])
+
+        let data = try listData(try runList(["path": "Ресурсы"]).outputJSON)
+
+        XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["Ресурсы/файл тест.txt"])
+    }
+
+    /// The constant `meta` block was deliberately KEPT (its presence is the
+    /// mechanically checkable half of the no-silent-caps rule).
+    func testListFiles_untruncated_stillEmitsMetaBlock() throws {
+        try seed(["a.txt"])
+
+        let root = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(try runList(["path": "."]).outputJSON.utf8))
+                as? [String: Any]
+        )
+        let meta = try XCTUnwrap(root["meta"] as? [String: Any])
+
+        XCTAssertEqual(meta["truncated"] as? Bool, false)
+        XCTAssertEqual(try XCTUnwrap(meta["warnings"] as? [String]), [])
+    }
+
+    // MARK: - list_files Corners: glob, depth, skips
+
+    func testListFiles_globMatchingOnlyDirs_leavesFilesEmpty() throws {
+        try seed(["g/keep.d/", "g/drop.txt"])
+
+        let data = try listData(try runList(["path": "g", "name_glob": "*.d"]).outputJSON)
+
+        XCTAssertEqual(try XCTUnwrap(data["dirs"] as? [String]), ["g/keep.d"])
+        XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), [])
+    }
+
+    func testListFiles_globMatchingNothing_succeedsWithZeroCount() throws {
+        try seed(["g/a.txt"])
+
+        let result = try runList(["path": "g", "name_glob": "*.never"])
+        let data = try listData(result.outputJSON)
+
+        XCTAssertFalse(result.isError, result.outputJSON)
+        XCTAssertEqual(try XCTUnwrap(data["count"] as? Int), 0)
+    }
+
+    /// The glob matches the BASENAME while the emitted path is full — removing the
+    /// `name` field must not have moved the filter onto the path.
+    func testListFiles_globMatchesBasename_whilePathStaysFull() throws {
+        try seed(["deep/nested/target.gd", "deep/nested/other.txt"])
+
+        let data = try listData(
+            try runList(["path": ".", "depth": 3, "name_glob": "*.gd"]).outputJSON
+        )
+
+        XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["deep/nested/target.gd"])
+    }
+
+    /// THE field shape: models orient themselves by calling `list_files` with
+    /// `depth: 0` on the work-folder root — recursion depth is habitually counted
+    /// from zero. Before the floor this answered with a successful EMPTY listing,
+    /// i.e. "your project is empty", at the very first exploration step.
+    func testListFiles_depthZeroOnRoot_listsImmediateChildren() throws {
+        try seed(["top.txt", "sub/"])
+
+        let result = try runList(["depth": 0])
+        let data = try listData(result.outputJSON)
+
+        XCTAssertFalse(result.isError, result.outputJSON)
+        XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["top.txt"])
+        XCTAssertTrue(try XCTUnwrap(data["dirs"] as? [String]).contains("sub"))
+    }
+
+    /// The scale is 0-indexed RECURSION depth: 0 is this folder's direct contents,
+    /// 1 already reaches into its subfolders. Pinning both tiers against the same
+    /// tree is what makes the indexing falsifiable — an off-by-one either way
+    /// breaks exactly one of these two assertions.
+    func testListFiles_depthScale_isZeroIndexedRecursion() throws {
+        try seed(["d/a.txt", "d/nested/deep.txt"])
+
+        let zero = try listData(try runList(["path": "d", "depth": 0]).outputJSON)
+        let one = try listData(try runList(["path": "d", "depth": 1]).outputJSON)
+
+        XCTAssertEqual(try XCTUnwrap(zero["files"] as? [String]), ["d/a.txt"],
+                       "depth 0 = direct contents only, no recursion")
+        XCTAssertEqual(try XCTUnwrap(one["files"] as? [String]), ["d/a.txt", "d/nested/deep.txt"],
+                       "depth 1 = one level deeper, so the subfolder's contents appear")
+    }
+
+    /// Omitting `depth` must behave as `depth: 0` — the default is the base of the
+    /// scale, so the overwhelmingly common no-arg call is unaffected by the indexing.
+    func testListFiles_depthOmitted_equivalentToDepthZero() throws {
+        try seed(["d/a.txt", "d/nested/deep.txt"])
+
+        let omitted = try listData(try runList(["path": "d"]).outputJSON)
+        let zero = try listData(try runList(["path": "d", "depth": 0]).outputJSON)
+
+        XCTAssertEqual(omitted["files"] as? [String], zero["files"] as? [String])
+        XCTAssertEqual(omitted["dirs"] as? [String], zero["dirs"] as? [String])
+    }
+
+    /// A wild depth must not overflow the internal `depth + 1`.
+    func testListFiles_intMaxDepth_doesNotOverflow() throws {
+        try seed(["d/a.txt"])
+
+        let result = try runList(["path": "d", "depth": Int.max])
+
+        XCTAssertFalse(result.isError, result.outputJSON)
+        XCTAssertEqual(try XCTUnwrap(try listData(result.outputJSON)["files"] as? [String]), ["d/a.txt"])
+    }
+
+    /// Negative depth is the same class of nonsense as zero and takes the same floor
+    /// rather than silently reporting an empty directory.
+    func testListFiles_negativeDepth_listsImmediateChildren() throws {
+        try seed(["d/a.txt"])
+
+        let data = try listData(try runList(["path": "d", "depth": -3]).outputJSON)
+
+        XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["d/a.txt"])
+    }
+
+    /// The string-encoded path takes the floor too — coercion happens before it.
+    func testListFiles_depthZeroAsString_listsImmediateChildren() throws {
+        try seed(["d/a.txt"])
+
+        let data = try listData(try runList(["path": "d", "depth": "0"]).outputJSON)
+
+        XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["d/a.txt"])
+    }
+
+    func testListFiles_depthBeyondTree_listsEverythingWithoutError() throws {
+        try seed(["d/a/b.txt"])
+
+        let result = try runList(["path": "d", "depth": 99])
+        let data = try listData(result.outputJSON)
+
+        XCTAssertFalse(result.isError)
+        XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["d/a/b.txt"])
+        XCTAssertEqual(try XCTUnwrap(data["dirs"] as? [String]), ["d/a"])
+    }
+
+    /// WalkSkipRules must keep applying below the first level, not just at the root.
+    func testListFiles_skipRules_applyAtNestedDepth() throws {
+        try seed(["proj/src/main.swift", "proj/node_modules/pkg.js"])
+
+        let data = try listData(try runList(["path": "proj", "depth": 3]).outputJSON)
+        let all = try XCTUnwrap(data["files"] as? [String]) + (try XCTUnwrap(data["dirs"] as? [String]))
+
+        XCTAssertTrue(all.contains("proj/src/main.swift"), "\(all)")
+        XCTAssertFalse(all.contains { $0.contains("node_modules") }, "\(all)")
+    }
+
+    /// A dangling symlink fails the `fileExists` probe and is skipped rather than
+    /// listed as a file the model would then fail to read.
+    func testListFiles_danglingSymlink_isSkipped() throws {
+        try seed(["s/real.txt"])
+        try fileManager.createSymbolicLink(
+            atPath: tempDir.appendingPathComponent("s/broken.txt").path,
+            withDestinationPath: tempDir.appendingPathComponent("s/does_not_exist.txt").path
+        )
+
+        let data = try listData(try runList(["path": "s"]).outputJSON)
+
+        XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["s/real.txt"])
+    }
+
+    // MARK: - list_files Corners: truncation boundary
+
+    /// One past the cap is the smallest input that must report truncation, and the
+    /// probe entry must not leak into the payload.
+    func testListFiles_exactlyOneOverCap_truncatesAndDropsProbe() throws {
+        try seedFlatFiles(ToolConstants.maxDirectoryEntries + 1)
+
+        let result = runListFiles("{\"path\": \"many\"}")
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.outputJSON.utf8)) as? [String: Any])
+        let data = try XCTUnwrap(root["data"] as? [String: Any])
+        let files = try XCTUnwrap(data["files"] as? [String])
+
+        XCTAssertEqual(files.count, ToolConstants.maxDirectoryEntries)
+        XCTAssertEqual(try XCTUnwrap(data["count"] as? Int), files.count)
+        XCTAssertEqual((root["meta"] as? [String: Any])?["truncated"] as? Bool, true)
+    }
+
+    /// The cap counts entries actually LISTED, so a glob that filters most of the
+    /// directory away must not trip truncation.
+    func testListFiles_capCountsMatchingEntriesOnly_notScannedOnes() throws {
+        try seedFlatFiles(ToolConstants.maxDirectoryEntries + 5)
+        try "x".write(
+            to: tempDir.appendingPathComponent("many/unique.gd"), atomically: true, encoding: .utf8
+        )
+
+        let result = runListFiles("{\"path\": \"many\", \"name_glob\": \"*.gd\"}")
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.outputJSON.utf8)) as? [String: Any])
+        let data = try XCTUnwrap(root["data"] as? [String: Any])
+
+        XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["many/unique.gd"])
+        XCTAssertEqual((root["meta"] as? [String: Any])?["truncated"] as? Bool, false)
+    }
+
+    // MARK: - Slash-Path Write-Side Safety
+
+    /// SAFETY: now that "/" resolves to the real work-folder root, a model that fat-fingers
+    /// `delete_file {"path": "/"}` must NOT delete the work folder — the directory guard
+    /// rejects it with NOT_A_FILE and everything survives.
+    func testDeleteFile_slashPath_rejectedAndWorkFolderPreserved() throws {
+        let call = StepToolCall(name: "delete_file", argumentsJSON: "{\"path\": \"/\"}")
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertTrue(results[0].isError)
+        XCTAssertTrue(results[0].outputJSON.contains("NOT_A_FILE"), results[0].outputJSON)
+        var isDir: ObjCBool = false
+        XCTAssertTrue(fileManager.fileExists(atPath: tempDir.path, isDirectory: &isDir) && isDir.boolValue,
+                      "work folder must survive a delete_file on \"/\"")
+        XCTAssertTrue(fileManager.fileExists(atPath: NTMSPaths(workFolderRoot: tempDir).nanoteamsDir.path),
+                      ".nanoteams must survive")
+    }
+
+    /// SAFETY: `write_file {"path": "/"}` cannot clobber the work-folder root — writing a
+    /// file over an existing directory fails, so the call errors and the folder survives.
+    func testWriteFile_slashPath_rejectedAndWorkFolderPreserved() throws {
+        let call = StepToolCall(
+            name: "write_file",
+            argumentsJSON: "{\"path\": \"/\", \"content\": \"nope\"}"
+        )
+        let results = runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertTrue(results[0].isError, "write_file on \"/\" must fail: \(results[0].outputJSON)")
+        var isDir: ObjCBool = false
+        XCTAssertTrue(fileManager.fileExists(atPath: tempDir.path, isDirectory: &isDir) && isDir.boolValue,
+                      "work folder must survive a write_file on \"/\"")
+        XCTAssertTrue(fileManager.fileExists(atPath: NTMSPaths(workFolderRoot: tempDir).nanoteamsDir.path),
+                      ".nanoteams must survive")
+    }
+
     // MARK: - search Tests
 
     func testSearchProject_findsMatches() throws {
@@ -600,11 +1197,23 @@ final class ToolsFileSystemTests: XCTestCase {
         let results = runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
-        let json = results[0].outputJSON
-        // Should see tasks/ and runs/ but NOT internal/
-        XCTAssertTrue(json.contains("tasks"), "Should see tasks dir")
-        XCTAssertFalse(json.contains("internal"), "Should NOT see internal dir")
-        XCTAssertFalse(json.contains("project.json"), "Should NOT see project.json inside internal")
+
+        // Asserted on the PARSED path arrays, not on substrings of the whole
+        // envelope: a bare `json.contains("internal")` passes for the wrong
+        // reason and would false-fail on any future envelope field that merely
+        // spells the word.
+        let data = try listData(results[0].outputJSON)
+        let entries = try XCTUnwrap(data["files"] as? [String]) + (try XCTUnwrap(data["dirs"] as? [String]))
+
+        XCTAssertTrue(entries.contains(".nanoteams/tasks"), "Should see tasks dir: \(entries)")
+        XCTAssertFalse(
+            entries.contains { $0.split(separator: "/").contains("internal") },
+            "Should NOT see the internal dir: \(entries)"
+        )
+        XCTAssertFalse(
+            entries.contains { ($0 as NSString).lastPathComponent == "project.json" },
+            "Should NOT see project.json inside internal: \(entries)"
+        )
     }
 
     func testListFiles_showsAttachments() throws {

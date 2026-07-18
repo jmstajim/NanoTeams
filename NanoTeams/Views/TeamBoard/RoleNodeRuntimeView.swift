@@ -14,7 +14,6 @@ struct RoleNodeRuntimeView: View {
     var onRestart: (() -> Void)? = nil
     var onFinish: (() -> Void)? = nil
     var onCorrect: (() -> Void)? = nil
-    var isAdvisory: Bool = false
     var isPaused: Bool = false
     var isEngineRunning: Bool = true
     var isInMeeting: Bool = false
@@ -149,7 +148,10 @@ struct RoleNodeRuntimeView: View {
                 }
             }
 
-            if isAdvisory && onFinish != nil && (status == .ready || status == .working) {
+            // The full finish policy (advisory · non-chat · ready/working) is applied by
+            // the parent's `onFinish` nil-map via `RoleFinishPolicy.canFinish`; a non-nil
+            // `onFinish` means finishable. No rule is re-encoded here.
+            if onFinish != nil {
                 Button {
                     onFinish?()
                 } label: {

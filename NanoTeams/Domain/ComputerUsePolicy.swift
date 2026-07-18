@@ -123,6 +123,25 @@ nonisolated enum ComputerUseAction: Hashable, Sendable {
         return t
     }
 
+    /// Single source of truth for the two arguments the permission gate and the
+    /// handler each used to resolve on their own. Duplicated resolution is how the
+    /// judge ends up approving "left-click at (x, y)" while a right-click opens a
+    /// context menu, or judging app A while the finalizer acts in app B — the same
+    /// gate/handler divergence class the coercion helpers exist to prevent.
+    ///
+    /// Anything that is not an explicit right-click is a left-click: a button the
+    /// model spelled some other way must not silently become the more disruptive
+    /// action.
+    static func normalizedButton(_ raw: String?) -> String {
+        raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "right" ? "right" : "left"
+    }
+
+    /// Nil-if-blank target spec, shared by both sides for the same reason.
+    static func normalizedTargetSpec(_ raw: String?) -> String? {
+        guard let t = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty else { return nil }
+        return t
+    }
+
     /// Compact one-liner for tight UI (logs / list rows). Type text is truncated for display —
     /// NEVER use this where a security decision is made (judge / approval), because the
     /// truncated value differs from what actually runs. Use `detail` there.

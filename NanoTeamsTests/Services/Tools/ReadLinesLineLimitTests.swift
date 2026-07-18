@@ -437,6 +437,88 @@ final class ReadLinesLineLimitTests: XCTestCase {
         XCTAssertTrue(r.outputJSON.contains("Line 5"))
     }
 
+    // MARK: - Numeric strings (small-model emission)
+
+    func testStringEncodedRange_readsRequestedRange() throws {
+        // Verbatim payload from a production failure: the model emitted both
+        // bounds as JSON strings. Strict `as? Int` rejection reported
+        // "Missing required argument: start_line" for an argument that was
+        // plainly present, wedging the model into retry loops.
+        _ = try writeFile(name: "strings.txt", lineCount: 800)
+
+        let r = runReadLines(
+            args: "{\"path\": \"strings.txt\", \"start_line\": \"501\", \"end_line\": \"754\"}"
+        )
+
+        XCTAssertFalse(r.isError, "string-encoded bounds must succeed. Got: \(r.outputJSON)")
+        assertStartLine(r.outputJSON, 501)
+        assertEndLine(r.outputJSON, 754)
+        assertTotalLines(r.outputJSON, 800)
+        XCTAssertEqual(contentLineCount(r.outputJSON), 254)
+    }
+
+    func testStringEncodedStartLine_withNumericEndLine() throws {
+        // Mixed types in one payload — models are inconsistent within a single
+        // emission, so each argument must coerce independently.
+        _ = try writeFile(name: "mixed.txt", lineCount: 100)
+
+        let r = runReadLines(args: "{\"path\": \"mixed.txt\", \"start_line\": \"10\", \"end_line\": 20}")
+
+        XCTAssertFalse(r.isError, "Got: \(r.outputJSON)")
+        assertStartLine(r.outputJSON, 10)
+        assertEndLine(r.outputJSON, 20)
+    }
+
+    func testStringEncodedEOFSentinel_readsToEOF() throws {
+        // Pins the fully string-encoded shape end-to-end: both bounds quoted,
+        // `end_line` carrying the EOF sentinel, reads the whole file without
+        // erroring. (Pre-fix this failed on `start_line: "1"`.)
+        //
+        // It deliberately does NOT claim to pin the coercion of `"-1"` itself —
+        // that is unobservable here: the handler collapses omitted / 0 / -1 into
+        // one `readToEOF` branch, so a `"-1"` that degraded to nil would produce
+        // an identical envelope. The discriminating pin lives at the seam, in
+        // `ToolArgumentHelpersTests.testOptionalInt_negativeNumericString_coerces`.
+        _ = try writeFile(name: "sentinel.txt", lineCount: 40)
+
+        let r = runReadLines(args: "{\"path\": \"sentinel.txt\", \"start_line\": \"1\", \"end_line\": \"-1\"}")
+
+        XCTAssertFalse(r.isError, "Got: \(r.outputJSON)")
+        assertEndLine(r.outputJSON, 40)
+    }
+
+    func testStringEncodedBounds_withStringEncodedBool_honorsBool() throws {
+        // Mixed quoting in one payload — the shape a numeric-quoting model
+        // actually emits. Before int coercion this call aborted at `start_line`
+        // and never reached `include_line_numbers`; once the int is accepted,
+        // a still-strict bool would silently fall back to its `true` default
+        // and return gutter-numbered text under a success envelope, with the
+        // model believing it asked for raw lines.
+        _ = try writeFile(name: "mixedtypes.txt", lineCount: 20)
+
+        let r = runReadLines(
+            args: "{\"path\": \"mixedtypes.txt\", \"start_line\": \"1\", \"end_line\": \"5\", \"include_line_numbers\": \"false\"}"
+        )
+
+        XCTAssertFalse(r.isError, "Got: \(r.outputJSON)")
+        XCTAssertFalse(r.outputJSON.contains("\u{2502}"),
+                       "include_line_numbers:\"false\" must suppress the line-number gutter. Got: \(r.outputJSON)")
+    }
+
+    func testStartLineNonNumericValue_errorsWithTypeNotMissing() throws {
+        // `start_line` is required, so an uncoercible value must error — but the
+        // message has to name the type problem. Reporting "Missing" for an
+        // argument the model just sent is what caused the original confusion.
+        _ = try writeFile(name: "badstart.txt", lineCount: 20)
+
+        let r = runReadLines(args: "{\"path\": \"badstart.txt\", \"start_line\": \"five\"}")
+
+        XCTAssertTrue(r.isError)
+        XCTAssertFalse(r.outputJSON.contains("Missing required argument"),
+                       "present-but-wrong-type must not report Missing. Got: \(r.outputJSON)")
+        XCTAssertTrue(r.outputJSON.contains("start_line"), "Got: \(r.outputJSON)")
+    }
+
     func testEndLineNonNumericValue_treatedAsAbsent() throws {
         // `optionalInt` returns nil for non-numeric values; the handler then
         // collapses to readToEOF. Per CORE_PRINCIPLES, sloppy LLM types map

@@ -128,7 +128,104 @@ final class ToolCallSummarizerTests: XCTestCase {
         XCTAssertEqual(ToolCallSummarizer.summarizeArguments(toolName: TN.readLines, json: json), "file.swift")
     }
 
+    // MARK: - Bool / array args in the identity key
+    //
+    // Same hazard as the string-encoded ranges below: once the handler coerces
+    // a quoted bool or a bare-string list, a summarizer still on the strict cast
+    // drops that argument, and two calls that differ only in it collapse to one
+    // loop-detector identity.
+
+    func testSummarizeArguments_uiClick_stringEncodedDouble_distinguishesFromSingle() {
+        let single = """
+        {"x": 10, "y": 20}
+        """
+        let double = """
+        {"x": 10, "y": 20, "double": "true"}
+        """
+        let s = ToolCallSummarizer.summarizeArguments(toolName: TN.uiClick, json: single)
+        let d = ToolCallSummarizer.summarizeArguments(toolName: TN.uiClick, json: double)
+        XCTAssertTrue(d.contains("double"), "string-encoded double must show in the summary. Got: \(d)")
+        XCTAssertNotEqual(s, d, "a double-click must not share an identity with a single click")
+    }
+
+    func testSummarizeArguments_search_bareStringPath_isScoped() {
+        let json = """
+        {"query": "target", "paths": "src"}
+        """
+        XCTAssertEqual(
+            ToolCallSummarizer.summarizeArguments(toolName: TN.search, json: json),
+            "\"target\" in 1 paths"
+        )
+    }
+
+    func testSummarizeArguments_gitAdd_bareStringPath_namesTheFile() {
+        let json = """
+        {"paths": "a.swift"}
+        """
+        XCTAssertEqual(ToolCallSummarizer.summarizeArguments(toolName: TN.gitAdd, json: json), "a.swift")
+    }
+
+    func testSummarizeArguments_gitAdd_bareStringPaths_distinctPerFile() {
+        let a = ToolCallSummarizer.summarizeArguments(toolName: TN.gitAdd, json: "{\"paths\": \"a.swift\"}")
+        let b = ToolCallSummarizer.summarizeArguments(toolName: TN.gitAdd, json: "{\"paths\": \"b.swift\"}")
+        XCTAssertNotEqual(a, b, "staging different files must not share one identity")
+    }
+
+    func testSummarizeArguments_requestTeamMeeting_bareStringParticipant_counted() {
+        let json = """
+        {"topic": "", "participants": "Tech Lead"}
+        """
+        XCTAssertEqual(
+            ToolCallSummarizer.summarizeArguments(toolName: TN.requestTeamMeeting, json: json),
+            "1 participants"
+        )
+    }
+
+    // MARK: - readLines: string-encoded bounds (loop-detector identity)
+    //
+    // `TrackedCall.argumentsSummary` IS the loop detector's identity key
+    // (`ToolCallLoopDetector` groups by `toolName + argumentsSummary`). The
+    // handler coerces string-encoded numerics, so the summarizer must too —
+    // otherwise every page of a paginated read collapses to the bare path and
+    // distinct calls are counted as a repetition loop. Same hazard the
+    // `ui_click` / `ui_scroll` entries already guard against.
+
+    func testSummarizeArguments_readLines_stringEncodedRange_showsRange() {
+        let json = """
+        {"path": "doc.md", "start_line": "501", "end_line": "754"}
+        """
+        XCTAssertEqual(ToolCallSummarizer.summarizeArguments(toolName: TN.readLines, json: json), "doc.md 501:754")
+    }
+
+    func testSummarizeArguments_readLines_paginatedStringPages_haveDistinctIdentities() {
+        let page1 = """
+        {"path": "doc.md", "start_line": "1", "end_line": "500"}
+        """
+        let page2 = """
+        {"path": "doc.md", "start_line": "501", "end_line": "1000"}
+        """
+        let s1 = ToolCallSummarizer.summarizeArguments(toolName: TN.readLines, json: page1)
+        let s2 = ToolCallSummarizer.summarizeArguments(toolName: TN.readLines, json: page2)
+        XCTAssertNotEqual(s1, s2, "legitimate pagination must not collapse into one loop-detector identity")
+    }
+
+    func testSummarizeArguments_readLines_fractionalBounds_matchHandlerTruncation() {
+        // The handler truncates toward zero; the summary must show the same
+        // number the tool actually read.
+        let json = """
+        {"path": "doc.md", "start_line": 10.9, "end_line": 20.9}
+        """
+        XCTAssertEqual(ToolCallSummarizer.summarizeArguments(toolName: TN.readLines, json: json), "doc.md 10:20")
+    }
+
     // MARK: - listFiles depth
+
+    func testSummarizeArguments_listFiles_stringEncodedDepth_showsDepth() {
+        let json = """
+        {"path": "/src", "depth": "2"}
+        """
+        XCTAssertEqual(ToolCallSummarizer.summarizeArguments(toolName: TN.listFiles, json: json), "/src depth:2")
+    }
 
     func testSummarizeArguments_listFiles_showsDepth() {
         let json = """

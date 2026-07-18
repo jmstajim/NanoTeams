@@ -486,6 +486,124 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase {
                        "the real role's status must be untouched")
     }
 
+    // MARK: - manage_role finish_advisory (producing guard + non-chat)
+
+    /// A non-chat advisory role (required artifacts, produces none) finishes without
+    /// closing — the role goes `.done`, the task stays open for the engine to complete.
+    func testManageRoleFinishAdvisory_onNonChatAdvisoryRole_finishesWithoutClosing() async {
+        _ = await pinManager()
+        guard let startupID = sut.snapshot?.workFolder.teams.first(where: { $0.templateID == "startup" })?.id else {
+            return XCTFail("Startup team must be bootstrapped")
+        }
+        // A custom advisory role added to the (non-chat) startup team so completionType == .advisory.
+        let advisory = TeamRoleDefinition(
+            id: "advisor", name: "Advisor", prompt: "", toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies(requiredArtifacts: ["Engineering Notes"])
+        )
+        await sut.mutateWorkFolder { proj in
+            if let i = proj.teams.firstIndex(where: { $0.id == startupID }) { proj.teams[i].addRole(advisory) }
+        }
+        guard let taskID = await sut.createTask(title: "T", supervisorTask: "x", preferredTeamID: startupID, makeActive: false) else {
+            return XCTFail("createTask failed")
+        }
+        await sut.ensureTaskLoaded(taskID)
+        await sut.mutateTask(taskID: taskID) { task in
+            task.runs = [Run(id: 0, steps: [
+                StepExecution(id: "advisor", role: .custom(id: "advisor"), title: "Advisor", status: .running),
+            ], roleStatuses: ["advisor": .working])]
+        }
+
+        let r = await sut.performAutovisorAction(.manageRole(taskID: taskID, roleID: "advisor", verb: .finishAdvisory))
+
+        XCTAssertTrue(r.ok, "finishing a non-chat advisory role must succeed")
+        XCTAssertEqual(sut.loadedTask(taskID)?.runs.last?.roleStatuses["advisor"], .done)
+        XCTAssertNil(sut.loadedTask(taskID)?.closedAt, "a non-chat finish must NOT close the task")
+    }
+
+    /// Builds a non-chat (Startup) task carrying a PRODUCING role whose id ("producer")
+    /// matches the run's step/status, so `completionType(forRoleID:)` resolves it.
+    private func makeTaskWithProducingRole() async -> Int? {
+        guard let startupID = sut.snapshot?.workFolder.teams.first(where: { $0.templateID == "startup" })?.id else {
+            XCTFail("Startup team must be bootstrapped"); return nil
+        }
+        let producer = TeamRoleDefinition(
+            id: "producer", name: "Producer", prompt: "", toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies(producesArtifacts: ["Out"]))
+        await sut.mutateWorkFolder { proj in
+            if let i = proj.teams.firstIndex(where: { $0.id == startupID }) { proj.teams[i].addRole(producer) }
+        }
+        guard let taskID = await sut.createTask(title: "T", supervisorTask: "x", preferredTeamID: startupID, makeActive: false) else {
+            XCTFail("createTask failed"); return nil
+        }
+        await sut.ensureTaskLoaded(taskID)
+        await sut.mutateTask(taskID: taskID) { task in
+            task.runs = [Run(id: 0, steps: [
+                StepExecution(id: "producer", role: .custom(id: "producer"), title: "Producer", status: .running),
+            ], roleStatuses: ["producer": .working], teamID: startupID)]
+        }
+        return taskID
+    }
+
+    /// finish_advisory on a PRODUCING role is rejected at the manager seam (force-finishing
+    /// one strands the pipeline). The role status is left untouched.
+    func testManageRoleFinishAdvisory_onProducingRole_failsWithoutMutating() async {
+        _ = await pinManager()
+        guard let taskID = await makeTaskWithProducingRole() else { return }
+        let r = await sut.performAutovisorAction(.manageRole(taskID: taskID, roleID: "producer", verb: .finishAdvisory))
+        XCTAssertFalse(r.ok, "finish_advisory on a producing role must be rejected")
+        XCTAssertTrue(r.message.contains("producing role"), "the failure must name the reason")
+        XCTAssertEqual(sut.loadedTask(taskID)?.runs.last?.roleStatuses["producer"], .working,
+                       "a rejected finish must leave the role status untouched")
+    }
+
+    /// The rejected finish_advisory message must be the FRESH producing-reject reason,
+    /// not a stale `lastErrorMessage` echoed from an earlier unrelated failure.
+    func testManageRoleFinishAdvisory_producingReject_isNotStaleBanner() async {
+        _ = await pinManager()
+        guard let taskID = await makeTaskWithProducingRole() else { return }
+        sut.lastErrorMessage = "OLD UNRELATED BANNER"
+        let r = await sut.performAutovisorAction(.manageRole(taskID: taskID, roleID: "producer", verb: .finishAdvisory))
+        XCTAssertFalse(r.ok)
+        XCTAssertFalse(r.message.contains("OLD UNRELATED BANNER"),
+                       "the arm must return its own reason, not echo a stale lastErrorMessage")
+        XCTAssertTrue(r.message.contains("producing role"))
+    }
+
+    /// Omitted `team_id` when the folder's active team is chat-mode must fail loudly
+    /// (a chat task never terminates on its own), without creating a task.
+    func testCreateManagedTask_omittedTeamID_activeTeamIsChatMode_failsWithoutCreating() async {
+        _ = await pinManager()
+        await sut.mutateWorkFolder { $0.settings.autovisorEnabled = true }
+        // The fresh work folder's active team (Coding Assistant) is already chat-mode.
+        XCTAssertTrue(sut.snapshot?.workFolder.activeTeam?.isChatMode ?? false,
+                      "precondition: default active team is chat-mode")
+        let before = taskCount
+        let r = await sut.performAutovisorAction(.createManagedTask(title: "T", brief: "B", teamID: nil))
+        XCTAssertFalse(r.ok, "omitting team_id on a chat active team must be rejected")
+        XCTAssertTrue(r.message.contains("chat team"), "the failure must explain why")
+        XCTAssertEqual(taskCount, before, "no task may be created")
+    }
+
+    /// An EXPLICIT chat team_id IS accepted (mark, not filter — the manager can close it),
+    /// distinct from the rejected omitted-team_id-on-chat-active-team case above.
+    func testCreateManagedTask_explicitChatTeamID_isAccepted() async {
+        _ = await pinManager()
+        await sut.mutateWorkFolder { $0.settings.autovisorEnabled = true }
+        let chatTeam = Team(id: "explicit-chat", name: "Explicit Chat", roles: [
+            TeamRoleDefinition(id: "supervisor", name: "Supervisor", prompt: "", toolIDs: [],
+                               usePlanningPhase: false, dependencies: RoleDependencies(), systemRoleID: "supervisor"),
+            TeamRoleDefinition(id: "a", name: "A", prompt: "", toolIDs: [],
+                               usePlanningPhase: false, dependencies: RoleDependencies(requiredArtifacts: ["Ctx"])),
+        ], artifacts: [], settings: TeamSettings(), graphLayout: TeamGraphLayout())
+        XCTAssertTrue(chatTeam.isChatMode, "precondition: the target team is chat-mode")
+        await sut.mutateWorkFolder { $0.teams.append(chatTeam) }
+        let before = taskCount
+        let r = await sut.performAutovisorAction(.createManagedTask(title: "T", brief: "B", teamID: "explicit-chat"))
+        XCTAssertTrue(r.ok, "an explicit chat team_id must be accepted")
+        XCTAssertEqual(taskCount, before + 1, "a task must be created")
+        if let id = r.createdTaskID { sut.stopEngineForTask(id) }  // tidy the spawned run
+    }
+
     func testWake_disabled_doesNotStamp() async {
         _ = await pinManager()  // feature stays disabled (we never call setAutovisorEnabled)
         XCTAssertNil(sut.autovisorLastWakeAt)
@@ -682,8 +800,14 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase {
     func testCreateManagedTask_seedsSeenSet() async {
         _ = await pinManager()
         await sut.mutateWorkFolder { $0.settings.autovisorEnabled = true }
+        // The default active team (Coding Assistant) is chat-mode; omitting team_id there
+        // is now rejected. Point the active team at a pipeline team so the omit-form
+        // succeeds and this test exercises what it's about (seen-set seeding).
+        if let startupID = sut.snapshot?.workFolder.teams.first(where: { $0.templateID == "startup" })?.id {
+            await sut.mutateWorkFolder { $0.setActiveTeam(startupID) }
+        }
         let r = await sut.performAutovisorAction(.createManagedTask(title: "T", brief: "B", teamID: nil))
-        XCTAssertTrue(r.ok, "creating a managed task on the active team should succeed")
+        XCTAssertTrue(r.ok, "creating a managed task on a pipeline active team should succeed")
         guard let id = r.createdTaskID else { return XCTFail("expected a created task id") }
         XCTAssertTrue(sut.autovisorSeenTaskIDs.contains(id),
                       "the manager must mark its own creation as seen (no onTaskCreated self-wake)")

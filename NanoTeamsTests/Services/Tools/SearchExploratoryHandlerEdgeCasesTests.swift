@@ -78,10 +78,10 @@ final class SearchExploratoryHandlerEdgeCasesTests: XCTestCase {
 
     // MARK: - expand with non-bool value (defensive)
 
-    func testExpand_stringValue_treatedAsFalse() throws {
+    func testExpand_stringValue_coerces() throws {
         // LLMs sometimes emit `"true"` (string) instead of `true` (bool).
-        // `optionalBool` doesn't coerce strings → falls back to default false
-        // → plain path.
+        // `optionalBool` coerces the unambiguous spellings, so the model gets
+        // the search it asked for instead of silently getting the plain path.
         try "target\n".write(
             to: tempDir.appendingPathComponent("a.swift"),
             atomically: true, encoding: .utf8
@@ -90,11 +90,11 @@ final class SearchExploratoryHandlerEdgeCasesTests: XCTestCase {
             context: ctx(),
             args: ["query": "target", "exploratory": "true"]
         )
-        XCTAssertNil(result.signal,
-                     "String 'true' must not trigger exploratory search — only real bool true.")
+        XCTAssertNotNil(result.signal,
+                        "String 'true' must request exploratory search, same as a real bool.")
     }
 
-    func testExpand_intValue_treatedAsFalse() throws {
+    func testExpand_intValue_coerces() throws {
         try "target\n".write(
             to: tempDir.appendingPathComponent("a.swift"),
             atomically: true, encoding: .utf8
@@ -102,6 +102,20 @@ final class SearchExploratoryHandlerEdgeCasesTests: XCTestCase {
         let result = makeTool().handle(
             context: ctx(),
             args: ["query": "target", "exploratory": 1]
+        )
+        XCTAssertNotNil(result.signal)
+    }
+
+    func testExpand_ambiguousValue_treatedAsFalse() throws {
+        // Coercion covers only unambiguous spellings — a value that is not a
+        // boolean in any reading keeps the default rather than being guessed at.
+        try "target\n".write(
+            to: tempDir.appendingPathComponent("a.swift"),
+            atomically: true, encoding: .utf8
+        )
+        let result = makeTool().handle(
+            context: ctx(),
+            args: ["query": "target", "exploratory": "sometimes"]
         )
         XCTAssertNil(result.signal)
     }

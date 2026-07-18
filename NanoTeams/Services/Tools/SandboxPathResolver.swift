@@ -12,7 +12,7 @@ nonisolated enum SandboxPathError: LocalizedError {
         case .emptyPath:
             "Path is empty."
         case .absolutePathNotAllowed(let path):
-            "Absolute paths are not allowed: \(path)"
+            "Absolute paths are not allowed: \(path). Paths are relative to the work-folder root; use \".\" for the root."
         case .parentTraversalNotAllowed(let path):
             "Parent traversal (..) is not allowed: \(path)"
         case .outsideSandbox(let path):
@@ -49,6 +49,11 @@ nonisolated struct SandboxPathResolver {
         if raw.hasPrefix("/") || raw.hasPrefix("~") {
             let expanded = (raw as NSString).expandingTildeInPath
             let absURL = URL(fileURLWithPath: expanded).standardizedFileURL
+            // Chroot-style root: models often address the work folder as "/" (also
+            // "//", "/.", "/.."). Anything standardizing to the filesystem root means
+            // the work-folder root — the literal volume root is outside the sandbox
+            // and useless to the model anyway. Mirrors the empty-path early return.
+            if absURL.path == "/" { return workFolderRoot }
             guard Self.isWithin(candidate: absURL, container: workFolderRoot) else {
                 // Preserve the ORIGINAL raw string in the error payload.
                 throw SandboxPathError.absolutePathNotAllowed(raw)

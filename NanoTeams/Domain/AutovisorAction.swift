@@ -180,14 +180,27 @@ nonisolated enum AutovisorStatus {
     }
 
     /// Seconds since the role last produced anything (message / tool call / token /
-    /// progress). Clamped at 0 — `MonotonicClock` model timestamps can sit a hair
-    /// ahead of wall-clock `now`.
-    static func idleSeconds(step: StepExecution, now: Date, lastStreamActivityAt: Date?) -> Int {
+    /// progress).
+    ///
+    /// **`now` MUST be a `MonotonicClock` stamp** — every source `lastActivity` reads
+    /// is stamped with `MonotonicClock.shared.now()`, which runs ahead of wall clock
+    /// by the drift accumulated at stamp time (measured: p99 37s, max 40s in a live
+    /// parallel test worker). A wall-clock `now` understates idle by exactly that
+    /// drift, and the `max(0, ...)` clamp turns the shortfall into a hard 0 — which
+    /// silently suppresses the HANG verdict. Defaulted so callers cannot get it wrong;
+    /// pinned by `AutovisorStatusTimingTests.testIdleSeconds_isMeasuredOnTheStampingClock_notWallClock`.
+    static func idleSeconds(
+        step: StepExecution,
+        now: Date = MonotonicClock.shared.now(),
+        lastStreamActivityAt: Date?
+    ) -> Int {
         max(0, Int(now.timeIntervalSince(lastActivity(step: step, lastStreamActivityAt: lastStreamActivityAt))))
     }
 
     /// Seconds the role has been executing (to completion if finished, else to `now`).
-    static func roleElapsedSeconds(step: StepExecution, now: Date) -> Int {
+    /// Same clock contract as `idleSeconds`: `now` is compared against
+    /// `step.createdAt`/`completedAt`, both `MonotonicClock` stamps.
+    static func roleElapsedSeconds(step: StepExecution, now: Date = MonotonicClock.shared.now()) -> Int {
         max(0, Int((step.completedAt ?? now).timeIntervalSince(step.createdAt)))
     }
 

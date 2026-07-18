@@ -208,4 +208,52 @@ extension AcceptanceService {
 
         return Self.acceptanceErrors[status]
     }
+
+    // MARK: - Accept Routing (Autovisor manage_role accept)
+
+    /// How the Autovisor's `manage_role accept` should be handled for a role.
+    /// `.accept` = ordinary acceptance of a role awaiting review; `.finishChatRole` =
+    /// the chat-mode exit (a chat advisory role never reaches acceptance, so accept
+    /// finishes it — and the caller closes the task when nothing else is active —
+    /// instead of failing "still working"); `.reject` carries the unchanged validation
+    /// message for cases where neither applies.
+    nonisolated enum AcceptRoute: Hashable {
+        case accept
+        case finishChatRole
+        case reject(reason: String)
+    }
+
+    /// Statuses for which the chat-finish exit is appropriate: a live advisory role
+    /// (`.working`) or the auto-finished-but-task-not-closed zombie (`.done`, from
+    /// `attemptAdvisoryAutoFinish`). Every OTHER validation-failing status keeps the
+    /// ordinary reject — accept must never force-convert a role to `.done` when that would
+    /// erase state: `.failed` (a failure `finalizeRoleStatusesForClose` deliberately
+    /// preserves; restart it instead), `.skipped`, `.revisionRequested` (don't abandon the
+    /// revision), `.accepted`, or `.idle`/`.ready` (work that never ran — plus a step-less
+    /// idle role has nothing to finish, which would spuriously fail).
+    private static let chatFinishableStatuses: Set<RoleExecutionStatus> = [.working, .done]
+
+    /// Routes `accept`, layered on top of `validateAcceptance` so the error table stays
+    /// the single source of the reject messages.
+    /// - `.needsAcceptance` (validation passes) → `.accept`, checked **first**: a
+    ///   chat-mode team can still hold a producing role legitimately at `.needsAcceptance`
+    ///   (Quest Party), a genuine mid-pipeline gate that must go through untouched.
+    /// - a chat-mode task's non-producing (advisory) role in a `chatFinishableStatuses`
+    ///   state → `.finishChatRole`.
+    /// - otherwise → `.reject` with the ordinary message.
+    static func routeAccept(
+        roleID: String,
+        roleStatuses: [String: RoleExecutionStatus],
+        isChatModeTask: Bool,
+        roleIsProducing: Bool
+    ) -> AcceptRoute {
+        guard let reason = validateAcceptance(roleID: roleID, roleStatuses: roleStatuses) else {
+            return .accept
+        }
+        if isChatModeTask, !roleIsProducing,
+           let status = roleStatuses[roleID], chatFinishableStatuses.contains(status) {
+            return .finishChatRole
+        }
+        return .reject(reason: reason)
+    }
 }

@@ -23,6 +23,37 @@ final class AutovisorStatusTimingTests: XCTestCase {
         )
     }
 
+    // MARK: - Clock agreement (idle must be measured on the stamping clock)
+
+    /// Every activity source `lastActivity` reads — `step.createdAt`,
+    /// `messages.createdAt`, `toolCalls.createdAt` — is stamped with
+    /// `MonotonicClock.shared.now()`, which runs AHEAD of wall clock by the drift
+    /// accumulated at stamp time (measured: p99 37s, max 40s in a live parallel
+    /// worker). Measuring idle with a wall-clock `now` therefore UNDERSTATES it by
+    /// exactly that drift, and `max(0, ...)` turns the shortfall into a hard 0 — so
+    /// a genuinely hung role can sit below the 180s HANG threshold forever.
+    ///
+    /// Here the role has been silent for 190s IN THE FRAME ITS OWN TIMESTAMPS USE,
+    /// which is past the threshold. A wall-clock `now` reads only 150s and misses it.
+    func testIdleSeconds_isMeasuredOnTheStampingClock_notWallClock() {
+        defer { MonotonicClock.shared.reset() }
+
+        // Simulate a process that has accumulated drift before the role acted.
+        for _ in 0..<40_000 { _ = MonotonicClock.shared.now() }
+        let drift = MonotonicClock.shared.now().timeIntervalSince(Date())
+        XCTAssertGreaterThan(drift, 10, "Setup invariant: need drift > 10s to separate the two clocks")
+
+        // Last activity: 190s ago on the clock that stamps model timestamps.
+        let stamp = MonotonicClock.shared.now().addingTimeInterval(-190)
+        let s = step(createdAt: stamp)
+
+        let idle = AutovisorStatus.idleSeconds(step: s, lastStreamActivityAt: nil)
+
+        XCTAssertGreaterThan(
+            idle, Int(AutovisorConstants.stuckHangSeconds),
+            "A role idle 190s on its own timestamp clock must clear the 180s HANG threshold; a wall-clock `now` understates it by the drift and suppresses the detector")
+    }
+
     // MARK: - lastActivity precedence
 
     func testLastActivity_picksLatestSource() {

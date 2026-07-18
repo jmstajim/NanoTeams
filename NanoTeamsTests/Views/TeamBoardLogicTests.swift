@@ -113,7 +113,7 @@ final class TeamBoardLogicTests: XCTestCase {
         XCTAssertTrue(role.isAdvisory)
         let status: RoleExecutionStatus = .working
         let isChatMode = false
-        let showFinish = role.isAdvisory && !isChatMode && (status == .ready || status == .working)
+        let showFinish = RoleFinishPolicy.canFinish(roleDef: role, status: status, isChatMode: isChatMode)
         XCTAssertTrue(showFinish)
     }
 
@@ -121,7 +121,7 @@ final class TeamBoardLogicTests: XCTestCase {
         let role = makeRole(required: ["Plan"], produced: [])
         let status: RoleExecutionStatus = .ready
         let isChatMode = false
-        let showFinish = role.isAdvisory && !isChatMode && (status == .ready || status == .working)
+        let showFinish = RoleFinishPolicy.canFinish(roleDef: role, status: status, isChatMode: isChatMode)
         XCTAssertTrue(showFinish)
     }
 
@@ -131,7 +131,7 @@ final class TeamBoardLogicTests: XCTestCase {
         XCTAssertTrue(role.isAdvisory)
         let status: RoleExecutionStatus = .working
         let isChatMode = true
-        let showFinish = role.isAdvisory && !isChatMode && (status == .ready || status == .working)
+        let showFinish = RoleFinishPolicy.canFinish(roleDef: role, status: status, isChatMode: isChatMode)
         XCTAssertFalse(showFinish)
     }
 
@@ -141,7 +141,7 @@ final class TeamBoardLogicTests: XCTestCase {
         XCTAssertFalse(role.isAdvisory)
         let status: RoleExecutionStatus = .working
         let isChatMode = false
-        let showFinish = role.isAdvisory && !isChatMode && (status == .ready || status == .working)
+        let showFinish = RoleFinishPolicy.canFinish(roleDef: role, status: status, isChatMode: isChatMode)
         XCTAssertFalse(showFinish)
     }
 
@@ -152,7 +152,7 @@ final class TeamBoardLogicTests: XCTestCase {
         XCTAssertFalse(role.isAdvisory)
         let status: RoleExecutionStatus = .working
         let isChatMode = false
-        let showFinish = role.isAdvisory && !isChatMode && (status == .ready || status == .working)
+        let showFinish = RoleFinishPolicy.canFinish(roleDef: role, status: status, isChatMode: isChatMode)
         XCTAssertFalse(showFinish)
     }
 
@@ -161,7 +161,7 @@ final class TeamBoardLogicTests: XCTestCase {
         let role = makeRole(required: ["Plan"], produced: [])
         let isChatMode = false
         for status in [RoleExecutionStatus.idle, .done, .failed, .accepted, .needsAcceptance, .skipped] {
-            let showFinish = role.isAdvisory && !isChatMode && (status == .ready || status == .working)
+            let showFinish = RoleFinishPolicy.canFinish(roleDef: role, status: status, isChatMode: isChatMode)
             XCTAssertFalse(showFinish, "Finish should be hidden for status \(status)")
         }
     }

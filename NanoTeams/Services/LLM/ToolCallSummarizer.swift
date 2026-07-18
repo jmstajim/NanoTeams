@@ -18,10 +18,15 @@ nonisolated enum ToolCallSummarizer {
         return [
             TN.readFile: pathExtractor,
             TN.writeFile: pathExtractor,
+            // Bounds resolved via `optionalInt` — the SAME coercion the handler
+            // uses, so a string-encoded range ({"start_line":"501"}) the handler
+            // reads doesn't collapse the summary (and thus the loop-detector
+            // identity key) to the bare path, counting successive pages of a
+            // paginated read as one repeated call.
             TN.readLines: { dict in
                 let path = (dict["path"] as? String) ?? "?"
-                let start = dict["start_line"] as? Int
-                let end = dict["end_line"] as? Int
+                let start = optionalInt(dict, "start_line")
+                let end = optionalInt(dict, "end_line")
                 if let s = start, let e = end { return "\(path) \(s):\(e)" }
                 if let s = start { return "\(path) \(s):" }
                 if let e = end { return "\(path) :\(e)" }
@@ -32,12 +37,12 @@ nonisolated enum ToolCallSummarizer {
             TN.listFiles: { dict in
                 let raw = (dict["path"] as? String) ?? "."
                 let path = raw.isEmpty ? "." : raw
-                if let depth = dict["depth"] as? Int { return "\(path) depth:\(depth)" }
+                if let depth = optionalInt(dict, "depth") { return "\(path) depth:\(depth)" }
                 return path
             },
             TN.search: { dict in
                 let query = (dict["query"] as? String) ?? "?"
-                if let paths = dict["paths"] as? [String], !paths.isEmpty {
+                if let paths = optionalStringArray(dict, "paths"), !paths.isEmpty {
                     return "\"\(query)\" in \(paths.count) paths"
                 }
                 return "\"\(query)\""
@@ -55,7 +60,7 @@ nonisolated enum ToolCallSummarizer {
             },
             TN.gitCheckout: { ($0["branch"] as? String) ?? "?" },
             TN.gitAdd: { dict in
-                if let paths = dict["paths"] as? [String], !paths.isEmpty {
+                if let paths = optionalStringArray(dict, "paths"), !paths.isEmpty {
                     return paths.count == 1 ? paths[0] : "\(paths.count) files"
                 }
                 return "files"
@@ -83,7 +88,7 @@ nonisolated enum ToolCallSummarizer {
             },
             TN.requestTeamMeeting: { dict in
                 let topic = (dict["topic"] as? String) ?? ""
-                let count = (dict["participants"] as? [String])?.count ?? 0
+                let count = optionalStringArray(dict, "participants")?.count ?? 0
                 if topic.isEmpty { return count > 0 ? "\(count) participants" : "" }
                 let trimmed = topic.count > 40 ? String(topic.prefix(40)) + "..." : topic
                 return count > 0 ? "\(trimmed) · \(count)" : trimmed
@@ -115,7 +120,7 @@ nonisolated enum ToolCallSummarizer {
                 guard let x = optionalInt(dict, "x"), let y = optionalInt(dict, "y") else { return "?" }
                 var parts = ["(\(x), \(y))"]
                 if (dict["button"] as? String)?.lowercased() == "right" { parts.append("right") }
-                if (dict["double"] as? Bool) == true { parts.append("double") }
+                if optionalBool(dict, "double") { parts.append("double") }
                 if let target = dict["target"] as? String, !target.isEmpty { parts.append("→ \(target)") }
                 return parts.joined(separator: " ")
             },

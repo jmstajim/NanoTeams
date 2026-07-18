@@ -201,14 +201,14 @@ extension NTMSOrchestrator {
                     run.roleStatuses[run.steps[i].effectiveRoleID] = .done
                 }
             }
-            // Also finalize any role statuses that are still `.needsAcceptance`
-            // — closing the task is an implicit acceptance of all completed
-            // work. Without this, the team graph keeps rendering "Needs
-            // Review" on those nodes even though the task is closed (visible
-            // in delegation history layers as a stuck purple pill).
-            for (roleID, status) in run.roleStatuses where status == .needsAcceptance {
-                run.roleStatuses[roleID] = .done
-            }
+            // Finalize every remaining non-terminal role to `.done` — closing is an
+            // implicit acceptance of completed work AND a finalization of roles that
+            // never ran (idle / ready / revisionRequested / needsAcceptance, plus a
+            // .working role whose step is still .pending). `.failed` is preserved.
+            // Supersedes the old needsAcceptance-only pass; without it the team graph
+            // keeps rendering non-terminal pills on the closed task (it reads
+            // `roleStatuses` raw).
+            run.finalizeRoleStatusesForClose()
             run.updatedAt = now
             task.runs[task.runs.count - 1] = run
         }

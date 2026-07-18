@@ -116,27 +116,9 @@ final class ToolsEnvelopeTests: XCTestCase {
         XCTAssertEqual(decoded.warnings, meta.warnings)
     }
 
-    // MARK: - Entry Tests
-
-    func testEntryCodableRoundTrip() throws {
-        let entry = Entry(path: "/project/src", name: "src", type: "dir")
-
-        let encoded = try JSONEncoder().encode(entry)
-        let decoded = try JSONDecoder().decode(Entry.self, from: encoded)
-
-        XCTAssertEqual(decoded.path, "/project/src")
-        XCTAssertEqual(decoded.name, "src")
-        XCTAssertEqual(decoded.type, "dir")
-    }
-
-    func testEntryFileType() throws {
-        let entry = Entry(path: "/project/main.swift", name: "main.swift", type: "file")
-
-        let encoded = try JSONEncoder().encode(entry)
-        let decoded = try JSONDecoder().decode(Entry.self, from: encoded)
-
-        XCTAssertEqual(decoded.type, "file")
-    }
+    // Entry-type round-trip tests removed with `struct Entry` itself: `list_files`
+    // now emits two flat `[String]` arrays, so there is no per-entry type to pin.
+    // Result-shape coverage lives in ToolsFileSystemTests §"list_files Result Shape".
 
     // MARK: - LineRef Tests
 
@@ -737,8 +719,17 @@ final class ToolsEnvelopeTests: XCTestCase {
         }
     }
 
-    func testRequiredStringArrayWrongType() {
+    func testRequiredStringArrayBareString_wrapsInArray() throws {
+        // A one-element list emitted as a bare string is an emission quirk, not
+        // a different intent — rejecting it read as "argument absent".
         let args: [String: Any] = ["paths": "not an array"]
+
+        XCTAssertEqual(try requiredStringArray(args, "paths"), ["not an array"])
+    }
+
+    func testRequiredStringArrayWrongType() {
+        // A value with no string reading at all still throws.
+        let args: [String: Any] = ["paths": 5]
 
         XCTAssertThrowsError(try requiredStringArray(args, "paths"))
     }

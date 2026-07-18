@@ -128,6 +128,16 @@ nonisolated extension Team {
         !isChatMode
     }
 
+    /// The completion kind of one role by id, or nil when this team has no such role.
+    /// Single source of truth for "which verb ends this role" — the Autovisor's
+    /// `manage_role` guards and `task_status`'s `role_kind`. Role ids are safe to key
+    /// on: `StepExecution.effectiveRoleID == step.id` and `Team.makeStep` builds the
+    /// step from the `TeamRoleDefinition`, so step ids, `roleStatuses` keys and role
+    /// ids share one namespace.
+    func completionType(forRoleID roleID: String) -> RoleCompletionType? {
+        roles.first(where: { $0.id == roleID })?.completionType
+    }
+
     /// True for infrastructure teams that must be hidden from every *task-assignment*
     /// team picker (the Generated Team placeholder and the Autovisor team). They are
     /// never chosen as a regular task's team, a delegation target, or a manager-spawned

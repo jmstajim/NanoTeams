@@ -215,13 +215,12 @@ struct TeamGraphView: View {
                     onRestart: onRestartRole.map { callback in
                         { callback(nodePosition.roleID) }
                     },
-                    onFinish: (!isChatMode && (roleDef?.isAdvisory ?? false)) ? onFinishRole.map { callback in
-                        { callback(nodePosition.roleID) }
-                    } : nil,
+                    onFinish: RoleFinishPolicy.canFinish(roleDef: roleDef, status: status, isChatMode: isChatMode)
+                        ? onFinishRole.map { callback in { callback(nodePosition.roleID) } }
+                        : nil,
                     onCorrect: onCorrectRole.map { callback in
                         { callback(nodePosition.roleID) }
                     },
-                    isAdvisory: roleDef?.isAdvisory ?? false,
                     isPaused: isPaused,
                     isEngineRunning: isEngineRunning,
                     isInMeeting: meetingParticipants.contains(nodePosition.roleID),

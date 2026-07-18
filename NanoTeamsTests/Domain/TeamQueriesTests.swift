@@ -78,6 +78,19 @@ final class TeamQueriesTests: XCTestCase {
         XCTAssertNil(t.role(withID: "missing"))
     }
 
+    func testCompletionTypeForRoleID_resolvesKindOrNil() {
+        let t = makeTeam(roles: [
+            role(id: "prod", name: "Prod", produces: ["Out"]),
+            role(id: "adv", name: "Adv", requires: ["In"]),
+            role(id: "obs", name: "Obs"),
+        ])
+        XCTAssertEqual(t.completionType(forRoleID: "prod"), .producing)
+        XCTAssertEqual(t.completionType(forRoleID: "adv"), .advisory)
+        XCTAssertEqual(t.completionType(forRoleID: "obs"), .observer)
+        XCTAssertNil(t.completionType(forRoleID: "missing"),
+                     "an unknown role id must return nil, not a default kind")
+    }
+
     func testArtifactWithName_andArtifactNames() {
         let t = makeTeam(roles: [], artifacts: [artifact("Plan"), artifact("Spec")])
         XCTAssertEqual(t.artifact(withName: "Plan")?.id, "plan")

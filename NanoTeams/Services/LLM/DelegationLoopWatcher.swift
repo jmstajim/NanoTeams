@@ -184,6 +184,15 @@ final class DelegationLoopWatcher {
     /// simulate "the watcher already fired N seconds ago, cooldown has
     /// expired" without standing up a full awaiter + child engine + waiter
     /// resolution dance just to plant one timestamp.
+    ///
+    /// **`when` MUST be a `MonotonicClock.shared.now()` stamp, not a `Date()`.**
+    /// `isInCooldown` compares it against `MonotonicClock.shared.now()`, which
+    /// returns `max(Date(), last + 1ms)` and only heals via `reset()` — so over a
+    /// test worker's lifetime it drifts arbitrarily far ahead of wall clock. A
+    /// wall-clock stamp reads as already-expired the moment that drift exceeds
+    /// `repetitionCooldownSeconds`, silently turning a cooldown assertion into a
+    /// scheduling-dependent flake. Pinned by
+    /// `DelegationLoopWatcherTests.testWatcher_cooldown_holdsUnderMonotonicClockDrift`.
     func _testForceTrigger(forTaskID taskID: Int, at when: Date) {
         lastTriggerByChildTask[taskID] = when
     }

@@ -49,6 +49,11 @@ extension LLMExecutionService {
             var id: Int
             var title: String
             var status: String
+            /// True when the task runs a chat-mode team (no deliverables). A chat task
+            /// never reaches Review and never finishes on its own — it reads `running`
+            /// until you `control_task close` it. Seeing this at triage keeps the manager
+            /// from planning a `manage_role accept` that can't apply.
+            var chat_mode: Bool
             /// Seconds since the task last changed — a cheap triage hint: a `running`
             /// task whose `updated_seconds_ago` is large may be hung; drill in via
             /// task_status (which has the full timing + stuck verdict).
@@ -56,10 +61,11 @@ extension LLMExecutionService {
         }
         struct ListData: Codable { var tasks: [TaskRow] }
 
-        let now = Date()
+        let now = MonotonicClock.shared.now()
         let rows = tasks.map {
             TaskRow(
                 id: $0.id, title: $0.title, status: $0.status.rawValue,
+                chat_mode: $0.isChatMode,
                 updated_seconds_ago: max(0, Int(now.timeIntervalSince($0.updatedAt)))
             )
         }
@@ -79,6 +85,11 @@ extension LLMExecutionService {
         struct StepRow: Codable {
             var role_id: String
             var status: String
+            /// `producing` | `advisory` | `observer` — how the role ends. `advisory` is
+            /// the verb token (`finish_advisory`; the UI labels it "Chat"). Omitted when
+            /// the team can't be resolved, so an absent value never asserts a kind the
+            /// payload can't prove.
+            var role_kind: String?
             /// Seconds the role has been executing (to completion if finished).
             var elapsed_seconds: Int
             /// Seconds since the role last produced a token / message / tool call
@@ -98,6 +109,12 @@ extension LLMExecutionService {
             var task_id: Int
             var title: String
             var status: String
+            /// True when the task runs a chat-mode team (no supervisor deliverables). A
+            /// chat task never reaches Review and never derives `.done` on its own — it
+            /// ends only via `control_task close`. On such a task `manage_role accept` /
+            /// `finish_advisory` on an `advisory` role finishes the role and closes the
+            /// task once no other role is active; neither applies to a producing role.
+            var chat_mode: Bool
             /// Seconds since the current run started.
             var elapsed_seconds: Int?
             var run_timeout_seconds: Int?
@@ -109,12 +126,14 @@ extension LLMExecutionService {
             /// Role ids genuinely awaiting acceptance (`.needsAcceptance`). Omitted when none —
             /// a finished task whose roles are all `.done` needs `control_task close` (which
             /// accepts everything), NOT a per-role `manage_role accept`. Ids match `steps[].role_id`.
+            /// Can be non-empty even on a `chat_mode` task — a chat team may still hold a
+            /// producing role at a mid-pipeline acceptance gate (accept those normally).
             var roles_needing_acceptance: [String]?
             /// Task-level verdict — the first looping/hung running role, if any.
             var stuck: StuckRow?
         }
 
-        let now = Date()
+        let now = MonotonicClock.shared.now()
         // User-tunable stuck-detection thresholds (Settings → Autovisor → Stuck
         // detection), defaulting to the constants when no snapshot is loaded.
         let tuning = delegate.snapshot?.workFolder.settings.autovisorTuning ?? .default
@@ -123,6 +142,15 @@ extension LLMExecutionService {
         var pendingQuestion: String?
         var taskStuck: StuckRow?
         let run = task.runs.last
+        // Role kind per role id, from the resolved team's definitions. Empty when the
+        // team can't be resolved (nil snapshot / unpinnable team) → `role_kind` is then
+        // omitted per row rather than asserting a kind the payload can't prove.
+        // `uniquingKeysWith` (not `uniqueKeysWithValues:`) — role ids are name-derived, so a
+        // team with two same-named roles has duplicate ids; the trapping initializer would
+        // crash this hot read path. Last-wins matches `Run.stepsByRoleBaseID()`.
+        let roleKindByID: [String: String] = resolveTeam(task: task).map { team in
+            Dictionary(team.roles.map { ($0.id, $0.completionType.rawValue) }, uniquingKeysWith: { first, _ in first })
+        } ?? [:]
         if let run {
             for step in run.steps {
                 let live = delegate.streamLastActivityAt(stepID: step.id, taskID: task.id)
@@ -140,6 +168,7 @@ extension LLMExecutionService {
                 steps.append(StepRow(
                     role_id: step.effectiveRoleID,
                     status: step.status.rawValue,
+                    role_kind: roleKindByID[step.effectiveRoleID],
                     elapsed_seconds: AutovisorStatus.roleElapsedSeconds(step: step, now: now),
                     idle_seconds: step.status == .running
                         ? AutovisorStatus.idleSeconds(step: step, now: now, lastStreamActivityAt: live)
@@ -180,6 +209,7 @@ extension LLMExecutionService {
             task_id: taskID,
             title: task.title,
             status: task.derivedStatusFromActiveRun().rawValue,
+            chat_mode: task.isChatMode,
             elapsed_seconds: AutovisorStatus.taskElapsedSeconds(run: run, now: now),
             run_timeout_seconds: task.runTimeoutSeconds.map { Int($0) },
             timed_out: run?.timedOutAt != nil,

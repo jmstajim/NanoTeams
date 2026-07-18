@@ -294,10 +294,48 @@ final class AutovisorHandlersTests: XCTestCase {
 
     // MARK: - create_managed_task team-generation gate (buildSchema)
 
-    /// A non-hidden probe team so the catalog has a real entry regardless of the flag.
+    /// A non-hidden, non-chat probe team so the catalog has a real entry regardless of
+    /// the flag. The Supervisor requires a deliverable, so `isChatMode == false` and the
+    /// catalog line carries no `[chat]` mark (kept separate from the mark tests below).
     private func probeTeam() -> Team {
-        Team(id: "catalog-probe", name: "Catalog Probe", roles: [], artifacts: [],
+        let supervisor = TeamRoleDefinition(
+            id: "supervisor", name: "Supervisor", prompt: "", toolIDs: [],
+            usePlanningPhase: false,
+            dependencies: RoleDependencies(requiredArtifacts: ["Deliverable"]),
+            systemRoleID: "supervisor"
+        )
+        return Team(id: "catalog-probe", name: "Catalog Probe", roles: [supervisor], artifacts: [],
+                    settings: TeamSettings(), graphLayout: TeamGraphLayout())
+    }
+
+    /// A chat-mode probe team (no supervisor deliverables → `isChatMode == true`).
+    private func chatProbeTeam() -> Team {
+        Team(id: "chat-probe", name: "Chat Probe", roles: [], artifacts: [],
              settings: TeamSettings(), graphLayout: TeamGraphLayout())
+    }
+
+    func testBuildSchema_marksChatModeTeams() async throws {
+        let schema = CreateManagedTaskTool.buildSchema(allTeams: [chatProbeTeam()], allowGenerated: false)
+        XCTAssertTrue(schema.description.contains("chat-probe"),
+                      "a chat team is still listed in the catalog")
+        XCTAssertTrue(schema.description.contains("[chat"),
+                      "a chat team's catalog line must carry the [chat] mark")
+    }
+
+    func testBuildSchema_pipelineTeam_isNotMarkedChat() async throws {
+        let schema = CreateManagedTaskTool.buildSchema(allTeams: [probeTeam()], allowGenerated: false)
+        XCTAssertTrue(schema.description.contains("catalog-probe"))
+        XCTAssertFalse(schema.description.contains("[chat"),
+                       "a pipeline team's catalog line must NOT carry the [chat] mark")
+    }
+
+    func testBuildSchema_stillListsChatModeTeams() async throws {
+        // Pins the "mark, don't filter" decision: chat teams are marked but remain
+        // selectable (unlike delegate_to_team, which excludes them) — the Autovisor can
+        // close a chat task, so it may legitimately open one.
+        let schema = CreateManagedTaskTool.buildSchema(allTeams: [chatProbeTeam()], allowGenerated: false)
+        XCTAssertTrue(schema.description.contains("`chat-probe`"),
+                      "chat teams must appear as a selectable catalog bullet")
     }
 
     func testBuildSchema_allowGeneratedTrue_advertisesGeneratedSentinel() async throws {

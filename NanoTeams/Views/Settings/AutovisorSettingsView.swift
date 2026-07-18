@@ -23,6 +23,8 @@ struct AutovisorSettingsView: View {
     /// debounced goal autosave while the rewrite streams.
     @State private var isImprovingGoal = false
     @State private var isAutoOffRowHovered = false
+    /// Goal-preset disclosure in `goalCard` — collapsed by default.
+    @State private var showPresets = false
 
     var body: some View {
         if store.hasRealWorkFolder {
@@ -178,6 +180,19 @@ struct AutovisorSettingsView: View {
                 )
 
                 rowCaption("What you want Autovisor to pursue in this folder — injected into its system prompt.", indented: false)
+
+                SettingsDisclosureRow(
+                    title: "Start from a preset",
+                    icon: "sparkles",
+                    isExpanded: $showPresets
+                ) {
+                    // Applying a preset mutates goalDraft → the same debounced
+                    // autosave as typing (`.onChange` below). Disabled while the
+                    // improve stream owns the draft.
+                    AutovisorGoalPresetPicker(goalText: $goalDraft, isDisabled: isImprovingGoal)
+                        .padding(.top, Spacing.xs)
+                }
+                .padding(.top, Spacing.s)
             }
             .onChange(of: goalDraft) { _, newValue in
                 // Suppress debounced autosave while the improve stream mutates

@@ -169,8 +169,14 @@ struct LLMEndpointEditor<TestSlot: View>: View {
         HStack(spacing: Spacing.xs) {
             Image(systemName: "arrow.turn.down.right")
                 .foregroundStyle(Colors.textTertiary)
-            Text("Inherits global model: \(label)")
+            Text("Inherits global model:")
                 .foregroundStyle(Colors.textTertiary)
+                .fixedSize()
+            Text(label)
+                .foregroundStyle(Colors.textTertiary)
+                .lineLimit(1)
+                .truncationMode(.head)
+                .help(label)
             Spacer(minLength: 0)
         }
         .font(Typography.monoCaption)

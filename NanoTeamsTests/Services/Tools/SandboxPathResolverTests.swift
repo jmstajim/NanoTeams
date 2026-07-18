@@ -305,7 +305,9 @@ final class SandboxPathResolverTests: XCTestCase {
 
     func testAbsolutePathErrorDescription() {
         let error = SandboxPathError.absolutePathNotAllowed("/etc/passwd")
-        XCTAssertEqual(error.errorDescription, "Absolute paths are not allowed: /etc/passwd")
+        XCTAssertEqual(
+            error.errorDescription,
+            "Absolute paths are not allowed: /etc/passwd. Paths are relative to the work-folder root; use \".\" for the root.")
     }
 
     func testParentTraversalErrorDescription() {
@@ -390,6 +392,75 @@ final class SandboxPathResolverTests: XCTestCase {
                 XCTFail("Expected restrictedPath, got \(error)"); return
             }
         }
+    }
+
+    // MARK: - Chroot-Style Root ("/" means work-folder root)
+
+    /// The reported bug: a model called `list_files(path: "/")` meaning the work-folder
+    /// root (chroot mental model) and got PERMISSION_DENIED. Bare "/" can never be a
+    /// legitimate outside target NOR a real work folder, so it resolves to the root —
+    /// mirroring the existing ""/"."/"./" → root behavior.
+    func testResolveBareSlash_returnsRoot() throws {
+        let url = try resolver.resolveFileURL(relativePath: "/")
+        XCTAssertEqual(url, tempProjectRoot.standardizedFileURL)
+    }
+
+    func testResolveDoubleSlash_returnsRoot() throws {
+        let url = try resolver.resolveFileURL(relativePath: "//")
+        XCTAssertEqual(url, tempProjectRoot.standardizedFileURL)
+    }
+
+    func testResolveSlashDot_returnsRoot() throws {
+        XCTAssertEqual(try resolver.resolveFileURL(relativePath: "/."), tempProjectRoot.standardizedFileURL)
+        XCTAssertEqual(try resolver.resolveFileURL(relativePath: "/./"), tempProjectRoot.standardizedFileURL)
+    }
+
+    func testResolveWhitespacePaddedSlash_returnsRoot() throws {
+        let url = try resolver.resolveFileURL(relativePath: "  /  ")
+        XCTAssertEqual(url, tempProjectRoot.standardizedFileURL)
+    }
+
+    /// "/.." standardizes to "/" (root's parent is root — chroot semantics), so it lands
+    /// on the work-folder root too. Deliberate: consistent with the absolute-branch `..`
+    /// asymmetry pinned by testResolveAbsolutePathWithDotDotInsideRoot_resolves. Note
+    /// "/../x" standardizes to "/x" — NOT bare root — and still throws (pinned below by
+    /// the outside-root tests).
+    func testResolveSlashDotDot_returnsRoot() throws {
+        let url = try resolver.resolveFileURL(relativePath: "/..")
+        XCTAssertEqual(url, tempProjectRoot.standardizedFileURL)
+    }
+
+    /// THE BOUNDARY: `/../x` standardizes to `/x` (NOT bare root), so the chroot early
+    /// return is skipped and it still throws `.absolutePathNotAllowed` with the raw string
+    /// preserved. This is what separates "root" from "escape" — the guard the code comment
+    /// claims. Without this pin, a future change to the `== "/"` check could silently start
+    /// resolving `/../x` to `<root>/x`.
+    func testResolveSlashDotDotThenContent_stillThrows() {
+        XCTAssertThrowsError(try resolver.resolveFileURL(relativePath: "/../x")) { error in
+            guard case SandboxPathError.absolutePathNotAllowed(let p) = error else {
+                return XCTFail("Expected absolutePathNotAllowed, got \(error)")
+            }
+            XCTAssertEqual(p, "/../x")  // original raw string preserved
+        }
+    }
+
+    /// The check is on the STANDARDIZED path, not the raw string: `/a/..` collapses to `/`
+    /// lexically (root's parent is root), so a non-literal-`/` input that resolves there
+    /// still lands on the work-folder root. Documents that `absURL.path == "/"` — not
+    /// `raw == "/"` — is the condition.
+    func testResolveDotDotCollapsingToRoot_returnsRoot() throws {
+        let url = try resolver.resolveFileURL(relativePath: "/a/..")
+        XCTAssertEqual(url, tempProjectRoot.standardizedFileURL)
+    }
+
+    /// The chroot early return fires BEFORE the internalDir restriction check, but that's
+    /// safe: the work-folder root is never inside `<root>/.nanoteams/internal`. Pins that
+    /// `/` resolves to root even when an internalDir is configured (no false restrictedPath).
+    func testResolveBareSlash_withInternalDir_returnsRootNotRestricted() throws {
+        let internalDir = tempProjectRoot.appendingPathComponent(".nanoteams/internal", isDirectory: true)
+        let r = SandboxPathResolver(workFolderRoot: tempProjectRoot, internalDir: internalDir)
+        let url = try r.resolveFileURL(relativePath: "/")
+        XCTAssertEqual(url, tempProjectRoot.standardizedFileURL)
     }
 
     // MARK: - Redundant Work-Folder-Name Prefix (existence-aware strip)
@@ -620,6 +691,18 @@ final class SandboxPathResolverTests: XCTestCase {
 
     func testRelativizePathspec_absoluteOutsideRoot_returnsRaw() {
         XCTAssertEqual(resolver.relativizePathspec("/etc/passwd"), "/etc/passwd")
+    }
+
+    /// Bare "/" now resolves to the work-folder root, whose relative form is empty →
+    /// the bare-root guard returns the raw pathspec unchanged (no over-broadening to ".").
+    func testRelativizePathspec_bareSlash_returnsRaw() {
+        XCTAssertEqual(resolver.relativizePathspec("/"), "/")
+    }
+
+    /// Root-standardizing variant `//` also relativizes to empty → raw handed back
+    /// verbatim (same bare-root guard as "/"), never broadened to ".".
+    func testRelativizePathspec_doubleSlash_returnsRaw() {
+        XCTAssertEqual(resolver.relativizePathspec("//"), "//")
     }
 
     /// Redundant prefix that resolves to bare root → empty relative → returns raw (don't

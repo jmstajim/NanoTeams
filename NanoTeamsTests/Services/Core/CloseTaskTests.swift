@@ -196,6 +196,62 @@ final class CloseTaskTests: NTMSOrchestratorTestBase {
         XCTAssertEqual(roles["role_d"], .failed, "Failed role status preserved")
     }
 
+    // MARK: - Role-Status Finalization (finalizeRoleStatusesForClose)
+
+    /// A `.working` role whose step is still `.pending` (never started): the step loop
+    /// leaves the pending step alone, but the role status must be finalized to `.done` so
+    /// the team graph (which reads `roleStatuses` raw) doesn't render a stale "Working" pill.
+    func testCloseTask_workingRoleWithPendingStep_finalizesRoleStatus() async {
+        await sut.openWorkFolder(tempDir)
+        let taskID = await sut.createTask(title: "T", supervisorTask: "x")!
+        await sut.mutateTask(taskID: taskID) { task in
+            task.runs = [Run(id: 0, steps: [
+                StepExecution(id: "r", role: .custom(id: "r"), title: "R", status: .pending),
+            ], roleStatuses: ["r": .working])]
+        }
+        _ = await sut.closeTask(taskID: taskID)
+        XCTAssertEqual(sut.activeTask?.runs.last?.steps.first?.status, .pending, "pending step untouched")
+        XCTAssertEqual(sut.activeTask?.runs.last?.roleStatuses["r"], .done, "working role finalized to .done")
+    }
+
+    func testCloseTask_revisionRequestedRole_finalizesToDone() async {
+        await sut.openWorkFolder(tempDir)
+        let taskID = await sut.createTask(title: "T", supervisorTask: "x")!
+        await sut.mutateTask(taskID: taskID) { task in
+            task.runs = [Run(id: 0, steps: [
+                StepExecution(id: "r", role: .custom(id: "r"), title: "R", status: .done),
+            ], roleStatuses: ["r": .revisionRequested])]
+        }
+        _ = await sut.closeTask(taskID: taskID)
+        XCTAssertEqual(sut.activeTask?.runs.last?.roleStatuses["r"], .done)
+    }
+
+    /// idle / ready roles with no steps (RunService seeds initialRoleStatuses for ALL
+    /// roles up front) are the stale-pill source — they must finalize to `.done` on close.
+    func testCloseTask_idleRoleThatNeverRan_finalizesToTerminal() async {
+        await sut.openWorkFolder(tempDir)
+        let taskID = await sut.createTask(title: "T", supervisorTask: "x")!
+        await sut.mutateTask(taskID: taskID) { task in
+            task.runs = [Run(id: 0, steps: [], roleStatuses: ["a": .idle, "b": .ready])]
+        }
+        _ = await sut.closeTask(taskID: taskID)
+        XCTAssertEqual(sut.activeTask?.runs.last?.roleStatuses["a"], .done)
+        XCTAssertEqual(sut.activeTask?.runs.last?.roleStatuses["b"], .done)
+    }
+
+    /// `.failed` role status is preserved by the finalize pass (a failed role stays failed
+    /// for the record), while a sibling idle role is finalized.
+    func testCloseTask_failedRoleStatus_stillPreserved() async {
+        await sut.openWorkFolder(tempDir)
+        let taskID = await sut.createTask(title: "T", supervisorTask: "x")!
+        await sut.mutateTask(taskID: taskID) { task in
+            task.runs = [Run(id: 0, steps: [], roleStatuses: ["a": .failed, "b": .idle])]
+        }
+        _ = await sut.closeTask(taskID: taskID)
+        XCTAssertEqual(sut.activeTask?.runs.last?.roleStatuses["a"], .failed, "failed role preserved")
+        XCTAssertEqual(sut.activeTask?.runs.last?.roleStatuses["b"], .done, "idle role finalized")
+    }
+
     // MARK: - Engine & Meeting Cleanup
 
     func testCloseTask_stopsEngineAndClearsMeetingParticipants() async {

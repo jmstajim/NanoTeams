@@ -243,7 +243,7 @@ extension LLMExecutionService {
         }()
 
         func target(_ d: [String: Any]) -> String? {
-            optionalString(d, "target").flatMap { $0.isEmpty ? nil : $0 }
+            ComputerUseAction.normalizedTargetSpec(optionalString(d, "target"))
         }
 
         switch canonical {
@@ -252,7 +252,7 @@ extension LLMExecutionService {
             return .capture(target: t, windowTitle: optionalString(dict, "window_title").flatMap { $0.isEmpty ? nil : $0 })
         case ToolNames.uiClick:
             guard let x = optionalInt(dict, "x"), let y = optionalInt(dict, "y") else { return nil }
-            let button = optionalString(dict, "button")?.lowercased() == "right" ? "right" : "left"
+            let button = ComputerUseAction.normalizedButton(optionalString(dict, "button"))
             return .click(x: x, y: y, button: button, double: optionalBool(dict, "double"), target: target(dict))
         case ToolNames.uiType:
             let text = optionalString(dict, "text") ?? resolveContentString(dict) ?? ""

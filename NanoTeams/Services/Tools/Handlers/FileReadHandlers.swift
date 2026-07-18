@@ -249,8 +249,8 @@ nonisolated struct ListFilesTool: ToolHandler {
         description: "List contents of a directory.",
         parameters: JS.object(
             properties: [
-                "path": JS.string("Relative path to directory"),
-                "depth": JS.integer("Traversal depth (1-5)"),
+                "path": JS.string("Relative path to directory ('.' or omit = work-folder root)"),
+                "depth": JS.integer("Recursion depth: 0 = direct contents, 1 = one level deeper."),
                 "name_glob": JS.string("Only include entries whose name matches this basename glob (e.g. *.gd). Combine with depth to list a file type recursively."),
             ]
         )
@@ -269,10 +269,25 @@ nonisolated struct ListFilesTool: ToolHandler {
     func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let path = optionalString(args, "path") ?? "."
-            let depth = optionalInt(args, "depth") ?? 1
-            let includeFiles = optionalBool(args, "include_files", default: true)
-            let includeDirs = optionalBool(args, "include_dirs", default: true)
-            let sortBy = optionalString(args, "sort") ?? "name"
+            // `depth` is RECURSION depth counted from zero — the way models actually
+            // spell it: 0 = this folder's direct contents, 1 = also one level of
+            // subfolders. The walk counts LEVELS from 1, hence `levels = depth + 1`.
+            //
+            // The zero end used to return a successful EMPTY listing, and models open
+            // a fresh work folder with exactly `depth: 0`, so the first orientation
+            // call answered "your project is empty" and planning proceeded from that.
+            // Same call as `read_lines` accepting `-1`/`0` as through-EOF sentinels
+            // rather than rejecting: take the convention the model already holds
+            // instead of burning a round-trip teaching it ours.
+            //
+            // Erring toward one level too many costs tokens; erring toward one too
+            // few makes a populated subfolder look empty, which is the failure mode
+            // worth designing against.
+            //
+            // Clamped below at 0 (negatives are the same nonsense as the old zero) and
+            // below `Int.max` so the `+ 1` cannot overflow on a wild model-supplied value.
+            let depth = min(max(0, optionalInt(args, "depth") ?? 0), Int.max - 1)
+            let levels = depth + 1
             // Trim to content and treat empty/whitespace as "no filter": an
             // untrimmed `"*.gd "` anchors to `^.*\.gd $` (matches nothing) and a
             // literal `""` anchors to `^$` (matches only empty names) — both
@@ -308,19 +323,36 @@ nonisolated struct ListFilesTool: ToolHandler {
                 )
             }
 
-            var entries: [Entry] = []
+            // Entry paths are relative to the WORK-FOLDER ROOT, not to the listed
+            // directory — mirrors SearchExecutor, and makes every entry a verbatim
+            // valid argument for the file tools (which all resolve from the root
+            // via SandboxPathResolver). Derived from the RESOLVED url rather than
+            // the raw arg so it reflects whatever the resolver actually did with
+            // absolute paths and redundant work-folder-name components.
+            let rootPrefix: String = {
+                let rootComponents = resolver.workFolderRoot.standardizedFileURL.pathComponents
+                let dirComponents = dirURL.standardizedFileURL.pathComponents
+                guard dirComponents.count > rootComponents.count else { return "" }
+                return dirComponents.dropFirst(rootComponents.count).joined(separator: "/")
+            }()
+
+            var entries: [(path: String, isDir: Bool)] = []
             let maxEntries = ToolConstants.maxDirectoryEntries
             let fm = fileManager
             let internalDir = self.internalDir
 
+            // Collect ONE entry past the cap as a probe. Stopping exactly at the cap
+            // cannot distinguish "the directory holds exactly `maxEntries`" from
+            // "there was more", so the old `>= maxEntries` flagged a complete listing
+            // as truncated and provoked a needless narrowing re-call.
             func listDir(at url: URL, relativePath: String, currentDepth: Int) {
-                guard currentDepth <= depth else { return }
-                guard entries.count < maxEntries else { return }
+                guard currentDepth <= levels else { return }
+                guard entries.count <= maxEntries else { return }
 
                 guard let contents = try? fm.contentsOfDirectory(atPath: url.path) else { return }
 
                 for name in contents {
-                    guard entries.count < maxEntries else { return }
+                    guard entries.count <= maxEntries else { return }
                     guard !listFilesSkippedNames.contains(name) else { continue }
 
                     let itemURL = url.appendingPathComponent(name)
@@ -331,7 +363,6 @@ nonisolated struct ListFilesTool: ToolHandler {
                     }
 
                     let entryPath = relativePath.isEmpty ? name : "\(relativePath)/\(name)"
-                    let entryType = itemIsDir.boolValue ? "dir" : "file"
 
                     // `name_glob` filters which entries are LISTED; recursion
                     // below is unconditional so nested matches under a non-
@@ -339,39 +370,73 @@ nonisolated struct ListFilesTool: ToolHandler {
                     // SearchExecutor's file-glob-filters-files / always-recurse).
                     let matchesGlob = nameGlob == nil
                         || GlobMatcher.matches(name: name, glob: nameGlob!, caseInsensitive: false)
-                    let shouldInclude =
-                        ((itemIsDir.boolValue && includeDirs) || (!itemIsDir.boolValue && includeFiles))
-                        && matchesGlob
 
-                    if shouldInclude {
-                        entries.append(Entry(path: entryPath, name: name, type: entryType))
+                    if matchesGlob {
+                        entries.append((path: entryPath, isDir: itemIsDir.boolValue))
                     }
 
-                    if itemIsDir.boolValue && currentDepth < depth {
+                    if itemIsDir.boolValue && currentDepth < levels {
                         listDir(at: itemURL, relativePath: entryPath, currentDepth: currentDepth + 1)
                     }
                 }
             }
 
-            listDir(at: dirURL, relativePath: "", currentDepth: 1)
+            listDir(at: dirURL, relativePath: rootPrefix, currentDepth: 1)
 
-            if sortBy == "type" {
-                entries.sort { ($0.type, $0.name) < ($1.type, $1.name) }
-            } else {
-                entries.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            // Drop the probe BEFORE sorting: in `contentsOfDirectory` order the last
+            // element is already arbitrary, whereas after sorting it would be a
+            // semantically meaningful entry.
+            let truncated = entries.count > maxEntries
+            if truncated { entries.removeLast() }
+
+            // Sorted by full PATH, not by basename. Basename order was a natural fit
+            // while each entry carried its own `name`; against a bare path list it
+            // interleaves directories (`b/apple.txt` before `a/zebra.txt`) and reads
+            // as unsorted — a known trigger for re-calling the tool. Path order keeps
+            // each subtree contiguous. `localizedStandardCompare` still gives natural
+            // numeric ordering, so `f2.txt` precedes `f10.txt`.
+            entries.sort { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+
+            var files: [String] = []
+            var dirs: [String] = []
+            for entry in entries {
+                if entry.isDir { dirs.append(entry.path) } else { files.append(entry.path) }
             }
 
-            let truncated = entries.count >= maxEntries
-
+            /// Files and directories are split into two arrays rather than carried as
+            /// tagged objects: the key names are self-describing, so the discriminator
+            /// costs no schema text (which ships on every request), a file structurally
+            /// cannot appear under `dirs`, and no marker rides inside the path string
+            /// the model copies verbatim into the other file tools.
+            ///
+            /// Both arrays are always emitted, including empty ones — unlike
+            /// `SearchData`'s nil-out of `skipped_files`, an empty `dirs` here is the
+            /// real answer ("no subdirectories"), not an absent exception marker.
+            ///
+            /// `count` is the number of entries RETURNED, not the size of the
+            /// directory: when truncated it equals the cap, and `meta` carries that
+            /// fact.
             struct ListData: Codable {
                 var path: String
-                var entries: [Entry]
+                var count: Int
+                var files: [String]
+                var dirs: [String]
             }
 
             return makeSuccessResult(
                 toolName: Self.name, args: args,
-                data: ListData(path: path, entries: entries),
-                meta: ToolResultMeta(truncated: truncated)
+                data: ListData(
+                    path: rootPrefix.isEmpty ? "." : rootPrefix,
+                    count: files.count + dirs.count,
+                    files: files,
+                    dirs: dirs
+                ),
+                meta: ToolResultMeta(
+                    truncated: truncated,
+                    warnings: truncated
+                        ? ["Listing capped at \(maxEntries) entries. Narrow with name_glob, or list a subdirectory."]
+                        : []
+                )
             )
         }
     }
