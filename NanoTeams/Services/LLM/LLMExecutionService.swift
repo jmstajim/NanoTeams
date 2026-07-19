@@ -135,12 +135,39 @@ final class LLMExecutionService {
         executionStates[TaskStepKey(taskID: taskID, stepID: stepID)] != nil
     }
 
-    /// Clears the running task entry for a step.
+    /// Clears the running task entry for a step. Also drops the step's
+    /// active-model registration (see `activeModelKeys`) — the model it was
+    /// using is no longer pinned by this step.
     func clearRunningTask(stepID: String, taskID: Int) {
         let key = TaskStepKey(taskID: taskID, stepID: stepID)
         executionStates[key]?.cleanup()
         executionStates[key] = nil
         clearBashState(stepID: stepID, taskID: taskID)
+    }
+
+    /// Records the (base, model) a running step resolved its effective config
+    /// to, so residency reconciliation can treat that exact model as in-use
+    /// while the step runs. Set once in `runStep` after config resolution.
+    ///
+    /// This is a MODEL-SPECIFIC in-use signal, not the model-agnostic
+    /// `hasLiveExecutions` c70ec54 deleted: it pins only the model a running
+    /// step actually captured, so a step on model B never pins model A. It
+    /// closes the census gap during tool-execution pauses — a long
+    /// `run_xcodebuild` between iterations opens no chat request, so the
+    /// census alone would let a foreign engine transition unload the model the
+    /// step will reuse on its next iteration (a 30-60s reload, or a
+    /// `model_load_failed` on a memory-tight box).
+    func recordActiveModel(stepID: String, taskID: Int, config: LLMConfig) {
+        let key = TaskStepKey(taskID: taskID, stepID: stepID)
+        executionStates[key]?.activeModelKey = ChatModelEnsurer.residencyKey(
+            model: config.modelName, base: config.baseURLString)
+    }
+
+    /// The (base, model) residency keys every live step is currently using.
+    /// Consulted by `reconcileChatModelResidency` so an in-flight step's model
+    /// is never reclaimed out from under it.
+    func activeModelKeys() -> Set<String> {
+        Set(executionStates.values.compactMap(\.activeModelKey))
     }
 
     /// Centralized reset for retry-cap counters that fire when the model produced a

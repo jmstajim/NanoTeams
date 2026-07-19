@@ -67,12 +67,6 @@ final class HeadlessRunner {
         orchestrator.configuration.llmProvider = provider
         orchestrator.configuration.llmBaseURLString = config.resolvedBaseURL
         orchestrator.configuration.llmModelName = config.resolvedModel
-        if let maxTokens = config.maxTokens {
-            orchestrator.configuration.llmMaxTokens = maxTokens
-        }
-        if let temp = config.temperature {
-            orchestrator.configuration.llmTemperature = temp
-        }
         if let retries = config.maxLLMRetries {
             orchestrator.configuration.maxLLMRetries = retries
         }

@@ -320,25 +320,23 @@ final class BashJudgeServiceTests: XCTestCase {
         XCTAssertEqual(BashJudgeService.configForJudge(base, policy: p).modelName, "global-model")
     }
 
-    func testConfigForJudge_appliesURLModelMaxTokensTemperature() {
-        let base = LLMConfig(baseURLString: "http://global:1234", modelName: "global-model", maxTokens: 4096, temperature: 0.7)
+    func testConfigForJudge_appliesURLAndModel() {
+        let base = LLMConfig(baseURLString: "http://global:1234", modelName: "global-model", temperature: 0.7)
         let p = BashPolicy(judgeOverride: LLMOverride(
-            baseURLString: "http://judge:9999", modelName: "judge-model", maxTokens: 256, temperature: 0))
+            baseURLString: "http://judge:9999", modelName: "judge-model"))
         let jc = BashJudgeService.configForJudge(base, policy: p)
         XCTAssertEqual(jc.baseURLString, "http://judge:9999")
         XCTAssertEqual(jc.modelName, "judge-model")
-        XCTAssertEqual(jc.maxTokens, 256)
-        XCTAssertEqual(jc.temperature, 0)
+        XCTAssertEqual(jc.temperature, 0, "The verdict pin always wins — the override carries no sampling")
     }
 
     func testConfigForJudge_emptyFieldsKeepGlobal() {
-        let base = LLMConfig(baseURLString: "http://global:1234", modelName: "global-model", maxTokens: 4096)
-        // An override that carries only a (whitespace) URL leaves model/maxTokens global.
+        let base = LLMConfig(baseURLString: "http://global:1234", modelName: "global-model")
+        // An override that carries only a (whitespace) URL leaves the model global.
         let p = BashPolicy(judgeOverride: LLMOverride(baseURLString: "   "))
         let jc = BashJudgeService.configForJudge(base, policy: p)
         XCTAssertEqual(jc.baseURLString, "http://global:1234")
         XCTAssertEqual(jc.modelName, "global-model")
-        XCTAssertEqual(jc.maxTokens, 4096)
     }
 
     /// Deterministic extraction: the verdict is one strict JSON object, so with
@@ -356,26 +354,18 @@ final class BashJudgeServiceTests: XCTestCase {
         XCTAssertEqual(BashJudgeService.configForJudge(base, policy: p).temperature, 0)
     }
 
-    func testConfigForJudge_explicitTemperatureOverrideWins() {
-        let base = LLMConfig(modelName: "global-model", temperature: 0.9)
-        let p = BashPolicy(judgeOverride: LLMOverride(temperature: 0.3))
-        XCTAssertEqual(BashJudgeService.configForJudge(base, policy: p).temperature, 0.3)
-    }
-
     /// Alignment canary: both judges resolve through the shared `JudgeConfig`,
     /// so the same base + override inputs must produce the SAME effective
     /// config across all override-applied fields — including the whitespace
-    /// trimming and maxTokens > 0 guard, not just temperature.
+    /// trimming, not just temperature.
     func testConfigForJudge_fullyAlignedWithComputerUseJudge() {
         let base = LLMConfig(
             baseURLString: "http://global:1234", modelName: "global-model",
-            maxTokens: 4096, temperature: 0.9)
+            temperature: 0.9)
         let cases: [LLMOverride?] = [
             nil,
             LLMOverride(modelName: "judge-model"),
-            LLMOverride(temperature: 0.3),
             LLMOverride(baseURLString: "  http://judge:9999  ", modelName: "  judge-model  "),
-            LLMOverride(maxTokens: 0),
         ]
         for o in cases {
             let bash = BashJudgeService.configForJudge(base, policy: BashPolicy(judgeOverride: o))
@@ -383,7 +373,6 @@ final class BashJudgeServiceTests: XCTestCase {
             XCTAssertEqual(bash.temperature, cu.temperature, "temperature diverged for \(String(describing: o))")
             XCTAssertEqual(bash.baseURLString, cu.baseURLString, "baseURL diverged for \(String(describing: o))")
             XCTAssertEqual(bash.modelName, cu.modelName, "model diverged for \(String(describing: o))")
-            XCTAssertEqual(bash.maxTokens, cu.maxTokens, "maxTokens diverged for \(String(describing: o))")
         }
         // The trimming semantics themselves (not just pair equality):
         let padded = BashJudgeService.configForJudge(

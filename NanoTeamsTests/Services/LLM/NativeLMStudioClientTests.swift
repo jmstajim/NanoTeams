@@ -36,14 +36,12 @@ final class NativeLMStudioClientTests: XCTestCase {
     private func makeConfig(
         baseURLString: String = "http://localhost:1234",
         modelName: String = "openai/gpt-oss-20b",
-        maxTokens: Int = 4096,
         temperature: Double? = nil
     ) -> LLMConfig {
         LLMConfig(
             provider: .lmStudio,
             baseURLString: baseURLString,
             modelName: modelName,
-            maxTokens: maxTokens,
             temperature: temperature
         )
     }
@@ -352,28 +350,6 @@ final class NativeLMStudioClientTests: XCTestCase {
         XCTAssertEqual(request.model, "ibm/granite-4-micro")
     }
 
-    func testMaxTokensMappedWhenPositive() throws {
-        let request = NativeLMStudioClient.buildRequest(
-            config: makeConfig(maxTokens: 8192),
-            messages: [ChatMessage(role: .user, content: "Hi")],
-            tools: [],
-            session: nil
-        )
-
-        XCTAssertEqual(request.maxOutputTokens, 8192)
-    }
-
-    func testMaxTokensNilWhenZero() throws {
-        let request = NativeLMStudioClient.buildRequest(
-            config: makeConfig(maxTokens: 0),
-            messages: [ChatMessage(role: .user, content: "Hi")],
-            tools: [],
-            session: nil
-        )
-
-        XCTAssertNil(request.maxOutputTokens)
-    }
-
     func testTemperatureMapped() throws {
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(temperature: 0.3),
@@ -409,7 +385,7 @@ final class NativeLMStudioClientTests: XCTestCase {
         // Opt out of the default omit so we can verify all snake_case keys are
         // present in the encoded payload.
         let request = NativeLMStudioClient.buildRequest(
-            config: makeConfig(maxTokens: 4096),
+            config: makeConfig(),
             messages: messages,
             tools: [],
             session: session,
@@ -420,10 +396,8 @@ final class NativeLMStudioClientTests: XCTestCase {
 
         XCTAssertNotNil(dict["system_prompt"])
         XCTAssertNotNil(dict["previous_response_id"])
-        XCTAssertNotNil(dict["max_output_tokens"])
         XCTAssertNil(dict["systemPrompt"])
         XCTAssertNil(dict["previousResponseID"])
-        XCTAssertNil(dict["maxOutputTokens"])
     }
 
     func testInputEncodedAsString() throws {
@@ -612,7 +586,6 @@ final class NativeLMStudioClientTests: XCTestCase {
             provider: .lmStudio,
             baseURLString: "not a valid url ://bad",
             modelName: "model",
-            maxTokens: 0,
             temperature: 0.7
         )
 
@@ -837,7 +810,6 @@ final class NativeLMStudioClientTests: XCTestCase {
             provider: .lmStudio,
             baseURLString: "http://127.0.0.1:19999",
             modelName: "model",
-            maxTokens: 0,
             temperature: 0.7
         )
 

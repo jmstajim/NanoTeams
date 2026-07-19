@@ -160,7 +160,6 @@ enum FirstPromptRenderer {
             provider: .lmStudio,
             baseURLString: LLMProvider.lmStudio.defaultBaseURL,
             modelName: config.resolvedModelName,
-            maxTokens: config.resolvedMaxTokens,
             temperature: config.temperature
         )
         let wireRequest = NativeLMStudioClient.buildRequest(

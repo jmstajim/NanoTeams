@@ -65,7 +65,6 @@ final class StoreConfiguration {
             if oldValue != llmProvider {
                 llmBaseURLString = llmProvider.defaultBaseURL
                 llmModelName = llmProvider.defaultModel
-                llmMaxTokens = llmProvider.defaultMaxTokens
             }
         }
     }
@@ -76,20 +75,6 @@ final class StoreConfiguration {
 
     var llmModelName: String {
         didSet { storage.set(llmModelName, forKey: Keys.llmModel) }
-    }
-
-    var llmMaxTokens: Int {
-        didSet { storage.set(llmMaxTokens, forKey: Keys.llmMaxTokens) }
-    }
-
-    var llmTemperature: Double? {
-        didSet {
-            if let temp = llmTemperature {
-                storage.set(temp, forKey: Keys.llmTemperature)
-            } else {
-                storage.removeObject(forKey: Keys.llmTemperature)
-            }
-        }
     }
 
     var enterSendsMessage: Bool {
@@ -216,10 +201,6 @@ final class StoreConfiguration {
         didSet { storage.set(visionBaseURLString, forKey: Keys.visionBaseURL) }
     }
 
-    var visionMaxTokens: Int {
-        didSet { storage.set(visionMaxTokens, forKey: Keys.visionMaxTokens) }
-    }
-
     var isVisionConfigured: Bool {
         guard visionEnabled else { return false }
         // I3: trim both branches symmetrically. Pre-fix the override branch
@@ -236,20 +217,17 @@ final class StoreConfiguration {
         // vision setup with an empty global URL still produced an LLMConfig
         // with `baseURLString == ""`, slipping past schema-time filtering and
         // failing later at request construction with a generic transport
-        // error. Trim both URLs symmetrically with the model-name fallback.
-        let trimmedVisionURL = visionBaseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedGlobalURL = llmBaseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedURL = trimmedVisionURL.isEmpty ? trimmedGlobalURL : trimmedVisionURL
+        // error. The empty→global fallback (symmetric trimming on BOTH the URL
+        // and the model name) lives in `StoreConfiguration+ModelResolution` so
+        // the model-switch hook resolves it identically — a second, hand-rolled
+        // copy in the view diverged on whitespace.
+        let resolvedURL = resolvedVisionBaseURL
         guard !resolvedURL.isEmpty else { return nil }
 
-        let trimmedVisionModel = visionModelName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedGlobalModel = llmModelName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedModel = trimmedVisionModel.isEmpty ? trimmedGlobalModel : trimmedVisionModel
         return LLMConfig(
             provider: llmProvider,
             baseURLString: resolvedURL,
-            modelName: resolvedModel,
-            maxTokens: visionMaxTokens,
+            modelName: resolvedVisionModel(for: visionModelName),
             requestTimeoutSeconds: llmRequestTimeoutSeconds
         )
     }
@@ -288,6 +266,23 @@ final class StoreConfiguration {
                 storage.set(data, forKey: Keys.teamGenLLMOverride)
             } else {
                 storage.removeObject(forKey: Keys.teamGenLLMOverride)
+            }
+        }
+    }
+
+    /// LM Studio chat instances this app manages, persisted so they survive a
+    /// relaunch. Without this the ledger is in-memory only, and a model the app
+    /// loaded in a previous session becomes permanently unreclaimable: it is no
+    /// longer referenced by any slot, so adoption skips it, and residency
+    /// reconciliation only ever unloads what it owns. Entries are re-claimed on
+    /// open ONLY if the instance is still resident (see `ChatModelEnsurer.restore`).
+    var chatModelLedger: [OwnedChatModel] {
+        didSet {
+            if chatModelLedger.isEmpty {
+                storage.removeObject(forKey: Keys.chatModelLedger)
+            } else if let data = try? JSONCoderFactory.makePersistenceEncoder()
+                .encode(chatModelLedger) {
+                storage.set(data, forKey: Keys.chatModelLedger)
             }
         }
     }
@@ -700,13 +695,12 @@ final class StoreConfiguration {
     init(storage: any ConfigurationStorage = UserDefaults.standard) {
         self.storage = storage
         Self.migrateExpandedSearchKeys(storage)
+        Self.purgeRetiredKeys(storage)
         let providerRaw = storage.string(forKey: Keys.llmProvider)
         let provider = providerRaw.flatMap(LLMProvider.init(rawValue:)) ?? .lmStudio
         self.llmProvider = provider
         self.llmBaseURLString = storage.string(forKey: Keys.llmBaseURL) ?? provider.defaultBaseURL
         self.llmModelName = storage.string(forKey: Keys.llmModel) ?? provider.defaultModel
-        self.llmMaxTokens = (storage.object(forKey: Keys.llmMaxTokens) as? Int) ?? provider.defaultMaxTokens
-        self.llmTemperature = storage.object(forKey: Keys.llmTemperature) as? Double
         self.enterSendsMessage = (storage.object(forKey: Keys.enterSendsMessage) as? Bool) ?? true
         self.embedFilesInPrompt = storage.bool(forKey: Keys.embedFilesInPrompt)
         self.debugModeEnabled = storage.bool(forKey: Keys.debugModeEnabled)
@@ -718,7 +712,6 @@ final class StoreConfiguration {
         self.timelineClearedUpToDate = storage.object(forKey: Keys.timelineClearedUpToDate) as? Date
         self.visionModelName = storage.string(forKey: Keys.visionModelName) ?? ""
         self.visionBaseURLString = storage.string(forKey: Keys.visionBaseURL) ?? ""
-        self.visionMaxTokens = (storage.object(forKey: Keys.visionMaxTokens) as? Int) ?? 0
         // An explicitly stored toggle value (user touched the setting) always
         // wins; while the key is absent — fresh installs and upgrades that
         // never opened Vision settings — Vision defaults to ON. This subsumes
@@ -731,6 +724,9 @@ final class StoreConfiguration {
         self.dismissedFeatureTipIDs = Set(rawTipIDs)
         let rawSeenKeys = (storage.object(forKey: Keys.seenSupervisorInputKeys) as? [String]) ?? []
         self.seenSupervisorInputKeys = Set(rawSeenKeys)
+        self.chatModelLedger = storage.data(forKey: Keys.chatModelLedger)
+            .flatMap { try? JSONCoderFactory.makeDateDecoder().decode([OwnedChatModel].self, from: $0) }
+            ?? []
         if let data = storage.data(forKey: Keys.teamGenLLMOverride),
            let decoded = try? JSONCoderFactory.makeDateDecoder().decode(LLMOverride.self, from: data),
            !decoded.isEmpty {
@@ -888,14 +884,35 @@ final class StoreConfiguration {
         }
     }
 
+    /// One-shot cleanup of UserDefaults keys whose settings were retired.
+    /// Idempotent — after the first run there is nothing left to remove.
+    ///
+    /// Retiring a setting deletes its `Keys` entry, which also deletes the
+    /// `removeObject` line in `resetToDefaults` — so without this the stored
+    /// value survives forever on upgraded installs, invisible to the app and
+    /// untouched even by a full reset. The literals are spelled out because
+    /// the constants no longer exist.
+    ///
+    /// Retired 2026-07 when LM Studio became the sole owner of sampling
+    /// (`temperature` / `max_output_tokens` are no longer sent on the wire).
+    /// TODO(2026-Q4): remove once all live installs have purged.
+    private static func purgeRetiredKeys(_ storage: any ConfigurationStorage) {
+        let retired = [
+            "llmMaxTokens",                    // un-prefixed legacy key
+            "llmTemperature",                  // un-prefixed legacy key
+            "NanoTeams.vision.maxTokens.v1",
+        ]
+        for key in retired where storage.object(forKey: key) != nil {
+            storage.removeObject(forKey: key)
+        }
+    }
+
     // MARK: - Reset
 
     func resetToDefaults() {
         storage.removeObject(forKey: Keys.llmProvider)
         storage.removeObject(forKey: Keys.llmBaseURL)
         storage.removeObject(forKey: Keys.llmModel)
-        storage.removeObject(forKey: Keys.llmMaxTokens)
-        storage.removeObject(forKey: Keys.llmTemperature)
         storage.removeObject(forKey: Keys.enterSendsMessage)
         storage.removeObject(forKey: Keys.embedFilesInPrompt)
         storage.removeObject(forKey: Keys.debugModeEnabled)
@@ -905,7 +922,6 @@ final class StoreConfiguration {
         storage.removeObject(forKey: Keys.visionEnabled)
         storage.removeObject(forKey: Keys.visionModelName)
         storage.removeObject(forKey: Keys.visionBaseURL)
-        storage.removeObject(forKey: Keys.visionMaxTokens)
         storage.removeObject(forKey: Keys.dismissedNotificationIDs)
         storage.removeObject(forKey: Keys.dismissedFeatureTipIDs)
         storage.removeObject(forKey: Keys.seenSupervisorInputKeys)
@@ -953,8 +969,6 @@ final class StoreConfiguration {
         llmProvider = provider
         llmBaseURLString = provider.defaultBaseURL
         llmModelName = provider.defaultModel
-        llmMaxTokens = provider.defaultMaxTokens
-        llmTemperature = nil
         enterSendsMessage = true
         embedFilesInPrompt = false
         debugModeEnabled = false
@@ -964,7 +978,6 @@ final class StoreConfiguration {
         visionEnabled = Self.defaultVisionEnabled
         visionModelName = ""
         visionBaseURLString = ""
-        visionMaxTokens = 0
         dismissedNotificationIDs = []
         dismissedFeatureTipIDs = []
         seenSupervisorInputKeys = []
@@ -1035,8 +1048,6 @@ final class StoreConfiguration {
             provider: llmProvider,
             baseURLString: llmBaseURLString,
             modelName: llmModelName,
-            maxTokens: llmMaxTokens,
-            temperature: llmTemperature,
             requestTimeoutSeconds: llmRequestTimeoutSeconds
         )
     }

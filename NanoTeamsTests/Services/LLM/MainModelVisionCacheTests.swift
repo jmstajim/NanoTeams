@@ -53,7 +53,7 @@ final class MainModelVisionCacheTests: XCTestCase, @unchecked Sendable {
 
     private func config(url: String = "http://localhost:1234", model: String = "m1") -> LLMConfig {
         LLMConfig(provider: .lmStudio, baseURLString: url, modelName: model,
-                  maxTokens: 1024, temperature: nil)
+                  temperature: nil)
     }
 
     func testDefinitiveTrue_isCached() async {

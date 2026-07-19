@@ -112,7 +112,6 @@ extension NativeLMStudioClient {
             previousResponseID: session?.responseID,
             store: !hasImages,  // Vision: fresh chat, no server-side storage
             stream: true,
-            maxOutputTokens: config.maxTokens > 0 ? config.maxTokens : nil,
             temperature: config.temperature
         )
     }

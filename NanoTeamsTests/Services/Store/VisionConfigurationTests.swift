@@ -209,7 +209,6 @@ final class VisionConfigurationTests: XCTestCase {
             provider: .lmStudio,
             baseURLString: "http://127.0.0.1:1234",
             modelName: "google/gemma-4-26b-a4b",
-            maxTokens: 4096,
             temperature: 0.0
         )
         service.attach(delegate: delegate)

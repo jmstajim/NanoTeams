@@ -15,13 +15,20 @@ nonisolated struct NativeLMStudioClient: LLMClient {
 
     let session: any NetworkSession
     let tokenResolver: any LLMTokenResolver
+    /// Ensures the target model is EXPLICITLY loaded before each chat request.
+    /// JIT-loaded instances are Auto-Evicted (LM Studio keeps at most one) and
+    /// carry a 60-minute idle TTL — explicit loads are exempt from both, which
+    /// is what lets the chat, Vision and embedding models stay resident together.
+    let modelEnsurer: ChatModelEnsurer
 
     init(
         session: any NetworkSession = URLSession.shared,
-        tokenResolver: any LLMTokenResolver = DefaultLLMTokenResolver()
+        tokenResolver: any LLMTokenResolver = DefaultLLMTokenResolver(),
+        modelEnsurer: ChatModelEnsurer = .shared
     ) {
         self.session = session
         self.tokenResolver = tokenResolver
+        self.modelEnsurer = modelEnsurer
     }
 
     // MARK: - Public API
@@ -47,10 +54,33 @@ nonisolated struct NativeLMStudioClient: LLMClient {
             let streamTask = Task.detached {
                 var requestRecord: NetworkLogRecord?
                 var startTime = Date()
+                // Census this request so the model-switch hook refuses to
+                // unload the instance while it is streaming. Bracketed here
+                // rather than around the HTTP call so the load itself is
+                // covered too. `defer` can't `await`, hence the unstructured
+                // Task — it does not inherit cancellation, so the decrement
+                // lands even when the stream is cancelled.
+                await self.modelEnsurer.beginRequest(
+                    modelName: config.modelName, baseURLString: config.baseURLString)
+                defer {
+                    let ensurer = self.modelEnsurer
+                    let model = config.modelName
+                    let base = config.baseURLString
+                    Task { await ensurer.endRequest(modelName: model, baseURLString: base) }
+                }
                 do {
                     guard let baseURL = URL(string: config.baseURLString) else {
                         throw LLMClientError.invalidBaseURL(config.baseURLString)
                     }
+
+                    // Explicit adopt-or-load BEFORE the request so LM Studio
+                    // never JIT-loads the model (JIT instances get Auto-Evicted
+                    // by each other). Already-loaded → no-op.
+                    try await self.modelEnsurer.ensureLoaded(
+                        modelName: config.modelName,
+                        baseURLString: config.baseURLString,
+                        client: self
+                    )
 
                     var url = baseURL
                     url.append(path: "api")

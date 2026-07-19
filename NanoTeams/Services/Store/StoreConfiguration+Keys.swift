@@ -9,8 +9,6 @@ extension StoreConfiguration {
         static let llmProvider = "llmProvider"
         static let llmBaseURL = UserDefaultsKeys.llmBaseURL
         static let llmModel = UserDefaultsKeys.llmModel
-        static let llmMaxTokens = "llmMaxTokens"
-        static let llmTemperature = "llmTemperature"
         static let debugModeEnabled = UserDefaultsKeys.debugModeEnabled
         static let maxLLMRetries = UserDefaultsKeys.maxLLMRetries
         static let llmRequestTimeoutSeconds = UserDefaultsKeys.llmRequestTimeoutSeconds
@@ -18,7 +16,6 @@ extension StoreConfiguration {
         static let visionEnabled = UserDefaultsKeys.visionEnabled
         static let visionModelName = UserDefaultsKeys.visionModelName
         static let visionBaseURL = UserDefaultsKeys.visionBaseURL
-        static let visionMaxTokens = UserDefaultsKeys.visionMaxTokens
         static let dismissedNotificationIDs = UserDefaultsKeys.dismissedNotificationIDs
         static let dismissedFeatureTipIDs = UserDefaultsKeys.dismissedFeatureTipIDs
         static let seenSupervisorInputKeys = UserDefaultsKeys.seenSupervisorInputKeys
@@ -27,6 +24,7 @@ extension StoreConfiguration {
         static let loggingEnabled = UserDefaultsKeys.loggingEnabled
         static let sidebarTaskFilter = UserDefaultsKeys.sidebarTaskFilter
         static let teamGenLLMOverride = UserDefaultsKeys.teamGenLLMOverride
+        static let chatModelLedger = UserDefaultsKeys.chatModelLedger
         static let teamGenSystemPrompt = UserDefaultsKeys.teamGenSystemPrompt
         static let teamGenForcedSupervisorMode = UserDefaultsKeys.teamGenForcedSupervisorMode
         static let teamGenForcedAcceptanceMode = UserDefaultsKeys.teamGenForcedAcceptanceMode

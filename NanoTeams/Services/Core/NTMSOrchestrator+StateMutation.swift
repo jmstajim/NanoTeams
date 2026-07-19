@@ -178,6 +178,15 @@ extension NTMSOrchestrator {
             if let ctx = lastContext {
                 apply(ctx)
             }
+            if teamsChanged {
+                // Per-role `llmOverride`s are settings slots too — clearing one
+                // in the Role Editor, or deleting a team, orphans whatever
+                // model it pinned. Nothing else observes team state, and
+                // per-role overrides are exactly the multiplier that let
+                // several chat models pile up resident at once.
+                await reconcileAndReportResidency(
+                    client: chatLifecycleClient, ensurer: chatModelEnsurer)
+            }
         } catch {
             let fileHint = partialWriteFileHint(
                 stateChanged: stateChanged,

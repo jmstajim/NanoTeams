@@ -25,12 +25,6 @@ struct HeadlessConfig: Codable {
     /// Model name override (e.g. "openai/gpt-oss-20b").
     var model: String?
 
-    /// Max tokens per response.
-    var maxTokens: Int?
-
-    /// Temperature (0.0–2.0).
-    var temperature: Double?
-
     // MARK: - Execution
 
     /// Team template ID: "assistant", "codingAssistant", "faang", "engineering", "startup", "questParty", "discussionClub".
@@ -79,7 +73,7 @@ struct HeadlessConfig: Codable {
 
     private enum CodingKeys: String, CodingKey {
         case projectPath, taskTitle, supervisorTask
-        case provider, baseURL, model, maxTokens, temperature
+        case provider, baseURL, model
         case teamTemplate, timeoutSeconds, maxLLMRetries
         case workFolderContext
         case visionModel, visionBaseURL, selectedScheme
@@ -95,8 +89,6 @@ struct HeadlessConfig: Codable {
         self.provider = try c.decodeIfPresent(String.self, forKey: .provider)
         self.baseURL = try c.decodeIfPresent(String.self, forKey: .baseURL)
         self.model = try c.decodeIfPresent(String.self, forKey: .model)
-        self.maxTokens = try c.decodeIfPresent(Int.self, forKey: .maxTokens)
-        self.temperature = try c.decodeIfPresent(Double.self, forKey: .temperature)
         self.teamTemplate = try c.decodeIfPresent(String.self, forKey: .teamTemplate)
         self.timeoutSeconds = try c.decodeIfPresent(Int.self, forKey: .timeoutSeconds)
         self.maxLLMRetries = try c.decodeIfPresent(Int.self, forKey: .maxLLMRetries)
@@ -115,8 +107,6 @@ struct HeadlessConfig: Codable {
         try c.encodeIfPresent(provider, forKey: .provider)
         try c.encodeIfPresent(baseURL, forKey: .baseURL)
         try c.encodeIfPresent(model, forKey: .model)
-        try c.encodeIfPresent(maxTokens, forKey: .maxTokens)
-        try c.encodeIfPresent(temperature, forKey: .temperature)
         try c.encodeIfPresent(teamTemplate, forKey: .teamTemplate)
         try c.encodeIfPresent(timeoutSeconds, forKey: .timeoutSeconds)
         try c.encodeIfPresent(maxLLMRetries, forKey: .maxLLMRetries)

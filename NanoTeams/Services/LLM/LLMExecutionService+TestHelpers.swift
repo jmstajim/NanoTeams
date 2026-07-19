@@ -29,6 +29,18 @@ extension LLMExecutionService {
         executionStates[TaskStepKey(taskID: taskID, stepID: stepID)] != nil
     }
 
+    /// Marks a step as actively using (base, model) so residency-reconcile
+    /// tests can exercise the model-specific in-use guard without driving a
+    /// full run. Mirrors what `recordActiveModel` does after config resolution.
+    func _testSetActiveModel(stepID: String, taskID: Int, base: String, model: String) {
+        let key = TaskStepKey(taskID: taskID, stepID: stepID)
+        if executionStates[key] == nil {
+            executionStates[key] = StepExecutionState()
+        }
+        executionStates[key]?.activeModelKey = ChatModelEnsurer.residencyKey(
+            model: model, base: base)
+    }
+
     func _testFinishStepWithWarning(stepID: String, taskID: Int, warning: String) async {
         await completeStepWithWarning(stepID: stepID, taskID: taskID, warning: warning)
     }

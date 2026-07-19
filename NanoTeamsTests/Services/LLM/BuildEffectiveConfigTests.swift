@@ -19,14 +19,12 @@ final class BuildEffectiveConfigTests: XCTestCase {
     private func makeGlobalConfig(
         baseURLString: String? = nil,
         modelName: String? = nil,
-        maxTokens: Int? = nil,
         temperature: Double? = 0.7
     ) -> LLMConfig {
         LLMConfig(
             provider: .lmStudio,
             baseURLString: baseURLString ?? "http://custom-global:9999",
             modelName: modelName ?? "global-model-v1",
-            maxTokens: maxTokens ?? 4096,
             temperature: temperature
         )
     }
@@ -44,7 +42,6 @@ final class BuildEffectiveConfigTests: XCTestCase {
         XCTAssertEqual(result.provider, global.provider)
         XCTAssertEqual(result.baseURLString, global.baseURLString)
         XCTAssertEqual(result.modelName, global.modelName)
-        XCTAssertEqual(result.maxTokens, global.maxTokens)
         XCTAssertEqual(result.temperature, global.temperature)
     }
 
@@ -61,7 +58,6 @@ final class BuildEffectiveConfigTests: XCTestCase {
         XCTAssertEqual(result.provider, global.provider)
         XCTAssertEqual(result.baseURLString, global.baseURLString)
         XCTAssertEqual(result.modelName, global.modelName)
-        XCTAssertEqual(result.maxTokens, global.maxTokens)
         XCTAssertEqual(result.temperature, global.temperature)
     }
 
@@ -79,7 +75,6 @@ final class BuildEffectiveConfigTests: XCTestCase {
         XCTAssertEqual(result.provider, global.provider, "Provider should remain global")
         XCTAssertEqual(result.baseURLString, global.baseURLString, "BaseURL should remain global")
         XCTAssertEqual(result.modelName, "special-model-v2", "Model should come from override")
-        XCTAssertEqual(result.maxTokens, global.maxTokens, "MaxTokens should remain global")
         XCTAssertEqual(result.temperature, global.temperature, "Temperature should remain global")
     }
 
@@ -97,32 +92,7 @@ final class BuildEffectiveConfigTests: XCTestCase {
         XCTAssertEqual(result.modelName, global.modelName, "Model should remain global")
     }
 
-    // MARK: - 3. MaxTokens and Temperature
-
-    func testOverrideMaxTokens_usesOverrideValue() {
-        let global = makeGlobalConfig(maxTokens: 4096)
-        let override = LLMOverride(maxTokens: 32768)
-
-        let result = LLMExecutionService.buildEffectiveConfig(
-            globalConfig: global,
-            roleOverride: override
-        )
-
-        XCTAssertEqual(result.maxTokens, 32768, "MaxTokens should come from override")
-    }
-
-    func testOverrideTemperature_usesOverrideValue() {
-        let global = makeGlobalConfig(temperature: 0.7)
-        let override = LLMOverride(temperature: 0.2)
-
-        let result = LLMExecutionService.buildEffectiveConfig(
-            globalConfig: global,
-            roleOverride: override
-        )
-
-        XCTAssertEqual(result.temperature, 0.2,
-                       "Temperature should come from override")
-    }
+    // MARK: - 3. Temperature passthrough
 
     func testTemperaturePreservedFromGlobal_whenOnlyModelOverridden() {
         let global = makeGlobalConfig(temperature: 0.3)

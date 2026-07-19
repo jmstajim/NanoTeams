@@ -99,9 +99,9 @@ final class ModelCatalog {
 
     /// Trim + lowercase + collapse trailing slashes so trivial URL
     /// variations (`http://x:1234/` vs `http://x:1234`) hit one cache entry.
-    static func normalize(_ url: String) -> String {
-        var s = url.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        while s.hasSuffix("/") { s = String(s.dropLast()) }
-        return s
+    /// Delegates to the shared normalizer so the cache key can't drift from
+    /// the Keychain account key or the model-load coalescing key.
+    nonisolated static func normalize(_ url: String) -> String {
+        url.normalizedBaseURL
     }
 }

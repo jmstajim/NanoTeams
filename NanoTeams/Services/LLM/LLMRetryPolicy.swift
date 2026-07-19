@@ -34,7 +34,14 @@ nonisolated enum LLMRetryPolicy {
         case .missingResponse, .providerError:
             // Could be a transient server hiccup — retry.
             return true
-        case .badHTTPStatus(let code, _):
+        case .badHTTPStatus(let code, let body):
+            // Checked BEFORE the 4xx/5xx split: "LM Studio has no free memory
+            // to load this model" arrives as a 500, which the rule below would
+            // call transient. It is not — it cannot clear by waiting, and with
+            // `maxLLMRetries = 0` (unlimited) it produced an unbounded retry
+            // loop that never reached `.failed`, so the user got "attempt N"
+            // forever and never an error bubble.
+            if let body, ModelLoadFailureClassifier.matches(body) { return false }
             // 4xx are client errors and permanent EXCEPT:
             //   400 — poisoned-chain recovery: the loop clears the session and
             //         rebuilds the conversation statelessly, which can succeed.

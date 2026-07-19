@@ -47,6 +47,10 @@ nonisolated extension NativeLMStudioClient {
 
     // MARK: - Request
 
+    /// Deliberately carries NO sampling keys beyond the optional `temperature`
+    /// (internal-only: the security-judge verdict pin). LM Studio's per-model
+    /// config is the source of truth for generation parameters — an omitted
+    /// key means "server decides".
     struct NativeChatRequest: Encodable {
         var model: String
         var systemPrompt: String?
@@ -54,14 +58,12 @@ nonisolated extension NativeLMStudioClient {
         var previousResponseID: String?
         var store: Bool
         var stream: Bool
-        var maxOutputTokens: Int?
         var temperature: Double?
 
         enum CodingKeys: String, CodingKey {
             case model, input, store, stream, temperature
             case systemPrompt = "system_prompt"
             case previousResponseID = "previous_response_id"
-            case maxOutputTokens = "max_output_tokens"
         }
     }
 

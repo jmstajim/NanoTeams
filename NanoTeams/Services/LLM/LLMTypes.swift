@@ -31,13 +31,6 @@ nonisolated enum LLMProvider: String, Codable, Hashable, CaseIterable, Identifia
     var supportsStatefulSessions: Bool {
         true
     }
-
-    var defaultMaxTokens: Int {
-        // 0 = "server decides" (LM Studio forwards nil max_tokens → no cap).
-        // Runaway thinking on local models is cappable via Settings → Generation
-        // → Response Limit (UI renders 0 as "Unlimited" and supports 1–128k).
-        0
-    }
 }
 
 // MARK: - LLMConfig
@@ -46,7 +39,11 @@ nonisolated struct LLMConfig: Hashable {
     var provider: LLMProvider
     var baseURLString: String
     var modelName: String
-    var maxTokens: Int
+    /// Sampling temperature. `nil` = server decides (the model's own LM Studio
+    /// config governs). The ONLY production writer is the security-judge
+    /// verdict pin (`JudgeConfig.forVerdict` → 0 for deterministic verdicts);
+    /// user-facing generation settings were removed — LM Studio is the single
+    /// source of truth for sampling.
     var temperature: Double?
     /// Streaming HTTP request timeout in seconds. `0` = no timeout (wait indefinitely).
     /// Minimum effective value is 1s; values below 1 other than 0 are clamped up.
@@ -56,14 +53,12 @@ nonisolated struct LLMConfig: Hashable {
         provider: LLMProvider = .lmStudio,
         baseURLString: String? = nil,
         modelName: String? = nil,
-        maxTokens: Int? = nil,
         temperature: Double? = nil,
         requestTimeoutSeconds: Int? = nil
     ) {
         self.provider = provider
         self.baseURLString = baseURLString ?? provider.defaultBaseURL
         self.modelName = modelName ?? provider.defaultModel
-        self.maxTokens = maxTokens ?? provider.defaultMaxTokens
         self.temperature = temperature
         self.requestTimeoutSeconds = requestTimeoutSeconds ?? LLMConstants.defaultLLMRequestTimeoutSeconds
     }
@@ -255,6 +250,20 @@ nonisolated enum LLMClientError: LocalizedError, Equatable {
             // dumping the raw LM Studio JSON envelope.
             if LLMAuthErrorClassifier.isAuthFailure(status: code) {
                 LLMAuthErrorClassifier.message(forStatus: code, body: body)
+            } else if let body, ModelLoadFailureClassifier.matches(body) {
+                // Same one-place-every-surface routing as the auth classifier:
+                // replace the raw LM Studio envelope with something the user
+                // can act on. Naming the model matters — the envelope buries it
+                // mid-sentence.
+                if let model = ModelLoadFailureClassifier.quotedModelName(in: body) {
+                    "Couldn't load '\(model)' — LM Studio doesn't have enough free memory. "
+                        + "Unload a model in LM Studio, or lower its context length "
+                        + "(My Models → gear)."
+                } else {
+                    "Couldn't load the model — LM Studio doesn't have enough free memory. "
+                        + "Unload a model in LM Studio, or lower its context length "
+                        + "(My Models → gear)."
+                }
             } else if let body {
                 "LLM request failed with HTTP \(code): \(body)"
             } else {

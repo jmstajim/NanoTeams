@@ -77,16 +77,12 @@ final class BashPolicyCodableTests: XCTestCase {
 
     func testEncodedJSON_carriesNoCredential() throws {
         // The bearer token lives only in the Keychain; an encoded policy (even with a
-        // judge override) must never serialize a credential key. (We avoid the bare
-        // "token" probe because `LLMOverride.maxTokens` legitimately contains it.)
-        // maxTokens is set so the encoded JSON actually contains the `maxTokens` key —
-        // that makes the "token" exclusion below genuinely necessary (a naive `token`
-        // probe would false-trip on `maxtokens`) rather than vacuous.
-        let p = BashPolicy(judgeOverride: LLMOverride(baseURLString: "http://h", modelName: "j", maxTokens: 256))
+        // judge override) must never serialize a credential key.
+        let p = BashPolicy(judgeOverride: LLMOverride(baseURLString: "http://h", modelName: "j"))
         let json = String(decoding: try JSONEncoder().encode(p), as: UTF8.self).lowercased()
-        XCTAssertTrue(json.contains("maxtokens"), "sanity: maxTokens is present so the 'token' exclusion is real")
-        // Not "token" (collides with `maxTokens`) nor "credential" (collides with the
-        // `credentialRead` sandbox grant) — probe the actual bearer-token leak keys.
+        XCTAssertTrue(json.contains("judgeoverride"), "sanity: the override is actually encoded")
+        // Not "credential" — it collides with the `credentialRead` sandbox grant.
+        // Probe the actual bearer-token leak keys.
         for forbidden in ["bearer", "authorization", "apitoken", "api_token", "secret", "password"] {
             XCTAssertFalse(json.contains(forbidden), "encoded BashPolicy must not contain '\(forbidden)'")
         }

@@ -85,11 +85,29 @@ final class EmbeddingModelLifecycleService {
             )
             serverLoaded = []
         }
-        if let existing = serverLoaded.first(where: { $0.modelName == config.modelName }) {
-            // If we previously thought we owned a different config, unload
-            // it first — the user changed model/URL, server already has the
-            // new one we want.
-            if let prior = loaded, prior.config != config {
+        // Canonical-name matching via the shared normalizer — the listing's
+        // `modelName` is already canonical (":N" stripped), and `sameModel`
+        // folds case/whitespace exactly like the chat side does.
+        let matches = serverLoaded.filter {
+            ChatModelEnsurer.sameModel($0.modelName, config.modelName)
+        }
+        if !matches.isEmpty {
+            // Prefer re-adopting the instance we already hold when it lives on
+            // the server we just listed: a client-side-only config change
+            // (batchSize/requestTimeout) must not unload a live instance and
+            // then point local state at its dead id.
+            let sameServerPriorID: String? = loaded.flatMap { prior in
+                prior.config.baseURLString.normalizedBaseURL
+                    == config.baseURLString.normalizedBaseURL
+                    ? prior.instanceID : nil
+            }
+            let adopted = matches.first { $0.instanceID == sameServerPriorID } ?? matches[0]
+            let priorIsAdopted = sameServerPriorID != nil
+                && adopted.instanceID == sameServerPriorID
+
+            // If we previously held a DIFFERENT instance (model/URL change),
+            // unload it first — the server already has the one we want.
+            if let prior = loaded, !priorIsAdopted {
                 do {
                     try await client.unloadModel(
                         instanceID: prior.instanceID,
@@ -107,7 +125,20 @@ final class EmbeddingModelLifecycleService {
                     )
                 }
             }
-            loaded = LoadedState(config: config, instanceID: existing.instanceID)
+            loaded = LoadedState(config: config, instanceID: adopted.instanceID)
+
+            // Reap sibling duplicates (the `:2`/`:3` pile-up a past
+            // listing-failure session left behind). Soft-warn on failure —
+            // the goal state ("model available") already holds, and failing
+            // Exploratory Search over VRAM hygiene would be backwards. Reuse
+            // the listing we already have (`matches`).
+            await reapSiblings(
+                matches,
+                ofModel: config.modelName,
+                base: config.baseURLString,
+                excluding: adopted.instanceID,
+                client: client
+            )
             return
         }
 
@@ -127,6 +158,18 @@ final class EmbeddingModelLifecycleService {
                     underlying: error
                 )
             }
+            // Reap any sibling duplicates of the PRIOR model too. A past
+            // listing-failure session could have left prior-model :2/:3, and
+            // once `loaded` points at the new model nothing ever lists the
+            // prior again — so the swap is the last chance to clean them.
+            // Soft-warn on failure: the swap already succeeded (goal state
+            // holds), a lingering sibling is a VRAM note, not a load failure.
+            await reapSiblingInstances(
+                ofModel: prior.config.modelName,
+                base: prior.config.baseURLString,
+                excluding: prior.instanceID,
+                client: client
+            )
         }
 
         let newID = try await client.loadModel(
@@ -136,19 +179,101 @@ final class EmbeddingModelLifecycleService {
         loaded = LoadedState(config: config, instanceID: newID)
     }
 
+    /// Lists `base` and reaps every same-model sibling except `keepID`. Used on
+    /// the swap branch, where the prior model may live on a different base than
+    /// the one `ensureLoaded` already listed. Listing failure soft-warns and
+    /// no-ops (the primary unload already succeeded).
+    private func reapSiblingInstances(
+        ofModel model: String,
+        base: String,
+        excluding keepID: String,
+        client: any LLMClient
+    ) async {
+        guard let listed = try? await client.listLoadedInstances(baseURLString: base) else {
+            onWarning?(
+                "Couldn't enumerate embedding instances on \(base) to reap duplicates of '\(model)'. " +
+                "Duplicates may linger until the server is restarted."
+            )
+            return
+        }
+        await reapSiblings(listed, ofModel: model, base: base, excluding: keepID, client: client)
+    }
+
+    /// Unloads every same-model instance in `instances` except `keepID`, soft-
+    /// warning on each failure. Shared by the adoption path (which passes the
+    /// listing it already fetched) and the swap path (via `reapSiblingInstances`).
+    private func reapSiblings(
+        _ instances: [LoadedModelInstance],
+        ofModel model: String,
+        base: String,
+        excluding keepID: String,
+        client: any LLMClient
+    ) async {
+        for sibling in instances
+        where ChatModelEnsurer.sameModel(sibling.modelName, model)
+            && sibling.instanceID != keepID {
+            do {
+                try await client.unloadModel(
+                    instanceID: sibling.instanceID, baseURLString: base)
+            } catch {
+                onWarning?(
+                    "Couldn't unload duplicate embedding instance '\(sibling.instanceID)' on \(base): " +
+                    "\(error.localizedDescription). It may still consume VRAM until the server is restarted."
+                )
+            }
+        }
+    }
+
     /// Idempotent. Unloads whatever is currently loaded; no-op if nothing is.
-    /// "Instance not found" / 404 are treated as success by `NativeLMStudioClient`
-    /// — the desired state (nothing loaded) holds either way. Anything reaching
-    /// this method's catch block is therefore a real error worth surfacing.
-    /// State is cleared in both branches via `defer`: the in-memory belief is
-    /// untrustworthy after any unload outcome.
+    ///
+    /// Reaps EVERY resident instance of the model, not just the remembered
+    /// one: a past listing-failure session can leave `:2`/`:3` duplicates the
+    /// one-slot `loaded` state can't represent (observed live 2026-07-19 —
+    /// three resident nomic instances). The target set is the UNION of the
+    /// remembered id and every listed instance matching the model — union,
+    /// not replace, so a server-restarted remembered id is still attempted
+    /// ("instance not found" / 404 are treated as success by
+    /// `NativeLMStudioClient`, so a stale id costs nothing). Listing failure
+    /// soft-warns and falls back to the remembered id alone — a real listing
+    /// error must not turn the unload into a failure.
+    ///
+    /// Unload errors: every instance is attempted, then the FIRST error
+    /// propagates (existing contract: orchestrator surfaces it via
+    /// `lastInfoMessage`). State is cleared in all branches via `defer`: the
+    /// in-memory belief is untrustworthy after any unload outcome.
     func ensureUnloaded() async throws {
         guard let current = loaded else { return }
         defer { loaded = nil }
-        try await client.unloadModel(
-            instanceID: current.instanceID,
-            baseURLString: current.config.baseURLString
-        )
+
+        var instanceIDs: [String] = [current.instanceID]
+        do {
+            let serverLoaded = try await client.listLoadedInstances(
+                baseURLString: current.config.baseURLString
+            )
+            for instance in serverLoaded
+            where ChatModelEnsurer.sameModel(instance.modelName, current.config.modelName)
+                && !instanceIDs.contains(instance.instanceID) {
+                instanceIDs.append(instance.instanceID)
+            }
+        } catch {
+            onWarning?(
+                "Couldn't query loaded models on \(current.config.baseURLString): \(error.localizedDescription). " +
+                "Unloading only the remembered instance — duplicates may linger."
+            )
+        }
+
+        var firstError: Error?
+        for instanceID in instanceIDs {
+            do {
+                try await client.unloadModel(
+                    instanceID: instanceID,
+                    baseURLString: current.config.baseURLString
+                )
+            } catch {
+                if firstError == nil { firstError = error }
+            }
+        }
+        if let firstError { throw firstError }
     }
 }
 

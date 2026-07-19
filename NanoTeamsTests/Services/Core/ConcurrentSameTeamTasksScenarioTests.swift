@@ -197,7 +197,7 @@ final class ConcurrentSameTeamTasksScenarioTests: NTMSOrchestratorTestBase {
         let gateB = AsyncGate()
         let config = LLMConfig(
             provider: .lmStudio, baseURLString: "http://localhost",
-            modelName: "stub", maxTokens: 100, temperature: nil)
+            modelName: "stub")
         let service = sut.llmExecutionService
 
         let streamA = Task { @MainActor in

@@ -36,7 +36,7 @@ final class WorkFolderContextGenerationServiceTests: XCTestCase {
     }
 
     private func makeConfig() -> LLMConfig {
-        LLMConfig(baseURLString: "http://localhost:1234", modelName: "m", maxTokens: 0)
+        LLMConfig(baseURLString: "http://localhost:1234", modelName: "m")
     }
 
     // MARK: - Probe → prompt shrink

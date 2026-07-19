@@ -59,11 +59,8 @@ final class UserDefaultsTokenLeakGuardTests: XCTestCase {
 
         sut.llmBaseURLString = "http://localhost:1234"
         sut.llmModelName = "any-model"
-        sut.llmMaxTokens = 8192
-        sut.llmTemperature = 0.7
         sut.visionBaseURLString = "http://localhost:1234"
         sut.visionModelName = "vision-any"
-        sut.visionMaxTokens = 4096
 
         for key in storage.allKeys {
             for banned in bannedSubstrings where key.contains(banned) {
@@ -99,7 +96,6 @@ final class UserDefaultsTokenLeakGuardTests: XCTestCase {
             UserDefaultsKeys.timelineClearedUpToDate,
             UserDefaultsKeys.visionModelName,
             UserDefaultsKeys.visionBaseURL,
-            UserDefaultsKeys.visionMaxTokens,
             UserDefaultsKeys.quickCapturePanelFrame,
             UserDefaultsKeys.dismissedNotificationIDs,
             UserDefaultsKeys.dismissedFeatureTipIDs,

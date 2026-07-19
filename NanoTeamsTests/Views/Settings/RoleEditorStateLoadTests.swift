@@ -34,8 +34,6 @@ final class RoleEditorStateLoadTests: XCTestCase {
         state.load(from: makeRole(llmOverride: nil))
         XCTAssertEqual(state.llmBaseURL, "")
         XCTAssertEqual(state.llmModelName, "")
-        XCTAssertEqual(state.overrideMaxTokens, 0)
-        XCTAssertNil(state.overrideTemperature)
     }
 
     func testLoad_emptyButNonNilOverride_fieldsRemainEmpty() {
@@ -43,8 +41,6 @@ final class RoleEditorStateLoadTests: XCTestCase {
         state.load(from: makeRole(llmOverride: LLMOverride()))
         XCTAssertEqual(state.llmBaseURL, "")
         XCTAssertEqual(state.llmModelName, "")
-        XCTAssertEqual(state.overrideMaxTokens, 0)
-        XCTAssertNil(state.overrideTemperature)
     }
 
     func testLoad_modelOnlyOverride_seedsModelOnly() {
@@ -65,14 +61,10 @@ final class RoleEditorStateLoadTests: XCTestCase {
         var state = RoleEditorState()
         let override = LLMOverride(
             baseURLString: "http://x:1234",
-            modelName: "m",
-            maxTokens: 8192,
-            temperature: 0.42
+            modelName: "m"
         )
         state.load(from: makeRole(llmOverride: override))
         XCTAssertEqual(state.llmBaseURL, "http://x:1234")
         XCTAssertEqual(state.llmModelName, "m")
-        XCTAssertEqual(state.overrideMaxTokens, 8192)
-        XCTAssertEqual(state.overrideTemperature ?? .nan, 0.42, accuracy: 1e-9)
     }
 }

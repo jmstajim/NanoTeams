@@ -48,10 +48,6 @@ struct FirstPromptRendererConfig: Codable {
     /// Optional temperature (mirrors `LLMConfig.temperature`).
     let temperature: Double?
 
-    /// Optional max tokens (mirrors `LLMConfig.maxTokens`). Default 4096 —
-    /// matches `LLMProvider.lmStudio.defaultMaxTokens`.
-    let maxTokens: Int?
-
     // MARK: - State-derived inputs the renderer can't infer
 
     /// App-wide instruction appended to the system prompt (mirrors
@@ -74,7 +70,6 @@ struct FirstPromptRendererConfig: Codable {
     // MARK: - Resolved helpers
 
     var resolvedModelName: String { modelName ?? "render-only" }
-    var resolvedMaxTokens: Int { maxTokens ?? LLMProvider.lmStudio.defaultMaxTokens }
     var resolvedGlobalContext: String { globalContext ?? "" }
     var resolvedVisionConfigured: Bool { visionConfigured ?? false }
     var resolvedComputerUseEnabled: Bool { computerUseEnabled ?? false }

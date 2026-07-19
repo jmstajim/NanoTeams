@@ -23,6 +23,12 @@ extension LLMExecutionService {
         /// `hashValue` to eliminate the (small but silent) collision risk.
         var lastMemoriesFingerprint: String?
         /// Saved original system prompt (to restore after planning phase).
+        /// The (base, model) residency key this step resolved its effective
+        /// config to, set once after config resolution in `runStep`. Read by
+        /// `LLMExecutionService.activeModelKeys()` so residency reconciliation
+        /// never unloads a model a live step is using. Nil until resolved.
+        var activeModelKey: String?
+
         var originalSystemPrompt: String?
         /// Whether this step has already received the planning→implementation transition.
         var planningTransitionDone: Bool = false

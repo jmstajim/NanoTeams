@@ -4,7 +4,7 @@ import XCTest
 /// Tests for `LLMOverride` — per-role configuration override struct.
 ///
 /// Pinned behavior:
-/// - `isEmpty` is true iff ALL four fields are nil.
+/// - `isEmpty` is true iff both fields are nil.
 /// - Any single field populated flips `isEmpty` to false.
 /// - Codable round-trip preserves every field (including Double precision).
 /// - Decoding with missing keys yields nil fields (graceful upgrade path).
@@ -29,16 +29,6 @@ final class LLMOverrideTests: XCTestCase {
         XCTAssertFalse(o.isEmpty)
     }
 
-    func testIsEmpty_maxTokensSet_returnsFalse() {
-        let o = LLMOverride(maxTokens: 4096)
-        XCTAssertFalse(o.isEmpty)
-    }
-
-    func testIsEmpty_temperatureSet_returnsFalse() {
-        let o = LLMOverride(temperature: 0.7)
-        XCTAssertFalse(o.isEmpty)
-    }
-
     /// Empty-string baseURL still counts as "set" (non-nil) — the struct is
     /// a nullability marker, not a validity check. Callers are responsible
     /// for validating content.
@@ -46,17 +36,6 @@ final class LLMOverrideTests: XCTestCase {
         let o = LLMOverride(baseURLString: "")
         XCTAssertFalse(o.isEmpty,
                        "An empty string is still non-nil — isEmpty is a nullability check")
-    }
-
-    func testIsEmpty_zeroTemperature_returnsFalse() {
-        let o = LLMOverride(temperature: 0.0)
-        XCTAssertFalse(o.isEmpty,
-                       "Temperature = 0.0 is valid (deterministic) and must not be treated as absent")
-    }
-
-    func testIsEmpty_zeroMaxTokens_returnsFalse() {
-        let o = LLMOverride(maxTokens: 0)
-        XCTAssertFalse(o.isEmpty)
     }
 
     // MARK: - Codable round-trip
@@ -67,17 +46,13 @@ final class LLMOverrideTests: XCTestCase {
     func testCodable_roundTrip_allFieldsPreserved() throws {
         let original = LLMOverride(
             baseURLString: "http://192.168.1.10:1234",
-            modelName: "custom-model-v2",
-            maxTokens: 8192,
-            temperature: 0.42
+            modelName: "custom-model-v2"
         )
         let data = try encoder.encode(original)
         let decoded = try decoder.decode(LLMOverride.self, from: data)
 
         XCTAssertEqual(decoded.baseURLString, "http://192.168.1.10:1234")
         XCTAssertEqual(decoded.modelName, "custom-model-v2")
-        XCTAssertEqual(decoded.maxTokens, 8192)
-        XCTAssertEqual(decoded.temperature ?? .nan, 0.42, accuracy: 1e-9)
     }
 
     func testCodable_roundTrip_emptyOverride() throws {
@@ -88,8 +63,6 @@ final class LLMOverrideTests: XCTestCase {
         XCTAssertTrue(decoded.isEmpty)
         XCTAssertNil(decoded.baseURLString)
         XCTAssertNil(decoded.modelName)
-        XCTAssertNil(decoded.maxTokens)
-        XCTAssertNil(decoded.temperature)
     }
 
     func testDecode_emptyJSONObject_yieldsEmptyOverride() throws {
@@ -99,15 +72,16 @@ final class LLMOverrideTests: XCTestCase {
                       "`{}` must decode as all-nil — graceful default for legacy JSON")
     }
 
-    func testDecode_partialJSON_onlyNamedFieldsPopulated() throws {
-        let json = #"{"modelName":"qwen-14b","temperature":0.1}"#
+    /// Legacy JSON written when sampling params still lived on the override
+    /// carries `maxTokens`/`temperature` keys — decode must ignore them,
+    /// not reject.
+    func testDecode_legacyJSON_withSamplingKeys_decodesIgnoringThem() throws {
+        let json = #"{"modelName":"qwen-14b","maxTokens":8192,"temperature":0.1}"#
         let data = json.data(using: .utf8)!
         let decoded = try decoder.decode(LLMOverride.self, from: data)
 
         XCTAssertEqual(decoded.modelName, "qwen-14b")
-        XCTAssertEqual(decoded.temperature ?? .nan, 0.1, accuracy: 1e-9)
         XCTAssertNil(decoded.baseURLString)
-        XCTAssertNil(decoded.maxTokens)
     }
 
     /// Unknown keys in the JSON payload must NOT cause decode to fail —
@@ -171,15 +145,15 @@ final class LLMOverrideTests: XCTestCase {
     // MARK: - Hashable
 
     func testHashable_sameValues_equalAndSameHash() {
-        let a = LLMOverride(baseURLString: "u", modelName: "m", maxTokens: 1, temperature: 0.1)
-        let b = LLMOverride(baseURLString: "u", modelName: "m", maxTokens: 1, temperature: 0.1)
+        let a = LLMOverride(baseURLString: "u", modelName: "m")
+        let b = LLMOverride(baseURLString: "u", modelName: "m")
         XCTAssertEqual(a, b)
         XCTAssertEqual(a.hashValue, b.hashValue)
     }
 
-    func testHashable_differentTemperature_notEqual() {
-        let a = LLMOverride(temperature: 0.1)
-        let b = LLMOverride(temperature: 0.2)
+    func testHashable_differentModelName_notEqual() {
+        let a = LLMOverride(modelName: "m1")
+        let b = LLMOverride(modelName: "m2")
         XCTAssertNotEqual(a, b)
     }
 }

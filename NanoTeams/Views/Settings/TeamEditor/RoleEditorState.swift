@@ -35,8 +35,6 @@ nonisolated struct RoleEditorState {
     var producedArtifacts: [String] = []
     var llmBaseURL: String = ""
     var llmModelName: String = ""
-    var overrideMaxTokens: Int = 0
-    var overrideTemperature: Double? = nil
     var availableModels: [String] = []
     /// Populated when the override-model fetch fails. Cleared on every fetch
     /// attempt; rendered in the LLM tab so the user knows why the picker is
@@ -81,8 +79,6 @@ nonisolated struct RoleEditorState {
         if let override = role.llmOverride {
             llmBaseURL = override.baseURLString ?? ""
             llmModelName = override.modelName ?? ""
-            overrideMaxTokens = override.maxTokens ?? 0
-            overrideTemperature = override.temperature
         }
 
         // Delegation: whitelist + generated flag round-trip directly from the

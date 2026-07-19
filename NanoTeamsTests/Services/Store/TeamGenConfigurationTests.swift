@@ -35,9 +35,7 @@ final class TeamGenConfigurationTests: XCTestCase {
     func testLLMOverride_setAndLoad() {
         let override = LLMOverride(
             baseURLString: "http://127.0.0.1:9999",
-            modelName: "qwen2.5-coder-32b",
-            maxTokens: 16_384,
-            temperature: 0.3
+            modelName: "qwen2.5-coder-32b"
         )
         config.teamGenLLMOverride = override
 
@@ -126,6 +124,64 @@ final class TeamGenConfigurationTests: XCTestCase {
 
         config.teamGenForcedAcceptanceMode = nil
         XCTAssertNil(storage.object(forKey: UserDefaultsKeys.teamGenForcedAcceptanceMode))
+    }
+
+    // MARK: - Chat-model ledger isolation
+
+    // Regression: 86b389a left a stray `removeObject(forKey: Keys.chatModelLedger)`
+    // inside teamGenLLMOverride's didSet else-branch, so clearing the team-gen
+    // override wiped the persisted chat-model ledger — after a relaunch every
+    // orphaned model became permanently unreclaimable again.
+    func testClearingLLMOverride_doesNotWipeTheChatModelLedger() {
+        let entry = OwnedChatModel(
+            modelName: "qwen3-8b",
+            baseURLString: "http://127.0.0.1:1234",
+            instanceID: "qwen3-8b"
+        )
+        config.chatModelLedger = [entry]
+        config.teamGenLLMOverride = LLMOverride(modelName: "x")
+
+        config.teamGenLLMOverride = nil
+
+        XCTAssertNotNil(
+            storage.data(forKey: UserDefaultsKeys.chatModelLedger),
+            "Clearing the team-gen override must not touch the chat-model ledger key"
+        )
+        let fresh = StoreConfiguration(storage: storage)
+        XCTAssertEqual(fresh.chatModelLedger, [entry])
+    }
+
+    func testSettingEmptyLLMOverride_doesNotWipeTheChatModelLedger() {
+        let entry = OwnedChatModel(
+            modelName: "qwen3-8b",
+            baseURLString: "http://127.0.0.1:1234",
+            instanceID: "qwen3-8b:2"
+        )
+        config.chatModelLedger = [entry]
+        config.teamGenLLMOverride = LLMOverride(modelName: "x")
+
+        // The other route into the same else-branch.
+        config.teamGenLLMOverride = LLMOverride()
+
+        XCTAssertNotNil(storage.data(forKey: UserDefaultsKeys.chatModelLedger))
+        XCTAssertEqual(StoreConfiguration(storage: storage).chatModelLedger, [entry])
+    }
+
+    // The ledger is operational bookkeeping (which LM Studio instances the app
+    // owns), not a user preference — "Reset to Defaults" must not orphan
+    // resident models by forgetting them.
+    func testResetToDefaults_preservesTheChatModelLedger() {
+        let entry = OwnedChatModel(
+            modelName: "qwen3-8b",
+            baseURLString: "http://127.0.0.1:1234",
+            instanceID: "qwen3-8b"
+        )
+        config.chatModelLedger = [entry]
+
+        config.resetToDefaults()
+
+        XCTAssertNotNil(storage.data(forKey: UserDefaultsKeys.chatModelLedger))
+        XCTAssertEqual(config.chatModelLedger, [entry])
     }
 
     // MARK: - Reset

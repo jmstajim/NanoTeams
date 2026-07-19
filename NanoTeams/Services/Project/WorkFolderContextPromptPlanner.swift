@@ -93,22 +93,18 @@ nonisolated enum WorkFolderContextPromptPlanner {
     // MARK: - Budget derivation
 
     /// Token budget available for the USER message (file list + excerpts),
-    /// after reserving the system prompt and the model's output.
+    /// after reserving the system prompt and the model's output
+    /// (`outputReserveTokens` — the server decides the actual generation cap).
     /// - Parameters:
     ///   - contextTokens: Probed model context window; `nil` → conservative fallback.
     ///   - systemPromptChars: Character count of the system prompt (subtracted).
-    ///   - maxOutputTokens: The role's response limit; `<= 0` means "server decides".
     static func inputTokenBudget(
         contextTokens: Int?,
-        systemPromptChars: Int,
-        maxOutputTokens: Int
+        systemPromptChars: Int
     ) -> Int {
         let context = contextTokens ?? fallbackContextTokens
-        let outReserve = maxOutputTokens <= 0
-            ? outputReserveTokens
-            : min(maxOutputTokens, outputReserveTokens)
         let systemTokens = Int((Double(systemPromptChars) / charsPerTokenASCII).rounded(.up))
-        let budget = Int(Double(context) * utilization) - outReserve - systemTokens
+        let budget = Int(Double(context) * utilization) - outputReserveTokens - systemTokens
         return max(minInputTokenBudget, budget)
     }
 

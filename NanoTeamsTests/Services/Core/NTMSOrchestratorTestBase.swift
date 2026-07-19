@@ -22,10 +22,16 @@ class NTMSOrchestratorTestBase: XCTestCase, @unchecked Sendable {
     /// existing scenario test runs without touching the real LM Studio endpoint.
     var embeddingClient: RecordingLLMClient!
 
+    /// Stubs the chat-residency reconcile that `openWorkFolder` now runs.
+    /// Tests that assert on residency inject their own client per call; this
+    /// exists so the other ~700 `openWorkFolder` sites do no network I/O.
+    var chatLifecycleClient: RecordingLLMClient!
+
     override func setUp() {
         super.setUp()
         MonotonicClock.shared.reset()
         embeddingClient = RecordingLLMClient()
+        chatLifecycleClient = RecordingLLMClient()
         // Production debounce is 10 s — without overriding it here, every
         // SearchIndexCoordinator that tests spin up serializes around a 10 s
         // FSEvents coalescing window, dominating wall-clock time in
@@ -44,7 +50,15 @@ class NTMSOrchestratorTestBase: XCTestCase, @unchecked Sendable {
             // POST /v1/embeddings to the default LMStudioEmbeddingClient,
             // adding ~2.5s of network round-trip per build to every
             // exploratory-search scenario test.
-            searchEmbeddingClient: StubSearchEmbeddingClient()
+            searchEmbeddingClient: StubSearchEmbeddingClient(),
+            // Same reason as `searchEmbeddingClient` (CLAUDE.md #49): with the
+            // production defaults, `openWorkFolder`'s chat-residency reconcile
+            // issues a live GET to the default LM Studio URL from every one of
+            // the ~700 test call sites — and `ChatModelEnsurer.shared` is
+            // process-global, so a suite that adopted a real model could then
+            // unload it from the developer's running LM Studio.
+            chatLifecycleClient: chatLifecycleClient,
+            chatModelEnsurer: ChatModelEnsurer()
         )
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -54,6 +68,7 @@ class NTMSOrchestratorTestBase: XCTestCase, @unchecked Sendable {
     override func tearDown() {
         sut = nil
         embeddingClient = nil
+        chatLifecycleClient = nil
         if let tempDir {
             try? FileManager.default.removeItem(at: tempDir)
         }

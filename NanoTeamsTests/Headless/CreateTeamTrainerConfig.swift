@@ -14,8 +14,6 @@ struct CreateTeamTrainerConfig: Codable {
 
     var model: String?
 
-    var maxTokens: Int?
-
     var temperature: Double?
 
     // MARK: - Corpus & Output
@@ -70,7 +68,6 @@ struct CreateTeamTrainerConfig: Codable {
             provider: resolvedProvider,
             baseURLString: resolvedBaseURL,
             modelName: resolvedModel,
-            maxTokens: maxTokens ?? resolvedProvider.defaultMaxTokens,
             temperature: temperature
         )
     }

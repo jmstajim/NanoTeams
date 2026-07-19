@@ -153,8 +153,8 @@ nonisolated enum ComputerUseJudgeService {
     }
 
     /// Builds the config for the verdict call — shared `JudgeConfig` semantics
-    /// (temp-0 pin + override application with trimming and maxTokens > 0
-    /// guard), so this gate and the bash gate cannot drift.
+    /// (temp-0 pin + override application with trimming), so this gate and
+    /// the bash gate cannot drift.
     static func configForJudge(_ base: LLMConfig, policy: ComputerUsePolicy) -> LLMConfig {
         JudgeConfig.forVerdict(base, override: policy.judgeOverride)
     }

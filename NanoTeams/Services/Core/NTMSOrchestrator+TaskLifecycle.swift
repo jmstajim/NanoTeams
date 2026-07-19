@@ -103,6 +103,14 @@ extension NTMSOrchestrator {
 
     func removeTask(_ taskID: Int) async {
         await removeTask(taskID, visited: [])
+        // Eviction just dropped the removed task (and its delegation children)
+        // from `loadedTasks`, de-referencing any generated-team per-role
+        // override models — no other trigger sees a task deletion. One sweep
+        // after the whole cascade, not one per recursive child. Silent
+        // (housekeeping, not a user "unload this" request) — see
+        // `sweepResidencyAfterEngineTransition`.
+        await reconcileChatModelResidency(
+            client: chatLifecycleClient, ensurer: chatModelEnsurer)
     }
 
     /// Internal recursive variant with a visited-set cycle guard. Defends
@@ -164,6 +172,12 @@ extension NTMSOrchestrator {
 
     /// Supervisor explicitly closes/accepts a completed task, transitioning it to `.done`.
     /// Returns `true` if the mutation persisted successfully.
+    // Deliberately NO residency sweep on close: `closeTask` keeps
+    // `generatedTeam` and the task stays in `loadedTasks`, so its per-role
+    // override models remain referenced — correct, because the task can be
+    // reopened (`restartRole` clears `closedAt`). The engine-transition sweep
+    // (`sweepResidencyAfterEngineTransition`) already covers the moment this
+    // task's streams end; deletion/eviction sweeps cover the de-reference.
     func closeTask(taskID: Int) async -> Bool {
         // Cancel all in-flight LLM executions (bulk API, matches pauseRun/removeTask pattern)
         llmExecutionService.cancelExecutions(forTaskID: taskID)

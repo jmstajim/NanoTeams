@@ -219,9 +219,7 @@ struct ExploratorySearchEmbeddingsCard: View {
         return LLMConfig(
             provider: .lmStudio,
             baseURLString: cfg.baseURLString,
-            modelName: cfg.modelName,
-            maxTokens: 0,
-            temperature: 0.0
+            modelName: cfg.modelName
         )
     }
 

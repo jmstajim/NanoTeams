@@ -167,7 +167,6 @@ final class ToolUnavailabilityWiringTests: XCTestCase {
             provider: .lmStudio,
             baseURLString: "http://127.0.0.1:1234",
             modelName: "vlm",
-            maxTokens: 4096,
             temperature: 0.0
         )
         let result = await runRejection(toolName: ToolNames.analyzeImage)

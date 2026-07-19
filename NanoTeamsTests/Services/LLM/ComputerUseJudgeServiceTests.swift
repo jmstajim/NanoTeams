@@ -226,9 +226,11 @@ final class ComputerUseJudgeServiceTests: XCTestCase {
         XCTAssertEqual(jc.modelName, "judge-model")
     }
 
-    func testConfigForJudge_explicitTemperatureOverrideWins() {
+    /// The override no longer carries sampling params, so the verdict pin is
+    /// unconditional — nothing can raise a security verdict off temperature 0.
+    func testConfigForJudge_overrideCannotUnpinTemperature() {
         let base = LLMConfig(modelName: "global-model", temperature: 0.9)
-        let p = ComputerUsePolicy(judgeOverride: LLMOverride(temperature: 0.3))
-        XCTAssertEqual(ComputerUseJudgeService.configForJudge(base, policy: p).temperature, 0.3)
+        let p = ComputerUsePolicy(judgeOverride: LLMOverride(baseURLString: "http://judge:9999"))
+        XCTAssertEqual(ComputerUseJudgeService.configForJudge(base, policy: p).temperature, 0)
     }
 }

@@ -280,16 +280,36 @@ extension NTMSOrchestrator {
     /// task, a generating task, or a delegation descendant of the active task
     /// (the active task's activity feed + graph need those loaded).
     ///
+    /// An actual eviction returns a background residency sweep (`nil` when
+    /// nothing was evicted): dropping the task de-references its
+    /// generated-team per-role override models, and no other trigger observes
+    /// scheduler evictions. Returned so tests can await it; production call
+    /// sites discard it.
+    ///
     /// Internal (not `private`) — also called by the startup status sweep
     /// (`recoverStaleStatusesAcrossIndex`).
-    func evictIfReclaimable(_ taskID: Int) {
-        guard taskID != activeTaskID else { return }
-        if isTaskEngineActive(taskID) { return }
-        if isGeneratingTeam(taskID: taskID) { return }
+    @discardableResult
+    func evictIfReclaimable(_ taskID: Int) -> Task<Void, Never>? {
+        guard taskID != activeTaskID else { return nil }
+        if isTaskEngineActive(taskID) { return nil }
+        if isGeneratingTeam(taskID: taskID) { return nil }
         if let activeID = activeTaskID,
            snapshot?.tasksIndex.descendantIDs(of: activeID).contains(taskID) == true {
-            return
+            return nil
         }
+        // Only sweep if this call ACTUALLY evicted something. `evictLoadedTask`
+        // is an unconditional `removeValue`, so a call for a task not in
+        // `loadedTasks` (already evicted, or never loaded — the startup status
+        // sweep hits both) would otherwise spawn a full reconcile for a no-op,
+        // making the documented "nil when nothing was evicted" contract false.
+        guard snapshot?.loadedTasks[taskID] != nil else { return nil }
         evictLoadedTask(taskID)
+        return Task { [weak self] in
+            guard let self else { return }
+            // Silent (scheduler housekeeping) — see
+            // `sweepResidencyAfterEngineTransition`.
+            await self.reconcileChatModelResidency(
+                client: self.chatLifecycleClient, ensurer: self.chatModelEnsurer)
+        }
     }
 }

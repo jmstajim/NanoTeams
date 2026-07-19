@@ -132,8 +132,7 @@ final class LLMClientRouterTests: XCTestCase {
             let config = LLMConfig(
                 provider: provider,
                 baseURLString: "",
-                modelName: "test",
-                maxTokens: 0
+                modelName: "test"
             )
 
             let stream = router.streamChat(

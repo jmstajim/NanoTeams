@@ -99,14 +99,6 @@ struct LLMVisionCard: View {
                         Task { await modelCatalog.refresh(url: effectiveFetchURL, visionOnly: true) }
                     }
                 )
-
-                LLMStepperSettingsRow(
-                    title: "Response Limit",
-                    value: $config.visionMaxTokens,
-                    range: 0...128_000,
-                    step: 1024,
-                    caption: "Maximum tokens per vision response."
-                )
             }
         }
         .task(id: config.visionEnabled) {

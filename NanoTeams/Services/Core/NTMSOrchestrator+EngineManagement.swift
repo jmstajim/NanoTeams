@@ -32,6 +32,10 @@ extension NTMSOrchestrator {
             default:
                 break
             }
+            // Run-boundary residency sweep: a model de-referenced while this
+            // task's streams were open was deferred by the in-use census, and
+            // without this the sweep waited for an unrelated settings change.
+            self.sweepResidencyAfterEngineTransition(state)
         }
         taskEngines[taskID] = engine
         return engine

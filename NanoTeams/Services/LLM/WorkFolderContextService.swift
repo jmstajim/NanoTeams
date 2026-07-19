@@ -40,8 +40,7 @@ nonisolated final class WorkFolderContextService: @unchecked Sendable {
         let contextTokens = await client.modelContextLength(config: config)
         var budget = WorkFolderContextPromptPlanner.inputTokenBudget(
             contextTokens: contextTokens,
-            systemPromptChars: system.count,
-            maxOutputTokens: config.maxTokens
+            systemPromptChars: system.count
         )
 
         // Self-correcting backstop: if the token estimate undershot and the

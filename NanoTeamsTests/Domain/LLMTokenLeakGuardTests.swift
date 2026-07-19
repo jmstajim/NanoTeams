@@ -25,9 +25,7 @@ final class LLMTokenLeakGuardTests: XCTestCase {
     func testLLMOverride_serialized_containsNoTokenLikeKeys() throws {
         let override = LLMOverride(
             baseURLString: "http://localhost:1234",
-            modelName: "test",
-            maxTokens: 1024,
-            temperature: 0.7
+            modelName: "test"
         )
         try assertNoBannedKeys(in: override, type: "LLMOverride")
     }

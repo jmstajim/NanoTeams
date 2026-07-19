@@ -14,13 +14,13 @@ import Foundation
 /// Shared config builder for the judge pair — the config half of the same
 /// no-drift contract `JudgeVerdictParser` provides for parsing. Both judges
 /// resolve their effective LLMConfig here so override semantics (whitespace
-/// trimming, maxTokens > 0 guard, explicit temperature wins) cannot diverge.
+/// trimming) cannot diverge.
 nonisolated enum JudgeConfig {
 
-    /// Applies the dedicated judge override (URL + model + generation params)
-    /// over the base config — WITHOUT the verdict temperature pin. This is the
-    /// variant for generative consumers that only want the judge's model
-    /// targeting (e.g. the Ask-AI advisory in `BashExplainService`).
+    /// Applies the dedicated judge override (URL + model) over the base
+    /// config — WITHOUT the verdict temperature pin. This is the variant for
+    /// generative consumers that only want the judge's model targeting
+    /// (e.g. the Ask-AI advisory in `BashExplainService`).
     /// The bearer token is resolved from the Keychain by URL at request time
     /// (never carried here).
     static func applying(_ override: LLMOverride?, to base: LLMConfig) -> LLMConfig {
@@ -32,20 +32,15 @@ nonisolated enum JudgeConfig {
         if let model = o.modelName?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty {
             config.modelName = model
         }
-        if let maxTokens = o.maxTokens, maxTokens > 0 {
-            config.maxTokens = maxTokens
-        }
-        if let temperature = o.temperature {
-            config.temperature = temperature
-        }
         return config
     }
 
-    /// The verdict-call config: temperature pinned to 0 first (the verdict is
-    /// one strict JSON object, not generative text — an inherited chat/creative
+    /// The verdict-call config: temperature pinned to 0 (the verdict is one
+    /// strict JSON object, not generative text — an inherited chat/creative
     /// temperature has no business injecting variance into a security
-    /// decision), then the operator override applied on top so an explicit
-    /// `override.temperature` still wins.
+    /// decision). This is the ONLY production writer of
+    /// `LLMConfig.temperature` — user-facing generation settings were removed
+    /// (LM Studio's per-model config governs sampling).
     static func forVerdict(_ base: LLMConfig, override: LLMOverride?) -> LLMConfig {
         var pinned = base
         pinned.temperature = 0

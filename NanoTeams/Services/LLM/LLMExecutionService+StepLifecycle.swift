@@ -108,6 +108,11 @@ extension LLMExecutionService {
                 config = effectiveConfig
             }
 
+            // Pin the resolved (base, model) as in-use for this step so a
+            // residency reconcile fired by another engine's transition can't
+            // unload the model this step will reuse across tool-execution gaps.
+            self.recordActiveModel(stepID: stepID, taskID: taskID, config: config)
+
             var cumulativeUsage = TokenUsage()
 
             do {

@@ -62,10 +62,17 @@ struct LLMSettingsView: View {
                     onTokenLoadError: { error in
                         store.lastErrorMessage = "Could not read saved API token: \(error.localizedDescription)"
                     },
-                    onURLCommit: { Task { await testConnection() } }
+                    onURLCommit: {
+                        Task { await testConnection() }
+                        // Reconcile from the COMMIT boundary, never from the
+                        // live binding: the URL field writes on every
+                        // keystroke, so a fingerprint-driven reconcile would
+                        // compare a half-typed URL against the owned
+                        // instance's base and unload a resident model because
+                        // the user was editing a port number.
+                        Task { await store.reconcileAndReportResidency() }
+                    }
                 )
-
-                LLMGenerationCard(config: config)
 
                 LLMErrorHandlingCard(config: config)
             }
@@ -73,6 +80,8 @@ struct LLMSettingsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Colors.surfacePrimary)
+        // NOTE: the model-switch (unload old / load new) hook is NOT here — it
+        // lives in MainLayoutView so the status-bar quick picker is covered too.
         .task {
             // First-appear load only. URL edits do NOT re-trigger fetches
             // here — that would ping the server on every keystroke. The

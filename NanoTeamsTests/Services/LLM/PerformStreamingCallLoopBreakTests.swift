@@ -47,7 +47,7 @@ final class PerformStreamingCallLoopBreakTests: XCTestCase {
     }
 
     private func stubConfig() -> LLMConfig {
-        LLMConfig(provider: .lmStudio, baseURLString: "http://localhost", modelName: "stub", maxTokens: 100, temperature: nil)
+        LLMConfig(provider: .lmStudio, baseURLString: "http://localhost", modelName: "stub")
     }
 
     private func run(_ events: [StreamEvent], stepID: String, taskID: Int) async throws -> LLMExecutionService.StreamingResult {

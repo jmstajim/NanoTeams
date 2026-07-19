@@ -453,7 +453,6 @@ final class DelegationReviewFixesTests: XCTestCase {
             provider: .lmStudio,
             baseURLString: "http://localhost",
             modelName: "stub",
-            maxTokens: 100,
             temperature: nil
         )
     }

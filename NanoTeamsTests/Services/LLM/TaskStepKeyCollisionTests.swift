@@ -791,7 +791,7 @@ final class PostTeardownWriteBarrierCornerTests: XCTestCase, @unchecked Sendable
     }
 
     private func stubConfig() -> LLMConfig {
-        LLMConfig(provider: .lmStudio, baseURLString: "http://localhost", modelName: "stub", maxTokens: 100, temperature: nil)
+        LLMConfig(provider: .lmStudio, baseURLString: "http://localhost", modelName: "stub")
     }
 
     func testTeardownOfOneTask_doesNotBlockOtherTasksWrites_onSharedStepID() async {
@@ -1083,7 +1083,7 @@ final class OrphanStreamCommitDropTests: XCTestCase, @unchecked Sendable {
         let gate = AsyncGate()
         let config = LLMConfig(
             provider: .lmStudio, baseURLString: "http://localhost",
-            modelName: "stub", maxTokens: 100, temperature: nil)
+            modelName: "stub")
         let weakService = service!
         let streamTask = Task { @MainActor in
             try await weakService.performStreamingCall(
@@ -1220,7 +1220,7 @@ final class DelegationGenerationTeardownTests: XCTestCase, @unchecked Sendable {
     }
 
     private func stubConfig() -> LLMConfig {
-        LLMConfig(provider: .lmStudio, baseURLString: "http://localhost", modelName: "stub", maxTokens: 100, temperature: nil)
+        LLMConfig(provider: .lmStudio, baseURLString: "http://localhost", modelName: "stub")
     }
 
     private func runHandler(client: GatedGenerationClient, task: NTMSTask) async -> Task<String, Never> {

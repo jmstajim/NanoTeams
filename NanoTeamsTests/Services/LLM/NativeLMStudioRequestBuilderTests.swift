@@ -634,6 +634,49 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
         XCTAssertTrue(request.store)
     }
 
+    // MARK: - No sampling on the wire
+
+    /// LM Studio's per-model config is the single source of truth for
+    /// generation parameters. A default-config request must carry NO sampling
+    /// key at all — an omitted key means "server decides", whereas any value
+    /// we send would override the user's My-Models settings.
+    func testBuildRequest_defaultConfig_carriesNoSamplingKeys() throws {
+        let config = LLMConfig(baseURLString: "http://localhost:1234", modelName: "m")
+        let request = NativeLMStudioClient.buildRequest(
+            config: config,
+            messages: [ChatMessage(role: .user, content: "Hi")],
+            tools: [],
+            session: nil
+        )
+        let data = try JSONEncoder().encode(request)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+
+        for key in ["temperature", "max_output_tokens", "top_k", "top_p", "min_p",
+                    "repeat_penalty", "seed", "context_length"] {
+            XCTAssertNil(json[key], "Request must not carry the sampling key '\(key)'")
+        }
+        XCTAssertEqual(Set(json.keys), ["model", "input", "store", "stream"],
+                       "Only transport keys may ride a default-config request")
+    }
+
+    /// The one sanctioned writer: the security-judge verdict pin. It must
+    /// still reach the wire so verdicts stay deterministic.
+    func testBuildRequest_judgeVerdictPin_sendsTemperatureZero() throws {
+        let config = JudgeConfig.forVerdict(
+            LLMConfig(baseURLString: "http://localhost:1234", modelName: "m"),
+            override: nil
+        )
+        let request = NativeLMStudioClient.buildRequest(
+            config: config,
+            messages: [ChatMessage(role: .user, content: "Hi")],
+            tools: [],
+            session: nil
+        )
+        let data = try JSONEncoder().encode(request)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        XCTAssertEqual(json["temperature"] as? Double, 0)
+    }
+
     // MARK: - NativeChatRequest encoding
 
     func testNativeChatRequest_encodesSnakeCaseKeys() throws {
@@ -644,17 +687,14 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
             previousResponseID: "resp-1",
             store: true,
             stream: false,
-            maxOutputTokens: 1000,
             temperature: 0.7
         )
         let data = try JSONEncoder().encode(request)
         let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
         XCTAssertNotNil(json["system_prompt"])
         XCTAssertNotNil(json["previous_response_id"])
-        XCTAssertNotNil(json["max_output_tokens"])
         XCTAssertNil(json["systemPrompt"])
         XCTAssertNil(json["previousResponseID"])
-        XCTAssertNil(json["maxOutputTokens"])
     }
 
     func testNativeChatRequest_omitsNilFields() throws {
@@ -665,14 +705,12 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
             previousResponseID: nil,
             store: true,
             stream: true,
-            maxOutputTokens: nil,
             temperature: nil
         )
         let data = try JSONEncoder().encode(request)
         let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
         XCTAssertNil(json["system_prompt"])
         XCTAssertNil(json["previous_response_id"])
-        XCTAssertNil(json["max_output_tokens"])
         XCTAssertNil(json["temperature"])
     }
 

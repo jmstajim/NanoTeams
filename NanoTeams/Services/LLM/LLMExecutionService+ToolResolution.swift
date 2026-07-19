@@ -18,8 +18,10 @@ extension LLMExecutionService {
             provider: .lmStudio,
             baseURLString: override.baseURLString ?? globalConfig.baseURLString,
             modelName: override.modelName ?? globalConfig.modelName,
-            maxTokens: override.maxTokens ?? globalConfig.maxTokens,
-            temperature: override.temperature ?? globalConfig.temperature,
+            // The override carries no sampling params (LM Studio owns those),
+            // but the global value must survive — dropping it here would let a
+            // URL-only override silently reset an explicitly-set temperature.
+            temperature: globalConfig.temperature,
             requestTimeoutSeconds: globalConfig.requestTimeoutSeconds
         )
     }

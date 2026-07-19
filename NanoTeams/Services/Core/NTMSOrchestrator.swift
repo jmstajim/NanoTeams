@@ -25,6 +25,30 @@ final class NTMSOrchestrator {
     /// triggering orchestrator-wide re-evaluation on settings changes.
     let configuration: StoreConfiguration
 
+    /// Re-entrancy guard for `reconcileChatModelResidency`. Settings can change
+    /// faster than a reconcile completes (a second picker click while an unload
+    /// is mid-round-trip), and two concurrent passes would race to unload the
+    /// same orphan. Not observed by any view.
+    @ObservationIgnored var isReconcilingResidency = false
+
+    /// Coalescing latch paired with `isReconcilingResidency`: a reconcile that
+    /// arrives while a pass is in flight sets this instead of being dropped, and
+    /// the running pass loops once more when it finishes. Without it a dedicated
+    /// de-reference sweep (removeTask / switchTeam) could be silently swallowed
+    /// by the run-boundary sweep the same flow spawns — whose snapshot predates
+    /// the de-reference — leaving the model resident with no further trigger.
+    @ObservationIgnored var pendingResidencyReconcile = false
+
+    /// Client used by the chat-model residency reconciler. Injectable so tests
+    /// don't issue live HTTP from `openWorkFolder` (CLAUDE.md #49) — `nil`
+    /// means "build a real `LLMClientRouter` on demand", the production path.
+    @ObservationIgnored let chatLifecycleClient: (any LLMClient)?
+
+    /// Ownership ledger for chat models. Defaults to the process-global
+    /// singleton; tests inject a fresh actor so ownership can't leak between
+    /// suites — or out to the developer's running LM Studio.
+    @ObservationIgnored let chatModelEnsurer: ChatModelEnsurer
+
     /// `bash` commands currently HELD awaiting the human's in-loop Allow/Deny
     /// decision, keyed by (taskID, stepID). Mirrors the gate's await state so the
     /// activity feed renders the approval buttons. Mutated only via the
@@ -372,8 +396,12 @@ final class NTMSOrchestrator {
         configuration: StoreConfiguration? = nil,
         fileManager: FileManager? = nil,
         embeddingLifecycle: EmbeddingModelLifecycleService? = nil,
-        searchEmbeddingClient: (any EmbeddingClient)? = nil
+        searchEmbeddingClient: (any EmbeddingClient)? = nil,
+        chatLifecycleClient: (any LLMClient)? = nil,
+        chatModelEnsurer: ChatModelEnsurer = .shared
     ) {
+        self.chatLifecycleClient = chatLifecycleClient
+        self.chatModelEnsurer = chatModelEnsurer
         self.repository = repository
         self.llmExecutionService = llmExecutionService ?? LLMExecutionService(repository: repository)
         self.settingsService = settingsService ?? SettingsService(repository: repository)

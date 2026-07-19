@@ -167,7 +167,6 @@ final class FirstPromptRendererTests: XCTestCase {
             outputPath: outputPath,
             modelName: nil,
             temperature: nil,
-            maxTokens: nil,
             globalContext: nil,
             selectedScheme: nil,
             visionConfigured: nil,

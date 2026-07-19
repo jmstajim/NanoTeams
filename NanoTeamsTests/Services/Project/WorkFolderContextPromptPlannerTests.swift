@@ -27,41 +27,36 @@ final class WorkFolderContextPromptPlannerTests: XCTestCase {
 
     func testBudget_probeNil_equalsFallbackContext() {
         // nil probe must behave exactly like an explicit 4096-token context.
-        let nilBudget = Planner.inputTokenBudget(contextTokens: nil, systemPromptChars: 200, maxOutputTokens: 0)
-        let fallbackBudget = Planner.inputTokenBudget(contextTokens: 4096, systemPromptChars: 200, maxOutputTokens: 0)
+        let nilBudget = Planner.inputTokenBudget(contextTokens: nil, systemPromptChars: 200)
+        let fallbackBudget = Planner.inputTokenBudget(contextTokens: 4096, systemPromptChars: 200)
         XCTAssertEqual(nilBudget, fallbackBudget)
     }
 
     func testBudget_tinyContext_flooredAtMinimum() {
         // A 100-token context can't yield a positive budget after reserves —
         // must clamp to the documented 1024 floor, never go negative.
-        let budget = Planner.inputTokenBudget(contextTokens: 100, systemPromptChars: 0, maxOutputTokens: 0)
+        let budget = Planner.inputTokenBudget(contextTokens: 100, systemPromptChars: 0)
         XCTAssertEqual(budget, 1024)
     }
 
-    func testBudget_outputReserveClamped() {
-        // maxOutputTokens 0 ("server decides") and a huge value must both clamp
-        // to the same reserve, yielding an identical budget.
-        let zero = Planner.inputTokenBudget(contextTokens: 8192, systemPromptChars: 0, maxOutputTokens: 0)
-        let huge = Planner.inputTokenBudget(contextTokens: 8192, systemPromptChars: 0, maxOutputTokens: 99999)
-        XCTAssertEqual(zero, huge)
-    }
-
-    func testBudget_smallOutputReserveLeavesMoreForInput() {
-        let smallReserve = Planner.inputTokenBudget(contextTokens: 8192, systemPromptChars: 0, maxOutputTokens: 200)
-        let bigReserve = Planner.inputTokenBudget(contextTokens: 8192, systemPromptChars: 0, maxOutputTokens: 4000)
-        XCTAssertGreaterThan(smallReserve, bigReserve)
+    /// The output reserve is a fixed constant now that the app carries no
+    /// response-limit setting — the same context must always yield the same
+    /// budget.
+    func testBudget_deterministicForSameContext() {
+        let a = Planner.inputTokenBudget(contextTokens: 8192, systemPromptChars: 0)
+        let b = Planner.inputTokenBudget(contextTokens: 8192, systemPromptChars: 0)
+        XCTAssertEqual(a, b)
     }
 
     func testBudget_systemPromptSubtracted() {
-        let noSystem = Planner.inputTokenBudget(contextTokens: 8192, systemPromptChars: 0, maxOutputTokens: 0)
-        let bigSystem = Planner.inputTokenBudget(contextTokens: 8192, systemPromptChars: 8000, maxOutputTokens: 0)
+        let noSystem = Planner.inputTokenBudget(contextTokens: 8192, systemPromptChars: 0)
+        let bigSystem = Planner.inputTokenBudget(contextTokens: 8192, systemPromptChars: 8000)
         XCTAssertGreaterThan(noSystem, bigSystem)
     }
 
     func testBudget_biggerContextBiggerBudget() {
-        let small = Planner.inputTokenBudget(contextTokens: 4096, systemPromptChars: 0, maxOutputTokens: 0)
-        let big = Planner.inputTokenBudget(contextTokens: 262144, systemPromptChars: 0, maxOutputTokens: 0)
+        let small = Planner.inputTokenBudget(contextTokens: 4096, systemPromptChars: 0)
+        let big = Planner.inputTokenBudget(contextTokens: 262144, systemPromptChars: 0)
         XCTAssertGreaterThan(big, small)
     }
 

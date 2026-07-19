@@ -78,7 +78,6 @@ final class NativeChatInputTests: XCTestCase {
             previousResponseID: nil,
             store: false,
             stream: true,
-            maxOutputTokens: nil,
             temperature: nil
         )
 
@@ -107,7 +106,6 @@ final class NativeChatInputTests: XCTestCase {
             previousResponseID: nil,
             store: true,
             stream: true,
-            maxOutputTokens: nil,
             temperature: nil
         )
 

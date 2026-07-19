@@ -47,7 +47,6 @@ final class NativeLMStudioClientAuthTests: XCTestCase {
             provider: .lmStudio,
             baseURLString: baseURL,
             modelName: "test-model",
-            maxTokens: 1024,
             temperature: nil
         )
     }

@@ -73,15 +73,13 @@ nonisolated struct KeychainSecureTokenStorage: SecureTokenStorage {
         self.service = service
     }
 
-    /// Lower-cases and trims a trailing slash. Intentionally conservative:
-    /// `localhost` and `127.0.0.1` are NOT collapsed (different network identities;
-    /// firewalls can route them differently), and default ports are NOT collapsed
-    /// (LM Studio's `:1234` is non-standard, no value in the rule).
+    /// The Keychain account key for a server. Delegates to the shared
+    /// `String.normalizedBaseURL` (which carries the "don't collapse
+    /// `localhost`/`127.0.0.1`, don't collapse default ports" rationale) so
+    /// this security-bearing key can never drift from the other normalizers —
+    /// a divergence would strand every previously stored token.
     static func normalize(baseURL: String) -> String {
-        let trimmed = baseURL.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return trimmed.replacingOccurrences(
-            of: #"/+$"#, with: "", options: .regularExpression
-        )
+        baseURL.normalizedBaseURL
     }
 
     func setToken(_ token: String?, forKey key: String) throws {

@@ -59,12 +59,6 @@ final class LLMTypesTests: XCTestCase {
         XCTAssertTrue(LLMProvider.lmStudio.supportsStatefulSessions)
     }
 
-    // MARK: - LLMProvider: defaultMaxTokens
-
-    func testLLMProviderDefaultMaxTokensLMStudio() {
-        XCTAssertEqual(LLMProvider.lmStudio.defaultMaxTokens, 0)
-    }
-
     // MARK: - LLMProvider: Codable Round-Trip
 
     func testLLMProviderCodableRoundTrip() throws {
@@ -90,8 +84,8 @@ final class LLMTypesTests: XCTestCase {
         XCTAssertEqual(config.provider, .lmStudio)
         XCTAssertEqual(config.baseURLString, LLMProvider.lmStudio.defaultBaseURL)
         XCTAssertEqual(config.modelName, LLMProvider.lmStudio.defaultModel)
-        XCTAssertEqual(config.maxTokens, LLMProvider.lmStudio.defaultMaxTokens)
-        XCTAssertNil(config.temperature)
+        XCTAssertNil(config.temperature,
+                     "Sampling is LM Studio's business — the app sends no temperature by default")
     }
 
     // MARK: - LLMConfig: Init with All Explicit Values
@@ -101,13 +95,11 @@ final class LLMTypesTests: XCTestCase {
             provider: .lmStudio,
             baseURLString: "http://custom.local:8888",
             modelName: "custom-model-v1",
-            maxTokens: 4096,
             temperature: 0.3
         )
         XCTAssertEqual(config.provider, .lmStudio)
         XCTAssertEqual(config.baseURLString, "http://custom.local:8888")
         XCTAssertEqual(config.modelName, "custom-model-v1")
-        XCTAssertEqual(config.maxTokens, 4096)
         XCTAssertEqual(config.temperature, 0.3)
     }
 
@@ -120,12 +112,6 @@ final class LLMTypesTests: XCTestCase {
     func testLLMConfigHashableIncludesModelName() {
         let config1 = LLMConfig(provider: .lmStudio, modelName: "model-a")
         let config2 = LLMConfig(provider: .lmStudio, modelName: "model-b")
-        XCTAssertNotEqual(config1, config2)
-    }
-
-    func testLLMConfigHashableIncludesMaxTokens() {
-        let config1 = LLMConfig(provider: .lmStudio, maxTokens: 100)
-        let config2 = LLMConfig(provider: .lmStudio, maxTokens: 200)
         XCTAssertNotEqual(config1, config2)
     }
 

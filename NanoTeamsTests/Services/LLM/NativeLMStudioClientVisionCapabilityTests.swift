@@ -33,7 +33,6 @@ final class NativeLMStudioClientVisionCapabilityTests: XCTestCase {
             provider: .lmStudio,
             baseURLString: "http://localhost:1234",
             modelName: model,
-            maxTokens: 1024,
             temperature: nil
         )
     }
@@ -128,7 +127,7 @@ final class NativeLMStudioClientVisionCapabilityTests: XCTestCase {
         let client = NativeLMStudioClient(session: session, tokenResolver: StubLLMTokenResolver([:]))
         let config = LLMConfig(
             provider: .lmStudio, baseURLString: "", modelName: "m",
-            maxTokens: 1024, temperature: nil)
+            temperature: nil)
         let verdict = await client.modelSupportsVision(config: config)
         XCTAssertNil(verdict)
     }

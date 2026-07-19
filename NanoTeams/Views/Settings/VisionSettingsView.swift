@@ -36,6 +36,8 @@ struct VisionSettingsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Colors.surfacePrimary)
+        // NOTE: the vision-model switch hook lives in MainLayoutView — see the
+        // comment there for why it can't live in this (not always mounted) view.
     }
 }
 

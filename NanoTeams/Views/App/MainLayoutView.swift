@@ -178,6 +178,7 @@ struct MainLayoutView: View {
                 newValue: newValue, taskID: store.activeTaskID
             )
         }
+        .modelResidencyHooks(store: store)
     }
 
     /// Derived status from tasksIndex (updated on every mutateTask), not stored task.status.

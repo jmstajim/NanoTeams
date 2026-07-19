@@ -116,7 +116,6 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
             provider: .lmStudio,
             baseURLString: LLMProvider.lmStudio.defaultBaseURL,
             modelName: "test-model",
-            maxTokens: 2048,
             temperature: 0.0
         )
         let request = NativeLMStudioClient.buildRequest(

@@ -150,6 +150,19 @@ extension NTMSOrchestrator {
         // is nil and reconcile will unload anything we had loaded for the
         // prior folder.
         await reconcileEmbeddingLifecycle()
+        // Chat half of the same idea. Re-adopt instances a previous run of the
+        // app left resident (the ownership ledger is in-memory), then reclaim
+        // anything this folder's roster no longer references — per-role
+        // overrides differ per work folder, so opening one can orphan a model.
+        //
+        // Injectable for the same reason `embeddingLifecycle` is (CLAUDE.md
+        // #49): with the production defaults these two lines issue live HTTP
+        // to `AppDefaults.llmBaseURL` from every one of the ~700 test call
+        // sites, and `ChatModelEnsurer.shared` is process-global, so a suite
+        // that adopted a real model could then unload it from the developer's
+        // running LM Studio.
+        await adoptResidentReferencedModels(client: chatLifecycleClient, ensurer: chatModelEnsurer)
+        await reconcileAndReportResidency(client: chatLifecycleClient, ensurer: chatModelEnsurer)
     }
 
     // MARK: - Stale Status Sweep
@@ -841,6 +854,14 @@ extension NTMSOrchestrator {
             run.updatedAt = MonotonicClock.shared.now()
             task.runs[runIndex] = run
         }
+
+        // `clearGeneratedTeam()` above de-referenced the transient roster's
+        // per-role override models — and this path flows through `mutateTask`,
+        // which the `teamsChanged` residency trigger (a `mutateWorkFolder`
+        // diff) never sees. Sweep explicitly, silent (housekeeping) — see
+        // `sweepResidencyAfterEngineTransition`.
+        await reconcileChatModelResidency(
+            client: chatLifecycleClient, ensurer: chatModelEnsurer)
     }
 }
 

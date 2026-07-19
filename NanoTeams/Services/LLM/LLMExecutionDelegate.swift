@@ -24,7 +24,7 @@ protocol TaskMutationDelegate: AnyObject {
 @MainActor
 protocol LLMStateDelegate: TaskMutationDelegate {
     var workFolderURL: URL? { get }
-    /// The global LLM configuration — provider, URL, model, maxTokens, temperature.
+    /// The global LLM configuration — provider, URL, model, request timeout.
     var globalLLMConfig: LLMConfig { get }
     /// App-wide instruction text appended to every LLM system prompt. Empty
     /// string disables the append. Surfaced from `StoreConfiguration.globalContext`.
