@@ -87,6 +87,10 @@ final class ToolTurnProductivityTests: XCTestCase {
             .deletingLastPathComponent()  // repo root
     }
 
+    /// The file the wiring pin scans — also the resolves-pin's marker, so the marker is a
+    /// file every compiling checkout carries (the public mirror ships no CLAUDE.md).
+    private static let scannedPath = "NanoTeams/Services/LLM/LLMExecutionService+ToolIteration.swift"
+
     /// The ceiling's reset must be reachable only through the classifier.
     ///
     /// A source pin because the property is "no OTHER site zeroes the counter in the
@@ -94,7 +98,7 @@ final class ToolTurnProductivityTests: XCTestCase {
     /// The reset used to be an unconditional `else` branch; a refactor re-introducing one
     /// would compile, pass every existing test, and silently restore the unbounded loop.
     func testIterationResetsTheCeilingOnlyThroughTheClassifier() throws {
-        let path = "NanoTeams/Services/LLM/LLMExecutionService+ToolIteration.swift"
+        let path = Self.scannedPath
         let source = try String(
             contentsOf: repoRoot.appendingPathComponent(path), encoding: .utf8)
 
@@ -112,7 +116,7 @@ final class ToolTurnProductivityTests: XCTestCase {
     func testRepoRootResolves() {
         XCTAssertTrue(
             FileManager.default.fileExists(
-                atPath: repoRoot.appendingPathComponent("CLAUDE.md").path),
+                atPath: repoRoot.appendingPathComponent(Self.scannedPath).path),
             "repoRoot derivation is wrong — the wiring pin above would pass vacuously")
     }
 }

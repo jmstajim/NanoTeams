@@ -50,6 +50,11 @@ final class PrefixCacheThresholdParityPinTests: XCTestCase {
 
     private func harnessLines() throws -> [String] {
         let url = repoRoot.appendingPathComponent("benchmark_prompt_processing.sh")
+        // The public mirror ships build sources only — no harness there means nothing to
+        // drift against; the pin stays armed in the checkout where the harness is edited.
+        try XCTSkipUnless(
+            FileManager.default.fileExists(atPath: url.path),
+            "benchmark_prompt_processing.sh is not in this checkout — parity pin skipped")
         return try String(contentsOf: url, encoding: .utf8)
             .components(separatedBy: "\n")
             .map(Self.strippingShellComments)
@@ -129,6 +134,9 @@ final class PrefixCacheThresholdParityPinTests: XCTestCase {
 
     private func baselineRows() throws -> [[String: Any]] {
         let url = repoRoot.appendingPathComponent("bench_baseline/results.jsonl")
+        try XCTSkipUnless(
+            FileManager.default.fileExists(atPath: url.path),
+            "bench_baseline/results.jsonl is not in this checkout — parity pin skipped")
         return try String(contentsOf: url, encoding: .utf8)
             .components(separatedBy: "\n")
             .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }

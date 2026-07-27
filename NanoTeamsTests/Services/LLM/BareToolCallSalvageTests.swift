@@ -206,6 +206,10 @@ final class BareToolCallSalvageTests: XCTestCase {
             .deletingLastPathComponent()  // repo root
     }
 
+    /// The sole expected call site — also the resolves-pin's marker, so the marker is a
+    /// file every compiling checkout carries (the public mirror ships no CLAUDE.md).
+    private static let expectedCallSitePath = "NanoTeams/Services/LLM/LLMExecutionService+Streaming.swift"
+
     /// Exactly one production call site: route 4 of `performStreamingCall`.
     ///
     /// A source pin because the property is about where this may NOT be used, and no
@@ -230,7 +234,7 @@ final class BareToolCallSalvageTests: XCTestCase {
             sites.append(url.lastPathComponent)
         }
         XCTAssertEqual(
-            sites, ["LLMExecutionService+Streaming.swift"],
+            sites, [URL(fileURLWithPath: Self.expectedCallSitePath).lastPathComponent],
             "the salvage is scoped to the step tool loop; adding a caller means re-arguing "
             + "its guards for that surface, not reusing them")
     }
@@ -239,6 +243,6 @@ final class BareToolCallSalvageTests: XCTestCase {
     func testRepoRootResolves() {
         XCTAssertTrue(
             FileManager.default.fileExists(
-                atPath: repoRoot.appendingPathComponent("CLAUDE.md").path))
+                atPath: repoRoot.appendingPathComponent(Self.expectedCallSitePath).path))
     }
 }
