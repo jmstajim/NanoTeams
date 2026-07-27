@@ -221,6 +221,8 @@ extension LLMExecutionService {
 
         let description: String
         do {
+        // Same interleaver as the `analyze_image` path — see the note there.
+        await noteInterleavingCall(label: "vision", config: visionConfig)
             description = try await VisionAnalysisService.analyze(
                 prompt: Self.captureDescriptionPrompt,
                 imageBase64: captured.pngBase64,

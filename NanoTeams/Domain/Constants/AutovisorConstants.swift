@@ -129,6 +129,12 @@ nonisolated enum AutovisorConstants {
     /// verbatim, so it must stay trim-stable, and editing the wording orphans parks
     /// persisted under the old text (cosmetic: the sidebar icon pulses while idle
     /// until the next fresh pass re-parks with the current text).
+    ///
+    /// Because the match is exact, a park that means something OTHER than "healthy
+    /// idle" must carry its own text or it becomes indistinguishable from one — the
+    /// sidebar gates the manager's attention badge on `!isIdleParked`. The
+    /// thinking-loop terminal relies on that: it parks via
+    /// `parkStepForEvents(question:)` with its diagnostic instead of this constant.
     static let idleParkQuestion =
         "Idle — waiting for events. Send a message to continue the conversation."
 

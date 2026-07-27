@@ -29,12 +29,7 @@ final class WorkFolderContextGenerationFailureTests: XCTestCase {
             repository: NTMSRepository(),
             workFolderContextService: contextService
         )
-        sut = NTMSOrchestrator(
-            repository: NTMSRepository(),
-            workFolderManagementService: workFolderService,
-            configuration: StoreConfiguration(storage: InMemoryConfigurationStorage()),
-            embeddingLifecycle: EmbeddingModelLifecycleService(client: RecordingLLMClient())
-        )
+        sut = TestOrchestrator.make(workFolderManagementService: workFolderService)
     }
 
     override func tearDown() {
@@ -216,7 +211,6 @@ private final class ControllableStubLLMClient: LLMClient, @unchecked Sendable {
         config: LLMConfig,
         messages: [ChatMessage],
         tools: [ToolSchema],
-        session: LLMSession?,
         logger: NetworkLogger?,
         stepID: String?,
         roleName: String?

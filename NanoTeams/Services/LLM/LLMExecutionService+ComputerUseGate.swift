@@ -66,6 +66,7 @@ extension LLMExecutionService {
                     // for auto+off before emitting `.ask`. If you add another judge
                     // call site (e.g. a manual-unattended fallback), re-check that
                     // contract — the off-switch lives in the evaluator.
+                    await noteInterleavingCall(label: "computer-use judge", config: config)
                     let verdict = await ComputerUseJudgeService.judge(
                         action: action, context: judgeContext(action: action, key: key),
                         policy: policy, config: config, client: client, logger: networkLogger)

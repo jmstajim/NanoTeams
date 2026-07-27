@@ -129,7 +129,7 @@ nonisolated extension PromptBuilder {
     /// Returns the resolved system_prompt string for the chosen call site.
     /// `.stepExecution` is byte-identity-tested against the production wire
     /// payload (`NativeChatRequest.systemPrompt` from
-    /// `NativeLMStudioClient.buildRequest(... session: nil)`). `.consultation`
+    /// `NativeLMStudioClient.buildRequest(...)`). `.consultation`
     /// / `.meeting` share the same `TemplateResolver.resolveSystemPrompt`
     /// pipeline as their runtime, so body parity is structural; the meeting
     /// Harmony block is appended via the same builder the runtime uses.
@@ -210,7 +210,8 @@ nonisolated extension PromptBuilder {
         // robust than checking the source-template substring (which would
         // miss legacy `{toolCallingBlock}` resolutions and could be fooled by
         // commented-out chip text).
-        let templateHasToolCallingChip = result.string.contains("Call tools using this Harmony format:")
+        let templateHasToolCallingChip = result.string.contains(
+            NativeLMStudioClient.harmonyBodyMarker)
         if !tools.isEmpty && !templateHasToolCallingChip {
             let separator = result.length > 0 ? "\n\n" : ""
             let toolsAttrs: [NSAttributedString.Key: Any] = [
@@ -314,7 +315,7 @@ nonisolated extension PromptBuilder {
     /// auto-append into skipping.
     private static func appendingToolBlock(to body: String, tools: [ToolSchema]) -> String {
         guard !tools.isEmpty else { return body }
-        if body.contains("Call tools using this Harmony format:") { return body }
+        if body.contains(NativeLMStudioClient.harmonyBodyMarker) { return body }
         var result = body
         if !result.isEmpty { result += "\n\n" }
         result += NativeLMStudioClient.buildToolSchemaSection(tools: tools)

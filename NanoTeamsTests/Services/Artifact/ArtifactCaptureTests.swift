@@ -9,7 +9,7 @@ final class ArtifactCaptureTests: XCTestCase {
         try fileManager.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? fileManager.removeItem(at: tempDir) }
 
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         await store.openWorkFolder(tempDir)
         await store.createTask(title: "Change greeting", supervisorTask: "Update greeting text.")
         await store.ensureTaskHasInitialRunIfNeeded(taskID: store.activeTaskID!)

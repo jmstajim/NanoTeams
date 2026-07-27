@@ -24,7 +24,6 @@ final class PlanningScratchpadCardTests: XCTestCase {
             config: LLMConfig,
             messages: [ChatMessage],
             tools: [ToolSchema],
-            session: LLMSession?,
             logger: NetworkLogger?,
             stepID: String?,
             roleName: String?
@@ -77,7 +76,7 @@ final class PlanningScratchpadCardTests: XCTestCase {
         let result = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .codeReviewer,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 

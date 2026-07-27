@@ -10,12 +10,7 @@ nonisolated struct RoleConsultationChat: Codable, Identifiable, Hashable {
     /// Role base ID (e.g., "productManager", custom UUID string).
     var id: String
 
-    /// Session ID for stateful LM Studio sessions.
-    /// Used as `previous_response_id` to continue the conversation server-side.
-    /// May become invalid after app restart — falls back to stateless (full history).
-    var sessionID: String?
-
-    /// Full conversation history for stateless fallback and persistence.
+    /// Full conversation history — the chat IS the request on every call.
     /// Includes system prompt, context messages, all Q/A pairs.
     var messages: [LLMMessage]
 
@@ -28,14 +23,12 @@ nonisolated struct RoleConsultationChat: Codable, Identifiable, Hashable {
 
     init(
         id: String,
-        sessionID: String? = nil,
         messages: [LLMMessage] = [],
         injectedArtifactIDs: Set<String> = [],
         createdAt: Date = MonotonicClock.shared.now(),
         updatedAt: Date = MonotonicClock.shared.now()
     ) {
         self.id = id
-        self.sessionID = sessionID
         self.messages = messages
         self.injectedArtifactIDs = injectedArtifactIDs
         self.createdAt = createdAt
@@ -50,19 +43,10 @@ nonisolated struct RoleConsultationChat: Codable, Identifiable, Hashable {
         }
     }
 
-    /// Get messages to send based on session state.
-    /// Stateful: only new messages since last assistant response.
-    /// Stateless: full history.
-    func messagesToSend(session: LLMSession?) -> [ChatMessage] {
-        if session != nil {
-            // Stateful: only send messages after the last assistant message
-            let allChat = toChatMessages()
-            if let lastAssistantIdx = allChat.lastIndex(where: { $0.role == .assistant }) {
-                return Array(allChat[(lastAssistantIdx + 1)...])
-            }
-            return allChat
-        } else {
-            return toChatMessages()
-        }
+    /// Messages to send on the next call: the FULL history, always. Every request
+    /// is self-contained; the provider's prompt-prefix cache — not a server-side
+    /// chain — is what makes the resend cheap.
+    func messagesToSend() -> [ChatMessage] {
+        toChatMessages()
     }
 }

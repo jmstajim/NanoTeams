@@ -28,10 +28,7 @@ import XCTest
 final class TaskEngineStoreAdapterChildTaskFallbackTests: XCTestCase {
 
     private func makeOrchestrator() -> NTMSOrchestrator {
-        NTMSOrchestrator(
-            repository: NTMSRepository(),
-            searchEmbeddingClient: StubSearchEmbeddingClient()
-        )
+        TestOrchestrator.make()
     }
 
     private func makeWorkFolderRoot() -> URL {

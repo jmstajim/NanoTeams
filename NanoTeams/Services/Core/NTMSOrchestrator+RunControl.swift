@@ -164,6 +164,15 @@ extension NTMSOrchestrator {
         // open tasks; restartRole clears `closedAt` before re-running, so it's unaffected.
         guard task.closedAt == nil else { return }
 
+        // Resuming is a transition back to live, so drop the recovery pause latch —
+        // otherwise every all-`.pending` moment of the resumed run renders "Paused".
+        // Pre-checked rather than called unconditionally: `mutateTask` returning true
+        // means "persisted", not "mutated" (CLAUDE.md §7), so an unguarded call would
+        // burn a disk write on every `answerSupervisorQuestion → resumeRun`.
+        if task.status == .paused {
+            await mutateTask(taskID: taskID) { $0.clearRecoveryPauseLatch() }
+        }
+
         // Cascade resume to delegated children FIRST so when this method returns
         // the parent's `delegate_to_team` handler — if its runStep was preserved
         // through the pause — sees its child engine actively making progress.
@@ -177,11 +186,12 @@ extension NTMSOrchestrator {
         // below so a clean failed *sibling* is revived even when another step is
         // mid-`delegate_to_team` — otherwise the short-circuit would skip it and the run
         // loop would re-fail immediately on the lingering `.failed` role. Skips any failed
-        // step that still carries `activeDelegationChildID`: its model chain has an
-        // unresolved `delegate_to_team` tool_call, so a blind re-run would poison the chain
-        // (that step needs `cancel_delegation`, not a retry). Flip step .failed→.paused AND
-        // role .failed→.working in ONE closure, preserving llmConversation/artifacts/
-        // toolCalls/llmSessionID — a retry, NOT a reset(); markStepRunning then promotes the
+        // step that still carries `activeDelegationChildID`: its transcript has an
+        // unresolved `delegate_to_team` tool call, so a blind re-run would replay a
+        // question nothing answers (that step needs `cancel_delegation`, not a retry).
+        // Flip step .failed→.paused AND role .failed→.working in ONE closure, preserving
+        // llmConversation/artifacts/toolCalls/wireTranscript — a retry, NOT a reset();
+        // markStepRunning then promotes the
         // .paused step to .running on runStep. Disjoint from branches 1/1.5/3 (which handle
         // .paused/.pending steps): branches 1/1.5 read the pre-revival `run` snapshot, where
         // a revived step is still `.failed` and so matches neither their `.paused` nor
@@ -252,15 +262,15 @@ extension NTMSOrchestrator {
             }
         }
 
-        // 1.5 Supervisor answered after restart (or any pause that left a saved session).
+        // 1.5 Supervisor answered while the step was suspended (an ask_supervisor
+        // question, the Autovisor idle park, or any pause that landed on one).
         // `engine.start()` after restart skips `reconcileAfterPause()`, and branch 3
         // below depends on `step.messages`/`llmConversation` being non-empty — both
-        // gaps cause the answered chat to never resume. Restart explicitly when the
-        // step has a saved session ID + an answer; `startStepExecution` then takes
-        // the stateful continuation path and sends only the answer via
-        // `previous_response_id` (no full history rebuild).
+        // gaps cause the answered chat to never resume. Restart explicitly whenever
+        // an answer is present; `startStepExecution` then replays the step's
+        // `wireTranscript` and appends the answer turn.
         for step in run.steps where step.status == .paused || step.status == .pending {
-            guard step.effectiveSupervisorAnswer != nil, step.llmSessionID != nil else { continue }
+            guard step.effectiveSupervisorAnswer != nil else { continue }
             let roleID = step.effectiveRoleID
             let roleStatus = run.roleStatuses[roleID]
             // Guard: only restart for live role states. Done / failed / skipped /
@@ -291,6 +301,10 @@ extension NTMSOrchestrator {
         guard let updatedTask = loadedTask(taskID), let updatedRun = updatedTask.runs.last else { return }
 
         // 3. Restart interrupted steps (idle role + paused step with messages = was running before pause/restart)
+        //
+        // `AutovisorStatus.isResumable` mirrors this branch to tell the Autovisor
+        // whether a resume will land — keep the two in lock-step, or `task_status`
+        // advertises a `resumable: true` this loop then silently skips.
         for step in updatedRun.steps where step.status == .paused {
             let roleID = step.effectiveRoleID
             let roleStatus = updatedRun.roleStatuses[roleID]

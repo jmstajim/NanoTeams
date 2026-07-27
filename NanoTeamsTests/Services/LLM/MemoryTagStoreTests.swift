@@ -978,4 +978,70 @@ final class MemoryTagStoreTests: XCTestCase {
         let data = try! JSONSerialization.data(withJSONObject: s, options: .fragmentsAllowed)
         return String(data: data, encoding: .utf8)!
     }
+
+    // MARK: - resetForFreshConversation (the planning→implementation boundary)
+
+    /// The wedge this exists to prevent: the boundary discards the exploration
+    /// transcript, so a repeat read that short-circuits to
+    /// `{"status":"unchanged","ref":"<§R1§>","_hint":"Do NOT re-read"}` hands the
+    /// model a pointer to content it can no longer see, together with an
+    /// instruction not to fetch it. There is then no route to the file at all.
+    func testResetForFreshConversation_repeatReadReturnsFullContentAgain() {
+        guard case .tagged = sut.processToolResult(
+            makeReadResult(path: "src/x.js", content: "let x = 1"), iteration: 1) else {
+            return XCTFail("first read should be tagged")
+        }
+        guard case .reference = sut.processToolResult(
+            makeReadResult(path: "src/x.js", content: "let x = 1"), iteration: 2) else {
+            return XCTFail("precondition: an unchanged repeat read dedups to a reference")
+        }
+
+        sut.resetForFreshConversation()
+
+        guard case .tagged(let content, _) = sut.processToolResult(
+            makeReadResult(path: "src/x.js", content: "let x = 1"), iteration: 3) else {
+            return XCTFail("after the boundary the model has NOT seen this file — send it")
+        }
+        XCTAssertTrue(content.contains("let x = 1"))
+    }
+
+    /// Tags stay monotonic across the reset. A phase-2 read reusing `<§R1§>`
+    /// would collide with the phase-1 tag still visible in `llmConversation`,
+    /// `tool_calls.jsonl` and the activity feed.
+    func testResetForFreshConversation_keepsTagCountersMonotonic() {
+        _ = sut.processToolResult(makeReadResult(path: "a.js", content: "1"), iteration: 1)
+        sut.resetForFreshConversation()
+
+        guard case .tagged(_, let tag) = sut.processToolResult(
+            makeReadResult(path: "b.js", content: "2"), iteration: 2) else {
+            return XCTFail("expected a fresh baseline")
+        }
+        XCTAssertEqual(tag, "<§R2§>", "counters must not rewind")
+        XCTAssertNil(sut.entries["<§R1§>"], "the discarded conversation's entries are gone")
+    }
+
+    /// An edit recorded before the boundary must not keep invalidating reads
+    /// afterwards — the whole per-path bookkeeping describes a conversation that
+    /// no longer exists.
+    func testResetForFreshConversation_clearsEditInvalidationState() {
+        _ = sut.processToolResult(makeReadResult(path: "x.js", content: "1"), iteration: 1)
+        _ = sut.processToolResult(makeEditResult(path: "x.js"), iteration: 2)
+
+        sut.resetForFreshConversation()
+
+        guard case .tagged = sut.processToolResult(
+            makeReadResult(path: "x.js", content: "2"), iteration: 3) else {
+            return XCTFail("expected a clean baseline read")
+        }
+        guard case .reference = sut.processToolResult(
+            makeReadResult(path: "x.js", content: "2"), iteration: 4) else {
+            return XCTFail("dedup must work normally again after the reset")
+        }
+    }
+
+    func testResetForFreshConversation_isIdempotentAndSafeWhenEmpty() {
+        sut.resetForFreshConversation()
+        sut.resetForFreshConversation()
+        XCTAssertTrue(sut.entries.isEmpty)
+    }
 }

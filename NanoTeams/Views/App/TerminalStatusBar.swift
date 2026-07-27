@@ -34,11 +34,11 @@ struct TerminalStatusBar: View {
     }
 
     private var availableModels: [String] {
-        modelCatalog.models(for: baseURL)
+        modelCatalog.models(for: baseURL, provider: config.llmProvider)
     }
 
     private var isFetchingModels: Bool {
-        modelCatalog.isFetching(baseURL)
+        modelCatalog.isFetching(baseURL, provider: config.llmProvider)
     }
 
     var body: some View {
@@ -48,7 +48,7 @@ struct TerminalStatusBar: View {
         }
         .background(Colors.surfaceBackground)
         .task(id: baseURL) {
-            await modelCatalog.loadIfNeeded(url: baseURL)
+            await modelCatalog.loadIfNeeded(url: baseURL, provider: config.llmProvider)
         }
     }
 
@@ -63,6 +63,7 @@ struct TerminalStatusBar: View {
 
             Spacer(minLength: Spacing.s)
 
+            PrefixCacheStatusIndicator()
             ExploratorySearchStatusIndicator()
         }
         .padding(.horizontal, Spacing.m)
@@ -110,7 +111,7 @@ struct TerminalStatusBar: View {
             Divider()
 
             Button {
-                Task { await modelCatalog.refresh(url: baseURL) }
+                Task { await modelCatalog.refresh(url: baseURL, provider: config.llmProvider) }
             } label: {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }

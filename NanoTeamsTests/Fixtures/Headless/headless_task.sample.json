@@ -1,0 +1,10 @@
+{
+  "projectPath": "/absolute/path/to/your/project",
+  "taskTitle": "Implement sorting",
+  "supervisorTask": "Create Sorting.swift with bubble sort and merge sort, plus a short README section describing when to use each.",
+  "provider": "lmStudio",
+  "baseURL": "http://127.0.0.1:1234",
+  "model": "openai/gpt-oss-20b",
+  "teamTemplate": "startup",
+  "timeoutSeconds": 600
+}

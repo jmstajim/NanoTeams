@@ -560,6 +560,10 @@ nonisolated extension NTMSTask {
         // nil in every `.done` branch below — the closed-task cases collapse to the
         // open-task result.
         switch base {
+        // `status` here is the recovery LATCH, not a live status — see
+        // `clearRecoveryPauseLatch()`. It exists so a recovered run whose remaining
+        // steps are all `.pending` (no `.paused` step to trip the summary's own
+        // `hasPaused` arm) reads "Paused" rather than "Working".
         case .running where status == .paused && !s.hasRunning:
             return .paused
         case .done where isChatMode:
@@ -582,6 +586,25 @@ nonisolated extension NTMSTask {
         default:
             return base
         }
+    }
+
+    /// Clears the recovery pause latch.
+    ///
+    /// `status` is a one-bit LATCH, not a live status. It has exactly two writers:
+    /// seeded at `createTask`, and armed (`.paused`) by `StatusRecoveryService` when a
+    /// launch found work parked mid-flight. Everything user-facing reads the DERIVED
+    /// status instead (`derivedStatusFromActiveRun`, `toSummary`), and the only thing
+    /// that consults the stored value is the `.running where status == .paused` guard
+    /// above — which exists so a recovered run with all-`.pending` steps reads "Paused".
+    ///
+    /// Because nothing used to clear it, the latch stayed armed for the rest of the
+    /// task's life: every LATER run then rendered "Paused" at any moment when no step
+    /// happened to be `.running` (e.g. an upstream step just finished while downstream
+    /// steps are still `.pending`). Every transition back to live must clear it —
+    /// today `createNewRun`, `resumeRun` and `restartRole`.
+    mutating func clearRecoveryPauseLatch() {
+        guard status == .paused else { return }
+        status = .running
     }
 
     /// Whether the task is ready for final Supervisor acceptance

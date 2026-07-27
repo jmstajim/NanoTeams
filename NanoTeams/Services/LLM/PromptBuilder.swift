@@ -48,6 +48,40 @@ nonisolated struct PromptBuilder {
         }
     }
 
+    /// Step messages in conversation order, on a TOTAL order: timestamp first, then the
+    /// persisted array index.
+    ///
+    /// The index tiebreak is not cosmetic. `sorted(by:)` is documented as NOT guaranteed stable,
+    /// so a comparator on `createdAt` alone leaves the order of tied messages up to the sort
+    /// implementation — and this builder is re-run on every rebuild path (`restartRole`,
+    /// `correctRole` branch B). On a stateless transport, the same inputs rendering different
+    /// bytes is a prompt-prefix miss whose cause the reader can never locate. Today's Swift sort
+    /// happens to preserve order for tied elements, which is exactly what makes the dependency
+    /// dangerous: it is an undocumented implementation detail that a toolchain update may drop
+    /// silently.
+    ///
+    /// The tiebreak is the ARRAY INDEX rather than a UUID because `step.messages` is persisted
+    /// and decoded in append order, so when the timestamps tie the array order is the only
+    /// honest chronology. `MonotonicClock` makes in-process ties impossible, so ties arrive from
+    /// legacy or imported data — the one case where that matters.
+    static func chronologicallyOrdered(_ messages: [StepMessage]) -> [StepMessage] {
+        messages.enumerated()
+            .sorted { precedes($0, $1) }
+            .map(\.element)
+    }
+
+    /// The strict weak ordering behind `chronologicallyOrdered`. Exposed so a test can assert it
+    /// is TOTAL — that no two distinct entries are mutually incomparable, which is the property
+    /// the stability of the sort would otherwise have to supply.
+    static func precedes(
+        _ lhs: (offset: Int, element: StepMessage),
+        _ rhs: (offset: Int, element: StepMessage)
+    ) -> Bool {
+        lhs.element.createdAt == rhs.element.createdAt
+            ? lhs.offset < rhs.offset
+            : lhs.element.createdAt < rhs.element.createdAt
+    }
+
     /// Builds the system prompt and initial chat messages for a step.
     /// - Parameters:
     ///   - context: The prompt building context.
@@ -212,7 +246,7 @@ nonisolated struct PromptBuilder {
         }
 
         // 6. Step messages as conversation history.
-        for message in step.messages.sorted(by: { $0.createdAt < $1.createdAt }) {
+        for message in chronologicallyOrdered(step.messages) {
             let messageRole = (message.role == .supervisor) ? "user" : "assistant"
             messages.append(ChatMessage(role: MessageRole(rawValue: messageRole) ?? .user, content: message.content))
         }
@@ -235,7 +269,9 @@ nonisolated struct PromptBuilder {
             messages.append(ChatMessage(role: .user, content: closing))
         }
 
-        // Note: Scratchpad planning phase is now handled in LLMExecutionService.runOneLLMToolIteration()
+        // Note: the planning phase is applied in `runOneLLMToolIteration` via
+        // `applyPlanningPhase` — it appends a brief to the WIRE and never touches
+        // this composed prompt.
 
         return messages
     }

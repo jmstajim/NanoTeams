@@ -82,22 +82,6 @@ nonisolated enum Colors {
 
     // MARK: - Adaptive Color Helper (theme-independent overrides)
 
-    /// Theme-independent adaptive color — pinned dark/light hex pair. Use this
-    /// only when the color MUST stay constant across themes (e.g. transparent
-    /// fade gradients that overlay specific surfaces). For all semantic tokens,
-    /// prefer `themed(_:)`.
-    static func adaptive(dark: UInt64, light: UInt64, alpha: CGFloat = 1.0) -> Color {
-        Color(nsColor: nsAdaptive(dark: dark, light: light, alpha: alpha))
-    }
-
-    /// AppKit counterpart of `adaptive`.
-    nonisolated static func nsAdaptive(dark: UInt64, light: UInt64, alpha: CGFloat = 1.0) -> NSColor {
-        NSColor(name: nil) { appearance in
-            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            let hex = isDark ? dark : light
-            return Self.makeNSColor(hex: hex, alpha: alpha)
-        }
-    }
 
     private nonisolated static func makeNSColor(hex: UInt64, alpha: CGFloat) -> NSColor {
         NSColor(

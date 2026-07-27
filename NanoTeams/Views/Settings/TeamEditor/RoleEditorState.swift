@@ -30,11 +30,17 @@ nonisolated struct RoleEditorState {
     var roleIcon: String = "person"
     var rolePrompt: String = ""
     var selectedTools: Set<String> = []
-    var usePlanningPhase: Bool = true
+    /// Off for a NEW role. The phase is a multi-turn read-and-plan stretch now,
+    /// not the single `update_scratchpad` call it used to be, so it is opt-in
+    /// everywhere except the Software Engineer template.
+    var usePlanningPhase: Bool = false
     var requiredArtifacts: [String] = []
     var producedArtifacts: [String] = []
     var llmBaseURL: String = ""
     var llmModelName: String = ""
+    /// `nil` = inherit the global provider. Set when the override URL points
+    /// at a different provider's server (mirrors `LLMOverride.provider`).
+    var llmProviderOverride: LLMProvider? = nil
     var availableModels: [String] = []
     /// Populated when the override-model fetch fails. Cleared on every fetch
     /// attempt; rendered in the LLM tab so the user knows why the picker is
@@ -79,6 +85,7 @@ nonisolated struct RoleEditorState {
         if let override = role.llmOverride {
             llmBaseURL = override.baseURLString ?? ""
             llmModelName = override.modelName ?? ""
+            llmProviderOverride = override.provider
         }
 
         // Delegation: whitelist + generated flag round-trip directly from the

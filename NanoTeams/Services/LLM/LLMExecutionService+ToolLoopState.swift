@@ -39,18 +39,26 @@ extension LLMExecutionService {
     //      `NanoTeamsTests/Services/LLM/ToolExecutionTests.swift` (paired TODO).
     //   4. Delete `testInjectMemories_disabledFlag_skipsSeededStore` — its
     //      assertion fails-on-flip and is the tripwire forcing this step.
+    //   5. Exempt it in `reportPrefixCacheMissIfAny`. The rebuild-in-place below
+    //      rewrites the block at `memoriesMessageIndex` — early in the array —
+    //      and the version counter guarantees the bytes differ every iteration,
+    //      so the prompt-prefix cache detector would correctly but uselessly
+    //      report a total miss on EVERY tool-using turn. Decide there whether
+    //      the rewrite is a defect worth reporting or a deliberate reset.
     private static let isMemoriesInjectionEnabled = false
 
     /// Injects the Memories index into the conversation. Skipped when the store
-    /// is empty (no tag-producing tools were called yet) and, in stateful mode,
-    /// when the content hasn't changed since the last injection — the prior
-    /// block is already in the server's response chain, so re-sending it just
-    /// bloats the conversation with N stale copies on long steps.
+    /// is empty (no tag-producing tools were called yet).
+    ///
+    /// Rebuilds in place so there's only ever ONE block: the whole conversation
+    /// is resent every iteration, so appending a fresh block per update would
+    /// accumulate N stale copies. The persisted copy is the block VERBATIM — a
+    /// `[MEMORIES]` bracket sigil would mix a second delimiter system into the
+    /// `##`-headed block [Sclar2024].
     func injectMemories(
         stepID: String,
         taskID: Int,
         memoryStore: MemoryTagStore,
-        session: LLMSession?,
         conversationMessages: inout [ChatMessage]
     ) async {
         guard Self.isMemoriesInjectionEnabled else { return }
@@ -61,30 +69,14 @@ extension LLMExecutionService {
 
         guard let memories = memoryStore.generateMemories(version: nextVersion) else { return }
 
-        if session != nil {
-            // Stateful: dedup — the prior block is already in the server chain.
-            // Fingerprint skips the version header so bumping `v1`→`v2` alone
-            // doesn't count as a change; only real entry changes trigger an append.
-            let fingerprint = memories.split(separator: "\n").dropFirst().joined(separator: "\n")
-            if executionStates[stepKey]?.lastMemoriesFingerprint == fingerprint { return }
-            executionStates[stepKey]?.lastMemoriesFingerprint = fingerprint
-            conversationMessages.append(ChatMessage(role: .user, content: memories))
-            await appendLLMMessage(stepID: stepID, taskID: taskID, role: .user, content: memories)
+        if let existingIndex = executionStates[stepKey]?.memoriesMessageIndex,
+           existingIndex < conversationMessages.count {
+            conversationMessages[existingIndex] = ChatMessage(role: .user, content: memories)
         } else {
-            // Stateless: rebuild in-place so there's only ever one block. The
-            // persisted copy is the block VERBATIM — a `[MEMORIES]` bracket
-            // sigil would mix a second delimiter system into the `##`-headed
-            // block on stateless rebuild [Sclar2024].
-            if let existingIndex = executionStates[stepKey]?.memoriesMessageIndex,
-               existingIndex < conversationMessages.count {
-                conversationMessages[existingIndex] = ChatMessage(role: .user, content: memories)
-                await appendLLMMessage(stepID: stepID, taskID: taskID, role: .user, content: memories)
-            } else {
-                executionStates[stepKey]?.memoriesMessageIndex = conversationMessages.count
-                conversationMessages.append(ChatMessage(role: .user, content: memories))
-                await appendLLMMessage(stepID: stepID, taskID: taskID, role: .user, content: memories)
-            }
+            executionStates[stepKey]?.memoriesMessageIndex = conversationMessages.count
+            conversationMessages.append(ChatMessage(role: .user, content: memories))
         }
+        await appendLLMMessage(stepID: stepID, taskID: taskID, role: .user, content: memories)
     }
 
     // MARK: - Queued Supervisor Message Injection
@@ -93,13 +85,6 @@ extension LLMExecutionService {
     /// untargeted Team queue) and appends it to `conversationMessages` as a user
     /// turn for this iteration's LLM request.
     ///
-    /// Skipped on iteration 1 with a non-nil session: that combination only
-    /// occurs when a step resumes from a saved session (supervisor/revision
-    /// continuation) and the conversation has no assistant turn to anchor the
-    /// stateful-chain slice against — appending a user message there would send
-    /// through stateless fallback while `session` stays set, causing the server
-    /// to duplicate the response chain.
-    ///
     /// The delegate performs attachment finalization AND persists the matching
     /// `LLMMessage` to `step.llmConversation` atomically — we must NOT also call
     /// `appendLLMMessage` here (double-append).
@@ -107,11 +92,8 @@ extension LLMExecutionService {
         stepID: String,
         taskID: Int,
         roleID: String,
-        iterationNumber: Int,
-        session: LLMSession?,
         conversationMessages: inout [ChatMessage]
     ) async {
-        guard iterationNumber > 1 || session == nil else { return }
         guard let delegate else { return }
         guard let content = await delegate.consumeQueuedSupervisorMessage(
             taskID: taskID, roleID: roleID, stepID: stepID
@@ -151,7 +133,7 @@ extension LLMExecutionService {
     /// error guidance says "don't retry" while the loop warning says "call
     /// it"). One directive beats a conditional menu for small models.
     /// Internal (not private) for test pinning.
-    static func loopWarningMessage(
+    nonisolated static func loopWarningMessage(
         loopDetection: LoopDetection,
         allowedToolNames: Set<String>
     ) -> String {
@@ -173,6 +155,93 @@ extension LLMExecutionService {
         }
         return "Loop detected: \(loopDetection.message) Do one of: change the arguments, "
             + "or move on to the next step of your plan.\(escalation)"
+    }
+
+    // MARK: - No-Tool-Call Nudges (tool-aware)
+    //
+    // Same contract as `loopWarningMessage` above and for the same reason: name ONLY
+    // tools in the role's CURRENT schema. `allowedToolNames` is the set
+    // `executeToolCalls` authorizes against (narrowed during the planning phase), so a
+    // name that isn't in it can only ever come back `tool_not_authorized`.
+    //
+    // This is not hypothetical: `resolveToolSchemas` strips `ask_supervisor` from the
+    // Autovisor manager unconditionally, yet every branch below used to name it — the
+    // manager was told to call a tool it provably does not have, on the very turn it
+    // was already failing to act.
+
+    /// The completion-channel nudge for a role that replied with text and no tool call.
+    ///
+    /// `wait_for_events` is checked first because it identifies the Autovisor manager,
+    /// the one role for which the "plain text does not reach the Supervisor" framing is
+    /// FALSE — its Supervisor is the human reading that very chat, and its own system
+    /// prompt calls plain text "your only reply channel". Telling it otherwise while
+    /// pointing at a missing tool is how a pass burns its recovery budget emitting
+    /// nothing. Keyed on the schema rather than on team identity so a role that holds
+    /// the tool gets the right text however it acquired it.
+    nonisolated static func noToolCallNudge(allowedToolNames: Set<String>) -> String {
+        if allowedToolNames.contains(ToolNames.waitForEvents) {
+            return "You replied with text but did not call a tool. Your reply is recorded. "
+                + "If you have nothing left to do this pass, call wait_for_events to go idle; "
+                + "otherwise call the next tool you need to continue."
+        }
+        if allowedToolNames.contains(ToolNames.askSupervisor) {
+            return "You responded with text but did not call any tools — plain text "
+                + "does not reach the Supervisor. If your reply is complete, send it via "
+                + "ask_supervisor; otherwise call the next tool you need to continue."
+        }
+        return "You responded with text but did not call any tools — plain text does not "
+            + "reach the Supervisor. Call the next tool you need to continue."
+    }
+
+    /// The nudge for N near-identical no-tool responses (`.repetitiveNonTool`).
+    ///
+    /// Discriminates on the SCHEMA, not on `producesArtifacts`: a producing role in the
+    /// planning phase has `create_artifact` withheld, and this branch runs ABOVE the
+    /// planning-phase handler, so the config signal would steer it straight into the
+    /// phase's `plan_required` rejection.
+    nonisolated static func repetitiveNonToolNudge(count: Int, allowedToolNames: Set<String>) -> String {
+        let escalation = allowedToolNames.contains(ToolNames.askSupervisor)
+            ? " If you're blocked, call ask_supervisor with a specific question."
+            : ""
+        let action: String
+        if allowedToolNames.contains(ToolNames.createArtifact) {
+            action = "If you've finished your work, call create_artifact to submit "
+                + "your deliverable.\(escalation)"
+        } else if allowedToolNames.contains(ToolNames.waitForEvents) {
+            action = "If you have nothing left to do this pass, call wait_for_events to go idle."
+        } else if allowedToolNames.contains(ToolNames.askSupervisor) {
+            action = "If your reply is complete, send it via ask_supervisor and wait "
+                + "for the Supervisor's response."
+        } else {
+            action = "Call the tool that advances your next step."
+        }
+        return "Your last \(count) responses were near-identical and "
+            + "contained no tool calls. \(action) Do not repeat this response."
+    }
+
+    /// Illustrative tool ids for the "missing top-level `name`" explainer, filtered to
+    /// the role's schema and capped at three. `nil` when none survive — the caller then
+    /// drops the parenthetical rather than shipping an empty one. An example naming a
+    /// tool the role lacks teaches a vocabulary the runtime rejects.
+    /// Illustration candidates, most-teachable first. Shared so the quoted list and the
+    /// single bare name below can never disagree about which tool a role is shown.
+    nonisolated private static let preferredExampleTools = [
+        ToolNames.createArtifact, ToolNames.writeFile, ToolNames.askSupervisor,
+        ToolNames.readFile, ToolNames.updateScratchpad, ToolNames.waitForEvents,
+    ]
+
+    nonisolated static func toolNameExamples(allowedToolNames: Set<String>) -> String? {
+        let picked = preferredExampleTools.filter(allowedToolNames.contains).prefix(3)
+        guard !picked.isEmpty else { return nil }
+        return picked.map { "\"\($0)\"" }.joined(separator: ", ")
+    }
+
+    /// One bare tool id for an example that must be syntactically valid — a Harmony
+    /// `to=NAME` recipient, or the `name` field of a call envelope. Returns nil when the
+    /// role holds none of the candidates, so the caller can drop the illustration rather
+    /// than teach a tool the runtime would reject.
+    nonisolated static func toolNameExample(allowedToolNames: Set<String>) -> String? {
+        preferredExampleTools.first(where: allowedToolNames.contains)
     }
 
     // MARK: - Supervisor Auto-Answer in Tool Loop

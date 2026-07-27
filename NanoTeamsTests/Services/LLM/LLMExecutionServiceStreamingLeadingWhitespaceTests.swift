@@ -30,7 +30,6 @@ final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
             config: LLMConfig,
             messages: [ChatMessage],
             tools: [ToolSchema],
-            session: LLMSession?,
             logger: NetworkLogger?,
             stepID: String?,
             roleName: String?
@@ -152,7 +151,7 @@ final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
         _ = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .codingAgent,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -197,7 +196,7 @@ final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
         _ = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .codingAgent,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -251,7 +250,7 @@ final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
         _ = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .codingAgent,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -277,7 +276,7 @@ final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
         _ = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .codingAgent,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -301,7 +300,7 @@ final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
         _ = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .codingAgent,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -335,7 +334,7 @@ final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
             _ = try await service.performStreamingCall(
                 stepID: stepID, taskID: taskID, roleForMessage: .codingAgent,
                 client: mockClient, config: LLMConfig(),
-                tools: [], conversationMessages: [], session: nil,
+                tools: [], conversationMessages: [],
                 networkLogger: nil
             )
             XCTFail("Expected CancellationError to propagate")
@@ -364,7 +363,7 @@ final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
             _ = try await service.performStreamingCall(
                 stepID: stepID, taskID: taskID, roleForMessage: .codingAgent,
                 client: mockClient, config: LLMConfig(),
-                tools: [], conversationMessages: [], session: nil,
+                tools: [], conversationMessages: [],
                 networkLogger: nil
             )
             XCTFail("Expected CancellationError to propagate")
@@ -392,7 +391,7 @@ final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
         _ = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .codingAgent,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 

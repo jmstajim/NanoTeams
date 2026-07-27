@@ -204,7 +204,7 @@ final class ConcurrentSameTeamTasksScenarioTests: NTMSOrchestratorTestBase {
             try await service.performStreamingCall(
                 stepID: stepID, taskID: taskA, roleForMessage: .softwareEngineer,
                 client: GatedClient(gate: gateA, content: "alpha: phase 39 engineering notes"),
-                config: config, tools: [], conversationMessages: [], session: nil, networkLogger: nil)
+                config: config, tools: [], conversationMessages: [], networkLogger: nil)
         }
         await waitUntil { self.sut.streamingPreviewManager.hasReceivedStreamActivity(stepID: stepID, taskID: taskA) }
 
@@ -212,7 +212,7 @@ final class ConcurrentSameTeamTasksScenarioTests: NTMSOrchestratorTestBase {
             try await service.performStreamingCall(
                 stepID: stepID, taskID: taskB, roleForMessage: .softwareEngineer,
                 client: GatedClient(gate: gateB, content: "bravo: phase 40 audio system"),
-                config: config, tools: [], conversationMessages: [], session: nil, networkLogger: nil)
+                config: config, tools: [], conversationMessages: [], networkLogger: nil)
         }
         await waitUntil { self.sut.streamingPreviewManager.hasReceivedStreamActivity(stepID: stepID, taskID: taskB) }
 
@@ -271,7 +271,7 @@ final class ConcurrentSameTeamTasksScenarioTests: NTMSOrchestratorTestBase {
         }
         func streamChat(
             config _: LLMConfig, messages _: [ChatMessage], tools _: [ToolSchema],
-            session _: LLMSession?, logger _: NetworkLogger?, stepID _: String?, roleName _: String?
+            logger _: NetworkLogger?, stepID _: String?, roleName _: String?
         ) -> AsyncThrowingStream<StreamEvent, Error> {
             let gate = gate
             let content = content

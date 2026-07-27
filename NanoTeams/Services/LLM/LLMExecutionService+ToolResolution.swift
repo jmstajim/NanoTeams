@@ -15,14 +15,21 @@ extension LLMExecutionService {
         }
 
         return LLMConfig(
-            provider: .lmStudio,
+            // Override provider wins when set (the override URL may point at a
+            // different provider's server); otherwise the global provider
+            // flows through — hardcoding `.lmStudio` here would silently talk
+            // the wrong wire format after a global provider switch.
+            provider: override.provider ?? globalConfig.provider,
             baseURLString: override.baseURLString ?? globalConfig.baseURLString,
             modelName: override.modelName ?? globalConfig.modelName,
             // The override carries no sampling params (LM Studio owns those),
             // but the global value must survive — dropping it here would let a
             // URL-only override silently reset an explicitly-set temperature.
             temperature: globalConfig.temperature,
-            requestTimeoutSeconds: globalConfig.requestTimeoutSeconds
+            requestTimeoutSeconds: globalConfig.requestTimeoutSeconds,
+            // Same reason as the timeout above: a URL-only override must not silently
+            // drop the residency hint and let the model evict mid-step.
+            keepAliveSeconds: globalConfig.keepAliveSeconds
         )
     }
 
@@ -68,7 +75,7 @@ extension LLMExecutionService {
     ) async -> LLMConfig {
         do {
             guard let checkURL = URL(string: effectiveConfig.baseURLString)?
-                .appendingPathComponent("api/v1/models") else {
+                .appendingPathComponent(effectiveConfig.provider.reachabilityProbePath) else {
                 throw LLMClientError.invalidBaseURL(effectiveConfig.baseURLString)
             }
             var request = URLRequest(url: checkURL)

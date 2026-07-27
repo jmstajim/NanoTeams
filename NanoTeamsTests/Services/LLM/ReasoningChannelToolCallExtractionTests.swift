@@ -29,7 +29,6 @@ final class ReasoningChannelToolCallExtractionTests: XCTestCase {
             config: LLMConfig,
             messages: [ChatMessage],
             tools: [ToolSchema],
-            session: LLMSession?,
             logger: NetworkLogger?,
             stepID: String?,
             roleName: String?
@@ -87,7 +86,7 @@ final class ReasoningChannelToolCallExtractionTests: XCTestCase {
         let result = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .codingAgent,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -123,7 +122,7 @@ final class ReasoningChannelToolCallExtractionTests: XCTestCase {
         let result = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .codingAgent,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -156,7 +155,7 @@ final class ReasoningChannelToolCallExtractionTests: XCTestCase {
         let result = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .codingAgent,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -180,7 +179,7 @@ final class ReasoningChannelToolCallExtractionTests: XCTestCase {
         let result = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .codingAgent,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -204,7 +203,7 @@ final class ReasoningChannelToolCallExtractionTests: XCTestCase {
         let result = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .codingAgent,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -227,7 +226,7 @@ final class ReasoningChannelToolCallExtractionTests: XCTestCase {
         _ = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .codingAgent,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 

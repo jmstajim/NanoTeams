@@ -4,30 +4,73 @@ import Foundation
 
 extension TeamEngine {
 
+    /// The per-role acceptance gate for this pass, resolved ONCE (the run loop reconciles
+    /// every role on every 250 ms tick — re-resolving per role would re-walk the task).
+    func acceptanceGate() -> AcceptanceService.Gate? {
+        guard let store, let task = store.activeTask else { return nil }
+        return AcceptanceService.Gate(task: task, teamSettings: store.teamSettings)
+    }
+
+    /// Applies `RoleStepReconciler` — the rule shared with `StatusRecoveryService` — to a
+    /// single role. Writes only on `.settle`.
+    ///
+    /// - Returns: `true` iff a status was written.
+    @discardableResult
+    func reconcileRole(
+        roleID: String,
+        roleStatus: RoleExecutionStatus?,
+        stepStatus: StepStatus?,
+        gate: AcceptanceService.Gate
+    ) async -> Bool {
+        guard case .settle(let newStatus) = RoleStepReconciler.outcome(
+            roleStatus: roleStatus,
+            stepStatus: stepStatus,
+            gate: gate,
+            roleID: roleID
+        ) else { return false }
+
+        await store?.updateRoleStatus(roleID: roleID, status: newStatus)
+        onRoleStatusChanged?(roleID, newStatus)
+        return true
+    }
+
     /// Reconcile role statuses after pause — a role task may have completed
     /// (step → .done/.failed) before cancellation took effect, or a step may
     /// have been paused after an external event (e.g., Supervisor answered ask_supervisor).
+    ///
+    /// Also runs on `start()` (see `launchRunLoop`), which is the path a post-restart
+    /// `resumeRun` takes.
     func reconcileAfterPause() async {
-        guard let store, let run = store.activeTask?.runs.last else { return }
+        guard let store, let run = store.activeTask?.runs.last, let gate = acceptanceGate() else { return }
         let stepMap = run.stepsByRoleBaseID()
-        for (roleID, status) in run.roleStatuses where status == .working {
-            if let step = stepMap[roleID] {
-                if step.status == .done {
-                    await handleRoleCompleted(roleID: roleID)
-                } else if step.status == .failed {
-                    await store.updateRoleStatus(roleID: roleID, status: .failed)
-                    onRoleStatusChanged?(roleID, .failed)
-                } else if step.status == .paused || step.status == .pending {
-                    // Step was paused or reset to pending while role was working
-                    // (e.g., Supervisor answered ask_supervisor sets .pending, or pause/resume sets .paused).
-                    // Restart step execution so the LLM can continue with the full conversation.
-                    roleTasks[roleID] = Task { [weak self] in
-                        guard let self, let store = self.store else { return }
-                            await store.prepareStepForExecution(stepID: step.id)
-                        await store.runStep(stepID: step.id)
-                        await self.waitForStepCompletion(stepID: step.id, roleID: roleID)
-                    }
-                }
+        for (roleID, status) in run.roleStatuses {
+            let step = stepMap[roleID]
+
+            // Settle first — this arm is gated on the ROLE's own status via
+            // `RoleStepReconciler`, so it also heals a role a previous launch's
+            // recovery left at `.idle` next to a terminal step. It additionally
+            // covers `.needsApproval`, which this method never used to handle.
+            if await reconcileRole(roleID: roleID, roleStatus: status, stepStatus: step?.status, gate: gate) {
+                continue
+            }
+
+            // The RESTART arm stays `.working`-gated on purpose. Settling is bookkeeping;
+            // restarting is an execution decision, and this arm does NOT write `.working`
+            // — firing it for an `.idle` role would run a step while the role reads
+            // `.idle`, and would duplicate `resumeRun`'s own recovery branch, re-running
+            // work the Supervisor never asked to resume.
+            guard status == .working, let step,
+                  step.status == .paused || step.status == .pending
+            else { continue }
+
+            // Step was paused or reset to pending while role was working
+            // (e.g., Supervisor answered ask_supervisor sets .pending, or pause/resume sets .paused).
+            // Restart step execution so the LLM can continue with the full conversation.
+            roleTasks[roleID] = Task { [weak self] in
+                guard let self, let store = self.store else { return }
+                await store.prepareStepForExecution(stepID: step.id)
+                await store.runStep(stepID: step.id)
+                await self.waitForStepCompletion(stepID: step.id, roleID: roleID)
             }
         }
     }
@@ -198,39 +241,23 @@ extension TeamEngine {
         }
     }
 
+    /// The step-is-`.done` entry point, called by `waitForStepCompletion`.
+    ///
+    /// Double-processing protection is preserved without an explicit `.working` guard:
+    /// after the first call the role is `.done` / `.needsAcceptance`, and
+    /// `RoleStepReconciler` answers `.noAction` for both — as it does for the other
+    /// never-touch statuses the old guard covered (`.revisionRequested`, `.failed`,
+    /// `.accepted`, `.skipped`). Passing `.done` literally, rather than looking the step
+    /// up, keeps this off any `stepID == roleID` assumption.
     func handleRoleCompleted(roleID: String) async {
-        guard let store else { return }
-        guard let task = store.activeTask else { return }
+        guard let run = store?.activeTask?.runs.last, let gate = acceptanceGate() else { return }
 
-        // Prevent double-processing: both reconciliation pass and waitForStepCompletion
-        // can detect step .done and call this method. Only process once while .working.
-        guard let run = task.runs.last,
-              run.roleStatuses[roleID] == .working else { return }
-
-        let acceptanceMode = AcceptanceService.effectiveAcceptanceMode(
-            for: task,
-            teamSettings: store.teamSettings
-        )
-        let checkpoints = AcceptanceService.effectiveCheckpoints(
-            for: task,
-            teamSettings: store.teamSettings
-        )
-
-        // Check if a per-role acceptance gate is needed. The terminal role is NOT gated
-        // here — it's covered by the task-level final review (see shouldRequestAcceptance).
-        let needsAcceptance = AcceptanceService.shouldRequestAcceptance(
+        await reconcileRole(
             roleID: roleID,
-            mode: acceptanceMode,
-            checkpoints: checkpoints
+            roleStatus: run.roleStatuses[roleID],
+            stepStatus: .done,
+            gate: gate
         )
-
-        if needsAcceptance {
-            await store.updateRoleStatus(roleID: roleID, status: .needsAcceptance)
-            onRoleStatusChanged?(roleID, .needsAcceptance)
-        } else {
-            await store.updateRoleStatus(roleID: roleID, status: .done)
-            onRoleStatusChanged?(roleID, .done)
-        }
     }
 
 }

@@ -90,10 +90,16 @@ final class PromptImprovementSession {
     /// Begins an improve run over the field's current text. No-op while a run
     /// is active or when the field is blank. The field is NOT touched until
     /// the first visible delta arrives.
+    /// `recordPrefixCall` registers this request with the prompt-prefix ledger. A closure rather
+    /// than the ledger itself: this session is owned by a SwiftUI view and has no service handle,
+    /// while the host can reach one from the environment. Optional because a host without the
+    /// orchestrator in scope legitimately cannot supply it — see the marker at the `streamChat`
+    /// call site.
     func start(
         config: LLMConfig,
         read: @escaping @MainActor () -> String,
-        write: @escaping @MainActor (String) -> Void
+        write: @escaping @MainActor (String) -> Void,
+        recordPrefixCall: (@MainActor (LLMConfig) async -> Void)? = nil
     ) {
         guard !isImproving else { return }
         let current = read()
@@ -119,6 +125,10 @@ final class PromptImprovementSession {
         // returns). The Task only consumes.
         let stream = streamProvider(current, config)
         task = Task { [weak self] in
+            // Registered as a suspect: this runs on the global model, and the button lives in
+            // `MessageComposer` — i.e. in the activity feed, where a role step may well be
+            // streaming on that same model right now.
+            await recordPrefixCall?(config)
             do {
                 for try await delta in stream {
                     guard let self, !Task.isCancelled else { return }

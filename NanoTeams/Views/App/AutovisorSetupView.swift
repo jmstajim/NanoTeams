@@ -1,18 +1,25 @@
 import SwiftUI
 
-/// First-time setup pane for the Autovisor in a work folder where it has never
-/// been enabled. Shown by `MainLayoutView.autovisorDetail` when the navigation
-/// destination is `.autovisor` but `autovisorTaskID == nil`.
+/// The Autovisor's start page — goal + **Enable**. Shown by
+/// `MainLayoutView.autovisorDetail` whenever `autovisorShowsSetupPane` is true,
+/// which covers BOTH entry points:
 ///
-/// Flow: the user edits the goal (pre-seeded with `AutovisorConstants.defaultGoal`
-/// so the field is never blank — the default is a "explore & wait" directive that
-/// keeps the manager safe until a real goal is set), then taps **Enable**:
+/// • **First run** — the manager was never created (`autovisorTaskID == nil`).
+/// • **Re-enable** — it exists but is switched off. Disabling keeps the task, so
+///   this pane replaces the chat for the whole off period; the conversation is
+///   untouched and comes back on the next enable.
+///
+/// Flow: the user edits the goal (`seedGoalDraft` pre-fills the persisted one, or
+/// `AutovisorConstants.defaultGoal` so the field is never blank — the default is an
+/// "explore & wait" directive that keeps the manager safe until a real goal is set),
+/// then taps **Enable**:
 ///
 /// 1. `updateAutovisorGoal` persists the edited goal.
 /// 2. `setAutovisorEnabled(true)` flips the settings flag and `ensureAutovisorTask`
-///    lazily creates the manager team-then-task — populating `autovisorTaskID`.
-/// 3. The parent `autovisorDetail` re-evaluates: `autovisorTaskID` is now non-nil
-///    → routes to the loader/`switchTask` branch → lands on the chat view.
+///    creates the manager team-then-task on first run, or re-arms the review
+///    recurrence for an existing one.
+/// 3. The parent `autovisorDetail` re-evaluates: `autovisorShowsSetupPane` is now
+///    false → routes to the loader/`switchTask` branch → lands on the chat view.
 ///
 /// No explicit navigation push needed — the body re-render IS the route.
 struct AutovisorSetupView: View {
@@ -83,7 +90,13 @@ struct AutovisorSetupView: View {
 
     private var goalSection: some View {
         VStack(alignment: .leading, spacing: Spacing.s) {
-            MonoLabel(text: "Goal", marker: true)
+            // The tip is a SIBLING of MonoLabel, never inside it — MonoLabel
+            // combines its subtree for accessibility, which would drop the
+            // button's action.
+            HStack(spacing: Spacing.xs) {
+                MonoLabel(text: "Goal", marker: true)
+                AutovisorGoalLintTip(goal: goalDraft)
+            }
 
             // Quick Capture-style composer (attach / skills / gear / improve /
             // dictate) minus the send button. Return inserts a newline, files

@@ -763,7 +763,7 @@ final class PostTeardownWriteBarrierCornerTests: XCTestCase, @unchecked Sendable
     private final class SilentClient: LLMClient, @unchecked Sendable {
         func streamChat(
             config _: LLMConfig, messages _: [ChatMessage], tools _: [ToolSchema],
-            session _: LLMSession?, logger _: NetworkLogger?, stepID _: String?, roleName _: String?
+            logger _: NetworkLogger?, stepID _: String?, roleName _: String?
         ) -> AsyncThrowingStream<StreamEvent, Error> {
             AsyncThrowingStream { $0.finish() }
         }
@@ -841,13 +841,13 @@ final class PostTeardownWriteBarrierCornerTests: XCTestCase, @unchecked Sendable
         service.clearRunningTask(stepID: stepID, taskID: taskA)
 
         let orphanResult = await service.setNeedsSupervisorInput(
-            stepID: stepID, taskID: taskA, question: "orphan Q", sessionID: nil)
+            stepID: stepID, taskID: taskA, question: "orphan Q")
         XCTAssertFalse(orphanResult)
         XCTAssertTrue(mockDelegate.notifyQueuedMessageBackstopCalls.isEmpty,
                       "Torn-down task A must not fire the auto-resuming backstop")
 
         let liveResult = await service.setNeedsSupervisorInput(
-            stepID: stepID, taskID: taskB, question: "live Q", sessionID: nil)
+            stepID: stepID, taskID: taskB, question: "live Q")
         XCTAssertTrue(liveResult)
         XCTAssertEqual(mockDelegate.notifyQueuedMessageBackstopCalls, [taskB],
                        "Live task B on the same stepID must keep its backstop")
@@ -861,7 +861,9 @@ final class PostTeardownWriteBarrierCornerTests: XCTestCase, @unchecked Sendable
         service.clearRunningTask(stepID: stepID, taskID: taskA)
         mockDelegate.eventLog.removeAll()
 
-        await service.persistSessionID(stepID: stepID, taskID: taskA, sessionID: "resp_1")
+        await service.persistWireTranscript(
+            stepID: stepID, taskID: taskA,
+            messages: [ChatMessage(role: .user, content: "orphan transcript")])
         await service.updateScratchpad(stepID: stepID, taskID: taskA, content: "orphan plan")
         await service.appendToolCalls(stepID: stepID, taskID: taskA, toolCalls: [
             StepToolCall(name: "read_file", argumentsJSON: "{}")
@@ -1044,7 +1046,7 @@ final class OrphanStreamCommitDropTests: XCTestCase, @unchecked Sendable {
         init(gate: AsyncGate) { self.gate = gate }
         func streamChat(
             config _: LLMConfig, messages _: [ChatMessage], tools _: [ToolSchema],
-            session _: LLMSession?, logger _: NetworkLogger?, stepID _: String?, roleName _: String?
+            logger _: NetworkLogger?, stepID _: String?, roleName _: String?
         ) -> AsyncThrowingStream<StreamEvent, Error> {
             let gate = gate
             return AsyncThrowingStream { continuation in
@@ -1089,7 +1091,7 @@ final class OrphanStreamCommitDropTests: XCTestCase, @unchecked Sendable {
             try await weakService.performStreamingCall(
                 stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
                 client: GatedClient(gate: gate), config: config,
-                tools: [], conversationMessages: [], session: nil, networkLogger: nil)
+                tools: [], conversationMessages: [], networkLogger: nil)
         }
 
         // Wait until the delta has been observed (markStreamActivity fires on every
@@ -1162,7 +1164,7 @@ final class DelegationGenerationTeardownTests: XCTestCase, @unchecked Sendable {
         }
         func streamChat(
             config _: LLMConfig, messages _: [ChatMessage], tools _: [ToolSchema],
-            session _: LLMSession?, logger _: NetworkLogger?, stepID _: String?, roleName _: String?
+            logger _: NetworkLogger?, stepID _: String?, roleName _: String?
         ) -> AsyncThrowingStream<StreamEvent, Error> {
             let gate = gate
             let outcome = outcome

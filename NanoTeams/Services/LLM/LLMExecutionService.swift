@@ -19,9 +19,10 @@ nonisolated final class OnceResolver: @unchecked Sendable {
 /// and step completion handling.
 ///
 /// This class is split across multiple extension files:
-/// - `+Streaming.swift` — LLM streaming, planning phase, post-stream processing
+/// - `+Streaming.swift` — LLM streaming and post-stream processing
 /// - `+StepLifecycle.swift` — Step execution setup and tool loop orchestration
-/// - `+StepFlowControl.swift` — No-tool-call handling and planning phase management
+/// - `+PlanningPhase.swift` — The @MainActor half of the planning phase
+/// - `+StepFlowControl.swift` — No-tool-call handling and the escalation caps
 /// - `+ToolExecution.swift` — Tool call authorization, identical-write rejection, runtime dispatch
 /// - `+ToolResultProcessing.swift` — Tool result orchestration (iterates, dispatches)
 /// - `+ToolResultDispatching.swift` — Collaboration signal routing + regular tool dispatch
@@ -53,6 +54,14 @@ final class LLMExecutionService {
     /// Entry present iff step is executing.
     var executionStates: [TaskStepKey: StepExecutionState] = [:]
 
+    /// Probed context-window size per `"<normalizedBase>|<model>"`. Probing costs a network
+    /// round-trip, the answer only changes when the user reloads the model with a different
+    /// window, and the check runs on every iteration of every step — so it is memoized for
+    /// the service's lifetime. A failed probe caches `nil` deliberately: a server that does
+    /// not report a window will not start doing so mid-run, and retrying per iteration would
+    /// add a round-trip to the hot path for an answer that never arrives.
+    var probedContextLengths: [String: Int?] = [:]
+
     /// Held `bash` commands awaiting the human's in-loop Allow / Deny decision,
     /// keyed by (taskID, stepID) → command key → waiter. The gate's `await`
     /// registers one per held command; a button tap (via the orchestrator) or a
@@ -80,6 +89,28 @@ final class LLMExecutionService {
     /// so the "gate only the FIRST capture per run" prompt fires once per run, not once per role
     /// / once after every pause. Cleared alongside `computerUseSessionAllowedApps`.
     var computerUseCaptureCountByTask: [Int: Int] = [:]
+
+    /// Remembers what each caller last sent to each `(server, model)` so a prompt-prefix (KV)
+    /// cache miss can be detected and attributed.
+    ///
+    /// Lives here rather than in the clients because the clients' `streamChat` is implemented by
+    /// 44 test doubles, and — more importantly — every interleaving caller that can plausibly
+    /// evict a running step's prefix is issued from THIS service: the bash and computer-use
+    /// judges, the Supervisor auto-answer, meeting turns, `ask_teammate` consultations and the
+    /// delegated-Supervisor side exchange. One reference here sees all of them.
+    ///
+    /// **Owned per service, never process-global** (CLAUDE.md Swift Style #49). The init seam
+    /// defaults to `nil` and resolves INWARD to a fresh ledger. Production builds exactly one
+    /// orchestrator and therefore one service, so per-service scope IS process scope there —
+    /// while the ~100 test sites that construct this service directly each get an isolated one.
+    /// A `.shared` default instead leaked three pieces of order-dependent state across suites:
+    /// the activity list that names suspects, the never-reset `prefillFloorNsPerToken` minimum,
+    /// and the per-owner chains (keyed `base|model|step:taskID:stepID`, and test task ids and
+    /// role ids collide by construction).
+    ///
+    /// A future recorder outside this service (Vision, team generation, work-folder context) must
+    /// be HANDED this instance, not reach for a global.
+    let prefixLedger: PromptPrefixLedger
 
     /// Auto-detected "can the main model see images?" verdicts, keyed by
     /// `"baseURL|model"`. Replaces the removed "Main model supports vision"
@@ -170,6 +201,39 @@ final class LLMExecutionService {
         Set(executionStates.values.compactMap(\.activeModelKey))
     }
 
+    /// Drop this step's prompt-prefix chain when its conversation is being built from SCRATCH.
+    ///
+    /// The ledger keys a step by `step:<taskID>:<stepID>` and `StepExecution.id` IS the role id,
+    /// so that key survives every run of the task and every `restartRole` — while the
+    /// conversation does not. Without this, request #1 of a brand-new conversation is compared
+    /// against the PREVIOUS run's chain, and both outcomes are wrong: an opening that still
+    /// matches reads as `.reused` (a short chain is a strict PREFIX of the long one, and
+    /// `PrefixCachePolicy.compare` bounds at `min(previous.count, current.count)`), so the server
+    /// signals get consulted for a conversation that has nothing to lose; an opening that moved —
+    /// the Autovisor rewriting `## Current Memory` into its own system prompt between passes —
+    /// reads as a full-size false `.systemPromptChanged`. Either way exemption 5 in
+    /// `reportPrefixCacheMissIfAny`, written for exactly this case, can never fire.
+    ///
+    /// The condition is `replaySource == nil`, the fact `startStepExecution` already computes at
+    /// the one place that knows it (`ConversationReplay.resume(from:) == nil`, documented there
+    /// as "a genuinely fresh step"). A re-entry that REPLAYS keeps its chain: that replay is
+    /// byte-identical to what the server already holds, so its `.reused` verdict is precisely
+    /// what makes the server half of `resolve` meaningful across a long human pause.
+    ///
+    /// "Nothing to replay" is `Optional.none` and nothing else: `ConversationReplay.Source`
+    /// used to carry an unreachable `.none` case alongside it, which made `Optional.none` and
+    /// `Source.none` two different nothings one could be mistaken for the other. The case is
+    /// gone, so the ambiguity is now unrepresentable rather than merely warned about.
+    func forgetPrefixChainForFreshConversation(stepID: String, taskID: Int) async {
+        // A missing entry means the step is torn down — the same write barrier every other
+        // prefix-cache seam uses.
+        guard let state = executionStates[TaskStepKey(taskID: taskID, stepID: stepID)] else {
+            return
+        }
+        guard state.replaySource == nil else { return }
+        await prefixLedger.forgetOwner(.step(taskID: taskID, stepID: stepID))
+    }
+
     /// Centralized reset for retry-cap counters that fire when the model produced a
     /// parseable tool call (the "drift" / "malformed-JSON" streaks are broken).
     /// Called from `runOneLLMToolIteration` immediately before `executeToolCalls`.
@@ -207,12 +271,14 @@ final class LLMExecutionService {
         repository: any NTMSRepositoryProtocol,
         artifactService: ArtifactService? = nil,
         clientFactory: @escaping @Sendable () -> any LLMClient = { LLMClientRouter() },
-        harmonyParser: HarmonyToolCallParser = HarmonyToolCallParser()
+        harmonyParser: HarmonyToolCallParser = HarmonyToolCallParser(),
+        prefixLedger: PromptPrefixLedger? = nil
     ) {
         self.repository = repository
         self.artifactService = artifactService ?? ArtifactService(repository: repository)
         self.clientFactory = clientFactory
         self.harmonyParser = harmonyParser
+        self.prefixLedger = prefixLedger ?? PromptPrefixLedger()
     }
 
     func attach(delegate: LLMExecutionDelegate) {
@@ -328,43 +394,6 @@ final class LLMExecutionService {
     func isStepRunning(stepID: String, taskID: Int) -> Bool {
         executionStates[TaskStepKey(taskID: taskID, stepID: stepID)]?.runningTask != nil
     }
-
-    // MARK: - Stateful continuation slice
-
-    /// Computes the message slice to send on a stateful (`previous_response_id`) continuation.
-    ///
-    /// In stateful mode the server already holds every prior turn, so we send only the
-    /// messages AFTER the last assistant turn (plus system messages, which
-    /// `NativeLMStudioClient` omits on continuations — they persist in the chain). If that
-    /// slice has no non-empty user/tool content (which would make the API reject the request
-    /// with HTTP 400 "input must not be an empty string"), `fallBackToStateless` is `true` so
-    /// the caller clears the session and resends the full conversation.
-    ///
-    /// Pure and `nonisolated` so `LLMSliceAnchorTests` exercises the REAL slice rather than a
-    /// replicated copy (the prior drift risk). Anchoring on `lastIndex(where: .assistant)` is
-    /// why every model turn must advance an assistant anchor — see `processStreamingResult`.
-    nonisolated static func statefulContinuationSlice(
-        conversationMessages: [ChatMessage], isStateful: Bool
-    ) -> (messages: [ChatMessage], fallBackToStateless: Bool) {
-        guard isStateful,
-              let lastAssistantIdx = conversationMessages.lastIndex(where: { $0.role == .assistant })
-        else {
-            return (conversationMessages, false)
-        }
-        let systemMessages = conversationMessages.filter { $0.role == .system }
-        let newMessages = Array(conversationMessages[(lastAssistantIdx + 1)...]
-            .filter { $0.role != .system })
-        let hasNonEmptyContent = newMessages.contains { msg in
-            let content = msg.content ?? ""
-            return !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || msg.imageContent?.isEmpty == false
-        }
-        if !hasNonEmptyContent {
-            return (conversationMessages, true)
-        }
-        return (systemMessages + newMessages, false)
-    }
-
 
     // MARK: - Shared Utilities
 

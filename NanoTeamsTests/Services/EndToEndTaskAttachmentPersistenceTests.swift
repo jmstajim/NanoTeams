@@ -48,7 +48,7 @@ final class EndToEndTaskAttachmentPersistenceTests: NTMSOrchestratorTestBase {
         XCTAssertNotNil(pathBefore)
 
         // Reopen
-        sut = NTMSOrchestrator(repository: NTMSRepository())
+        sut = TestOrchestrator.make()
         await sut.openWorkFolder(tempDir)
         await sut.switchTask(to: taskID)
 
@@ -75,7 +75,7 @@ final class EndToEndTaskAttachmentPersistenceTests: NTMSOrchestratorTestBase {
             clippedTexts: [], attachments: [staged], draftID: draftID
         )!
 
-        sut = NTMSOrchestrator(repository: NTMSRepository())
+        sut = TestOrchestrator.make()
         await sut.openWorkFolder(tempDir)
         await sut.switchTask(to: taskID)
 
@@ -104,7 +104,7 @@ final class EndToEndTaskAttachmentPersistenceTests: NTMSOrchestratorTestBase {
             draftID: draftID
         )!
 
-        sut = NTMSOrchestrator(repository: NTMSRepository())
+        sut = TestOrchestrator.make()
         await sut.openWorkFolder(tempDir)
         await sut.switchTask(to: taskID)
 
@@ -132,7 +132,7 @@ final class EndToEndTaskAttachmentPersistenceTests: NTMSOrchestratorTestBase {
             draftID: draftID
         )!
 
-        sut = NTMSOrchestrator(repository: NTMSRepository())
+        sut = TestOrchestrator.make()
         await sut.openWorkFolder(tempDir)
         await sut.switchTask(to: taskID)
 

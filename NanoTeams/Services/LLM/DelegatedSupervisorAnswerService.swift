@@ -1,19 +1,17 @@
 import Foundation
 
 /// Routes a delegated child team's `ask_supervisor` question back to the parent role
-/// that called `delegate_to_team`, using a **seeded stateful chain** scoped to the
-/// active delegation.
+/// that called `delegate_to_team`.
 ///
-/// First question: seeds a fresh chain with the parent step's accumulated
-/// `llmConversation` (so the parent answers from its full context). Subsequent
-/// questions in the same delegation reuse the stored `parentStep.delegationSession`
-/// via `previous_response_id`, growing one stateful chain per delegation.
+/// Every question is a one-shot side exchange seeded with the parent step's
+/// accumulated `llmConversation` (so the parent answers from its full context) plus
+/// the new question turn. Prior questions in the same delegation are already IN that
+/// conversation — `persistExchange` appends each (question, answer) pair — so the
+/// seed grows naturally without any server-side chain to maintain.
 ///
-/// The seeded chain is **isolated** from the parent's main response chain — the
-/// side exchange does not perturb parent's main `llmSessionID`. This is required
-/// for chain protocol safety: the parent's main chain has an unresolved
-/// `delegate_to_team` tool call; injecting unrelated user/assistant turns there
-/// would invalidate it. See plan file for the full rationale.
+/// The side exchange is deliberately isolated from the parent step's own tool loop:
+/// the parent is blocked mid-`delegate_to_team`, and its conversation must not gain
+/// turns that the loop didn't produce.
 @MainActor
 enum DelegatedSupervisorAnswerService {
 
@@ -109,9 +107,8 @@ enum DelegatedSupervisorAnswerService {
             roleOverride: roleDef?.llmOverride
         )
 
-        // 3. Build messages for the side exchange:
-        //    - First question (delegationSession == nil): seed with full parent llmConversation + new user turn.
-        //    - Subsequent question: only the new user turn; previous_response_id chain carries history.
+        // 3. Build messages for the side exchange: the parent's full
+        //    `llmConversation` as the seed, plus the new question turn.
         // Escalation is detected ONLY via an `ask_supervisor` tool call (see the
         // toolCalls check below) — the instruction must demand that channel, not
         // prose ("say so" made a compliant model refuse in text, which was then
@@ -131,133 +128,71 @@ enum DelegatedSupervisorAnswerService {
                 """
         )
 
-        let messagesToSend: [ChatMessage]
-        let session: LLMSession?
-        if let existingSessionID = step.delegationSession {
-            session = LLMSession(responseID: existingSessionID)
-            messagesToSend = [questionTurn]
-        } else {
-            session = nil
-            // Seed with the role's accumulated llmConversation.
-            //
-            // Chain-protocol safety (CLAUDE.md §LLM #2 — `input` in stateful
-            // mode must only contain `function_call_output` tool results
-            // and `user` messages): `LLMMessage` does NOT persist
-            // `tool_call_id` / `tool_calls` (they're stripped at
-            // `LLMExecutionService+ConversationManagement.persistConversation`),
-            // so any `tool`-role message in the persisted history is an
-            // orphan tool result without its binding `tool_call_id` —
-            // sending it would cause the server to reject the seeded
-            // chain. We also drop the legacy `developer` role (CLAUDE.md
-            // §LLM #3 invariant — would corrupt the response chain on LM
-            // Studio). System prompt and plain user/assistant text turns
-            // are kept; the system prompt persists server-side once the
-            // seeded chain is established (NativeLMStudioClient omits
-            // system_prompt on continuations).
-            let seed: [ChatMessage] = step.llmConversation.compactMap { llm in
-                guard let role = MessageRole(rawValue: llm.role.rawValue) else { return nil }
-                if role == .tool { return nil }
-                return ChatMessage(role: role, content: llm.content)
-            }
-            messagesToSend = seed + [questionTurn]
-        }
+        // Seed with the role's accumulated llmConversation. `tool`-role messages
+        // are dropped: `LLMMessage` does NOT persist `tool_call_id` / `tool_calls`
+        // (they're stripped at
+        // `LLMExecutionService+ConversationManagement.persistConversation`), so a
+        // replayed `tool` turn would be an orphan result with nothing naming the
+        // call it answers. System prompt and plain user/assistant text turns are kept.
+        let messagesToSend = Self.buildSeed(step: step, questionTurn: questionTurn)
 
         // Stream the side exchange.
         //
         // On failure we MUST surface the underlying cause to the UI banner.
-        // Bare `return nil` swallows 401 (auth), HTTP 400 (which would normally
-        // drive stateless fallback per CLAUDE.md §LLM session invariants),
-        // model-unloaded, transport failures, and JSON parse errors — the
-        // caller (`handleDelegateToTeam`) then surfaces a generic "Failed to
-        // answer the delegated team's question" with no diagnostic.
-        //
-        // For 400 specifically: the seeded chain has been invalidated (often
-        // because the seed contains an unresolved tool_call). Retry once
-        // statelessly so the seeded-chain is re-established with no stale
-        // `previous_response_id`.
-        var captured: (content: String, toolCalls: [StepToolCall], session: LLMSession?) = ("", [], nil)
+        // A bare `return nil` swallows 401 (auth), model-unloaded, transport
+        // failures, and JSON parse errors — the caller (`handleDelegateToTeam`)
+        // then surfaces a generic "Failed to answer the delegated team's question"
+        // with no diagnostic.
+        var captured: (content: String, toolCalls: [StepToolCall]) = ("", [])
         var accumulator = ToolCallAccumulator()
-        var stateless = false
-        for attempt in 0..<2 {
-            captured = ("", [], nil)
-            accumulator = ToolCallAccumulator()
-            let attemptSession: LLMSession? = stateless ? nil : session
-            let attemptMessages: [ChatMessage] = stateless
-                ? Self.rebuildStatelessSeed(step: step, questionTurn: questionTurn)
-                : messagesToSend
-            do {
-                let stream = client.streamChat(
-                    config: effectiveConfig,
-                    messages: attemptMessages,
-                    tools: [AskSupervisorTool.schema],
-                    session: attemptSession,
-                    logger: nil,
-                    stepID: nil
-                )
-                for try await event in stream {
-                    captured.content += event.contentDelta
-                    if !event.toolCallDeltas.isEmpty {
-                        accumulator.absorb(event.toolCallDeltas)
-                    }
-                    if let s = event.session {
-                        captured.session = s
-                    }
-                }
-                captured.toolCalls = accumulator.finalize()
-                // Harmony fallback (CLAUDE.md 3-fallback rule for direct LLM
-                // calls): gpt-oss-class local models emit tool calls as text
-                // envelopes instead of OpenAI deltas. Without this, an
-                // escalation was invisible and the raw `<|channel|>…` envelope
-                // leaked to the child as the Supervisor's answer. Names are
-                // canonicalized (`functions.ask_supervisor` → `ask_supervisor`)
-                // at this dispatch boundary per `ToolRegistry.resolveToolName`.
-                if captured.toolCalls.isEmpty, captured.content.contains("<|") {
-                    captured.toolCalls = HarmonyToolCallParser()
-                        .extractAllToolCalls(from: captured.content)
-                        .map { call in
-                            var normalized = call
-                            normalized.name = ToolRegistry.resolveToolName(call.name)
-                            return normalized
-                        }
-                }
-                break
-            } catch {
-                if attempt == 0,
-                   Self.shouldRetryStateless(error: error),
-                   session != nil {
-                    // First attempt failed with HTTP 400 (or equivalent
-                    // chain-protocol invalidation). Drop the seeded-chain
-                    // session id and rebuild from full conversation.
-                    stateless = true
-                    continue
-                }
-                let reason = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                delegate.setLastErrorMessageForUI(
-                    "Delegated supervisor answer failed for role \(roleID): \(reason)"
-                )
-                return nil
-            }
-        }
-        if stateless {
-            // Seeded chain was discarded — clear the persisted session so the
-            // next question seeds a fresh chain.
-            await delegate.mutateTask(taskID: taskID) { task in
-                guard let runIdx = task.runs.indices.last,
-                      let stepIdx = task.runs[runIdx].steps.firstIndex(where: { $0.id == roleID })
-                else { return }
-                task.runs[runIdx].steps[stepIdx].setDelegationSession(nil)
-            }
-        }
 
-        // Persist updated delegation session id so the next question in this
-        // delegation continues the chain.
-        if let newSession = captured.session {
-            await delegate.mutateTask(taskID: taskID) { task in
-                guard let runIdx = task.runs.indices.last,
-                      let stepIdx = task.runs[runIdx].steps.firstIndex(where: { $0.id == roleID })
-                else { return }
-                task.runs[runIdx].steps[stepIdx].setDelegationSession(newSession.responseID)
+        // A real accumulating chain, not a one-shot: `persistExchange` appends every
+        // (question, answer) pair back onto the parent step's conversation, so the seed GROWS and
+        // a second question resends a strict superset of the first. Keyed by (task, run, role) —
+        // the same granularity as the consultation chain, which matters for the escalation
+        // recursion, where each level up is genuinely a different conversation.
+        await delegate.recordPrefixChainForTasklessCall(
+            owner: .chain(id: "delegatedSupervisor:\(taskID):\(run.id):\(roleID)"),
+            config: effectiveConfig,
+            messages: messagesToSend)
+
+        do {
+            let stream = client.streamChat(
+                config: effectiveConfig,
+                messages: messagesToSend,
+                tools: [AskSupervisorTool.schema],
+                logger: nil,
+                stepID: nil
+            )
+            for try await event in stream {
+                captured.content += event.contentDelta
+                if !event.toolCallDeltas.isEmpty {
+                    accumulator.absorb(event.toolCallDeltas)
+                }
             }
+            captured.toolCalls = accumulator.finalize()
+            // Harmony fallback (CLAUDE.md 3-fallback rule for direct LLM
+            // calls): gpt-oss-class local models emit tool calls as text
+            // envelopes instead of OpenAI deltas. Without this, an
+            // escalation was invisible and the raw `<|channel|>…` envelope
+            // leaked to the child as the Supervisor's answer. Names are
+            // canonicalized (`functions.ask_supervisor` → `ask_supervisor`)
+            // at this dispatch boundary per `ToolRegistry.resolveToolName`.
+            if captured.toolCalls.isEmpty, captured.content.contains("<|") {
+                captured.toolCalls = HarmonyToolCallParser()
+                    .extractAllToolCalls(from: captured.content)
+                    .map { call in
+                        var normalized = call
+                        normalized.name = ToolRegistry.resolveToolName(call.name)
+                        return normalized
+                    }
+            }
+        } catch {
+            let reason = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            delegate.setLastErrorMessageForUI(
+                "Delegated supervisor answer failed for role \(roleID): \(reason)"
+            )
+            return nil
         }
 
         // Persist (question, answer) pair to the role's llmConversation for UI.
@@ -324,7 +259,7 @@ enum DelegatedSupervisorAnswerService {
         parentTaskID: Int,
         parentRoleID: String,
         question: String,
-        response: (content: String, toolCalls: [StepToolCall], session: LLMSession?),
+        response: (content: String, toolCalls: [StepToolCall]),
         delegate: any LLMStateDelegate
     ) async {
         let isEscalation = response.toolCalls.contains(where: { $0.name == ToolNames.askSupervisor })
@@ -356,27 +291,10 @@ enum DelegatedSupervisorAnswerService {
         }
     }
 
-    /// Returns `true` when an LLM streaming error is the kind that should
-    /// drive a stateless retry (HTTP 400 = chain invalidated; transport
-    /// errors are NOT retried statelessly because they're symmetric across
-    /// session vs no-session).
-    static func shouldRetryStateless(error: Error) -> Bool {
-        if let llmErr = error as? LLMClientError {
-            switch llmErr {
-            case .badHTTPStatus(let code, _) where code == 400:
-                return true
-            default:
-                return false
-            }
-        }
-        return false
-    }
-
-    /// Builds a fresh stateless seed from the step's persisted conversation
-    /// when the seeded chain was rejected. Mirrors the chain-protocol-safe
-    /// filtering used by the initial-seed branch (drops orphan `tool`-role
-    /// messages whose `tool_call_id` was lost on persistence).
-    static func rebuildStatelessSeed(step: StepExecution, questionTurn: ChatMessage) -> [ChatMessage] {
+    /// Builds the side exchange's message list from the step's persisted
+    /// conversation plus the new question turn. Drops orphan `tool`-role
+    /// messages whose `tool_call_id` was lost on persistence.
+    static func buildSeed(step: StepExecution, questionTurn: ChatMessage) -> [ChatMessage] {
         let seed: [ChatMessage] = step.llmConversation.compactMap { llm in
             guard let role = MessageRole(rawValue: llm.role.rawValue) else { return nil }
             if role == .tool { return nil }

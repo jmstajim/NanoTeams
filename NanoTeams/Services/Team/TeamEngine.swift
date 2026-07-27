@@ -91,11 +91,7 @@ final class TeamEngine {
         stop()
         state = .running
         iterationCount = 0
-
-        runTask = Task { [weak self] in
-            guard let self else { return }
-            await self.runLoop()
-        }
+        launchRunLoop()
     }
 
     func stop() {
@@ -124,6 +120,17 @@ final class TeamEngine {
         // Reset iteration count to allow another full set of iterations
         iterationCount = 0
         state = .running
+        launchRunLoop()
+    }
+
+    /// The one launcher both `start()` and `resume()` use, so the invariant "a launched
+    /// run loop always begins from a reconciled state" cannot drift between them.
+    ///
+    /// `start()` used to skip `reconcileAfterPause()`, and that asymmetry is where the
+    /// restart-review bug hid: `resumeRun` deliberately takes the `start()` branch after
+    /// an app restart (the freshly-created engine is `.pending`), so the one path that
+    /// most needed reconciliation was the one that never got it.
+    private func launchRunLoop() {
         runTask = Task { [weak self] in
             guard let self else { return }
             await self.reconcileAfterPause()

@@ -119,23 +119,36 @@ extension LLMExecutionService {
         }
         chat.messages.append(LLMMessage(role: .user, content: questionMsg))
 
-        // 3. Resolve session for stateful providers
-        let session = chat.sessionID.map { LLMSession(responseID: $0) }
-
-        // 4. Build messages to send (stateful: only new, stateless: full history)
-        let messagesToSend = chat.messagesToSend(session: session)
-
-        // 5. Call LLM via consultation chat
+        // 3. Call the LLM with the chat's FULL history — the consultation chat
+        // accumulates across the run and every call resends it, so the provider's
+        // prompt-prefix cache carries the cost, not a server-side chain.
         let startTime = Date()
+        // A consultation is a `.chain`, not a one-shot: the chat above accumulates for the whole
+        // run and every call resends it, so it has a real prefix to lose — exactly what the
+        // detector protects. Recording it also lets a step's `serverDroppedCache` name it.
+        //
+        // Scoped to the task AND the run because that is the chat's real lifetime:
+        // `Run.consultationChats` is per-run, so a new run rebuilds this chat from scratch, and
+        // `Run.id` is per-task sequential so it does not identify a run on its own (the same
+        // reason `PrefixCacheReporter`'s banner latch keys `(taskID, runID, causeClass)`).
+        // Without the task, two tasks on one team consulting the same role concurrently —
+        // `delegate_to_team` runs children in parallel — interleave into ONE chain and
+        // manufacture rewrites out of unrelated conversations, the exact failure per-owner
+        // keying exists to prevent.
+        _ = await prefixLedger.record(
+            baseURL: consultedConfig.baseURLString,
+            model: consultedConfig.modelName,
+            owner: .chain(
+                id: "consultation:\(tid):\(task.runs[runIndex].id):\(consultedRoleID)"),
+            messages: chat.messagesToSend(),
+            toolSchemaText: "")
         do {
             var fullResponse = ""
             var fullThinking = ""
-            var newSession: LLMSession?
             let stream = client.streamChat(
                 config: consultedConfig,
-                messages: messagesToSend,
+                messages: chat.messagesToSend(),
                 tools: [],
-                session: session,
                 logger: networkLogger,
                 stepID: nil
             )
@@ -143,7 +156,6 @@ extension LLMExecutionService {
             for try await event in stream {
                 fullResponse += event.contentDelta
                 fullThinking += event.thinkingDelta
-                if let s = event.session { newSession = s }
             }
 
             // Prefer the visible content. When a reasoning model emits its whole
@@ -166,15 +178,14 @@ extension LLMExecutionService {
                 return .failed(message)
             }
 
-            // 6. Save response to consultation chat
+            // 4. Save response to consultation chat
             chat.messages.append(LLMMessage(role: .assistant, content: answer))
-            if let s = newSession { chat.sessionID = s.responseID }
             chat.updatedAt = MonotonicClock.shared.now()
             await saveConsultationChat(
                 stepID: stepID, taskID: tid, runIndex: runIndex, roleID: consultedRoleID, chat: chat
             )
 
-            // 7. Record consultation
+            // 5. Record consultation
             consultation.complete(with: answer, responseTimeMs: responseTimeMs)
             await recordConsultation(stepID: stepID, taskID: tid, consultation: consultation)
 

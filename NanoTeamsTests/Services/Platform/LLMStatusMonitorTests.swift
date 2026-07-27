@@ -27,7 +27,7 @@ final class LLMStatusMonitorTests: XCTestCase {
     }
 
     func testStartMonitoring_probesOnce_updatesLastCheckedAt() async {
-        sut.startMonitoring(baseURLProvider: { "http://127.0.0.1:9" }, interval: 60)
+        sut.startMonitoring(endpointProvider: { ("http://127.0.0.1:9", .lmStudio) }, interval: 60)
 
         // Wait until the initial probe lands. Invalid port fails the connect
         // attempt fast (<<1s on localhost); poll-with-timeout avoids the prior
@@ -42,8 +42,8 @@ final class LLMStatusMonitorTests: XCTestCase {
 
     /// Re-entrant start must cancel the previous task (no leaked poll loop).
     func testStartMonitoring_calledTwice_replacesActiveTask() async {
-        sut.startMonitoring(baseURLProvider: { "http://127.0.0.1:9" }, interval: 60)
-        sut.startMonitoring(baseURLProvider: { "http://127.0.0.1:10" }, interval: 60)
+        sut.startMonitoring(endpointProvider: { ("http://127.0.0.1:9", .lmStudio) }, interval: 60)
+        sut.startMonitoring(endpointProvider: { ("http://127.0.0.1:10", .lmStudio) }, interval: 60)
 
         // Not directly observable without injecting a mock checker, but we assert no
         // crash and that stopMonitoring cleanly tears down the latest task.
@@ -56,7 +56,7 @@ final class LLMStatusMonitorTests: XCTestCase {
     /// We can't directly observe the cancellation-after-await guard without a mock, but
     /// we can assert that stopMonitoring is idempotent and leaves state frozen.
     func testStopMonitoring_idempotent_afterStart() async {
-        sut.startMonitoring(baseURLProvider: { "http://127.0.0.1:9" }, interval: 60)
+        sut.startMonitoring(endpointProvider: { ("http://127.0.0.1:9", .lmStudio) }, interval: 60)
         await waitUntilNotNil({ self.sut.lastCheckedAt }, timeoutSeconds: 5)
         let frozen = sut.lastCheckedAt
 

@@ -22,7 +22,6 @@ final class TeamGenerationServiceLoggerWiringTests: XCTestCase {
             config: LLMConfig,
             messages: [ChatMessage],
             tools: [ToolSchema],
-            session: LLMSession?,
             logger: NetworkLogger?,
             stepID: String?,
             roleName: String?
@@ -121,7 +120,7 @@ final class TeamGenerationServiceLoggerWiringTests: XCTestCase {
         final class RecordingClient: LLMClient, @unchecked Sendable {
             func streamChat(
                 config: LLMConfig, messages: [ChatMessage], tools: [ToolSchema],
-                session: LLMSession?, logger: NetworkLogger?,
+                logger: NetworkLogger?,
                 stepID: String?, roleName: String?
             ) -> AsyncThrowingStream<StreamEvent, Error> {
                 if let logger {

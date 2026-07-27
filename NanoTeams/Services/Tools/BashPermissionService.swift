@@ -270,14 +270,6 @@ nonisolated enum BashPermissionService {
         return programs.contains { $0.caseInsensitiveCompare(rule) == .orderedSame }
     }
 
-    /// Anchored glob: `*` matches any run of characters; all other characters are
-    /// literal. Anchored at the start (prefix), NOT at the end — so `git push*`
-    /// matches `git push origin main`. Matching is case-insensitive.
-    static func globMatches(_ pattern: String, _ candidate: String) -> Bool {
-        guard let re = compileGlob(pattern) else { return false }
-        return globMatch(re, candidate)
-    }
-
     /// Compiles a `*`-glob into an anchored, case-insensitive regex (every non-`*`
     /// character escaped to a literal). Returns nil only for an unconstructable pattern.
     private static func compileGlob(_ pattern: String) -> NSRegularExpression? {

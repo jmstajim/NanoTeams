@@ -101,7 +101,8 @@ struct NanoTeamsApp: App {
                             }
                         }
                         llmStatusMonitor.startMonitoring(
-                            baseURLProvider: { store.configuration.llmBaseURLString }
+                            endpointProvider: { (store.configuration.llmBaseURLString,
+                                                 store.configuration.llmProvider) }
                         )
                     }
                     .task {

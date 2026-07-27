@@ -18,7 +18,6 @@ final class TeamGenerationServiceStreamTests: XCTestCase {
             config: LLMConfig,
             messages: [ChatMessage],
             tools: [ToolSchema],
-            session: LLMSession?,
             logger: NetworkLogger?,
             stepID: String?,
             roleName: String?
@@ -264,7 +263,7 @@ final class TeamGenerationServiceStreamTests: XCTestCase {
         }
         func streamChat(
             config: LLMConfig, messages: [ChatMessage], tools: [ToolSchema],
-            session: LLMSession?, logger: NetworkLogger?,
+            logger: NetworkLogger?,
             stepID: String?, roleName: String?
         ) -> AsyncThrowingStream<StreamEvent, Error> {
             let count = totalEvents
@@ -309,7 +308,7 @@ final class TeamGenerationServiceStreamTests: XCTestCase {
         final class FastFirstThenSlow: LLMClient, @unchecked Sendable {
             func streamChat(
                 config: LLMConfig, messages: [ChatMessage], tools: [ToolSchema],
-                session: LLMSession?, logger: NetworkLogger?,
+                logger: NetworkLogger?,
                 stepID: String?, roleName: String?
             ) -> AsyncThrowingStream<StreamEvent, Error> {
                 AsyncThrowingStream { continuation in
@@ -343,7 +342,7 @@ final class TeamGenerationServiceStreamTests: XCTestCase {
             var capturedMessages: [ChatMessage] = []
             func streamChat(
                 config: LLMConfig, messages: [ChatMessage], tools: [ToolSchema],
-                session: LLMSession?, logger: NetworkLogger?,
+                logger: NetworkLogger?,
                 stepID: String?, roleName: String?
             ) -> AsyncThrowingStream<StreamEvent, Error> {
                 capturedMessages = messages

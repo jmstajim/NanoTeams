@@ -750,12 +750,11 @@ final class ToolExecutionTests: XCTestCase {
         return store
     }
 
-    func testInjectMemories_stateful_appendsMessage() async throws {
+    func testInjectMemories_appendsMessage() async throws {
         try XCTSkipIf(true, Self.memoriesDisabledSkipReason)
 
         let stepID = "test_step"
         let memoryStore = seededMemoryStore()
-        let session = LLMSession(responseID: "test-session")
         var messages: [ChatMessage] = []
 
         service._testRegisterStepTask(stepID: stepID, taskID: Int())
@@ -765,7 +764,6 @@ final class ToolExecutionTests: XCTestCase {
             stepID: stepID,
             taskID: 0,
             memoryStore: memoryStore,
-            session: session,
             conversationMessages: &messages
         )
 
@@ -774,15 +772,13 @@ final class ToolExecutionTests: XCTestCase {
         XCTAssertTrue(messages[0].content?.contains("Memories") ?? false)
     }
 
-    /// Stateful dedup — same memory content in two successive injections
-    /// produces only one appended message. The prior block is already in the
-    /// server's response chain.
-    func testInjectMemories_stateful_dedupesUnchangedContent() async throws {
+    /// Two successive injections replace the block IN PLACE, so the conversation
+    /// never accumulates stale copies — the whole conversation is the request.
+    func testInjectMemories_repeatedInjection_replacesInPlace() async throws {
         try XCTSkipIf(true, Self.memoriesDisabledSkipReason)
 
         let stepID = "test_step"
         let memoryStore = seededMemoryStore()
-        let session = LLMSession(responseID: "test-session")
         var messages: [ChatMessage] = []
 
         service._testRegisterStepTask(stepID: stepID, taskID: Int())
@@ -790,21 +786,20 @@ final class ToolExecutionTests: XCTestCase {
 
         await service.injectMemories(
             stepID: stepID, taskID: 0, memoryStore: memoryStore,
-            session: session, conversationMessages: &messages
+            conversationMessages: &messages
         )
         await service.injectMemories(
             stepID: stepID, taskID: 0, memoryStore: memoryStore,
-            session: session, conversationMessages: &messages
+            conversationMessages: &messages
         )
 
         XCTAssertEqual(messages.count, 1,
-                       "Identical MEMORIES content must not be appended twice on stateful continuation")
+                       "The MEMORIES block must be rebuilt in place, never appended twice")
     }
 
     func testInjectMemories_emptyStore_doesNotInject() async {
         let stepID = "test_step"
         let memoryStore = MemoryTagStore()   // empty — no tags
-        let session = LLMSession(responseID: "test-session")
         var messages: [ChatMessage] = []
 
         service._testRegisterStepTask(stepID: stepID, taskID: Int())
@@ -812,7 +807,7 @@ final class ToolExecutionTests: XCTestCase {
 
         await service.injectMemories(
             stepID: stepID, taskID: 0, memoryStore: memoryStore,
-            session: session, conversationMessages: &messages
+            conversationMessages: &messages
         )
 
         XCTAssertEqual(messages.count, 0,
@@ -830,7 +825,6 @@ final class ToolExecutionTests: XCTestCase {
     func testInjectMemories_disabledFlag_skipsSeededStore() async {
         let stepID = "test_step"
         let memoryStore = seededMemoryStore()
-        let session = LLMSession(responseID: "test-session")
         var messages: [ChatMessage] = []
 
         service._testRegisterStepTask(stepID: stepID, taskID: Int())
@@ -838,14 +832,14 @@ final class ToolExecutionTests: XCTestCase {
 
         await service.injectMemories(
             stepID: stepID, taskID: 0, memoryStore: memoryStore,
-            session: session, conversationMessages: &messages
+            conversationMessages: &messages
         )
 
         XCTAssertEqual(messages.count, 0,
                        "Guard must short-circuit seeded-store injection while flag is false")
     }
 
-    func testInjectMemories_stateless_replacesInPlace() async throws {
+    func testInjectMemories_withTrackedIndex_replacesInPlace() async throws {
         try XCTSkipIf(true, Self.memoriesDisabledSkipReason)
 
         let stepID = "test_step"
@@ -862,7 +856,6 @@ final class ToolExecutionTests: XCTestCase {
             stepID: stepID,
             taskID: 0,
             memoryStore: memoryStore,
-            session: nil,
             conversationMessages: &messages
         )
 
@@ -871,7 +864,7 @@ final class ToolExecutionTests: XCTestCase {
         XCTAssertTrue(messages[0].content?.contains("Memories") ?? false)
     }
 
-    func testInjectMemories_stateless_firstCall_appendsAndTracksIndex() async throws {
+    func testInjectMemories_firstCall_appendsAndTracksIndex() async throws {
         try XCTSkipIf(true, Self.memoriesDisabledSkipReason)
 
         let stepID = "test_step"
@@ -888,7 +881,6 @@ final class ToolExecutionTests: XCTestCase {
             stepID: stepID,
             taskID: 0,
             memoryStore: memoryStore,
-            session: nil,
             conversationMessages: &messages
         )
 
@@ -1090,13 +1082,11 @@ final class ToolExecutionTests: XCTestCase {
 
         service._testSetPlanMessageIndex(stepID: stepID, taskID: 0, index: 5)
         service._testSetMemoriesMessageIndex(stepID: stepID, taskID: 0, index: 3)
-        service._testSetOriginalSystemPrompt(stepID: stepID, taskID: 0, prompt: "test")
 
         service.clearRunningTask(stepID: stepID, taskID: 0)
 
         XCTAssertNil(service._testGetPlanMessageIndex(stepID: stepID, taskID: 0))
         XCTAssertNil(service._testGetMemoriesMessageIndex(stepID: stepID, taskID: 0))
-        XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: stepID, taskID: 0))
     }
 
     func testCancelStepExecution_cleansState() async {
@@ -1104,13 +1094,11 @@ final class ToolExecutionTests: XCTestCase {
 
         service._testSetPlanMessageIndex(stepID: stepID, taskID: 0, index: 5)
         service._testSetMemoriesMessageIndex(stepID: stepID, taskID: 0, index: 3)
-        service._testSetOriginalSystemPrompt(stepID: stepID, taskID: 0, prompt: "test")
 
         await service.cancelStepExecution(stepID: stepID, taskID: 0)
 
         XCTAssertNil(service._testGetPlanMessageIndex(stepID: stepID, taskID: 0))
         XCTAssertNil(service._testGetMemoriesMessageIndex(stepID: stepID, taskID: 0))
-        XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: stepID, taskID: 0))
     }
 
     func testCancelAllExecutions_cleansAllState() {
@@ -1124,13 +1112,12 @@ final class ToolExecutionTests: XCTestCase {
 
         XCTAssertEqual(service._testPlanMessageIndexCount, 0)
         XCTAssertEqual(service._testMemoriesMessageIndexCount, 0)
-        XCTAssertEqual(service._testOriginalSystemPromptCount, 0)
     }
 
     // MARK: - Private Helpers
 
     private func setupProjectWithTask() async {
-        let orchestrator = NTMSOrchestrator(repository: NTMSRepository())
+        let orchestrator = TestOrchestrator.make()
         await orchestrator.openWorkFolder(tempDir)
         mockDelegate.snapshot = orchestrator.snapshot
         mockDelegate.workFolderURL = tempDir

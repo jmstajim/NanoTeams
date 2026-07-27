@@ -14,6 +14,32 @@ import Foundation
 /// (`EmbeddingModelLifecycleService`); this is the same discipline for chat.
 extension NTMSOrchestrator {
 
+    // MARK: - Dependency resolution (the ONLY place residency builds a real client)
+
+    /// The chat-lifecycle client for THIS orchestrator, and the single site in
+    /// the residency subsystem that constructs a real `LLMClientRouter`.
+    ///
+    /// `chatLifecycleClient == nil` is the production shape, so production
+    /// behaviour is unchanged — a fresh router per call, exactly as before. What
+    /// changes is the meaning of a caller that passes no client: it now inherits
+    /// THIS orchestrator's client instead of silently minting a live one. In
+    /// tests that is the injected stub, which makes every entry point below
+    /// network-free by construction rather than by each caller remembering an
+    /// argument — including the no-argument production callers
+    /// (`ModelResidencyHooks`, `LLMSettingsSheetView`) and any entry point added
+    /// later. Pinned by `ChatModelLifecycleClientResolutionPinTests`.
+    private var resolvedChatLifecycleClient: any LLMClient {
+        chatLifecycleClient ?? LLMClientRouter()
+    }
+
+    /// The ownership ledger for THIS orchestrator. Same rationale: a test holding
+    /// a fresh `ChatModelEnsurer()` can no longer fall through to the
+    /// process-global one and adopt — then unload — the developer's hand-loaded
+    /// model, which is the hazard `openWorkFolder` documents at its call site.
+    private func resolvedEnsurer(_ explicit: ChatModelEnsurer?) -> ChatModelEnsurer {
+        explicit ?? chatModelEnsurer
+    }
+
     /// Brings LM Studio's resident set in line with what the settings
     /// reference. Unloads every instance this app manages that no longer has a
     /// referencing slot — the model you switched away from, a Vision override
@@ -41,11 +67,14 @@ extension NTMSOrchestrator {
     /// WHICH instance serves the stream, so a busy model defers its sibling
     /// reap too. That is a deferral, not a leak — the next reconcile sweeps
     /// it, and reconciles run on every settings change and run boundary.
+    /// `client: nil` / `ensurer: nil` mean "this orchestrator's own", never the
+    /// process global — see `resolvedChatLifecycleClient`.
     @discardableResult
     func reconcileChatModelResidency(
         client: (any LLMClient)? = nil,
-        ensurer: ChatModelEnsurer = .shared
+        ensurer: ChatModelEnsurer? = nil
     ) async -> [String] {
+        let ensurer = resolvedEnsurer(ensurer)
         // COALESCING latch, not a drop. A pass that arrives while another is in
         // flight records a rerun request instead of returning empty and losing
         // its work: the running pass loops once more when it finishes, so a
@@ -60,7 +89,7 @@ extension NTMSOrchestrator {
         isReconcilingResidency = true
         defer { isReconcilingResidency = false }
 
-        let resolvedClient = client ?? LLMClientRouter()
+        let resolvedClient = client ?? resolvedChatLifecycleClient
         var notices: [String] = []
         repeat {
             pendingResidencyReconcile = false
@@ -180,11 +209,15 @@ extension NTMSOrchestrator {
     /// models this app loaded last session look foreign and would never be
     /// reclaimed. Adopting only the ones a slot references keeps genuinely
     /// hand-loaded models out of the ledger.
+    ///
+    /// `client: nil` / `ensurer: nil` mean "this orchestrator's own", never the
+    /// process global — see `resolvedChatLifecycleClient`.
     func adoptResidentReferencedModels(
         client: (any LLMClient)? = nil,
-        ensurer: ChatModelEnsurer = .shared
+        ensurer: ChatModelEnsurer? = nil
     ) async {
-        let resolvedClient = client ?? LLMClientRouter()
+        let ensurer = resolvedEnsurer(ensurer)
+        let resolvedClient = client ?? resolvedChatLifecycleClient
 
         // Persist every ledger change from here on. Set before restoring so the
         // restore's own pruning is written back.
@@ -254,9 +287,11 @@ extension NTMSOrchestrator {
         oldModel: String,
         newModel: String,
         baseURLString: String,
+        provider: LLMProvider = .lmStudio,
         client: (any LLMClient)? = nil,
-        ensurer: ChatModelEnsurer = .shared
+        ensurer: ChatModelEnsurer? = nil
     ) async {
+        let ensurer = resolvedEnsurer(ensurer)
         let old = oldModel.trimmingCharacters(in: .whitespacesAndNewlines)
         let new = newModel.trimmingCharacters(in: .whitespacesAndNewlines)
         let base = baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -264,7 +299,7 @@ extension NTMSOrchestrator {
         // what is already the desired state.
         guard !ChatModelEnsurer.sameModel(old, new), !base.isEmpty else { return }
 
-        let resolvedClient = client ?? LLMClientRouter()
+        let resolvedClient = client ?? resolvedChatLifecycleClient
 
         // Every user-facing note is emitted ONCE at the end: `lastInfoMessage`
         // is a single coalescing slot, so writing an unload note and then a
@@ -273,6 +308,17 @@ extension NTMSOrchestrator {
             client: resolvedClient, ensurer: ensurer)
 
         guard !new.isEmpty else {
+            emit(notices)
+            return
+        }
+        // The explicit load half only applies to providers whose residency the
+        // app manages (LM Studio). Ollama loads on first use and owns its own
+        // eviction (`keep_alive`) — attempting `/api/v1/models/load` there
+        // 404s and would surface a spurious "couldn't load model" banner on
+        // every switch. Reconcile still ran above: it can only ever touch
+        // LM-Studio-ledgered instances, e.g. the model orphaned by switching
+        // the provider itself.
+        guard provider.managesModelResidency else {
             emit(notices)
             return
         }
@@ -300,11 +346,77 @@ extension NTMSOrchestrator {
 
     /// Reconcile driven by a settings change that is not a model swap, and
     /// report anything that could not be reclaimed.
+    ///
+    /// Pure forwarder: `nil`s stay `nil` and `reconcileChatModelResidency`
+    /// resolves them against this orchestrator.
     func reconcileAndReportResidency(
         client: (any LLMClient)? = nil,
-        ensurer: ChatModelEnsurer = .shared
+        ensurer: ChatModelEnsurer? = nil
     ) async {
         emit(await reconcileChatModelResidency(client: client, ensurer: ensurer))
+    }
+
+    // MARK: - Residency queries for the Downloaded Models card
+
+    /// Canonical names of every model instance resident on `baseURLString`.
+    ///
+    /// Lives here rather than in `NTMSOrchestrator+DownloadedModels` so the
+    /// client keeps resolving through `resolvedChatLifecycleClient` — the one
+    /// seam allowed to build a real router (`ChatModelLifecycleClientResolutionPinTests`).
+    ///
+    /// Empty on ANY failure. Callers use this to decorate a row with a "loaded"
+    /// badge, never to gate an action, so an unreachable server degrades to
+    /// "no badge" rather than to a false claim either way.
+    func residentModelNames(
+        baseURLString: String,
+        client: (any LLMClient)? = nil
+    ) async -> Set<String> {
+        let resolvedClient = client ?? resolvedChatLifecycleClient
+        guard let instances = try? await resolvedClient.listLoadedInstances(baseURLString: baseURLString)
+        else { return [] }
+        return Set(instances.map(\.modelName))
+    }
+
+    /// Best-effort unload of every resident instance whose canonical name
+    /// matches one of `modelNames` — used immediately before a model's files are
+    /// deleted from disk.
+    ///
+    /// Unlike the reconciler, this does NOT restrict itself to app-owned
+    /// instances: the user asked for this specific model to be removed, so
+    /// leaving a hand-loaded copy of it serving from RAM after its files are
+    /// gone would be the surprising outcome. Routing through
+    /// `ChatModelEnsurer.reclaim` still drops ledger ownership when we happen to
+    /// own it, and gives the `awaitInstanceGone` settle for free — LM Studio
+    /// acknowledges an unload before it actually releases the instance.
+    ///
+    /// Failures are swallowed on purpose. Trashing a directory is a rename, so
+    /// an instance that refuses to unload does not make the delete unsafe; it
+    /// only means LM Studio keeps serving that copy until it is unloaded or the
+    /// app restarts.
+    func unloadResidentInstances(
+        matching modelNames: [String],
+        baseURLString: String,
+        client: (any LLMClient)? = nil,
+        ensurer: ChatModelEnsurer? = nil
+    ) async {
+        guard !modelNames.isEmpty else { return }
+        let resolvedClient = client ?? resolvedChatLifecycleClient
+        let ensurer = resolvedEnsurer(ensurer)
+
+        guard let instances = try? await resolvedClient.listLoadedInstances(baseURLString: baseURLString)
+        else { return }
+
+        for instance in instances
+        where modelNames.contains(where: { ChatModelEnsurer.sameModel($0, instance.modelName) }) {
+            try? await ensurer.reclaim(
+                OwnedChatModel(
+                    modelName: instance.modelName,
+                    baseURLString: baseURLString,
+                    instanceID: instance.instanceID
+                ),
+                client: resolvedClient
+            )
+        }
     }
 
     /// Residency sweep for a run-boundary event, wired into every engine's
@@ -334,8 +446,7 @@ extension NTMSOrchestrator {
         guard state != .running else { return nil }
         return Task { [weak self] in
             guard let self else { return }
-            await self.reconcileChatModelResidency(
-                client: self.chatLifecycleClient, ensurer: self.chatModelEnsurer)
+            await self.reconcileChatModelResidency()
         }
     }
 

@@ -454,7 +454,7 @@ final class RestartRoleTests: NTMSOrchestratorTestBase {
     // MARK: - Queued-message preservation through restart
 
     /// Regression guard for the "restartRole preserves queue" invariant
-    /// (plan §7a). `step.reset()` clears `llmSessionID`, so the injection
+    /// (plan §7a). `step.reset()` clears the conversation, so the injection
     /// hook's `iterationNumber > 1 || session == nil` guard is satisfied on
     /// iteration 1 of the restarted step, and the queued message delivers
     /// there. Must not be "fixed" by adding role-level queue cleanup.
@@ -469,8 +469,7 @@ final class RestartRoleTests: NTMSOrchestratorTestBase {
             title: "PM Step",
             status: .done,
             completedAt: MonotonicClock.shared.now(),
-            llmConversation: [LLMMessage(role: .assistant, content: "finished")],
-            llmSessionID: "stale-session"
+            llmConversation: [LLMMessage(role: .assistant, content: "finished")]
         )
         let taskID = await createTaskWithRun(
             steps: [doneStep],
@@ -494,7 +493,6 @@ final class RestartRoleTests: NTMSOrchestratorTestBase {
         // Reset cleared the stale session so iteration 1 of the restarted step
         // will pass the injection hook's `session == nil` guard.
         let step = sut.activeTask?.runs.last?.steps.first(where: { $0.id == roleID })
-        XCTAssertNil(step?.llmSessionID, "reset() must null llmSessionID so the next run starts stateless")
         XCTAssertEqual(step?.status, .pending)
 
         // Simulate iteration-1 of the restarted step calling through the delegate.

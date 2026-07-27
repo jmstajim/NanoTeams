@@ -40,10 +40,7 @@ final class NTMSOrchestratorDelegationRestoreTests: XCTestCase {
     }
 
     private func makeOrchestrator() -> NTMSOrchestrator {
-        NTMSOrchestrator(
-            repository: NTMSRepository(),
-            searchEmbeddingClient: StubSearchEmbeddingClient()
-        )
+        TestOrchestrator.make()
     }
 
     // MARK: - Scenario A: cold restart via openWorkFolder

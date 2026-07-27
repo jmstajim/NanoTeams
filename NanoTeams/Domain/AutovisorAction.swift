@@ -217,4 +217,33 @@ nonisolated enum AutovisorStatus {
     static func hasToolInFlight(step: StepExecution) -> Bool {
         step.toolCalls.last.map { $0.resultJSON == nil } ?? false
     }
+
+    // MARK: - Resumability
+
+    /// Whether `control_task resume` will genuinely continue this step.
+    ///
+    /// Names an AFFORDANCE, not a diagnosis — a paused step is the one state the
+    /// manager's triage has no verdict for: `AutovisorStuckEvaluator` returns
+    /// `.notStuck` for anything that isn't `.running`, so `stuck`, `idle_seconds`
+    /// and `running_tool` are all structurally absent, and `elapsed_seconds` keeps
+    /// counting through app downtime (`StatusRecoveryService` never sets
+    /// `completedAt`). Left to infer, a manager reads "hours with nothing
+    /// happening" and reaches for `manage_role restart`, which wipes the
+    /// conversation and every tool call it was about to continue from.
+    ///
+    /// Mirrors `resumeRun` branch 3 exactly: a `.paused` step whose role is still
+    /// `.working` (deliberate pause) or is `.idle` with preserved history (the
+    /// app-quit shape `StatusRecoveryService` produces — it is the only writer of
+    /// `.idle` alongside a `.paused` step). **Keep in lock-step with
+    /// `NTMSOrchestrator.resumeRun`**: drift here promises the manager a resume the
+    /// runtime would silently drop.
+    static func isResumable(
+        step: StepExecution,
+        roleStatus: RoleExecutionStatus?,
+        taskIsClosed: Bool
+    ) -> Bool {
+        guard !taskIsClosed, step.status == .paused else { return false }
+        if roleStatus == .working { return true }
+        return roleStatus == .idle && !(step.messages.isEmpty && step.llmConversation.isEmpty)
+    }
 }

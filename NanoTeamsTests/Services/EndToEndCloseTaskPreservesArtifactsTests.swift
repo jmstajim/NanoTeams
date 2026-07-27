@@ -146,7 +146,7 @@ final class EndToEndCloseTaskPreservesArtifactsTests: NTMSOrchestratorTestBase {
         let id = await seedTaskWithAllDoneSteps()
         _ = await sut.closeTask(taskID: id)
 
-        sut = NTMSOrchestrator(repository: NTMSRepository())
+        sut = TestOrchestrator.make()
         await sut.openWorkFolder(tempDir)
         await sut.switchTask(to: id)
 

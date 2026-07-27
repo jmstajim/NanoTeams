@@ -4,7 +4,7 @@ import XCTest
 
 /// Run 6 regression: Code Reviewer emitted 14 consecutive near-identical
 /// "I'm sorry, I can't create files…" messages (interleaved with user nudges)
-/// that `collapseRedundantAssistantTextRuns` couldn't compact. The program had
+/// that the since-deleted `collapseRedundantAssistantTextRuns` couldn't compact. The program had
 /// no escape hatch; 27 iterations wasted until the run was killed.
 /// `ConversationRepairService.detectMessageLoop` is the new detector.
 final class MessageLoopDetectorTests: XCTestCase {

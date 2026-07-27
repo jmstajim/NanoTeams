@@ -64,6 +64,4 @@ enum Typography {
 
     /// Tracking for UPPERCASE section labels (design `--nt-tracking-label` 0.12em ≈ 1.3pt)
     static let labelTracking: CGFloat = 1.3
-    /// Wider tracking for spaced-out banner labels (design `--nt-tracking-wide` 0.22em)
-    static let bannerTracking: CGFloat = 2.4
 }

@@ -12,8 +12,7 @@ final class CorrectRoleTests: NTMSOrchestratorTestBase {
 
     private func createTaskWithPausedStep(
         roleID: String,
-        needsSupervisorInput: Bool,
-        llmSessionID: String? = nil
+        needsSupervisorInput: Bool
     ) async -> Int {
         await sut.openWorkFolder(tempDir)
         let taskID = await sut.createTask(title: "Test", supervisorTask: "Goal")!
@@ -26,8 +25,7 @@ final class CorrectRoleTests: NTMSOrchestratorTestBase {
             messages: [StepMessage(role: .productManager, content: "Working…")],
             needsSupervisorInput: needsSupervisorInput,
             supervisorQuestion: needsSupervisorInput ? "Which option?" : nil,
-            llmConversation: [LLMMessage(role: .assistant, content: "Prior turn")],
-            llmSessionID: llmSessionID
+            llmConversation: [LLMMessage(role: .assistant, content: "Prior turn")]
         )
         await sut.mutateTask(taskID: taskID) { task in
             var run = Run(id: 0, steps: [step], roleStatuses: [roleID: .working])
@@ -107,8 +105,7 @@ final class CorrectRoleTests: NTMSOrchestratorTestBase {
         let initialMessageCount = 1  // "Working…" seed message from createTaskWithPausedStep
         let taskID = await createTaskWithPausedStep(
             roleID: roleID,
-            needsSupervisorInput: true,
-            llmSessionID: "resp_abc123"
+            needsSupervisorInput: true
         )
         markEngineStatePaused(taskID: taskID)
 
@@ -129,8 +126,6 @@ final class CorrectRoleTests: NTMSOrchestratorTestBase {
         // (which would append a StepMessage and set revisionComment):
         XCTAssertEqual(step?.messages.count, initialMessageCount,
                        "Branch A must NOT append a StepMessage — that's Branch B's behavior")
-        XCTAssertEqual(step?.llmSessionID, "resp_abc123",
-                       "Branch A must preserve llmSessionID so `previous_response_id` continuation keeps working")
         XCTAssertTrue(step?.supervisorAnswerAttachmentPaths.isEmpty ?? false,
                       "answerSupervisorQuestion clears attachment paths (Branch A passes no attachments)")
     }

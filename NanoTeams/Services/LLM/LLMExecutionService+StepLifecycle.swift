@@ -1,7 +1,7 @@
 import Foundation
 
-/// Extension containing the step execution lifecycle: setup, tool loop, error recovery,
-/// and session management. Extracted from the main LLMExecutionService file for SRP.
+/// Extension containing the step execution lifecycle: setup, tool loop, and error
+/// recovery. Extracted from the main LLMExecutionService file for SRP.
 extension LLMExecutionService {
 
     // MARK: - Step Execution
@@ -80,16 +80,33 @@ extension LLMExecutionService {
         let fullConversation = buildChatMessages(
             for: task, stepID: stepID, tools: tools, supervisorMode: supervisorMode)
 
-        // Check for supervisor continuation: saved session + answer means we can resume
-        // the stateful chain instead of rebuilding from scratch.
-        let savedSessionID = step.llmSessionID
-        let hasSupervisorContinuation = savedSessionID != nil && step.effectiveSupervisorAnswer != nil
-        let hasRevisionContinuation = savedSessionID != nil
-            && step.revisionComment != nil
+        // Re-entry: continue the conversation this step actually sent instead of
+        // re-synthesizing one. `resume` is nil only for a genuinely fresh step.
+        // The two re-entry triggers are mutually exclusive by construction: an
+        // answer outranks a revision comment.
+        let resumeConversation = ConversationReplay.resume(from: step)
+        // `.legacyConversation` is a documented guaranteed prefix-cache miss ("not byte-identical
+        // to what was sent"). Recording WHERE the conversation came from is what lets the
+        // detector tell that apart from a genuinely fresh step, which is inherent and never
+        // reported — the two are otherwise both "this step's first request".
+        executionStates[stepKey]?.replaySource = resumeConversation?.source
+        let hasSupervisorAnswer = step.effectiveSupervisorAnswer != nil
+        let hasRevisionFeedback = step.revisionComment != nil
             && step.effectiveSupervisorAnswer == nil
 
         let taskHandle = Task { [weak self] in
             guard let self else { return }
+
+            // A conversation built from scratch shares nothing with what this step sent in a
+            // previous run, so the ledger's chain for this owner is not a baseline — it is a
+            // different conversation that happens to carry the same owner key. Dropping it is
+            // what makes `.firstRequestForOwner`, and its exemption, reachable at all.
+            //
+            // Runs BEFORE the config block below on purpose: `preflightCheck` can replace
+            // `effectiveConfig` with `globalConfig`, and a role override can be edited between
+            // runs, so a `(server, model)`-keyed drop would clear one slot and leave the stale
+            // chain live under the other. Owner-scoped makes that trap unrepresentable.
+            await self.forgetPrefixChainForFreshConversation(stepID: stepID, taskID: taskID)
 
             // Resolve effective config with provider-aware pre-flight check
             let config: LLMConfig
@@ -114,46 +131,54 @@ extension LLMExecutionService {
             self.recordActiveModel(stepID: stepID, taskID: taskID, config: config)
 
             var cumulativeUsage = TokenUsage()
+            // Declared outside the `do` so the cancellation arm can persist it: a pause
+            // must leave behind the conversation the step was mid-way through, or resume
+            // re-synthesizes and loses the working history.
+            var conversation: [ChatMessage] = []
 
             do {
                 // LLM run with tool loop, capped to prevent infinite cycling.
                 var safetyIterations = 0
-                var conversation: [ChatMessage]
                 let tracker = ToolCallTracker()
                 let memoryStore = MemoryTagStore(workFolderRoot: workFolderRoot)
                 var llmErrorCount = 0
-                var session: LLMSession?
-                var needsSessionFallback = false
 
-                if hasSupervisorContinuation, let sid = savedSessionID {
-                    // Stateful continuation — send only the tool result with the Supervisor's answer.
+                // Re-entry replays the transcript this step actually sent and appends
+                // the new turn — an append-only, byte-identical prefix, so the server's
+                // prompt cache re-evaluates only what's new.
+                //
+                // The fall-through is `ConversationReplay`, NOT a `PromptBuilder` rebuild.
+                // `buildChatMessages` never reads `step.llmConversation` or
+                // `step.toolCalls`; it reads `step.messages`, which in a Harmony tool loop
+                // receives nothing for envelope-only assistant turns and never receives
+                // tool results at all. Rebuilding there silently dropped the entire
+                // working history — every read, every write, every denied command — so the
+                // model re-did the work it had already done.
+                if let resume = resumeConversation, hasSupervisorAnswer {
+                    // Append-only continuation: everything already processed, plus the
+                    // answer as the tool result resolving the pending `ask_supervisor`.
                     // The `.supervisorAnswer` LLMMessage was appended to
                     // `step.llmConversation` atomically by
                     // `StepMessagingService.answerSupervisorQuestion`, so no
                     // duplicate append here. (Auto-answer path appends from
                     // `handleAutoSupervisorAnswer` within the same iteration
                     // and doesn't re-enter through here.)
-                    session = LLMSession(responseID: sid)
                     let answer = step.effectiveSupervisorAnswer ?? ""
                     let answerJSON = self.buildCollaborationToolResult(
                         toolName: ToolNames.askSupervisor,
                         response: answer)
-                    conversation = [ChatMessage(role: .tool, content: answerJSON)]
-                    needsSessionFallback = true
-                } else if hasRevisionContinuation, let sid = savedSessionID,
+                    conversation = resume.messages
+                        + [ChatMessage(role: .tool, content: answerJSON)]
+                } else if let resume = resumeConversation, hasRevisionFeedback,
                           let feedback = step.revisionComment {
-                    // Revision continuation — send only the Supervisor's feedback via stateful session.
-                    // The LLM server has the full prior conversation in its response chain.
-                    session = LLMSession(responseID: sid)
                     // `revisionComment` is raw by contract, but tasks persisted by older
                     // builds stored the already-prefixed message content in it —
                     // `rawFeedback` strips before prefixing so legacy data can't resurrect
                     // the doubled "Supervisor Feedback: Supervisor Feedback:" output.
                     let outbound = MessageSourceContext.supervisorFeedbackPrefix
                         + MessageSourceContext.rawFeedback(feedback)
-                    conversation = [ChatMessage(role: .user, content: outbound)]
-                    needsSessionFallback = true
-
+                    conversation = resume.messages
+                        + [ChatMessage(role: .user, content: outbound)]
                     // Persist to llmConversation for activity feed display.
                     // `.changeRequest` labels the bubble "(change request)" — without a
                     // sourceContext, `sourceContextDisplayLabel` falls back to the generic
@@ -163,20 +188,19 @@ extension LLMExecutionService {
                         content: outbound,
                         sourceRole: .supervisor,
                         sourceContext: .changeRequest)
+                } else if let resume = resumeConversation {
+                    // A step that suspended WITHOUT a Supervisor answer or a
+                    // revision — an ordinary pause, or a stop/resume — still has
+                    // a transcript, and it is still the byte-identical prefix the
+                    // server holds. Before this branch it fell through to
+                    // `fullConversation`, discarding every read, write and denial
+                    // the step had accumulated: the same history loss the
+                    // stateless work fixed for the other two re-entry doors, just
+                    // through a third one. Nothing is appended — resuming a pause
+                    // adds no new turn.
+                    conversation = resume.messages
                 } else {
                     conversation = fullConversation
-                }
-
-                // Clear saved session ID now that we've used it (prevents stale session on retry after failure)
-                if hasSupervisorContinuation || hasRevisionContinuation,
-                   let delegate = self.delegate,
-                   self.isExecutionLive(stepID: stepID, taskID: taskID) {
-                    await delegate.mutateTask(taskID: taskID) { task in
-                        guard let runIndex = task.runs.indices.last,
-                              let stepIndex = task.runs[runIndex].steps.firstIndex(where: { $0.id == stepID })
-                        else { return }
-                        task.runs[runIndex].steps[stepIndex].llmSessionID = nil
-                    }
                 }
 
                 // No per-role iteration ceiling: the global maxToolIterations is 0
@@ -187,28 +211,31 @@ extension LLMExecutionService {
                     if Task.isCancelled { throw CancellationError() }
                     if executionStates[stepKey]?.finishRequested == true {
                         executionStates[stepKey]?.finishRequested = false
-                        await self.persistSessionID(stepID: stepID, taskID: taskID, sessionID: session?.responseID)
+                        await self.persistWireTranscript(stepID: stepID, taskID: taskID, messages: conversation)
                         await self.persistTokenUsage(stepID: stepID, taskID: taskID, usage: cumulativeUsage)
                         await self.finishStepGraceful(stepID: stepID, taskID: taskID)
                         return
                     }
                     // Autovisor idle park (`wait_for_events`): end the pass by parking
-                    // at `.needsSupervisorInput` with the session preserved, so a human
-                    // message continues the SAME conversation via stateful continuation.
+                    // at `.needsSupervisorInput` with the wire transcript persisted, so a
+                    // human message continues the SAME conversation on re-entry.
                     // Deliberately bypasses the `.supervisorQuestion` machinery — the
                     // manager team is `.autonomous`, and the in-loop auto-answer would
                     // answer the park itself (same direct-park pattern as the
-                    // `StepFlowControl` escalation caps). Chain stays valid: the
-                    // continuation sends the Supervisor's answer as a single
-                    // synthesized `ask_supervisor`-shaped tool result (this file's
-                    // `hasSupervisorContinuation` branch), which resolves the pending
-                    // tool_call on the server chain — the proven `ask_supervisor`
-                    // shape. The `wait_for_events` envelope in `llmConversation` only
-                    // ships on the stateless (`needsSessionFallback`) rebuild.
+                    // `StepFlowControl` escalation caps). The re-entry appends the
+                    // Supervisor's answer as a single synthesized `ask_supervisor`-shaped
+                    // tool result (the `hasSupervisorAnswer` branch above).
                     if executionStates[stepKey]?.parkForEventsRequested == true {
                         executionStates[stepKey]?.parkForEventsRequested = false
+                        // nil = the standard idle park; the thinking-loop terminal
+                        // overrides it so a loop break is distinguishable from idle.
+                        let parkQuestion = executionStates[stepKey]?.parkQuestionOverride
+                        executionStates[stepKey]?.parkQuestionOverride = nil
+                        await self.persistWireTranscript(stepID: stepID, taskID: taskID, messages: conversation)
                         await self.persistTokenUsage(stepID: stepID, taskID: taskID, usage: cumulativeUsage)
-                        await self.parkStepForEvents(stepID: stepID, taskID: taskID, sessionID: session?.responseID)
+                        await self.parkStepForEvents(
+                            stepID: stepID, taskID: taskID,
+                            question: parkQuestion ?? AutovisorConstants.idleParkQuestion)
                         return
                     }
                     safetyIterations += 1
@@ -230,7 +257,6 @@ extension LLMExecutionService {
                             tracker: tracker,
                             memoryStore: memoryStore,
                             iterationNumber: safetyIterations,
-                            session: &session,
                             cumulativeUsage: &cumulativeUsage,
                             networkLogger: networkLogger
                         )
@@ -243,14 +269,9 @@ extension LLMExecutionService {
                         // produces the error bubble. No "attempt N" retry note is
                         // appended for these. Transient errors fall through to retry.
                         if !LLMRetryPolicy.isRetryable(error) { throw error }
-                        // LLM server error — retry instead of killing the step.
-                        // Clear session to avoid stale previous_response_id on retry.
-                        // Any error (400, 429, network timeout, etc.) can leave the session invalid.
-                        session = nil
-                        if needsSessionFallback {
-                            conversation = fullConversation
-                            needsSessionFallback = false
-                        }
+                        // LLM server error — retry instead of killing the step. The
+                        // conversation is already the whole request, so the retry needs
+                        // no rebuild; repair below only fixes a poisoned tail.
                         llmErrorCount += 1
                         safetyIterations -= 1
                         let maxRetries = delegate.maxLLMRetries
@@ -262,25 +283,32 @@ extension LLMExecutionService {
                         // Collapse a burst of retries into ONE live-updating bubble
                         // instead of appending a fresh message per attempt.
                         await appendOrReplaceRetryNotice(stepID: stepID, taskID: taskID, content: retryNote)
-                        ConversationRepairService.repairConversationIfNeeded(&conversation)
-                        ConversationRepairService.collapseRedundantAssistantTextRuns(&conversation)
+                        // The repair truncates the poisoned tail, which is a DELIBERATE prefix
+                        // reset — necessary, because the alternative is an unrecoverable HTTP 500
+                        // loop. Arm the same one-shot the planning boundary uses so the next
+                        // request is not reported as a cache defect. Only when it actually fired:
+                        // the flag is consumed on the next report, so arming it on a no-op would
+                        // swallow a genuine miss instead.
+                        if ConversationRepairService.repairConversationIfNeeded(&conversation) {
+                            executionStates[TaskStepKey(taskID: taskID, stepID: stepID)]?
+                                .expectedPrefixResetPending = true
+                        }
                         try await Task.sleep(for: .seconds(retryDelay))
                         continue
                     }
                     llmErrorCount = 0
-                    needsSessionFallback = false
 
                     switch stop {
                     case .completed:
-                        await self.persistSessionID(stepID: stepID, taskID: taskID, sessionID: session?.responseID)
+                        await self.persistWireTranscript(stepID: stepID, taskID: taskID, messages: conversation)
                         await self.persistTokenUsage(stepID: stepID, taskID: taskID, usage: cumulativeUsage)
                         await self.completeStepSuccess(stepID: stepID, taskID: taskID)
                         return
                     case .needsSupervisorInput(let question):
+                        await self.persistWireTranscript(stepID: stepID, taskID: taskID, messages: conversation)
                         await self.persistTokenUsage(stepID: stepID, taskID: taskID, usage: cumulativeUsage)
                         let persisted = await self.setNeedsSupervisorInput(
-                            stepID: stepID, taskID: taskID, question: question,
-                            sessionID: session?.responseID)
+                            stepID: stepID, taskID: taskID, question: question)
                         // Defense-in-depth: the inner caller (handleNoToolCalls cap branches)
                         // already handles persistence failures; this outer call is the last
                         // line of defense for ask_supervisor and other direct paths. Without
@@ -296,29 +324,38 @@ extension LLMExecutionService {
                     case .continueLoop:
                         continue
                     case .needsAcceptance:
-                        await self.persistSessionID(stepID: stepID, taskID: taskID, sessionID: session?.responseID)
+                        await self.persistWireTranscript(stepID: stepID, taskID: taskID, messages: conversation)
                         await self.persistTokenUsage(stepID: stepID, taskID: taskID, usage: cumulativeUsage)
                         await self.completeStepNeedsAcceptance(stepID: stepID, taskID: taskID)
                         return
                     case .toolFailure(let message):
-                        await self.persistSessionID(stepID: stepID, taskID: taskID, sessionID: session?.responseID)
+                        await self.persistWireTranscript(stepID: stepID, taskID: taskID, messages: conversation)
                         await self.persistTokenUsage(stepID: stepID, taskID: taskID, usage: cumulativeUsage)
                         await self.completeStepFailure(stepID: stepID, taskID: taskID, errorMessage: message)
                         return
                     }
                 }
 
-                await self.persistSessionID(stepID: stepID, taskID: taskID, sessionID: session?.responseID)
+                await self.persistWireTranscript(stepID: stepID, taskID: taskID, messages: conversation)
                 await self.persistTokenUsage(stepID: stepID, taskID: taskID, usage: cumulativeUsage)
                 await self.completeStepWithWarning(
                     stepID: stepID, taskID: taskID, warning: "Tool loop iteration limit reached.")
             } catch is CancellationError {
+                await self.persistWireTranscript(stepID: stepID, taskID: taskID, messages: conversation)
                 await self.persistTokenUsage(stepID: stepID, taskID: taskID, usage: cumulativeUsage)
                 delegate.clearStreamingPreview(stepID: stepID, taskID: taskID)
             } catch {
-                // Persist accumulated usage before failing — a permanent error can
-                // arrive after earlier iterations already spent tokens. Mirrors every
-                // other terminal arm (success / acceptance / toolFailure / warning).
+                // Persist the transcript and the accumulated usage before failing — a
+                // permanent error can arrive after earlier iterations already spent tokens
+                // and did real work. Mirrors every other terminal arm (success / acceptance
+                // / toolFailure / warning).
+                //
+                // The transcript matters even though the step is about to be `.failed`:
+                // `resetStepForRevision` acts on `.failed` as well as `.done` and preserves
+                // the conversation, so a change request against a step that died on a
+                // permanent error re-runs it. Without this the re-run falls back to
+                // `ConversationReplay`'s lossy display-record rebuild for no reason.
+                await self.persistWireTranscript(stepID: stepID, taskID: taskID, messages: conversation)
                 await self.persistTokenUsage(stepID: stepID, taskID: taskID, usage: cumulativeUsage)
                 let message =
                     (error as? LocalizedError)?.errorDescription ?? error.localizedDescription

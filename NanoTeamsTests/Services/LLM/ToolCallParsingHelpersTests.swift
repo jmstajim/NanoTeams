@@ -164,6 +164,37 @@ final class ToolCallParsingHelpersTests: XCTestCase {
         XCTAssertEqual(result, "[3,1,2]")
     }
 
+    /// Observed live from `openai/gpt-oss-20b` (2026-07-26): it writes the arguments as a
+    /// QUOTED ATTRIBUTE — `to=read_file arguments="{\"path\":…}"` — with no `<|message|>`
+    /// marker. `ChannelEnvelopeParser`'s plain-`{` fallback then finds the first brace INSIDE
+    /// that string literal and extracts the still-escaped body. Left as-is it reaches the tool
+    /// runtime as the literal `path` value (measured: `FILE_NOT_FOUND: File not found:
+    /// {\"path\":\"Sources/Counter.swift\"}`, one iteration burned) and rides every later
+    /// stateless resend as unparseable JSON inside the re-materialized envelope.
+    func testNormalizeJSON_escapedStringBody_isUnescapedThenNormalized() {
+        XCTAssertEqual(
+            ToolCallParsingHelpers.normalizeArgumentsJSONString(
+                #"{\"path\":\"Sources/Counter.swift\"}"#),
+            #"{"path":"Sources/Counter.swift"}"#)
+    }
+
+    /// The repair fires ONLY where the text is already unusable. Valid JSON that merely
+    /// contains a backslash — a Windows path, a regex — must survive byte-for-byte, or the
+    /// repair would corrupt healthy calls.
+    func testNormalizeJSON_validJSONContainingBackslashes_isUntouched() {
+        XCTAssertEqual(
+            ToolCallParsingHelpers.normalizeArgumentsJSONString(
+                #"{"pattern":"a\\d+","path":"C:\\src\\a.txt"}"#),
+            #"{"path":"C:\\src\\a.txt","pattern":"a\\d+"}"#)
+    }
+
+    /// Unescaping must not turn one unusable form into another: a blob that is still not JSON
+    /// after unescaping is returned unchanged, exactly as before.
+    func testNormalizeJSON_escapedButStillNotJSON_returnsOriginal() {
+        let input = #"not \"json\" either"#
+        XCTAssertEqual(ToolCallParsingHelpers.normalizeArgumentsJSONString(input), input)
+    }
+
     // MARK: - stableJSONString
 
     func testStableJSONString_dict_sortedKeys() {

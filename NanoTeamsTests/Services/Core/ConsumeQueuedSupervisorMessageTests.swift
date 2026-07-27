@@ -520,4 +520,91 @@ final class ConsumeQueuedSupervisorMessageTests: NTMSOrchestratorTestBase {
         XCTAssertTrue(formState.hasQueuedMessage(for: 999),
                       "Task B's queue must be untouched by Task A consumption")
     }
+
+    // MARK: - Redelivery: reaches the model, does NOT re-render in the feed
+
+    /// The planning-phase boundary discards everything after the brief, so a Supervisor message
+    /// delivered mid-planning is handed back to the queue. It has to reach the model again — the
+    /// implementation phase never saw it — but the user typed once and must not watch their own
+    /// message appear twice in the feed.
+    private func queueRedelivery(taskID: Int, text: String, targetRoleID: String? = nil) {
+        let msg = QuickCaptureFormState.QueuedChatMessage(
+            text: text, attachments: [], clippedTexts: [],
+            targetRoleID: targetRoleID, isRedelivery: true)!
+        formState.appendQueuedMessage(msg, for: taskID)
+    }
+
+    private func conversation(taskID: Int, stepID: String) -> [LLMMessage] {
+        sut.loadedTask(taskID)?.runs.last?.steps.first(where: { $0.id == stepID })?
+            .llmConversation ?? []
+    }
+
+    func testRedelivery_reachesTheModel() async {
+        let (taskID, stepID) = await createTaskWithRunningStep()
+        queueRedelivery(taskID: taskID, text: "look at the parser", targetRoleID: stepID)
+
+        let prompt = await sut.consumeQueuedSupervisorMessage(
+            taskID: taskID, roleID: stepID, stepID: stepID)
+
+        XCTAssertEqual(prompt, "Supervisor:\nlook at the parser")
+    }
+
+    func testRedelivery_addsNoSecondBubbleToTheFeed() async {
+        let (taskID, stepID) = await createTaskWithRunningStep()
+        let before = conversation(taskID: taskID, stepID: stepID).count
+        queueRedelivery(taskID: taskID, text: "look at the parser", targetRoleID: stepID)
+
+        _ = await sut.consumeQueuedSupervisorMessage(
+            taskID: taskID, roleID: stepID, stepID: stepID)
+
+        XCTAssertEqual(
+            conversation(taskID: taskID, stepID: stepID).count, before,
+            "the user saw this text on its first delivery; a second bubble is a UI artefact")
+    }
+
+    /// A fresh message queued FIRST is still shown; a redelivery drained alongside it is not.
+    func testMixedBatch_showsOnlyTheFreshMessage() async {
+        let (taskID, stepID) = await createTaskWithRunningStep()
+        queueRedelivery(taskID: taskID, text: "look at the parser", targetRoleID: stepID)
+        _ = queue(taskID: taskID, text: "and fix the lexer", targetRoleID: stepID)
+
+        let prompt = await sut.consumeQueuedSupervisorMessage(
+            taskID: taskID, roleID: stepID, stepID: stepID)
+
+        XCTAssertEqual(
+            prompt, "Supervisor:\nlook at the parser\nand fix the lexer",
+            "the model sees both — it has not read either in THIS phase")
+
+        let bubbles = conversation(taskID: taskID, stepID: stepID)
+            .filter { $0.sourceContext == .supervisorMessage }
+        XCTAssertEqual(bubbles.count, 1)
+        XCTAssertEqual(
+            bubbles.first?.content, "Supervisor:\nand fix the lexer",
+            "only the message the user has not yet seen is rendered")
+    }
+
+    func testAFreshMessage_stillRendersNormally() async {
+        let (taskID, stepID) = await createTaskWithRunningStep()
+        _ = queue(taskID: taskID, text: "fresh input", targetRoleID: stepID)
+
+        _ = await sut.consumeQueuedSupervisorMessage(
+            taskID: taskID, roleID: stepID, stepID: stepID)
+
+        let bubbles = conversation(taskID: taskID, stepID: stepID)
+            .filter { $0.sourceContext == .supervisorMessage }
+        XCTAssertEqual(bubbles.count, 1)
+        XCTAssertEqual(bubbles.first?.content, "Supervisor:\nfresh input")
+    }
+
+    func testRedelivery_isRemovedFromTheQueueLikeAnyOtherMessage() async {
+        let (taskID, stepID) = await createTaskWithRunningStep()
+        queueRedelivery(taskID: taskID, text: "look at the parser", targetRoleID: stepID)
+
+        _ = await sut.consumeQueuedSupervisorMessage(
+            taskID: taskID, roleID: stepID, stepID: stepID)
+
+        XCTAssertFalse(
+            formState.hasQueuedMessage(for: taskID),
+            "skipping the bubble must not skip the pop — that would deliver it forever")
+    }
 }

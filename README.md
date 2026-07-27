@@ -2,7 +2,7 @@
 
 # **NanoTeams**
 
-### Free, open-source AI coding agent & multi-agent teams for macOS<br>— 100% local via LM Studio, with an autonomous supervisor
+### Free, open-source AI coding agent & multi-agent teams for macOS<br>— 100% local via Ollama or LM Studio, with an autonomous supervisor
 
 [![Build&Test](https://github.com/jmstajim/NanoTeams/actions/workflows/ios.yml/badge.svg)](https://github.com/jmstajim/NanoTeams/actions/workflows/ios.yml)
 [![Version](https://img.shields.io/github/v/release/jmstajim/NanoTeams?label=version&color=5F87D9&style=flat-square)](https://github.com/jmstajim/NanoTeams/releases/latest)
@@ -13,11 +13,11 @@
 
 </div>
 
-**NanoTeams is a free, open-source, local-first AI coding agent and multi-agent AI team app for macOS.** It runs 100% on-device through [LM Studio](https://lmstudio.ai) — no cloud, no API keys, no subscription, no telemetry — so the local models you already run can read and edit your files, run git and Xcode, control the screen, and coordinate specialized AI roles inside a sandboxed work folder.
+**NanoTeams is a free, open-source, local-first AI coding agent and multi-agent AI team app for macOS.** It runs 100% on-device through [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai) — no cloud, no API keys, no subscription, no telemetry — so the local models you already run can read and edit your files, run git and Xcode, control the screen, and coordinate specialized AI roles inside a sandboxed work folder.
 
 Chat with the **Coding Assistant** to read and edit your files, or let the **Coding Agent** make small changes itself and hand the heavy lifting to a full team of AI roles that plan, build, review, and ship. It's universal, too: because a team is just AI roles you configure, the same engine drafts documents, plans projects, or runs research. Flip on the **Autovisor** and it runs the whole folder on its own. Your code and your ideas stay on your machine.
 
-*Built for Mac developers who run local models in LM Studio and anyone whose code can't leave the machine — privacy-first, NDA, or air-gapped work.*
+*Built for Mac developers who run local models in Ollama or LM Studio and anyone whose code can't leave the machine — privacy-first, NDA, or air-gapped work.*
 
 **[Download for macOS](https://github.com/jmstajim/NanoTeams/releases/latest/download/NanoTeams.app.zip)** · free & open-source (MIT) · [Get started](#getting-started) · [All releases](https://github.com/jmstajim/NanoTeams/releases)
 
@@ -29,18 +29,18 @@ The goal is simple: make local LLMs work as fast and efficiently as possible in 
 
 **NanoTeams** treats smaller models as the design constraint.
 
-Stateful chat keeps responses fast. The architecture forgives mistakes. Every piece of the program compensates for something local models don't do well.
+Every request is shaped so your server can reuse the prompt it already processed, which is what keeps responses fast. The architecture forgives mistakes. Every piece of the program compensates for something local models don't do well.
 
 It's a native Mac app — pure Swift/SwiftUI, with zero third-party dependencies: nothing in the supply chain but Apple's own frameworks.
 
 ## Getting Started
 
-> Requires **macOS 15.0+** and **[LM Studio 0.4.0+](https://lmstudio.ai)**
+> Requires **macOS 15.0+** and either **[Ollama 0.9+](https://ollama.com)** or **[LM Studio 0.4.0+](https://lmstudio.ai)**
 
 1. **[Download NanoTeams.app.zip](https://github.com/jmstajim/NanoTeams/releases/latest/download/NanoTeams.app.zip)** ([all releases](https://github.com/jmstajim/NanoTeams/releases)), extract it, and drag `NanoTeams.app` into Applications.
 2. **First launch:** macOS will warn that it "can't verify" the app, because it isn't notarized yet. Open **System Settings → Privacy & Security → Open Anyway**.
-3. Open **LM Studio** and load a model (see [Recommended Models](#recommended-models)).
-4. Launch **NanoTeams** and select a work folder (where AI roles read and write files).
+3. Start **Ollama** or **LM Studio** and load a model (see [Recommended Models](#recommended-models)).
+4. Launch **NanoTeams**, pick your provider in **Settings → LLM**, and select a work folder (where AI roles read and write files).
 5. Pick a team. **Coding Assistant** is the default (chat-mode with files, git, and Xcode tools); the new **Coding Agent** edits small changes itself and delegates bigger work to another team.
 6. Create a task, describe what you need, and the team takes it from there.
 
@@ -58,7 +58,7 @@ Each role can read/write files, use git, build with Xcode, consult other roles, 
 
 ## Features
 
-Everything below runs on your Mac, against your own local model.
+Everything below runs on your Mac, against your own local model in **Ollama** or **LM Studio**. Pick either one in **Settings → LLM**, or mix them — individual roles, Vision, and the Autovisor can each point at their own server.
 
 ### Multi-Agent AI Teams
 Turn one task into a coordinated team effort. Each role has its own instructions, tools, and deliverables, and they collaborate through quick consultations, group meetings, and change requests.
@@ -76,7 +76,7 @@ Code-writing roles can run real terminal commands, including long-running ones y
 Some jobs need the screen, not just files. A role can take a screenshot and then click, type, and scroll in other Mac apps to get them done. It's **manual by default**: you approve every action with a preview of exactly what will happen. Prefer hands-off? Hand approval to an on-device judge at the strictness you choose, or turn the feature off entirely. Built-in guardrails keep it from ever touching NanoTeams itself or any app you haven't allowed, and macOS asks for screen and accessibility permission the first time.
 
 ### Privacy & Security
-**NanoTeams** never sends your code, files, or prompts off your Mac. Its only outbound call is a once-a-day check for a new version — configurable, and you can turn it off entirely. Everything else runs on-device through LM Studio, with no telemetry and no account. File access is sandboxed to your work folder, the terminal and screen-control tools ask before they act, and a macOS sandbox keeps changes inside your folder and away from your credentials.
+**NanoTeams** never sends your code, files, or prompts off your Mac. Its only outbound call is a once-a-day check for a new version — configurable, and you can turn it off entirely. Everything else runs on-device through Ollama or LM Studio, with no telemetry and no account. File access is sandboxed to your work folder, the terminal and screen-control tools ask before they act, and a macOS sandbox keeps changes inside your folder and away from your credentials.
 
 ### More features
 
@@ -91,7 +91,7 @@ Some jobs need the screen, not just files. A role can take a screenshot and then
 | **Documents In & Out** | Reads PDF, DOCX, RTF, XLSX, PPTX, and ODT directly (no manual conversion); exports artifacts to PDF, Word, or RTF. |
 | **Universal Search** | Keyword search across PDFs, Office docs, slides, OpenDocument, HTML, source code, and plain text — one tool call. |
 | **Exploratory Search (Semantic)** | Search your project by meaning, not just keywords — runs entirely on-device; opt-in in Settings. |
-| **Per-Role LLM Configuration** | Give each role its own local model — a fast small one for planning, a heavyweight coder for the hard parts. |
+| **Per-Role LLM Configuration** | Give each role its own local model, server, and provider — a fast small one for planning, a heavyweight coder for the hard parts. |
 | **Vision (Image Analysis)** | Point a separate image-capable model at screenshots, diagrams, and photos; leave its fields empty to fall back to your main model. |
 | **Quick Capture** | Two global hotkeys create tasks, answer AI questions, or attach a selection from any app; paste files, screenshots, or text with ⌘V. |
 | **Private Voice Dictation** | On-device, multilingual, offline dictation wherever you write (requires macOS 26+). |
@@ -147,10 +147,13 @@ In the Discussion Club, four personality roles (The Open, The Conscientious, The
 ## Recommended Models
 
 I train **NanoTeams** on:
-- **[gpt-oss-20b](https://lmstudio.ai/models/openai/gpt-oss-20b)**
-- **[qwen3.5-9b](https://lmstudio.ai/models/qwen/qwen3.5-9b)**
-- **[gemma-4-26b-a4b](https://lmstudio.ai/models/google/gemma-4-26b-a4b)**
-- **[qwen3.5-35b-a3b](https://lmstudio.ai/models/qwen/qwen3.5-35b-a3b)**
+
+| Model | Ollama | LM Studio |
+|-------|--------|-----------|
+| **gpt-oss-20b** | `ollama pull gpt-oss:20b` | [openai/gpt-oss-20b](https://lmstudio.ai/models/openai/gpt-oss-20b) |
+| **qwen3.5-9b** | `ollama pull qwen3.5:9b` | [qwen/qwen3.5-9b](https://lmstudio.ai/models/qwen/qwen3.5-9b) |
+| **gemma-4-26b-a4b** | `ollama pull gemma4:26b` | [google/gemma-4-26b-a4b](https://lmstudio.ai/models/google/gemma-4-26b-a4b) |
+| **qwen3.5-35b-a3b** | `ollama pull qwen3.5:35b-a3b` | [qwen/qwen3.5-35b-a3b](https://lmstudio.ai/models/qwen/qwen3.5-35b-a3b) |
 
 Have a favorite local LLM? [Open an issue](https://github.com/jmstajim/NanoTeams/issues) and I'd love to make **NanoTeams** work better with it.
 
@@ -167,16 +170,16 @@ No external dependencies — nothing in the supply chain but Apple frameworks. P
 ## FAQ
 
 ### Is NanoTeams a local, offline alternative to Cursor, Claude Code, Codex, or GitHub Copilot?
-Yes. NanoTeams is an on-device AI coding agent for macOS: it runs entirely through a local model in LM Studio, so your code never leaves your Mac and you need no account, no API key, and no subscription. Unlike cloud assistants such as Cursor, Claude Code, Codex, and GitHub Copilot, it keeps working offline after the first download — useful for privacy-first, NDA, or air-gapped work. It's a native Mac app, not a CLI or a VS Code extension.
+Yes. NanoTeams is an on-device AI coding agent for macOS: it runs entirely through a local model in Ollama or LM Studio, so your code never leaves your Mac and you need no account, no API key, and no subscription. Unlike cloud assistants such as Cursor, Claude Code, Codex, and GitHub Copilot, it keeps working offline after the first download — useful for privacy-first, NDA, or air-gapped work. It's a native Mac app, not a CLI or a VS Code extension.
 
 ### Is NanoTeams free?
 Yes. **NanoTeams** is open-source and free. There are no subscriptions, no API keys, and no usage limits. You only pay for the hardware your local LLM runs on.
 
 ### Does NanoTeams send my data anywhere?
-No. All inference runs through LM Studio on your Mac; your files, prompts, and tool calls never leave your machine. The app's only outbound call of its own is a once-a-day version check — configurable, and you can turn it off entirely. No telemetry, no account.
+No. All inference runs through Ollama or LM Studio on your Mac; your files, prompts, and tool calls never leave your machine. The app's only outbound call of its own is a once-a-day version check — configurable, and you can turn it off entirely. No telemetry, no account.
 
 ### Do I need an internet connection?
-No, after the initial download of LM Studio and a model. **NanoTeams** works offline, which helps for travel, secure environments, or air-gapped machines.
+No, after the initial download of Ollama or LM Studio and a model. **NanoTeams** works offline, which helps for travel, secure environments, or air-gapped machines.
 
 ### Can NanoTeams run autonomously?
 Yes. Turn on the **Autovisor** — an automated Supervisor — and NanoTeams runs the work folder on its own: it creates and schedules tasks, answers the questions roles would normally ask you, reviews finished work, closes it, and remembers what it learned. It wakes when a task needs attention, idles when there's nothing to do, and a sleep timer (3 hours by default, adjustable) stops it after a while. Message it any time to steer it.
@@ -185,13 +188,13 @@ Yes. Turn on the **Autovisor** — an automated Supervisor — and NanoTeams run
 A team is a group of AI roles — each with its own instructions, tools, and deliverables — that collaborate through consultations, group meetings, and change requests. NanoTeams ships with 8 built-in teams (Coding Assistant, Coding Agent, Personal Assistant, FAANG, Engineering, Startup, Quest Party, Discussion Club) and 3 role types (producing, chat, observer). You can also describe a task in one line and have a local LLM generate a custom team for it.
 
 ### What models does NanoTeams support?
-Any model you can run in LM Studio. I train **NanoTeams** on `gpt-oss-20b`, `qwen3.5-9b`, `gemma-4-26b-a4b`, and `qwen3.5-35b-a3b`; see [Recommended Models](#recommended-models). For image analysis, you set one vision model in **Settings → Vision** — it overrides your main model for `analyze_image`, and if you leave its fields empty it falls back to your main LLM. Per role, you can override the main text model, its server, and generation parameters.
+Any model you can run in Ollama or LM Studio. I train **NanoTeams** on `gpt-oss-20b`, `qwen3.5-9b`, `gemma-4-26b-a4b`, and `qwen3.5-35b-a3b`; see [Recommended Models](#recommended-models). For image analysis, you set one vision model in **Settings → Vision** — it overrides your main model for `analyze_image`, and if you leave its fields empty it falls back to your main LLM. Per role, you can override the main text model, its server, and its provider. Sampling settings stay with the server, so the per-model config you already keep in a modelfile or in LM Studio is what runs. One exception to the provider choice: Exploratory Search embeddings need LM Studio.
 
 ### Why use NanoTeams instead of a hosted AI assistant?
 Hosted assistants run massive frontier models in the cloud and are excellent at what they do. **NanoTeams** is a different choice for a different need: when your code or data can't leave the machine, when you don't want a subscription or per-token bill, or when you want a multi-agent workflow with specialized roles, artifact pipelines, and on-device embeddings around whichever local model you prefer.
 
 ### What are the system requirements?
-macOS 15.0 or later. LM Studio 0.4.0 or later. Apple Silicon recommended for best local-LLM performance. Voice dictation requires macOS 26+.
+macOS 15.0 or later. Ollama 0.9 or later, or LM Studio 0.4.0 or later. Apple Silicon recommended for best local-LLM performance. Voice dictation requires macOS 26+.
 
 ## Support
 

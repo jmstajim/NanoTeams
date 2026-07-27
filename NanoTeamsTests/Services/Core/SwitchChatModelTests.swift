@@ -71,6 +71,30 @@ final class SwitchChatModelTests: NTMSOrchestratorTestBase {
         XCTAssertEqual(loadedModels(client), ["new-model"])
     }
 
+    /// Ollama manages its own residency (`keep_alive`, no load/unload REST
+    /// surface) — a switch under provider `.ollama` must NOT attempt an
+    /// explicit load (the 404 would surface as a spurious "couldn't load
+    /// model" banner on every switch), while reconcile still reclaims the
+    /// LM Studio instance orphaned by the provider flip itself.
+    func testSwitch_ollamaProvider_reconcilesButNeverLoads() async {
+        let client = RecordingLLMClient()
+        client.listLoadedInstancesResults = resident(["old-lm-model"])
+        let ensurer = await managed(["old-lm-model"], client: client)
+        // Global slot now points at Ollama — the LM Studio model is orphaned.
+        sut.configuration.llmBaseURLString = "http://127.0.0.1:11434"
+        sut.configuration.llmModelName = "gpt-oss:20b"
+
+        await sut.switchChatModel(
+            oldModel: "old-lm-model", newModel: "gpt-oss:20b",
+            baseURLString: "http://127.0.0.1:11434", provider: .ollama,
+            client: client, ensurer: ensurer)
+
+        XCTAssertEqual(loadedModels(client), [], "no explicit load against an Ollama server")
+        XCTAssertEqual(unloadedIDs(client), ["old-lm-model"],
+                       "reconcile still reclaims the orphaned LM Studio instance")
+        XCTAssertNil(sut.lastErrorMessage)
+    }
+
     /// The accumulation bug, reproduced: TWO models were orphaned by earlier
     /// switches. A delta handler frees only the one it was told about; the
     /// reconciler frees both.

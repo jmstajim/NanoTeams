@@ -173,21 +173,48 @@ nonisolated enum AutovisorPolicy {
         return trimmed.isEmpty || trimmed == AutovisorConstants.defaultGoal
     }
 
-    /// Whether the Autovisor surface should present the first-time SETUP pane
-    /// rather than the manager chat. THE single source of truth shared by the
-    /// detail-pane routing (`MainLayoutView.autovisorDetail`), the Watchtower pill's
-    /// click intercept, and the sidebar menu label — so a click that routes to
-    /// "setup" actually lands on setup, never silently on the chat.
+    // MARK: - Setup routing
+    //
+    // Two rules, because "setup" answers two different questions and one predicate
+    // cannot serve both:
+    //
+    // • DESTINATION — which pane does `.autovisor` render? (`showsSetupPane`)
+    // • INTERCEPT — may an OFF→ON click enable in place, or must it route through
+    //   setup first? (`requiresSetupBeforeEnabling`)
+    //
+    // They used to be one predicate keyed on the goal, which made a disabled manager
+    // with a real goal render a CHAT it could never drive — a dead surface with no
+    // visible way back. Widening that single predicate to "disabled ⇒ setup" would
+    // have fixed the pane and broken the pill: it could never turn the Autovisor on
+    // again, only navigate.
+    //
+    // The earlier divergence hazard (an intercept routing to "setup" while the pane
+    // showed the chat) is now structurally impossible rather than merely coordinated:
+    // every disabled state shows setup, and the intercept only ever fires while
+    // disabled — so `requiresSetupBeforeEnabling ⟹ showsSetupPane(enabled: false)`
+    // holds by construction. Pinned by `AutovisorPolicyTests`.
+
+    /// Whether the `.autovisor` destination renders the SETUP pane (goal + Enable)
+    /// rather than the manager chat — the routing rule for
+    /// `MainLayoutView.autovisorDetail` and the sidebar menu label that names it.
     ///
-    /// Needs setup when the manager was never created (`!taskExists`), OR it exists
-    /// but is disabled with an unset goal. The disabled+unset state is reachable and
-    /// load-bearing: `setAutovisorEnabled(false)` keeps `autovisorTaskID` set (only
-    /// Delete clears it), so a created-then-disabled manager that never got a real
-    /// goal must still route back to setup — not to a chat for a manager that won't
-    /// run. An ENABLED manager never needs setup (it's already running, even on the
-    /// placeholder goal — don't interrupt it); a disabled manager WITH a real goal
-    /// doesn't either (the pill just re-enables it directly).
-    static func needsSetup(taskExists: Bool, enabled: Bool, goalIsUnset: Bool) -> Bool {
-        !taskExists || (!enabled && goalIsUnset)
+    /// Setup unless the manager exists AND is enabled. A disabled manager keeps its
+    /// task (`setAutovisorEnabled(false)` leaves `autovisorTaskID` set — only Delete
+    /// clears it), so without this it would keep rendering a chat for a manager that
+    /// won't run. The goal is deliberately NOT an input: while disabled, the way back
+    /// is always the same one screen, whatever the goal says.
+    static func showsSetupPane(taskExists: Bool, enabled: Bool) -> Bool {
+        !taskExists || !enabled
+    }
+
+    /// Whether an OFF→ON click (the Watchtower pill) must route to the setup pane
+    /// instead of enabling in place.
+    ///
+    /// A real goal enables directly — one click, no detour. The seeded
+    /// `AutovisorConstants.defaultGoal` placeholder must be replaced first, or the
+    /// manager would start on the inert "explore & wait" directive; likewise a
+    /// manager that was never created has nothing to turn on yet.
+    static func requiresSetupBeforeEnabling(taskExists: Bool, goalIsUnset: Bool) -> Bool {
+        !taskExists || goalIsUnset
     }
 }

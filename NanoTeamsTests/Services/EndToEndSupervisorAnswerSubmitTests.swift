@@ -267,7 +267,7 @@ final class EndToEndSupervisorAnswerSubmitTests: NTMSOrchestratorTestBase {
         )
 
         // Simulate app restart
-        sut = NTMSOrchestrator(repository: NTMSRepository())
+        sut = TestOrchestrator.make()
         await sut.openWorkFolder(tempDir)
         await sut.switchTask(to: id)
 

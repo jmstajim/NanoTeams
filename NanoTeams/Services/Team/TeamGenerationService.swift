@@ -120,11 +120,13 @@ nonisolated enum TeamGenerationService {
         // requires recording the behavior in the first place. `roleName`
         // is fixed to "Team Generator" so the log row is attributable
         // separately from the delegating role's own calls.
+        // prefix-cache-owner: registered by each caller — `+DelegateToTeam`,
+        // `NTMSOrchestrator+TeamGeneration` and `TeamEditorView+Actions` note
+        // `.oneShot("team generation")`.
         let stream = client.streamChat(
             config: config,
             messages: messages,
             tools: [CreateTeamTool.schema],
-            session: nil,
             logger: logger,
             stepID: stepID,
             roleName: "Team Generator"

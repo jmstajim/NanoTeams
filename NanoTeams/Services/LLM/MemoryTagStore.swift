@@ -85,6 +85,29 @@ nonisolated final class MemoryTagStore {
     /// Current plan tag (for update_scratchpad)
     private var currentPlanTag: String?
 
+    /// Drops everything that describes what the model can currently SEE,
+    /// because the conversation those tags referred to was discarded.
+    ///
+    /// Called at the planning→implementation boundary, which rebuilds the wire
+    /// from scratch. Without it, a repeat `read_file` in the implementation
+    /// phase short-circuits to `{"status":"unchanged","ref":"<§R1§>","_hint":"Do NOT re-read"}`
+    /// — a pointer to content that is no longer anywhere in the model's context,
+    /// paired with an instruction not to fetch it. The model then has no route
+    /// to the file at all, and the usual outcome is an `edit_file` with
+    /// hallucinated `old_text` looping on `anchor_not_found`.
+    ///
+    /// `nextID` is deliberately NOT reset: tags stay monotonic across the
+    /// boundary, so a phase-2 `<§R5§>` can never collide with a phase-1
+    /// `<§R1§>` that is still visible in `llmConversation`, `tool_calls.jsonl`
+    /// and the activity feed.
+    func resetForFreshConversation() {
+        entries.removeAll()
+        currentReadTags.removeAll()
+        editedSinceLastRead.removeAll()
+        readRangesSinceEdit.removeAll()
+        currentPlanTag = nil
+    }
+
     // MARK: - Tag Generation
 
     func nextTag(_ type: TagType) -> String {

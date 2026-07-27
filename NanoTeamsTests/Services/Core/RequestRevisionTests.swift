@@ -27,8 +27,7 @@ final class RequestRevisionTests: NTMSOrchestratorTestBase {
             title: "SWE Step",
             status: .done,
             completedAt: MonotonicClock.shared.now(),
-            messages: [StepMessage(role: .softwareEngineer, content: "Done.")],
-            llmSessionID: "resp_xyz789"
+            messages: [StepMessage(role: .softwareEngineer, content: "Done.")]
         )
         await sut.mutateTask(taskID: taskID) { task in
             var run = Run(id: 0, steps: [step], roleStatuses: [roleID: .needsAcceptance])
@@ -73,8 +72,6 @@ final class RequestRevisionTests: NTMSOrchestratorTestBase {
                        "Raw revisionComment survives resetStepForRevision unchanged")
         XCTAssertFalse(step?.revisionComment?.contains("Supervisor Feedback:") ?? true,
                        "The doubled-prefix bug: revisionComment must never contain the prefix")
-        XCTAssertEqual(step?.llmSessionID, "resp_xyz789",
-                       "Session is preserved for stateful revision continuation")
     }
 
     /// Defense-in-depth: a step that reaches `.revisionRequested` without a stored raw
@@ -168,8 +165,7 @@ final class RequestRevisionTests: NTMSOrchestratorTestBase {
         let taskID = await sut.createTask(title: "Test", supervisorTask: "Goal")!
         let step = StepExecution(
             id: roleID, role: .softwareEngineer, title: "SWE",
-            status: .failed,
-            llmSessionID: "resp_failed"
+            status: .failed
         )
         await sut.mutateTask(taskID: taskID) { task in
             var run = Run(id: 0, steps: [step], roleStatuses: [roleID: .failed])

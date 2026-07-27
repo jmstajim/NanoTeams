@@ -41,12 +41,12 @@ final class SSEEventParserTests: XCTestCase {
 
     // MARK: - Chat End
 
-    func testChatEnd_returnsResponseIDAndUsage() {
+    func testChatEnd_returnsUsage() {
         _ = parser.parse(line: "event: chat.end")
         let json = "{\"response_id\": \"resp-123\", \"stats\": {\"input_tokens\": 100, \"total_output_tokens\": 50}}"
         let result = parser.parse(line: "data: \(json)")
-        if case .chatEnd(let responseID, let usage) = result {
-            XCTAssertEqual(responseID, "resp-123")
+        // `response_id` is deliberately dropped — nothing resumes a chain.
+        if case .chatEnd(let usage, _) = result {
             XCTAssertEqual(usage?.inputTokens, 100)
             XCTAssertEqual(usage?.outputTokens, 50)
         } else {
@@ -184,5 +184,73 @@ final class SSEEventParserTests: XCTestCase {
         let result = parser.parse(line: "data: {}")
         if case .ignored = result { /* OK */ }
         else { XCTFail("Expected ignored for nil content, got \(String(describing: result))") }
+    }
+
+    // MARK: - chat.end → ServerPrefillReport
+
+    /// The LM Studio half of the prompt-prefix cache's server signals had zero tests. The unit
+    /// conversion, the deliberately-absent prefill rate, and the empty-report collapse are all
+    /// load-bearing for `PrefixCachePolicy.resolve`, and all three were unpinned.
+
+    private func chatEndPrefill(_ statsJSON: String) -> ServerPrefillReport? {
+        _ = parser.parse(line: "event: chat.end")
+        let result = parser.parse(line: "data: {\"stats\": \(statsJSON)}")
+        guard case .chatEnd(_, let prefill) = result else {
+            XCTFail("Expected chatEnd, got \(String(describing: result))")
+            return nil
+        }
+        return prefill
+    }
+
+    func testChatEnd_modelLoadTimeSeconds_isConvertedToMilliseconds() {
+        let prefill = chatEndPrefill(
+            "{\"input_tokens\": 12927, \"total_output_tokens\": 8, \"model_load_time_seconds\": 2.2366}")
+        XCTAssertEqual(prefill?.modelLoadMs ?? 0, 2236.6, accuracy: 0.001)
+        XCTAssertEqual(prefill?.promptTokens, 12927)
+    }
+
+    /// LM Studio reports `time_to_first_token_seconds`, which includes queue time — and parallel
+    /// roles on one model are this app's normal mode, so a queued warm request would be
+    /// indistinguishable from a cold one. The omission is deliberate; this pins it so a future
+    /// "we already have a number, let's use it" change fails loudly.
+    func testChatEnd_prefillRateIsDeliberatelyAbsentOnLMStudio() {
+        let prefill = chatEndPrefill(
+            "{\"input_tokens\": 12927, \"total_output_tokens\": 8, \"model_load_time_seconds\": 2.2366, "
+                + "\"time_to_first_token_seconds\": 4.2}")
+        XCTAssertNil(
+            prefill?.nsPerToken,
+            "the rate branch of the detector must never be fed LM Studio's TTFT")
+    }
+
+    /// The universal warm case on this provider: `model_load_time_seconds` is exactly 0 on all 27
+    /// baseline rows. Zero is NOT nil, so `isEmpty` is false and the report survives — which is
+    /// what keeps `promptTokens` reachable on LM Studio at all. `isEmpty` deliberately ignores
+    /// `promptTokens` (a denominator, not a signal), so a server that reported ONLY the token
+    /// count would drop the whole report; the surviving zero is the only reason that corner is
+    /// unreachable here. Anything reading `promptTokens` must not assume this holds forever.
+    func testChatEnd_zeroModelLoadTime_stillCarriesTheTokenCount() {
+        let prefill = chatEndPrefill(
+            "{\"input_tokens\": 900, \"total_output_tokens\": 8, \"model_load_time_seconds\": 0}")
+        XCTAssertEqual(prefill?.modelLoadMs, 0, "zero is a measurement, not an absence")
+        XCTAssertEqual(prefill?.promptTokens, 900)
+        XCTAssertNil(prefill?.nsPerToken)
+    }
+
+    /// The complement, and the reason the line above matters: with the load figure genuinely
+    /// absent the report carries only `promptTokens`, and `isEmpty` throws it away.
+    func testChatEnd_withNoLoadFigure_dropsTheReportEvenThoughTokensAreKnown() {
+        XCTAssertNil(
+            chatEndPrefill("{\"input_tokens\": 900, \"total_output_tokens\": 8}"),
+            "`isEmpty` ignores promptTokens by design — a consumer must have a fallback source")
+    }
+
+    func testChatEnd_missingStats_yieldsNoUsageAndNoPrefill() {
+        _ = parser.parse(line: "event: chat.end")
+        let result = parser.parse(line: "data: {\"response_id\": \"r\"}")
+        guard case .chatEnd(let usage, let prefill) = result else {
+            return XCTFail("Expected chatEnd, got \(String(describing: result))")
+        }
+        XCTAssertNil(usage)
+        XCTAssertNil(prefill)
     }
 }

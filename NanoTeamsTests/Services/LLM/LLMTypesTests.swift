@@ -3,7 +3,7 @@
 //  NanoTeamsTests
 //
 //  Tests for LLMTypes value types: LLMProvider, LLMConfig, StreamEvent,
-//  TokenUsage, LLMSession, ChatMessage, ChatToolCall, LLMClientError.
+//  TokenUsage, ChatMessage, ChatToolCall, LLMClientError.
 //
 
 import XCTest
@@ -15,8 +15,9 @@ final class LLMTypesTests: XCTestCase {
 
     func testLLMProviderAllCasesExist() {
         let cases = LLMProvider.allCases
-        XCTAssertEqual(cases.count, 1)
+        XCTAssertEqual(cases.count, 2)
         XCTAssertTrue(cases.contains(.lmStudio))
+        XCTAssertTrue(cases.contains(.ollama))
     }
 
     func testLLMProviderIDMatchesRawValue() {
@@ -53,10 +54,35 @@ final class LLMTypesTests: XCTestCase {
         XCTAssertTrue(LLMProvider.lmStudio.supportsModelFetching)
     }
 
-    // MARK: - LLMProvider: supportsStatefulSessions
+    // MARK: - LLMProvider: Ollama case
 
-    func testLLMProviderSupportsStatefulSessionsTrue() {
-        XCTAssertTrue(LLMProvider.lmStudio.supportsStatefulSessions)
+    func testOllamaDisplayName() {
+        XCTAssertEqual(LLMProvider.ollama.displayName, "Ollama")
+    }
+
+    func testOllamaDefaultBaseURL() {
+        XCTAssertEqual(LLMProvider.ollama.defaultBaseURL, "http://127.0.0.1:11434")
+    }
+
+    func testOllamaDefaultModel() {
+        XCTAssertEqual(LLMProvider.ollama.defaultModel, "gpt-oss:20b")
+    }
+
+    func testManagesModelResidency() {
+        // LM Studio: explicit loads opt out of Auto-Evict → the app owns
+        // eviction. Ollama: keep_alive, no load/unload REST surface.
+        XCTAssertTrue(LLMProvider.lmStudio.managesModelResidency)
+        XCTAssertFalse(LLMProvider.ollama.managesModelResidency)
+    }
+
+    func testReachabilityProbePaths() {
+        XCTAssertEqual(LLMProvider.lmStudio.reachabilityProbePath, "api/v1/models")
+        XCTAssertEqual(LLMProvider.ollama.reachabilityProbePath, "api/tags")
+    }
+
+    func testOllamaRawValueEncoding() throws {
+        let data = try JSONEncoder().encode(LLMProvider.ollama)
+        XCTAssertEqual(String(data: data, encoding: .utf8), "\"ollama\"")
     }
 
     // MARK: - LLMProvider: Codable Round-Trip
@@ -130,7 +156,7 @@ final class LLMTypesTests: XCTestCase {
         XCTAssertEqual(event.thinkingDelta, "")
         XCTAssertTrue(event.toolCallDeltas.isEmpty)
         XCTAssertNil(event.tokenUsage)
-        XCTAssertNil(event.session)
+        XCTAssertNil(event.processingProgress)
     }
 
     func testStreamEventWithContentIsNotEmpty() {
@@ -151,11 +177,6 @@ final class LLMTypesTests: XCTestCase {
 
     func testStreamEventWithTokenUsageIsNotEmpty() {
         let event = StreamEvent(tokenUsage: TokenUsage(inputTokens: 10, outputTokens: 5))
-        XCTAssertFalse(event.isEmpty)
-    }
-
-    func testStreamEventWithSessionIsNotEmpty() {
-        let event = StreamEvent(session: LLMSession(responseID: "resp-1"))
         XCTAssertFalse(event.isEmpty)
     }
 
@@ -269,32 +290,6 @@ final class LLMTypesTests: XCTestCase {
         usage.accumulate(TokenUsage(inputTokens: 30, outputTokens: 15))
         XCTAssertEqual(usage.inputTokens, 60)
         XCTAssertEqual(usage.outputTokens, 30)
-    }
-
-    // MARK: - LLMSession: Init and Hashable
-
-    func testLLMSessionInit() {
-        let session = LLMSession(responseID: "resp-abc-123")
-        XCTAssertEqual(session.responseID, "resp-abc-123")
-    }
-
-    func testLLMSessionHashableEquality() {
-        let session1 = LLMSession(responseID: "resp-1")
-        let session2 = LLMSession(responseID: "resp-1")
-        XCTAssertEqual(session1, session2)
-    }
-
-    func testLLMSessionHashableInequality() {
-        let session1 = LLMSession(responseID: "resp-1")
-        let session2 = LLMSession(responseID: "resp-2")
-        XCTAssertNotEqual(session1, session2)
-    }
-
-    func testLLMSessionSetDeduplication() {
-        let session1 = LLMSession(responseID: "resp-1")
-        let session2 = LLMSession(responseID: "resp-1")
-        let set: Set<LLMSession> = [session1, session2]
-        XCTAssertEqual(set.count, 1)
     }
 
     // MARK: - MessageRole: Cases

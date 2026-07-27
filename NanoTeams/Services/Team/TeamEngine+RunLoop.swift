@@ -27,27 +27,27 @@ extension TeamEngine {
                 return
             }
 
-            // Reconcile working roles whose steps already completed.
+            // Reconcile roles whose steps already reached a terminal status.
             // runStep() is fire-and-forget so artifacts are produced as soon as
             // step.status becomes .done, but waitForStepCompletion (250 ms poll)
             // may not have updated the role status yet.  Without this pass the
             // loop can start a downstream role while the predecessor still shows
             // .working in the graph.
+            //
+            // Routed through `RoleStepReconciler` — the rule shared with
+            // `StatusRecoveryService` — which gates on the ROLE's own status rather
+            // than on `.working` alone, so a role a previous launch's recovery parked
+            // at `.idle` next to a finished step is healed here too instead of being
+            // re-run from scratch by `findReadyRoles`.
             let stepMap = run.stepsByRoleBaseID()
-            for (roleID, roleStatus) in run.roleStatuses where roleStatus == .working {
-                if let step = stepMap[roleID] {
-                    switch step.status {
-                    case .done:
-                        await handleRoleCompleted(roleID: roleID)
-                    case .failed:
-                        await store.updateRoleStatus(roleID: roleID, status: .failed)
-                        onRoleStatusChanged?(roleID, .failed)
-                    case .needsApproval:
-                        await store.updateRoleStatus(roleID: roleID, status: .needsAcceptance)
-                        onRoleStatusChanged?(roleID, .needsAcceptance)
-                    default:
-                        break
-                    }
+            if let gate = acceptanceGate() {
+                for (roleID, roleStatus) in run.roleStatuses {
+                    await reconcileRole(
+                        roleID: roleID,
+                        roleStatus: roleStatus,
+                        stepStatus: stepMap[roleID]?.status,
+                        gate: gate
+                    )
                 }
             }
 
@@ -165,8 +165,14 @@ extension TeamEngine {
                     return
                 } else if isChatMode && Run.activeWorkRoleIDs(roleStatuses: roleStatuses, definitions: teamRoles).isEmpty {
                     // Chat-mode auto-complete arm: every non-supervisor non-observer role
-                    // has reached a terminal status (advisory auto-finish in autonomous
-                    // mode is the only existing producer). `allRolesComplete` hard-returns
+                    // has reached a terminal status. Named by WRITER rather than by caller,
+                    // so a renamed caller cannot rot this again: the writer is
+                    // `markChatModeAdvisoryStepDone`, shared by the autonomous no-tool
+                    // backstop and the loop-recovery graceful finish, plus the Supervisor's
+                    // own "Finish Role". Note the Autovisor manager no longer reaches here —
+                    // its backstop parks for events instead of finishing.
+                    //
+                    // `allRolesComplete` hard-returns
                     // false in chat mode, so we read the shared `activeWorkRoleIDs` helper
                     // directly — same predicate the Autovisor's chat-task close uses, so
                     // the two can never disagree. Without this arm, the only chat-mode path

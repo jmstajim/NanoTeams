@@ -20,8 +20,7 @@ final class ResumeFailedStepTests: NTMSOrchestratorTestBase {
     /// non-destructive. `step.id == roleID` because `effectiveRoleID == id`.
     private func createTaskWithFailedStep(
         roleID: String = "swe",
-        conversation: [LLMMessage] = [LLMMessage(role: .assistant, content: "partial work so far")],
-        sessionID: String? = "resp_failed_123"
+        conversation: [LLMMessage] = [LLMMessage(role: .assistant, content: "partial work so far")]
     ) async -> Int {
         await sut.openWorkFolder(tempDir)
         let taskID = await sut.createTask(title: "Test", supervisorTask: "Goal")!
@@ -32,8 +31,7 @@ final class ResumeFailedStepTests: NTMSOrchestratorTestBase {
                 title: "Engineer Step",
                 status: .failed,
                 completedAt: MonotonicClock.shared.now(),
-                llmConversation: conversation,
-                llmSessionID: sessionID
+                llmConversation: conversation
             )
             var run = Run(id: 0, steps: [step], roleStatuses: [roleID: .failed])
             run.updatedAt = MonotonicClock.shared.now()
@@ -59,8 +57,6 @@ final class ResumeFailedStepTests: NTMSOrchestratorTestBase {
         // Revival is a RETRY, not a reset — prior work must survive.
         XCTAssertEqual(step?.llmConversation.count, 1,
                        "Conversation must be preserved (retry, not reset)")
-        XCTAssertEqual(step?.llmSessionID, "resp_failed_123",
-                       "Session id must be preserved (not wiped like reset())")
     }
 
     func testResumeRun_multipleFailedSteps_allRevived() async {
@@ -272,7 +268,6 @@ final class ResumeFailedStepTests: NTMSOrchestratorTestBase {
                 id: "swe", role: .softwareEngineer, title: "SWE", status: .failed,
                 completedAt: MonotonicClock.shared.now(),
                 llmConversation: [LLMMessage(role: .assistant, content: "attempt")],
-                llmSessionID: "resp_rev_1",
                 revisionComment: "address the feedback"
             )
             var run = Run(id: 0, steps: [step], roleStatuses: ["swe": .failed])
@@ -286,6 +281,5 @@ final class ResumeFailedStepTests: NTMSOrchestratorTestBase {
         XCTAssertEqual(step?.status, .running, "Failed revision step is revived")
         XCTAssertEqual(step?.revisionComment, "address the feedback",
                        "revisionComment is preserved — revival is a retry, not a reset()")
-        XCTAssertEqual(step?.llmSessionID, "resp_rev_1")
     }
 }

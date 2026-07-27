@@ -73,22 +73,23 @@ final class IterationBoundaryRefreshTests: XCTestCase {
 
     // MARK: - End-to-end planning transition (Run 8 regression)
 
-    /// Composed scenario: iter 1 prose response → `handleNoToolCalls` persists a
-    /// scratchpad through the delegate → fresh snapshot via `refreshedTaskSnapshot`
-    /// → `applyPlanningPhase` must transition to the implementation branch
-    /// (`resetSession = true`, full toolset, original system prompt restored).
+    /// Composed scenario: a planning-phase iteration answers with PROSE instead
+    /// of calling `update_scratchpad` → `handleNoToolCalls` persists the prose as
+    /// the plan through the delegate → fresh snapshot via `refreshedTaskSnapshot`
+    /// → `applyPlanningPhase` crosses the boundary (full authorization, wire
+    /// rebuilt from the seed).
     ///
-    /// If a future change removes the call to `refreshedTaskSnapshot` in
-    /// `runOneLLMToolIteration`, `applyPlanningPhase` sees the stale original
-    /// step (scratchpad still nil) and this test fails.
-    func testPlanningTransitionUnblockedByFreshSnapshot_afterProseResponse() async {
+    /// If a future change removes the `refreshedTaskSnapshot` call in
+    /// `runOneLLMToolIteration`, `applyPlanningPhase` sees the stale step
+    /// (scratchpad still nil), stays in planning, and this test fails — which is
+    /// the Run-8 regression it was written for.
+    func testBoundaryCrossedAfterProseResponse_onFreshSnapshot() async {
         let role = TeamRoleDefinition(
             id: "swe", name: "Software Engineer", prompt: "", toolIDs: [],
             usePlanningPhase: true,
             dependencies: RoleDependencies(requiredArtifacts: [], producesArtifacts: ["Engineering Notes"])
         )
-        let originalPrompt = "You are Software Engineer."
-        let planningPrompt = "You are Software Engineer.\n\nPLANNING PHASE\n==============\nCall update_scratchpad(...)."
+        let systemPrompt = "You are Software Engineer."
         let fullTools: [ToolSchema] = [
             ToolSchema(name: ToolNames.updateScratchpad, description: "Scratchpad", parameters: .object(properties: [:])),
             ToolSchema(name: ToolNames.search, description: "Search", parameters: .object(properties: [:])),
@@ -96,15 +97,17 @@ final class IterationBoundaryRefreshTests: XCTestCase {
             ToolSchema(name: ToolNames.createArtifact, description: "Artifact", parameters: .object(properties: [:])),
         ]
 
-        service._testSetOriginalSystemPrompt(stepID: stepID, taskID: task.id, prompt: originalPrompt)
-
+        // A wire mid-planning: the brief is a trailing user turn, the system
+        // message is untouched.
         var conversation: [ChatMessage] = [
-            ChatMessage(role: .system, content: planningPrompt),
+            ChatMessage(role: .system, content: systemPrompt),
             ChatMessage(role: .user, content: "Build"),
+            ChatMessage(role: .user, content: PlanningPhasePolicy.planningBrief(
+                exploreToolNames: [ToolNames.search], expectedArtifacts: ["Engineering Notes"])),
             ChatMessage(role: .assistant, content: "Below is a complete implementation…"),
         ]
 
-        // handleNoToolCalls writes scratchpad via delegate.
+        // handleNoToolCalls writes the scratchpad via the delegate.
         let stop = await service._testHandleNoToolCalls(
             stepID: stepID,
             assistantContent: "Below is a complete implementation…",
@@ -124,25 +127,25 @@ final class IterationBoundaryRefreshTests: XCTestCase {
         XCTAssertNotNil(refreshedStep.scratchpad,
                         "Precondition: scratchpad must be persisted via delegate before iter 2")
 
-        let tracker = ToolCallTracker()
-        let (tools, resetSession) = await service.applyPlanningPhase(
+        let authorization = await service.applyPlanningPhase(
             stepID: stepID,
             taskID: task.id,
-            roleForMessage: .softwareEngineer,
             tools: fullTools,
             step: refreshedStep,
-            tracker: tracker,
+            team: nil,
+            memoryStore: MemoryTagStore(workFolderRoot: URL(fileURLWithPath: "/tmp")),
             conversationMessages: &conversation,
             roleDefinition: role
         )
 
-        XCTAssertEqual(tools.count, 4,
-                       "Full toolset must be returned after planning transition")
-        XCTAssertTrue(tools.contains { $0.name == ToolNames.writeFile },
-                      "write_file must be available so the model can implement")
-        XCTAssertTrue(resetSession,
-                      "Must request session reset so the next request sends full system_prompt in a fresh chain")
-        XCTAssertEqual(conversation.first(where: { $0.role == .system })?.content, originalPrompt,
-                       "System message must be restored from the saved original prompt")
+        XCTAssertEqual(authorization.allowed.count, 4,
+                       "Everything must be authorized once the plan is recorded")
+        XCTAssertTrue(authorization.withheldByPhase.isEmpty)
+        XCTAssertEqual(conversation.first(where: { $0.role == .system })?.content, systemPrompt,
+                       "The system message is never touched — that is the whole point")
+        XCTAssertFalse(PlanningPhasePolicy.wireCarriesBrief(conversation),
+                       "The boundary removes the brief, which is what makes it fire once")
+        XCTAssertTrue(conversation.last?.content?.contains(PlanningPhasePolicy.seedMarker) ?? false,
+                      "The implementation phase opens on the seeded plan")
     }
 }

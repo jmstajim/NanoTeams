@@ -1,10 +1,11 @@
 import Foundation
 
-/// LM Studio native API client — stateful via `previous_response_id`.
+/// LM Studio native API client — STATELESS: every request carries the full
+/// conversation and relies on the server's prompt-prefix cache.
 /// Endpoint: `POST /api/v1/chat`
 ///
 /// Notes:
-/// - System prompt uses `system_prompt` field and persists in the response chain
+/// - System prompt uses the `system_prompt` field and ships on every request
 /// - `input` is a plain string (single user message or joined tool results + user text)
 /// - No `tools` parameter — tool schemas are injected into `system_prompt` as a Harmony-format
 ///   description block; models generate `<|call|>` tool calls parsed by HarmonyToolCallParser
@@ -37,7 +38,6 @@ nonisolated struct NativeLMStudioClient: LLMClient {
         config: LLMConfig,
         messages: [ChatMessage],
         tools: [ToolSchema],
-        session: LLMSession?,
         logger: NetworkLogger? = nil,
         stepID: String? = nil,
         roleName: String? = nil
@@ -54,6 +54,7 @@ nonisolated struct NativeLMStudioClient: LLMClient {
             let streamTask = Task.detached {
                 var requestRecord: NetworkLogRecord?
                 var startTime = Date()
+                var capturedResidency: ClientResidencyFacts?
                 // Census this request so the model-switch hook refuses to
                 // unload the instance while it is streaming. Bracketed here
                 // rather than around the HTTP call so the load itself is
@@ -76,11 +77,23 @@ nonisolated struct NativeLMStudioClient: LLMClient {
                     // Explicit adopt-or-load BEFORE the request so LM Studio
                     // never JIT-loads the model (JIT instances get Auto-Evicted
                     // by each other). Already-loaded → no-op.
-                    try await self.modelEnsurer.ensureLoaded(
+                    let ensureStart = Date()
+                    let ensureOutcome = try await self.modelEnsurer.ensureLoaded(
                         modelName: config.modelName,
                         baseURLString: config.baseURLString,
                         client: self
                     )
+                    // A load we performed ourselves is the ONLY evidence of a reload available on
+                    // this provider: LM Studio reports `model_load_time_seconds` as 0 on every
+                    // warm row, and its residency is ours to manage. Emitted before any network
+                    // work so it survives a request that then fails. `.adopted` and `.skipped`
+                    // say nothing — the instance was already there, cache and all.
+                    if case .loaded = ensureOutcome {
+                        capturedResidency = ClientResidencyFacts(
+                            appLoadedModelForThisRequest: true,
+                            appModelLoadMs: Date().timeIntervalSince(ensureStart) * 1000)
+                        continuation.yield(StreamEvent(clientResidency: capturedResidency))
+                    }
 
                     var url = baseURL
                     url.append(path: "api")
@@ -101,8 +114,7 @@ nonisolated struct NativeLMStudioClient: LLMClient {
                     let payload = Self.buildRequest(
                         config: config,
                         messages: messages,
-                        tools: tools,
-                        session: session
+                        tools: tools
                     )
 
                     let bodyData = try JSONCoderFactory.makeWireEncoder().encode(payload)
@@ -143,8 +155,8 @@ nonisolated struct NativeLMStudioClient: LLMClient {
                     // Accumulators for network logging
                     var accumulatedContent = ""
                     var accumulatedThinking = ""
-                    var capturedResponseID: String?
                     var capturedUsage: TokenUsage?
+                    var capturedPrefill: ServerPrefillReport?
 
                     var sseParser = SSEEventParser()
 
@@ -159,9 +171,9 @@ nonisolated struct NativeLMStudioClient: LLMClient {
                         case .thinkingDelta(let content):
                             accumulatedThinking += content
                             continuation.yield(StreamEvent(thinkingDelta: content))
-                        case .chatEnd(let responseID, let usage):
-                            capturedResponseID = responseID
+                        case .chatEnd(let usage, let prefill):
                             capturedUsage = usage
+                            capturedPrefill = prefill
                         case .error(let message):
                             throw LLMClientError.providerError(message)
                         case .processingProgress(let progress):
@@ -171,13 +183,10 @@ nonisolated struct NativeLMStudioClient: LLMClient {
                         }
                     }
 
-                    // Emit final event with session + usage
-                    let finalSession = capturedResponseID.map { LLMSession(responseID: $0) }
-                    if capturedUsage != nil || finalSession != nil {
+                    // Emit final event with usage + the server's account of how it prefilled.
+                    if capturedUsage != nil || capturedPrefill != nil {
                         continuation.yield(StreamEvent(
-                            tokenUsage: capturedUsage,
-                            session: finalSession
-                        ))
+                            tokenUsage: capturedUsage, serverPrefill: capturedPrefill))
                     }
 
                     // Log response
@@ -197,7 +206,9 @@ nonisolated struct NativeLMStudioClient: LLMClient {
                             body: responseBody.isEmpty ? nil : responseBody,
                             error: nil,
                             inputTokens: capturedUsage?.inputTokens,
-                            outputTokens: capturedUsage?.outputTokens
+                            outputTokens: capturedUsage?.outputTokens,
+                            serverPrefill: capturedPrefill,
+                            clientResidency: capturedResidency
                         )
                         logger.append(responseRecord)
                     }
@@ -299,6 +310,62 @@ nonisolated struct NativeLMStudioClient: LLMClient {
             if let ctx = loaded.maxContextLength { return ctx }
         }
         return matches.compactMap(\.maxContextLength).first
+    }
+
+    /// Model Details card source: `GET /api/v0/models` matched by canonical
+    /// name. Prefers a `loaded` entry (it carries the EFFECTIVE
+    /// `loaded_context_length`); falls back to any matching entry so a
+    /// not-yet-loaded model still shows its static metadata. `nil` on
+    /// transport/decode failure or when the model isn't listed.
+    ///
+    /// Deliberately does NOT include sampling parameters: LM Studio's
+    /// per-model sampling config is not observable over REST (only the GUI
+    /// shows it) — the card's footer states that instead of guessing.
+    func modelLoadDetails(config: LLMConfig) async -> ModelLoadDetails? {
+        guard let baseURL = URL(string: config.baseURLString) else { return nil }
+        let url = baseURL.appendingPathComponent("api/v0/models")
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 5
+        request.applyLMStudioBearer(baseURL: config.baseURLString, resolver: tokenResolver)
+
+        guard let (data, response) = try? await session.sessionData(for: request),
+              let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode),
+              let decoded = try? JSONCoderFactory.makeWireDecoder().decode(V0ModelListResponse.self, from: data)
+        else { return nil }
+
+        let target = Self.canonicalModelName(config.modelName)
+        let matches = decoded.data.filter { Self.canonicalModelName($0.id) == target }
+        guard let entry = matches.first(where: { $0.state == "loaded" }) ?? matches.first else {
+            return nil
+        }
+
+        var fields: [ModelLoadDetails.Field] = []
+        let isLoaded = entry.state == "loaded"
+        fields.append(.init(label: "State", value: isLoaded ? "Loaded" : "Not loaded"))
+        if let ctx = entry.loadedContextLength {
+            fields.append(.init(label: "Loaded context length", value: String(ctx)))
+        }
+        if let maxCtx = entry.maxContextLength {
+            fields.append(.init(label: "Max context length", value: String(maxCtx)))
+        }
+        if let quant = entry.quantization, !quant.isEmpty {
+            fields.append(.init(label: "Quantization", value: quant))
+        }
+        if let arch = entry.arch, !arch.isEmpty {
+            fields.append(.init(label: "Architecture", value: arch))
+        }
+        if let type = entry.type, !type.isEmpty {
+            fields.append(.init(label: "Type", value: type))
+        }
+        if let compat = entry.compatibilityType, !compat.isEmpty {
+            fields.append(.init(label: "Format", value: compat))
+        }
+        if let publisher = entry.publisher, !publisher.isEmpty {
+            fields.append(.init(label: "Publisher", value: publisher))
+        }
+        return ModelLoadDetails(fields: fields)
     }
 
     func fetchEmbeddingModels(config: LLMConfig) async throws -> [String] {

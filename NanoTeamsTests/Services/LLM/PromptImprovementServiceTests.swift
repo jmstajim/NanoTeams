@@ -18,21 +18,18 @@ final class PromptImprovementServiceTests: XCTestCase {
         var onStreamTerminated: (@Sendable () -> Void)?
         var capturedMessages: [ChatMessage] = []
         var capturedConfig: LLMConfig?
-        var capturedSession: LLMSession?
         var capturedTools: [ToolSchema] = []
 
         func streamChat(
             config: LLMConfig,
             messages: [ChatMessage],
             tools: [ToolSchema],
-            session: LLMSession?,
             logger: NetworkLogger?,
             stepID: String?,
             roleName: String?
         ) -> AsyncThrowingStream<StreamEvent, Error> {
             capturedMessages = messages
             capturedConfig = config
-            capturedSession = session
             capturedTools = tools
 
             if let error = shouldThrow {
@@ -72,7 +69,7 @@ final class PromptImprovementServiceTests: XCTestCase {
         XCTAssertEqual(result, "Build a scientific calculator app.")
     }
 
-    func testImprove_buildsSystemPlusUserMessages_statelessNoTools() async throws {
+    func testImprove_buildsSystemPlusUserMessages_noTools() async throws {
         let client = MockLLMClient()
 
         _ = try await PromptImprovementService.improve(
@@ -82,7 +79,6 @@ final class PromptImprovementServiceTests: XCTestCase {
         XCTAssertEqual(client.capturedMessages[0].role, .system)
         XCTAssertEqual(client.capturedMessages[1].role, .user)
         XCTAssertEqual(client.capturedMessages[1].content, "rough prompt text" as String?)
-        XCTAssertNil(client.capturedSession, "one-shot rewrite must be stateless (session: nil)")
         XCTAssertTrue(client.capturedTools.isEmpty, "improve must not offer tools")
     }
 
@@ -205,15 +201,15 @@ final class PromptImprovementServiceTests: XCTestCase {
         XCTAssertEqual(result, "", "thinking deltas are not content — the field must not be filled with reasoning")
     }
 
-    func testImprove_ignoresTokenUsageAndSessionEvents_accumulatesOnlyContent() async throws {
-        // Metadata events (usage, session, thinking) interleaved with content must not corrupt the result.
+    func testImprove_ignoresMetadataEvents_accumulatesOnlyContent() async throws {
+        // Metadata events (usage, thinking) interleaved with content must not corrupt the result.
         let client = MockLLMClient()
         client.streamedEvents = [
             StreamEvent(thinkingDelta: "reasoning…"),
             StreamEvent(contentDelta: "Clear "),
             StreamEvent(tokenUsage: TokenUsage(inputTokens: 10, outputTokens: 5)),
             StreamEvent(contentDelta: "prompt."),
-            StreamEvent(session: LLMSession(responseID: "resp_1")),
+            StreamEvent(tokenUsage: TokenUsage(inputTokens: 0, outputTokens: 2)),
         ]
 
         let result = try await PromptImprovementService.improve(prompt: "x", config: makeConfig(), client: client)
@@ -299,7 +295,7 @@ final class PromptImprovementServiceTests: XCTestCase {
             StreamEvent(tokenUsage: TokenUsage(inputTokens: 1, outputTokens: 1)),
             StreamEvent(contentDelta: ""),
             StreamEvent(contentDelta: "B"),
-            StreamEvent(session: LLMSession(responseID: "resp_1")),
+            StreamEvent(tokenUsage: TokenUsage(inputTokens: 0, outputTokens: 2)),
         ]
 
         var got: [String] = []
@@ -323,7 +319,6 @@ final class PromptImprovementServiceTests: XCTestCase {
         XCTAssertEqual(client.capturedMessages[0].role, .system)
         XCTAssertEqual(client.capturedMessages[1].role, .user)
         XCTAssertEqual(client.capturedMessages[1].content, "rough prompt text" as String?)
-        XCTAssertNil(client.capturedSession)
         XCTAssertTrue(client.capturedTools.isEmpty)
     }
 

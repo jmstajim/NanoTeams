@@ -75,7 +75,6 @@ final class NativeChatInputTests: XCTestCase {
             model: "vision-model",
             systemPrompt: "You are an assistant",
             input: .multimodal(parts),
-            previousResponseID: nil,
             store: false,
             stream: true,
             temperature: nil
@@ -103,7 +102,6 @@ final class NativeChatInputTests: XCTestCase {
             model: "text-model",
             systemPrompt: nil,
             input: .text("Hello"),
-            previousResponseID: nil,
             store: true,
             stream: true,
             temperature: nil

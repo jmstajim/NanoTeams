@@ -22,25 +22,44 @@ struct LLMServerConfigCard: View {
         SettingsCard(
             header: "Server",
             systemImage: "server.rack",
-            footer: "Requires a running LM Studio server."
+            footer: "Requires a running \(config.llmProvider.displayName) server."
         ) {
-            LLMEndpointEditor(
-                baseURL: $config.llmBaseURLString,
-                modelName: $config.llmModelName,
-                apiToken: $apiToken,
-                urlPrompt: "http://127.0.0.1:1234",
-                urlDefaultValue: LLMProvider.lmStudio.defaultBaseURL,
-                emptyModelLabel: "Choose a model",
-                tokenInheritedHint: "Set a server address to enable the token field",
-                onTokenSaveError: onTokenSaveError,
-                onTokenLoadError: onTokenLoadError,
-                onURLCommit: onURLCommit,
-                availableModels: availableModels,
-                isFetchingModels: isFetchingModels,
-                status: nil,
-                onRefreshModels: onRefreshModels
-            ) {
-                testConnectionRow
+            VStack(alignment: .leading, spacing: Spacing.s) {
+                // Provider selection. Switching resets URL + model to the new
+                // provider's defaults (StoreConfiguration.llmProvider.didSet),
+                // which also drives the residency hook: the orphaned LM Studio
+                // instance is reconciled away, and no explicit load is
+                // attempted against a provider that manages its own residency.
+                HStack(spacing: Spacing.s) {
+                    Text("Provider")
+                        .font(Typography.caption)
+                        .foregroundStyle(Colors.textSecondary)
+                    TerminalSegmentedPicker(
+                        selection: $config.llmProvider,
+                        options: LLMProvider.allCases.map { ($0, $0.displayName) }
+                    )
+                    .frame(maxWidth: 320)
+                    Spacer(minLength: 0)
+                }
+
+                LLMEndpointEditor(
+                    baseURL: $config.llmBaseURLString,
+                    modelName: $config.llmModelName,
+                    apiToken: $apiToken,
+                    urlPrompt: config.llmProvider.defaultBaseURL,
+                    urlDefaultValue: config.llmProvider.defaultBaseURL,
+                    emptyModelLabel: "Choose a model",
+                    tokenInheritedHint: "Set a server address to enable the token field",
+                    onTokenSaveError: onTokenSaveError,
+                    onTokenLoadError: onTokenLoadError,
+                    onURLCommit: onURLCommit,
+                    availableModels: availableModels,
+                    isFetchingModels: isFetchingModels,
+                    status: nil,
+                    onRefreshModels: onRefreshModels
+                ) {
+                    testConnectionRow
+                }
             }
         }
     }

@@ -177,6 +177,27 @@ final class PreflightDecisionTests: XCTestCase {
         )
     }
 
+    func testPreflight_ollamaOverride_probesApiTags() async {
+        let session = StubSession(); session.statusCode = 200
+        let collector = MessageCollector()
+        let ollamaOverride = LLMConfig(
+            provider: .ollama, baseURLString: "http://override:11434",
+            modelName: "gpt-oss:20b")
+
+        _ = await LLMExecutionService.preflightDecision(
+            effectiveConfig: ollamaOverride,
+            globalConfig: globalConfig,
+            session: session,
+            resolver: StubLLMTokenResolver([:]),
+            appendSystemMessage: { await collector.add($0) }
+        )
+
+        XCTAssertEqual(
+            session.capturedRequest?.url?.path, "/api/tags",
+            "An Ollama override must be probed on ITS provider's path — /api/v1/models 404s there and would silently fall back to the global config every step."
+        )
+    }
+
     // MARK: - Resolver token plumbed onto preflight request
 
     func testPreflight_appliesResolverToken() async {

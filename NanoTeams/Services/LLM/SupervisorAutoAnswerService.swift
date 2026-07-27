@@ -76,9 +76,11 @@ nonisolated enum SupervisorAutoAnswerService {
 
         var collected = ""
         do {
+            // prefix-cache-owner: registered by the caller —
+            // `LLMExecutionService+TaskStateMutations` notes `.oneShot("supervisor auto-answer")`.
             for try await event in client.streamChat(
                 config: config, messages: messages, tools: [],
-                session: nil, logger: nil, stepID: nil)
+                logger: nil, stepID: nil)
             {
                 if !event.contentDelta.isEmpty {
                     collected += event.contentDelta

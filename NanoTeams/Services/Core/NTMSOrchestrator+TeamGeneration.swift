@@ -96,6 +96,10 @@ extension NTMSOrchestrator {
                 }
                 return NetworkLogger(logURL: url)
             }()
+            // Runs on the global model unless a team-gen override is set, so it interleaves
+            // with any role step streaming on that model and can evict its prefix cache.
+            await llmExecutionService.noteInterleavingCall(
+                label: "team generation", config: effectiveConfig)
             let raw = try await TeamGenerationService.generate(
                 taskDescription: taskDescription,
                 config: effectiveConfig,

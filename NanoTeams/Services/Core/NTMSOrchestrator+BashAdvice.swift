@@ -82,6 +82,11 @@ extension NTMSOrchestrator {
         guard let pending = llmExecutionService.pendingBashApproval(stepID: stepID, taskID: taskID) else {
             return []
         }
+        // Two sequential LLM calls (judge + explain) on the judge config, which inherits the
+        // global model unless an override is set. Registered once for the pair: the point is to
+        // be nameable as a suspect, not to count round-trips.
+        await llmExecutionService.noteInterleavingCall(
+            label: "bash advice", config: pending.judgeConfig)
         return await BashAdviceService.advise(
             commands: pending.commands,
             workingDirectories: pending.workingDirectories,

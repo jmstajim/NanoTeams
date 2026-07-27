@@ -81,16 +81,40 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase {
         XCTAssertTrue(disabled, "disable always takes effect → returns true")
     }
 
-    // MARK: - autovisorNeedsSetup (setup-pane-vs-chat routing)
+    // MARK: - Setup routing (which pane `.autovisor` shows; pill intercept)
 
     /// Fresh orchestrator (no manager task, disabled) → the detail surface routes
-    /// to the first-time setup pane. Drives `MainLayoutView.autovisorDetail`, the
-    /// Watchtower pill intercept, and the sidebar menu label off ONE predicate, so
-    /// a "go to setup" click can't land on the chat.
-    func testAutovisorNeedsSetup_noManagerTask_isTrue() {
+    /// to the start page, and the pill's OFF→ON click routes there too rather than
+    /// enabling something that doesn't exist.
+    func testAutovisorShowsSetupPane_noManagerTask_isTrue() {
         XCTAssertNil(sut.autovisorTaskID, "precondition: manager never created")
-        XCTAssertTrue(sut.autovisorNeedsSetup,
+        XCTAssertTrue(sut.autovisorShowsSetupPane,
             "no manager task → show setup, not a chat for a manager that doesn't exist")
+        XCTAssertTrue(sut.autovisorRequiresSetupBeforeEnabling,
+            "nothing to turn on yet → the pill must route to setup")
+    }
+
+    /// The created-then-disabled wiring, end to end on the orchestrator: a manager
+    /// with a REAL goal that gets switched off shows the start page (so re-enabling
+    /// is one screen away) while the pill keeps its one-click enable (no detour —
+    /// the goal is already configured). These two must disagree here; that's exactly
+    /// why the old single predicate was split.
+    func testDisabledManagerWithRealGoal_showsSetupPaneButPillStillEnablesDirectly() async {
+        let mgrID = await pinManager()
+        await sut.mutateWorkFolder {
+            $0.settings.autovisorGoal = "Keep the test suite green and report regressions."
+            $0.settings.autovisorEnabled = true   // direct write: no engine, no LM Studio
+        }
+        XCTAssertFalse(sut.autovisorShowsSetupPane, "precondition: enabled manager shows its chat")
+
+        let disabled = await sut.setAutovisorEnabled(false)
+        XCTAssertTrue(disabled)
+
+        XCTAssertEqual(sut.autovisorTaskID, mgrID, "disable keeps the manager task — only Delete clears it")
+        XCTAssertTrue(sut.autovisorShowsSetupPane,
+            "disabled → the tab shows the start page, whatever the goal says")
+        XCTAssertFalse(sut.autovisorRequiresSetupBeforeEnabling,
+            "a real goal is already set → the pill re-enables in one click")
     }
 
     // MARK: - F1: role validation
@@ -103,6 +127,103 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase {
         )
         XCTAssertFalse(r.ok, "a hallucinated role_id must be rejected, not silently no-op'd")
         XCTAssertTrue(r.message.contains("ghost-role"))
+    }
+
+    // MARK: - F1b: restart is destructive on a paused task
+
+    /// Seeds `taskID` with a paused step holding `toolCalls` tool calls, and puts the
+    /// engine in `.paused` — the exact shape `StatusRecoveryService` leaves behind when
+    /// the app is closed mid-run.
+    private func seedPausedStepWithWork(taskID: Int, roleID: String = "startup_software_engineer",
+                                        toolCalls: Int = 5) async {
+        let calls = (1...max(1, toolCalls)).map {
+            StepToolCall(name: "read_file", argumentsJSON: "{\"path\":\"f\($0).swift\"}",
+                         resultJSON: "{\"ok\":true}")
+        }
+        let step = StepExecution(
+            id: roleID, role: .softwareEngineer, title: "SWE", status: .paused,
+            messages: [StepMessage(role: .softwareEngineer, content: "researching")],
+            toolCalls: calls)
+        // A background task is absent from `loadedTasks`, and `mutateTask` gates on
+        // it — without this the seed is silently dropped (CLAUDE.md §7).
+        await sut.ensureTaskLoaded(taskID)
+        await sut.mutateTask(taskID: taskID) { task in
+            task.runs = [Run(id: 0, steps: [step], roleStatuses: [roleID: .idle])]
+        }
+        sut.engineState[taskID] = .paused
+    }
+
+    /// The 2026-07-25 incident: the manager restarted a merely-paused task and
+    /// `StepExecution.reset` erased 5 tool calls of research plus the conversation.
+    /// Restart must be refused there, and the refusal must name the verbs that do the
+    /// job — a bare "no" costs the manager a turn to rediscover them.
+    func testRestart_onPausedTaskWithWork_isRejected_andNamesTheAlternatives() async {
+        _ = await pinManager()
+        let otherID = await sut.createTask(title: "M3", supervisorTask: "x", makeActive: false)!
+        await seedPausedStepWithWork(taskID: otherID)
+
+        let r = await sut.performAutovisorAction(
+            .manageRole(taskID: otherID, roleID: "startup_software_engineer",
+                        verb: .restart(comment: "resume it")))
+
+        XCTAssertFalse(r.ok, "restart on a paused step holding work must be refused, not performed")
+        XCTAssertTrue(r.message.contains("resume"), "the refusal must name the verb that continues the run")
+        XCTAssertTrue(r.message.contains("correct"), "…and the verb that steers it in place")
+        XCTAssertTrue(r.message.contains("stop"), "…and the deliberate-discard escape hatch")
+
+        let step = sut.loadedTask(otherID)?.runs.last?.steps.first
+        XCTAssertEqual(step?.toolCalls.count, 5, "the work must still be on disk after the refusal")
+        XCTAssertEqual(step?.status, .paused, "and the step must not have been reset")
+    }
+
+    /// The guard is about DATA LOSS, not about the paused state: a paused step that
+    /// never produced anything has nothing to lose, so restart still works.
+    func testRestart_onPausedTaskWithNoWork_proceeds() async {
+        _ = await pinManager()
+        let otherID = await sut.createTask(title: "M3", supervisorTask: "x", makeActive: false)!
+        let step = StepExecution(id: "startup_software_engineer", role: .softwareEngineer,
+                                 title: "SWE", status: .paused)
+        await sut.ensureTaskLoaded(otherID)
+        await sut.mutateTask(taskID: otherID) { task in
+            task.runs = [Run(id: 0, steps: [step], roleStatuses: ["startup_software_engineer": .idle])]
+        }
+        sut.engineState[otherID] = .paused
+
+        let r = await sut.performAutovisorAction(
+            .manageRole(taskID: otherID, roleID: "startup_software_engineer",
+                        verb: .restart(comment: "go")))
+
+        XCTAssertTrue(r.ok, "an empty paused step has no work to protect")
+    }
+
+    /// The escape hatch, without a schema change: `control_task stop` drops the engine
+    /// state, after which restart is allowed. Two explicit steps = deliberate intent.
+    func testRestart_afterStop_proceeds() async {
+        _ = await pinManager()
+        let otherID = await sut.createTask(title: "M3", supervisorTask: "x", makeActive: false)!
+        await seedPausedStepWithWork(taskID: otherID)
+
+        let stopped = await sut.performAutovisorAction(.controlTask(taskID: otherID, verb: .stop))
+        XCTAssertTrue(stopped.ok)
+
+        let r = await sut.performAutovisorAction(
+            .manageRole(taskID: otherID, roleID: "startup_software_engineer",
+                        verb: .restart(comment: "start over")))
+        XCTAssertTrue(r.ok, "after an explicit stop the discard is intentional and must be allowed")
+    }
+
+    /// The guard is scoped to `.paused`. A RUNNING task's restart is the documented
+    /// remedy for a looping role and must not be caught by it.
+    func testRestart_onRunningTaskWithWork_stillProceeds() async {
+        _ = await pinManager()
+        let otherID = await sut.createTask(title: "M3", supervisorTask: "x", makeActive: false)!
+        await seedPausedStepWithWork(taskID: otherID)
+        sut.engineState[otherID] = .running
+
+        let r = await sut.performAutovisorAction(
+            .manageRole(taskID: otherID, roleID: "startup_software_engineer",
+                        verb: .restart(comment: "you are looping")))
+        XCTAssertTrue(r.ok, "restart stays the remedy for a stuck RUNNING role")
     }
 
     func testCorrect_notPaused_fails() async {

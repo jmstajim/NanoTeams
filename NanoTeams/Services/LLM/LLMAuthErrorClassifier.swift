@@ -40,7 +40,7 @@ nonisolated enum LLMAuthErrorClassifier {
     /// signal: only 401/403 get the "go add a token" guidance.
     static func message(forStatus status: Int, body: String?) -> String {
         if isAuthFailure(status: status) {
-            return "Authentication required — add your LM Studio API token in Settings → LLM. "
+            return "Authentication required — add your API token in Settings → LLM. "
                 + "(HTTP \(status))"
         }
         if let body = body?.trimmingCharacters(in: .whitespacesAndNewlines), !body.isEmpty {

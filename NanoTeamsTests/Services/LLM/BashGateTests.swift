@@ -295,7 +295,6 @@ private final class StubJudgeClient: LLMClient, @unchecked Sendable {
         config _: LLMConfig,
         messages _: [ChatMessage],
         tools _: [ToolSchema],
-        session _: LLMSession?,
         logger _: NetworkLogger?,
         stepID _: String?,
         roleName _: String?

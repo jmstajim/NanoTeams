@@ -40,7 +40,7 @@ final class NativeLMStudioVisionRequestTests: XCTestCase {
                         imageContent: [imagePNG()])
         ]
         let request = NativeLMStudioClient.buildRequest(
-            config: config(), messages: messages, tools: [], session: nil
+            config: config(), messages: messages, tools: []
         )
 
         guard case .multimodal(let parts) = request.input else {
@@ -55,7 +55,7 @@ final class NativeLMStudioVisionRequestTests: XCTestCase {
             ChatMessage(role: .user, content: "Plain text only")
         ]
         let request = NativeLMStudioClient.buildRequest(
-            config: config(), messages: messages, tools: [], session: nil
+            config: config(), messages: messages, tools: []
         )
 
         guard case .text = request.input else {
@@ -73,7 +73,7 @@ final class NativeLMStudioVisionRequestTests: XCTestCase {
                         imageContent: [])
         ]
         let request = NativeLMStudioClient.buildRequest(
-            config: config(), messages: messages, tools: [], session: nil
+            config: config(), messages: messages, tools: []
         )
 
         guard case .text = request.input else {
@@ -81,29 +81,30 @@ final class NativeLMStudioVisionRequestTests: XCTestCase {
         }
     }
 
-    // MARK: - `store` flag — vision = false
+    // MARK: - `store` flag — always false
 
-    /// Vision requests set `store: false` to avoid server-side retention
-    /// of image-bearing conversations. Text-only requests keep `store: true`.
+    /// `store: false` on every request, image-bearing or not. It used to be
+    /// image-conditional (vision forced a fresh chat); with response chains gone
+    /// nothing ever resumes a stored response, so the flag is uniformly off.
     func testBuildRequest_withImages_storeIsFalse() {
         let messages = [
             ChatMessage(role: .user, content: "Analyze",
                         imageContent: [imagePNG()])
         ]
         let request = NativeLMStudioClient.buildRequest(
-            config: config(), messages: messages, tools: [], session: nil
+            config: config(), messages: messages, tools: []
         )
         XCTAssertFalse(request.store,
                        "Vision requests must NOT be stored on the server (fresh chat)")
     }
 
-    func testBuildRequest_withoutImages_storeIsTrue() {
+    func testBuildRequest_withoutImages_storeIsAlsoFalse() {
         let messages = [ChatMessage(role: .user, content: "Plain")]
         let request = NativeLMStudioClient.buildRequest(
-            config: config(), messages: messages, tools: [], session: nil
+            config: config(), messages: messages, tools: []
         )
-        XCTAssertTrue(request.store,
-                      "Text-only requests should use server-side storage for chain continuity")
+        XCTAssertFalse(request.store,
+                       "Text-only requests must not be stored either — no chain resumes them")
     }
 
     // MARK: - Multimodal part structure
@@ -118,7 +119,7 @@ final class NativeLMStudioVisionRequestTests: XCTestCase {
                         ])
         ]
         let request = NativeLMStudioClient.buildRequest(
-            config: config(), messages: messages, tools: [], session: nil
+            config: config(), messages: messages, tools: []
         )
 
         guard case .multimodal(let parts) = request.input else {
@@ -142,7 +143,7 @@ final class NativeLMStudioVisionRequestTests: XCTestCase {
                         imageContent: [imagePNG()])
         ]
         let request = NativeLMStudioClient.buildRequest(
-            config: config(), messages: messages, tools: [], session: nil
+            config: config(), messages: messages, tools: []
         )
 
         guard case .multimodal(let parts) = request.input else {
@@ -164,7 +165,7 @@ final class NativeLMStudioVisionRequestTests: XCTestCase {
                         imageContent: [imagePNG(base64: "YYY")]),
         ]
         let request = NativeLMStudioClient.buildRequest(
-            config: config(), messages: messages, tools: [], session: nil
+            config: config(), messages: messages, tools: []
         )
 
         guard case .multimodal(let parts) = request.input else {
@@ -186,31 +187,28 @@ final class NativeLMStudioVisionRequestTests: XCTestCase {
                         imageContent: [imagePNG()]),
         ]
         let request = NativeLMStudioClient.buildRequest(
-            config: config(), messages: messages, tools: [], session: nil
+            config: config(), messages: messages, tools: []
         )
         XCTAssertNotNil(request.systemPrompt)
         XCTAssertTrue(request.systemPrompt!.contains("vision assistant"))
     }
 
-    /// Vision + stateful continuation: historically a rare combination
-    /// (vision is usually fresh-chat) but the builder must still honor
-    /// `omitSystemPromptOnContinuation` when a session is provided. Pins
-    /// that multimodal doesn't accidentally force system-prompt re-sending.
-    func testBuildRequest_multimodal_stateful_omitsSystemPromptByDefault() {
+    /// Multimodal follows the same rule as every other request: `system_prompt`
+    /// always ships and `store` is always false. The old builder special-cased
+    /// images to force `store:false`; now the whole surface is uniform.
+    func testBuildRequest_multimodal_carriesSystemPromptAndNeverStores() {
         let messages = [
             ChatMessage(role: .system, content: "vision system"),
             ChatMessage(role: .user, content: "Describe again",
                         imageContent: [imagePNG()]),
         ]
-        let session = LLMSession(responseID: "resp-vision-1")
         let request = NativeLMStudioClient.buildRequest(
-            config: config(), messages: messages, tools: [],
-            session: session, omitSystemPromptOnContinuation: true
+            config: config(), messages: messages, tools: []
         )
 
-        XCTAssertNil(request.systemPrompt,
-                     "Stateful continuations must omit system_prompt even in multimodal mode")
-        XCTAssertEqual(request.previousResponseID, "resp-vision-1")
+        XCTAssertNotNil(request.systemPrompt)
+        XCTAssertTrue(request.systemPrompt!.contains("vision system"))
+        XCTAssertFalse(request.store)
     }
 
     // MARK: - Wire-format pinning
@@ -226,7 +224,7 @@ final class NativeLMStudioVisionRequestTests: XCTestCase {
                                                      mimeType: "image/jpeg")])
         ]
         let request = NativeLMStudioClient.buildRequest(
-            config: config(), messages: messages, tools: [], session: nil
+            config: config(), messages: messages, tools: []
         )
 
         let data = try JSONEncoder().encode(request)

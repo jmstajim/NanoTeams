@@ -8,7 +8,7 @@ import XCTest
 /// - `resetStepForRevision` preserves artifacts, conversation, session, messages
 /// - `checkArtifactCompleteness` skips during revision
 /// - `revisionComment` cleared on artifact creation
-/// - `persistSessionID` saves session on step completion
+/// - `persistWireTranscript` saves the replayable transcript on step completion
 /// - `handleNoToolCalls` revision-aware nudge
 @MainActor
 final class RevisionContinuationTests: XCTestCase {
@@ -96,7 +96,6 @@ final class RevisionContinuationTests: XCTestCase {
         var task = makeCompletedTask()
         let stepID = task.runs[0].steps[0].id
 
-        task.runs[0].steps[0].llmSessionID = "session-abc-123"
         task.runs[0].steps[0].messages.append(
             StepMessage(role: .supervisor, content: "Fix the formatting.")
         )
@@ -105,8 +104,6 @@ final class RevisionContinuationTests: XCTestCase {
         await simulateResetStepForRevision(task: &task, stepID: stepID)
 
         let updated = mockDelegate.taskToMutate!.runs[0].steps[0]
-        XCTAssertEqual(updated.llmSessionID, "session-abc-123",
-                       "Session ID should be preserved for stateful continuation via previous_response_id")
     }
 
     func testResetStepForRevision_setsRevisionComment() async {
@@ -211,35 +208,46 @@ final class RevisionContinuationTests: XCTestCase {
                      "revisionComment should be cleared after LLM creates a new artifact")
     }
 
-    // MARK: - Session Persistence on Step Completion
+    // MARK: - Transcript Persistence on Step Completion
 
-    func testSessionPersisted_onStepCompletion() async {
+    /// The step's re-entry state. This replaced the saved session id: the
+    /// continuation replays `wireTranscript` instead of resuming a server chain,
+    /// so a step that suspends without writing it wakes with no memory of its work.
+    func testWireTranscriptPersisted_onStepCompletion() async {
         var task = makeCompletedTask()
         let stepID = task.runs[0].steps[0].id
         task.runs[0].steps[0].status = .running
-        task.runs[0].steps[0].llmSessionID = nil
         mockDelegate.taskToMutate = task
         service._testRegisterStepTask(stepID: stepID, taskID: task.id)
 
-        // Persist a session ID
-        await service.persistSessionID(stepID: stepID, taskID: task.id, sessionID: "response-xyz-456")
+        let sent: [ChatMessage] = [
+            ChatMessage(role: .system, content: "System prompt"),
+            ChatMessage(role: .user, content: "Do the work"),
+            ChatMessage(role: .tool, content: "{\"ok\":true}"),
+        ]
+        await service.persistWireTranscript(stepID: stepID, taskID: task.id, messages: sent)
 
         let updated = mockDelegate.taskToMutate!.runs[0].steps[0]
-        XCTAssertEqual(updated.llmSessionID, "response-xyz-456",
-                       "Session ID should be persisted for future stateful continuation")
+        XCTAssertEqual(updated.wireTranscript.count, 3)
+        XCTAssertEqual(updated.wireTranscript.map(\.role), [.system, .user, .tool])
     }
 
-    func testSessionPersisted_nilClearsExisting() async {
+    /// An empty transcript is a no-op, NOT a wipe: the terminal arms call this
+    /// unconditionally, and a cancelled step with nothing accumulated must not
+    /// erase the transcript a prior arm already wrote.
+    func testWireTranscriptPersist_emptyMessages_leavesExistingIntact() async {
         var task = makeCompletedTask()
         let stepID = task.runs[0].steps[0].id
-        task.runs[0].steps[0].llmSessionID = "old-session"
+        task.runs[0].steps[0].wireTranscript = [ChatMessage(role: .user, content: "earlier")]
         mockDelegate.taskToMutate = task
         service._testRegisterStepTask(stepID: stepID, taskID: task.id)
 
-        await service.persistSessionID(stepID: stepID, taskID: task.id, sessionID: nil)
+        await service.persistWireTranscript(stepID: stepID, taskID: task.id, messages: [])
 
         let updated = mockDelegate.taskToMutate!.runs[0].steps[0]
-        XCTAssertNil(updated.llmSessionID, "Passing nil should clear the session ID")
+        XCTAssertEqual(updated.wireTranscript.count, 1,
+                       "An empty persist must not clobber a previously written transcript")
+        XCTAssertEqual(updated.wireTranscript.first?.content, "earlier")
     }
 
     // MARK: - Helpers

@@ -12,9 +12,19 @@ extension NTMSOrchestrator {
         // Clear closedAt so the new run goes through needsSupervisorAcceptance when it finishes,
         // rather than auto-resolving to .done from the previous closure.
         task.closedAt = nil
+        // Same "a new run is a fresh look" rationale: a recovery latch left armed by an
+        // earlier launch would make every all-`.pending` moment of THIS run render
+        // "Paused". Clearing here (rather than in `startRun`) also covers
+        // `ensureTaskHasInitialRunIfNeeded`, the other caller.
+        task.clearRecoveryPauseLatch()
 
         let team = resolvedTeam(for: task)
         _ = RunService.createTeamRun(task: &task, team: team)
+
+        // A new run is a fresh look: the `CACHE ×N` pill should count THIS run's misses, not
+        // every miss since launch, and the banner latch must re-arm for it. Scoped to this task
+        // so the Autovisor's once-a-minute run cannot zero the counts of the user's own tasks.
+        prefixCacheReporter.resetCounters(forTaskID: taskID)
 
         do {
             try repository.updateTaskOnly(at: url, task: task)
@@ -50,7 +60,8 @@ extension NTMSOrchestrator {
         do {
             var task = try repository.loadTask(at: url, taskID: taskID)
             var recoveryPersisted = false
-            if StatusRecoveryService.recoverStaleStatuses(in: &task) {
+            let teamSettings = snapshot.map { TeamResolution.teamSettings(for: task, in: $0.projection) } ?? nil
+            if StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: teamSettings) {
                 // Persist recovered status. If this fails, memory and disk
                 // diverge — pause/resume cascades that re-read disk later see
                 // a different task than the in-memory snapshot. Surface the

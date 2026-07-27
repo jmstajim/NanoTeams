@@ -10,18 +10,19 @@ final class LLMStatusMonitor {
 
     @ObservationIgnored private var pollTask: Task<Void, Never>?
 
-    /// Starts a background polling loop. `baseURLProvider` is a closure so the monitor
-    /// picks up live configuration changes without restart. Runs on the main actor so
-    /// the provider can read `@MainActor`-isolated state directly.
+    /// Starts a background polling loop. `endpointProvider` is a closure so the monitor
+    /// picks up live configuration changes (URL AND provider) without restart. Runs on
+    /// the main actor so the provider can read `@MainActor`-isolated state directly.
     func startMonitoring(
-        baseURLProvider: @escaping @MainActor () -> String,
+        endpointProvider: @escaping @MainActor () -> (baseURL: String, provider: LLMProvider),
         interval: TimeInterval = 120
     ) {
         stopMonitoring()
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                let baseURL = baseURLProvider()
-                let reachable = await LLMConnectionChecker.check(baseURL: baseURL, timeout: 2.0)
+                let endpoint = endpointProvider()
+                let reachable = await LLMConnectionChecker.check(
+                    baseURL: endpoint.baseURL, provider: endpoint.provider, timeout: 2.0)
                 // Guard after the await: `stopMonitoring` may have fired while the
                 // probe was in flight — honor cancellation before publishing stale state.
                 guard !Task.isCancelled, let self else { return }

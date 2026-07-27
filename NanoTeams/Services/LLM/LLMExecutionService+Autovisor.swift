@@ -85,6 +85,14 @@ extension LLMExecutionService {
         struct StepRow: Codable {
             var role_id: String
             var status: String
+            /// Present (and `true`) only when `control_task resume` will actually
+            /// continue this step — never `false`, so its absence cannot promise a
+            /// resume the runtime would drop. Exists because a `paused` step is the
+            /// one state with no `stuck` verdict, no `idle_seconds` and no
+            /// `running_tool`, and an `elapsed_seconds` that counts app downtime:
+            /// without this the manager infers "dead for hours" and restarts,
+            /// discarding the conversation resume would have replayed.
+            var resumable: Bool?
             /// `producing` | `advisory` | `observer` — how the role ends. `advisory` is
             /// the verb token (`finish_advisory`; the UI labels it "Chat"). Omitted when
             /// the team can't be resolved, so an absent value never asserts a kind the
@@ -168,6 +176,12 @@ extension LLMExecutionService {
                 steps.append(StepRow(
                     role_id: step.effectiveRoleID,
                     status: step.status.rawValue,
+                    // `true` or omitted — see `resumable`'s doc comment.
+                    resumable: AutovisorStatus.isResumable(
+                        step: step,
+                        roleStatus: run.roleStatuses[step.effectiveRoleID],
+                        taskIsClosed: task.closedAt != nil
+                    ) ? true : nil,
                     role_kind: roleKindByID[step.effectiveRoleID],
                     elapsed_seconds: AutovisorStatus.roleElapsedSeconds(step: step, now: now),
                     idle_seconds: step.status == .running
@@ -276,21 +290,28 @@ extension LLMExecutionService {
     }
 
     /// Parks a step whose `parkForEventsRequested` flag was consumed
-    /// (`wait_for_events`): `.needsSupervisorInput` with the idle-park question and
-    /// the live session id preserved, so a human answer continues the SAME
-    /// conversation via stateful continuation. `setNeedsSupervisorInput` also fires
+    /// (`wait_for_events`): `.needsSupervisorInput` with the idle-park question.
+    /// The caller has already written `step.wireTranscript`, so a human answer
+    /// continues the SAME conversation via `ConversationReplay` on re-entry.
+    /// `setNeedsSupervisorInput` also fires
     /// the queued-message backstop, so messages that arrived during the pass (after
     /// the last inject point) flush into the park immediately. A persist failure
     /// fails the step — and surfaces a banner FIRST, independently of
     /// `completeStepFailure`: the closure-short-circuit causes of `persisted ==
     /// false` (delegate gone, step not in the latest run) hit the same guards
     /// inside `completeStepFailure` and would otherwise no-op with zero signal.
-    func parkStepForEvents(stepID: String, taskID: Int, sessionID: String?) async {
+    /// - Parameter question: defaults to the standard idle-park text. The thinking-loop
+    ///   terminal passes its diagnostic instead, so a loop-terminated pass is not
+    ///   mistaken for a healthy idle by `taskHasIdleParkStep`'s exact-equality match.
+    func parkStepForEvents(
+        stepID: String,
+        taskID: Int,
+        question: String = AutovisorConstants.idleParkQuestion
+    ) async {
         let persisted = await setNeedsSupervisorInput(
             stepID: stepID,
             taskID: taskID,
-            question: AutovisorConstants.idleParkQuestion,
-            sessionID: sessionID)
+            question: question)
         if !persisted {
             delegate?.setLastErrorMessageForUI(
                 "Autovisor: failed to park for events (step \(stepID)) — failing the step.")

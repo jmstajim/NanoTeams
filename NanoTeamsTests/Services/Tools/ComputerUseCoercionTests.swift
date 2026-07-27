@@ -354,7 +354,6 @@ private final class UnusedJudgeClient: LLMClient, @unchecked Sendable {
         config: LLMConfig,
         messages: [ChatMessage],
         tools: [ToolSchema],
-        session: LLMSession?,
         logger: NetworkLogger?,
         stepID: String?,
         roleName: String?

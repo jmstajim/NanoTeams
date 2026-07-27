@@ -5,8 +5,9 @@ import XCTest
 /// picker logic (`matching` / `applyAction`).
 ///
 /// The invariants here are load-bearing, not cosmetic:
-/// - `goalIsUnset(goalText) == false` — a preset that reads as "unset" would
-///   bounce the user back into the setup pane via `AutovisorPolicy.needsSetup`.
+/// - `goalIsUnset(goalText) == false` — a preset that reads as "unset" would make
+///   the Watchtower pill keep routing to setup instead of enabling in one click
+///   (`AutovisorPolicy.requiresSetupBeforeEnabling`).
 /// - Trim-stability — `matching`/`applyAction` compare the TRIMMED current goal
 ///   against `goalText` byte-for-byte; a literal with stray edge whitespace
 ///   would silently break selection highlight and the overwrite guard.
@@ -75,13 +76,32 @@ final class AutovisorGoalPresetsTests: XCTestCase {
         }
     }
 
+    /// Derived from the registry rather than a hand-written list. The literal
+    /// six names this used to carry covered 6 of the 25 real gaps, and every
+    /// tool added since had to be remembered here — which is how
+    /// `run_xcodebuild`, the whole git-write family and both shell tools came
+    /// to be uncovered.
     func testAll_goalTextNamesNoToolTheManagerLacks() {
-        let forbidden = ["write_file", "edit_file", "delete_file",
-                         "delegate_to_team", "ask_supervisor", "bash"]
         for preset in AutovisorGoalPresets.all {
-            for tool in forbidden {
-                XCTAssertFalse(preset.goalText.contains(tool), "\(preset.id) names \(tool)")
-            }
+            let findings = AutovisorGoalLint.scanStrict(preset.goalText)
+            XCTAssertTrue(
+                findings.isEmpty,
+                "\(preset.id) names tools the manager does not have: "
+                    + findings.map { "\($0.token) (line \($0.line))" }.joined(separator: ", "))
+        }
+    }
+
+    /// Separate test, separate rule: a failure here means the prose tells the
+    /// manager to build something itself, which is a different defect from
+    /// naming a tool — and mixing them would hide which one tripped.
+    func testAll_goalTextMakesNoSelfDirectedBuildClaim() {
+        for preset in AutovisorGoalPresets.all {
+            let claims = AutovisorGoalLint.scanUserAuthored(preset.goalText)
+                .filter { $0.kind == .selfDirectedBuildClaim }
+            XCTAssertTrue(
+                claims.isEmpty,
+                "\(preset.id) tells the manager to build/run something itself: "
+                    + claims.map { "\($0.token) (line \($0.line))" }.joined(separator: ", "))
         }
     }
 

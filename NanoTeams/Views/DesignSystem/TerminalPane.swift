@@ -50,26 +50,35 @@ struct TerminalPane<Content: View>: View {
             }
     }
 
+    // Accessibility is applied per-element rather than by combining the chip:
+    // `.accessibilityElement(children: .combine)` flattens descendants and DROPS
+    // their actions, so an interactive `headerTrailing` (e.g. an `InfoTip`) would
+    // be unreachable to VoiceOver and Full Keyboard Access. The label stays on the
+    // title `Text` — dropping it would leave the UPPERCASED string as the spoken
+    // label for every pane in the app.
     private func titleChip(_ title: String) -> some View {
         HStack(spacing: 3) {
-            Text("┤").foregroundStyle(Colors.borderSubtle)
+            Text("┤")
+                .foregroundStyle(Colors.borderSubtle)
+                .accessibilityHidden(true)
             HStack(spacing: Spacing.xs) {
                 Text(title.uppercased())
                     .fontWeight(.medium)
                     .tracking(Typography.labelTracking)
                     .foregroundStyle(titleAccent ? Colors.accent : Colors.textTertiary)
+                    .accessibilityLabel(title)
+                    .accessibilityAddTraits(.isHeader)
                 if let headerTrailing { headerTrailing }
             }
-            Text("├").foregroundStyle(Colors.borderSubtle)
+            Text("├")
+                .foregroundStyle(Colors.borderSubtle)
+                .accessibilityHidden(true)
         }
         .font(Typography.term2xs)
         // The page background behind the chip masks the border line, so the
         // title reads as cut into the top edge (panes sit on `surfacePrimary`).
         .padding(.horizontal, 4)
         .background(Colors.surfacePrimary)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(title)
-        .accessibilityAddTraits(.isHeader)
     }
 }
 
@@ -99,13 +108,6 @@ struct DotGridBackground: View {
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
-    }
-}
-
-extension View {
-    /// Lay a faint dot-grid behind a graph canvas.
-    func dotGridBackground(spacing: CGFloat = 18) -> some View {
-        background(DotGridBackground(spacing: spacing))
     }
 }
 

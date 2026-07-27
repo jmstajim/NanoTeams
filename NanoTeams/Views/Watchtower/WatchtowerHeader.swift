@@ -242,26 +242,26 @@ struct WatchtowerHeader: View {
 /// snapshot-derived Autovisor state itself so its high-frequency churn (manager
 /// memory writes during a review pass) stays isolated to this leaf (CLAUDE.md #11).
 ///
-/// Setup intercept: an OFF→ON click while the manager `needsSetup` routes to
-/// `AutovisorSetupView` instead of toggling. Rationale — flipping `enabled = true`
-/// silently seeds the goal to `AutovisorConstants.defaultGoal` (the "explore &
-/// wait" placeholder), and the user has no obvious surface to find/edit it, so
-/// the manager runs with a placeholder until they happen to open Settings. Making
-/// the pill the discoverable doorway eliminates that hidden state. The gate is the
-/// shared `store.autovisorNeedsSetup` — the SAME predicate `autovisorDetail` routes
-/// on — so the intercept always lands on the setup pane, never on the chat (the
-/// prior local `goalNeedsSetup` could route to setup while the detail pane, gated
-/// on `autovisorTaskID == nil`, showed the chat instead for a created-then-disabled
-/// manager). Toggling OFF is never intercepted — disabling is always immediate.
+/// Setup intercept: an OFF→ON click routes to `AutovisorSetupView` instead of
+/// toggling WHEN the goal is still the seeded `AutovisorConstants.defaultGoal`
+/// placeholder (or there is no manager yet). Rationale — flipping `enabled = true`
+/// on the placeholder starts a manager on the inert "explore & wait" directive with
+/// no obvious surface to find or edit it, so it runs that way until the user happens
+/// to open Settings. Making the pill the discoverable doorway eliminates that hidden
+/// state. Once a real goal exists the pill stays a true one-click toggle.
+///
+/// The intercept can't land on the wrong pane: it only fires while the Autovisor is
+/// OFF, and `autovisorDetail` shows setup for EVERY disabled state, so
+/// `requiresSetupBeforeEnabling ⟹ showsSetupPane` holds by construction (see
+/// `AutovisorPolicy`). Toggling OFF is never intercepted — disabling is immediate.
 struct WatchtowerAutovisorPill: View {
     @Environment(NTMSOrchestrator.self) private var store
 
     private var enabled: Bool { store.workFolder?.settings.autovisorEnabled ?? false }
 
-    /// Whether the manager isn't ready to run (never created, or disabled with an
-    /// unset goal) — the shared routing predicate, so the pill's intercept and the
-    /// detail-pane setup-vs-chat decision can't diverge.
-    private var needsSetup: Bool { store.autovisorNeedsSetup }
+    /// Whether turning the manager on has to go through setup first — no manager
+    /// yet, or the goal is still the placeholder.
+    private var needsSetup: Bool { store.autovisorRequiresSetupBeforeEnabling }
 
     var body: some View {
         // Hidden in default storage (no real work folder) — the Autovisor can't

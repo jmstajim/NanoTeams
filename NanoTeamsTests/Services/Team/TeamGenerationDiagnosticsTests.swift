@@ -16,7 +16,7 @@ final class TeamGenerationDiagnosticsTests: XCTestCase {
 
         func streamChat(
             config: LLMConfig, messages: [ChatMessage], tools: [ToolSchema],
-            session: LLMSession?, logger: NetworkLogger?,
+            logger: NetworkLogger?,
             stepID: String?, roleName: String?
         ) -> AsyncThrowingStream<StreamEvent, Error> {
             let captured = events

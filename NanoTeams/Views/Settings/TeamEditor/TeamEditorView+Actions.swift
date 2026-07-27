@@ -51,6 +51,11 @@ extension TeamEditorView {
                 globalConfig: store.globalLLMConfig,
                 roleOverride: store.configuration.teamGenLLMOverride
             )
+            // Interleaves on the global model like the runtime team-gen path does.
+            await store.recordPrefixChainForTasklessCall(
+                owner: .oneShot(label: "team generation"),
+                config: effectiveConfig,
+                messages: [])
             let raw = try await TeamGenerationService.generate(
                 taskDescription: taskDescription,
                 config: effectiveConfig,

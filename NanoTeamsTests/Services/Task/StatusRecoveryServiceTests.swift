@@ -34,12 +34,205 @@ final class StatusRecoveryServiceTests: XCTestCase {
         return task
     }
 
+    /// Builds a task whose step id MATCHES the role id, so `stepsByRoleBaseID()` actually
+    /// pairs them. `makeTask` above deliberately does not (its steps are all `test_step`),
+    /// which is why its roles only ever exercise the "no step" path.
+    private func makePairedTask(
+        roleID: String = "software_engineer",
+        stepStatus: StepStatus,
+        roleStatus: RoleExecutionStatus,
+        otherRoles: [String: RoleExecutionStatus] = ["supervisor": .done]
+    ) -> NTMSTask {
+        let step = StepExecution(id: roleID, role: .softwareEngineer, title: "Step", status: stepStatus)
+        var statuses = otherRoles
+        statuses[roleID] = roleStatus
+        let run = Run(id: 0, steps: [step], roleStatuses: statuses)
+        var task = NTMSTask(id: 0, title: "Test", supervisorTask: "Goal")
+        task.runs = [run]
+        return task
+    }
+
+    private static let finalOnly = TeamSettings(defaultAcceptanceMode: .finalOnly)
+    private static let afterEachRole = TeamSettings(defaultAcceptanceMode: .afterEachRole)
+
+    // MARK: - Torn-pair Settling (the restart-review bug)
+
+    /// The exact shape the app quits into: the step finished, the engine never got to
+    /// write the role. Before the fix the role was demoted to `.idle` and the task read
+    /// "Working" forever with every review affordance hidden.
+    func testRecoverWorkingRoleWithDoneStep_settlesToDone() {
+        var task = makePairedTask(stepStatus: .done, roleStatus: .working)
+
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: Self.finalOnly)
+
+        XCTAssertTrue(changed)
+        XCTAssertEqual(task.runs[0].roleStatuses["software_engineer"], .done)
+        XCTAssertEqual(task.derivedStatusFromActiveRun(), .needsSupervisorAcceptance)
+        XCTAssertTrue(task.isReadyForFinalAcceptance)
+    }
+
+    /// Self-heal: a `task.json` ALREADY demoted by an older build must recover on the
+    /// next launch, with no migration and no user action.
+    func testRecoverIdleRoleWithDoneStep_settlesToDone_finalOnly() {
+        var task = makePairedTask(stepStatus: .done, roleStatus: .idle)
+
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: Self.finalOnly)
+
+        XCTAssertTrue(changed)
+        XCTAssertEqual(task.runs[0].roleStatuses["software_engineer"], .done)
+        XCTAssertEqual(task.derivedStatusFromActiveRun(), .needsSupervisorAcceptance)
+    }
+
+    func testRecoverIdleRoleWithDoneStep_settlesToNeedsAcceptance_afterEachRole() {
+        var task = makePairedTask(stepStatus: .done, roleStatus: .idle)
+
+        StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: Self.afterEachRole)
+
+        XCTAssertEqual(task.runs[0].roleStatuses["software_engineer"], .needsAcceptance)
+        // A role awaiting acceptance surfaces the per-role Accept card, not final review.
+        XCTAssertEqual(task.derivedStatusFromActiveRun(), .needsSupervisorAcceptance)
+        XCTAssertFalse(task.isReadyForFinalAcceptance)
+    }
+
+    /// Variant 2: the quit landed after `completeStepNeedsAcceptance` but before the
+    /// role flip. Recovery leaves the `.needsApproval` step alone, so the role must be
+    /// the thing that surfaces the acceptance card.
+    func testRecoverIdleRoleWithNeedsApprovalStep_settlesToNeedsAcceptance() {
+        var task = makePairedTask(stepStatus: .needsApproval, roleStatus: .idle)
+
+        StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: Self.finalOnly)
+
+        XCTAssertEqual(task.runs[0].roleStatuses["software_engineer"], .needsAcceptance)
+        XCTAssertEqual(task.runs[0].steps[0].status, .needsApproval, "step must not be rewritten")
+        XCTAssertFalse(
+            task.runs[0].rolesNeedingAcceptance(definitions: []).isEmpty,
+            "the acceptance card must have something to render"
+        )
+    }
+
+    func testRecoverIdleRoleWithFailedStep_settlesToFailed() {
+        var task = makePairedTask(stepStatus: .failed, roleStatus: .idle)
+
+        StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: Self.finalOnly)
+
+        XCTAssertEqual(task.runs[0].roleStatuses["software_engineer"], .failed)
+        XCTAssertEqual(task.derivedStatusFromActiveRun(), .failed, "a failure must read as failed, not Working")
+    }
+
+    /// An unresolvable team must fail VISIBLE (one extra Accept click) rather than
+    /// silently accepting the work on the Supervisor's behalf.
+    func testRecoverNilTeamSettings_defaultsToVisibleGate() {
+        var task = makePairedTask(stepStatus: .done, roleStatus: .working)
+
+        StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: nil)
+
+        XCTAssertEqual(task.runs[0].roleStatuses["software_engineer"], .needsAcceptance)
+    }
+
+    // MARK: - Never-touch set
+
+    func testRecoverRevisionRequestedRoleWithDoneStep_untouched() {
+        var task = makePairedTask(stepStatus: .done, roleStatus: .revisionRequested)
+
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: Self.finalOnly)
+
+        XCTAssertFalse(changed)
+        XCTAssertEqual(task.runs[0].roleStatuses["software_engineer"], .revisionRequested)
+    }
+
+    /// Re-deriving a live Supervisor gate under `.finalOnly` would rewrite it to `.done`
+    /// — a silent acceptance `acceptRole` then refuses to undo.
+    func testRecoverNeedsAcceptanceRoleWithDoneStep_untouched_evenInFinalOnly() {
+        var task = makePairedTask(stepStatus: .done, roleStatus: .needsAcceptance)
+
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: Self.finalOnly)
+
+        XCTAssertFalse(changed)
+        XCTAssertEqual(task.runs[0].roleStatuses["software_engineer"], .needsAcceptance)
+    }
+
+    // MARK: - The paused latch
+
+    /// A pass that only settled a torn TERMINAL pair interrupted nothing, so it must not
+    /// arm the `.paused` latch — which is durable and permanently arms the guard in
+    /// `derivedStatusFromActiveRun`.
+    func testSettleOnlyPass_doesNotArmPausedLatch() {
+        var task = makePairedTask(stepStatus: .done, roleStatus: .working)
+        task.status = .running
+
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: Self.finalOnly)
+
+        XCTAssertTrue(changed)
+        XCTAssertEqual(task.status, .running, "settling a finished pair is not a park")
+    }
+
+    func testParkingPass_stillArmsPausedLatch() {
+        var task = makePairedTask(stepStatus: .running, roleStatus: .working)
+        task.status = .running
+
+        StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: Self.finalOnly)
+
+        XCTAssertEqual(task.status, .paused)
+        XCTAssertEqual(task.runs[0].steps[0].status, .paused)
+        XCTAssertEqual(task.runs[0].roleStatuses["software_engineer"], .idle)
+    }
+
+    // MARK: - Historical runs
+
+    /// A historical run must still lose its stale `.working` (the run-history graph
+    /// renders `displayedRun`'s role pills), but must NEVER gain `.needsAcceptance`:
+    /// the activity feed renders acceptance cards from `displayedRun` un-gated on
+    /// `isReadOnly`, while `acceptRole` writes to `runs.last` — a card there would
+    /// mutate a different run. A superseded run collapses to `.done` instead.
+    func testHistoricalRun_settlesToDone_neverToNeedsAcceptance() {
+        let oldStep = StepExecution(id: "r", role: .softwareEngineer, title: "Old", status: .done)
+        let newStep = StepExecution(id: "r", role: .softwareEngineer, title: "New", status: .running)
+        let oldRun = Run(id: 0, steps: [oldStep], roleStatuses: ["r": .working])
+        let newRun = Run(id: 1, steps: [newStep], roleStatuses: ["r": .working])
+        var task = NTMSTask(id: 0, title: "Test", supervisorTask: "Goal")
+        task.runs = [oldRun, newRun]
+
+        // `.afterEachRole` is the mode that WOULD settle to `.needsAcceptance`.
+        StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: Self.afterEachRole)
+
+        XCTAssertEqual(task.runs[0].roleStatuses["r"], .done, "historical run settles, but not to a gate")
+        XCTAssertTrue(
+            task.runs[0].rolesNeedingAcceptance(definitions: []).isEmpty,
+            "a historical run must never mint an Accept card — it would mutate runs.last"
+        )
+        XCTAssertEqual(task.runs[1].roleStatuses["r"], .idle, "active run's step is mid-flight → demote")
+    }
+
+    /// The active run keeps the real gate — only history collapses it.
+    func testActiveRun_stillSettlesToNeedsAcceptance() {
+        var task = makePairedTask(stepStatus: .done, roleStatus: .working)
+
+        StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: Self.afterEachRole)
+
+        XCTAssertEqual(task.runs[0].roleStatuses["software_engineer"], .needsAcceptance)
+    }
+
+    // MARK: - Idempotence
+
+    func testRecoveryIsIdempotent() {
+        var task = makePairedTask(stepStatus: .done, roleStatus: .working)
+
+        XCTAssertTrue(StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: Self.finalOnly))
+        let afterFirst = task.updatedAt
+
+        XCTAssertFalse(
+            StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: Self.finalOnly),
+            "a second launch must not churn the task"
+        )
+        XCTAssertEqual(task.updatedAt, afterFirst)
+    }
+
     // MARK: - Step Recovery Tests
 
     func testRecoverRunningStepsToPaused() {
         var task = makeTask(stepStatuses: [.running, .done, .pending])
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
 
         XCTAssertTrue(changed)
         XCTAssertEqual(task.runs[0].steps[0].status, .paused)
@@ -51,7 +244,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
     func testRecoverNeedsSupervisorInputStepsToPaused() {
         var task = makeTask(stepStatuses: [.needsSupervisorInput, .done])
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
 
         XCTAssertTrue(changed)
         XCTAssertEqual(task.runs[0].steps[0].status, .paused)
@@ -62,7 +255,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
     func testRecoverMultipleStaleSteps() {
         var task = makeTask(stepStatuses: [.running, .needsSupervisorInput, .running])
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
 
         XCTAssertTrue(changed)
         XCTAssertEqual(task.runs[0].steps[0].status, .paused)
@@ -82,7 +275,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
             ]
         )
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
 
         XCTAssertTrue(changed)
         XCTAssertEqual(task.runs[0].roleStatuses["softwareEngineer"], .idle)
@@ -104,7 +297,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
         )
         let originalStatus = task.status
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
 
         XCTAssertFalse(changed)
         XCTAssertEqual(task.status, originalStatus, "task.status should not change when no recovery needed")
@@ -114,7 +307,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
         var task = NTMSTask(id: 0, title: "Empty", supervisorTask: "Goal")
         task.runs = []
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
 
         XCTAssertFalse(changed)
     }
@@ -125,7 +318,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
         var task = makeTask(stepStatuses: [.running])
         task.setStoredChatMode(true)
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
 
         XCTAssertTrue(changed)
         XCTAssertEqual(task.status, .paused)
@@ -147,7 +340,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
             ]
         )
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
 
         XCTAssertFalse(changed)
         XCTAssertEqual(task.runs[0].steps[0].status, .done)
@@ -168,7 +361,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
         let originalTaskUpdatedAt = task.updatedAt
         let originalStepUpdatedAt = task.runs[0].steps[0].updatedAt
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
 
         XCTAssertTrue(changed)
         XCTAssertGreaterThan(task.updatedAt, originalTaskUpdatedAt)
@@ -180,7 +373,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
         var task = makeTask(stepStatuses: [.done, .pending])
         let originalUpdatedAt = task.updatedAt
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
 
         XCTAssertFalse(changed)
         XCTAssertEqual(task.updatedAt, originalUpdatedAt)
@@ -198,7 +391,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
         var task = NTMSTask(id: 0, title: "Multi-run", supervisorTask: "Goal")
         task.runs = [run1, run2]
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
 
         XCTAssertTrue(changed)
         XCTAssertEqual(task.runs[0].steps[0].status, .paused)

@@ -159,7 +159,8 @@ nonisolated enum RoleEditorMutations {
     private static func makeLLMOverride(from state: RoleEditorState) -> LLMOverride? {
         let candidate = LLMOverride(
             baseURLString: state.llmBaseURL.isEmpty ? nil : state.llmBaseURL,
-            modelName: state.llmModelName.isEmpty ? nil : state.llmModelName
+            modelName: state.llmModelName.isEmpty ? nil : state.llmModelName,
+            provider: state.llmProviderOverride
         )
         return candidate.isEmpty ? nil : candidate
     }

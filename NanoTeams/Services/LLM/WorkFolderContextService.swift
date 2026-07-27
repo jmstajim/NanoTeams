@@ -77,11 +77,12 @@ nonisolated final class WorkFolderContextService: @unchecked Sendable {
         ]
 
         var collected = ""
+        // prefix-cache-owner: registered by the caller —
+        // `NTMSOrchestrator+WorkFolderManagement` notes `.oneShot("work folder context")`.
         for try await event in client.streamChat(
             config: config,
             messages: messages,
             tools: [],
-            session: nil,
             logger: nil,
             stepID: nil
         ) {

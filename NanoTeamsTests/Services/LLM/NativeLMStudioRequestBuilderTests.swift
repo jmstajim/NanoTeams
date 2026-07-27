@@ -20,41 +20,29 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
             ChatMessage(role: .user, content: "Hello"),
         ]
         let request = NativeLMStudioClient.buildRequest(
-            config: config, messages: messages, tools: [], session: nil
+            config: config, messages: messages, tools: []
         )
         XCTAssertNotNil(request.systemPrompt)
         XCTAssertTrue(request.systemPrompt!.contains("helpful assistant"))
-        XCTAssertNil(request.previousResponseID)
     }
 
-    func testBuildRequest_stateful_omitsSystemPrompt() {
+    /// Every request is self-contained: `system_prompt` always ships (nothing holds
+    /// it server-side between calls) and `store` is always false (no chain will ever
+    /// resume a stored response, so storing one only leaks server state).
+    func testBuildRequest_everyCall_carriesSystemPromptAndNeverStores() {
         let config = LLMConfig(provider: .lmStudio, baseURLString: "http://localhost:1234", modelName: "test-model")
         let messages = [
             ChatMessage(role: .system, content: "You are a helpful assistant."),
             ChatMessage(role: .user, content: "Hello"),
+            ChatMessage(role: .assistant, content: "Hi"),
+            ChatMessage(role: .user, content: "Again"),
         ]
-        let session = LLMSession(responseID: "resp-123")
         let request = NativeLMStudioClient.buildRequest(
-            config: config, messages: messages, tools: [], session: session,
-            omitSystemPromptOnContinuation: true
-        )
-        XCTAssertNil(request.systemPrompt)
-        XCTAssertEqual(request.previousResponseID, "resp-123")
-    }
-
-    func testBuildRequest_stateful_keepSystemPromptWhenNotOmitting() {
-        let config = LLMConfig(provider: .lmStudio, baseURLString: "http://localhost:1234", modelName: "test-model")
-        let messages = [
-            ChatMessage(role: .system, content: "System prompt."),
-            ChatMessage(role: .user, content: "Hello"),
-        ]
-        let session = LLMSession(responseID: "resp-456")
-        let request = NativeLMStudioClient.buildRequest(
-            config: config, messages: messages, tools: [], session: session,
-            omitSystemPromptOnContinuation: false
+            config: config, messages: messages, tools: []
         )
         XCTAssertNotNil(request.systemPrompt)
-        XCTAssertEqual(request.previousResponseID, "resp-456")
+        XCTAssertTrue(request.systemPrompt!.contains("helpful assistant"))
+        XCTAssertFalse(request.store, "store must be false — nothing resumes a stored response")
     }
 
     func testBuildRequest_withTools_appendsToolSchemaToSystemPrompt() {
@@ -67,7 +55,7 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
             ToolSchema(name: "read_file", description: "Read a file", parameters: .object(properties: [:])),
         ]
         let request = NativeLMStudioClient.buildRequest(
-            config: config, messages: messages, tools: tools, session: nil
+            config: config, messages: messages, tools: tools
         )
         XCTAssertNotNil(request.systemPrompt)
         XCTAssertTrue(request.systemPrompt!.contains("Tool Calling"))
@@ -87,7 +75,7 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
                        parameters: .object(properties: [:])),
         ]
         let request = NativeLMStudioClient.buildRequest(
-            config: config, messages: messages, tools: tools, session: nil
+            config: config, messages: messages, tools: tools
         )
         let prompt = request.systemPrompt ?? ""
         // Must show the example with `create_artifact` at top-level AND `name` inside arguments —
@@ -126,7 +114,7 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
         )
         let tools = [ToolSchema(name: "create_artifact", description: "Submit", parameters: schema)]
         let request = NativeLMStudioClient.buildRequest(
-            config: config, messages: messages, tools: tools, session: nil
+            config: config, messages: messages, tools: tools
         )
         let prompt = request.systemPrompt ?? ""
         XCTAssertTrue(
@@ -161,7 +149,7 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
             ToolSchema(name: "ask_supervisor", description: "Ask the Supervisor a question.", parameters: askSchema),
         ]
         let request = NativeLMStudioClient.buildRequest(
-            config: config, messages: messages, tools: tools, session: nil
+            config: config, messages: messages, tools: tools
         )
         let prompt = request.systemPrompt ?? ""
 
@@ -192,7 +180,7 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
             provider: .lmStudio, baseURLString: "http://localhost:1234", modelName: "test-model")
         let messages = [ChatMessage(role: .system, content: "Base prompt.")]
         let request = NativeLMStudioClient.buildRequest(
-            config: config, messages: messages, tools: [], session: nil
+            config: config, messages: messages, tools: []
         )
         // No tools → no tool schema section at all (existing testBuildRequest_emptyTools_noToolSection
         // pins this), so we don't get an Example: line either.
@@ -215,7 +203,7 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
             ToolSchema(name: "cancel_delegation", description: "Abort a paused delegation.", parameters: cancelSchema),
         ]
         let request = NativeLMStudioClient.buildRequest(
-            config: config, messages: messages, tools: tools, session: nil
+            config: config, messages: messages, tools: tools
         )
         let prompt = request.systemPrompt ?? ""
 
@@ -244,7 +232,7 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
         )
         let tools = [ToolSchema(name: "_probe", description: "probe", parameters: schema)]
         let request = NativeLMStudioClient.buildRequest(
-            config: config, messages: messages, tools: tools, session: nil
+            config: config, messages: messages, tools: tools
         )
         let prompt = request.systemPrompt ?? ""
 
@@ -270,7 +258,7 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
         )
         let tools = [ToolSchema(name: "_probe", description: "probe", parameters: schema)]
         let request = NativeLMStudioClient.buildRequest(
-            config: config, messages: messages, tools: tools, session: nil
+            config: config, messages: messages, tools: tools
         )
         let prompt = request.systemPrompt ?? ""
 
@@ -306,7 +294,7 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
                                            required: ["path"])),
         ]
         let request = NativeLMStudioClient.buildRequest(
-            config: config, messages: messages, tools: tools, session: nil
+            config: config, messages: messages, tools: tools
         )
         let prompt = request.systemPrompt ?? ""
 
@@ -337,7 +325,7 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
             content: "Base prompt.\n\n" + prebuiltBody
         )]
         let request = NativeLMStudioClient.buildRequest(
-            config: config, messages: messages, tools: tools, session: nil
+            config: config, messages: messages, tools: tools
         )
         let prompt = request.systemPrompt ?? ""
 
@@ -373,7 +361,7 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
                                            required: ["path"])),
         ]
         let request = NativeLMStudioClient.buildRequest(
-            config: config, messages: messages, tools: tools, session: nil
+            config: config, messages: messages, tools: tools
         )
         let prompt = request.systemPrompt ?? ""
 
@@ -406,7 +394,7 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
         )
         let tools = [ToolSchema(name: "_probe", description: "probe", parameters: schema)]
         let request = NativeLMStudioClient.buildRequest(
-            config: config, messages: messages, tools: tools, session: nil
+            config: config, messages: messages, tools: tools
         )
         let prompt = request.systemPrompt ?? ""
 
@@ -436,7 +424,7 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
                 parameters: readFileSchema),
         ]
         let request = NativeLMStudioClient.buildRequest(
-            config: config, messages: messages, tools: tools, session: nil
+            config: config, messages: messages, tools: tools
         )
         let prompt = request.systemPrompt ?? ""
 
@@ -477,7 +465,7 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
                 parameters: .object(properties: [:])),
         ]
         let request = NativeLMStudioClient.buildRequest(
-            config: config, messages: messages, tools: tools, session: nil
+            config: config, messages: messages, tools: tools
         )
         let prompt = request.systemPrompt ?? ""
 
@@ -502,7 +490,7 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
         let messages = [ChatMessage(role: .system, content: "Base.")]
         let tools = ToolHandlerRegistry.allSchemas
         let request = NativeLMStudioClient.buildRequest(
-            config: config, messages: messages, tools: tools, session: nil
+            config: config, messages: messages, tools: tools
         )
         let prompt = request.systemPrompt ?? ""
 
@@ -542,7 +530,7 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
             ToolSchema(name: "matrix_tool", description: "Test matrix tool.", parameters: schema),
         ]
         let request = NativeLMStudioClient.buildRequest(
-            config: config, messages: messages, tools: tools, session: nil
+            config: config, messages: messages, tools: tools
         )
         let prompt = request.systemPrompt ?? ""
 
@@ -571,7 +559,7 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
             ChatMessage(role: .user, content: "Hello"),
         ]
         let request = NativeLMStudioClient.buildRequest(
-            config: config, messages: messages, tools: [], session: nil
+            config: config, messages: messages, tools: []
         )
         XCTAssertNotNil(request.systemPrompt)
         XCTAssertFalse(request.systemPrompt!.contains("Tool Calling"))
@@ -586,7 +574,7 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
             ChatMessage(role: .user, content: "Q2"),
         ]
         let request = NativeLMStudioClient.buildRequest(
-            config: config, messages: messages, tools: [], session: nil
+            config: config, messages: messages, tools: []
         )
         XCTAssertTrue(request.input.textValue!.contains("Q1"))
         XCTAssertTrue(request.input.textValue!.contains("[Assistant]"))
@@ -594,20 +582,71 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
         XCTAssertTrue(request.input.textValue!.contains("Q2"))
     }
 
-    func testBuildRequest_stateful_excludesAssistantMessages() {
+    /// Assistant turns MUST be rendered into `input`. The stateful path used to skip
+    /// them because the server chain held them; with no chain, omitting them shows the
+    /// model tool results for calls it has no record of making.
+    func testBuildRequest_rendersAssistantTurns() {
         let config = LLMConfig(provider: .lmStudio, baseURLString: "http://localhost:1234", modelName: "test-model")
         let messages = [
             ChatMessage(role: .system, content: "System."),
             ChatMessage(role: .user, content: "New question"),
             ChatMessage(role: .assistant, content: "Old answer"),
         ]
-        let session = LLMSession(responseID: "resp-789")
         let request = NativeLMStudioClient.buildRequest(
-            config: config, messages: messages, tools: [], session: session
+            config: config, messages: messages, tools: []
         )
         XCTAssertTrue(request.input.textValue!.contains("New question"))
-        XCTAssertFalse(request.input.textValue!.contains("[Assistant]"))
-        XCTAssertFalse(request.input.textValue!.contains("Old answer"))
+        XCTAssertTrue(request.input.textValue!.contains("[Assistant]"))
+        XCTAssertTrue(request.input.textValue!.contains("Old answer"))
+    }
+
+    /// The same requirement, for the turns that actually carry tool calls — and the one this
+    /// builder used to fail. The streaming path truncates the Harmony envelope out of the
+    /// assistant CONTENT and files the calls under `ChatMessage.toolCalls`
+    /// (`LLMExecutionService+Streaming.swift`, a path shared by both providers), so rendering
+    /// only `content` shipped a bare `[Assistant]\n` followed by an orphan `[Tool Result]`.
+    /// That is precisely the history loss the comment above claims to have fixed: `d2391833`
+    /// removed the server-side `previous_response_id` chain that had been carrying it, and
+    /// re-materialized the envelope on Ollama only.
+    func testBuildRequest_assistantToolCalls_rematerializedIntoInput() {
+        let config = LLMConfig(provider: .lmStudio, baseURLString: "http://localhost:1234", modelName: "test-model")
+        let messages = [
+            ChatMessage(role: .user, content: "read A"),
+            ChatMessage(
+                role: .assistant, content: nil,
+                toolCalls: [ChatToolCall(
+                    id: "tc-1", name: "read_file", argumentsJSON: #"{"path":"A.swift"}"#)]),
+            ChatMessage(role: .tool, content: "{\"ok\":true}", toolCallID: "tc-1"),
+        ]
+        let input = NativeLMStudioClient.buildRequest(
+            config: config, messages: messages, tools: []
+        ).input.textValue!
+
+        XCTAssertTrue(
+            input.contains(#"<|call|>{"name":"read_file","arguments":{"path":"A.swift"}}<|end|>"#),
+            "the model must see the call it made, not an empty assistant turn")
+        XCTAssertFalse(
+            input.contains("[Assistant]\n\n\n[Tool Result]"),
+            "an empty [Assistant] segment ahead of a tool result is the history-loss signature")
+    }
+
+    /// Parity with `OllamaClient.buildRequest`: both providers are stateless and resend the
+    /// full history, so the same `[ChatMessage]` must produce the same envelope bytes. They
+    /// differ only in framing (`[Assistant]` label vs a real `role: "assistant"` message).
+    func testBuildRequest_toolCallEnvelope_matchesTheOllamaBuilder() {
+        let assistant = ChatMessage(
+            role: .assistant, content: "Let me check.",
+            toolCalls: [ChatToolCall(id: "a", name: "git_status", argumentsJSON: "{}")])
+        let config = LLMConfig(provider: .lmStudio, baseURLString: "http://localhost:1234", modelName: "m")
+
+        let lmStudio = NativeLMStudioClient.buildRequest(
+            config: config, messages: [assistant], tools: []
+        ).input.textValue!
+        let ollama = OllamaClient.buildRequest(
+            config: config, messages: [assistant], tools: []
+        ).messages.first { $0.role == "assistant" }?.content
+
+        XCTAssertEqual(lmStudio, "[Assistant]\n" + ollama!)
     }
 
     func testBuildRequest_toolResults_formattedCorrectly() {
@@ -617,7 +656,7 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
             ChatMessage(role: .tool, content: "{\"ok\": true}"),
         ]
         let request = NativeLMStudioClient.buildRequest(
-            config: config, messages: messages, tools: [], session: nil
+            config: config, messages: messages, tools: []
         )
         XCTAssertTrue(request.input.textValue!.contains("[Tool Result]"))
         XCTAssertTrue(request.input.textValue!.contains("{\"ok\": true}"))
@@ -627,11 +666,11 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
         let config = LLMConfig(provider: .lmStudio, baseURLString: "http://localhost:1234", modelName: "my-model-v2")
         let messages = [ChatMessage(role: .user, content: "Hi")]
         let request = NativeLMStudioClient.buildRequest(
-            config: config, messages: messages, tools: [], session: nil
+            config: config, messages: messages, tools: []
         )
         XCTAssertEqual(request.model, "my-model-v2")
         XCTAssertTrue(request.stream)
-        XCTAssertTrue(request.store)
+        XCTAssertFalse(request.store)
     }
 
     // MARK: - No sampling on the wire
@@ -645,8 +684,7 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: config,
             messages: [ChatMessage(role: .user, content: "Hi")],
-            tools: [],
-            session: nil
+            tools: []
         )
         let data = try JSONEncoder().encode(request)
         let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
@@ -669,8 +707,7 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: config,
             messages: [ChatMessage(role: .user, content: "Hi")],
-            tools: [],
-            session: nil
+            tools: []
         )
         let data = try JSONEncoder().encode(request)
         let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
@@ -684,7 +721,6 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
             model: "test",
             systemPrompt: "prompt",
             input: .text("hello"),
-            previousResponseID: "resp-1",
             store: true,
             stream: false,
             temperature: 0.7
@@ -692,9 +728,9 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
         let data = try JSONEncoder().encode(request)
         let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
         XCTAssertNotNil(json["system_prompt"])
-        XCTAssertNotNil(json["previous_response_id"])
         XCTAssertNil(json["systemPrompt"])
-        XCTAssertNil(json["previousResponseID"])
+        XCTAssertNil(json["previous_response_id"],
+                     "Response chains were removed — the key must never reach the wire")
     }
 
     func testNativeChatRequest_omitsNilFields() throws {
@@ -702,7 +738,6 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
             model: "test",
             systemPrompt: nil,
             input: .text("hello"),
-            previousResponseID: nil,
             store: true,
             stream: true,
             temperature: nil
@@ -774,7 +809,7 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: config,
             messages: [ChatMessage(role: .system, content: "Base prompt.")],
-            tools: [], session: nil
+            tools: []
         )
         XCTAssertFalse((request.systemPrompt ?? "").contains(Self.boundarySentence))
     }

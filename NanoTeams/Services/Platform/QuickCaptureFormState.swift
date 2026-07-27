@@ -103,6 +103,14 @@ final class QuickCaptureFormState {
         /// Monotonic timestamp — useful for diagnosing FIFO-order issues across task
         /// switches and for future "queued N seconds ago" UX.
         let createdAt: Date
+        /// `true` when this message has ALREADY been delivered once and shown in the feed, and is
+        /// only back in the queue because a wire it rode was discarded — today that means the
+        /// planning-phase boundary, which keeps just the task statement and the scratchpad.
+        ///
+        /// The redelivery still reaches the model (the implementation phase never saw it), but it
+        /// must NOT produce a second Supervisor bubble: the user typed once and would otherwise
+        /// watch their own message appear twice.
+        let isRedelivery: Bool
 
         /// Fails when the payload is entirely empty. Trims `text` for the emptiness
         /// check but preserves the original (including leading/trailing whitespace)
@@ -114,7 +122,8 @@ final class QuickCaptureFormState {
             targetRoleID: String? = nil,
             isFromAutomatedSupervisor: Bool = false,
             id: UUID = UUID(),
-            createdAt: Date = MonotonicClock.shared.now()
+            createdAt: Date = MonotonicClock.shared.now(),
+            isRedelivery: Bool = false
         ) {
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty || !attachments.isEmpty || !clippedTexts.isEmpty else {
@@ -127,6 +136,7 @@ final class QuickCaptureFormState {
             self.targetRoleID = targetRoleID
             self.isFromAutomatedSupervisor = isFromAutomatedSupervisor
             self.createdAt = createdAt
+            self.isRedelivery = isRedelivery
         }
     }
 

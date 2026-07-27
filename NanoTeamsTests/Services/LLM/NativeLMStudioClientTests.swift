@@ -88,8 +88,7 @@ final class NativeLMStudioClientTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(),
             messages: messages,
-            tools: [],
-            session: nil
+            tools: []
         )
 
         XCTAssertEqual(request.systemPrompt, "You are a helpful assistant.")
@@ -105,8 +104,7 @@ final class NativeLMStudioClientTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(),
             messages: messages,
-            tools: [],
-            session: nil
+            tools: []
         )
 
         XCTAssertEqual(request.systemPrompt, "Be concise.\n\nYou are an engineer.")
@@ -120,8 +118,7 @@ final class NativeLMStudioClientTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(),
             messages: messages,
-            tools: [],
-            session: nil
+            tools: []
         )
 
         XCTAssertNil(request.systemPrompt)
@@ -136,8 +133,7 @@ final class NativeLMStudioClientTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(),
             messages: messages,
-            tools: [],
-            session: nil
+            tools: []
         )
 
         // System message goes to systemPrompt, not input
@@ -145,7 +141,7 @@ final class NativeLMStudioClientTests: XCTestCase {
         XCTAssertEqual(request.input.textValue,"Hello")
     }
 
-    // MARK: - Stateless Mode (No Session)
+    // MARK: - Input Rendering
 
     func testStatelessUserMessageInInput() throws {
         let messages: [ChatMessage] = [
@@ -156,11 +152,9 @@ final class NativeLMStudioClientTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(),
             messages: messages,
-            tools: [],
-            session: nil
+            tools: []
         )
 
-        XCTAssertNil(request.previousResponseID)
         XCTAssertEqual(request.input.textValue,"What is 2+2?")
     }
 
@@ -174,8 +168,7 @@ final class NativeLMStudioClientTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(),
             messages: messages,
-            tools: [],
-            session: nil
+            tools: []
         )
 
         // Parts joined with "\n\n"
@@ -194,8 +187,7 @@ final class NativeLMStudioClientTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(),
             messages: messages,
-            tools: [],
-            session: nil
+            tools: []
         )
 
         XCTAssertTrue(request.input.contains("[Tool Result]\nfile contents here"))
@@ -213,35 +205,16 @@ final class NativeLMStudioClientTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(),
             messages: messages,
-            tools: [],
-            session: nil
+            tools: []
         )
 
         let expected = "Hello\n\n[Assistant]\nHi\n\n[Tool Result]\nresult\n\nThanks"
         XCTAssertEqual(request.input.textValue,expected)
     }
 
-    // MARK: - Stateful Mode (With Session)
+    // MARK: - System / user / tool routing
 
-    func testStatefulSendsPreviousResponseID() throws {
-        let session = LLMSession(responseID: "resp_abc123")
-        let messages: [ChatMessage] = [
-            ChatMessage(role: .system, content: "System."),
-            ChatMessage(role: .user, content: "Follow-up question"),
-        ]
-
-        let request = NativeLMStudioClient.buildRequest(
-            config: makeConfig(),
-            messages: messages,
-            tools: [],
-            session: session
-        )
-
-        XCTAssertEqual(request.previousResponseID, "resp_abc123")
-    }
-
-    func testStatefulUserMessageInInput() throws {
-        let session = LLMSession(responseID: "resp_1")
+    func testSystemGoesToSystemPromptNotInput() throws {
         let messages: [ChatMessage] = [
             ChatMessage(role: .system, content: "System."),
             ChatMessage(role: .user, content: "New user question"),
@@ -250,15 +223,13 @@ final class NativeLMStudioClientTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(),
             messages: messages,
-            tools: [],
-            session: session
+            tools: []
         )
 
         XCTAssertEqual(request.input.textValue,"New user question")
     }
 
-    func testStatefulToolResultInInput() throws {
-        let session = LLMSession(responseID: "resp_2")
+    func testToolResultInInput() throws {
         let messages: [ChatMessage] = [
             ChatMessage(role: .system, content: "System."),
             ChatMessage(role: .tool, content: "read output", toolCallID: "call_x"),
@@ -267,17 +238,16 @@ final class NativeLMStudioClientTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(),
             messages: messages,
-            tools: [],
-            session: session
+            tools: []
         )
 
         XCTAssertEqual(request.input.textValue,"[Tool Result]\nread output")
     }
 
-    func testStatefulAssistantMessagesSkipped() throws {
-        // In stateful mode, LLMExecutionService only passes new messages (after last assistant).
-        // But if an assistant message does arrive, it should be skipped (it's in the server chain).
-        let session = LLMSession(responseID: "resp_3")
+    /// Assistant turns are rendered into `input`. Nothing is held server-side, so
+    /// skipping them (the old stateful behavior) would show the model tool results
+    /// for calls it has no record of making.
+    func testAssistantMessagesAreRendered() throws {
         let messages: [ChatMessage] = [
             ChatMessage(role: .system, content: "System."),
             ChatMessage(role: .assistant, content: "Previous assistant response"),
@@ -287,38 +257,15 @@ final class NativeLMStudioClientTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(),
             messages: messages,
-            tools: [],
-            session: session
+            tools: []
         )
 
-        // Only the tool result should be in input — assistant is in server chain
-        XCTAssertEqual(request.input.textValue,"[Tool Result]\ntool output")
-        XCTAssertFalse(request.input.contains("Previous assistant response"))
+        XCTAssertEqual(
+            request.input.textValue,
+            "[Assistant]\nPrevious assistant response\n\n[Tool Result]\ntool output")
     }
 
-    /// When `omitSystemPromptOnContinuation = false` is explicitly passed, the
-    /// stateful continuation still ships the system_prompt. (Production default
-    /// is now `true`; this case exists for opt-in callers.)
-    func testStatefulSystemInSystemPrompt_whenOmitDisabled() throws {
-        let session = LLMSession(responseID: "resp_4")
-        let messages: [ChatMessage] = [
-            ChatMessage(role: .system, content: "You are an engineer."),
-            ChatMessage(role: .user, content: "Question"),
-        ]
-
-        let request = NativeLMStudioClient.buildRequest(
-            config: makeConfig(),
-            messages: messages,
-            tools: [],
-            session: session,
-            omitSystemPromptOnContinuation: false
-        )
-
-        XCTAssertEqual(request.systemPrompt, "You are an engineer.")
-    }
-
-    func testStatefulMultipleToolResults() throws {
-        let session = LLMSession(responseID: "resp_5")
+    func testMultipleToolResults() throws {
         let messages: [ChatMessage] = [
             ChatMessage(role: .system, content: "System."),
             ChatMessage(role: .tool, content: "result 1", toolCallID: "c1"),
@@ -328,8 +275,7 @@ final class NativeLMStudioClientTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(),
             messages: messages,
-            tools: [],
-            session: session
+            tools: []
         )
 
         XCTAssertTrue(request.input.contains("[Tool Result]\nresult 1"))
@@ -343,8 +289,7 @@ final class NativeLMStudioClientTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(modelName: "ibm/granite-4-micro"),
             messages: [ChatMessage(role: .user, content: "Hi")],
-            tools: [],
-            session: nil
+            tools: []
         )
 
         XCTAssertEqual(request.model, "ibm/granite-4-micro")
@@ -354,50 +299,46 @@ final class NativeLMStudioClientTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(temperature: 0.3),
             messages: [ChatMessage(role: .user, content: "Hi")],
-            tools: [],
-            session: nil
+            tools: []
         )
 
         XCTAssertEqual(request.temperature, 0.3)
     }
 
-    func testStoreAndStreamAlwaysTrue() throws {
+    /// `stream` is always on; `store` is always OFF. Nothing resumes a stored
+    /// response now that chains are gone, so storing one only accumulates orphan
+    /// server-side state.
+    func testStreamAlwaysTrue_storeAlwaysFalse() throws {
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(),
             messages: [ChatMessage(role: .user, content: "Hi")],
-            tools: [],
-            session: nil
+            tools: []
         )
 
-        XCTAssertTrue(request.store)
+        XCTAssertFalse(request.store)
         XCTAssertTrue(request.stream)
     }
 
     // MARK: - Encoding (CodingKeys)
 
     func testRequestEncodesWithSnakeCaseKeys() throws {
-        let session = LLMSession(responseID: "resp_xyz")
         let messages: [ChatMessage] = [
             ChatMessage(role: .system, content: "System."),
             ChatMessage(role: .user, content: "Hello"),
         ]
 
-        // Opt out of the default omit so we can verify all snake_case keys are
-        // present in the encoded payload.
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(),
             messages: messages,
-            tools: [],
-            session: session,
-            omitSystemPromptOnContinuation: false
+            tools: []
         )
 
         let dict = try encodeToDict(request)
 
         XCTAssertNotNil(dict["system_prompt"])
-        XCTAssertNotNil(dict["previous_response_id"])
         XCTAssertNil(dict["systemPrompt"])
-        XCTAssertNil(dict["previousResponseID"])
+        XCTAssertNil(dict["previous_response_id"],
+                     "Response chains were removed — the key must never reach the wire")
     }
 
     func testInputEncodedAsString() throws {
@@ -408,8 +349,7 @@ final class NativeLMStudioClientTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(),
             messages: messages,
-            tools: [],
-            session: nil
+            tools: []
         )
 
         let dict = try encodeToDict(request)
@@ -429,8 +369,7 @@ final class NativeLMStudioClientTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(),
             messages: messages,
-            tools: [],
-            session: nil
+            tools: []
         )
 
         XCTAssertEqual(request.systemPrompt, "You are an assistant.")
@@ -447,8 +386,7 @@ final class NativeLMStudioClientTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(),
             messages: messages,
-            tools: tools,
-            session: nil
+            tools: tools
         )
 
         let prompt = request.systemPrompt ?? ""
@@ -465,8 +403,7 @@ final class NativeLMStudioClientTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(),
             messages: messages,
-            tools: tools,
-            session: nil
+            tools: tools
         )
 
         let prompt = request.systemPrompt ?? ""
@@ -485,8 +422,7 @@ final class NativeLMStudioClientTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(),
             messages: messages,
-            tools: tools,
-            session: nil
+            tools: tools
         )
 
         let prompt = request.systemPrompt ?? ""
@@ -505,8 +441,7 @@ final class NativeLMStudioClientTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(),
             messages: messages,
-            tools: tools,
-            session: nil
+            tools: tools
         )
 
         let prompt = request.systemPrompt ?? ""
@@ -523,20 +458,18 @@ final class NativeLMStudioClientTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(),
             messages: messages,
-            tools: tools,
-            session: nil
+            tools: tools
         )
 
         XCTAssertNotNil(request.systemPrompt)
         XCTAssertTrue(request.systemPrompt?.contains("Tool Calling") ?? false)
     }
 
-    // MARK: - Stateful Invariants
+    // MARK: - Wire invariants
 
-    func testStatefulInvariant_SystemOmittedByDefault() throws {
-        // Production default: on stateful continuations system_prompt is omitted
-        // (server persists it in the response chain, so resending would cost tokens).
-        let session = LLMSession(responseID: "resp_x")
+    func testInvariant_SystemPromptAlwaysSent() throws {
+        // Nothing persists it server-side, so every request must carry it — and it
+        // anchors the byte-identical prefix the KV cache keys on.
         let messages: [ChatMessage] = [
             ChatMessage(role: .system, content: "Be concise."),
             ChatMessage(role: .user, content: "Question"),
@@ -545,20 +478,13 @@ final class NativeLMStudioClientTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(),
             messages: messages,
-            tools: [],
-            session: session
+            tools: []
         )
 
-        XCTAssertNil(request.systemPrompt, "Stateful default must omit system_prompt")
-        XCTAssertNotNil(request.previousResponseID)
+        XCTAssertEqual(request.systemPrompt, "Be concise.")
     }
 
-    func testStatefulInvariant_InputContainsOnlyNewMessages() throws {
-        // In stateful mode, input should only contain new messages (not full history).
-        // LLMExecutionService slices messages before passing; we verify the client
-        // doesn't re-add anything extra.
-        let session = LLMSession(responseID: "resp_y")
-        // Simulate: only the new tool result + user message after last assistant turn
+    func testInvariant_SystemNeverDuplicatedIntoInput() throws {
         let messages: [ChatMessage] = [
             ChatMessage(role: .system, content: "System."),
             ChatMessage(role: .tool, content: "tool output", toolCallID: "c1"),
@@ -568,14 +494,12 @@ final class NativeLMStudioClientTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(),
             messages: messages,
-            tools: [],
-            session: session
+            tools: []
         )
 
         XCTAssertTrue(request.input.contains("[Tool Result]\ntool output"))
         XCTAssertTrue(request.input.contains("Continue"))
-        XCTAssertEqual(request.previousResponseID, "resp_y")
-        // System must NOT appear in input
+        // System rides `system_prompt`, never `input`
         XCTAssertFalse(request.input.contains("System."))
     }
 
@@ -593,7 +517,6 @@ final class NativeLMStudioClientTests: XCTestCase {
             config: config,
             messages: [ChatMessage(role: .user, content: "Hi")],
             tools: [],
-            session: nil,
             logger: nil,
             stepID: nil
         )
@@ -817,7 +740,6 @@ final class NativeLMStudioClientTests: XCTestCase {
             config: config,
             messages: [ChatMessage(role: .user, content: "Hi")],
             tools: [],
-            session: nil,
             logger: nil,
             stepID: nil
         )
@@ -844,8 +766,7 @@ final class NativeLMStudioClientTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(),
             messages: messages,
-            tools: [],
-            session: nil
+            tools: []
         )
 
         XCTAssertEqual(request.input.textValue,"")
@@ -859,37 +780,15 @@ final class NativeLMStudioClientTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(),
             messages: messages,
-            tools: [],
-            session: nil
+            tools: []
         )
 
         XCTAssertEqual(request.input.textValue,"[Tool Result]\n")
     }
 
-    // MARK: - System Prompt Omission on Stateful Continuations
+    // MARK: - System prompt is never omitted
 
-    func testStatefulContinuation_OmitsSystemPrompt() throws {
-        let session = LLMSession(responseID: "resp_abc")
-        let messages: [ChatMessage] = [
-            ChatMessage(role: .system, content: "You are an engineer."),
-            ChatMessage(role: .user, content: "Follow-up"),
-        ]
-
-        let request = NativeLMStudioClient.buildRequest(
-            config: makeConfig(),
-            messages: messages,
-            tools: [],
-            session: session,
-            omitSystemPromptOnContinuation: true
-        )
-
-        XCTAssertNil(request.systemPrompt)
-        XCTAssertEqual(request.previousResponseID, "resp_abc")
-        XCTAssertEqual(request.input.textValue,"Follow-up")
-    }
-
-    func testStatefulContinuation_OmitsToolSchemasToo() throws {
-        let session = LLMSession(responseID: "resp_abc")
+    func testSystemPromptAndToolSchemas_alwaysSent() throws {
         let messages: [ChatMessage] = [
             ChatMessage(role: .system, content: "You are an engineer."),
             ChatMessage(role: .user, content: "Continue"),
@@ -902,51 +801,16 @@ final class NativeLMStudioClientTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: makeConfig(),
             messages: messages,
-            tools: tools,
-            session: session,
-            omitSystemPromptOnContinuation: true
+            tools: tools
         )
 
-        // Tool schemas are part of system_prompt — both should be omitted
-        XCTAssertNil(request.systemPrompt)
+        let prompt = try XCTUnwrap(request.systemPrompt)
+        XCTAssertTrue(prompt.contains("You are an engineer."))
+        XCTAssertTrue(prompt.contains("read_file"), "Tool schemas ride system_prompt")
+        XCTAssertTrue(prompt.contains("write_file"))
+        XCTAssertEqual(request.input.textValue, "Continue")
     }
 
-    func testStatelessRequest_AlwaysSendsSystemPrompt() throws {
-        let messages: [ChatMessage] = [
-            ChatMessage(role: .system, content: "You are an engineer."),
-            ChatMessage(role: .user, content: "Hello"),
-        ]
-
-        let request = NativeLMStudioClient.buildRequest(
-            config: makeConfig(),
-            messages: messages,
-            tools: [],
-            session: nil,
-            omitSystemPromptOnContinuation: true
-        )
-
-        // No session → system_prompt sent regardless of the flag
-        XCTAssertEqual(request.systemPrompt, "You are an engineer.")
-        XCTAssertNil(request.previousResponseID)
-    }
-
-    func testStatefulContinuation_FlagDisabled_SendsSystemPrompt() throws {
-        let session = LLMSession(responseID: "resp_abc")
-        let messages: [ChatMessage] = [
-            ChatMessage(role: .system, content: "You are an engineer."),
-            ChatMessage(role: .user, content: "Follow-up"),
-        ]
-
-        let request = NativeLMStudioClient.buildRequest(
-            config: makeConfig(),
-            messages: messages,
-            tools: [],
-            session: session,
-            omitSystemPromptOnContinuation: false
-        )
-
-        XCTAssertEqual(request.systemPrompt, "You are an engineer.")
-    }
 }
 
 // MARK: - StubNetworkSession

@@ -174,6 +174,63 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
             "the step-level verdict must use the configured threshold too")
     }
 
+    // MARK: - resumable contract
+
+    /// The 2026-07-25 incident, pinned end to end. The app was closed mid-planning,
+    /// so `StatusRecoveryService` left the step `.paused` with its role `.idle` and
+    /// all 5 tool calls intact.
+    ///
+    /// Everything the manager's triage normally keys on is structurally absent here
+    /// — `stuck`, `idle_seconds` and `running_tool` are all gated on `.running` — and
+    /// `elapsed_seconds` counts the app's downtime, so it reads like hours of
+    /// nothing. `resumable: true` is the one field that says what to DO, and its
+    /// absence is what let the manager reach for the destructive `manage_role
+    /// restart` instead of `control_task resume`.
+    func testHandleTaskStatus_appQuitRecoveredStep_isResumable() async throws {
+        let old = Date(timeIntervalSinceNow: -23_885)   // the incident's elapsed_seconds
+        let calls = (1...5).map {
+            StepToolCall(name: "read_file", argumentsJSON: "{\"path\":\"f\($0).swift\"}",
+                         resultJSON: "{\"ok\":true}")
+        }
+        let step = StepExecution(
+            id: "startup_software_engineer", role: .softwareEngineer, title: "SWE",
+            status: .paused, createdAt: old, updatedAt: old,
+            messages: [StepMessage(role: .softwareEngineer, content: "researching")],
+            toolCalls: calls
+        )
+        let run = Run(id: 0, createdAt: old, steps: [step],
+                      roleStatuses: ["startup_software_engineer": .idle])
+        mockDelegate.taskToMutate = NTMSTask(
+            id: 10, title: "M3 — Player screen", supervisorTask: "...", runs: [run])
+
+        let status = try Self.decodeStatus(from: await service.handleTaskStatus(taskID: 10))
+        let row = try XCTUnwrap(status.steps.first)
+
+        XCTAssertEqual(row.status, "paused")
+        XCTAssertEqual(row.resumable, true,
+            "the one actionable field on a paused step — without it the manager restarts and wipes the work")
+        XCTAssertNil(row.stuck, "a paused step never carries a stuck verdict")
+        XCTAssertNil(row.idle_seconds, "idle_seconds is gated on .running")
+        XCTAssertNil(row.running_tool)
+        XCTAssertEqual(row.elapsed_seconds, 23_885, accuracy: 5,
+            "elapsed keeps counting through app downtime — which is exactly why it must not be the signal")
+    }
+
+    /// `resumable` is `true`-or-omitted, never `false`: an absent key must not read
+    /// as a claim that resume would fail. A running step's payload is unchanged.
+    func testHandleTaskStatus_runningStep_omitsResumable() async throws {
+        let step = StepExecution(
+            id: "startup_software_engineer", role: .softwareEngineer, title: "SWE",
+            status: .running)
+        let run = Run(id: 0, steps: [step], roleStatuses: ["startup_software_engineer": .working])
+        mockDelegate.taskToMutate = NTMSTask(id: 12, title: "T", supervisorTask: "...", runs: [run])
+
+        let json = await service.handleTaskStatus(taskID: 12)
+        XCTAssertFalse(json.contains("resumable"),
+            "omitted, not false — a running step's wire shape must be byte-identical to before")
+        XCTAssertNil(try Self.decodeStatus(from: json).steps.first?.resumable)
+    }
+
     // MARK: - roles_needing_acceptance contract
 
     /// `RoleExecutionStatus` is otherwise invisible to the manager, so `task_status`
@@ -423,6 +480,8 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
     private struct StuckDTO: Decodable { let kind: String; let detail: String? }
     private struct StepRowDTO: Decodable {
         let role_id: String
+        let status: String
+        let resumable: Bool?
         let role_kind: String?
         let elapsed_seconds: Int
         let idle_seconds: Int?

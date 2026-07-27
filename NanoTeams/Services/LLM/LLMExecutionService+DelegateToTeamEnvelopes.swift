@@ -54,10 +54,11 @@ extension LLMExecutionService {
         return stripped
     }
 
-    /// Clears `delegationSession` and `activeDelegationChildID` on the parent step
-    /// when the delegation reaches any terminal outcome. Called from every exit
-    /// path of the awaiter loop so the next `delegate_to_team` call starts clean
-    /// (fresh seeded chain) and `pauseRun` no longer treats the step as mid-delegation.
+    /// Clears `activeDelegationChildID` on the parent step when the delegation
+    /// reaches any terminal outcome. Called from every exit path of the awaiter
+    /// loop so the next `delegate_to_team` call starts clean and `pauseRun` no
+    /// longer treats the step as mid-delegation. The append-only
+    /// `delegationChildIDs` history is deliberately preserved.
     func clearDelegationFields(
         parentTID: Int,
         stepID: String,

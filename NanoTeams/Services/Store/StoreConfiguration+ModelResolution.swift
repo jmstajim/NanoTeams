@@ -31,6 +31,14 @@ extension StoreConfiguration {
         return llmBaseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// The provider the Vision slot speaks — its own when pinned, else the
+    /// global one. Single source of truth shared by `visionLLMConfig`
+    /// (request time), the Vision card's model-list fetches, and the
+    /// model-switch residency hook.
+    var resolvedVisionProvider: LLMProvider {
+        visionProvider ?? llmProvider
+    }
+
     /// Resolves a raw Vision model-name field through the empty→global
     /// fallback. Takes the value as a parameter rather than reading
     /// `visionModelName` so the model-switch hook can resolve the OLD value

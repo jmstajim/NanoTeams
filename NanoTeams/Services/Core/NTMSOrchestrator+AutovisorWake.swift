@@ -93,6 +93,22 @@ extension NTMSOrchestrator {
         }
     }
 
+    /// The other kind of park: `LoopRecoveryPolicy` gave up after
+    /// `maxThinkingLoopBreaks` and parked the manager carrying the loop diagnostic.
+    ///
+    /// Sibling of `taskHasIdleParkStep`, and deliberately NOT the same predicate: an
+    /// idle park means "I finished the pass and have nothing left to do", a loop park
+    /// means "the pass died mid-thought". Matched by `contains` on
+    /// `LoopRecoveryPolicy.stuckQuestionMarker` rather than by equality, because the
+    /// question interpolates the role name and the diagnostic.
+    nonisolated static func taskHasLoopParkStep(_ task: NTMSTask?) -> Bool {
+        guard let run = task?.runs.last else { return false }
+        return run.steps.contains {
+            $0.needsSupervisorInput
+                && ($0.supervisorQuestion?.contains(LoopRecoveryPolicy.stuckQuestionMarker) ?? false)
+        }
+    }
+
     /// True when the manager's latest-run step already carries an unprocessed HUMAN
     /// answer — text and/or attachments. Uses `effectiveSupervisorAnswer` (the same
     /// signal `resumeRun` consumes) so an attachment-only answer (empty text, files
@@ -148,12 +164,13 @@ extension NTMSOrchestrator {
     /// Sets (or clears) the Manager role's per-role LLM override. Bumps the team's
     /// `updatedAt` (via `updateRole`) so `@Observable` UI refreshes; persistence is
     /// JSON-diff'd by `mutateWorkFolder` regardless.
-    func setAutovisorLLMOverride(baseURL: String?, model: String?) async {
+    func setAutovisorLLMOverride(baseURL: String?, model: String?, provider: LLMProvider?) async {
         let b = baseURL?.trimmingCharacters(in: .whitespacesAndNewlines)
         let m = model?.trimmingCharacters(in: .whitespacesAndNewlines)
         let override = LLMOverride(
             baseURLString: (b?.isEmpty == false) ? b : nil,
-            modelName: (m?.isEmpty == false) ? m : nil
+            modelName: (m?.isEmpty == false) ? m : nil,
+            provider: provider
         )
         await mutateWorkFolder { proj in
             guard let ti = proj.teams.firstIndex(where: { $0.templateID == AutovisorConstants.teamTemplateID }),
@@ -317,6 +334,39 @@ extension NTMSOrchestrator {
             watchable: watchable, engineStates: taskEngineStates,
             activation: act, seen: autovisorSeenTaskIDs, stuck: stuck
         ).map(\.key))
+    }
+
+    /// Roll back the attention baseline a pass never earned, once.
+    ///
+    /// `autovisorLastPassAttentionKeys` means "the manager has reviewed these", and it
+    /// is written at pass START. A pass that ends in a `LoopRecoveryPolicy` park died
+    /// mid-thought without reviewing anything, so leaving its baseline in place tells
+    /// every later wake that a still-unhandled condition is old news — the failed
+    /// worker keeps its `.failed` level forever, the poll's `hasFreshCondition` guard
+    /// stays false, and recovery falls through to the 10-minute recurrence (or to the
+    /// auto-off deadline, after which nothing wakes the folder at all).
+    ///
+    /// Subtracting only keys NOT already in `autovisorLoopParkRedelivered` is the bound:
+    /// one extra pass per key per episode. A manager that loops again immediately finds
+    /// its keys already spent, rolls back nothing, and stays parked — so this cannot
+    /// become the tight wake loop the deliver-once design prevents.
+    ///
+    /// Called from `engineForTask`'s state observer (a headless-safe seam) rather than
+    /// from a SwiftUI observer, so it also fires with no window mounted.
+    func noteAutovisorLoopPark(_ taskID: Int) {
+        guard taskID == autovisorTaskID,
+              Self.taskHasLoopParkStep(loadedTask(taskID)) else { return }
+        let rollback = autovisorLastPassAttentionKeys.subtracting(autovisorLoopParkRedelivered)
+        guard !rollback.isEmpty else { return }
+        autovisorLastPassAttentionKeys.subtract(rollback)
+        autovisorLoopParkRedelivered.formUnion(rollback)
+    }
+
+    /// A healthy terminal means the manager actually completed a pass, so the one free
+    /// re-delivery is re-armed for any future loop-park episode.
+    func clearAutovisorLoopParkLedger(_ taskID: Int) {
+        guard taskID == autovisorTaskID else { return }
+        autovisorLoopParkRedelivered.removeAll()
     }
 
     /// Top-level, non-manager tasks the Autovisor watches. Single source of truth —

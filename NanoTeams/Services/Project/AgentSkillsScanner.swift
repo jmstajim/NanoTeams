@@ -23,7 +23,6 @@ nonisolated struct AgentSkillsSnapshot: Hashable, Sendable {
     }
 
     let items: [Item]
-    static let empty = AgentSkillsSnapshot(items: [])
     var isEmpty: Bool { items.isEmpty }
 }
 

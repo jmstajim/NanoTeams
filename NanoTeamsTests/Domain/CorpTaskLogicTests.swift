@@ -229,6 +229,85 @@ final class NTMSTaskLogicTests: XCTestCase {
         XCTAssertEqual(task.derivedStatusFromActiveRun(), .needsSupervisorAcceptance)
     }
 
+    /// The shape a pre-fix `StatusRecoveryService` manufactured at every launch: all
+    /// steps `.done`, the finished role demoted to `.idle`. Pinned HERE, unchanged, to
+    /// prove the fix belongs in recovery — `NTMSTask` is right to call an `.idle` role
+    /// unfinished; it cannot see that the role's step already completed.
+    func testDerivedStatus_allStepsDone_roleIdle_returnsRunning() {
+        var task = NTMSTask(id: 0, title: "Test", supervisorTask: "Goal")
+        task.runs = [
+            Run(id: 0, steps: [
+                StepExecution(id: "eng", role: .softwareEngineer, title: "Eng", status: .done)
+            ], roleStatuses: [
+                "supervisor": .done,
+                "eng": .idle
+            ])
+        ]
+
+        XCTAssertEqual(task.derivedStatusFromActiveRun(), .running)
+        XCTAssertFalse(task.isReadyForFinalAcceptance,
+                       "every review affordance reduces to this — hence the invisible task")
+    }
+
+    /// The post-heal shape: recovery settled the role, so the task is reviewable.
+    func testDerivedStatus_allStepsDone_roleSettledDone_isReadyForFinalAcceptance() {
+        var task = NTMSTask(id: 0, title: "Test", supervisorTask: "Goal")
+        task.runs = [
+            Run(id: 0, steps: [
+                StepExecution(id: "eng", role: .softwareEngineer, title: "Eng", status: .done)
+            ], roleStatuses: [
+                "supervisor": .done,
+                "eng": .done
+            ])
+        ]
+
+        XCTAssertEqual(task.derivedStatusFromActiveRun(), .needsSupervisorAcceptance)
+        XCTAssertTrue(task.isReadyForFinalAcceptance)
+    }
+
+    // MARK: - Recovery pause latch
+
+    /// The latch exists so a recovered run whose remaining steps are all `.pending`
+    /// reads "Paused" rather than "Working".
+    func testRecoveryPauseLatch_armed_makesAllPendingRunReadPaused() {
+        var task = NTMSTask(id: 0, title: "Test", supervisorTask: "Goal")
+        task.status = .paused
+        task.runs = [
+            Run(id: 0, steps: [
+                StepExecution(id: "eng", role: .softwareEngineer, title: "Eng", status: .pending)
+            ], roleStatuses: ["eng": .idle])
+        ]
+
+        XCTAssertEqual(task.derivedStatusFromActiveRun(), .paused)
+    }
+
+    /// …and clearing it on a transition back to live restores "Working". Without a
+    /// clear the latch stayed armed for the task's whole life, so every LATER run
+    /// rendered "Paused" at any moment when no step happened to be `.running`.
+    func testClearRecoveryPauseLatch_restoresRunning() {
+        var task = NTMSTask(id: 0, title: "Test", supervisorTask: "Goal")
+        task.status = .paused
+        task.runs = [
+            Run(id: 0, steps: [
+                StepExecution(id: "eng", role: .softwareEngineer, title: "Eng", status: .pending)
+            ], roleStatuses: ["eng": .idle])
+        ]
+
+        task.clearRecoveryPauseLatch()
+
+        XCTAssertEqual(task.status, .running)
+        XCTAssertEqual(task.derivedStatusFromActiveRun(), .running)
+    }
+
+    func testClearRecoveryPauseLatch_isNoOpForNonPausedStatus() {
+        var task = NTMSTask(id: 0, title: "Test", supervisorTask: "Goal")
+        task.status = .done
+
+        task.clearRecoveryPauseLatch()
+
+        XCTAssertEqual(task.status, .done, "the clear must only ever retire the .paused latch")
+    }
+
     func testDerivedStatus_emptyRoleStatuses_fallsThrough() {
         // Legacy runs have empty roleStatuses — should still work
         var task = NTMSTask(id: 0, title: "Test", supervisorTask: "Goal")

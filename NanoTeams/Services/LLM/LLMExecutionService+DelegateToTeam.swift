@@ -93,6 +93,9 @@ extension LLMExecutionService {
             )
             await appendToolCalls(stepID: stepID, taskID: parentTID, toolCalls: [placeholder])
             do {
+                // Generation runs on the global model unless a team-gen override is set, so
+                // it interleaves with the delegating role's own chain on that model.
+                await noteInterleavingCall(label: "team generation", config: generationConfig)
                 let buildResult = try await TeamGenerationService.generate(
                     taskDescription: taskBrief,
                     config: generationConfig,
@@ -441,10 +444,8 @@ extension LLMExecutionService {
                 // one of: `cancel_delegation` (stop), `resume_delegation`
                 // (continue waiting), `forward_to_team` (inject guidance and
                 // continue). `activeDelegationChildID` stays set so those
-                // follow-ups can find the paused child; only `delegationSession`
-                // would normally clear here, but we leave it intact too —
-                // resuming via the seeded chain is correct since no terminal
-                // outcome happened.
+                // follow-ups can find the paused child — no terminal outcome
+                // happened, so the delegation markers must survive the pause.
                 //
                 // Race-safety re-check: if the child engine reached a
                 // terminal state concurrently with the queued-message

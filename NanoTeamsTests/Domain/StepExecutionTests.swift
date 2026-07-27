@@ -47,8 +47,7 @@ final class StepExecutionTests: XCTestCase {
             supervisorAnswerWasAuto: true,
             supervisorCommentForNext: "Good job",
             tokenUsage: TokenUsage(inputTokens: 100, outputTokens: 50),
-            llmConversation: [LLMMessage(role: .user, content: "Hello")],
-            llmSessionID: "session-123"
+            llmConversation: [LLMMessage(role: .user, content: "Hello")]
         )
 
         step.reset()
@@ -69,7 +68,6 @@ final class StepExecutionTests: XCTestCase {
         XCTAssertNil(step.supervisorCommentForNext)
         XCTAssertNil(step.tokenUsage)
         XCTAssertTrue(step.llmConversation.isEmpty)
-        XCTAssertNil(step.llmSessionID)
 
         // Identity fields preserved
         XCTAssertEqual(step.role, .softwareEngineer)

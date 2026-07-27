@@ -16,8 +16,9 @@ nonisolated enum MessageSourceContext: String, Codable {
     /// Question that arrived from a delegated child team's `ask_supervisor` call
     /// while this role's `delegate_to_team` handler was awaiting completion. The
     /// question is appended to this role's `step.llmConversation` for activity-feed
-    /// visibility; the actual stateful answering happens in
-    /// `DelegatedSupervisorAnswerService` on `parentStep.delegationSession`.
+    /// visibility; the actual answering happens in
+    /// `DelegatedSupervisorAnswerService`, which seeds a one-shot side exchange
+    /// from that same conversation.
     case delegatedQuestion
     /// Question that bubbled up the delegation chain (a delegated team's role asked
     /// `ask_supervisor`, the immediate parent role couldn't answer and itself called
@@ -30,6 +31,28 @@ nonisolated enum MessageSourceContext: String, Codable {
     /// `TaskMutationService.appendOrReplaceRetryNotice`). Display-only — never sent
     /// to the model.
     case serverError
+    /// Correction appended after an in-stream thinking loop broke the stream and the
+    /// looping generation was discarded (`LoopRecoveryPolicy.retryWithNudge`).
+    /// Unlike `.serverError` this one IS sent — it is the entire recovery, since a
+    /// stateless resend without it is byte-identical to the request that looped. The
+    /// context exists so the turn survives the activity feed's `.user`-with-no-context
+    /// filter; without it the only record of a loop break would be a `cancelled` row
+    /// in `network_log.json`, which is off by default in Release.
+    case loopCorrection
+    /// A retry nudge the runtime appended after a turn produced no usable tool call —
+    /// the drift reminder, the repetition warning, the malformed-envelope retry, the
+    /// missing-artifacts reminder, the planning-phase plan note, the generic
+    /// "you replied with text" nudge. Like `.loopCorrection` these ARE sent; the context
+    /// exists so they survive the activity feed's `.user`-with-no-context filter.
+    ///
+    /// Without it the user watches a role emit the same reply N times with nothing on
+    /// screen explaining why it is being asked again — which is exactly how the wedged
+    /// Autovisor pass presented: identical bubbles, no visible cause. A nudge is the
+    /// app talking to the model on the user's behalf, so it belongs on the record.
+    ///
+    /// Deliberately NOT `.loopCorrection`: that one means "the stream looped and was
+    /// discarded", and labelling a tokens-only retry with it would be a new lie.
+    case retryNudge
 
     private static let displayLabelMap: [MessageSourceContext: String] = [
         .consultation: "consultation",
@@ -39,6 +62,8 @@ nonisolated enum MessageSourceContext: String, Codable {
         .supervisorMessage: "message",
         .delegatedQuestion: "delegated question",
         .delegationEscalation: "escalation",
+        .loopCorrection: "loop correction",
+        .retryNudge: "retry",
     ]
 
     var displayLabel: String { Self.displayLabelMap[self] ?? rawValue }

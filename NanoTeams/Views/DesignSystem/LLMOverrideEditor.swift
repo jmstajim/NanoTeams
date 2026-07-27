@@ -21,7 +21,7 @@ struct LLMOverrideEditor: View {
 
     private var inheritedURLPrompt: String {
         let global = config.llmBaseURLString.trimmingCharacters(in: .whitespaces)
-        return global.isEmpty ? "http://127.0.0.1:1234" : global
+        return global.isEmpty ? effectiveFetchProvider.defaultBaseURL : global
     }
 
     private var emptyModelLabel: String {
@@ -38,32 +38,42 @@ struct LLMOverrideEditor: View {
         return config.llmBaseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Provider used for the model-list fetch — the override's provider when
+    /// set (matches `buildEffectiveConfig` resolution), else the global one.
+    private var effectiveFetchProvider: LLMProvider {
+        config[keyPath: keyPath]?.provider ?? config.llmProvider
+    }
+
     var body: some View {
-        LLMEndpointEditor(
-            baseURL: baseURLBinding,
-            modelName: modelNameBinding,
-            apiToken: $apiToken,
-            urlPrompt: inheritedURLPrompt,
-            emptyModelLabel: emptyModelLabel,
-            onTokenSaveError: onTokenSaveError,
-            onTokenLoadError: onTokenLoadError,
-            onURLCommit: {
-                Task { await modelCatalog.loadIfNeeded(url: effectiveFetchURL) }
-            },
-            availableModels: modelCatalog.models(for: effectiveFetchURL),
-            isFetchingModels: modelCatalog.isFetching(effectiveFetchURL),
-            status: EndpointStatus.resolve(
-                fetchError: modelCatalog.error(for: effectiveFetchURL),
-                isFetching: modelCatalog.isFetching(effectiveFetchURL)
-            ),
-            onRefreshModels: {
-                Task { await modelCatalog.refresh(url: effectiveFetchURL) }
-            }
-        )
+        VStack(alignment: .leading, spacing: Spacing.s) {
+            LLMProviderOverridePicker(selection: providerBinding)
+
+            LLMEndpointEditor(
+                baseURL: baseURLBinding,
+                modelName: modelNameBinding,
+                apiToken: $apiToken,
+                urlPrompt: inheritedURLPrompt,
+                emptyModelLabel: emptyModelLabel,
+                onTokenSaveError: onTokenSaveError,
+                onTokenLoadError: onTokenLoadError,
+                onURLCommit: {
+                    Task { await modelCatalog.loadIfNeeded(url: effectiveFetchURL, provider: effectiveFetchProvider) }
+                },
+                availableModels: modelCatalog.models(for: effectiveFetchURL, provider: effectiveFetchProvider),
+                isFetchingModels: modelCatalog.isFetching(effectiveFetchURL, provider: effectiveFetchProvider),
+                status: EndpointStatus.resolve(
+                    fetchError: modelCatalog.error(for: effectiveFetchURL, provider: effectiveFetchProvider),
+                    isFetching: modelCatalog.isFetching(effectiveFetchURL, provider: effectiveFetchProvider)
+                ),
+                onRefreshModels: {
+                    Task { await modelCatalog.refresh(url: effectiveFetchURL, provider: effectiveFetchProvider) }
+                }
+            )
+        }
         .task {
             // First-appear load only. URL edits re-trigger via onURLCommit; the
             // Refresh button forces a re-fetch.
-            await modelCatalog.loadIfNeeded(url: effectiveFetchURL)
+            await modelCatalog.loadIfNeeded(url: effectiveFetchURL, provider: effectiveFetchProvider)
         }
     }
 
@@ -71,6 +81,13 @@ struct LLMOverrideEditor: View {
         Binding(
             get: { config[keyPath: keyPath]?.baseURLString ?? "" },
             set: { config.writeOverride(keyPath, \.baseURLString, $0.isEmpty ? nil : $0) }
+        )
+    }
+
+    private var providerBinding: Binding<LLMProvider?> {
+        Binding(
+            get: { config[keyPath: keyPath]?.provider },
+            set: { config.writeOverride(keyPath, \.provider, $0) }
         )
     }
 

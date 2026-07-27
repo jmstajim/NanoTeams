@@ -195,6 +195,29 @@ extension LLMExecutionService {
                     tools: speakerTools
                 )
 
+                // A meeting turn is a genuine accumulating chain, not a one-shot: its tool
+                // follow-ups continue this exact array (see `executeTurnToolLoop` below), so it
+                // both loses its own prefix and evicts other callers on the shared model.
+                // `LLMCallOwner` names it as a required `.chain` and it was never registered.
+                //
+                // Keyed by (task, run, meeting, SPEAKER). The speaker belongs in the key because
+                // each one gets its own system prompt — segment 0 differs by construction, so two
+                // speakers are two conversations and comparing them would manufacture a
+                // `systemPromptChanged` on every rotation. Within one speaker the wire is
+                // append-only (`buildMeetingMessages`), so this chain measures something real: the
+                // discussion should stay cached from that speaker's previous turn onward.
+                //
+                // Built ONCE here and handed to the follow-up loop rather than recomputed there,
+                // so a turn and its tool follow-ups land on the same chain.
+                let meetingChainID =
+                    "meeting:\(tid):\(run.id):\(meeting.id.uuidString):\(speaker.baseID)"
+                _ = await prefixLedger.record(
+                    baseURL: speakerConfig.baseURLString,
+                    model: speakerConfig.modelName,
+                    owner: .chain(id: meetingChainID),
+                    messages: turnMessages,
+                    toolSchemaText: "")
+
                 let streamResult = try await MeetingStreamingService.streamParticipantResponse(
                     messages: turnMessages,
                     client: client,
@@ -214,7 +237,7 @@ extension LLMExecutionService {
                 // including its system prompt and artifact context) — never a
                 // rebuilt stack with a different system prompt.
                 let meetingStepKey = TaskStepKey(taskID: tid, stepID: stepID)
-                let (finalContent, allThinking, toolSummaries, _) =
+                let (finalContent, allThinking, toolSummaries) =
                     try await MeetingToolExecutor.executeTurnToolLoop(
                     initialResult: streamResult,
                     conversationSoFar: turnMessages,
@@ -233,6 +256,15 @@ extension LLMExecutionService {
                         } else if self.executionStates[meetingStepKey]?.currentToolBatchTask != nil {
                             self.executionStates[meetingStepKey]?.currentToolBatchTask = nil
                         }
+                    },
+                    recordPrefixChain: { [weak self] conversation in
+                        guard let self else { return }
+                        _ = await self.prefixLedger.record(
+                            baseURL: speakerConfig.baseURLString,
+                            model: speakerConfig.modelName,
+                            owner: .chain(id: meetingChainID),
+                            messages: conversation,
+                            toolSchemaText: "")
                     }
                 )
 

@@ -99,7 +99,7 @@ final class StepExecutionDelegationHistoryTests: XCTestCase {
     /// Pins the lifecycle contract that `clearDelegationFields` in
     /// `LLMExecutionService+DelegateToTeam.swift` exists to enforce: after a
     /// delegation reaches a terminal outcome, only the in-flight markers
-    /// (`activeDelegationChildID`, `delegationSession`) are cleared. The
+    /// (`activeDelegationChildID`) are cleared. The
     /// append-only history (`delegationChildIDs`) MUST stay intact so the
     /// team graph can render completed delegation layers below the active one.
     /// Without this pin, a future refactor could trivially clear the history
@@ -110,7 +110,6 @@ final class StepExecutionDelegationHistoryTests: XCTestCase {
             id: "role_a",
             role: .softwareEngineer,
             title: "Step",
-            delegationSession: "session-id-123",
             activeDelegationChildID: 42,
             delegationChildIDs: [10, 20, 42]
         )
@@ -118,8 +117,6 @@ final class StepExecutionDelegationHistoryTests: XCTestCase {
         // Mirror the exact mutations `clearDelegationFields` performs.
         step.clearActiveDelegation()
 
-        XCTAssertNil(step.delegationSession,
-                     "delegationSession must clear on terminal outcome (next delegation needs a fresh seeded chain)")
         XCTAssertNil(step.activeDelegationChildID,
                      "activeDelegationChildID must clear on terminal outcome (pauseRun checks this to identify mid-delegation steps)")
         XCTAssertEqual(step.delegationChildIDs, [10, 20, 42],

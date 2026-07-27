@@ -1523,4 +1523,169 @@ final class TeamEngineTests: XCTestCase {
         XCTAssertTrue(live.isCancelled,
                       "cancelRoleTasks must cancel the task, not just drop the reference")
     }
+
+    // MARK: - Role↔Step Reconciliation (restart-review bug)
+
+    /// Seeds a single-worker team whose step id matches the role id.
+    private func seedSingleWorker(
+        roleStatus: RoleExecutionStatus,
+        stepStatus: StepStatus,
+        acceptanceMode: AcceptanceMode = .finalOnly,
+        stepMessages: [StepMessage] = []
+    ) {
+        let supervisorRole = makeSupervisorRole(requiredArtifacts: ["Art A"])
+        let roleA = makeWorkerRole(
+            id: "a", name: "RoleA",
+            requiredArtifacts: ["Supervisor Task"],
+            producesArtifacts: ["Art A"]
+        )
+        var settings = TeamSettings.default
+        settings.defaultAcceptanceMode = acceptanceMode
+        let team = Team(
+            name: "Test", roles: [supervisorRole, roleA],
+            artifacts: [], settings: settings, graphLayout: TeamGraphLayout()
+        )
+        mockStore.activeTeam = team
+        mockStore.teamSettings = settings
+
+        let stepA = StepExecution(
+            id: "a", role: .softwareEngineer, title: "A",
+            status: stepStatus, messages: stepMessages,
+            artifacts: stepStatus == .done ? [Artifact(name: "Art A")] : []
+        )
+        let run = Run(
+            id: 0, steps: [stepA],
+            roleStatuses: ["supervisor-role": .done, "a": roleStatus]
+        )
+        mockStore.activeTask = NTMSTask(id: 0, title: "Test", supervisorTask: "Goal", runs: [run])
+        mockStore.producedArtifactNamesResult = stepStatus == .done
+            ? ["Supervisor Task", "Art A"]
+            : ["Supervisor Task"]
+        mockStore.stepStatusResults["a"] = stepStatus
+    }
+
+    /// The restart shape: a previous launch's recovery demoted the finished role to
+    /// `.idle`. Pre-fix the reconcile pass' `.working` gate skipped it and
+    /// `findReadyRoles` (which does NOT exclude `.idle`) RE-RAN the finished role —
+    /// flipping it back to `.working` and spawning a pointless step execution.
+    func testRunLoop_settlesIdleRoleWithDoneStep_withoutRerunning() async {
+        seedSingleWorker(roleStatus: .idle, stepStatus: .done)
+
+        let expectation = XCTestExpectation(description: "Engine completes")
+        sut.onStateChanged = { if $0 == .done { expectation.fulfill() } }
+
+        sut.start()
+        await fulfillment(of: [expectation], timeout: 2.0)
+
+        let aCalls = mockStore.updateRoleStatusCalls.filter { $0.roleID == "a" }
+        XCTAssertEqual(aCalls.map(\.status), [.done],
+                       "the finished role must be settled straight to .done")
+        XCTAssertFalse(aCalls.contains { $0.status == .working },
+                       "a finished role must never be flipped back to .working — that is the spurious re-run")
+        XCTAssertTrue(mockStore.runStepCalls.isEmpty,
+                      "no step should be re-executed for an already-.done step")
+    }
+
+    /// Same shape under `.afterEachRole`: the role must surface the Supervisor gate,
+    /// not silently complete.
+    func testRunLoop_settlesIdleRoleWithDoneStep_toNeedsAcceptance() async {
+        seedSingleWorker(roleStatus: .idle, stepStatus: .done, acceptanceMode: .afterEachRole)
+
+        let expectation = XCTestExpectation(description: "Engine needs acceptance")
+        sut.onStateChanged = { if $0 == .needsAcceptance { expectation.fulfill() } }
+
+        sut.start()
+        await fulfillment(of: [expectation], timeout: 2.0)
+
+        XCTAssertEqual(
+            mockStore.updateRoleStatusCalls.filter { $0.roleID == "a" }.map(\.status),
+            [.needsAcceptance]
+        )
+    }
+
+    /// `resumeRun` deliberately takes the `start()` branch after an app restart (the
+    /// freshly-created engine is `.pending`), so `start()` must reconcile exactly like
+    /// `resume()` does. Pre-fix only `resume()` did, and a `.working` role with a
+    /// `.paused` step spun the loop's waiting-on-working branch to the iteration cap.
+    func testStart_runsReconcileAfterPause_restartingPausedStep() async {
+        seedSingleWorker(
+            roleStatus: .working,
+            stepStatus: .paused,
+            stepMessages: [StepMessage(role: .assistant, content: "partial work")]
+        )
+
+        sut.start()
+        try? await Task.sleep(for: .milliseconds(300))
+
+        XCTAssertTrue(mockStore.runStepCalls.contains("a"),
+                      "start() must reconcile: a .working role with a .paused step is restarted")
+    }
+
+    /// A fresh run (no steps yet) must not be perturbed by the new reconcile-on-start.
+    func testStart_freshRunWithNoSteps_reconcileIsNoOp() async {
+        let supervisorRole = makeSupervisorRole(requiredArtifacts: ["Art A"])
+        let roleA = makeWorkerRole(id: "a", name: "RoleA", producesArtifacts: ["Art A"])
+        mockStore.activeTeam = makeTeam(roles: [supervisorRole, roleA])
+        mockStore.teamSettings = .default
+        let run = Run(id: 0, steps: [], roleStatuses: ["supervisor-role": .done, "a": .ready])
+        mockStore.activeTask = NTMSTask(id: 0, title: "Test", supervisorTask: "Goal", runs: [run])
+        mockStore.producedArtifactNamesResult = ["Supervisor Task"]
+        // Let startRoles succeed, so the only `.failed` write that could appear would be
+        // a reconciliation one (its step-creation failure path also writes `.failed`).
+        mockStore.findOrCreateStepResults["a"] = "a"
+
+        sut.start()
+        try? await Task.sleep(for: .milliseconds(200))
+        sut.stop()
+
+        // The only role-status write may come from startRoles (.working) — never a
+        // reconciler SETTLE, since the run carries no step to settle against.
+        let settled: Set<RoleExecutionStatus> = [.done, .needsAcceptance, .failed]
+        XCTAssertFalse(
+            mockStore.updateRoleStatusCalls.contains { $0.roleID == "a" && settled.contains($0.status) },
+            "reconcile must not settle a role whose step does not exist yet"
+        )
+    }
+
+    /// `reconcileAfterPause` never had a `.needsApproval` arm — the run loop did. Now
+    /// both share `RoleStepReconciler`, so a step parked at `.needsApproval` surfaces
+    /// the acceptance gate from either entry point.
+    func testReconcileAfterPause_needsApprovalStep_settlesNeedsAcceptance() async {
+        seedSingleWorker(roleStatus: .working, stepStatus: .needsApproval)
+
+        await sut.reconcileAfterPause()
+
+        XCTAssertEqual(
+            mockStore.updateRoleStatusCalls.filter { $0.roleID == "a" }.map(\.status),
+            [.needsAcceptance]
+        )
+    }
+
+    /// The RESTART arm stays `.working`-gated: restarting is an execution decision that
+    /// does not write `.working`, and `resumeRun`'s own recovery branch owns the
+    /// `.idle` + `.paused`-step shape. Firing here too would double-start it.
+    func testReconcileAfterPause_idleRoleWithPausedStep_doesNotRestart() async {
+        seedSingleWorker(
+            roleStatus: .idle,
+            stepStatus: .paused,
+            stepMessages: [StepMessage(role: .assistant, content: "partial work")]
+        )
+
+        await sut.reconcileAfterPause()
+
+        XCTAssertTrue(mockStore.runStepCalls.isEmpty,
+                      "an .idle role's paused step is resumeRun's job, not reconcileAfterPause's")
+        XCTAssertTrue(mockStore.updateRoleStatusCalls.filter { $0.roleID == "a" }.isEmpty,
+                      "a mid-flight step must not settle the role")
+    }
+
+    /// A `.revisionRequested` role legitimately sits next to a still-`.done` step until
+    /// `resetStepForRevision` lands. The widened gate must not erase the flag.
+    func testReconcileAfterPause_revisionRequestedRole_isUntouched() async {
+        seedSingleWorker(roleStatus: .revisionRequested, stepStatus: .done)
+
+        await sut.reconcileAfterPause()
+
+        XCTAssertTrue(mockStore.updateRoleStatusCalls.filter { $0.roleID == "a" }.isEmpty)
+    }
 }

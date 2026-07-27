@@ -163,6 +163,36 @@ final class RoleEditorMutationsTests: XCTestCase {
     /// generated-teams flag stays ON: both the whitelist removal AND the
     /// hierarchy clear must land in a single mutation, with no
     /// captured-snapshot lost-update.
+    func testApplyEdit_persistsLLMProviderOverride() {
+        let role = makeWorkerRole()
+        var team = makeTeam(roles: [role], reportsTo: [role.id: Self.supervisorID])
+
+        let state = makeState(for: role) {
+            $0.llmBaseURL = "http://127.0.0.1:11434"
+            $0.llmProviderOverride = .ollama
+        }
+
+        XCTAssertTrue(RoleEditorMutations.applyEdit(
+            to: &team, editorState: state, existingRoleID: role.id))
+        XCTAssertEqual(team.roles[0].llmOverride?.provider, .ollama,
+                       "Dropping provider from makeLLMOverride would compile (default param) and silently lose the pin")
+        XCTAssertEqual(team.roles[0].llmOverride?.baseURLString, "http://127.0.0.1:11434")
+    }
+
+    func testApplyEdit_providerOnlyOverride_persistsNonNil() {
+        let role = makeWorkerRole()
+        var team = makeTeam(roles: [role], reportsTo: [role.id: Self.supervisorID])
+
+        let state = makeState(for: role) {
+            $0.llmProviderOverride = .ollama
+        }
+
+        XCTAssertTrue(RoleEditorMutations.applyEdit(
+            to: &team, editorState: state, existingRoleID: role.id))
+        XCTAssertEqual(team.roles[0].llmOverride?.provider, .ollama,
+                       "A provider-only override is meaningful (\"this role's inherited URL speaks Ollama\") and must survive the empty-collapse")
+    }
+
     func testApplyEdit_uncheckingTeamFromWhitelist_persistsRemoval() {
         let role = makeWorkerRole(
             allowedDelegationTeamIDs: [Self.teamA_ID, Self.teamB_ID],

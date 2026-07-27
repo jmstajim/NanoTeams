@@ -154,7 +154,7 @@ enum FirstPromptRenderer {
         let messages = PromptBuilder.buildChatMessages(context: promptContext, tools: toolSchemas)
 
         // 7. Fuse into the actual NativeChatRequest via the production builder.
-        //    `session: nil` = first stateless call → system_prompt is NOT
+        //    Every call is stateless → system_prompt is NOT
         //    omitted, tool schema section IS appended.
         let llmConfig = LLMConfig(
             provider: .lmStudio,
@@ -165,8 +165,7 @@ enum FirstPromptRenderer {
         let wireRequest = NativeLMStudioClient.buildRequest(
             config: llmConfig,
             messages: messages,
-            tools: toolSchemas,
-            session: nil
+            tools: toolSchemas
         )
 
         // 8. Encode wire payload, wrap in `{wire, render_meta}` envelope, write

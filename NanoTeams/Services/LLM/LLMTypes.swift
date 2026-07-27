@@ -4,11 +4,15 @@ import Foundation
 
 nonisolated enum LLMProvider: String, Codable, Hashable, CaseIterable, Identifiable {
     case lmStudio
+    case ollama
 
     var id: String { rawValue }
 
     var displayName: String {
-        "LM Studio"
+        switch self {
+        case .lmStudio: "LM Studio"
+        case .ollama: "Ollama"
+        }
     }
 
     var defaultBaseURL: String {
@@ -17,19 +21,45 @@ nonisolated enum LLMProvider: String, Codable, Hashable, CaseIterable, Identifia
         // keeping a single canonical form avoids drift between what the
         // user sees, what Reset restores, and what the bearer token is
         // saved under.
-        "http://127.0.0.1:1234"
+        switch self {
+        case .lmStudio: "http://127.0.0.1:1234"
+        case .ollama: "http://127.0.0.1:11434"
+        }
     }
 
     var defaultModel: String {
-        "openai/gpt-oss-20b"
+        switch self {
+        case .lmStudio: "openai/gpt-oss-20b"
+        case .ollama: "gpt-oss:20b"
+        }
     }
 
     var supportsModelFetching: Bool {
         true
     }
 
-    var supportsStatefulSessions: Bool {
-        true
+    /// Whether the app manages model residency (explicit load/unload, the
+    /// `ChatModelEnsurer` ledger, reconcile sweeps) on this provider's server.
+    /// LM Studio requires it: explicit loads opt out of Auto-Evict, so the
+    /// app owns eviction. Ollama manages its own residency (`keep_alive`,
+    /// `OLLAMA_MAX_LOADED_MODELS`) and exposes no load/unload REST surface —
+    /// `switchChatModel` must not attempt an explicit load there (the 404
+    /// would surface as a spurious "couldn't load model" banner).
+    var managesModelResidency: Bool {
+        switch self {
+        case .lmStudio: true
+        case .ollama: false
+        }
+    }
+
+    /// Relative path probed by reachability checks (Test Connection, the
+    /// status-bar pill, per-role override preflight). A cheap GET that any
+    /// healthy server of this provider answers 2xx.
+    var reachabilityProbePath: String {
+        switch self {
+        case .lmStudio: "api/v1/models"
+        case .ollama: "api/tags"
+        }
     }
 }
 
@@ -48,99 +78,35 @@ nonisolated struct LLMConfig: Hashable {
     /// Streaming HTTP request timeout in seconds. `0` = no timeout (wait indefinitely).
     /// Minimum effective value is 1s; values below 1 other than 0 are clamped up.
     var requestTimeoutSeconds: Int
+    /// How long a stateless provider should keep the model — and therefore its KV
+    /// prefix cache — resident after a request. `nil` = don't send the key, let the
+    /// server decide.
+    ///
+    /// Only Ollama consumes this (`managesModelResidency == false`, so nothing in the
+    /// app loads or pins its models). Its default is 5 minutes of idle, after which the
+    /// model AND the cache are dropped — but a human answering an `ask_supervisor`
+    /// question routinely takes longer, and that is precisely when the replayed
+    /// conversation needs the cache to still be warm. Measured cost of a miss on this
+    /// project's models: ~7 s instead of ~80 ms at 13k tokens.
+    ///
+    /// LM Studio ignores it: the app manages that residency explicitly through
+    /// `ChatModelEnsurer` and its ownership ledger.
+    var keepAliveSeconds: Int?
 
     init(
         provider: LLMProvider = .lmStudio,
         baseURLString: String? = nil,
         modelName: String? = nil,
         temperature: Double? = nil,
-        requestTimeoutSeconds: Int? = nil
+        requestTimeoutSeconds: Int? = nil,
+        keepAliveSeconds: Int? = nil
     ) {
         self.provider = provider
         self.baseURLString = baseURLString ?? provider.defaultBaseURL
         self.modelName = modelName ?? provider.defaultModel
         self.temperature = temperature
         self.requestTimeoutSeconds = requestTimeoutSeconds ?? LLMConstants.defaultLLMRequestTimeoutSeconds
-    }
-}
-
-// MARK: - MessageRole
-
-nonisolated enum MessageRole: String, Codable, Hashable {
-    case system
-    case user
-    case assistant
-    case tool
-}
-
-// MARK: - ImageContent
-
-nonisolated struct ImageContent: Codable, Hashable {
-    var base64Data: String
-    var mimeType: String
-}
-
-// MARK: - ChatMessage
-
-nonisolated struct ChatMessage: Codable, Hashable {
-    var role: MessageRole
-    var content: String?
-    var toolCallID: String?
-    var toolCalls: [ChatToolCall]?
-    var isToolError: Bool?
-    var imageContent: [ImageContent]?
-
-    init(
-        role: MessageRole,
-        content: String? = nil,
-        toolCallID: String? = nil,
-        toolCalls: [ChatToolCall]? = nil,
-        isToolError: Bool? = nil,
-        imageContent: [ImageContent]? = nil
-    ) {
-        self.role = role
-        self.content = content
-        self.toolCallID = toolCallID
-        self.toolCalls = toolCalls
-        self.isToolError = isToolError
-        self.imageContent = imageContent
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case role, content
-        case toolCallID = "tool_call_id"
-        case toolCalls = "tool_calls"
-        case isToolError = "is_tool_error"
-        case imageContent = "image_content"
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        role = try container.decode(MessageRole.self, forKey: .role)
-        content = try container.decodeIfPresent(String.self, forKey: .content)
-        toolCallID = try container.decodeIfPresent(String.self, forKey: .toolCallID)
-        toolCalls = try container.decodeIfPresent([ChatToolCall].self, forKey: .toolCalls)
-        isToolError = try container.decodeIfPresent(Bool.self, forKey: .isToolError)
-        imageContent = try container.decodeIfPresent([ImageContent].self, forKey: .imageContent)
-    }
-}
-
-// MARK: - ChatToolCall
-
-nonisolated struct ChatToolCall: Codable, Hashable {
-    var id: String
-    var name: String
-    var argumentsJSON: String
-
-    init(id: String, name: String, argumentsJSON: String) {
-        self.id = id
-        self.name = name
-        self.argumentsJSON = argumentsJSON
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case id, name
-        case argumentsJSON = "arguments_json"
+        self.keepAliveSeconds = keepAliveSeconds
     }
 }
 
@@ -165,29 +131,38 @@ nonisolated struct StreamEvent: Hashable {
     var thinkingDelta: String
     var toolCallDeltas: [ToolCallDelta]
     var tokenUsage: TokenUsage?
-    var session: LLMSession?
     /// Prompt processing progress (0.0–1.0). Non-nil during prompt_processing phase.
     var processingProgress: Double?
+    /// What the server reported about how it processed this request's prompt. Same category as
+    /// `tokenUsage` — a terminal, server-authoritative diagnostic riding the event stream — and
+    /// emitted alongside it. Used to tell a prompt-prefix cache hit from a silent re-prefill.
+    var serverPrefill: ServerPrefillReport?
+    /// What THIS APP did to the model's residency for this request. The complement of
+    /// `serverPrefill` — see `ClientResidencyFacts`.
+    var clientResidency: ClientResidencyFacts?
 
     init(
         contentDelta: String = "",
         thinkingDelta: String = "",
         toolCallDeltas: [ToolCallDelta] = [],
         tokenUsage: TokenUsage? = nil,
-        session: LLMSession? = nil,
-        processingProgress: Double? = nil
+        processingProgress: Double? = nil,
+        serverPrefill: ServerPrefillReport? = nil,
+        clientResidency: ClientResidencyFacts? = nil
     ) {
         self.contentDelta = contentDelta
         self.thinkingDelta = thinkingDelta
         self.toolCallDeltas = toolCallDeltas
         self.tokenUsage = tokenUsage
-        self.session = session
         self.processingProgress = processingProgress
+        self.serverPrefill = serverPrefill
+        self.clientResidency = clientResidency
     }
 
     var isEmpty: Bool {
         contentDelta.isEmpty && thinkingDelta.isEmpty && toolCallDeltas.isEmpty
-            && tokenUsage == nil && session == nil && processingProgress == nil
+            && tokenUsage == nil && processingProgress == nil && serverPrefill == nil
+            && clientResidency == nil
     }
 
     struct ToolCallDelta: Hashable {
@@ -196,6 +171,85 @@ nonisolated struct StreamEvent: Hashable {
         var name: String?
         var argumentsDelta: String?
     }
+}
+
+// MARK: - ClientResidencyFacts
+
+/// What this app did to the model's residency while serving a request.
+///
+/// The two providers are exactly complementary, which is why this exists alongside
+/// `ServerPrefillReport` rather than inside it:
+///
+/// - **Ollama** manages its own residency and reports `load_duration`, so a reload is visible in
+///   the server's own numbers.
+/// - **LM Studio** reports `model_load_time_seconds` as exactly `0` on every measured row — all
+///   27 in `bench_baseline` — while its residency is managed by THIS APP through
+///   `ChatModelEnsurer` and the ownership ledger. The server cannot tell us it reloaded; we are
+///   the ones who reloaded it.
+///
+/// So `Cause.modelReloaded` has two evidence channels selected by who owns residency, and the
+/// one that was previously unreachable — a reload on the default provider, typically after a
+/// parked step let the reconciler reclaim the model — becomes observable. The facts are PUSHED
+/// per request rather than pulled from the ensurer: a pull would make `LLMExecutionService` hold
+/// a `ChatModelEnsurer`, whose only sane default is the process-global `.shared`, i.e. exactly
+/// the outward-resolving seam CLAUDE.md #49 forbids.
+///
+/// Known gap: an instance the app unloaded and a THIRD PARTY reloaded comes back as `.adopted`,
+/// which sets nothing here. The cache is cold and this reports nothing — the same blindness as
+/// before, not a regression.
+nonisolated struct ClientResidencyFacts: Hashable, Sendable {
+    /// The app performed an explicit load for this request (`EnsureOutcome.loaded`). Never true
+    /// for `.adopted` (already resident, cache intact) or `.skipped`.
+    var appLoadedModelForThisRequest: Bool
+    /// Wall-clock milliseconds that load took, measured by the app. Diagnostic only — the verdict
+    /// keys on the boolean, because "we loaded it" is categorical and needs no threshold, unlike
+    /// the server figure it complements.
+    var appModelLoadMs: Double?
+
+    init(appLoadedModelForThisRequest: Bool, appModelLoadMs: Double? = nil) {
+        self.appLoadedModelForThisRequest = appLoadedModelForThisRequest
+        self.appModelLoadMs = appModelLoadMs
+    }
+}
+
+// MARK: - ServerPrefillReport
+
+/// The server's own account of how it processed a request's prompt.
+///
+/// Every field is optional because neither provider promises any of them, and absence is never
+/// evidence of anything — a provider that reports nothing must produce no verdict rather than a
+/// guess.
+nonisolated struct ServerPrefillReport: Hashable {
+    /// Milliseconds the server says it spent loading the model, VERBATIM — a transport fact, not
+    /// a reload flag: `bench_baseline` records 20.6–25.1 ms on every warm Ollama request against
+    /// 2236.6 ms for the one real load. `PrefixCachePolicy.minimumLoadMsForReload` owns the
+    /// threshold, and keeping it out of here is what lets `NetworkLogger` record what the server
+    /// actually said — which is how that threshold gets re-derived from a real run.
+    /// LM Studio `model_load_time_seconds`, Ollama `load_duration`.
+    var modelLoadMs: Double?
+    /// Nanoseconds spent prefilling, decode excluded. Ollama `prompt_eval_duration` only.
+    var prefillNs: Double?
+    /// Tokens the server says it prefilled. Ollama `prompt_eval_count`, LM Studio `input_tokens`.
+    var promptTokens: Int?
+
+    init(modelLoadMs: Double? = nil, prefillNs: Double? = nil, promptTokens: Int? = nil) {
+        self.modelLoadMs = modelLoadMs
+        self.prefillNs = prefillNs
+        self.promptTokens = promptTokens
+    }
+
+    /// Nanoseconds per prefilled token — the scale-free form that can be compared against a warm
+    /// floor. `nil` unless BOTH halves are present and positive.
+    var nsPerToken: Double? {
+        guard let prefillNs, prefillNs > 0, let promptTokens, promptTokens > 0 else { return nil }
+        return prefillNs / Double(promptTokens)
+    }
+
+    /// True when the report carries no signal worth acting on. `promptTokens` deliberately does
+    /// NOT count: it is only the denominator for `nsPerToken`, it duplicates `TokenUsage`, and
+    /// every provider always sends it — so counting it would make the report non-empty on every
+    /// request while saying nothing about the cache.
+    var isEmpty: Bool { modelLoadMs == nil && prefillNs == nil }
 }
 
 // MARK: - TokenUsage
@@ -216,12 +270,6 @@ nonisolated struct TokenUsage: Codable, Hashable {
     }
 }
 
-// MARK: - LLMSession
-
-nonisolated struct LLMSession: Sendable, Hashable {
-    var responseID: String
-}
-
 // MARK: - LLMClientError
 
 nonisolated enum LLMClientError: LocalizedError, Equatable {
@@ -239,7 +287,7 @@ nonisolated enum LLMClientError: LocalizedError, Equatable {
             // raw empty string so onAppear-triggered preflights don't show
             // a useless `Invalid LLM base URL:` row.
             if s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                "Server address is empty. Enter the LM Studio URL above."
+                "Server address is empty. Enter the server URL in Settings → LLM."
             } else {
                 "Invalid LLM base URL: \(s)"
             }

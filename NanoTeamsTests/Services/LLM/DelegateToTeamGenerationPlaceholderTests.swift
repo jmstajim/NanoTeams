@@ -301,7 +301,6 @@ final class DelegateToTeamGenerationPlaceholderTests: XCTestCase {
             config _: LLMConfig,
             messages _: [ChatMessage],
             tools _: [ToolSchema],
-            session _: LLMSession?,
             logger _: NetworkLogger?,
             stepID _: String?,
             roleName _: String?
@@ -344,7 +343,6 @@ final class DelegateToTeamGenerationPlaceholderTests: XCTestCase {
             config _: LLMConfig,
             messages _: [ChatMessage],
             tools _: [ToolSchema],
-            session _: LLMSession?,
             logger _: NetworkLogger?,
             stepID _: String?,
             roleName _: String?

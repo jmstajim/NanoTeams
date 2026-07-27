@@ -15,7 +15,7 @@ nonisolated enum VisionAnalysisService {
         """
 
     /// Analyzes an image using the vision LLM model.
-    /// Each call creates a fresh chat (session: nil) — no persistent context between calls.
+    /// Each call creates a fresh chat — no persistent context between calls.
     static func analyze(
         prompt: String,
         imageBase64: String,
@@ -34,11 +34,13 @@ nonisolated enum VisionAnalysisService {
         ]
 
         var result = ""
+        // prefix-cache-owner: registered by the caller — `LLMExecutionService+Vision` and
+        // `+ComputerUse` note `.oneShot("vision")`. The most consequential interleaver on a
+        // default setup: a blank vision slot inherits the GLOBAL chat model.
         let stream = client.streamChat(
             config: config,
             messages: messages,
             tools: [],
-            session: nil,
             logger: logger,
             stepID: nil
         )

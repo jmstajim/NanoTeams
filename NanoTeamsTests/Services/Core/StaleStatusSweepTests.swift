@@ -55,15 +55,7 @@ final class StaleStatusSweepTests: NTMSOrchestratorTestBase {
 
     /// Simulates force-quit + relaunch: fresh orchestrator over the same folder.
     private func restartOrchestrator() {
-        let configuration = StoreConfiguration(storage: InMemoryConfigurationStorage())
-        configuration.searchIndexWatcherDebounceSeconds =
-            AppDefaults.searchIndexWatcherDebounceSecondsMin
-        sut = NTMSOrchestrator(
-            repository: NTMSRepository(),
-            configuration: configuration,
-            embeddingLifecycle: EmbeddingModelLifecycleService(client: embeddingClient),
-            searchEmbeddingClient: StubSearchEmbeddingClient()
-        )
+        sut = TestOrchestrator.make(embeddingClient: embeddingClient)
     }
 
     private func diskIndexStatus(_ taskID: Int, root: URL? = nil) -> TaskStatus? {
@@ -192,7 +184,6 @@ final class StaleStatusSweepTests: NTMSOrchestratorTestBase {
                 needsSupervisorInput: true,
                 supervisorQuestion: "Which DB?"
             )
-            step.llmSessionID = "resp_x"
             task.runs = [Run(id: 0, steps: [step], roleStatuses: ["worker": .working])]
         }
         _ = await sut.createTask(title: "B", supervisorTask: "b")!
@@ -440,7 +431,6 @@ final class StaleStatusSweepTests: NTMSOrchestratorTestBase {
                 needsSupervisorInput: true,
                 supervisorQuestion: "Which DB?"
             )
-            step.llmSessionID = "resp_q"
             task.runs = [Run(id: 0, steps: [step], roleStatuses: ["worker": .working])]
         }
         _ = await sut.createTask(title: "B", supervisorTask: "b")!
@@ -453,7 +443,6 @@ final class StaleStatusSweepTests: NTMSOrchestratorTestBase {
         XCTAssertEqual(onDisk?.status, .paused)
         XCTAssertEqual(onDisk?.needsSupervisorInput, true, "flag survives recovery")
         XCTAssertEqual(onDisk?.supervisorQuestion, "Which DB?", "question text survives recovery")
-        XCTAssertEqual(onDisk?.llmSessionID, "resp_q", "session survives for stateful continuation")
     }
 
     func testFolderSwitch_collidingTaskID_ghostNotWrittenIntoNewFolder() async {
@@ -856,7 +845,6 @@ final class StaleStatusSweepTests: NTMSOrchestratorTestBase {
                 needsSupervisorInput: true,
                 supervisorQuestion: "Parked — waiting for events."
             )
-            step.llmSessionID = "resp_park"
             task.runs = [Run(id: 0, steps: [step], roleStatuses: ["autovisor": .working])]
         }
         _ = await sut.createTask(title: "B", supervisorTask: "b")!

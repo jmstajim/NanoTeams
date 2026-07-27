@@ -14,10 +14,7 @@ final class PauseResumeDelegationCascadeTests: XCTestCase {
 
     private func makeOrchestrator() -> NTMSOrchestrator {
         let repo = NTMSRepository()
-        return NTMSOrchestrator(
-            repository: repo,
-            searchEmbeddingClient: StubSearchEmbeddingClient()
-        )
+        return TestOrchestrator.make(repository: repo)
     }
 
     // MARK: - Mid-Delegation Detection

@@ -52,15 +52,19 @@ final class RoleConsultationChatTests: XCTestCase {
                 LLMMessage(role: .user, content: "Question 2"),
             ]
         )
-        let messages = chat.messagesToSend(session: nil)
+        let messages = chat.messagesToSend()
         XCTAssertEqual(messages.count, 4)
         XCTAssertEqual(messages[0].role, .system)
         XCTAssertEqual(messages[3].content, "Question 2")
     }
 
-    // MARK: - messagesToSend — stateful
+    // MARK: - messagesToSend — always the full history
 
-    func testMessagesToSend_withSession_returnsOnlyNewMessages() {
+    /// Server-side response chains were removed: the chat's ENTIRE history rides
+    /// every call, including the turns already answered. A "send only what's new"
+    /// slice is exactly the shape that made the model wake with no memory of the
+    /// exchange after a provider switch.
+    func testMessagesToSend_afterAnAnsweredTurn_stillReturnsEverything() {
         let chat = RoleConsultationChat(
             id: "pm",
             messages: [
@@ -70,29 +74,16 @@ final class RoleConsultationChatTests: XCTestCase {
                 LLMMessage(role: .user, content: "Question 2"),
             ]
         )
-        let session = LLMSession(responseID: "resp-1")
-        let messages = chat.messagesToSend(session: session)
-        // Should return only messages after last assistant message
-        XCTAssertEqual(messages.count, 1)
-        XCTAssertEqual(messages[0].content, "Question 2")
-        XCTAssertEqual(messages[0].role, .user)
+        let messages = chat.messagesToSend()
+        XCTAssertEqual(messages.count, 4,
+                       "The whole chat is the request — no post-assistant slice")
+        XCTAssertEqual(messages[0].role, .system)
+        XCTAssertEqual(messages[2].content, "Answer 1",
+                       "The prior answer must still be visible to the model")
+        XCTAssertEqual(messages[3].content, "Question 2")
     }
 
-    func testMessagesToSend_withSession_noAssistantMessage_returnsAll() {
-        let chat = RoleConsultationChat(
-            id: "pm",
-            messages: [
-                LLMMessage(role: .system, content: "System prompt"),
-                LLMMessage(role: .user, content: "First question"),
-            ]
-        )
-        let session = LLMSession(responseID: "resp-1")
-        let messages = chat.messagesToSend(session: session)
-        // No assistant message found, return all
-        XCTAssertEqual(messages.count, 2)
-    }
-
-    func testMessagesToSend_withSession_assistantIsLast_returnsEmpty() {
+    func testMessagesToSend_assistantIsLast_stillReturnsEverything() {
         let chat = RoleConsultationChat(
             id: "pm",
             messages: [
@@ -100,16 +91,12 @@ final class RoleConsultationChatTests: XCTestCase {
                 LLMMessage(role: .assistant, content: "Final answer"),
             ]
         )
-        let session = LLMSession(responseID: "resp-1")
-        let messages = chat.messagesToSend(session: session)
-        // Assistant is the last message, nothing new after it
-        XCTAssertTrue(messages.isEmpty)
+        XCTAssertEqual(chat.messagesToSend().count, 2)
     }
 
     func testMessagesToSend_emptyChat_returnsEmpty() {
         let chat = RoleConsultationChat(id: "empty")
-        XCTAssertTrue(chat.messagesToSend(session: nil).isEmpty)
-        XCTAssertTrue(chat.messagesToSend(session: LLMSession(responseID: "r")).isEmpty)
+        XCTAssertTrue(chat.messagesToSend().isEmpty)
     }
 
     // MARK: - injectedArtifactIDs

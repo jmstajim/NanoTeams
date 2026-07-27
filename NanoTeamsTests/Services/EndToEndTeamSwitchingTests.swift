@@ -155,7 +155,7 @@ final class EndToEndTeamSwitchingTests: NTMSOrchestratorTestBase {
         await sut.mutateWorkFolder { proj in proj.setActiveTeam(targetID) }
 
         // Simulate restart
-        sut = NTMSOrchestrator(repository: NTMSRepository())
+        sut = TestOrchestrator.make()
         await sut.openWorkFolder(tempDir)
 
         XCTAssertEqual(sut.workFolder?.activeTeamID, targetID,

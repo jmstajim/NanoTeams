@@ -104,7 +104,7 @@ struct WatchtowerSetupSection: View {
             return Copy(
                 icon: "brain.head.profile",
                 title: "LLM",
-                description: "Connect to an LM Studio server and pick a model — every role uses it.",
+                description: "Connect to a local LLM server (LM Studio or Ollama) and pick a model — every role uses it.",
                 tint: Colors.accent,
                 tab: .llm
             )

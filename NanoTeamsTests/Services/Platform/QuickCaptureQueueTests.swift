@@ -282,7 +282,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     // MARK: - Terminal-state cleanup + user feedback
 
     func testTryFlush_dropsAllQueuedOnDone_andSurfacesInfoMessage() async {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
         sut.appendQueuedMessage(msg("a"), for: 1)
@@ -302,7 +302,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     /// dispatch `resumeRun`, preserve the queue (primary path drains it on the retried
     /// step's next iteration), no discard banner.
     func testTryFlush_failedEngineWithQueue_callsResumeRunAndPreservesQueue() async {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
         var resumed: [Int] = []
@@ -326,7 +326,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     func testTryFlush_failedEngine_butTaskClosed_dropsQueueAndDoesNotResume() async throws {
         let tmp = try makeTempWorkFolder()
         defer { try? FileManager.default.removeItem(at: tmp) }
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         await store.openWorkFolder(tmp)
         guard let taskID = await store.createTask(title: "t", supervisorTask: "g") else {
             return XCTFail("Could not create task")
@@ -353,7 +353,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     /// Per-task isolation across terminal states in one pass: a `.failed` task resumes
     /// (queue preserved) while a `.done` task discards — independently.
     func testTryFlush_twoTasks_failedResumesAndDoneDiscards() async {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
         var resumed: [Int] = []
@@ -374,7 +374,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     /// `.failed` uses the same in-flight dedup guard as `.paused`: two synchronous ticks
     /// collapse to one resumeRun while the first is in flight.
     func testTryFlush_failedEngine_inFlightGuard_dedupesResume() async {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
         var resumed: [Int] = []
@@ -393,7 +393,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     /// The user's actual recovery path: sending a message to a `.failed` task immediately
     /// wakes the run (queueChatMessage → tryFlush → resume), message stays queued.
     func testQueueChatMessage_failedEngine_immediatelyTriggersResume() async {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
         var resumed: [Int] = []
@@ -413,14 +413,14 @@ final class QuickCaptureQueueTests: XCTestCase {
     // MARK: - .done CHAT task — wake with a fresh startRun, never discard
 
     /// A chat-mode task at `.done` is an ended turn, not a finished pipeline
-    /// (`attemptAdvisoryAutoFinish` lands chat advisory steps there) — a queued
+    /// (`noteNonProductiveTurn` lands chat advisory steps there) — a queued
     /// message must START a fresh run (drained on iteration 1), not be discarded
     /// (the pre-fix bug: the Autovisor chat silently destroyed messages) and not
     /// `resumeRun` (which re-enters the all-terminal run and bounces back to `.done`).
     func testTryFlush_doneChatTask_startsRunAndPreservesQueue() async throws {
         let tmp = try makeTempWorkFolder()
         defer { try? FileManager.default.removeItem(at: tmp) }
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         await store.openWorkFolder(tmp)
         guard let taskID = await store.createTask(title: "chat", supervisorTask: "g") else {
             return XCTFail("Could not create task")
@@ -451,7 +451,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     func testTryFlush_doneChatTask_unloadedTask_usesSummaryFallback() async throws {
         let tmp = try makeTempWorkFolder()
         defer { try? FileManager.default.removeItem(at: tmp) }
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         await store.openWorkFolder(tmp)
         // makeActive: false → the task is indexed (summary carries isChatMode) but
         // NOT loaded, so the loaded-task branch of isChatModeTask returns nil.
@@ -481,7 +481,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     func testTryFlush_doneChatTask_closed_dropsQueueAndDoesNotStart() async throws {
         let tmp = try makeTempWorkFolder()
         defer { try? FileManager.default.removeItem(at: tmp) }
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         await store.openWorkFolder(tmp)
         guard let taskID = await store.createTask(title: "chat", supervisorTask: "g") else {
             return XCTFail("Could not create task")
@@ -506,7 +506,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     func testTryFlush_doneChatTask_inFlightGuard_dedupesStart() async throws {
         let tmp = try makeTempWorkFolder()
         defer { try? FileManager.default.removeItem(at: tmp) }
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         await store.openWorkFolder(tmp)
         guard let taskID = await store.createTask(title: "chat", supervisorTask: "g") else {
             return XCTFail("Could not create task")
@@ -533,7 +533,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     func testTryFlush_doneChatTask_fruitlessStart_secondTickDiscards() async throws {
         let tmp = try makeTempWorkFolder()
         defer { try? FileManager.default.removeItem(at: tmp) }
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         await store.openWorkFolder(tmp)
         guard let taskID = await store.createTask(title: "chat", supervisorTask: "g") else {
             return XCTFail("Could not create task")
@@ -564,7 +564,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     func testTryFlush_doneNonChatLoadedTask_discards() async throws {
         let tmp = try makeTempWorkFolder()
         defer { try? FileManager.default.removeItem(at: tmp) }
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         await store.openWorkFolder(tmp)
         guard let faangID = store.snapshot?.workFolder.teams.first(where: { !$0.isChatMode })?.id,
               let taskID = await store.createTask(
@@ -594,7 +594,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     func testTryFlush_doneChatTask_brandNewMessageAfterPriorAttempt_getsFreshStart() async throws {
         let tmp = try makeTempWorkFolder()
         defer { try? FileManager.default.removeItem(at: tmp) }
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         await store.openWorkFolder(tmp)
         guard let taskID = await store.createTask(title: "chat", supervisorTask: "g") else {
             return XCTFail("Could not create task")
@@ -625,7 +625,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     func testTryFlush_failedThenDoneChat_startGetsItsOwnAttempt() async throws {
         let tmp = try makeTempWorkFolder()
         defer { try? FileManager.default.removeItem(at: tmp) }
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         await store.openWorkFolder(tmp)
         guard let taskID = await store.createTask(title: "chat", supervisorTask: "g") else {
             return XCTFail("Could not create task")
@@ -665,7 +665,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     func testPerformStartWake_closedTask_discardsQueue_neverReopens() async throws {
         let tmp = try makeTempWorkFolder()
         defer { try? FileManager.default.removeItem(at: tmp) }
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         await store.openWorkFolder(tmp)
         guard let taskID = await store.createTask(title: "chat", supervisorTask: "g") else {
             return XCTFail("Could not create task")
@@ -693,7 +693,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     func testPerformStartWake_loadFailure_keepsQueue_surfacesError() async throws {
         let tmp = try makeTempWorkFolder()
         defer { try? FileManager.default.removeItem(at: tmp) }
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         await store.openWorkFolder(tmp)
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
@@ -716,7 +716,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     func testTryFlush_doneChatTask_loadFailure_unstampsAttempt_nextTickRetries() async throws {
         let tmp = try makeTempWorkFolder()
         defer { try? FileManager.default.removeItem(at: tmp) }
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         await store.openWorkFolder(tmp)
         guard let taskID = await store.createTask(
             title: "chat", supervisorTask: "g", makeActive: false
@@ -757,7 +757,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     func testPerformStartWake_unloadedClosedChatTask_discardsAfterLoad() async throws {
         let tmp = try makeTempWorkFolder()
         defer { try? FileManager.default.removeItem(at: tmp) }
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         await store.openWorkFolder(tmp)
         guard let taskID = await store.createTask(
             title: "chat", supervisorTask: "g", makeActive: false
@@ -792,7 +792,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     func testTryFlush_doneChatTask_giveUpDeferredWhileWakeInFlight() async throws {
         let tmp = try makeTempWorkFolder()
         defer { try? FileManager.default.removeItem(at: tmp) }
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         await store.openWorkFolder(tmp)
         guard let taskID = await store.createTask(title: "chat", supervisorTask: "g") else {
             return XCTFail("Could not create task")
@@ -826,7 +826,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     func testIsChatModeTask_truthTable() async throws {
         let tmp = try makeTempWorkFolder()
         defer { try? FileManager.default.removeItem(at: tmp) }
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         await store.openWorkFolder(tmp)
         guard let faangID = store.snapshot?.workFolder.teams.first(where: { !$0.isChatMode })?.id,
               let chatLoaded = await store.createTask(title: "c1", supervisorTask: "g"),
@@ -852,7 +852,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     /// is a detached Task — at `queueChatMessage`'s return the message must still be
     /// queued (`true`), because "still queued" is exactly "not synchronously discarded".
     func testQueueChatMessage_needsSupervisorInput_returnsTrue_queueIntactAtReturn() async {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
         store.engineState[3] = .needsSupervisorInput
@@ -873,7 +873,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     /// NOT overwrite the discard banner with a "Message queued" lie — the pre-fix
     /// composer showed "resuming the task" while the message was already destroyed.
     func testQueueChatMessage_doneNonChat_returnsFalse_keepsDiscardBanner() async {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
         store.engineState[1] = .done  // no work folder → chat lookup falls back to false
@@ -893,7 +893,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     func testQueueChatMessage_doneChatTask_returnsTrue_andStarts() async throws {
         let tmp = try makeTempWorkFolder()
         defer { try? FileManager.default.removeItem(at: tmp) }
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         await store.openWorkFolder(tmp)
         guard let taskID = await store.createTask(title: "chat", supervisorTask: "g") else {
             return XCTFail("Could not create task")
@@ -918,7 +918,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     /// completed and the engine is STILL `.failed`, the queue is discarded honestly
     /// instead of re-resuming forever.
     func testTryFlush_failedEngine_resumeDidNotRevive_secondTickDiscardsQueue() async {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
         var resumed: [Int] = []
@@ -946,7 +946,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     /// A new message via `queueChatMessage` has a not-yet-attempted ID, so a fresh send to
     /// a still-`.failed` task attempts a resume rather than immediately discarding.
     func testQueueChatMessage_newMessage_grantsFreshResumeAttempt() async {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
         var resumed: [Int] = []
@@ -975,7 +975,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     /// wake-loops (resume → .running → .failed → resume …) forever in production, even
     /// though a `resumeRunForTesting`-based test (no real engine, no flicker) would pass.
     func testTryFlush_failedEngine_transientRunningDoesNotDefeatGiveUp() async {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
         var resumed: [Int] = []
@@ -1009,7 +1009,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     /// `appendQueuedMessage` directly — must not be silently discarded by a stale per-task
     /// give-up marker.
     func testTryFlush_failedEngine_brandNewMessageAfterPriorAttempt_getsFreshAttempt() async {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
         var resumed: [Int] = []
@@ -1041,7 +1041,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     /// give-up. Documents intentional behavior — an undeliverable targeted message is
     /// honestly discarded rather than held forever on a dead task.
     func testTryFlush_failedEngine_targetedMessage_participatesInGiveUp() async {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
         var resumed: [Int] = []
@@ -1070,7 +1070,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     /// longer have queued messages (deleted/consumed). `tryFlushQueuedMessages` prunes the
     /// map to live-queue tasks so a removed task's entry doesn't accumulate.
     func testTryFlush_prunesAttemptedEntriesForTasksWithoutQueuedMessages() async {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
         controller.resumeRunForTesting = { _ in }
@@ -1093,7 +1093,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     }
 
     func testTryFlush_preservesAllQueuedOnRunning() async {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
         sut.appendQueuedMessage(msg("a"), for: 1)
@@ -1107,7 +1107,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     }
 
     func testTryFlush_perTaskIsolation_onlyTargetedTaskIsAffected() async {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
         sut.appendQueuedMessage(msg("terminal-a"), for: 1)
@@ -1130,7 +1130,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     /// continue` swallows the wake-up signal and the primary path never fires
     /// (no tool-loop is running while the step is paused).
     func testTryFlush_pausedEngineWithQueue_callsResumeRunAndPreservesQueue() async {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
         var resumed: [Int] = []
@@ -1151,7 +1151,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     /// Engine state nil (e.g. immediately after app restart, before
     /// `syncEngineStateFromRun` runs) must also wake the run.
     func testTryFlush_noEngineEntry_withQueue_callsResumeRun() async {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
         var resumed: [Int] = []
@@ -1173,7 +1173,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     func testTryFlush_pausedEngine_butTaskClosed_dropsQueueAndDoesNotResume() async throws {
         let tmp = try makeTempWorkFolder()
         defer { try? FileManager.default.removeItem(at: tmp) }
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         await store.openWorkFolder(tmp)
         guard let taskID = await store.createTask(title: "t", supervisorTask: "g") else {
             return XCTFail("Could not create task")
@@ -1203,7 +1203,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     /// times before the first resumeRun finishes) must dedupe — exactly one
     /// `resumeRun` per (taskID, in-flight cycle).
     func testTryFlush_pausedEngine_inFlightGuard_dedupesResume() async {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
         var resumed: [Int] = []
@@ -1227,7 +1227,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     /// the wake-up — without this, the message hangs until some other event
     /// (engineState change) fires onChange. Caught the original user-reported bug.
     func testQueueChatMessage_pausedEngine_immediatelyTriggersResume() async {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
         var resumed: [Int] = []
@@ -1250,7 +1250,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     /// Counterpart: queueing on a `.running` engine must NOT call resumeRun
     /// (the primary path will pick it up on the next tool-loop iteration).
     func testQueueChatMessage_runningEngine_doesNotTriggerResume() async {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
         var resumed: [Int] = []
@@ -1276,7 +1276,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     func testRemoveTask_clearsQueuedMessages() async throws {
         let tmp = try makeTempWorkFolder()
         defer { try? FileManager.default.removeItem(at: tmp) }
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         store.quickCaptureFormState = sut
         await store.openWorkFolder(tmp)
         guard let taskID = await store.createTask(title: "t", supervisorTask: "g") else {
@@ -1298,7 +1298,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     /// and after the simulated resume completes a fresh wake-up tick can dispatch
     /// another resume if needed.
     func testScenario_burstOfMessagesAfterRestart_singleResumeFIFOPreserved() async {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
         var resumed: [Int] = []
@@ -1333,7 +1333,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     /// sends one message to each. Each task's resume must fire independently —
     /// the in-flight guard is per-task, not global.
     func testScenario_twoPausedTasks_eachGetsIndependentResume() async {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
         var resumed: [Int] = []
@@ -1356,7 +1356,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     /// historically only fired when an unrelated `engineState` onChange happened later;
     /// the post-enqueue `tryFlush` ensures it fires immediately.
     func testScenario_queueWhileSupervisorAwaiting_immediatelyDispatchesBackstop() async {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
         var resumed: [Int] = []
@@ -1380,7 +1380,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     func testScenario_userClosesTaskWithQueuedMessages_messagesDiscardedWithFeedback() async throws {
         let tmp = try makeTempWorkFolder()
         defer { try? FileManager.default.removeItem(at: tmp) }
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         store.quickCaptureFormState = sut
         await store.openWorkFolder(tmp)
         guard let taskID = await store.createTask(title: "t", supervisorTask: "g") else {
@@ -1415,7 +1415,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     /// completed an iteration and is awaiting the next user input in chat mode).
     /// A second user message must be deliverable — the in-flight guard must clear.
     func testScenario_resumeCompletes_thenSecondMessageCanResumeAgain() async {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
         var resumed: [Int] = []
@@ -1439,7 +1439,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     /// task right after restart, before `syncEngineStateFromRun` ran). Messages
     /// queued in this window must still wake the run.
     func testScenario_freshAfterRestart_noEngineEntryYet_queueStillTriggersResume() async {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
         var resumed: [Int] = []
@@ -1455,7 +1455,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     /// Scenario: Queue is empty. Wake-up branches must not fire spurious
     /// resumeRun calls when there's nothing to deliver.
     func testScenario_emptyQueue_neverDispatchesResumeRegardlessOfState() async {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
         var resumed: [Int] = []
@@ -1474,7 +1474,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     /// another is running (with queue). Only the paused one should be woken;
     /// the running one's queue is owned by the primary path on its next iter.
     func testScenario_mixedStates_onlyPausedTriggersResume() async {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
         var resumed: [Int] = []
@@ -1644,7 +1644,7 @@ final class QuickCaptureQueueTests: XCTestCase {
     }
 
     func testHandleEngineStateChanged_drivesFlush() async {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = TestOrchestrator.make()
         let controller = QuickCaptureController(formState: sut)
         controller.store = store
         sut.appendQueuedMessage(msg("drop-me"), for: 1)

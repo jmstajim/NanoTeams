@@ -771,11 +771,12 @@ final class ExploratorySearchUserScenarioTests: NTMSOrchestratorTestBase {
 
     /// User path: chat-mode advisory role under autonomous supervisor mode
     /// completes its work, the auto-supervisor service answers any
-    /// `ask_supervisor` calls, and after 3 consecutive non-productive turns
-    /// the role auto-finishes. End-to-end version of C2 + I6.
-    func testUserPath_advisoryRole_chatMode_autonomous_finishesAfterThreeNonProductiveTurns() async {
+    /// `ask_supervisor` calls, and after `LLMConstants.maxNonProductiveTurns`
+    /// consecutive non-productive turns the role auto-finishes. End-to-end
+    /// version of C2 + I6.
+    func testUserPath_advisoryRole_chatMode_autonomous_finishesAtTheNoToolCap() async {
         // This test exercises the LLM execution path directly via the public
-        // attemptAdvisoryAutoFinish helper, avoiding the streaming pipeline
+        // noteNonProductiveTurn helper, avoiding the streaming pipeline
         // (which would need an LM Studio server).
         let svc = LLMExecutionService(repository: NTMSRepository())
         let mock = MockLLMExecutionDelegate()
@@ -818,16 +819,16 @@ final class ExploratorySearchUserScenarioTests: NTMSOrchestratorTestBase {
         mock.taskToMutate = task
         svc._testRegisterStepTask(stepID: step.id, taskID: task.id)
 
-        // 3 non-productive turns:
-        //   Turns 1, 2: counter advances, no completion.
-        //   Turn 3: threshold trips, step + role both .done.
-        for i in 1...2 {
-            let stop = await svc.attemptAdvisoryAutoFinish(stepID: step.id, taskID: task.id, roleDefinition: role)
+        // `maxNonProductiveTurns` non-productive turns:
+        //   Every turn below the cap: counter advances, no completion.
+        //   The capth turn: threshold trips, step + role both .done.
+        for i in 1...(LLMConstants.maxNonProductiveTurns - 1) {
+            let stop = await svc.noteNonProductiveTurn(stepID: step.id, taskID: task.id, roleDefinition: role)
             XCTAssertNil(stop, "Turn \(i) below threshold — expected nil, got \(String(describing: stop))")
         }
-        let finalStop = await svc.attemptAdvisoryAutoFinish(stepID: step.id, taskID: task.id, roleDefinition: role)
+        let finalStop = await svc.noteNonProductiveTurn(stepID: step.id, taskID: task.id, roleDefinition: role)
         if case .completed? = finalStop { /* ok */ } else {
-            XCTFail("3rd turn should auto-finish chat-mode advisory role, got \(String(describing: finalStop))")
+            XCTFail("Turn \(LLMConstants.maxNonProductiveTurns) should auto-finish chat-mode advisory role, got \(String(describing: finalStop))")
         }
 
         // End-state: step .done, role .done — this is what allows the engine's

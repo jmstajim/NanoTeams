@@ -11,14 +11,19 @@ import XCTest
 /// emitting plain-text confirmations — `handleNoToolCalls` keeps re-pinging it because
 /// advisory roles have no `producesArtifacts` to self-terminate on.
 ///
-/// Fix: in `handleNoToolCalls`, after 3 consecutive no-tool-call turns by an advisory
-/// role under `supervisorMode == .autonomous`, write step.done + role.done atomically
-/// and return `.completed`. The atomic role.done write is essential — bypassing
-/// `handleRoleCompleted` avoids a per-role gating mode (e.g. `.afterEachRole`, the
-/// `TeamSettings.default`) routing the role to `.needsAcceptance`, which would otherwise
-/// deadlock the engine into `.failed` in chat mode (the engine has no `.needsAcceptance`
-/// exit path for chat teams).
-/// Manual mode is untouched — the gate explicitly checks `team.settings.supervisorMode`.
+/// Fix: `noteNonProductiveTurn` counts every non-productive turn — for EVERY role — and
+/// at `LLMConstants.maxNonProductiveTurns` takes a role-shaped terminal. For an advisory
+/// role in a chat-mode team under `supervisorMode == .autonomous` that terminal writes
+/// step.done + role.done atomically and returns `.completed`. The atomic role.done write
+/// is essential — bypassing `handleRoleCompleted` avoids a per-role gating mode
+/// (e.g. `.afterEachRole`, the `TeamSettings.default`) routing the role to
+/// `.needsAcceptance`, which would otherwise deadlock the engine into `.failed` in chat
+/// mode (the engine has no `.needsAcceptance` exit path for chat teams).
+///
+/// Every other shape — the Autovisor manager (parks), a producing role, manual supervisor
+/// mode, a non-chat advisory role, an unresolved role definition — takes its own terminal
+/// rather than none. Those five used to bypass the counter entirely and loop forever;
+/// each now has a test below.
 @MainActor
 final class AdvisoryAutoFinishTests: XCTestCase {
     private var service: LLMExecutionService!
@@ -89,7 +94,15 @@ final class AdvisoryAutoFinishTests: XCTestCase {
     /// Attaches a generated team to `task` with the given supervisor mode. `resolveTeam`
     /// prefers `task.generatedTeam`, so this is the lightest way to drive the gate
     /// without populating `delegate.snapshot.workFolder`.
-    private func attachTeam(supervisorMode: SupervisorMode, role: TeamRoleDefinition) {
+    ///
+    /// `templateID` selects the TERMINAL: `AutovisorConstants.teamTemplateID` makes
+    /// `isAutovisorStep` true (it keys on the resolved team's templateID), which routes
+    /// the backstop to the park instead of the `.done` finish.
+    private func attachTeam(
+        supervisorMode: SupervisorMode,
+        role: TeamRoleDefinition,
+        templateID: String? = nil
+    ) {
         var settings = TeamSettings()
         settings.supervisorMode = supervisorMode
         let supervisor = TeamRoleDefinition(
@@ -103,20 +116,45 @@ final class AdvisoryAutoFinishTests: XCTestCase {
             systemRoleID: "supervisor"
         )
         let team = Team(
-            id: "t", name: "T", roles: [supervisor, role], artifacts: [],
+            id: "t", name: "T", templateID: templateID,
+            roles: [supervisor, role], artifacts: [],
             settings: settings, graphLayout: TeamGraphLayout()
         )
         mockDelegate.taskToMutate?.adoptGeneratedTeam(team)
     }
 
+    /// Drives the backstop `n` times and returns the last stop.
+    ///
+    /// Each turn gets a FRESH empty `conversationMessages`, so `detectMessageLoop` sees
+    /// `.noLoop` and the generic-nudge path is exercised in isolation. The
+    /// `.repetitiveNonTool` path is covered separately by
+    /// `testRepetitiveIdenticalTurns_stillReachTheCap`, which shares one conversation —
+    /// both now feed the same counter, which is the point of making it shape-independent.
+    @discardableResult
+    private func runNonProductiveTurns(_ n: Int, role: TeamRoleDefinition) async -> LLMStepStop {
+        var last: LLMStepStop = .continueLoop
+        for _ in 1...n {
+            var messages: [ChatMessage] = []
+            last = await service._testHandleNoToolCalls(
+                stepID: stepID,
+                assistantContent: "All tasks completed.",
+                sawHarmonyMarker: false,
+                task: mockDelegate.taskToMutate!,
+                roleDefinition: role,
+                conversationMessages: &messages
+            )
+        }
+        return last
+    }
+
     // MARK: - Auto-Finish (positive path)
 
-    func testAdvisoryRole_autonomousMode_finishesAfter3ConsecutiveNoToolTurns() async {
+    func testAdvisoryRole_autonomousMode_finishesAtTheCap() async {
         let role = makeAdvisoryRole()
         attachTeam(supervisorMode: .autonomous, role: role)
 
-        // First 2 turns: counter increments, generic nudge fires, .continueLoop.
-        for i in 1...2 {
+        // Every turn below the cap: counter increments, generic nudge fires, .continueLoop.
+        for i in 1...(LLMConstants.maxNonProductiveTurns - 1) {
             var messages: [ChatMessage] = []
             let stop = await service._testHandleNoToolCalls(
                 stepID: stepID,
@@ -130,11 +168,11 @@ final class AdvisoryAutoFinishTests: XCTestCase {
                 XCTFail("Turn \(i): expected .continueLoop, got \(stop)")
                 return
             }
-            XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), i,
+            XCTAssertEqual(service._testNonProductiveTurnCounter(stepID: stepID, taskID: task.id), i,
                            "Turn \(i): counter should equal turn number")
         }
 
-        // 3rd turn: counter hits threshold, returns .completed.
+        // Final turn: counter hits threshold, returns .completed.
         var messages: [ChatMessage] = []
         let stop = await service._testHandleNoToolCalls(
             stepID: stepID,
@@ -145,22 +183,112 @@ final class AdvisoryAutoFinishTests: XCTestCase {
             conversationMessages: &messages
         )
         guard case .completed = stop else {
-            XCTFail("3rd turn: expected .completed (auto-finish), got \(stop)")
+            XCTFail("Turn \(LLMConstants.maxNonProductiveTurns): expected .completed (auto-finish), got \(stop)")
             return
         }
-        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), 0,
+        XCTAssertEqual(service._testNonProductiveTurnCounter(stepID: stepID, taskID: task.id), 0,
                        "Counter must reset after auto-finish so a re-entry starts clean")
+    }
+
+    // MARK: - Autovisor manager: parks, never finishes
+
+    /// The reported defect: the manager's review pass ended with "Advisory role
+    /// auto-finished after N consecutive turns without productive tool calls" and its
+    /// role written `.done`. That bypasses the manager's designed terminal — the idle
+    /// park — and costs the same-conversation continuation, the idle sidebar state, and
+    /// the recurrence/event supersede protections. It must PARK instead.
+    func testAutovisorManager_atTheCap_parksInsteadOfFinishing() async {
+        let role = makeAdvisoryRole()
+        attachTeam(supervisorMode: .autonomous, role: role,
+                   templateID: AutovisorConstants.teamTemplateID)
+
+        let stop = await runNonProductiveTurns(LLMConstants.maxNonProductiveTurns, role: role)
+
+        guard case .continueLoop = stop else {
+            return XCTFail("Manager must hand off to the loop-top park, got \(stop)")
+        }
+        XCTAssertTrue(
+            service._testParkForEventsRequested(stepID: stepID, taskID: task.id),
+            "The park flag is the handoff — without it the step just loops again")
+        XCTAssertEqual(service._testNonProductiveTurnCounter(stepID: stepID, taskID: task.id), 0,
+                       "Counter must reset so a re-entry starts clean")
+
+        // The whole point: the role is NOT terminal, so the engine does not take its
+        // chat-mode `.done` arm and the manager task stays alive.
+        let run = mockDelegate.taskToMutate!.runs.last!
+        XCTAssertNotEqual(run.roleStatuses[role.id], .done,
+                          "Parking must not write the role terminal")
+        XCTAssertNotEqual(run.steps.first(where: { $0.id == stepID })?.status, .done,
+                          "Parking must not write the step terminal")
+    }
+
+    /// The park must be DISTINGUISHABLE from a healthy `wait_for_events` idle:
+    /// `taskHasIdleParkStep` matches `idleParkQuestion` verbatim and the sidebar gates
+    /// the manager's attention badge on `!isIdleParked`, so reusing that text would make
+    /// a manager that stopped driving its loop look exactly like one resting normally.
+    func testAutovisorManager_parkCarriesDiagnostic_notTheIdleParkText() async {
+        let role = makeAdvisoryRole()
+        attachTeam(supervisorMode: .autonomous, role: role,
+                   templateID: AutovisorConstants.teamTemplateID)
+
+        await runNonProductiveTurns(LLMConstants.maxNonProductiveTurns, role: role)
+
+        let question = service._testParkQuestionOverride(stepID: stepID, taskID: task.id)
+        XCTAssertNotNil(question, "The park must carry its own text, not fall back to idle")
+        XCTAssertNotEqual(question, AutovisorConstants.idleParkQuestion,
+                          "A malfunctioning pass must not read as a healthy idle")
+        XCTAssertEqual(
+            question,
+            LLMExecutionService.noToolParkQuestion(turns: LLMConstants.maxNonProductiveTurns))
+    }
+
+    /// Every turn below the cap still nudges — the manager gets the same chances to
+    /// recover as any other advisory role before the backstop fires.
+    func testAutovisorManager_belowThreshold_nudgesWithoutParking() async {
+        let role = makeAdvisoryRole()
+        attachTeam(supervisorMode: .autonomous, role: role,
+                   templateID: AutovisorConstants.teamTemplateID)
+
+        for i in 1...(LLMConstants.maxNonProductiveTurns - 1) {
+            let stop = await runNonProductiveTurns(1, role: role)
+            guard case .continueLoop = stop else {
+                return XCTFail("Turn \(i): expected .continueLoop, got \(stop)")
+            }
+            XCTAssertFalse(
+                service._testParkForEventsRequested(stepID: stepID, taskID: task.id),
+                "Turn \(i): must not park before the cap")
+            XCTAssertEqual(service._testNonProductiveTurnCounter(stepID: stepID, taskID: task.id), i)
+        }
+    }
+
+    /// The finish arm must survive: an ORDINARY chat advisory role (Coding Assistant,
+    /// Personal Assistant) still terminates `.done`. Only the manager parks.
+    func testNonManagerChatAdvisory_stillFinishesDone_andDoesNotPark() async {
+        let role = makeAdvisoryRole()
+        attachTeam(supervisorMode: .autonomous, role: role) // no templateID → not the manager
+
+        let stop = await runNonProductiveTurns(LLMConstants.maxNonProductiveTurns, role: role)
+
+        guard case .completed = stop else {
+            return XCTFail("Non-manager chat advisory must still auto-finish, got \(stop)")
+        }
+        XCTAssertFalse(
+            service._testParkForEventsRequested(stepID: stepID, taskID: task.id),
+            "Only the manager parks")
+        XCTAssertEqual(mockDelegate.taskToMutate!.runs.last!.roleStatuses[role.id], .done)
     }
 
     // MARK: - Negative gates
 
-    func testAdvisoryRole_manualMode_doesNotAutoFinish() async {
-        // Default supervisorMode is .manual — interactive UI default. Even after 10
-        // no-tool-call turns the role keeps getting nudged, never auto-finishes.
+    func testAdvisoryRole_manualMode_neverAutoFinishes_butEscalatesAtTheCap() async {
+        // Manual mode must never auto-finish — but "never terminate" was a hole, not a
+        // feature: the guard used to fail before the counter, so a manual-mode role
+        // nudged forever with nothing watching. It now escalates to the human who is,
+        // by definition of manual mode, there to answer.
         let role = makeAdvisoryRole()
         attachTeam(supervisorMode: .manual, role: role)
 
-        for _ in 1...10 {
+        for i in 1...(LLMConstants.maxNonProductiveTurns - 1) {
             var messages: [ChatMessage] = []
             let stop = await service._testHandleNoToolCalls(
                 stepID: stepID,
@@ -171,22 +299,40 @@ final class AdvisoryAutoFinishTests: XCTestCase {
                 conversationMessages: &messages
             )
             guard case .continueLoop = stop else {
-                XCTFail("Manual mode must never auto-finish, got \(stop)")
+                XCTFail("Turn \(i): expected a nudge below the cap, got \(stop)")
                 return
             }
         }
-        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), 0,
-                       "Counter should never increment in manual mode")
+
+        var messages: [ChatMessage] = []
+        let stop = await service._testHandleNoToolCalls(
+            stepID: stepID, assistantContent: "Anything else?", sawHarmonyMarker: false,
+            task: mockDelegate.taskToMutate!, roleDefinition: role,
+            conversationMessages: &messages
+        )
+        guard case .needsSupervisorInput = stop else {
+            XCTFail("Manual mode must escalate at the cap, not finish or loop; got \(stop)")
+            return
+        }
+        XCTAssertFalse(
+            service._testParkForEventsRequested(stepID: stepID, taskID: task.id),
+            "Only the manager parks")
+        XCTAssertNotEqual(
+            mockDelegate.taskToMutate!.runs.last!.roleStatuses[role.id], .done,
+            "Escalation must never force a role done — the human decides")
     }
 
-    func testProducingRole_autonomousMode_doesNotAutoFinish() async {
-        // Producing roles already have a self-terminate path (artifact completeness).
-        // The advisory branch must not steal them — they should still get the
-        // "Missing deliverables" nudge.
+    func testProducingRole_autonomousMode_neverAutoFinishes_butEscalatesAtTheCap() async {
+        // Producing roles have their own self-terminate path (artifact completeness), and
+        // this branch must not steal it — below the cap they keep getting the "Missing
+        // deliverables" nudge. But they used to return above the counter entirely, so a
+        // producing role that never submits anything looped forever. It now escalates.
+        // Never `.done`: forcing that would mark the role complete with no deliverable and
+        // strand every downstream role waiting on the artifact.
         let role = makeProducingRole()
         attachTeam(supervisorMode: .autonomous, role: role)
 
-        for _ in 1...5 {
+        for i in 1...(LLMConstants.maxNonProductiveTurns - 1) {
             var messages: [ChatMessage] = []
             let stop = await service._testHandleNoToolCalls(
                 stepID: stepID,
@@ -197,7 +343,7 @@ final class AdvisoryAutoFinishTests: XCTestCase {
                 conversationMessages: &messages
             )
             guard case .continueLoop = stop else {
-                XCTFail("Producing role must never auto-finish, got \(stop)")
+                XCTFail("Turn \(i): producing role must be nudged below the cap, got \(stop)")
                 return
             }
             // Last message should be the producing-role artifact nudge.
@@ -206,8 +352,103 @@ final class AdvisoryAutoFinishTests: XCTestCase {
                 "Producing role should get artifact nudge, not advisory finish"
             )
         }
-        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), 0,
-                       "Producing role should never bump the advisory counter")
+
+        var messages: [ChatMessage] = []
+        let stop = await service._testHandleNoToolCalls(
+            stepID: stepID, assistantContent: "Working on it.", sawHarmonyMarker: false,
+            task: mockDelegate.taskToMutate!, roleDefinition: role,
+            conversationMessages: &messages
+        )
+        guard case .needsSupervisorInput = stop else {
+            XCTFail("Producing role must escalate at the cap, got \(stop)")
+            return
+        }
+        XCTAssertNotEqual(
+            mockDelegate.taskToMutate!.runs.last!.roleStatuses[role.id], .done,
+            "A producing role that submitted nothing must never be marked done")
+        XCTAssertEqual(service._testNonProductiveTurnCounter(stepID: stepID, taskID: task.id), 0,
+                       "Escalation resets the counter so a post-supervisor continuation starts clean")
+    }
+
+    /// Hole 4: `handleNoToolCalls` is reachable with `roleDefinition == nil` (a role that
+    /// didn't resolve against the team). Every guard used to fail on the nil, so the step
+    /// fell through to the generic nudge forever with no counter and no terminal.
+    func testNilRoleDefinition_escalatesAtTheCap() async {
+        attachTeam(supervisorMode: .autonomous, role: makeAdvisoryRole())
+
+        for i in 1...(LLMConstants.maxNonProductiveTurns - 1) {
+            var messages: [ChatMessage] = []
+            let stop = await service._testHandleNoToolCalls(
+                stepID: stepID, assistantContent: "Hmm.", sawHarmonyMarker: false,
+                task: mockDelegate.taskToMutate!, roleDefinition: nil,
+                conversationMessages: &messages
+            )
+            guard case .continueLoop = stop else {
+                XCTFail("Turn \(i): expected a nudge below the cap, got \(stop)")
+                return
+            }
+            XCTAssertEqual(service._testNonProductiveTurnCounter(stepID: stepID, taskID: task.id), i,
+                           "An unresolved role definition must still be counted")
+        }
+
+        var messages: [ChatMessage] = []
+        let stop = await service._testHandleNoToolCalls(
+            stepID: stepID, assistantContent: "Hmm.", sawHarmonyMarker: false,
+            task: mockDelegate.taskToMutate!, roleDefinition: nil,
+            conversationMessages: &messages
+        )
+        guard case .needsSupervisorInput = stop else {
+            XCTFail("An unresolved role definition must escalate at the cap, got \(stop)")
+            return
+        }
+    }
+
+    /// Hole 1, and the one that made the whole ceiling a fiction: the `.repetitiveNonTool`
+    /// arm returned ABOVE the counter, so a model repeating one byte-identical reply froze
+    /// it at whatever value it had and looped forever.
+    ///
+    /// Note this drives a SHARED conversation, unlike `runNonProductiveTurns` — the
+    /// detector reads the last three text-only assistant turns, so a fresh array per turn
+    /// (which every other test here uses deliberately, to isolate the counter) makes this
+    /// branch unreachable.
+    func testRepetitiveIdenticalTurns_stillReachTheCap() async {
+        let role = makeAdvisoryRole()
+        attachTeam(supervisorMode: .autonomous, role: role)
+
+        var shared: [ChatMessage] = []
+        var sawRepetitiveNudge = false
+        for i in 1...(LLMConstants.maxNonProductiveTurns - 1) {
+            // The detector only inspects assistant turns; `_testHandleNoToolCalls`
+            // appends only the nudge, so the test supplies the model's side.
+            shared.append(ChatMessage(role: .assistant, content: "wait_for_events"))
+            let stop = await service._testHandleNoToolCalls(
+                stepID: stepID, assistantContent: "wait_for_events", sawHarmonyMarker: false,
+                task: mockDelegate.taskToMutate!, roleDefinition: role,
+                conversationMessages: &shared,
+                allowedToolNames: [ToolNames.waitForEvents]
+            )
+            guard case .continueLoop = stop else {
+                XCTFail("Turn \(i): expected a nudge below the cap, got \(stop)")
+                return
+            }
+            if (shared.last?.content ?? "").contains("near-identical") { sawRepetitiveNudge = true }
+            XCTAssertEqual(service._testNonProductiveTurnCounter(stepID: stepID, taskID: task.id), i,
+                           "Turn \(i): a repetitive turn is still a non-productive turn")
+        }
+        XCTAssertTrue(sawRepetitiveNudge,
+                      "Sanity: the .repetitiveNonTool branch must actually have fired here")
+
+        shared.append(ChatMessage(role: .assistant, content: "wait_for_events"))
+        let stop = await service._testHandleNoToolCalls(
+            stepID: stepID, assistantContent: "wait_for_events", sawHarmonyMarker: false,
+            task: mockDelegate.taskToMutate!, roleDefinition: role,
+            conversationMessages: &shared,
+            allowedToolNames: [ToolNames.waitForEvents]
+        )
+        guard case .completed = stop else {
+            XCTFail("A repetition loop must reach the cap and take its terminal, got \(stop)")
+            return
+        }
     }
 
     // MARK: - Counter reset on tool-call activity
@@ -216,12 +457,13 @@ final class AdvisoryAutoFinishTests: XCTestCase {
         // Real run pattern: model alternates between tool-driven turns and brief
         // confirmations. After an inter-turn tool call, the counter must reset so
         // a single subsequent text-only turn doesn't trigger finish on what would
-        // otherwise be the 3rd consecutive no-tool turn cumulatively.
+        // otherwise be the capth consecutive no-tool turn cumulatively.
         let role = makeAdvisoryRole()
         attachTeam(supervisorMode: .autonomous, role: role)
 
-        // Pre-arm with 2 no-tool turns (one short of threshold).
-        for _ in 1...2 {
+        // Pre-arm one short of the threshold.
+        let preArm = LLMConstants.maxNonProductiveTurns - 1
+        for _ in 1...preArm {
             var messages: [ChatMessage] = []
             _ = await service._testHandleNoToolCalls(
                 stepID: stepID, assistantContent: "OK.", sawHarmonyMarker: false,
@@ -229,13 +471,13 @@ final class AdvisoryAutoFinishTests: XCTestCase {
                 conversationMessages: &messages
             )
         }
-        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), 2)
+        XCTAssertEqual(service._testNonProductiveTurnCounter(stepID: stepID, taskID: task.id), preArm)
 
         // Simulate tool call execution between turns.
-        service._testResetAdvisoryNoToolCounter(stepID: stepID, taskID: task.id)
-        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), 0)
+        service._testResetNonProductiveTurnCounter(stepID: stepID, taskID: task.id)
+        XCTAssertEqual(service._testNonProductiveTurnCounter(stepID: stepID, taskID: task.id), 0)
 
-        // Post-reset turn → counter = 1 again, NOT 3-and-finish.
+        // Post-reset turn → counter = 1 again, NOT cap-and-finish.
         var messages: [ChatMessage] = []
         let stop = await service._testHandleNoToolCalls(
             stepID: stepID, assistantContent: "Continuing.", sawHarmonyMarker: false,
@@ -246,7 +488,7 @@ final class AdvisoryAutoFinishTests: XCTestCase {
             XCTFail("Post-reset turn must continue loop, got \(stop)")
             return
         }
-        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), 1,
+        XCTAssertEqual(service._testNonProductiveTurnCounter(stepID: stepID, taskID: task.id), 1,
                        "Counter should restart at 1 after the reset")
     }
 
@@ -266,8 +508,8 @@ final class AdvisoryAutoFinishTests: XCTestCase {
         // Pre-condition: role status is `.working` (engine sets this when starting the step).
         mockDelegate.taskToMutate?.runs[0].roleStatuses[role.id] = .working
 
-        // Drive 3 consecutive no-tool turns to trip the auto-finish.
-        for _ in 1...3 {
+        // Drive enough consecutive no-tool turns to trip the auto-finish.
+        for _ in 1...LLMConstants.maxNonProductiveTurns {
             var messages: [ChatMessage] = []
             _ = await service._testHandleNoToolCalls(
                 stepID: stepID, assistantContent: "All set.", sawHarmonyMarker: false,
@@ -293,15 +535,16 @@ final class AdvisoryAutoFinishTests: XCTestCase {
     /// the Supervisor is already driving the model via the revision flow — auto-finishing
     /// would short-circuit explicit feedback iteration. The counter must NOT increment
     /// during revision either (otherwise a single post-revision no-tool turn could trip
-    /// count==3-and-finish).
+    /// count==cap-and-finish).
     func testRevisionMode_skipsAutoFinish_andDoesNotIncrementCounter() async {
         let role = makeAdvisoryRole()
         attachTeam(supervisorMode: .autonomous, role: role)
         // Activate revision on the step.
         mockDelegate.taskToMutate?.runs[0].steps[0].revisionComment = "Please redo X"
 
-        // Drive 5 consecutive no-tool turns — would be way past threshold without the gate.
-        for i in 1...5 {
+        // Way past threshold without the gate. Bound derived so a cap raise can't make
+        // this test vacuous.
+        for i in 1...(LLMConstants.maxNonProductiveTurns + 5) {
             var messages: [ChatMessage] = []
             let stop = await service._testHandleNoToolCalls(
                 stepID: stepID, assistantContent: "OK.", sawHarmonyMarker: false,
@@ -314,7 +557,7 @@ final class AdvisoryAutoFinishTests: XCTestCase {
             }
         }
         XCTAssertEqual(
-            service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), 0,
+            service._testNonProductiveTurnCounter(stepID: stepID, taskID: task.id), 0,
             "Counter must not increment during revision — guard fails before increment"
         )
         // Step status is unchanged from initial `.running`.
@@ -332,12 +575,13 @@ final class AdvisoryAutoFinishTests: XCTestCase {
     /// returned `.completed`, lying about state that didn't change.
     /// Post-fix: didApply captured-flag detects the short-circuit and we
     /// return `nil` without announcing.
-    func testAttemptAdvisoryAutoFinish_mutateTaskShortCircuit_doesNotAnnounceCompletion() async {
+    func testAttemptAdvisoryNoToolBackstop_mutateTaskShortCircuit_doesNotAnnounceCompletion() async {
         let role = makeAdvisoryRole()
         attachTeam(supervisorMode: .autonomous, role: role)
 
-        // Drive 2 turns — counter at 2, just under threshold.
-        for _ in 1...2 {
+        // Drive up to just under the threshold.
+        let preArm = LLMConstants.maxNonProductiveTurns - 1
+        for _ in 1...preArm {
             var messages: [ChatMessage] = []
             _ = await service._testHandleNoToolCalls(
                 stepID: stepID, assistantContent: "OK.", sawHarmonyMarker: false,
@@ -345,7 +589,7 @@ final class AdvisoryAutoFinishTests: XCTestCase {
                 conversationMessages: &messages
             )
         }
-        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), 2)
+        XCTAssertEqual(service._testNonProductiveTurnCounter(stepID: stepID, taskID: task.id), preArm)
 
         // Simulate a race: step is removed from the task between the previous
         // turn's mutation and this turn's lookup. mutateTask will still return
@@ -353,7 +597,7 @@ final class AdvisoryAutoFinishTests: XCTestCase {
         // internal `firstIndex(where: stepID)` guard short-circuits.
         mockDelegate.taskToMutate?.runs[0].steps = []
 
-        // 3rd turn: threshold trips, mutateTask runs, closure short-circuits.
+        // Final turn: threshold trips, mutateTask runs, closure short-circuits.
         var messages: [ChatMessage] = []
         let stop = await service._testHandleNoToolCalls(
             stepID: stepID, assistantContent: "OK.", sawHarmonyMarker: false,
@@ -366,8 +610,9 @@ final class AdvisoryAutoFinishTests: XCTestCase {
         }
         // Counter must NOT be reset (would mask the threshold breach on retry).
         XCTAssertEqual(
-            service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), 3,
-            "Counter must stay at 3 (not reset) so the next iteration can re-attempt"
+            service._testNonProductiveTurnCounter(stepID: stepID, taskID: task.id),
+            LLMConstants.maxNonProductiveTurns,
+            "Counter must stay at the cap (not reset) so the next iteration can re-attempt"
         )
         // No "auto-finished" assistant message must have been appended to the
         // step (mockDelegate would have been re-mutated). Empty steps array
@@ -408,7 +653,7 @@ final class AdvisoryAutoFinishTests: XCTestCase {
         mockDelegate.taskToMutate?.adoptGeneratedTeam(team)
         XCTAssertFalse(team.isChatMode, "Sanity: team should be non-chat with a supervisor-required artifact")
 
-        for i in 1...5 {
+        for i in 1...(LLMConstants.maxNonProductiveTurns - 1) {
             var messages: [ChatMessage] = []
             let stop = await service._testHandleNoToolCalls(
                 stepID: stepID, assistantContent: "OK.", sawHarmonyMarker: false,
@@ -420,12 +665,25 @@ final class AdvisoryAutoFinishTests: XCTestCase {
                 return
             }
         }
-        // Step must remain `.running` — the bypass path must not have written
-        // `.done` directly. (handleRoleCompleted would also not fire here
-        // because attemptAdvisoryAutoFinish returns nil before triggering it,
-        // but the engine's normal artifact-completeness path would handle
-        // the role's lifecycle in the real runtime.)
-        XCTAssertEqual(mockDelegate.taskToMutate?.runs[0].steps[0].status, .running)
+
+        // At the cap it escalates instead of finishing. Escalation is the correct terminal
+        // here for the same reason the bypass is forbidden: the engine's acceptance
+        // plumbing owns this role's lifecycle, so the step must be handed back rather than
+        // written `.done` behind it. Before this, the guard failed BEFORE the counter, so
+        // an advisory role in a non-chat team simply looped forever.
+        var messages: [ChatMessage] = []
+        let stop = await service._testHandleNoToolCalls(
+            stepID: stepID, assistantContent: "OK.", sawHarmonyMarker: false,
+            task: mockDelegate.taskToMutate!, roleDefinition: role,
+            conversationMessages: &messages
+        )
+        guard case .needsSupervisorInput = stop else {
+            XCTFail("Non-chat advisory must escalate at the cap, never bypass to .done; got \(stop)")
+            return
+        }
+        // The bypass path must not have written `.done` directly.
+        XCTAssertEqual(mockDelegate.taskToMutate?.runs[0].steps[0].status, .needsSupervisorInput)
+        XCTAssertNotEqual(mockDelegate.taskToMutate!.runs.last!.roleStatuses[role.id], .done)
     }
 
     // MARK: - I10 regression: ask_supervisor-only turn counter treatment
@@ -434,27 +692,27 @@ final class AdvisoryAutoFinishTests: XCTestCase {
     /// mode, so a turn whose only tool call is `ask_supervisor` is non-
     /// productive — the model can ping itself in a loop forever. The
     /// counter-treatment branch in `runOneLLMToolIteration` calls
-    /// `attemptAdvisoryAutoFinish` (= increment) for these turns, NOT the
+    /// `noteNonProductiveTurn` (= increment) for these turns, NOT the
     /// reset path. We exercise the increment via the `_testIncrementAdvisoryNoToolCounter`
     /// helper since `_testHandleNoToolCalls` doesn't drive the tool-call branch.
     func testAdvisoryCounter_askSupervisorOnlyTurn_incrementsLikeNoToolTurn() async {
         let role = makeAdvisoryRole()
         attachTeam(supervisorMode: .autonomous, role: role)
 
-        // Two `ask_supervisor`-only turns: each should advance the counter
-        // via the same `attemptAdvisoryAutoFinish` path that no-tool-call turns
-        // use. Drive via the public auto-finish helper directly.
-        for i in 1...2 {
-            let stop = await service.attemptAdvisoryAutoFinish(stepID: stepID, taskID: task.id, roleDefinition: role)
+        // Each below-cap `ask_supervisor`-only turn should advance the counter via the
+        // same `noteNonProductiveTurn` path that no-tool-call turns use. Drive
+        // via the public auto-finish helper directly.
+        for i in 1...(LLMConstants.maxNonProductiveTurns - 1) {
+            let stop = await service.noteNonProductiveTurn(stepID: stepID, taskID: task.id, roleDefinition: role)
             XCTAssertNil(stop, "Below threshold — must continue, got \(String(describing: stop))")
-            XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), i,
+            XCTAssertEqual(service._testNonProductiveTurnCounter(stepID: stepID, taskID: task.id), i,
                            "Each ask_supervisor-only turn must increment the counter")
         }
 
-        // 3rd time hits threshold — fires auto-finish.
-        let final = await service.attemptAdvisoryAutoFinish(stepID: stepID, taskID: task.id, roleDefinition: role)
+        // The capth turn hits threshold — fires auto-finish.
+        let final = await service.noteNonProductiveTurn(stepID: stepID, taskID: task.id, roleDefinition: role)
         if case .completed? = final { /* ok */ } else {
-            XCTFail("Threshold should trip on 3rd consecutive ask_supervisor-only turn, got \(String(describing: final))")
+            XCTFail("Threshold should trip on turn \(LLMConstants.maxNonProductiveTurns) of consecutive ask_supervisor-only turns, got \(String(describing: final))")
         }
     }
 
@@ -465,18 +723,19 @@ final class AdvisoryAutoFinishTests: XCTestCase {
         let role = makeAdvisoryRole()
         attachTeam(supervisorMode: .autonomous, role: role)
 
-        // Pre-arm counter to 2.
-        for _ in 1...2 {
-            _ = await service.attemptAdvisoryAutoFinish(stepID: stepID, taskID: task.id, roleDefinition: role)
+        // Pre-arm the counter to one short of the cap.
+        let preArm = LLMConstants.maxNonProductiveTurns - 1
+        for _ in 1...preArm {
+            _ = await service.noteNonProductiveTurn(stepID: stepID, taskID: task.id, roleDefinition: role)
         }
-        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), 2)
+        XCTAssertEqual(service._testNonProductiveTurnCounter(stepID: stepID, taskID: task.id), preArm)
 
         // Simulate a productive (mixed) turn — this is what runOneLLMToolIteration
         // does in the !isAskSupervisorOnly branch:
-        //     executionStates[stepID]?.consecutiveAdvisoryNoToolTurns = 0
+        //     executionStates[stepID]?.consecutiveNonProductiveTurns = 0
         // Validate via the test helper that exposes that reset.
-        service._testResetAdvisoryNoToolCounter(stepID: stepID, taskID: task.id)
-        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), 0,
+        service._testResetNonProductiveTurnCounter(stepID: stepID, taskID: task.id)
+        XCTAssertEqual(service._testNonProductiveTurnCounter(stepID: stepID, taskID: task.id), 0,
                        "Mixed turn (ask_supervisor + any real tool) must reset the counter")
     }
 
@@ -493,10 +752,10 @@ final class AdvisoryAutoFinishTests: XCTestCase {
         attachTeam(supervisorMode: .autonomous, role: role)
         // Tear down the state entry that setUp created.
         service.clearRunningTask(stepID: stepID, taskID: task.id)
-        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), -1,
+        XCTAssertEqual(service._testNonProductiveTurnCounter(stepID: stepID, taskID: task.id), -1,
                        "Sentinel: state entry is gone")
 
-        for i in 1...10 {
+        for i in 1...(LLMConstants.maxNonProductiveTurns + 5) {
             var messages: [ChatMessage] = []
             let stop = await service._testHandleNoToolCalls(
                 stepID: stepID, assistantContent: "Done.", sawHarmonyMarker: false,
@@ -508,7 +767,7 @@ final class AdvisoryAutoFinishTests: XCTestCase {
                 return
             }
         }
-        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), -1,
+        XCTAssertEqual(service._testNonProductiveTurnCounter(stepID: stepID, taskID: task.id), -1,
                        "Counter helper still returns sentinel — no entry was magicked into existence")
     }
 
@@ -524,11 +783,11 @@ final class AdvisoryAutoFinishTests: XCTestCase {
             task: mockDelegate.taskToMutate!, roleDefinition: role,
             conversationMessages: &messages
         )
-        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), 1)
+        XCTAssertEqual(service._testNonProductiveTurnCounter(stepID: stepID, taskID: task.id), 1)
 
         // clearRunningTask removes the state entry entirely; the next read returns -1.
         service.clearRunningTask(stepID: stepID, taskID: task.id)
-        XCTAssertEqual(service._testAdvisoryNoToolCounter(stepID: stepID, taskID: task.id), -1,
+        XCTAssertEqual(service._testNonProductiveTurnCounter(stepID: stepID, taskID: task.id), -1,
                        "After cleanup, state entry is removed (counter helper returns -1)")
     }
 
@@ -536,7 +795,7 @@ final class AdvisoryAutoFinishTests: XCTestCase {
 
     /// `finishStepGraceful` (the legacy `requestFinish` / `finishRequested` path).
     /// For a chat-mode advisory step it must finish directly as `.done` (step + role),
-    /// the same terminal state `attemptAdvisoryAutoFinish` produces — NOT
+    /// the same terminal state `noteNonProductiveTurn` produces — NOT
     /// `.needsAcceptance`, which deadlocks the engine in chat mode.
     func testFinishStepGraceful_chatModeAdvisory_finishesStepAndRoleAsDone() async {
         let role = makeAdvisoryRole()
@@ -583,7 +842,7 @@ final class AdvisoryAutoFinishTests: XCTestCase {
     /// the live session id — the properties that let a human answer continue the
     /// SAME conversation via stateful continuation instead of a fresh pass.
     func testParkStepForEvents_parksStepWithIdleQuestionAndSession() async {
-        await service.parkStepForEvents(stepID: stepID, taskID: task.id, sessionID: "resp_42")
+        await service.parkStepForEvents(stepID: stepID, taskID: task.id)
 
         let step = mockDelegate.taskToMutate?.runs.last?.steps.first
         XCTAssertEqual(step?.status, .needsSupervisorInput,
@@ -591,8 +850,6 @@ final class AdvisoryAutoFinishTests: XCTestCase {
         XCTAssertEqual(step?.needsSupervisorInput, true)
         XCTAssertEqual(step?.supervisorQuestion, AutovisorConstants.idleParkQuestion,
                        "the idle-park question is what the composer renders")
-        XCTAssertEqual(step?.llmSessionID, "resp_42",
-                       "park must preserve the session so the chat continues statefully")
     }
 
     /// Write↔read round-trip: a park landed by the REAL write path (including its
@@ -601,22 +858,20 @@ final class AdvisoryAutoFinishTests: XCTestCase {
     /// ever alter the persisted text (or the predicate's matching changes), this
     /// fails even though both sides' own unit tests still pass against themselves.
     func testParkStepForEvents_resultSatisfiesIdleParkPredicate() async {
-        await service.parkStepForEvents(stepID: stepID, taskID: task.id, sessionID: "resp_42")
+        await service.parkStepForEvents(stepID: stepID, taskID: task.id)
 
         XCTAssertTrue(NTMSOrchestrator.taskHasIdleParkStep(mockDelegate.taskToMutate),
                       "a genuine park must be recognized as idle by the sidebar predicate")
     }
 
     /// Corner: a pass that never established a session (every call fell back to
-    /// stateless) parks with `sessionID: nil` — the park must still land; the
-    /// continuation then rebuilds statelessly instead of via `previous_response_id`.
+    /// stateless) parks with no chain state — the park must still land; the
+    /// continuation then replays the persisted transcript.
     func testParkStepForEvents_nilSession_stillParks() async {
-        await service.parkStepForEvents(stepID: stepID, taskID: task.id, sessionID: nil)
+        await service.parkStepForEvents(stepID: stepID, taskID: task.id)
 
         let step = mockDelegate.taskToMutate?.runs.last?.steps.first
         XCTAssertEqual(step?.status, .needsSupervisorInput)
-        XCTAssertNil(step?.llmSessionID,
-                     "stateless park stores no session — continuation rebuilds the conversation")
         XCTAssertEqual(step?.supervisorQuestion, AutovisorConstants.idleParkQuestion)
     }
 
@@ -630,7 +885,7 @@ final class AdvisoryAutoFinishTests: XCTestCase {
         let stranger = StepExecution(id: "someone_else", role: .softwareEngineer, title: "Other")
         mockDelegate.taskToMutate?.runs = [Run(id: 1, steps: [stranger])]
 
-        await service.parkStepForEvents(stepID: stepID, taskID: task.id, sessionID: "resp_42")
+        await service.parkStepForEvents(stepID: stepID, taskID: task.id)
 
         XCTAssertTrue(
             mockDelegate.lastErrorMessages.contains { $0.contains("failed to park") },
@@ -651,7 +906,7 @@ final class AdvisoryAutoFinishTests: XCTestCase {
         XCTAssertEqual(mockDelegate.taskToMutate?.runs.last?.steps.first?.supervisorAnswerWasAuto,
                        true, "precondition: the auto answer stamped the flag")
 
-        await service.parkStepForEvents(stepID: stepID, taskID: task.id, sessionID: "resp_43")
+        await service.parkStepForEvents(stepID: stepID, taskID: task.id)
 
         let step = mockDelegate.taskToMutate?.runs.last?.steps.first
         XCTAssertEqual(step?.supervisorAnswerWasAuto, false,

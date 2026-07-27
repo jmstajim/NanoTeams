@@ -42,13 +42,14 @@ nonisolated enum LLMConnectionChecker {
     /// `nil`, the resolver consults Keychain.
     static func probeOutcome(
         baseURL: String,
+        provider: LLMProvider = .lmStudio,
         bearerToken: String? = nil,
         timeout: TimeInterval = 5.0,
         session: any NetworkSession = URLSession.shared,
         resolver: any LLMTokenResolver = DefaultLLMTokenResolver()
     ) async -> LLMProbeOutcome {
         guard let url = URL(string: baseURL)?
-            .appendingPathComponent("api/v1/models") else { return .invalidURL }
+            .appendingPathComponent(provider.reachabilityProbePath) else { return .invalidURL }
         var request = URLRequest(url: url)
         request.timeoutInterval = timeout
         if let bearerToken {
@@ -84,13 +85,14 @@ nonisolated enum LLMConnectionChecker {
     /// responded, or `nil` for any non-HTTP outcome.
     static func probe(
         baseURL: String,
+        provider: LLMProvider = .lmStudio,
         bearerToken: String? = nil,
         timeout: TimeInterval = 5.0,
         session: any NetworkSession = URLSession.shared,
         resolver: any LLMTokenResolver = DefaultLLMTokenResolver()
     ) async -> Int? {
         await probeOutcome(
-            baseURL: baseURL, bearerToken: bearerToken,
+            baseURL: baseURL, provider: provider, bearerToken: bearerToken,
             timeout: timeout, session: session, resolver: resolver
         ).statusCode
     }
@@ -98,13 +100,14 @@ nonisolated enum LLMConnectionChecker {
     /// Returns `true` if the server at `baseURL` responds with a 2xx status code.
     static func check(
         baseURL: String,
+        provider: LLMProvider = .lmStudio,
         bearerToken: String? = nil,
         timeout: TimeInterval = 5.0,
         session: any NetworkSession = URLSession.shared,
         resolver: any LLMTokenResolver = DefaultLLMTokenResolver()
     ) async -> Bool {
         guard let status = await probe(
-            baseURL: baseURL, bearerToken: bearerToken,
+            baseURL: baseURL, provider: provider, bearerToken: bearerToken,
             timeout: timeout, session: session, resolver: resolver
         ) else { return false }
         return (200...299).contains(status)
@@ -113,19 +116,20 @@ nonisolated enum LLMConnectionChecker {
     /// Checks connection and returns a result with a user-facing message.
     static func checkWithMessage(
         baseURL: String,
+        provider: LLMProvider = .lmStudio,
         bearerToken: String? = nil,
         session: any NetworkSession = URLSession.shared,
         resolver: any LLMTokenResolver = DefaultLLMTokenResolver()
     ) async -> ConnectionResult {
         let outcome = await probeOutcome(
-            baseURL: baseURL, bearerToken: bearerToken,
+            baseURL: baseURL, provider: provider, bearerToken: bearerToken,
             session: session, resolver: resolver
         )
         switch outcome {
         case .http(let status) where (200...299).contains(status):
             return ConnectionResult(
                 isReachable: true,
-                message: "Successfully connected to LM Studio server.",
+                message: "Successfully connected to \(provider.displayName) server.",
                 statusCode: status
             )
         case .http(let status):
@@ -143,13 +147,13 @@ nonisolated enum LLMConnectionChecker {
         case .connectionRefused:
             return ConnectionResult(
                 isReachable: false,
-                message: "Connection refused at \(baseURL). LM Studio is not listening on that port.",
+                message: "Connection refused at \(baseURL). \(provider.displayName) is not listening on that port.",
                 statusCode: nil
             )
         case .timedOut:
             return ConnectionResult(
                 isReachable: false,
-                message: "Server did not respond within 5s. Check that LM Studio is running and reachable.",
+                message: "Server did not respond within 5s. Check that \(provider.displayName) is running and reachable.",
                 statusCode: nil
             )
         case .offline:
@@ -161,7 +165,7 @@ nonisolated enum LLMConnectionChecker {
         case .otherTransport(let detail):
             return ConnectionResult(
                 isReachable: false,
-                message: "Could not reach LM Studio at \(baseURL): \(detail)",
+                message: "Could not reach \(provider.displayName) at \(baseURL): \(detail)",
                 statusCode: nil
             )
         case .invalidURL:

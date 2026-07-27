@@ -95,6 +95,10 @@ extension LLMExecutionService {
                 if policy.mode == .auto {
                     // AUTO judge.
                     let workingDir = BashArguments.workingDirectory(fromJSON: call.argumentsJSON)
+                    // The judge runs against the SAME (server, model) as the step whose tool
+                    // loop we are inside, so record its presence: if the server later reports it
+                    // re-processed this step's prompt, this is the caller to name.
+                    await noteInterleavingCall(label: "bash judge", config: config)
                     let verdict = await BashJudgeService.judge(
                         command: command, workingDirectory: workingDir,
                         policy: policy, config: config, client: client, logger: networkLogger)

@@ -67,12 +67,56 @@ final class TeamRoleDefinitionTests: XCTestCase {
         XCTAssertEqual(role.name, "Test Role")
         XCTAssertEqual(role.prompt, "Test prompt")
         XCTAssertTrue(role.toolIDs.isEmpty, "Should default to empty array")
-        XCTAssertTrue(role.usePlanningPhase, "Should default to true")
+        XCTAssertFalse(role.usePlanningPhase,
+                       "Off by default: the phase is a multi-turn read-and-plan stretch now, "
+                           + "not the single update_scratchpad call it used to be, so only the "
+                           + "Software Engineer template opts in")
         XCTAssertTrue(role.dependencies.requiredArtifacts.isEmpty)
         XCTAssertTrue(role.dependencies.producesArtifacts.isEmpty)
         XCTAssertNil(role.llmOverride)
         XCTAssertFalse(role.isSystemRole, "Should default to false")
         XCTAssertNil(role.systemRoleID)
+    }
+
+    /// A role customised while the flag was briefly spelled `useResearchPhase`
+    /// (1.7.3–1.7.5) keeps its choice: that spelling is still read, from a
+    /// separate container so `Encodable` synthesis is untouched.
+    ///
+    /// Reconcile overwrites SYSTEM roles from the bundled template, so this
+    /// fallback is what a CUSTOM role — and an exported team JSON, which
+    /// reconcile can never reach — depends on.
+    func testCodable_legacyUseResearchPhaseKey_isStillHonoured() throws {
+        let legacyJSON = """
+        {
+            "id": "r", "name": "R", "prompt": "p",
+            "useResearchPhase": true,
+            "createdAt": 0, "updatedAt": 0
+        }
+        """.data(using: .utf8)!
+
+        let role = try JSONDecoder().decode(TeamRoleDefinition.self, from: legacyJSON)
+        XCTAssertTrue(role.usePlanningPhase,
+                      "a choice stored under the interim spelling must survive")
+    }
+
+    /// `usePlanningPhase` wins when both are present, and re-encoding writes ONLY
+    /// it — so the file migrates in place instead of round-tripping a dead key
+    /// forever.
+    func testCodable_planningKeyWins_andResearchKeyIsNotReWritten() throws {
+        let bothJSON = """
+        {
+            "id": "r", "name": "R", "prompt": "p",
+            "usePlanningPhase": false, "useResearchPhase": true,
+            "createdAt": 0, "updatedAt": 0
+        }
+        """.data(using: .utf8)!
+
+        let role = try JSONDecoder().decode(TeamRoleDefinition.self, from: bothJSON)
+        XCTAssertFalse(role.usePlanningPhase)
+
+        let json = String(decoding: try JSONEncoder().encode(role), as: UTF8.self)
+        XCTAssertTrue(json.contains("usePlanningPhase"))
+        XCTAssertFalse(json.contains("useResearchPhase"))
     }
 
     // MARK: - Helper Method Tests

@@ -6,14 +6,25 @@ final class HeadlessRunnerTests: XCTestCase {
 
     /// Main entry point for headless execution.
     ///
-    /// Invoke via:
+    /// Invoke via `./run_headless.sh path/to/config.json`, or directly:
     /// ```
+    /// NANOTEAMS_CONFIG_PATH=path/to/config.json \
     /// xcodebuild test -project NanoTeams.xcodeproj -scheme NanoTeams \
     ///   -only-testing NanoTeamsTests/HeadlessRunnerTests/testRunHeadless
     /// ```
     ///
-    /// Config is loaded from `.nanoteams/headless_task.json` in the project root.
-    /// If the file doesn't exist, the test silently passes (normal test suite unaffected).
+    /// Config resolution, in order: `NANOTEAMS_CONFIG_PATH` (what
+    /// `run_headless.sh` exports), else `<repoRoot>/.nanoteams/headless_task.json`
+    /// (what the train-app skill writes when it invokes `xcodebuild` directly).
+    ///
+    /// A named-but-absent override FAILS; no config at all SKIPS. Neither
+    /// passes: the old bare `return` on both made a run that did nothing report
+    /// "completed successfully" through the wrapper.
+    ///
+    /// Every skip prints a `[HEADLESS] SKIP:` line BEFORE throwing, because
+    /// `run_headless.sh` filters output to lines containing `[HEADLESS]`,
+    /// `Test Case`, `error:` or `** TEST` — an `XCTSkip` message alone is
+    /// swallowed, and a skipped test still exits `xcodebuild` with 0.
     func testRunHeadless() async throws {
         // Resolve project root from this source file's location
         let sourceFile = URL(fileURLWithPath: #filePath)
@@ -22,20 +33,40 @@ final class HeadlessRunnerTests: XCTestCase {
             .deletingLastPathComponent() // NanoTeamsTests/
             .deletingLastPathComponent() // NanoTeams/ (project root)
 
-        let configURL = workFolderRoot
-            .appendingPathComponent(".nanoteams")
-            .appendingPathComponent("headless_task.json")
+        let configURL: URL
+        switch HeadlessConfigLocator.resolve(
+            environment: ProcessInfo.processInfo.environment,
+            repositoryRoot: workFolderRoot,
+            fileExists: { FileManager.default.fileExists(atPath: $0.path) }
+        ) {
+        case .found(let url, let source):
+            // The wrapper greps for this exact line to prove the environment
+            // reached the test host.
+            print("[HEADLESS] Config: \(url.path) (source: \(source))")
+            configURL = url
 
-        guard FileManager.default.fileExists(atPath: configURL.path) else {
-            print("[HEADLESS] No config at \(configURL.path) — skipping.")
+        case .missingOverride(let url):
+            let message = "\(HeadlessConfigLocator.environmentKey) points at "
+                + "\(url.path), but no file exists there."
+            print("[HEADLESS] error: \(message)")
+            receipt(.failed, config: url.path, detail: message)
+            XCTFail(message)
             return
+
+        case .none(let checked):
+            let message = "No headless config. Set "
+                + "\(HeadlessConfigLocator.environmentKey), or create \(checked.path)."
+            print("[HEADLESS] SKIP: \(message)")
+            receipt(.skipped, config: nil, detail: message)
+            throw XCTSkip(message)
         }
 
-        // Load config
+        // Load config. `makeWireDecoder` for parity with the sibling trainers.
         let configData = try Data(contentsOf: configURL)
-        let config = try JSONDecoder().decode(HeadlessConfig.self, from: configData)
+        let config = try JSONCoderFactory.makeWireDecoder()
+            .decode(HeadlessConfig.self, from: configData)
 
-        // Pre-flight: check if LLM server is reachable (skip if not)
+        // Pre-flight: check if the LLM server is reachable (skip if not)
         let serverURL = URL(string: config.resolvedBaseURL)!
         let probe = URLRequest(url: serverURL, timeoutInterval: 3)
         let reachable: Bool
@@ -46,9 +77,17 @@ final class HeadlessRunnerTests: XCTestCase {
             reachable = false
         }
         guard reachable else {
-            print("[HEADLESS] LLM server at \(config.resolvedBaseURL) is not reachable — skipping.")
-            return
+            let message = "LLM server at \(config.resolvedBaseURL) is not reachable."
+            print("[HEADLESS] SKIP: \(message)")
+            receipt(.skipped, config: configURL.path, detail: message)
+            throw XCTSkip(message)
         }
+
+        // From here the run genuinely happens, so the receipt is written BEFORE
+        // the (possibly long) run rather than after — a crash or a hard timeout
+        // must not read back as "never started".
+        receipt(.ran, config: configURL.path,
+                detail: "\(config.taskTitle) on \(config.resolvedProvider.rawValue)")
 
         print("[HEADLESS] ==========================================")
         print("[HEADLESS] Task: \(config.taskTitle)")
@@ -76,6 +115,16 @@ final class HeadlessRunnerTests: XCTestCase {
     }
 
     // MARK: - Output
+
+    /// Records what this run decided, for `run_headless.sh` to gate on. See
+    /// `HeadlessConfigLocator.receiptEnvironmentKey` for why a file rather than
+    /// the printed lines the wrapper filters for.
+    private func receipt(
+        _ status: HeadlessConfigLocator.Receipt.Status, config: String?, detail: String
+    ) {
+        HeadlessConfigLocator.writeReceipt(
+            HeadlessConfigLocator.Receipt(status: status, configPath: config, detail: detail))
+    }
 
     private func printResult(_ result: HeadlessResult) {
         print("")

@@ -118,6 +118,25 @@ extension NTMSOrchestrator {
 
         let prompt = MessageSourceContext.supervisorMessagePrefix + bodies.joined(separator: "\n")
 
+        // The FEED shows only what the user has not already seen. A redelivery is a message that
+        // was delivered once, rendered once, and came back only because the wire it rode was
+        // discarded (the planning-phase boundary keeps just the task statement and the
+        // scratchpad). It still has to reach the model — the implementation phase never saw it —
+        // but persisting a second bubble would show the user their own message twice for something
+        // they typed once.
+        //
+        // Computed per message rather than per batch: a redelivery can be drained together with a
+        // genuinely new message, and the new one must still appear.
+        let freshBodies = zip(popped, bodies).compactMap { $0.0.isRedelivery ? nil : $0.1 }
+        guard !freshBodies.isEmpty else {
+            // Nothing new to show. Delivery is the return value below; there is no persistence to
+            // guard, and no data to lose — the user has seen this text and the model already acted
+            // on it once.
+            return prompt
+        }
+        let displayPrompt = MessageSourceContext.supervisorMessagePrefix
+            + freshBodies.joined(separator: "\n")
+
         // Persist one LLMMessage carrying the combined batch. Use a captured
         // flag (not `mutateTask`'s return value) — the closure may short-circuit
         // via its own `locateStepInLatestRun` guard while `mutateTask` still
@@ -128,7 +147,7 @@ extension NTMSOrchestrator {
         // and mid-iteration writes don't affect this run's `fullConversation`.
         let message = LLMMessage(
             role: .user,
-            content: prompt,
+            content: displayPrompt,
             sourceRole: .supervisor,
             sourceContext: .supervisorMessage
         )
@@ -193,5 +212,27 @@ extension NTMSOrchestrator {
     // periphery:ignore - protocol conformance (LLMStateDelegate)
     func notifyQueuedMessageBackstop(taskID _: Int) {
         QuickCaptureController.shared.tryFlushQueuedMessages()
+    }
+
+    /// `LLMStateDelegate.requeueSupervisorMessageAtHead` witness — the planning-phase boundary's
+    /// undo for a message it is about to discard.
+    ///
+    /// Rebuilt rather than restored: the pipeline hands the LLM a composed prompt (attachments
+    /// finalized, clips inlined) and does not keep the original `QueuedChatMessage`, so what comes
+    /// back is the text. Attachments were finalized on first delivery and their paths are already
+    /// inside that text, so nothing is lost by re-queueing without them — and re-staging them
+    /// would duplicate files on disk.
+    ///
+    /// `targetRoleID` is set so the redelivery goes to the same role rather than to whichever role
+    /// asks first: this message was already routed once, and re-routing it on the way back would
+    /// silently change who the human was talking to.
+    // periphery:ignore - protocol conformance (LLMStateDelegate)
+    func requeueSupervisorMessageAtHead(taskID: Int, roleID: String, text: String) {
+        guard let formState = quickCaptureFormState,
+              let message = QuickCaptureFormState.QueuedChatMessage(
+                  text: text, attachments: [], clippedTexts: [], targetRoleID: roleID,
+                  isRedelivery: true)
+        else { return }
+        formState.prependQueuedMessages([message], for: taskID)
     }
 }

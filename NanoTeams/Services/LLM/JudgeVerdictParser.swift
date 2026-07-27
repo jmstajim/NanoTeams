@@ -32,6 +32,12 @@ nonisolated enum JudgeConfig {
         if let model = o.modelName?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty {
             config.modelName = model
         }
+        // Same resolution as `buildEffectiveConfig`: the override's provider
+        // wins when set (its URL may point at a different provider's server),
+        // else the base provider flows through.
+        if let provider = o.provider {
+            config.provider = provider
+        }
         return config
     }
 

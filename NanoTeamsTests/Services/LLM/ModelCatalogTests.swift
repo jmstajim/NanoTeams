@@ -15,6 +15,7 @@ final class ModelCatalogTests: XCTestCase {
 
     private final class StubClient: LLMClient, @unchecked Sendable {
         var fetchCount: Int = 0
+        var lastConfig: LLMConfig?
         var lastVisionOnly: Bool = false
         var modelsToReturn: [String] = ["model-a", "model-b"]
         var visionModelsToReturn: [String] = ["vision-model-a"]
@@ -26,6 +27,7 @@ final class ModelCatalogTests: XCTestCase {
         func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] {
             fetchCount += 1
             lastVisionOnly = visionOnly
+            lastConfig = config
             if fetchDelayNanos > 0 {
                 try? await Task.sleep(for: .nanoseconds(fetchDelayNanos))
             }
@@ -37,7 +39,6 @@ final class ModelCatalogTests: XCTestCase {
             config: LLMConfig,
             messages: [ChatMessage],
             tools: [ToolSchema],
-            session: LLMSession?,
             logger: NetworkLogger?,
             stepID: String?,
             roleName: String?
@@ -71,22 +72,22 @@ final class ModelCatalogTests: XCTestCase {
         let stub = StubClient()
         let catalog = ModelCatalog(clientFactory: { stub })
 
-        await catalog.loadIfNeeded(url: "http://x:1234")
-        await catalog.loadIfNeeded(url: "http://x:1234")
-        await catalog.loadIfNeeded(url: "http://x:1234")
+        await catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio)
+        await catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio)
+        await catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio)
 
         XCTAssertEqual(stub.fetchCount, 1,
                        "Cached URL must NOT trigger a second fetch")
-        XCTAssertEqual(catalog.models(for: "http://x:1234"), ["model-a", "model-b"])
+        XCTAssertEqual(catalog.models(for: "http://x:1234", provider: .lmStudio), ["model-a", "model-b"])
     }
 
     func testLoadIfNeeded_normalizesURLBeforeCacheLookup() async {
         let stub = StubClient()
         let catalog = ModelCatalog(clientFactory: { stub })
 
-        await catalog.loadIfNeeded(url: "http://x:1234")
-        await catalog.loadIfNeeded(url: "http://x:1234/")
-        await catalog.loadIfNeeded(url: "  HTTP://X:1234  ")
+        await catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio)
+        await catalog.loadIfNeeded(url: "http://x:1234/", provider: .lmStudio)
+        await catalog.loadIfNeeded(url: "  HTTP://X:1234  ", provider: .lmStudio)
 
         XCTAssertEqual(stub.fetchCount, 1,
                        "Trivial URL variations must collapse to one cache entry")
@@ -96,8 +97,8 @@ final class ModelCatalogTests: XCTestCase {
         let stub = StubClient()
         let catalog = ModelCatalog(clientFactory: { stub })
 
-        await catalog.loadIfNeeded(url: "")
-        await catalog.loadIfNeeded(url: "   ")
+        await catalog.loadIfNeeded(url: "", provider: .lmStudio)
+        await catalog.loadIfNeeded(url: "   ", provider: .lmStudio)
 
         XCTAssertEqual(stub.fetchCount, 0,
                        "Empty URL must not trigger a fetch — picker would have nothing to talk to")
@@ -109,15 +110,15 @@ final class ModelCatalogTests: XCTestCase {
         let stub = StubClient()
         let catalog = ModelCatalog(clientFactory: { stub })
 
-        await catalog.loadIfNeeded(url: "http://x:1234")
+        await catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio)
         XCTAssertEqual(stub.fetchCount, 1)
 
         stub.modelsToReturn = ["model-c"]
-        await catalog.refresh(url: "http://x:1234")
+        await catalog.refresh(url: "http://x:1234", provider: .lmStudio)
 
         XCTAssertEqual(stub.fetchCount, 2,
                        "Refresh must always re-fetch — that's its whole purpose")
-        XCTAssertEqual(catalog.models(for: "http://x:1234"), ["model-c"],
+        XCTAssertEqual(catalog.models(for: "http://x:1234", provider: .lmStudio), ["model-c"],
                        "Cache must be updated with the fresh result")
     }
 
@@ -127,12 +128,12 @@ final class ModelCatalogTests: XCTestCase {
         let stub = StubClient()
         let catalog = ModelCatalog(clientFactory: { stub })
 
-        await catalog.loadIfNeeded(url: "http://x:1234")
-        await catalog.loadIfNeeded(url: "http://y:1234")
+        await catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio)
+        await catalog.loadIfNeeded(url: "http://y:1234", provider: .lmStudio)
 
         XCTAssertEqual(stub.fetchCount, 2)
-        XCTAssertEqual(catalog.models(for: "http://x:1234"), ["model-a", "model-b"])
-        XCTAssertEqual(catalog.models(for: "http://y:1234"), ["model-a", "model-b"])
+        XCTAssertEqual(catalog.models(for: "http://x:1234", provider: .lmStudio), ["model-a", "model-b"])
+        XCTAssertEqual(catalog.models(for: "http://y:1234", provider: .lmStudio), ["model-a", "model-b"])
     }
 
     // MARK: - Error handling
@@ -145,22 +146,22 @@ final class ModelCatalogTests: XCTestCase {
         )
         let catalog = ModelCatalog(clientFactory: { stub })
 
-        await catalog.loadIfNeeded(url: "http://x:1234")
+        await catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio)
 
-        XCTAssertEqual(catalog.models(for: "http://x:1234"), [])
-        XCTAssertEqual(catalog.error(for: "http://x:1234"), "Could not connect.")
+        XCTAssertEqual(catalog.models(for: "http://x:1234", provider: .lmStudio), [])
+        XCTAssertEqual(catalog.error(for: "http://x:1234", provider: .lmStudio), "Could not connect.")
     }
 
     func testRefresh_clearsPriorError_onSuccess() async {
         let stub = StubClient()
         stub.errorToThrow = NSError(domain: "test", code: 0, userInfo: [NSLocalizedDescriptionKey: "fail"])
         let catalog = ModelCatalog(clientFactory: { stub })
-        await catalog.loadIfNeeded(url: "http://x:1234")
-        XCTAssertNotNil(catalog.error(for: "http://x:1234"))
+        await catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio)
+        XCTAssertNotNil(catalog.error(for: "http://x:1234", provider: .lmStudio))
 
         stub.errorToThrow = nil
-        await catalog.refresh(url: "http://x:1234")
-        XCTAssertNil(catalog.error(for: "http://x:1234"),
+        await catalog.refresh(url: "http://x:1234", provider: .lmStudio)
+        XCTAssertNil(catalog.error(for: "http://x:1234", provider: .lmStudio),
                      "Successful refresh must clear the prior error")
     }
 
@@ -172,20 +173,20 @@ final class ModelCatalogTests: XCTestCase {
         let stub = StubClient()
         let catalog = ModelCatalog(clientFactory: { stub })
 
-        await catalog.loadIfNeeded(url: "http://x:1234")
-        await catalog.loadIfNeeded(url: "http://x:1234", visionOnly: true)
+        await catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio)
+        await catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio, visionOnly: true)
 
         XCTAssertEqual(stub.fetchCount, 2,
                        "Same URL with different visionOnly must fetch twice — separate cache entries")
-        XCTAssertEqual(catalog.models(for: "http://x:1234"), ["model-a", "model-b"])
-        XCTAssertEqual(catalog.models(for: "http://x:1234", visionOnly: true), ["vision-model-a"])
+        XCTAssertEqual(catalog.models(for: "http://x:1234", provider: .lmStudio), ["model-a", "model-b"])
+        XCTAssertEqual(catalog.models(for: "http://x:1234", provider: .lmStudio, visionOnly: true), ["vision-model-a"])
     }
 
     func testVisionOnly_passesFlagToClient() async {
         let stub = StubClient()
         let catalog = ModelCatalog(clientFactory: { stub })
 
-        await catalog.loadIfNeeded(url: "http://x:1234", visionOnly: true)
+        await catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio, visionOnly: true)
 
         XCTAssertTrue(stub.lastVisionOnly,
                       "ModelCatalog must forward visionOnly to the LLMClient")
@@ -195,8 +196,8 @@ final class ModelCatalogTests: XCTestCase {
         let stub = StubClient()
         let catalog = ModelCatalog(clientFactory: { stub })
 
-        await catalog.loadIfNeeded(url: "http://x:1234", visionOnly: true)
-        await catalog.loadIfNeeded(url: "http://x:1234", visionOnly: true)
+        await catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio, visionOnly: true)
+        await catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio, visionOnly: true)
 
         XCTAssertEqual(stub.fetchCount, 1,
                        "Vision cache must dedup independently of the all-models cache")
@@ -207,16 +208,16 @@ final class ModelCatalogTests: XCTestCase {
         let catalog = ModelCatalog(clientFactory: { stub })
 
         // All-models succeeds.
-        await catalog.loadIfNeeded(url: "http://x:1234")
-        XCTAssertNil(catalog.error(for: "http://x:1234"))
+        await catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio)
+        XCTAssertNil(catalog.error(for: "http://x:1234", provider: .lmStudio))
 
         // Vision-only fails.
         stub.errorToThrow = NSError(domain: "test", code: 1, userInfo: [NSLocalizedDescriptionKey: "vision fail"])
-        await catalog.loadIfNeeded(url: "http://x:1234", visionOnly: true)
+        await catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio, visionOnly: true)
 
-        XCTAssertNil(catalog.error(for: "http://x:1234"),
+        XCTAssertNil(catalog.error(for: "http://x:1234", provider: .lmStudio),
                      "All-models cache error must not be polluted by vision-only failure")
-        XCTAssertEqual(catalog.error(for: "http://x:1234", visionOnly: true), "vision fail")
+        XCTAssertEqual(catalog.error(for: "http://x:1234", provider: .lmStudio, visionOnly: true), "vision fail")
     }
 
     // MARK: - In-flight dedup
@@ -227,11 +228,39 @@ final class ModelCatalogTests: XCTestCase {
         stub.fetchDelayNanos = 50_000_000
         let catalog = ModelCatalog(clientFactory: { stub })
 
-        async let a: Void = catalog.loadIfNeeded(url: "http://x:1234")
-        async let b: Void = catalog.loadIfNeeded(url: "http://x:1234")
+        async let a: Void = catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio)
+        async let b: Void = catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio)
         _ = await (a, b)
 
         XCTAssertEqual(stub.fetchCount, 1,
                        "Concurrent loadIfNeeded for the same URL must coalesce — one network call total")
+    }
+
+    // MARK: - Provider threading
+
+    func testFetch_threadsProviderIntoClientConfig() async {
+        let stub = StubClient()
+        let catalog = ModelCatalog(clientFactory: { stub })
+        await catalog.loadIfNeeded(url: "http://x:11434", provider: .ollama)
+        XCTAssertEqual(stub.lastConfig?.provider, .ollama,
+                       "Re-hardcoding .lmStudio inside fetch() would make the provider parameter cosmetic")
+        XCTAssertEqual(stub.lastConfig?.baseURLString, "http://x:11434")
+    }
+
+    func testCacheKey_separatesProvidersOnTheSameURL() async {
+        // Override surfaces can pin a provider while inheriting the GLOBAL
+        // URL — one URL under two providers must be two cache entries so a
+        // wrong-provider result (usually an error) can't poison the other
+        // surface's list.
+        let stub = StubClient()
+        let catalog = ModelCatalog(clientFactory: { stub })
+        stub.modelsToReturn = ["lm-model"]
+        await catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio)
+        stub.modelsToReturn = ["ollama-model"]
+        await catalog.loadIfNeeded(url: "http://x:1234", provider: .ollama)
+
+        XCTAssertEqual(stub.fetchCount, 2, "different provider = different cache entry = second fetch")
+        XCTAssertEqual(catalog.models(for: "http://x:1234", provider: .lmStudio), ["lm-model"])
+        XCTAssertEqual(catalog.models(for: "http://x:1234", provider: .ollama), ["ollama-model"])
     }
 }

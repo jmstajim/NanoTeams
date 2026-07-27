@@ -12,8 +12,15 @@ extension LLMExecutionService {
         var resolvedToolCalls: [StepToolCall]
         var sawHarmonyMarker: Bool
         var harmonyBuffer: String
-        var session: LLMSession?
         var tokenUsage: TokenUsage?
+        /// What the server reported about how it processed this request's prompt. Used to tell
+        /// a prompt-prefix cache hit from a silent re-prefill; absent on providers or versions
+        /// that report nothing, which is never treated as evidence either way.
+        var serverPrefill: ServerPrefillReport?
+        /// What THIS APP did to the model's residency for this request — the complement of
+        /// `serverPrefill` on the provider whose residency the app manages. See
+        /// `ClientResidencyFacts`.
+        var clientResidency: ClientResidencyFacts?
         /// Non-nil iff the stream was broken by an in-stream thinking loop on a
         /// TOP-LEVEL task. Drives `handleStreamLoopBreak` (clean-retry / terminal).
         /// The looping generation is discarded — `assistantContent`/`thinkingContent`/
@@ -46,7 +53,6 @@ extension LLMExecutionService {
         config: LLMConfig,
         tools: [ToolSchema],
         conversationMessages: [ChatMessage],
-        session: LLMSession?,
         networkLogger: NetworkLogger?,
         roleName: String? = nil
     ) async throws -> StreamingResult {
@@ -102,8 +108,9 @@ extension LLMExecutionService {
         var sawHarmonyMarker = false
         var harmonyBuffer = ""
         var uiBuffer = ""
-        var capturedSession: LLMSession?
         var capturedUsage: TokenUsage?
+        var capturedPrefill: ServerPrefillReport?
+        var capturedResidency: ClientResidencyFacts?
 
         /// Commits streaming content (final or partial on cancellation).
         func commitStreamingContent() async {
@@ -151,11 +158,11 @@ extension LLMExecutionService {
         // (canonical `name`+sortedKeys(args) signature). On detection we `break` out
         // of the for-await — the AsyncThrowingStream's `onTermination` handler in
         // `NativeLMStudioClient` cancels the underlying URLSession bytes stream so
-        // the model isn't allowed to keep emitting more duplicates. The captured
-        // session is dropped (`responseID` only arrives at `chatEnd`, which we
-        // never reach here), forcing the next iteration onto the existing
-        // stateless fallback path — same code path HTTP 400 already exercises.
+        // the model isn't allowed to keep emitting more duplicates.
         var loopDetected = false
+        /// Resolved inside the `do` block, before the turn is committed. Declared out here
+        /// so the return can read it; the cancellation path throws, so it stays empty there.
+        var resolvedToolCalls: [StepToolCall] = []
 
         // In-stream loop detection — the single point that replaces both the old
         // `DelegationLoopWatcher.considerStreamingBuffer` AND the orchestrator's
@@ -200,9 +207,11 @@ extension LLMExecutionService {
         // possibly be present — until then dedup is impossible by definition.
         var harmonyCloseCount = 0
         do {
+            // prefix-cache-owner: the role step itself — `runOneLLMToolIteration` records
+            // `.step(taskID:stepID:)` before this send and resolves the verdict after it.
             for try await event in client.streamChat(
                 config: config, messages: conversationMessages, tools: tools,
-                session: session, logger: networkLogger, stepID: stepID, roleName: roleName)
+                logger: networkLogger, stepID: stepID, roleName: roleName)
             {
                 if Task.isCancelled { throw CancellationError() }
 
@@ -351,8 +360,9 @@ extension LLMExecutionService {
                     }
                 }
 
-                if let s = event.session { capturedSession = s }
                 if let u = event.tokenUsage { capturedUsage = u }
+                if let p = event.serverPrefill { capturedPrefill = p }
+                if let r = event.clientResidency { capturedResidency = r }
 
                 // In-stream loop scan (cadence-throttled). For child tasks this fires
                 // the parent interrupt and returns false (no break). For top-level it
@@ -366,6 +376,66 @@ extension LLMExecutionService {
             // broken early by loop detection — either way, generation is done
             // from this iteration's perspective).
             delegate.clearStreamingProcessingProgress(stepID: stepID, taskID: taskID)
+
+            // Resolve tool calls BEFORE the turn is committed. Every input below is final
+            // once the stream loop exits, so the position is free — and it has to be
+            // here, because route 4 can move text out of the content channel. Resolving
+            // after the commit would fork the display record from the wire permanently:
+            // the raw payload would already be in `step.llmConversation`, and since
+            // `HarmonyToolCallEnvelope.appendedWireText` re-materializes the call on top
+            // of non-empty content, every stateless resend would carry that call twice.
+            flushPendingUI(force: true)
+
+            // 1. Provider-native `tool_calls` deltas always win.
+            resolvedToolCalls = toolAccumulator.finalize()
+            // 2. Harmony envelope in the content channel.
+            if resolvedToolCalls.isEmpty, sawHarmonyMarker {
+                resolvedToolCalls = harmonyParser.extractAllToolCalls(from: harmonyBuffer)
+            }
+            // 3. Reasoning-channel fallback: some local models (observed: qwen3.6-mlx
+            // family) stochastically emit `<|call|>{...}<|end|>` envelopes inside
+            // `reasoning.delta` SSE events instead of `chunk.delta` content. Those
+            // deltas land in `thinkingCollected` and never reach `harmonyBuffer`.
+            // Empirical evidence in
+            // `.nanoteams/internal/tasks/0/subtasks/1/runs/0/network_log.json`
+            // records #11/#13 (FAIL — call in reasoning) vs #15 (OK — call in
+            // content); byte-identical envelope shapes, only the channel differs.
+            // Cheap `contains("<|")` gate keeps the hot path on the existing
+            // branch — only fires when reasoning text actually carries a marker.
+            if resolvedToolCalls.isEmpty, thinkingCollected.contains("<|") {
+                let fromThinking = harmonyParser.extractAllToolCalls(from: thinkingCollected)
+                if !fromThinking.isEmpty {
+                    resolvedToolCalls = fromThinking
+                }
+            }
+            // 4. Last resort: a reply carrying no sentinel at all. Gated on
+            // `!sawHarmonyMarker` — once a marker was seen, recovery belongs to route 2
+            // and `classifyHarmonyCallIssue`, which can name the defect. See
+            // `BareToolCallSalvage` for why this is the only place that accepts an
+            // unframed call, and what it refuses to infer.
+            if resolvedToolCalls.isEmpty, !sawHarmonyMarker,
+               let salvaged = BareToolCallSalvage.salvage(
+                from: assistantCollected, advertised: tools)
+            {
+                resolvedToolCalls = [salvaged]
+                // The promoted text leaves the content channel — otherwise the turn
+                // renders twice, once as a raw-JSON bubble and once as a tool card, and
+                // the wire carries the call twice for the same reason. It re-surfaces as
+                // live THINKING (preview-only, not persisted), exactly as the mid-stream
+                // Harmony rewind does, so no streamed text ever just vanishes from screen.
+                let promoted = assistantCollected
+                assistantCollected = ""
+                delegate.replaceStreamingPreview(
+                    stepID: stepID, taskID: taskID, messageID: streamingMessageID,
+                    role: roleForMessage, content: "")
+                delegate.appendStreamingThinking(
+                    stepID: stepID, taskID: taskID, content: promoted)
+            }
+            // Loop break: drop later occurrences of any duplicated (name, args) signature
+            // — only the first instance of each is kept and executed.
+            if loopDetected {
+                resolvedToolCalls = Self.deduplicateToolCalls(resolvedToolCalls)
+            }
 
             if thinkingLoopSignal != nil {
                 // Top-level thinking-loop break: DISCARD the looping generation —
@@ -386,47 +456,15 @@ extension LLMExecutionService {
             throw CancellationError()
         }
 
-        // Reconstruct tool calls
-        var resolvedToolCalls = toolAccumulator.finalize()
-        if resolvedToolCalls.isEmpty, sawHarmonyMarker {
-            resolvedToolCalls = harmonyParser.extractAllToolCalls(from: harmonyBuffer)
-        }
-        // Reasoning-channel fallback: some local models (observed: qwen3.6-mlx
-        // family) stochastically emit `<|call|>{...}<|end|>` envelopes inside
-        // `reasoning.delta` SSE events instead of `chunk.delta` content. Those
-        // deltas land in `thinkingCollected` and never reach `harmonyBuffer`.
-        // Empirical evidence in
-        // `.nanoteams/internal/tasks/0/subtasks/1/runs/0/network_log.json`
-        // records #11/#13 (FAIL — call in reasoning) vs #15 (OK — call in
-        // content); byte-identical envelope shapes, only the channel differs.
-        // Cheap `contains("<|")` gate keeps the hot path on the existing
-        // branch — only fires when reasoning text actually carries a marker.
-        if resolvedToolCalls.isEmpty, thinkingCollected.contains("<|") {
-            let fromThinking = harmonyParser.extractAllToolCalls(from: thinkingCollected)
-            if !fromThinking.isEmpty {
-                resolvedToolCalls = fromThinking
-            }
-        }
-
-        // Loop break: drop later occurrences of any duplicated (name, args) signature
-        // — only the first instance of each is kept and executed. Drop the captured
-        // session so the next iteration sends stateless (full conversation + system
-        // prompt). `capturedSession` is normally nil here anyway because `responseID`
-        // only arrives at `chatEnd` which we never reached, but we defensively force
-        // nil to keep the contract explicit.
-        if loopDetected {
-            resolvedToolCalls = Self.deduplicateToolCalls(resolvedToolCalls)
-            capturedSession = nil
-        }
-
         return StreamingResult(
             assistantContent: assistantCollected,
             thinkingContent: thinkingCollected,
             resolvedToolCalls: resolvedToolCalls,
             sawHarmonyMarker: sawHarmonyMarker,
             harmonyBuffer: harmonyBuffer,
-            session: capturedSession,
             tokenUsage: capturedUsage,
+            serverPrefill: capturedPrefill,
+            clientResidency: capturedResidency,
             thinkingLoopSignal: thinkingLoopSignal
         )
     }
@@ -504,7 +542,10 @@ extension LLMExecutionService {
         let hasContent = !result.assistantContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let hasToolCalls = !result.resolvedToolCalls.isEmpty
 
-        // Append assistant message to in-memory conversation for session slicing.
+        // Append the assistant turn to the in-memory conversation — the conversation
+        // IS the request on every iteration (stateless full history), so a turn the
+        // model produced must be recorded here or the next call shows it tool results
+        // for calls it has no record of making.
         // NOTE: The LLMMessage and StepMessage are already committed by commitStreaming()
         // in performStreamingCall(), so we only update conversationMessages here.
         if hasContent || hasToolCalls {
@@ -530,19 +571,14 @@ extension LLMExecutionService {
         } else {
             // The model produced a turn that yields no assistant content and no resolved
             // tool calls — typically a Harmony tool-call envelope the parser consumed but
-            // couldn't resolve (malformed JSON). The turn DID happen and is in the server's
-            // stateful response chain (store:true + previous_response_id). Record an anchor
-            // assistant turn so the next stateful slice — lastIndex(where: .assistant) in
-            // runOneLLMToolIteration — advances past the already-delivered tool result(s)
-            // and prior retry nudges. Without this, the slice re-sends the previous tool
-            // result and every accumulated nudge on each malformed iteration (chain
-            // corruption + exponential input growth; CLAUDE.md "Stateful Session
-            // Invariants" #2). conversationMessages is in-memory slicing state only — any
-            // user-visible LLMMessage/StepMessage commit is owned by commitStreaming() (the
-            // streaming LLMMessage is pre-created at stream start), so appending this anchor
-            // has no UI or persistence effect, and in stateful mode the anchor is never
-            // transmitted (NativeLMStudioClient+RequestBuilder skips .assistant on
-            // continuations).
+            // couldn't resolve (malformed JSON). The turn DID happen, so record an empty
+            // anchor for it: it keeps the transcript's turn structure honest (the retry
+            // nudge that follows is a reply to SOMETHING) and keeps the conversation
+            // growing, so a malformed iteration can't leave the array byte-identical to
+            // the previous one. `conversationMessages` is in-memory wire state only — any
+            // user-visible LLMMessage/StepMessage commit is owned by commitStreaming()
+            // (the streaming LLMMessage is pre-created at stream start), so appending this
+            // anchor has no UI or persistence effect.
             conversationMessages.append(ChatMessage(role: .assistant, content: nil))
         }
 

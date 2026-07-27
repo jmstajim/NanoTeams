@@ -9,7 +9,7 @@ nonisolated struct SSEEventParser {
     enum ParsedEvent {
         case contentDelta(String)
         case thinkingDelta(String)
-        case chatEnd(responseID: String?, usage: TokenUsage?)
+        case chatEnd(usage: TokenUsage?, prefill: ServerPrefillReport?)
         case error(String)
         case processingProgress(Double)
         case ignored
@@ -60,7 +60,17 @@ nonisolated struct SSEEventParser {
                 let usage = event.stats.map {
                     TokenUsage(inputTokens: $0.inputTokens, outputTokens: $0.outputTokens)
                 }
-                return .chatEnd(responseID: event.responseID, usage: usage)
+                // `prefillNs` stays nil on this provider: LM Studio reports
+                // `time_to_first_token_seconds`, which includes queue time, and parallel roles
+                // against one model are this app's normal mode — so a queued warm request would
+                // be indistinguishable from a cold one. Only the model-load signal, which needs
+                // no calibration, is taken from here.
+                let prefill = event.stats.map {
+                    ServerPrefillReport(
+                        modelLoadMs: $0.modelLoadTimeSeconds.map { $0 * 1000 },
+                        promptTokens: $0.inputTokens)
+                }
+                return .chatEnd(usage: usage, prefill: prefill.flatMap { $0.isEmpty ? nil : $0 })
             }
             return .ignored
 

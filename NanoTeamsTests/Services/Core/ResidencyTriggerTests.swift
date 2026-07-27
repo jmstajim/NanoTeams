@@ -300,4 +300,63 @@ final class ResidencyTriggerTests: NTMSOrchestratorTestBase {
                      "The active task is never evicted, so nothing de-references")
         XCTAssertNotNil(sut.loadedTask(taskID))
     }
+
+    // MARK: - The injection seam
+    //
+    // Every test above passes `client:` explicitly, so none of them would
+    // notice `client ?? LLMClientRouter()` coming back. PRODUCTION, however,
+    // calls these entry points with NO client — `ModelResidencyHooks` (both
+    // model-change hooks and the settings sweep) and `LLMSettingsSheetView`.
+    // Before `resolvedChatLifecycleClient` those paths bypassed the injection
+    // entirely and issued live HTTP to the developer's LM Studio. The two
+    // tests below are the ones that go red if the seam is reverted.
+
+    /// `nil` must mean "this orchestrator's client", never "a fresh real router".
+    func testReconcileAndReportResidency_withNoExplicitClient_usesTheInjectedOne() async {
+        sut.configuration.llmBaseURLString = baseURL
+        sut.configuration.llmModelName = "chat-model"
+        await manage("orphan")
+        chatLifecycleClient.listLoadedInstancesResults = resident(["orphan"])
+
+        await sut.reconcileAndReportResidency()
+
+        XCTAssertEqual(unloadedIDs(), ["orphan"],
+                       "A no-argument reconcile must reclaim through the injected client")
+    }
+
+    /// Same for the model-swap entry point, which `ModelResidencyHooks` also
+    /// invokes without a client.
+    func testSwitchChatModel_withNoExplicitClient_usesTheInjectedOne() async {
+        sut.configuration.llmBaseURLString = baseURL
+        await manage("old-model")
+        // The setting now points elsewhere, so "old-model" is unreferenced.
+        sut.configuration.llmModelName = "new-model"
+        chatLifecycleClient.listLoadedInstancesResults = resident(["old-model"])
+
+        await sut.switchChatModel(
+            oldModel: "old-model", newModel: "new-model", baseURLString: baseURL)
+
+        XCTAssertEqual(unloadedIDs(), ["old-model"],
+                       "A no-argument switch must reclaim through the injected client")
+        XCTAssertTrue(
+            chatLifecycleClient.calls.contains(.load(model: "new-model", baseURL: baseURL)),
+            "…and load the replacement through it too")
+    }
+
+    /// The ownership ledger follows the same rule: an orchestrator holding its
+    /// own `ChatModelEnsurer` must never fall through to the process-global
+    /// one, or a test run could adopt — then unload — a model the developer
+    /// hand-loaded in the LM Studio UI.
+    func testNoArgumentReconcile_leavesTheProcessGlobalLedgerUntouched() async {
+        let before = await ChatModelEnsurer.shared.ownedModels()
+        sut.configuration.llmBaseURLString = baseURL
+        sut.configuration.llmModelName = "chat-model"
+        await manage("orphan")
+
+        await sut.reconcileAndReportResidency()
+
+        let after = await ChatModelEnsurer.shared.ownedModels()
+        XCTAssertEqual(before.map(\.instanceID).sorted(), after.map(\.instanceID).sorted(),
+                       "Residency must resolve to this orchestrator's ensurer")
+    }
 }

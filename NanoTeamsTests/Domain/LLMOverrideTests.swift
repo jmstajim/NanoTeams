@@ -156,4 +156,59 @@ final class LLMOverrideTests: XCTestCase {
         let b = LLMOverride(modelName: "m2")
         XCTAssertNotEqual(a, b)
     }
+
+    // MARK: - Provider override
+
+    func testIsEmpty_providerSet_returnsFalse() {
+        // A provider-only override is meaningful: "this URL speaks Ollama".
+        let override = LLMOverride(provider: .ollama)
+        XCTAssertFalse(override.isEmpty)
+    }
+
+    func testCodable_roundTrip_providerPreserved() throws {
+        let original = LLMOverride(
+            baseURLString: "http://127.0.0.1:11434",
+            modelName: "gpt-oss:20b",
+            provider: .ollama
+        )
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(LLMOverride.self, from: data)
+        XCTAssertEqual(decoded.provider, .ollama)
+        XCTAssertEqual(decoded, original)
+    }
+
+    func testDecode_legacyJSONWithoutProvider_yieldsNilProvider() throws {
+        // Every teams.json written before provider overrides existed.
+        let json = #"{"baseURLString":"http://x:1234","modelName":"m"}"#
+        let decoded = try JSONDecoder().decode(LLMOverride.self, from: Data(json.utf8))
+        XCTAssertNil(decoded.provider)
+        XCTAssertEqual(decoded.baseURLString, "http://x:1234")
+    }
+
+    func testDecode_providerAsWrongType_tolerantlyNil() throws {
+        // Hand-edited / corrupted teams.json: a NUMBER under `provider` must
+        // not fail the whole team decode (the three-file store treats any
+        // decode failure as corruption → wipe + re-bootstrap, far too harsh
+        // for one garbage field). Type garbage collapses to "inherit global",
+        // same as an unknown raw value.
+        let json = #"{"modelName":"m","provider":42}"#
+        let decoded = try JSONDecoder().decode(LLMOverride.self, from: Data(json.utf8))
+        XCTAssertNil(decoded.provider)
+        XCTAssertEqual(decoded.modelName, "m")
+    }
+
+    func testDecode_providerAsNullLiteral_nil() throws {
+        let json = #"{"modelName":"m","provider":null}"#
+        let decoded = try JSONDecoder().decode(LLMOverride.self, from: Data(json.utf8))
+        XCTAssertNil(decoded.provider)
+    }
+
+    func testDecode_unknownProviderRawValue_tolerantlyNil() throws {
+        // A future provider in a newer export must not fail the whole team —
+        // unknown raw values collapse to "inherit global".
+        let json = #"{"modelName":"m","provider":"futureProvider"}"#
+        let decoded = try JSONDecoder().decode(LLMOverride.self, from: Data(json.utf8))
+        XCTAssertNil(decoded.provider)
+        XCTAssertEqual(decoded.modelName, "m")
+    }
 }

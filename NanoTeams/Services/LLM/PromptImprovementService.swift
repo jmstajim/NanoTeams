@@ -2,7 +2,7 @@ import Foundation
 
 /// Stateless service that rewrites a user-authored prompt into a clearer, more
 /// effective version via a one-shot LLM call. DIP: accepts `any LLMClient` — no
-/// HTTP/SSE duplication. Each call is a fresh chat (`session: nil`), no tools,
+/// HTTP/SSE duplication. Each call is a fresh chat, no tools,
 /// no persistent context between calls (mirrors `VisionAnalysisService`).
 nonisolated enum PromptImprovementService {
 
@@ -52,11 +52,20 @@ nonisolated enum PromptImprovementService {
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
+                    // prefix-cache-owner: registered by the host — `ImprovePromptButton` passes a
+                    // recorder into `PromptImprovementSession.start`, which notes
+                    // `.oneShot("prompt improvement")` before consuming the stream.
+                    //
+                    // The recorder is optional because neither this service nor the session can
+                    // reach a ledger; the button reads the orchestrator from the environment. An
+                    // earlier note here claimed the call had near-zero suspect value because it is
+                    // "Settings only" — that was wrong: the button also sits in `MessageComposer`,
+                    // i.e. in the activity feed, where a role step is quite likely streaming on
+                    // the very same global model.
                     let stream = client.streamChat(
                         config: config,
                         messages: messages,
                         tools: [],
-                        session: nil,
                         logger: logger,
                         stepID: nil
                     )

@@ -49,7 +49,58 @@ nonisolated extension AcceptanceService.SupervisorFeedback: Hashable {
     }
 }
 
+// MARK: - Acceptance Gate
+
 extension AcceptanceService {
+
+    /// The per-role acceptance decision, resolved once and carried as a value.
+    ///
+    /// GRASP Information Expert: `AcceptanceService` owns the mode/checkpoint rule, so
+    /// consumers that need "does this role need a Supervisor gate" (today
+    /// `RoleStepReconciler`, via the engine and status recovery) are handed this instead
+    /// of a bare `Bool` they could compute wrongly.
+    nonisolated struct Gate: Equatable {
+        let mode: AcceptanceMode
+        let checkpoints: Set<String>
+
+        /// - Parameter teamSettings: `nil` means "the task's team could not be resolved"
+        ///   (deleted team, or a snapshot that predates the team). Falls back to
+        ///   `TeamSettings.default` — i.e. `.afterEachRole`, the FAIL-VISIBLE direction.
+        ///
+        ///   Guessing `.finalOnly` wrongly settles a completed role straight to `.done`,
+        ///   which is `isComplete` and terminal: the app would have silently accepted the
+        ///   work on the Supervisor's behalf, with no card to click and no way back except
+        ///   `restartRole` (which wipes the step). Guessing `.afterEachRole` wrongly costs
+        ///   one extra Accept click that moves the role to `.accepted` and proceeds to
+        ///   final review — recoverable, and *visible*, which is the whole point.
+        ///
+        ///   The per-task override (`task.acceptanceMode`) still wins; it needs no team.
+        init(task: NTMSTask, teamSettings: TeamSettings?) {
+            let settings = teamSettings ?? .default
+            self.mode = AcceptanceService.effectiveAcceptanceMode(for: task, teamSettings: settings)
+            self.checkpoints = AcceptanceService.effectiveCheckpoints(for: task, teamSettings: settings)
+        }
+
+        init(mode: AcceptanceMode, checkpoints: Set<String> = []) {
+            self.mode = mode
+            self.checkpoints = checkpoints
+        }
+
+        func requestsAcceptance(roleID: String) -> Bool {
+            AcceptanceService.shouldRequestAcceptance(
+                roleID: roleID,
+                mode: mode,
+                checkpoints: checkpoints
+            )
+        }
+    }
+}
+
+// `nonisolated` because these are pure static rules over value types, and the app
+// target's `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` would otherwise make them
+// main-actor-isolated — unreachable from `RoleStepReconciler` / `AcceptanceService.Gate`,
+// which are `nonisolated`. An extension does NOT inherit the type's `nonisolated`.
+nonisolated extension AcceptanceService {
 
     // MARK: - Should Request Acceptance
 
@@ -225,7 +276,7 @@ extension AcceptanceService {
 
     /// Statuses for which the chat-finish exit is appropriate: a live advisory role
     /// (`.working`) or the auto-finished-but-task-not-closed zombie (`.done`, from
-    /// `attemptAdvisoryAutoFinish`). Every OTHER validation-failing status keeps the
+    /// `noteNonProductiveTurn`). Every OTHER validation-failing status keeps the
     /// ordinary reject — accept must never force-convert a role to `.done` when that would
     /// erase state: `.failed` (a failure `finalizeRoleStatusesForClose` deliberately
     /// preserves; restart it instead), `.skipped`, `.revisionRequested` (don't abandon the

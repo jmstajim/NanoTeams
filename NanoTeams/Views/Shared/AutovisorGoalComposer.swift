@@ -18,6 +18,15 @@ import SwiftUI
 /// their paths are listed in the `## Supervisor Goal` prompt (or their text is
 /// inlined when the gear's "Embed files in prompt" toggle is on), and the
 /// manager reads them with its file tools.
+///
+/// The capability warning that used to hang under this editor now lives beside
+/// each host's **Goal** label as `AutovisorGoalLintTip`.
+///
+/// Hosts must not wrap this view in a `.background`/`.overlay` ViewBuilder
+/// closure containing focusable or responder-participating content: the editor
+/// is `NSScrollView`-backed, and such content anywhere in its ancestor chain
+/// re-enters SwiftUI's display list on every CoreAnimation frame the scroll view
+/// emits (CLAUDE.md #50).
 struct AutovisorGoalComposer: View {
     @Environment(NTMSOrchestrator.self) private var store
 

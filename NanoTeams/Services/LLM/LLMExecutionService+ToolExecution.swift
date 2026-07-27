@@ -33,6 +33,7 @@ extension LLMExecutionService {
     func executeToolCalls(
         resolvedToolCalls: [StepToolCall],
         allowedToolNames: Set<String>,
+        phaseWithheldToolNames: Set<String> = [],
         runtime: ToolRuntime,
         tracker: ToolCallTracker,
         task: NTMSTask,
@@ -94,7 +95,8 @@ extension LLMExecutionService {
                     isVisionConfigured: delegate.visionLLMConfig != nil,
                     selectedScheme: scheme,
                     xcodeSchemeKnown: snapshot != nil,
-                    isComputerUseEnabled: delegate.computerUsePolicy.isEnabled
+                    isComputerUseEnabled: delegate.computerUsePolicy.isEnabled,
+                    phaseWithheldToolNames: phaseWithheldToolNames
                 )
                 let rejected = Self.makeUnavailableToolResult(
                     call: call, canonicalName: name, scope: "for this role", reason: reason
@@ -192,6 +194,12 @@ extension LLMExecutionService {
         case visionNotConfigured    // analyze_image without a vision LLM config
         case xcodeSchemeNotSelected // run_xcodebuild/run_xcodetests without a scheme
         case computerUseDisabled    // screen_capture/ui_* with ComputerUsePolicy.mode == .off
+        /// The role HAS this tool and every work-folder precondition is met —
+        /// this ITERATION withheld it because the step is still in its planning
+        /// phase. The only reason with a "retry later" contract: every other one
+        /// tells the model to stop, which is factually wrong here, since after
+        /// recording its plan the model SHOULD repeat the exact same call.
+        case withheldUntilPlanRecorded
     }
 
     /// Maps a rejected tool name to the most-specific precondition that
@@ -214,8 +222,13 @@ extension LLMExecutionService {
         selectedScheme: String?,
         xcodeSchemeKnown: Bool = true,
         isComputerUseEnabled: Bool = true,
+        phaseWithheldToolNames: Set<String> = [],
         fileManager: FileManager = .default
     ) -> ToolUnavailabilityReason {
+        // Checked FIRST, and without an ordering hazard: this set is derived
+        // from the already-precondition-filtered tool array, so membership
+        // proves every other reason is inapplicable.
+        if phaseWithheldToolNames.contains(toolName) { return .withheldUntilPlanRecorded }
         let registry = ToolHandlerRegistry.self
         if isDefaultStorage && registry.defaultStorageBlocked.contains(toolName) {
             return .workFolderClosed
@@ -275,6 +288,12 @@ extension LLMExecutionService {
         case .computerUseDisabled:
             errorCode = "precondition_failed"
             msg = "Tool '\(call.name)' requires Computer Use, which is turned off in this app's settings. Continue without screen control, or ask the supervisor to enable Computer Use."
+        case .withheldUntilPlanRecorded:
+            // Distinct code so `buildToolErrorGuidance` can steer toward the
+            // retry. `precondition_failed` would tell the model the blocker is
+            // the work folder — false, and non-retryable.
+            errorCode = "plan_required"
+            msg = "Tool '\(call.name)' becomes available once your plan is recorded. Call update_scratchpad with your findings and your numbered plan, then call '\(call.name)' again."
         }
         let escapedMsg = msg.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")

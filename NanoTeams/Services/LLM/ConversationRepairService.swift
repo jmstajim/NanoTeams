@@ -9,12 +9,20 @@ nonisolated enum ConversationRepairService {
     /// Repairs a "poisoned" conversation that causes LLM servers to crash (HTTP 500).
     /// Pattern: assistant(toolCalls) -> tool(error) -> user(guidance) at the tail.
     /// Replaces the poisoned tail with a single user message so the next LLM call can succeed.
-    static func repairConversationIfNeeded(_ messages: inout [ChatMessage]) {
-        guard messages.count >= 3 else { return }
+    ///
+    /// Returns whether it actually repaired anything. The caller needs that: the repair is a
+    /// DELIBERATE prefix reset (it truncates the tail), so it has to arm
+    /// `expectedPrefixResetPending` — but only when it fired. Arming unconditionally would let a
+    /// no-op repair swallow the NEXT genuine cache miss, since the flag is a consumed one-shot.
+    /// It is necessary rather than optional — the alternative is an unrecoverable HTTP 500 loop —
+    /// which is what makes it an exemption rather than a defect.
+    @discardableResult
+    static func repairConversationIfNeeded(_ messages: inout [ChatMessage]) -> Bool {
+        guard messages.count >= 3 else { return false }
 
         // Scan backwards: expect user(guidance), then one or more tool results, then assistant(toolCalls)
         let last = messages[messages.count - 1]
-        guard last.role == .user else { return }
+        guard last.role == .user else { return false }
 
         // Count tool messages before the user guidance
         var toolCount = 0
@@ -23,11 +31,11 @@ nonisolated enum ConversationRepairService {
             toolCount += 1
             idx -= 1
         }
-        guard toolCount > 0, idx >= 0 else { return }
+        guard toolCount > 0, idx >= 0 else { return false }
 
         // Check if the message before tool results is an assistant with toolCalls
         let assistantMsg = messages[idx]
-        guard assistantMsg.role == .assistant, assistantMsg.toolCalls != nil else { return }
+        guard assistantMsg.role == .assistant, assistantMsg.toolCalls != nil else { return false }
 
         // Found poisoned pattern — replace everything from assistant onwards.
         // The replacement message must restate WHICH call failed: the repair
@@ -50,34 +58,28 @@ nonisolated enum ConversationRepairService {
                     + "Do not repeat that exact call — fix the arguments or take the next step of your task."
             )
         )
+        return true
     }
 
-    /// Collapse runs of consecutive assistant text-only turns (no tool calls) by keeping only
-    /// the most recent. After repeated HTTP 400 retries the conversation can accumulate several
-    /// near-identical "All tasks complete..." prose dumps that explode token counts on the next
-    /// stateless rebuild (regression: Code Reviewer in run EA190834 ballooned 1k → 13k input
-    /// tokens). Use after `repairConversationIfNeeded` and before re-streaming.
-    static func collapseRedundantAssistantTextRuns(_ messages: inout [ChatMessage]) {
-        guard messages.count >= 2 else { return }
-        var compacted: [ChatMessage] = []
-        compacted.reserveCapacity(messages.count)
-        for msg in messages {
-            let isTextOnlyAssistant = msg.role == .assistant
-                && (msg.toolCalls?.isEmpty ?? true)
-                && !(msg.content?.isEmpty ?? true)
-            if isTextOnlyAssistant,
-               let prev = compacted.last,
-               prev.role == .assistant,
-               prev.toolCalls?.isEmpty ?? true,
-               !(prev.content?.isEmpty ?? true) {
-                // Replace prior text-only assistant with this newer one
-                compacted[compacted.count - 1] = msg
-            } else {
-                compacted.append(msg)
-            }
-        }
-        messages = compacted
-    }
+    // A `collapseRedundantAssistantTextRuns` used to run here, on the same retry path, folding
+    // runs of consecutive text-only assistant turns down to the newest. It was deleted (2026-07)
+    // for three independent reasons, recorded so it is not reinvented:
+    //
+    //  1. **Its trigger was wrong.** It fired in the retryable-LLM-error arm, while the shape it
+    //     targeted is produced by the model looping without tool calls — iteration by iteration,
+    //     not by the retry. Its regression (EA190834) was the `previous_response_id` HTTP-400
+    //     loop of the stateful era, which no longer exists.
+    //  2. **It could not fire anyway.** Adjacency needs two text-only assistant turns in a row,
+    //     and every `.continueLoop` arm of `handleNoToolCalls` appends a `.user` nudge first;
+    //     `processStreamingResult` appends exactly one assistant turn per iteration. The only
+    //     reachable adjacency is `ConversationReplay.rebuildFromDisplayRecord`, which is already
+    //     a total prefix loss reported as `degradedReplay`. Pinned by
+    //     `ConversationAppendInvariantTests`.
+    //  3. **Its cost was unbounded.** It rebuilt the array, so the divergence index could be as
+    //     early as 2 — a full re-prefill (~4-6 s at 13k tokens) on a stateless transport, paid on
+    //     top of an already-failed request, and with no exemption it also reported as a defect.
+    //     Token volume is the context-budget subsystem's concern; the looping shape is
+    //     `detectMessageLoop`'s, which shipped in the same commit.
 
     // MARK: - Message-Level Loop Detection
 

@@ -17,19 +17,6 @@ extension LLMExecutionService {
         }
     }
 
-    // MARK: - Session Persistence
-
-    /// Saves the LLM session ID so the step can resume via stateful continuation (e.g. after revision).
-    func persistSessionID(stepID: String, taskID: Int, sessionID: String?) async {
-        guard let delegate, isExecutionLive(stepID: stepID, taskID: taskID) else { return }
-        await delegate.mutateTask(taskID: taskID) { task in
-            guard let runIndex = task.runs.indices.last,
-                  let stepIndex = task.runs[runIndex].steps.firstIndex(where: { $0.id == stepID })
-            else { return }
-            task.runs[runIndex].steps[stepIndex].llmSessionID = sessionID
-        }
-    }
-
     // MARK: - Tool Call Recording
 
     func appendToolCalls(stepID: String, taskID: Int, toolCalls: [StepToolCall]) async {
@@ -89,6 +76,7 @@ extension LLMExecutionService {
         config: LLMConfig
     ) async -> String {
         guard delegate != nil else { return "Approved." }
+        await noteInterleavingCall(label: "supervisor auto-answer", config: config)
         return await SupervisorAutoAnswerService.generateAnswer(
             question: question,
             task: task,
@@ -140,7 +128,7 @@ extension LLMExecutionService {
     /// transition the engine to "needs Supervisor input" with NO question
     /// rendered — which is strictly worse than the loop they replaced.
     @discardableResult
-    func setNeedsSupervisorInput(stepID: String, taskID: Int, question: String, sessionID: String?) async -> Bool {
+    func setNeedsSupervisorInput(stepID: String, taskID: Int, question: String) async -> Bool {
         // The liveness gate matters doubly here: a post-teardown call would not just
         // mis-write — it would flip a closed/paused task back to `.needsSupervisorInput`
         // and fire the queued-message backstop, which auto-resumes the run.
@@ -157,7 +145,6 @@ extension LLMExecutionService {
             task.runs[runIndex].steps[stepIndex].supervisorAnswer = nil  // Clear stale answer from previous Q&A
             task.runs[runIndex].steps[stepIndex].supervisorAnswerAttachmentPaths = []
             task.runs[runIndex].steps[stepIndex].supervisorAnswerWasAuto = false
-            task.runs[runIndex].steps[stepIndex].llmSessionID = sessionID
             task.runs[runIndex].steps[stepIndex].needsSupervisorInput = true
             task.runs[runIndex].steps[stepIndex].status = .needsSupervisorInput
 

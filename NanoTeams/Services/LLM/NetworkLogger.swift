@@ -26,6 +26,28 @@ nonisolated struct NetworkLogRecord: Codable, Hashable {
     var inputTokens: Int?
     var outputTokens: Int?
     var roleName: String?
+    /// Server-reported prompt PREFILL time in milliseconds, decode excluded. Distinct from
+    /// `durationMs`, which is whole-request wall time and is dominated by generation. This is the
+    /// number that tells a prompt-prefix (KV) cache hit from a silent re-prefill — the same
+    /// measurement `benchmark_prompt_processing.sh` extracts, now recorded per request so the
+    /// prefix audit that §6 of the stateless handoff did by hand can be done from the log.
+    /// Ollama only; LM Studio reports a queue-contaminated TTFT instead, which is not comparable.
+    var prefillMs: Double?
+    /// Server-reported model LOAD time in milliseconds, VERBATIM — never thresholded here.
+    ///
+    /// A positive value is NOT by itself a reload: Ollama reports 20–30 ms of per-request
+    /// bookkeeping on a resident model (26 of 27 baseline rows) while LM Studio reports exactly
+    /// 0 when warm. Recording the raw number is what let `minimumLoadMsForReload` be re-derived
+    /// from a real run instead of re-guessed — see `PrefixCachePolicy.minimumLoadMsForReload`,
+    /// which owns the only threshold.
+    var modelLoadMs: Double?
+    /// Milliseconds THIS APP spent explicitly loading the model for this request, when it did.
+    ///
+    /// Kept separate from `modelLoadMs` rather than folded into it so the two provenances stay
+    /// distinguishable in a real log: the server's figure is the calibration source for
+    /// `minimumLoadMsForReload`, and mixing an app-measured duration into it would poison any
+    /// attempt to re-derive that threshold. Nil whenever the model was already resident.
+    var appModelLoadMs: Double?
 }
 
 nonisolated final class NetworkLogger: @unchecked Sendable {
@@ -168,7 +190,9 @@ nonisolated final class NetworkLogger: @unchecked Sendable {
         body: String? = nil,
         error: Error?,
         inputTokens: Int? = nil,
-        outputTokens: Int? = nil
+        outputTokens: Int? = nil,
+        serverPrefill: ServerPrefillReport? = nil,
+        clientResidency: ClientResidencyFacts? = nil
     ) -> NetworkLogRecord {
         NetworkLogRecord(
             id: UUID(),
@@ -184,7 +208,10 @@ nonisolated final class NetworkLogger: @unchecked Sendable {
             stepID: request.stepID,
             inputTokens: inputTokens,
             outputTokens: outputTokens,
-            roleName: request.roleName
+            roleName: request.roleName,
+            prefillMs: serverPrefill?.prefillNs.map { $0 / 1_000_000 },
+            modelLoadMs: serverPrefill?.modelLoadMs,
+            appModelLoadMs: clientResidency?.appModelLoadMs
         )
     }
     nonisolated deinit {}

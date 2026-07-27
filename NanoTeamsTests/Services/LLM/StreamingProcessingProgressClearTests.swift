@@ -62,7 +62,6 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
             config: stubConfig(),
             tools: [],
             conversationMessages: [],
-            session: nil,
             networkLogger: nil
         )
 
@@ -105,7 +104,6 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
             config: stubConfig(),
             tools: [],
             conversationMessages: [],
-            session: nil,
             networkLogger: nil
         )
 
@@ -138,7 +136,6 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
             config: stubConfig(),
             tools: [],
             conversationMessages: [],
-            session: nil,
             networkLogger: nil
         )
 
@@ -175,7 +172,6 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
             config: stubConfig(),
             tools: [],
             conversationMessages: [],
-            session: nil,
             networkLogger: nil
         )
 
@@ -206,7 +202,6 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
             config: stubConfig(),
             tools: [],
             conversationMessages: [],
-            session: nil,
             networkLogger: nil
         )
 
@@ -241,7 +236,6 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
             config: stubConfig(),
             tools: [],
             conversationMessages: [],
-            session: nil,
             networkLogger: nil
         )
 
@@ -277,7 +271,6 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
             config: stubConfig(),
             tools: [],
             conversationMessages: [],
-            session: nil,
             networkLogger: nil
         )
 
@@ -311,7 +304,6 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
             config: stubConfig(),
             tools: [],
             conversationMessages: [],
-            session: nil,
             networkLogger: nil
         )
 
@@ -348,7 +340,6 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
             config: stubConfig(),
             tools: [],
             conversationMessages: [],
-            session: nil,
             networkLogger: nil
         )
 
@@ -375,7 +366,6 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
             config: stubConfig(),
             tools: [],
             conversationMessages: [],
-            session: nil,
             networkLogger: nil
         )
 
@@ -404,7 +394,6 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
             config: stubConfig(),
             tools: [],
             conversationMessages: [],
-            session: nil,
             networkLogger: nil
         )
 
@@ -434,7 +423,6 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
             config _: LLMConfig,
             messages _: [ChatMessage],
             tools _: [ToolSchema],
-            session _: LLMSession?,
             logger _: NetworkLogger?,
             stepID _: String?,
             roleName _: String?

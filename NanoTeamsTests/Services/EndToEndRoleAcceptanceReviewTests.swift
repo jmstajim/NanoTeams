@@ -127,7 +127,7 @@ final class EndToEndRoleAcceptanceReviewTests: NTMSOrchestratorTestBase {
         _ = await sut.acceptRole(taskID: id, roleID: "pm")
 
         // Simulate restart
-        sut = NTMSOrchestrator(repository: NTMSRepository())
+        sut = TestOrchestrator.make()
         await sut.openWorkFolder(tempDir)
         await sut.switchTask(to: id)
 

@@ -60,6 +60,10 @@ final class HeadlessRunner {
         }
 
         // 2. Create orchestrator (LM Studio needs no API keys)
+        // NTMS-ALLOW-REAL-LLM-CLIENT: production-intent driver — a headless run
+        // is SUPPOSED to talk to the configured LM Studio / Ollama server, so
+        // this is the one place under NanoTeamsTests/ that must NOT route
+        // through `TestOrchestrator.make`.
         orchestrator = NTMSOrchestrator(repository: NTMSRepository())
 
         // 3. Configure LLM

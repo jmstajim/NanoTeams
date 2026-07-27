@@ -12,10 +12,13 @@ extension StoreConfiguration {
         static let debugModeEnabled = UserDefaultsKeys.debugModeEnabled
         static let maxLLMRetries = UserDefaultsKeys.maxLLMRetries
         static let llmRequestTimeoutSeconds = UserDefaultsKeys.llmRequestTimeoutSeconds
+        static let ollamaKeepAliveSeconds = UserDefaultsKeys.ollamaKeepAliveSeconds
         static let timelineClearedUpToDate = UserDefaultsKeys.timelineClearedUpToDate
         static let visionEnabled = UserDefaultsKeys.visionEnabled
         static let visionModelName = UserDefaultsKeys.visionModelName
         static let visionBaseURL = UserDefaultsKeys.visionBaseURL
+        static let visionProvider = UserDefaultsKeys.visionProvider
+        static let llmProviderEndpoints = UserDefaultsKeys.llmProviderEndpoints
         static let dismissedNotificationIDs = UserDefaultsKeys.dismissedNotificationIDs
         static let dismissedFeatureTipIDs = UserDefaultsKeys.dismissedFeatureTipIDs
         static let seenSupervisorInputKeys = UserDefaultsKeys.seenSupervisorInputKeys

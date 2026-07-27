@@ -195,7 +195,7 @@ final class EndToEndTeamImportExportWorkflowTests: NTMSOrchestratorTestBase {
         await sut.mutateWorkFolder { proj in proj.addTeam(imported) }
 
         // Reopen
-        sut = NTMSOrchestrator(repository: NTMSRepository())
+        sut = TestOrchestrator.make()
         await sut.openWorkFolder(tempDir)
 
         XCTAssertNotNil(sut.workFolder?.teams.first { $0.id == imported.id },

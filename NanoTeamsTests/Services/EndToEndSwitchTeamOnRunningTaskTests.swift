@@ -204,7 +204,7 @@ final class EndToEndSwitchTeamOnRunningTaskTests: NTMSOrchestratorTestBase {
         await sut.switchTeam(to: newID)
 
         // Restart
-        sut = NTMSOrchestrator(repository: NTMSRepository())
+        sut = TestOrchestrator.make()
         await sut.openWorkFolder(tempDir)
         await sut.switchTask(to: taskID)
 

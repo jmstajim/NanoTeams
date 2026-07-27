@@ -1114,7 +1114,6 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         XCTAssertTrue(event.thinkingDelta.isEmpty)
         XCTAssertTrue(event.toolCallDeltas.isEmpty)
         XCTAssertNil(event.tokenUsage)
-        XCTAssertNil(event.session)
         XCTAssertFalse(event.isEmpty, "Event with only processingProgress should not be empty")
     }
 

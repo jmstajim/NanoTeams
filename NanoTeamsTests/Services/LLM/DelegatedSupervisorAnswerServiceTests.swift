@@ -1,12 +1,13 @@
 import XCTest
 @testable import NanoTeams
 
-/// User-path tests for `DelegatedSupervisorAnswerService` — the seeded stateful chain
-/// that routes a delegated child team's `ask_supervisor` calls back to the parent role.
+/// User-path tests for `DelegatedSupervisorAnswerService` — the side exchange that
+/// routes a delegated child team's `ask_supervisor` calls back to the parent role.
 ///
 /// Covers:
-/// - First question seeds chain with `parentStep.llmConversation` (session=nil), captures session id
-/// - Subsequent question reuses `parentStep.delegationSession` via `previous_response_id` (only new turn sent)
+/// - Every question seeds from `parentStep.llmConversation` + the new question turn
+/// - A SECOND question in the same delegation re-seeds and sees the first Q&A, because
+///   `persistExchange` appended it to the very conversation the seed is built from
 /// - Plain-text answer routes through `delegate.answerSupervisorQuestion` (which engages engine resume)
 /// - Tool-call escalation when `parentTask.parentTaskID != nil` recurses on the grandparent
 /// - Top-of-chain escalation: persists `ancillaryQuestion`, surfaces info banner, returns `false`
@@ -129,26 +130,24 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
     }
 
     /// Scripted LLM client. Captures every streamChat invocation; returns scripted
-    /// content + (optional) tool call + session id from the next entry of `script`.
+    /// content + (optional) tool call from the next entry of `script`.
     final class ScriptedLLMClient: LLMClient, @unchecked Sendable {
         struct ScriptedTurn {
             var content: String = ""
             var toolCalls: [(name: String, argumentsJSON: String)] = []
-            var responseID: String? = nil
         }
         var script: [ScriptedTurn] = []
-        var captures: [(messages: [ChatMessage], tools: [ToolSchema], session: LLMSession?)] = []
+        var captures: [(messages: [ChatMessage], tools: [ToolSchema])] = []
 
         func streamChat(
             config _: LLMConfig,
             messages: [ChatMessage],
             tools: [ToolSchema],
-            session: LLMSession?,
             logger _: NetworkLogger?,
             stepID _: String?,
             roleName _: String?
         ) -> AsyncThrowingStream<StreamEvent, Error> {
-            captures.append((messages, tools, session))
+            captures.append((messages, tools))
             let turn = script.isEmpty ? ScriptedTurn() : script.removeFirst()
             return AsyncThrowingStream { continuation in
                 if !turn.content.isEmpty {
@@ -162,9 +161,6 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
                         argumentsDelta: call.argumentsJSON
                     )
                     continuation.yield(StreamEvent(toolCallDeltas: [delta]))
-                }
-                if let rid = turn.responseID {
-                    continuation.yield(StreamEvent(session: LLMSession(responseID: rid)))
                 }
                 continuation.finish()
             }
@@ -261,7 +257,7 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
 
         let client = ScriptedLLMClient()
         client.script = [
-            .init(content: "Yes, negative numbers are required.", toolCalls: [], responseID: "resp-1"),
+            .init(content: "Yes, negative numbers are required.", toolCalls: []),
         ]
 
         let success = await DelegatedSupervisorAnswerService.handleChildQuestion(
@@ -278,17 +274,14 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
         XCTAssertTrue(success, "Plain-text answer path should succeed")
         XCTAssertEqual(client.captures.count, 1, "One streamChat call expected for first question")
         let capture = client.captures[0]
-        XCTAssertNil(capture.session, "First question must seed with session=nil (fresh chain)")
         // Seed = system + user + assistant + new user(question prefix). 4 messages total.
         XCTAssertEqual(capture.messages.count, seed.count + 1)
         XCTAssertEqual(capture.messages.first?.role, .system)
         XCTAssertTrue(capture.messages.last?.content?.contains("Should the calculator support negative numbers?") ?? false,
                       "Last message must contain the child's question")
 
-        // Capture session id persists to parent step.delegationSession
         let parentTaskAfter = delegate.tasks[1]!
         let parentStep = parentTaskAfter.runs[0].steps[0]
-        XCTAssertEqual(parentStep.delegationSession, "resp-1")
 
         // Q&A persisted to parent step's conversation
         XCTAssertEqual(parentStep.llmConversation.count, seed.count + 2)
@@ -303,21 +296,29 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
         XCTAssertEqual(delegate.answerSupervisorCalls[0].answer, "Yes, negative numbers are required.")
     }
 
-    // MARK: - Subsequent Question: Stateful Continuation
+    // MARK: - Subsequent Question: Re-seeds And Carries The Prior Q&A
 
-    func testSubsequentQuestion_reusesDelegationSession_sendsOnlyNewTurn() async {
+    /// The second question in a delegation must SEE the first one. There is no
+    /// server-side chain any more, so the guarantee comes from `persistExchange`
+    /// appending each (question, answer) pair to the very `llmConversation` the
+    /// seed is rebuilt from.
+    func testSubsequentQuestion_reSeeds_andCarriesThePriorExchange() async {
         let delegate = MultiTaskDelegateStub()
         let parentTeam = makeParentTeam()
         delegate.workFolderProjection = makeProjection(teams: [parentTeam])
         var parentTask = makeParentTask(seedConversation: [LLMMessage(role: .system, content: "PM")])
-        // Pre-seed delegationSession to simulate prior question in the same delegation
-        parentTask.runs[0].steps[0].setDelegationSession("resp-prev")
+        // A prior question in the same delegation, already recorded by persistExchange.
+        parentTask.runs[0].steps[0].llmConversation.append(
+            LLMMessage(role: .user, content: "Earlier question",
+                       sourceRole: nil, sourceContext: .delegatedQuestion))
+        parentTask.runs[0].steps[0].llmConversation.append(
+            LLMMessage(role: .assistant, content: "Earlier answer"))
         delegate.tasks[1] = parentTask
         delegate.tasks[2] = makeChildTask(question: "What about division by zero?")
 
         let client = ScriptedLLMClient()
         client.script = [
-            .init(content: "Throw a DivisionByZeroError.", toolCalls: [], responseID: "resp-2"),
+            .init(content: "Throw a DivisionByZeroError.", toolCalls: []),
         ]
 
         _ = await DelegatedSupervisorAnswerService.handleChildQuestion(
@@ -333,13 +334,14 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
 
         XCTAssertEqual(client.captures.count, 1)
         let capture = client.captures[0]
-        XCTAssertEqual(capture.session?.responseID, "resp-prev",
-                       "Subsequent question must reuse parent.delegationSession via previous_response_id")
-        XCTAssertEqual(capture.messages.count, 1, "Only the new question turn — no full history rebuild")
-        XCTAssertTrue(capture.messages.first?.content?.contains("What about division by zero?") ?? false)
-
-        // Updated session captured on parent step
-        XCTAssertEqual(delegate.tasks[1]!.runs[0].steps[0].delegationSession, "resp-2")
+        // system + earlier Q + earlier A + the new question turn
+        XCTAssertEqual(capture.messages.count, 4,
+                       "The seed is rebuilt from the parent's conversation every time")
+        let wire = capture.messages.compactMap(\.content).joined(separator: "\n")
+        XCTAssertTrue(wire.contains("Earlier question"),
+                      "The prior exchange must ride the seed — nothing holds it server-side")
+        XCTAssertTrue(wire.contains("Earlier answer"))
+        XCTAssertTrue(capture.messages.last?.content?.contains("What about division by zero?") ?? false)
     }
 
     // MARK: - Mid-chain Escalation: Recursion to Grandparent
@@ -361,11 +363,10 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
             // Parent escalates via ask_supervisor tool call
             .init(
                 content: "",
-                toolCalls: [(name: ToolNames.askSupervisor, argumentsJSON: "{\"question\": \"Need clarification (escalated)\"}")],
-                responseID: "resp-parent"
+                toolCalls: [(name: ToolNames.askSupervisor, argumentsJSON: "{\"question\": \"Need clarification (escalated)\"}")]
             ),
             // Grandparent answers in plain text
-            .init(content: "Use the standard approach.", toolCalls: [], responseID: "resp-gp"),
+            .init(content: "Use the standard approach.", toolCalls: []),
         ]
 
         let success = await DelegatedSupervisorAnswerService.handleChildQuestion(
@@ -399,9 +400,6 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
         XCTAssertTrue(gpConv.contains { $0.sourceContext == .delegatedQuestion },
                       "Grandparent step should record the question as a delegated question since GP answered plainly.")
 
-        // Each step's delegationSession was updated with its respective response id.
-        XCTAssertEqual(delegate.tasks[1]!.runs[0].steps[0].delegationSession, "resp-parent")
-        XCTAssertEqual(delegate.tasks[0]!.runs[0].steps[0].delegationSession, "resp-gp")
     }
 
     // MARK: - Top-of-chain Escalation: Aborts with Banner
@@ -418,8 +416,7 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
         client.script = [
             .init(
                 content: "",
-                toolCalls: [(name: ToolNames.askSupervisor, argumentsJSON: "{\"question\": \"Need exec input\"}")],
-                responseID: "resp-1"
+                toolCalls: [(name: ToolNames.askSupervisor, argumentsJSON: "{\"question\": \"Need exec input\"}")]
             ),
         ]
 
@@ -509,7 +506,7 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
         delegate.tasks[2] = makeChildTask(question: "Q?")
 
         let client = ScriptedLLMClient()
-        client.script = [.init(content: "A.", toolCalls: [], responseID: "r1")]
+        client.script = [.init(content: "A.", toolCalls: [])]
 
         _ = await DelegatedSupervisorAnswerService.handleChildQuestion(
             childTID: 2, parentTaskID: 1, parentRoleID: "pm",
@@ -546,8 +543,7 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
             .init(
                 content: "<|channel|>commentary to=functions.ask_supervisor<|message|>"
                     + "{\"question\": \"Need exec input\"}<|call|>",
-                toolCalls: [],
-                responseID: "r1"
+                toolCalls: []
             ),
         ]
 
@@ -574,7 +570,7 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
 
         let client = ScriptedLLMClient()
         client.script = [
-            .init(content: "<|channel|>final<|message|>Use approach B.", toolCalls: [], responseID: "r1"),
+            .init(content: "<|channel|>final<|message|>Use approach B.", toolCalls: []),
         ]
 
         _ = await DelegatedSupervisorAnswerService.handleChildQuestion(

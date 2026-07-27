@@ -185,15 +185,12 @@ final class StepMessagingServiceTests: XCTestCase {
         var (task, stepID) = createTaskWithStep()
         task.runs[0].steps[0].status = .paused
         task.runs[0].steps[0].needsSupervisorInput = true
-        task.runs[0].steps[0].llmSessionID = "resp_xyz"
 
         StepMessagingService.answerSupervisorQuestion(stepID: stepID, answer: "продолжай", in: &task)
 
         XCTAssertEqual(task.runs[0].steps[0].status, .pending)
         XCTAssertFalse(task.runs[0].steps[0].needsSupervisorInput)
         XCTAssertEqual(task.runs[0].steps[0].supervisorAnswer, "продолжай")
-        XCTAssertEqual(task.runs[0].steps[0].llmSessionID, "resp_xyz",
-                       "Saved session ID must survive — startStepExecution uses it for previous_response_id")
     }
 
     /// Other terminal/transitional statuses must NOT be promoted to `.pending` — the `.paused`

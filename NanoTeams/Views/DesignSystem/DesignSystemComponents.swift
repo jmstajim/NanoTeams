@@ -150,21 +150,54 @@ struct BorderedTextEditorStyle: ViewModifier {
 // MARK: - Info Tip
 
 /// ⓘ button that shows a help popover with explanatory text.
+///
+/// Every parameter but `text` defaults to the plain-info rendering, so a caller
+/// that just needs a help affordance writes `InfoTip("…")`. The symbol / tint /
+/// font knobs exist so a tip can carry STATE (e.g. the Autovisor goal tip turns
+/// into a warning triangle) and size itself to the label it sits beside, without
+/// a second popover implementation drifting from this one on width or padding.
+///
+/// Deliberately carries NO `.keyboardShortcut` / `.focusable`: instances sit in
+/// the ancestor chain of `NSScrollView`-backed editors, where responder-participating
+/// content re-enters SwiftUI's display list on every CoreAnimation frame the scroll
+/// view emits (CLAUDE.md #50). `isPresented` stays local to this leaf for the same
+/// reason — lifting it would invalidate the host's body on every toggle.
 struct InfoTip: View {
     let text: String
+    let systemImage: String
+    let tint: Color
+    let font: Font
+    let accessibilityLabel: String
+
     @State private var isPresented = false
 
-    init(_ text: String) { self.text = text }
+    // Explicit rather than memberwise so `text` stays positional-first —
+    // `InfoTip("…")` is the common call. Defaults live here only, so there is
+    // one place to change the plain-info rendering.
+    init(
+        _ text: String,
+        systemImage: String = "info.circle",
+        tint: Color = Colors.textTertiary,
+        font: Font = Typography.subheadline,
+        accessibilityLabel: String = "More information"
+    ) {
+        self.text = text
+        self.systemImage = systemImage
+        self.tint = tint
+        self.font = font
+        self.accessibilityLabel = accessibilityLabel
+    }
 
     var body: some View {
         Button {
             isPresented.toggle()
         } label: {
-            Image(systemName: "info.circle")
-                .font(Typography.subheadline)
-                .foregroundStyle(Colors.textTertiary)
+            Image(systemName: systemImage)
+                .font(font)
+                .foregroundStyle(tint)
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel)
         .popover(isPresented: $isPresented) {
             Text(text)
                 .font(Typography.termBase)
@@ -277,12 +310,18 @@ struct SettingsCard<Content: View>: View {
     let header: String
     var systemImage: String?
     var footer: String?
+    /// A trailing control rendered on the `┤ TITLE ├` chip line — forwarded to the
+    /// slot `TerminalPane` already owns. Must stay a `var` (an Optional `var` gets
+    /// an implicit `nil` in the memberwise init, which is what keeps all existing
+    /// call sites compiling); a `let` with a default would be dropped from that
+    /// init entirely, making the parameter unreachable.
+    var headerTrailing: AnyView?
     @ViewBuilder let content: () -> Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.s) {
             // Titled box-drawing card — the design's `┤ TITLE ├` cut-in pane.
-            TerminalPane(title: header, contentPadding: Spacing.standard) {
+            TerminalPane(title: header, contentPadding: Spacing.standard, headerTrailing: headerTrailing) {
                 VStack(alignment: .leading, spacing: Spacing.m) {
                     content()
                 }

@@ -76,11 +76,33 @@ final class MeetingCoordinatorTests: XCTestCase {
         XCTAssertTrue(filtered.isEmpty)
     }
 
+
+    /// The whole-turn prompt, composed from the three parts the production wire now sends as
+    /// separate messages. The assertions below are about CONTENT — every line still reaches the
+    /// model, just not folded into one message — so composing it here keeps them meaningful while
+    /// the wire stays append-only. `MeetingWireAppendOnlyTests` pins the split itself.
+    private static func composedTurnMessage(
+        speaker: Role,
+        meeting: TeamMeeting,
+        context: TeamMeetingService.MeetingContext
+    ) -> String {
+        var parts = [MeetingCoordinator.buildMeetingHeader(meeting: meeting, context: context)]
+        if !meeting.messages.isEmpty {
+            parts.append("Discussion so far:")
+            parts.append(contentsOf: meeting.messages.map {
+                MeetingCoordinator.buildTranscriptLine($0, context: context)
+            })
+        }
+        parts.append(MeetingCoordinator.buildTurnDirective(
+            speaker: speaker, meeting: meeting, context: context))
+        return parts.joined(separator: "\n")
+    }
+
     // MARK: - buildTurnMessage
 
     func testBuildTurnMessage_includesTopicAndParticipants() {
         let (meeting, context) = makeMeetingAndContext(topic: "Design review")
-        let msg = MeetingCoordinator.buildTurnMessage(
+        let msg = Self.composedTurnMessage(
             speaker: .techLead,
             meeting: meeting,
             context: context
@@ -92,7 +114,7 @@ final class MeetingCoordinatorTests: XCTestCase {
     func testBuildTurnMessage_includesAdditionalContext() {
         var (meeting, context) = makeMeetingAndContext(topic: "API design")
         meeting.context = "We need to decide on REST vs GraphQL"
-        let msg = MeetingCoordinator.buildTurnMessage(
+        let msg = Self.composedTurnMessage(
             speaker: .techLead,
             meeting: meeting,
             context: context
@@ -102,7 +124,7 @@ final class MeetingCoordinatorTests: XCTestCase {
 
     func testBuildTurnMessage_noMessages_noDiscussionSection() {
         let (meeting, context) = makeMeetingAndContext(topic: "First topic")
-        let msg = MeetingCoordinator.buildTurnMessage(
+        let msg = Self.composedTurnMessage(
             speaker: .techLead,
             meeting: meeting,
             context: context
@@ -117,7 +139,7 @@ final class MeetingCoordinatorTests: XCTestCase {
             role: .productManager, content: "I think we should...",
             messageType: .proposal
         ))
-        let msg = MeetingCoordinator.buildTurnMessage(
+        let msg = Self.composedTurnMessage(
             speaker: .techLead,
             meeting: meeting,
             context: context
@@ -137,7 +159,7 @@ final class MeetingCoordinatorTests: XCTestCase {
                 messageType: .discussion
             ))
         }
-        let msg = MeetingCoordinator.buildTurnMessage(
+        let msg = Self.composedTurnMessage(
             speaker: context.coordinatorRole,
             meeting: meeting,
             context: context
@@ -147,7 +169,7 @@ final class MeetingCoordinatorTests: XCTestCase {
 
     func testBuildTurnMessage_nonCoordinator_genericMessage() {
         let (meeting, context) = makeMeetingAndContext(topic: "Topic")
-        let msg = MeetingCoordinator.buildTurnMessage(
+        let msg = Self.composedTurnMessage(
             speaker: .softwareEngineer,
             meeting: meeting,
             context: context
@@ -161,7 +183,7 @@ final class MeetingCoordinatorTests: XCTestCase {
             topic: "Discussion", limits: limits, templateID: "discussionClub"
         )
         // Early turn (0 messages, turnNumber=1): "3-5 sentences"
-        let earlyMsg = MeetingCoordinator.buildTurnMessage(
+        let earlyMsg = Self.composedTurnMessage(
             speaker: .theAgreeable, meeting: meeting, context: context
         )
         XCTAssertTrue(earlyMsg.contains("3-5 sentences"))
@@ -174,7 +196,7 @@ final class MeetingCoordinatorTests: XCTestCase {
                 messageType: .discussion
             ))
         }
-        let lateMsg = MeetingCoordinator.buildTurnMessage(
+        let lateMsg = Self.composedTurnMessage(
             speaker: .theAgreeable, meeting: meeting, context: context
         )
         XCTAssertTrue(lateMsg.contains("Final remarks only"))
@@ -197,7 +219,7 @@ final class MeetingCoordinatorTests: XCTestCase {
 
         // Turn 1 (empty meeting) — generic input branch (coordinator gets
         // steering only past half-way, not at turn 1).
-        let turn1 = MeetingCoordinator.buildTurnMessage(
+        let turn1 = Self.composedTurnMessage(
             speaker: initiator, meeting: meeting, context: context
         )
         XCTAssertFalse(turn1.contains("Final turns"))
@@ -212,7 +234,7 @@ final class MeetingCoordinatorTests: XCTestCase {
                 messageType: .discussion
             ))
         }
-        let turnMid = MeetingCoordinator.buildTurnMessage(
+        let turnMid = Self.composedTurnMessage(
             speaker: initiator, meeting: meeting, context: context
         )
         XCTAssertTrue(turnMid.contains("As coordinator"),
@@ -226,7 +248,7 @@ final class MeetingCoordinatorTests: XCTestCase {
             role: initiator, content: "msg",
             messageType: .discussion
         ))
-        let turnLate = MeetingCoordinator.buildTurnMessage(
+        let turnLate = Self.composedTurnMessage(
             speaker: initiator, meeting: meeting, context: context
         )
         XCTAssertTrue(turnLate.contains("Final turns"),
@@ -249,7 +271,7 @@ final class MeetingCoordinatorTests: XCTestCase {
                 messageType: .discussion
             ))
         }
-        let msg = MeetingCoordinator.buildTurnMessage(
+        let msg = Self.composedTurnMessage(
             speaker: .softwareEngineer, meeting: meeting, context: context
         )
         XCTAssertTrue(msg.contains("Provide your input"))

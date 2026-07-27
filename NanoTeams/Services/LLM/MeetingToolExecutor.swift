@@ -32,14 +32,21 @@ enum MeetingToolExecutor {
         toolContext: ToolExecutionContext,
         stepID: String? = nil,
         networkLogger: NetworkLogger? = nil,
-        cancellationRegistrar: BatchCancellationRegistrar? = nil
+        cancellationRegistrar: BatchCancellationRegistrar? = nil,
+        /// Records each follow-up request against the meeting turn's prompt-prefix chain.
+        ///
+        /// A closure rather than the ledger itself: this is a stateless enum with no owner and no
+        /// notion of which chain it belongs to, and the caller has both. Binding the chain id at
+        /// the call site is also what guarantees the initial stream and its follow-ups land on the
+        /// SAME chain — recomputing the id in two frames is how a key comes to disagree with
+        /// itself (CLAUDE.md Грабли 2026-07-26).
+        recordPrefixChain: (([ChatMessage]) async -> Void)? = nil
     ) async throws -> (
         content: String, thinking: String,
-        toolSummaries: [MeetingToolSummary], finalSession: LLMSession?
+        toolSummaries: [MeetingToolSummary]
     ) {
         var currentResult = initialResult
         var conversation = conversationSoFar
-        var finalSession: LLMSession?
         var allThinking = initialResult.thinking
         var collectedToolSummaries: [MeetingToolSummary] = []
         var iteration = 0
@@ -142,10 +149,12 @@ enum MeetingToolExecutor {
                 ))
             }
 
-            // Re-call LLM with tool results. Stateless full send (session nil):
-            // the response establishes a fresh chain that INCLUDES the tool
-            // results, and its id is returned as `finalSession` so the caller
-            // stores a chain consistent with the persisted chat.
+            // Re-call the LLM with the tool results appended — the same full
+            // conversation the initial stream was grounded on, plus this
+            // iteration's calls and results. Append-only, so this is exactly the growing prefix
+            // the ledger exists to track.
+            await recordPrefixChain?(conversation)
+
             currentResult = try await MeetingStreamingService.streamParticipantResponse(
                 messages: conversation,
                 client: client,
@@ -154,13 +163,12 @@ enum MeetingToolExecutor {
                 logger: networkLogger,
                 stepID: stepID
             )
-            if let s = currentResult.session { finalSession = s }
 
             if !currentResult.thinking.isEmpty {
                 allThinking += (allThinking.isEmpty ? "" : "\n") + currentResult.thinking
             }
         }
 
-        return (currentResult.content, allThinking, collectedToolSummaries, finalSession)
+        return (currentResult.content, allThinking, collectedToolSummaries)
     }
 }

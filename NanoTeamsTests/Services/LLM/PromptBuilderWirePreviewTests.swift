@@ -121,8 +121,7 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
         let request = NativeLMStudioClient.buildRequest(
             config: llmConfig,
             messages: messages,
-            tools: tools,
-            session: nil
+            tools: tools
         )
         return request.systemPrompt ?? ""
     }

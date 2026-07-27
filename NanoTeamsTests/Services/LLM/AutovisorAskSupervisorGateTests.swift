@@ -119,6 +119,54 @@ final class AutovisorAskSupervisorGateTests: XCTestCase {
                       "sanity: management toolset survives the strip")
     }
 
+    // MARK: - Hole 4: the strip held, but the NUDGES named the stripped tool anyway
+
+    /// The gap that let the reported defect ship: every test above pins that
+    /// `ask_supervisor` is absent from the manager's schema, and none pinned that the
+    /// flow-control nudges respect that. They did not — `handleNoToolCalls` had no
+    /// access to the schema at all and unconditionally told the manager to "send it via
+    /// ask_supervisor". Observed in production: the manager replied with reasoning and
+    /// no tool call, got pointed at a tool it does not have, then emitted two empty
+    /// turns and burned its whole recovery budget.
+    ///
+    /// Drives the REAL resolved schema (not a hand-listed set) so the pin cannot drift
+    /// from what actually ships on the wire.
+    func testManagerSchema_noNudgeNamesAskSupervisor() {
+        let team = TeamTemplateFactory.autovisor()
+        let allowed = Set(
+            LLMExecutionService.resolveToolSchemas(for: .autovisor, team: team).map(\.name))
+        XCTAssertFalse(allowed.contains(ToolNames.askSupervisor), "precondition: the strip held")
+
+        let nudges = [
+            LLMExecutionService.noToolCallNudge(allowedToolNames: allowed),
+            LLMExecutionService.repetitiveNonToolNudge(count: 3, allowedToolNames: allowed),
+            LLMExecutionService.toolNameExamples(allowedToolNames: allowed) ?? "",
+            LLMExecutionService.loopWarningMessage(
+                loopDetection: .repetitiveTool(
+                    tool: ToolNames.listTasks, count: 3, message: "repeated list_tasks"),
+                allowedToolNames: allowed),
+        ]
+        for nudge in nudges {
+            XCTAssertFalse(
+                nudge.contains(ToolNames.askSupervisor),
+                "a nudge named a tool the manager's schema does not carry: \(nudge)")
+        }
+    }
+
+    /// …and the positive half: the manager IS steered at the tool it actually has.
+    /// Without this the fix could degrade to "names nothing", which is safe but leaves
+    /// the model with no way to end its pass.
+    func testManagerSchema_genericNudgeSteersToWaitForEvents() {
+        let team = TeamTemplateFactory.autovisor()
+        let allowed = Set(
+            LLMExecutionService.resolveToolSchemas(for: .autovisor, team: team).map(\.name))
+        XCTAssertTrue(allowed.contains(ToolNames.waitForEvents),
+                      "precondition: wait_for_events is the manager's pass terminal")
+
+        let nudge = LLMExecutionService.noToolCallNudge(allowedToolNames: allowed)
+        XCTAssertTrue(nudge.contains(ToolNames.waitForEvents), "got: \(nudge)")
+    }
+
     func testNormalAdvisoryRole_stillAutoInjectsAskSupervisor() {
         // Minimal non-manager chat team with an advisory role (input dep, no outputs).
         let advisory = TeamRoleDefinition(

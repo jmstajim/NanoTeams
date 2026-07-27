@@ -16,8 +16,12 @@ struct HeadlessConfig: Codable {
 
     // MARK: - LLM
 
-    /// LLM provider raw value: "lmStudio".
-    var provider: String?
+    /// LLM provider: `"lmStudio"` or `"ollama"`. Omitted ⇒ `.lmStudio`.
+    ///
+    /// Typed rather than a raw `String?` so a typo fails at config load instead
+    /// of silently degrading to LM Studio and pointing a 10-minute Ollama run at
+    /// the wrong server (same reasoning as `CreateTeamTrainerConfig.provider`).
+    var provider: LLMProvider?
 
     /// Base URL override (e.g. "http://127.0.0.1:1234").
     var baseURL: String?
@@ -54,7 +58,7 @@ struct HeadlessConfig: Codable {
     // MARK: - Resolved Helpers
 
     var resolvedProvider: LLMProvider {
-        provider.flatMap(LLMProvider.init(rawValue:)) ?? .lmStudio
+        provider ?? .lmStudio
     }
 
     var resolvedBaseURL: String {
@@ -86,7 +90,19 @@ struct HeadlessConfig: Codable {
         self.projectPath = try c.decode(String.self, forKey: .projectPath)
         self.taskTitle = try c.decode(String.self, forKey: .taskTitle)
         self.supervisorTask = try c.decode(String.self, forKey: .supervisorTask)
-        self.provider = try c.decodeIfPresent(String.self, forKey: .provider)
+        // Decoded through the raw string so the error names the offending value
+        // and the legal set, instead of Foundation's generic `dataCorrupted`.
+        if let raw = try c.decodeIfPresent(String.self, forKey: .provider) {
+            guard let parsed = LLMProvider(rawValue: raw) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .provider, in: c,
+                    debugDescription: "Unknown provider \"\(raw)\". Valid values: "
+                        + LLMProvider.allCases.map(\.rawValue).joined(separator: ", "))
+            }
+            self.provider = parsed
+        } else {
+            self.provider = nil
+        }
         self.baseURL = try c.decodeIfPresent(String.self, forKey: .baseURL)
         self.model = try c.decodeIfPresent(String.self, forKey: .model)
         self.teamTemplate = try c.decodeIfPresent(String.self, forKey: .teamTemplate)

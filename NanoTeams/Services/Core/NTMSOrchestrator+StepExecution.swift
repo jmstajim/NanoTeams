@@ -18,6 +18,35 @@ extension NTMSOrchestrator {
         lastInfoMessage = message
     }
 
+    /// `LLMStateDelegate.reportPrefixCacheMiss`. The service detects the miss; every user-visible
+    /// surface is owned here.
+    ///
+    /// The count always moves — that is the always-on surface, and it is idempotent under
+    /// repetition, which the 4-second single-slot banner is not. The banner fires only when
+    /// `PrefixCacheReporter` says this miss earns one (once per task+run+cause, on-screen task
+    /// only).
+    // periphery:ignore - protocol conformance (LLMStateDelegate)
+    func reportPrefixCacheMiss(_ miss: PrefixCacheMiss) {
+        guard let message = prefixCacheReporter.report(miss) else { return }
+        lastErrorMessage = message
+    }
+
+    /// Registers a request against a prompt-prefix chain on behalf of a taskless service that
+    /// has no ledger of its own. Routes to THIS orchestrator's execution service — never a
+    /// global (CLAUDE.md Swift Style #49), which is the whole reason the ledger is an injected
+    /// instance rather than a singleton.
+    // periphery:ignore - protocol conformance (LLMStateDelegate)
+    func recordPrefixChainForTasklessCall(
+        owner: LLMCallOwner, config: LLMConfig, messages: [ChatMessage]
+    ) async {
+        _ = await llmExecutionService.prefixLedger.record(
+            baseURL: config.baseURLString,
+            model: config.modelName,
+            owner: owner,
+            messages: messages,
+            toolSchemaText: "")
+    }
+
     /// Notify the engine for a specific task that an external event occurred.
     func notifyEngineExternalEvent(taskID: Int) {
         taskEngines[taskID]?.notifyExternalEvent()

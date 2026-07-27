@@ -106,4 +106,43 @@ final class BuildEffectiveConfigTests: XCTestCase {
         XCTAssertEqual(result.temperature, 0.3,
                        "Temperature should fall back to global when not overridden")
     }
+
+    // MARK: - 4. Provider resolution
+
+    func testURLOnlyOverride_preservesGlobalOllamaProvider() {
+        // Pre-fix this hardcoded `.lmStudio`, silently discarding even the
+        // global provider — a URL-only override on a global-Ollama setup
+        // would have spoken the wrong wire format.
+        let global = LLMConfig(
+            provider: .ollama,
+            baseURLString: "http://127.0.0.1:11434",
+            modelName: "gpt-oss:20b"
+        )
+        let override = LLMOverride(baseURLString: "http://other-ollama:11434")
+
+        let result = LLMExecutionService.buildEffectiveConfig(
+            globalConfig: global,
+            roleOverride: override
+        )
+
+        XCTAssertEqual(result.provider, .ollama)
+        XCTAssertEqual(result.baseURLString, "http://other-ollama:11434")
+    }
+
+    func testOverrideProvider_winsOverGlobal() {
+        let global = makeGlobalConfig() // .lmStudio
+        let override = LLMOverride(
+            baseURLString: "http://127.0.0.1:11434",
+            modelName: "gpt-oss:20b",
+            provider: .ollama
+        )
+
+        let result = LLMExecutionService.buildEffectiveConfig(
+            globalConfig: global,
+            roleOverride: override
+        )
+
+        XCTAssertEqual(result.provider, .ollama,
+                       "The override's provider decides the wire format for its URL")
+    }
 }

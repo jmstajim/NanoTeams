@@ -132,4 +132,71 @@ final class AutovisorStatusTimingTests: XCTestCase {
         let run = Run(id: 0, createdAt: now.addingTimeInterval(-120))
         XCTAssertEqual(AutovisorStatus.taskElapsedSeconds(run: run, now: now), 120)
     }
+
+    // MARK: - isResumable
+
+    /// Truth table. This predicate mirrors `resumeRun` branch 3; the manager acts on
+    /// it, so a false positive advertises a resume the runtime silently drops and a
+    /// false negative pushes it back toward the destructive `manage_role restart`.
+
+    /// Deliberate pause (`control_task pause` / UI): `pauseStep` never touches role
+    /// status, so the role stays `.working`.
+    func testIsResumable_pausedStepWithWorkingRole_isResumable() {
+        let s = step(createdAt: now, status: .paused)
+        XCTAssertTrue(AutovisorStatus.isResumable(step: s, roleStatus: .working, taskIsClosed: false))
+    }
+
+    /// The incident shape: app quit mid-run, `StatusRecoveryService` demoted the role
+    /// to `.idle` while the step kept its history.
+    func testIsResumable_appQuitShape_idleRoleWithHistory_isResumable() {
+        let withMessages = step(
+            createdAt: now, status: .paused,
+            messages: [StepMessage(role: .softwareEngineer, content: "working")])
+        XCTAssertTrue(
+            AutovisorStatus.isResumable(step: withMessages, roleStatus: .idle, taskIsClosed: false))
+
+        // `llmConversation` alone is enough — a Harmony tool loop can fill it while
+        // `messages` stays empty (envelope-only assistant turns never land there).
+        let withConversation = step(
+            createdAt: now, status: .paused,
+            llm: [LLMMessage(role: .user, content: "brief")])
+        XCTAssertTrue(
+            AutovisorStatus.isResumable(step: withConversation, roleStatus: .idle, taskIsClosed: false))
+    }
+
+    /// An idle role with nothing to replay is a step that never ran — resume would
+    /// find no transcript, so the manager must not be told it can continue one.
+    func testIsResumable_idleRoleWithNoHistory_isNotResumable() {
+        let s = step(createdAt: now, status: .paused)
+        XCTAssertFalse(AutovisorStatus.isResumable(step: s, roleStatus: .idle, taskIsClosed: false))
+    }
+
+    /// Only `.paused` is resumable — every other status has its own triage branch.
+    func testIsResumable_nonPausedStatuses_areNotResumable() {
+        for status: StepStatus in [.running, .pending, .done, .failed] {
+            let s = step(
+                createdAt: now, status: status,
+                messages: [StepMessage(role: .softwareEngineer, content: "x")])
+            XCTAssertFalse(
+                AutovisorStatus.isResumable(step: s, roleStatus: .working, taskIsClosed: false),
+                "\(status.rawValue) must not advertise resume")
+        }
+    }
+
+    /// `resumeRun` bails on a closed task, so the hint must too.
+    func testIsResumable_closedTask_isNotResumable() {
+        let s = step(
+            createdAt: now, status: .paused,
+            messages: [StepMessage(role: .softwareEngineer, content: "x")])
+        XCTAssertFalse(AutovisorStatus.isResumable(step: s, roleStatus: .working, taskIsClosed: true))
+        XCTAssertFalse(AutovisorStatus.isResumable(step: s, roleStatus: .idle, taskIsClosed: true))
+    }
+
+    /// A role status the run doesn't carry (unresolvable role id) is not a licence.
+    func testIsResumable_unknownRoleStatus_isNotResumable() {
+        let s = step(
+            createdAt: now, status: .paused,
+            messages: [StepMessage(role: .softwareEngineer, content: "x")])
+        XCTAssertFalse(AutovisorStatus.isResumable(step: s, roleStatus: nil, taskIsClosed: false))
+    }
 }

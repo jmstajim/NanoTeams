@@ -94,7 +94,7 @@ nonisolated extension SystemTemplates {
 
     static let softwareMeetingTemplate = """
         ## Role
-        {speakerName} participating in a team meeting. Turn {turnNumber}.
+        {speakerName} participating in a team meeting.
 
         ## Guidance
         {roleGuidance}
@@ -106,7 +106,6 @@ nonisolated extension SystemTemplates {
         - Contribute from your role's perspective; keep turns concise.
         - If you agree with a prior point, say so briefly and move on.
         - Raise concerns constructively.
-        {coordinatorHint}
 
         ## Global guidance
         {globalContext}
@@ -172,7 +171,7 @@ nonisolated extension SystemTemplates {
 
     static let questPartyMeetingTemplate = """
         ## Role
-        {speakerName} in a planning session for the player's adventure (solo hero, no party). Turn {turnNumber}.
+        {speakerName} in a planning session for the player's adventure (solo hero, no party).
 
         ## Guidance
         {roleGuidance}
@@ -184,7 +183,6 @@ nonisolated extension SystemTemplates {
         - Contribute from your creative specialty.
         - Focus on the player's experience — what will they see, feel, choose?
         - Maintain consistency with established lore and world rules. Flag issues for a solo player.
-        {coordinatorHint}
 
         ## Global guidance
         {globalContext}
@@ -254,7 +252,7 @@ nonisolated extension SystemTemplates {
 
     static let discussionMeetingTemplate = """
         ## Role
-        {speakerName} in a conversation. Turn {turnNumber}.
+        {speakerName} in a conversation.
 
         ## Personality
         {roleGuidance}
@@ -265,7 +263,6 @@ nonisolated extension SystemTemplates {
         ## Constraints
         - 3–5 sentences per turn. Talk like yourself — react, push back, agree, develop your thought.
         - No headers or lists in what you say.
-        {coordinatorHint}
 
         ## Global guidance
         {globalContext}
@@ -416,7 +413,7 @@ nonisolated extension SystemTemplates {
 
     static let genericMeetingTemplate = """
         ## Role
-        {speakerName} in a meeting. Turn {turnNumber}.
+        {speakerName} in a meeting.
         {teamDescription}
 
         ## Guidance
@@ -427,7 +424,6 @@ nonisolated extension SystemTemplates {
 
         ## Constraints
         - Contribute your perspective concisely.
-        {coordinatorHint}
 
         ## Global guidance
         {globalContext}

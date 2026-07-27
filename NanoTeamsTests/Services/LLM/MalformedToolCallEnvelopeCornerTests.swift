@@ -19,7 +19,7 @@ final class MalformedToolCallEnvelopeCornerTests: XCTestCase {
         var deltas: [StreamEvent] = []
         func streamChat(
             config: LLMConfig, messages: [ChatMessage], tools: [ToolSchema],
-            session: LLMSession?, logger: NetworkLogger?, stepID: String?, roleName: String?
+            logger: NetworkLogger?, stepID: String?, roleName: String?
         ) -> AsyncThrowingStream<StreamEvent, Error> {
             let events = deltas
             return AsyncThrowingStream { continuation in
@@ -63,7 +63,7 @@ final class MalformedToolCallEnvelopeCornerTests: XCTestCase {
         let result = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .codeReviewer,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil, networkLogger: nil
+            tools: [], conversationMessages: [], networkLogger: nil
         )
         return result.resolvedToolCalls
     }
@@ -156,7 +156,7 @@ final class MalformedToolCallEnvelopeCornerTests: XCTestCase {
         let result = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .codeReviewer,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil, networkLogger: nil
+            tools: [], conversationMessages: [], networkLogger: nil
         )
         XCTAssertTrue(result.resolvedToolCalls.isEmpty)
     }
@@ -176,9 +176,39 @@ final class MalformedToolCallEnvelopeCornerTests: XCTestCase {
         let result = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .codeReviewer,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil, networkLogger: nil
+            tools: [], conversationMessages: [], networkLogger: nil
         )
         XCTAssertEqual(result.resolvedToolCalls.count, 1)
         XCTAssertEqual(result.resolvedToolCalls.first?.name, ToolNames.updateScratchpad)
+    }
+
+    // MARK: - Classification: no call block is not malformed JSON
+
+    /// Harmony framing that never opens a `<|call|>` block has no JSON, so calling it
+    /// malformed is a misdiagnosis — one that reaches the HUMAN, since three of them
+    /// escalate with a question naming unescaped quotes as the likely cause.
+    func testClassify_channelFramingWithNoCallBlock_isNoCallEnvelope() {
+        for buffer in [
+            "<|channel|>commentary<|message|>Let me think.",
+            "<|channel|>final<|message|>I'll wait for the task to finish.",
+            "<|channel|>commentary to=commentary<|message|>",  // reserved recipient
+        ] {
+            XCTAssertEqual(
+                ToolCallParsingHelpers.classifyHarmonyCallIssue(in: buffer), .noCallEnvelope,
+                "no `<|call|>` block was opened in: \(buffer)")
+        }
+    }
+
+    /// The other side of the split: a block that WAS opened and whose payload really is
+    /// broken keeps `.malformedJSON`, so the parse-failure cap and its diagnostic stay
+    /// aimed at the defect they describe.
+    func testClassify_openedCallBlockWithBrokenPayload_staysMalformedJSON() {
+        XCTAssertEqual(
+            ToolCallParsingHelpers.classifyHarmonyCallIssue(
+                in: ##"<|call|>{"name":"write_file","arguments":{"path":"x""##),
+            .malformedJSON, "unbalanced braces after `<|call|>` is a genuine parse failure")
+        XCTAssertEqual(
+            ToolCallParsingHelpers.classifyHarmonyCallIssue(in: "<|call|>not an object"),
+            .malformedJSON, "a `<|call|>` block whose payload isn't an object is too")
     }
 }

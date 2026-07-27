@@ -69,7 +69,12 @@ struct WatchtowerAutovisorCard: View {
 
     private var goalSection: some View {
         VStack(alignment: .leading, spacing: Spacing.xxs) {
-            MonoLabel(text: "Goal", size: .xs)
+            // Sibling of MonoLabel, not a child — MonoLabel combines its subtree
+            // for accessibility, which would drop the button's action.
+            HStack(spacing: Spacing.xs) {
+                MonoLabel(text: "Goal", size: .xs)
+                AutovisorGoalLintTip(goal: goalDraft, font: Typography.term2xs)
+            }
             // Quick Capture-style composer minus the send button. Capped like MEMORY
             // so a long goal scrolls internally instead of ballooning the card inside
             // the Watchtower ScrollView. Attachments persist to the folder goal store.

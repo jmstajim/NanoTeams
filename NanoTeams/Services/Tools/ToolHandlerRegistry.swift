@@ -148,6 +148,17 @@ nonisolated enum ToolHandlerRegistry {
     /// All file system tools (read + write).
     static var allFileTools: Set<String> { fileReadTools.union(fileWriteTools) }
 
+    /// Tools that only OBSERVE the work folder: file reads plus git reads.
+    ///
+    /// Derived from `ToolCategory` rather than listed, so a read-only tool
+    /// added later joins automatically (same contract as `defaultStorageBlocked`).
+    /// Consumed by `PlanningPhasePolicy` to build the planning toolset.
+    ///
+    /// Deliberately excludes `.shell` — `bash` can mutate anything, and its
+    /// approval gate can park the step, which the planning→implementation
+    /// boundary is not built to survive.
+    static var readOnlyTools: Set<String> { fileReadTools.union(gitReadTools) }
+
     /// Read-only Git tools: `git_status`, `git_log`, `git_diff`, `git_branch_list`.
     static var gitReadTools: Set<String> { names(in: .gitRead) }
 

@@ -11,7 +11,7 @@ import Foundation
 /// judge sees so it rarely contradicts the gate. Unlike the judge (which fails CLOSED), this fails SOFT — any
 /// transport error, an empty reply, or noise resolves to an empty string, so a
 /// missing advisory simply shows nothing rather than blocking or misleading the
-/// human. A fresh `session: nil` call (DIP over `any LLMClient`), reusing the
+/// human. A fresh one-shot call (DIP over `any LLMClient`), reusing the
 /// dedicated judge model override so it comes from the same model the user
 /// configured for bash decisions.
 nonisolated enum BashExplainService {
@@ -35,11 +35,12 @@ nonisolated enum BashExplainService {
             // judge's model targeting (URL/model override). The verdict
             // path's temperature-0 pin is for strict-JSON extraction — this is
             // generative prose, so the operator's temperature stays in effect.
+            // prefix-cache-owner: registered by the caller — `NTMSOrchestrator+BashAdvice` notes
+            // `.oneShot("bash advice")` once for the judge+explain pair.
             let stream = client.streamChat(
                 config: JudgeConfig.applying(policy.judgeOverride, to: config),
                 messages: messages,
                 tools: [],
-                session: nil,
                 logger: logger,
                 stepID: nil
             )

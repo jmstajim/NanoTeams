@@ -222,6 +222,24 @@ extension NTMSOrchestrator {
         }
         switch verb {
         case .restart(let comment):
+            // `restartRole` → `StepExecution.reset` destroys the conversation, tool
+            // calls and artifacts of this role AND every transitive downstream one.
+            // On a PAUSED task that is almost never what the manager meant: pause is
+            // the state with no `stuck` verdict and an `elapsed_seconds` that counts
+            // app downtime, so a wedged-looking task is usually just an app that was
+            // closed mid-run — and `resume` replays the very transcript restart would
+            // erase. Reject and name the alternatives rather than warn-and-do: the
+            // manager cannot undo the wipe, so a warning is a receipt, not honesty.
+            // Deliberate discard stays available via `control_task stop` first, which
+            // drops the engine state and lifts this guard.
+            if taskEngineStates[taskID] == .paused,
+               let step = resolveManagedRoleStep(taskID: taskID, roleID: roleID),
+               step.hasCommittedWork {
+                return .failure(
+                    "restart would discard \(step.toolCalls.count) tool call(s) and the conversation of "
+                        + "role \(roleID) on paused task #\(taskID). Use manage_role correct to steer it, "
+                        + "control_task resume to continue it, or control_task stop first to discard deliberately.")
+            }
             return await reportingError("Restarted role \(roleID) on task #\(taskID).") {
                 await self.restartRole(taskID: taskID, roleID: roleID, comment: comment)
             }

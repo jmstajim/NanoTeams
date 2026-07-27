@@ -109,8 +109,7 @@ extension NTMSOrchestrator {
         // after the whole cascade, not one per recursive child. Silent
         // (housekeeping, not a user "unload this" request) — see
         // `sweepResidencyAfterEngineTransition`.
-        await reconcileChatModelResidency(
-            client: chatLifecycleClient, ensurer: chatModelEnsurer)
+        await reconcileChatModelResidency()
     }
 
     /// Internal recursive variant with a visited-set cycle guard. Defends

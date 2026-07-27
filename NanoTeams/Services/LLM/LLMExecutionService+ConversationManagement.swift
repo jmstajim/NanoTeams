@@ -82,22 +82,26 @@ extension LLMExecutionService {
         }
     }
 
-    /// Updates only the system message in the persisted llmConversation without replacing other messages.
-    /// Used after planning phase to restore the original system prompt without losing thinking content.
-    func updatePersistedSystemMessage(stepID: String, taskID: Int, content: String) async {
+    /// Persists the byte-faithful record of what this step last SENT.
+    ///
+    /// Written at every arm where the step stops with a chance of being resumed later —
+    /// an answered `ask_supervisor`, the Autovisor idle park, a pause, and the terminal
+    /// arms (a `.done`/`.failed` step is still re-enterable through
+    /// `resetStepForRevision`). On re-entry `ConversationReplay.resume` hands this array
+    /// straight back, so the continuation is an append-only extension of the conversation
+    /// the server already processed rather than a fresh synthesis.
+    ///
+    /// Deliberately separate from ``saveLLMConversation``: that one writes the DISPLAY
+    /// record, flattens to `(role, content)`, and is a destructive whole-array replace.
+    func persistWireTranscript(stepID: String, taskID: Int, messages: [ChatMessage]) async {
+        guard !messages.isEmpty else { return }
         guard let delegate, isExecutionLive(stepID: stepID, taskID: taskID) else { return }
 
         await delegate.mutateTask(taskID: taskID) { task in
-            guard let runIndex = task.runs.indices.last else { return }
-            guard let stepIndex = task.runs[runIndex].steps.firstIndex(where: { $0.id == stepID })
+            guard let runIndex = task.runs.indices.last,
+                  let stepIndex = task.runs[runIndex].steps.firstIndex(where: { $0.id == stepID })
             else { return }
-
-            if let sysIdx = task.runs[runIndex].steps[stepIndex].llmConversation
-                .firstIndex(where: { $0.role == .system })
-            {
-                task.runs[runIndex].steps[stepIndex].llmConversation[sysIdx].content = content
-            }
-            task.runs[runIndex].steps[stepIndex].updatedAt = MonotonicClock.shared.now()
+            task.runs[runIndex].steps[stepIndex].wireTranscript = messages
         }
     }
 

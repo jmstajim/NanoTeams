@@ -15,10 +15,7 @@ import XCTest
 final class DelegationInterruptTests: XCTestCase {
 
     private func makeOrchestrator() -> NTMSOrchestrator {
-        NTMSOrchestrator(
-            repository: NTMSRepository(),
-            searchEmbeddingClient: StubSearchEmbeddingClient()
-        )
+        TestOrchestrator.make()
     }
 
     private func makeWorkFolderRoot() -> URL {

@@ -90,12 +90,12 @@ final class TaskEngineStoreAdapter: TeamEngineStore {
         await orchestrator?.findOrCreateStep(taskID: taskID, roleID: roleID)
     }
 
-    /// Resets a completed step for revision (stateful continuation).
-    /// Preserves all state (messages, artifacts, llmConversation, llmSessionID, scratchpad, toolCalls,
-    /// amendments) so the LLM continues the conversation with full context.
+    /// Resets a completed step for revision (append-only continuation).
+    /// Preserves all state (messages, artifacts, llmConversation, wireTranscript, scratchpad,
+    /// toolCalls, amendments) so the LLM continues the conversation with full context.
     /// Ensures `revisionComment` is set — preferring the raw comment stored by the
-    /// requesting flow, falling back to the last supervisor message — to enable stateful
-    /// session continuation and prevent premature artifact completeness auto-completion.
+    /// requesting flow, falling back to the last supervisor message — to drive the
+    /// continuation and prevent premature artifact completeness auto-completion.
     /// No-ops for any status other than `.done`/`.failed` (benign: a `.pending` step was
     /// already reset by a prior pass).
     func resetStepForRevision(stepID: String) async {
@@ -133,7 +133,7 @@ final class TaskEngineStoreAdapter: TeamEngineStore {
                 task.runs[location.runIndex].steps[location.stepIndex].completedAt = nil
                 task.runs[location.runIndex].steps[location.stepIndex].revisionComment = feedback
                 task.runs[location.runIndex].steps[location.stepIndex].updatedAt = MonotonicClock.shared.now()
-                // llmSessionID kept for stateful continuation via previous_response_id
+                // wireTranscript kept — the revision replays it and appends the feedback turn.
             }
         }
     }

@@ -56,7 +56,6 @@ final class ChatModelEnsureWiringTests: XCTestCase, @unchecked Sendable {
             config: LLMConfig(baseURLString: baseURL, modelName: "qwen"),
             messages: [ChatMessage(role: .user, content: "Hi")],
             tools: [],
-            session: nil,
             logger: nil,
             stepID: nil
         ))
@@ -87,7 +86,6 @@ final class ChatModelEnsureWiringTests: XCTestCase, @unchecked Sendable {
             config: LLMConfig(baseURLString: "not a valid url ://bad", modelName: "qwen"),
             messages: [ChatMessage(role: .user, content: "Hi")],
             tools: [],
-            session: nil,
             logger: nil,
             stepID: nil
         ))

@@ -150,7 +150,7 @@ final class EndToEndTaskDeletionTests: NTMSOrchestratorTestBase {
         await sut.removeTask(idGone2)
 
         // Simulate app restart by closing and reopening the work folder
-        sut = NTMSOrchestrator(repository: NTMSRepository())
+        sut = TestOrchestrator.make()
         await sut.openWorkFolder(tempDir)
 
         let ids = Set(sut.snapshot?.tasksIndex.tasks.map(\.id) ?? [])

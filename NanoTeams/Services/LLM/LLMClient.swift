@@ -28,21 +28,25 @@ nonisolated protocol LLMClient: Sendable {
 
     /// Stream a chat completion from the LLM provider.
     ///
+    /// Every call is stateless: `messages` is the FULL conversation, and the
+    /// provider is expected to reuse its prompt-prefix cache on the byte-identical
+    /// prefix. Server-side response chains (`previous_response_id`) were removed —
+    /// measured on this project's models they bought nothing (LM Studio: 348 ms
+    /// chained vs 339 ms unchained at 13k tokens) while being the root of a class
+    /// of provider-specific bugs.
+    ///
     /// - Parameters:
     ///   - config: Provider configuration (URL, model, API key, etc.)
-    ///   - messages: Conversation history
+    ///   - messages: Full conversation history
     ///   - tools: Available tool schemas
-    ///   - session: Optional session for stateful providers.
-    ///     Stateless providers ignore this parameter.
     ///   - logger: Optional network logger
     ///   - stepID: Optional step ID for log correlation
     ///   - roleName: Optional role name for log attribution
-    /// - Returns: Async stream of events (content, thinking, tool calls, usage, session)
+    /// - Returns: Async stream of events (content, thinking, tool calls, usage)
     func streamChat(
         config: LLMConfig,
         messages: [ChatMessage],
         tools: [ToolSchema],
-        session: LLMSession?,
         logger: NetworkLogger?,
         stepID: String?,
         roleName: String?
@@ -101,6 +105,12 @@ nonisolated protocol LLMClient: Sendable {
     /// conservative fallback, never assume a large window. Used to size the
     /// one-shot work-folder-context prompt so it fits the loaded model.
     func modelContextLength(config: LLMConfig) async -> Int?
+
+    /// Human-readable load parameters of `config.modelName` (residency state,
+    /// effective context window, quantization, …) for the Settings → LLM
+    /// "Model Details" card. `nil` = undeterminable (transport failure /
+    /// model not listed). Purely informational — nothing routes on it.
+    func modelLoadDetails(config: LLMConfig) async -> ModelLoadDetails?
 }
 
 nonisolated extension LLMClient {
@@ -114,6 +124,10 @@ nonisolated extension LLMClient {
     /// back to their conservative context assumption. `NativeLMStudioClient`
     /// implements the real probe; `LLMClientRouter` forwards.
     func modelContextLength(config: LLMConfig) async -> Int? { nil }
+
+    /// Default: no load-details surface — test doubles inherit this; the
+    /// Model Details card renders its empty state.
+    func modelLoadDetails(config: LLMConfig) async -> ModelLoadDetails? { nil }
 }
 
 /// Server-side record of a loaded model instance. Returned by
@@ -159,12 +173,11 @@ nonisolated extension LLMClient {
         config: LLMConfig,
         messages: [ChatMessage],
         tools: [ToolSchema],
-        session: LLMSession?,
         logger: NetworkLogger?,
         stepID: String?
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         streamChat(
             config: config, messages: messages, tools: tools,
-            session: session, logger: logger, stepID: stepID, roleName: nil)
+            logger: logger, stepID: stepID, roleName: nil)
     }
 }

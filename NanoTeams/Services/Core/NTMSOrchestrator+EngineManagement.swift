@@ -23,12 +23,20 @@ extension NTMSOrchestrator {
             switch state {
             case .done:
                 self.completionAwaiter.deliver(taskID: taskID, outcome: .terminal(.done))
+                self.clearAutovisorLoopParkLedger(taskID)
             case .failed:
                 self.completionAwaiter.deliver(taskID: taskID, outcome: .terminal(.failed))
             case .needsAcceptance:
                 self.completionAwaiter.deliver(taskID: taskID, outcome: .terminal(.needsAcceptance))
+                self.clearAutovisorLoopParkLedger(taskID)
             case .needsSupervisorInput:
                 self.completionAwaiter.deliver(taskID: taskID, outcome: .needsSupervisorInput)
+                // A manager pass killed by a reasoning loop reviewed nothing, so the
+                // attention baseline it wrote at pass start is a false claim — roll it
+                // back once so the next poll can re-deliver. This hook (not a SwiftUI
+                // observer) is what makes the recovery work headless too. No-op for
+                // every other task and for the healthy `wait_for_events` idle park.
+                self.noteAutovisorLoopPark(taskID)
             default:
                 break
             }

@@ -44,7 +44,6 @@ final class LLMClientRouterTests: XCTestCase {
             config: config,
             messages: [],
             tools: [],
-            session: nil,
             logger: nil,
             stepID: nil
         )
@@ -81,6 +80,47 @@ final class LLMClientRouterTests: XCTestCase {
                 XCTAssertEqual(url, "", "Should report the empty URL")
             } else {
                 XCTFail("Expected invalidBaseURL, got \(error)")
+            }
+        } catch {
+            XCTFail("Expected LLMClientError, got \(type(of: error))")
+        }
+    }
+
+    func testRoutes_ollama_toOllamaClient() async {
+        // Ollama routes to OllamaClient — an empty baseURL triggers its
+        // invalidBaseURL, proving the call reached a real client (the router
+        // has no default arm that could silently swallow a new provider).
+        let config = LLMConfig(
+            provider: .ollama,
+            baseURLString: "",
+            modelName: "gpt-oss:20b"
+        )
+
+        let stream = router.streamChat(
+            config: config,
+            messages: [],
+            tools: [],
+            logger: nil,
+            stepID: nil
+        )
+
+        let error = await collectStreamError(stream)
+        guard let clientError = error as? LLMClientError,
+              case .invalidBaseURL(let url) = clientError else {
+            XCTFail("Expected invalidBaseURL from OllamaClient, got \(String(describing: error))")
+            return
+        }
+        XCTAssertEqual(url, "")
+    }
+
+    func testFetchModels_ollama_throwsWithBadURL() async {
+        let config = LLMConfig(provider: .ollama, baseURLString: "")
+        do {
+            _ = try await router.fetchModels(config: config, visionOnly: false)
+            XCTFail("Expected invalidBaseURL error")
+        } catch let error as LLMClientError {
+            guard case .invalidBaseURL = error else {
+                return XCTFail("Expected invalidBaseURL, got \(error)")
             }
         } catch {
             XCTFail("Expected LLMClientError, got \(type(of: error))")
@@ -139,7 +179,6 @@ final class LLMClientRouterTests: XCTestCase {
                 config: config,
                 messages: [],
                 tools: [],
-                session: nil,
                 logger: nil,
                 stepID: nil
             )

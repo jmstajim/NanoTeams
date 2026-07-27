@@ -23,7 +23,7 @@ final class DelegationStateAndLineageTests: XCTestCase {
         // Pre-refactor this was a legal-but-broken combination (the legacy
         // write site relied on a manual `if !contains { append }` pattern
         // that any caller could forget). Post-refactor the type fixes it.
-        let state = DelegationState(session: nil, activeChildID: 7, history: [])
+        let state = DelegationState(activeChildID: 7, history: [])
         XCTAssertEqual(state.activeChildID, 7)
         XCTAssertEqual(state.history, [7],
                        "DelegationState.init MUST auto-append activeChildID to history when missing — that's the invariant the refactor enforces structurally.")
@@ -32,7 +32,7 @@ final class DelegationStateAndLineageTests: XCTestCase {
     func testDelegationState_init_idempotentOnDuplicate() {
         // If the caller correctly includes the active id in history,
         // init must NOT duplicate it.
-        let state = DelegationState(session: nil, activeChildID: 7, history: [3, 7])
+        let state = DelegationState(activeChildID: 7, history: [3, 7])
         XCTAssertEqual(state.history, [3, 7],
                        "DelegationState init must be idempotent on activeChildID already in history.")
     }
@@ -50,18 +50,16 @@ final class DelegationStateAndLineageTests: XCTestCase {
     func testDelegationState_clearActive_preservesHistory() {
         // The whole point of `delegationChildIDs` (now `history`): it's an
         // append-only audit trail. `clearActive()` is for terminal cleanup
-        // — must clear `activeChildID` + `session` only, never `history`.
-        var state = DelegationState(session: "resp-X", activeChildID: 5, history: [3, 5])
+        // — must clear `activeChildID` only, never `history`.
+        var state = DelegationState(activeChildID: 5, history: [3, 5])
         state.clearActive()
         XCTAssertNil(state.activeChildID)
-        XCTAssertNil(state.session)
         XCTAssertEqual(state.history, [3, 5],
                        "clearActive must preserve `history` — it's the audit trail the team graph renders as completed delegation layers.")
     }
 
     func testDelegationState_isEmpty_trueOnDefault_falseOnAnyField() {
         XCTAssertTrue(DelegationState().isEmpty)
-        XCTAssertFalse(DelegationState(session: "x").isEmpty)
         XCTAssertFalse(DelegationState(activeChildID: 1).isEmpty)
         XCTAssertFalse(DelegationState(history: [1]).isEmpty)
     }
@@ -75,7 +73,6 @@ final class DelegationStateAndLineageTests: XCTestCase {
         var step = StepExecution(id: "r", role: .softwareEngineer, title: "x")
         step.setActiveDelegation(childID: 42)
         step.setActiveDelegation(childID: 17)  // history grows; active=17
-        step.setDelegationSession("resp-abc")
         step.setAncillaryQuestion("Need info")
 
         let encoder = JSONCoderFactory.makePersistenceEncoder()
@@ -83,7 +80,6 @@ final class DelegationStateAndLineageTests: XCTestCase {
         let data = try encoder.encode(step)
         let decoded = try decoder.decode(StepExecution.self, from: data)
 
-        XCTAssertEqual(decoded.delegationSession, "resp-abc")
         XCTAssertEqual(decoded.activeDelegationChildID, 17)
         XCTAssertEqual(decoded.delegationChildIDs, [42, 17])
         XCTAssertEqual(decoded.ancillaryQuestion, "Need info")
@@ -92,15 +88,17 @@ final class DelegationStateAndLineageTests: XCTestCase {
 
     func testStepExecution_codable_decodes_legacyFlatShape() throws {
         // Most important back-compat test: a `task.json` written by a
-        // build before this refactor uses five flat keys
-        // (`delegationSession`, `activeDelegationChildID`,
-        // `delegationChildIDs`, `ancillaryQuestion`, `ancillaryAnswer`).
+        // build before this refactor uses flat keys
+        // (`activeDelegationChildID`, `delegationChildIDs`,
+        // `ancillaryQuestion`, `ancillaryAnswer`). A legacy
+        // `delegationSession` key is also present on real files and must be
+        // ignored, not rejected.
         // The new decoder MUST find them and rebuild `DelegationState` /
         // `AncillaryQuery` correctly. Without this the user's existing
         // tasks unload silently after upgrade.
         //
         // Round-trip approach: encode a real step, strip the new bundled
-        // `delegation` / `ancillary` blocks, inject the five legacy flat
+        // `delegation` / `ancillary` blocks, inject the legacy flat
         // keys. More robust than hand-building JSON — guarantees we don't
         // miss required Codable fields the test author forgot.
         let seedStep = StepExecution(id: "role_a", role: .softwareEngineer, title: "Step Title")
@@ -108,7 +106,7 @@ final class DelegationStateAndLineageTests: XCTestCase {
         var dict = try JSONSerialization.jsonObject(with: encoded) as! [String: Any]
         dict.removeValue(forKey: "delegation")
         dict.removeValue(forKey: "ancillary")
-        dict["delegationSession"] = "resp-legacy"
+        dict["delegationSession"] = "resp-legacy"  // obsolete: must be ignored, not rejected
         dict["activeDelegationChildID"] = 42
         dict["delegationChildIDs"] = [10, 20, 42]
         dict["ancillaryQuestion"] = "Need exec input"
@@ -118,8 +116,6 @@ final class DelegationStateAndLineageTests: XCTestCase {
         let decoder = JSONCoderFactory.makeDateDecoder()
         let decoded = try decoder.decode(StepExecution.self, from: data)
 
-        XCTAssertEqual(decoded.delegationSession, "resp-legacy",
-                       "Legacy `delegationSession` key must round-trip into DelegationState.session")
         XCTAssertEqual(decoded.activeDelegationChildID, 42,
                        "Legacy `activeDelegationChildID` key must round-trip into DelegationState.activeChildID")
         XCTAssertEqual(decoded.delegationChildIDs, [10, 20, 42],

@@ -99,7 +99,6 @@ final class StepExecutionAttachmentTests: XCTestCase {
 
     func testHasSupervisorContinuation_textAnswer() {
         var step = StepExecution(id: "test_step", role: .softwareEngineer, title: "test")
-        step.llmSessionID = "session-123"
         step.supervisorAnswer = "Yes, proceed"
 
         // effectiveSupervisorAnswer is non-nil → continuation should be detected
@@ -108,7 +107,6 @@ final class StepExecutionAttachmentTests: XCTestCase {
 
     func testHasSupervisorContinuation_attachmentsOnly() {
         var step = StepExecution(id: "test_step", role: .softwareEngineer, title: "test")
-        step.llmSessionID = "session-123"
         step.supervisorAnswer = nil  // trimmed empty → nil
         step.supervisorAnswerAttachmentPaths = [".nanoteams/tasks/abc/attachments/file.png"]
 
@@ -119,7 +117,6 @@ final class StepExecutionAttachmentTests: XCTestCase {
 
     func testHasSupervisorContinuation_noAnswerNoAttachments() {
         var step = StepExecution(id: "test_step", role: .softwareEngineer, title: "test")
-        step.llmSessionID = "session-123"
         step.supervisorAnswer = nil
         step.supervisorAnswerAttachmentPaths = []
 
@@ -129,7 +126,6 @@ final class StepExecutionAttachmentTests: XCTestCase {
 
     func testRevisionContinuation_notTriggeredByAttachmentOnlyAnswer() {
         var step = StepExecution(id: "test_step", role: .softwareEngineer, title: "test")
-        step.llmSessionID = "session-123"
         step.supervisorAnswer = nil
         step.supervisorAnswerAttachmentPaths = [".nanoteams/tasks/abc/attachments/file.png"]
         step.revisionComment = "Fix the bug"

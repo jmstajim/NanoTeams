@@ -20,6 +20,9 @@ struct ImprovePromptButton: View {
 
     @Environment(StoreConfiguration.self) private var config
     @Environment(DictationService.self) private var dictation
+    /// Optional so the button still works in a preview or any host that does not inject the
+    /// orchestrator; when present it is what lets this call register with the prompt-prefix ledger.
+    @Environment(NTMSOrchestrator.self) private var store: NTMSOrchestrator?
 
     @State private var session = PromptImprovementSession()
 
@@ -82,10 +85,18 @@ struct ImprovePromptButton: View {
         if session.isImproving {
             session.stop()
         } else {
+            var recorder: (@MainActor (LLMConfig) async -> Void)?
+            if let orchestrator = store {
+                recorder = { cfg in
+                    await orchestrator.recordPrefixChainForTasklessCall(
+                        owner: .oneShot(label: "prompt improvement"), config: cfg, messages: [])
+                }
+            }
             session.start(
                 config: config.globalLLMConfig,
                 read: { text },
-                write: { text = $0 }
+                write: { text = $0 },
+                recordPrefixCall: recorder
             )
         }
     }

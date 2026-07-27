@@ -243,7 +243,9 @@ nonisolated enum TeamTemplateFactory {
     ///
     /// MUST be `supervisorMode: .autonomous` + chat-mode (empty `supervisorRequires`)
     /// + advisory (role requires the Supervisor Task artifact) so the engine runs it
-    /// and `attemptAdvisoryAutoFinish` can end each review pass.
+    /// and the flow-control backstops apply. A healthy pass ends at `wait_for_events`;
+    /// `.autonomous` is what arms `noteNonProductiveTurn`, which parks a
+    /// manager that stops calling tools instead of letting it spin forever.
     static func autovisor() -> Team {
         buildTeam(
             name: "Autovisor",

@@ -175,7 +175,6 @@ private final class ScriptedJudgeClient: LLMClient, @unchecked Sendable {
         config: LLMConfig,
         messages: [ChatMessage],
         tools _: [ToolSchema],
-        session _: LLMSession?,
         logger _: NetworkLogger?,
         stepID _: String?,
         roleName _: String?
@@ -199,7 +198,6 @@ private final class ThrowingJudgeClient: LLMClient, @unchecked Sendable {
         config _: LLMConfig,
         messages _: [ChatMessage],
         tools _: [ToolSchema],
-        session _: LLMSession?,
         logger _: NetworkLogger?,
         stepID _: String?,
         roleName _: String?

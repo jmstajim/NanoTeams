@@ -39,9 +39,12 @@ struct RoleEditorGeneralTab: View {
                     SettingsCard(
                         header: "Execution",
                         systemImage: "play.circle",
-                        footer: "When enabled, the LLM first creates a plan, then executes it. Recommended for complex roles."
+                        footer: "When enabled, the role first explores the work folder with "
+                            + "read-only tools and records what it found with update_scratchpad. "
+                            + "Implementation then starts from those notes. Costs extra turns — "
+                            + "worth it for roles that write code."
                     ) {
-                        Toggle("Use Planning Phase", isOn: $editorState.usePlanningPhase)
+                        Toggle("Planning phase", isOn: $editorState.usePlanningPhase)
                             .toggleStyle(.terminal)
                     }
                 }

@@ -81,7 +81,7 @@ final class UnreadIndicatorTests: XCTestCase {
         sut.taskToDelete = taskA
         // confirmDelete calls store.removeTask which needs a real store,
         // but the seen set removal happens regardless
-        _ = await sut.confirmDelete(store: NTMSOrchestrator(repository: NTMSRepository()))
+        _ = await sut.confirmDelete(store: TestOrchestrator.make())
         XCTAssertFalse(sut.seenSupervisorInputTaskIDs.contains(taskA))
     }
 

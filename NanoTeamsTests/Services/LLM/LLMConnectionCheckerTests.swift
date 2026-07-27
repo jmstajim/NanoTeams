@@ -42,6 +42,20 @@ final class LLMConnectionCheckerTests: XCTestCase {
                        "Should use /api/v1/models endpoint path")
     }
 
+    func testCheck_ollamaProvider_probesApiTags() async {
+        let mock = MockNetworkSession()
+        mock.statusCode = 200
+
+        _ = await LLMConnectionChecker.check(
+            baseURL: "http://localhost:11434",
+            provider: .ollama,
+            session: mock
+        )
+
+        XCTAssertEqual(mock.capturedURL?.path, "/api/tags",
+                       "Ollama reachability must probe /api/tags — /api/v1/models 404s there")
+    }
+
     func testCheck_returnsTrueOn200() async {
         let mock = MockNetworkSession()
         mock.statusCode = 200

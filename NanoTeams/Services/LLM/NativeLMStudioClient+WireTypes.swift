@@ -51,11 +51,13 @@ nonisolated extension NativeLMStudioClient {
     /// (internal-only: the security-judge verdict pin). LM Studio's per-model
     /// config is the source of truth for generation parameters — an omitted
     /// key means "server decides".
+    ///
+    /// Carries no `previous_response_id` either: every request is stateless and
+    /// self-contained (see `buildRequest`).
     struct NativeChatRequest: Encodable {
         var model: String
         var systemPrompt: String?
         var input: NativeChatInput
-        var previousResponseID: String?
         var store: Bool
         var stream: Bool
         var temperature: Double?
@@ -63,7 +65,6 @@ nonisolated extension NativeLMStudioClient {
         enum CodingKeys: String, CodingKey {
             case model, input, store, stream, temperature
             case systemPrompt = "system_prompt"
-            case previousResponseID = "previous_response_id"
         }
     }
 
@@ -73,34 +74,30 @@ nonisolated extension NativeLMStudioClient {
         var content: String?
     }
 
+    /// Terminal SSE frame. Only `stats` is read — `response_id` is deliberately
+    /// ignored now that requests carry no chain to resume.
     struct ChatEndEvent: Decodable {
-        var responseID: String?
         var stats: Stats?
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: TopKeys.self)
-            // Nested format: {"type":"chat.end","result":{"response_id":...,"stats":...}}
+            // Nested format: {"type":"chat.end","result":{"stats":...}}
             if let result = try container.decodeIfPresent(ResultPayload.self, forKey: .result) {
-                responseID = result.responseID
                 stats = result.stats
             } else {
-                // Flat format: {"response_id":...,"stats":...} (per docs)
-                responseID = try container.decodeIfPresent(String.self, forKey: .responseID)
+                // Flat format: {"stats":...} (per docs)
                 stats = try container.decodeIfPresent(Stats.self, forKey: .stats)
             }
         }
 
         enum TopKeys: String, CodingKey {
             case result
-            case responseID = "response_id"
             case stats
         }
 
         struct ResultPayload: Decodable {
-            var responseID: String?
             var stats: Stats?
             enum CodingKeys: String, CodingKey {
-                case responseID = "response_id"
                 case stats
             }
         }
@@ -108,6 +105,16 @@ nonisolated extension NativeLMStudioClient {
         struct Stats: Decodable {
             var inputTokens: Int
             var outputTokens: Int
+            /// Seconds the server spent LOADING the model for this request. Undocumented but
+            /// present — `benchmark_prompt_processing.sh` reads it off a live server, where LM
+            /// Studio returns exactly 0 on all 27 warm rows.
+            ///
+            /// A positive value is not by itself a reload: Ollama's counterpart reports ~22 ms of
+            /// per-request bookkeeping on a resident model, and this field is decoded into the
+            /// same provider-neutral `ServerPrefillReport.modelLoadMs`. The threshold that turns
+            /// it into a verdict is `PrefixCachePolicy.minimumLoadMsForReload`, which needs no
+            /// per-model calibration — unlike the prefill-rate branch beside it.
+            var modelLoadTimeSeconds: Double?
 
             init(from decoder: Decoder) throws {
                 let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -116,6 +123,8 @@ nonisolated extension NativeLMStudioClient {
                     ?? container.decodeIfPresent(Int.self, forKey: .tokensIn) ?? 0
                 outputTokens = try container.decodeIfPresent(Int.self, forKey: .totalOutputTokens)
                     ?? container.decodeIfPresent(Int.self, forKey: .tokensOut) ?? 0
+                modelLoadTimeSeconds = try container.decodeIfPresent(
+                    Double.self, forKey: .modelLoadTimeSeconds)
             }
 
             enum CodingKeys: String, CodingKey {
@@ -123,6 +132,7 @@ nonisolated extension NativeLMStudioClient {
                 case tokensIn = "tokens_in"
                 case totalOutputTokens = "total_output_tokens"
                 case tokensOut = "tokens_out"
+                case modelLoadTimeSeconds = "model_load_time_seconds"
             }
         }
     }
@@ -259,6 +269,12 @@ nonisolated extension NativeLMStudioClient {
             /// observed on a live server; decoded best-effort so its absence on
             /// older builds degrades to `maxContextLength`.
             let loadedContextLength: Int?
+            /// Display metadata for the Model Details card — all best-effort
+            /// optionals, absent on older builds.
+            let arch: String?
+            let quantization: String?
+            let publisher: String?
+            let compatibilityType: String?
 
             // Explicit keys: the wire decoder (`JSONCoderFactory.makeWireDecoder`)
             // has NO snake_case strategy, so the context-length keys must be
@@ -269,8 +285,12 @@ nonisolated extension NativeLMStudioClient {
                 case id
                 case state
                 case type
+                case arch
+                case quantization
+                case publisher
                 case maxContextLength = "max_context_length"
                 case loadedContextLength = "loaded_context_length"
+                case compatibilityType = "compatibility_type"
             }
         }
     }

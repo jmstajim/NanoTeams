@@ -112,6 +112,13 @@ nonisolated struct TeamRoleDefinition: Codable, Identifiable {
 
     // MARK: - Codable
 
+    /// Read-only view of `useResearchPhase`, the spelling this flag briefly
+    /// carried in 1.7.3–1.7.5. Kept out of `CodingKeys` so `Encodable` stays
+    /// synthesized and the legacy key is never written back.
+    private enum LegacyCodingKeys: String, CodingKey {
+        case useResearchPhase
+    }
+
     enum CodingKeys: String, CodingKey {
         case id
         case name
@@ -142,8 +149,25 @@ nonisolated struct TeamRoleDefinition: Codable, Identifiable {
             ?? SystemTemplates.roles[systemRoleIDForIcon ?? ""]?.icon ?? "person"
         self.prompt = try container.decode(String.self, forKey: .prompt)
         self.toolIDs = try container.decodeIfPresent([String].self, forKey: .toolIDs) ?? []
+        // Default FALSE. The phase used to be a single `update_scratchpad` call
+        // and was on for everyone; it is now a multi-turn read-and-plan stretch,
+        // which only the Software Engineer gets by default. Anyone else turns it
+        // on per role in the role editor.
+        //
+        // The 1.7.3–1.7.5 spelling is read from a SEPARATE container rather than
+        // as an extra `CodingKeys` case: an unencoded case breaks `Encodable`
+        // synthesis, and re-encoding writes only `usePlanningPhase`, so a role
+        // the user customised in one of those builds keeps its choice and the
+        // file migrates in place. Reconcile overwrites SYSTEM roles from the
+        // bundled template anyway — custom roles are the ones that ride this
+        // fallback, and an exported team JSON is the one carrier reconcile can
+        // never repair.
+        let legacyFlag = try? decoder.container(keyedBy: LegacyCodingKeys.self)
+            .decodeIfPresent(Bool.self, forKey: .useResearchPhase)
         self.usePlanningPhase =
-            try container.decodeIfPresent(Bool.self, forKey: .usePlanningPhase) ?? true
+            try container.decodeIfPresent(Bool.self, forKey: .usePlanningPhase)
+            ?? legacyFlag.flatMap { $0 }
+            ?? false
         self.dependencies =
             try container.decodeIfPresent(RoleDependencies.self, forKey: .dependencies)
             ?? RoleDependencies(requiredArtifacts: [], producesArtifacts: [])

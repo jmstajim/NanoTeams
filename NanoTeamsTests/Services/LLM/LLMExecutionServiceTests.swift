@@ -211,6 +211,13 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     var scriptedQueuedMessages: [(taskID: Int, roleID: String?, content: String)] = []
     /// Records every `consumeQueuedSupervisorMessage` delivery (taskID, roleID, stepID, content).
     var consumedQueuedMessages: [(Int, String, String, String)] = []
+    /// Messages the planning-phase boundary handed back to the queue after discarding their wire
+    /// turn. Order is delivery order, which is what the head-insert has to preserve.
+    var requeuedSupervisorMessages: [(taskID: Int, roleID: String, text: String)] = []
+
+    func requeueSupervisorMessageAtHead(taskID: Int, roleID: String, text: String) {
+        requeuedSupervisorMessages.append((taskID: taskID, roleID: roleID, text: text))
+    }
 
     func consumeQueuedSupervisorMessage(
         taskID: Int,
@@ -243,6 +250,14 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     var lastErrorMessages: [String] = []
     func setLastErrorMessageForUI(_ message: String) {
         lastErrorMessages.append(message)
+    }
+
+    /// Prompt-prefix cache misses reported by the detector. The protocol default is a no-op, so
+    /// only this shared mock implements it — the narrow doubles stay untouched.
+    var prefixCacheMisses: [PrefixCacheMiss] = []
+
+    func reportPrefixCacheMiss(_ miss: PrefixCacheMiss) {
+        prefixCacheMisses.append(miss)
     }
 
     /// Records `holdDownstreamForRevision` invocations (engine-side teardown is not
@@ -522,78 +537,10 @@ final class LLMExecutionServiceTests: XCTestCase {
 
     // MARK: - Original System Prompt Restoration Tests
 
-    func testCancelStepExecutionClearsOriginalSystemPrompt() async {
-        let stepID = "test_step"
 
-        // Set up an original system prompt
-        service._testSetOriginalSystemPrompt(stepID: stepID, taskID: 0, prompt: "Original prompt content")
-        XCTAssertEqual(service._testGetOriginalSystemPrompt(stepID: stepID, taskID: 0), "Original prompt content")
 
-        // Cancel step execution should clear the original system prompt
-        await service.cancelStepExecution(stepID: stepID, taskID: 0)
 
-        XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: stepID, taskID: 0))
-    }
 
-    func testCancelAllExecutionsClearsAllOriginalSystemPrompts() {
-        let step1 = "step1"
-        let step2 = "step2"
-        let step3 = "step3"
-
-        // Set up original prompts for multiple steps
-        service._testSetOriginalSystemPrompt(stepID: step1, taskID: 0, prompt: "Prompt 1")
-        service._testSetOriginalSystemPrompt(stepID: step2, taskID: 0, prompt: "Prompt 2")
-        service._testSetOriginalSystemPrompt(stepID: step3, taskID: 0, prompt: "Prompt 3")
-
-        XCTAssertEqual(service._testOriginalSystemPromptCount, 3)
-
-        // Cancel all executions should clear all original prompts
-        service.cancelAllExecutions()
-
-        XCTAssertEqual(service._testOriginalSystemPromptCount, 0)
-    }
-
-    func testClearRunningTaskClearsOriginalSystemPrompt() {
-        let stepID = "test_step"
-
-        // Set up an original system prompt
-        service._testSetOriginalSystemPrompt(stepID: stepID, taskID: 0, prompt: "Test prompt")
-        XCTAssertNotNil(service._testGetOriginalSystemPrompt(stepID: stepID, taskID: 0))
-
-        // Clear running task should also clear the original system prompt
-        service.clearRunningTask(stepID: stepID, taskID: 0)
-
-        XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: stepID, taskID: 0))
-    }
-
-    func testOriginalSystemPromptStorageAndRetrieval() {
-        let stepID = "test_step"
-        let prompt = "You are role-playing as Software Engineer. Focus on implementation."
-
-        // Initially should be nil
-        XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: stepID, taskID: 0))
-
-        // Set and verify
-        service._testSetOriginalSystemPrompt(stepID: stepID, taskID: 0, prompt: prompt)
-        XCTAssertEqual(service._testGetOriginalSystemPrompt(stepID: stepID, taskID: 0), prompt)
-    }
-
-    func testMultipleStepsHaveIndependentOriginalPrompts() {
-        let step1 = "step1"
-        let step2 = "step2"
-
-        service._testSetOriginalSystemPrompt(stepID: step1, taskID: 0, prompt: "Prompt for step 1")
-        service._testSetOriginalSystemPrompt(stepID: step2, taskID: 0, prompt: "Prompt for step 2")
-
-        XCTAssertEqual(service._testGetOriginalSystemPrompt(stepID: step1, taskID: 0), "Prompt for step 1")
-        XCTAssertEqual(service._testGetOriginalSystemPrompt(stepID: step2, taskID: 0), "Prompt for step 2")
-
-        // Clear one should not affect the other
-        service.clearRunningTask(stepID: step1, taskID: 0)
-
-        XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: step1, taskID: 0))
-        XCTAssertEqual(service._testGetOriginalSystemPrompt(stepID: step2, taskID: 0), "Prompt for step 2")
-    }
 
     // MARK: - Start Step Execution Guards Tests
 
@@ -2115,176 +2062,9 @@ final class LLMConversationSavingTests: XCTestCase {
 
     // MARK: - Planning Phase Prompt Restoration Tests
 
-    func testImplementationPromptSavedAfterPlanningPhaseRestoration() async {
-        let task = createTestTaskWithStep()
-        mockDelegate.taskToMutate = task
-        let stepID = task.runs[0].steps[0].id
 
-        let implementationPrompt = """
-        You are role-playing as Software Engineer.
-        Focus on implementation. Make real code changes using tools.
-        """
 
-        let planningPrompt = """
-        You are role-playing as Software Engineer.
 
-        PLANNING PHASE
-        ==============
-        Before starting work, create your implementation plan.
-        """
-
-        // Set up: original prompt saved, current conversation has planning prompt
-        service._testSetOriginalSystemPrompt(stepID: stepID, taskID: 0, prompt: implementationPrompt)
-
-        var conversationMessages = [
-            ChatMessage(role: .system, content: planningPrompt),
-            ChatMessage(role: .user, content: "Task context")
-        ]
-
-        // Simulate implementation phase save (this should restore and save)
-        await service._testSimulateImplementationPhaseSave(
-            stepID: stepID,
-            taskID: task.id,
-            conversationMessages: &conversationMessages,
-            isFirstIteration: false
-        )
-
-        // Verify: conversation messages now have implementation prompt
-        XCTAssertEqual(conversationMessages[0].content, implementationPrompt)
-
-        // Verify: original prompt was cleared after restoration
-        XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: stepID, taskID: 0))
-
-        // Verify: the task's llmConversation was updated with implementation prompt
-        if let updatedTask = mockDelegate.taskToMutate {
-            let llmConversation = updatedTask.runs[0].steps[0].llmConversation
-            XCTAssertFalse(llmConversation.isEmpty, "llmConversation should not be empty")
-
-            let systemMessage = llmConversation.first { $0.role == .system }
-            XCTAssertNotNil(systemMessage, "Should have system message")
-            XCTAssertTrue(
-                systemMessage?.content.contains("Focus on implementation") ?? false,
-                "System message should contain implementation prompt"
-            )
-            XCTAssertFalse(
-                systemMessage?.content.contains("PLANNING PHASE") ?? true,
-                "System message should NOT contain planning prompt"
-            )
-        }
-    }
-
-    func testPlanningPromptNotOverwrittenIfNoOriginalSaved() async {
-        let task = createTestTaskWithStep()
-        mockDelegate.taskToMutate = task
-        let stepID = task.runs[0].steps[0].id
-
-        let planningPrompt = """
-        PLANNING PHASE
-        ==============
-        """
-
-        // No original prompt saved
-        XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: stepID, taskID: 0))
-
-        var conversationMessages = [
-            ChatMessage(role: .system, content: planningPrompt)
-        ]
-
-        // Simulate with isFirstIteration = false, no original prompt
-        await service._testSimulateImplementationPhaseSave(
-            stepID: stepID,
-            taskID: task.id,
-            conversationMessages: &conversationMessages,
-            isFirstIteration: false
-        )
-
-        // Conversation should still have planning prompt (no restoration happened)
-        XCTAssertTrue(conversationMessages[0].content?.contains("PLANNING PHASE") == true)
-
-        // llmConversation should be empty (no save happened)
-        if let updatedTask = mockDelegate.taskToMutate {
-            let llmConversation = updatedTask.runs[0].steps[0].llmConversation
-            XCTAssertTrue(llmConversation.isEmpty, "No save should happen without original prompt")
-        }
-    }
-
-    func testFirstIterationWithoutPlanningPhaseSavesDirectly() async {
-        let task = createTestTaskWithStep()
-        mockDelegate.taskToMutate = task
-        let stepID = task.runs[0].steps[0].id
-
-        let normalSystemPrompt = """
-        You are a Software Engineer. Focus on implementation.
-        """
-
-        var conversationMessages = [
-            ChatMessage(role: .system, content: normalSystemPrompt),
-            ChatMessage(role: .user, content: "Build the feature")
-        ]
-
-        // Simulate first iteration (no planning phase)
-        await service._testSimulateImplementationPhaseSave(
-            stepID: stepID,
-            taskID: task.id,
-            conversationMessages: &conversationMessages,
-            isFirstIteration: true
-        )
-
-        // Verify: conversation saved directly
-        if let updatedTask = mockDelegate.taskToMutate {
-            let llmConversation = updatedTask.runs[0].steps[0].llmConversation
-            XCTAssertEqual(llmConversation.count, 2, "Should have 2 messages saved")
-
-            let systemMessage = llmConversation.first { $0.role == .system }
-            XCTAssertTrue(
-                systemMessage?.content.contains("Focus on implementation") ?? false,
-                "Should save the original system prompt"
-            )
-        }
-    }
-
-    func testRestorationOnlyHappensOnce() async {
-        let task = createTestTaskWithStep()
-        mockDelegate.taskToMutate = task
-        let stepID = task.runs[0].steps[0].id
-
-        let implementationPrompt = "Implementation prompt"
-        let planningPrompt = "PLANNING PHASE prompt"
-
-        service._testSetOriginalSystemPrompt(stepID: stepID, taskID: 0, prompt: implementationPrompt)
-
-        var conversationMessages = [
-            ChatMessage(role: .system, content: planningPrompt)
-        ]
-
-        // First call: should restore and clear
-        await service._testSimulateImplementationPhaseSave(
-            stepID: stepID,
-            taskID: task.id,
-            conversationMessages: &conversationMessages,
-            isFirstIteration: false
-        )
-
-        XCTAssertNil(service._testGetOriginalSystemPrompt(stepID: stepID, taskID: 0))
-        XCTAssertEqual(conversationMessages[0].content, implementationPrompt)
-
-        // Manually revert to check second call behavior
-        conversationMessages[0] = ChatMessage(
-            role: .system,
-            content: "Some other content"
-        )
-
-        // Second call: should NOT restore (original already cleared)
-        await service._testSimulateImplementationPhaseSave(
-            stepID: stepID,
-            taskID: task.id,
-            conversationMessages: &conversationMessages,
-            isFirstIteration: false
-        )
-
-        // Should remain unchanged
-        XCTAssertEqual(conversationMessages[0].content, "Some other content")
-    }
 
     func testImplementationPromptContainsExpectedContent() {
         // Verify the default Software Engineer prompt carries its identity-
@@ -2487,7 +2267,6 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
             config: LLMConfig,
             messages: [ChatMessage],
             tools: [ToolSchema],
-            session: LLMSession?,
             logger: NetworkLogger?,
             stepID: String?,
             roleName: String?
@@ -2541,7 +2320,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         let result = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -2561,7 +2340,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         let result = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -2578,7 +2357,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         let result = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -2596,7 +2375,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         let result = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -2614,7 +2393,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         let result = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -2632,7 +2411,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         _ = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -2653,7 +2432,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         _ = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -2673,7 +2452,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         let result = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -2694,7 +2473,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         let result = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -2725,7 +2504,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         let result = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -2752,7 +2531,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         _ = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -2776,7 +2555,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         _ = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -2797,7 +2576,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         _ = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -2824,7 +2603,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         let result = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -2848,7 +2627,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         let result = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -2873,7 +2652,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         let result = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -2896,7 +2675,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         let result = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -2922,7 +2701,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         let result = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -2949,7 +2728,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
             _ = try await service.performStreamingCall(
                 stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
                 client: mockClient, config: LLMConfig(),
-                tools: [], conversationMessages: [], session: nil,
+                tools: [], conversationMessages: [],
                 networkLogger: nil
             )
             XCTFail("Expected CancellationError to rethrow")
@@ -2980,7 +2759,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         _ = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -3001,7 +2780,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         _ = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -3023,7 +2802,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         _ = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil,
+            tools: [], conversationMessages: [],
             networkLogger: nil
         )
 
@@ -3086,7 +2865,7 @@ final class SetNeedsSupervisorInputBackstopTests: XCTestCase {
         service._testRegisterStepTask(stepID: step.id, taskID: task.id)
 
         let success = await service.setNeedsSupervisorInput(
-            stepID: step.id, taskID: task.id, question: "Confirm?", sessionID: "session-1"
+            stepID: step.id, taskID: task.id, question: "Confirm?"
         )
 
         XCTAssertTrue(success)
@@ -3103,7 +2882,7 @@ final class SetNeedsSupervisorInputBackstopTests: XCTestCase {
         service._testRegisterStepTask(stepID: "ghost_step", taskID: 99)
 
         let success = await service.setNeedsSupervisorInput(
-            stepID: "ghost_step", taskID: 99, question: "Q?", sessionID: nil
+            stepID: "ghost_step", taskID: 99, question: "Q?"
         )
 
         XCTAssertFalse(success)
@@ -3129,7 +2908,7 @@ final class SetNeedsSupervisorInputBackstopTests: XCTestCase {
         service._testRegisterStepTask(stepID: "wrong_step", taskID: task.id)
 
         let success = await service.setNeedsSupervisorInput(
-            stepID: "wrong_step", taskID: task.id, question: "Q?", sessionID: nil
+            stepID: "wrong_step", taskID: task.id, question: "Q?"
         )
 
         XCTAssertFalse(success, "Eligibility gate (mutated && didApply) must fail")
@@ -3152,7 +2931,7 @@ final class SetNeedsSupervisorInputBackstopTests: XCTestCase {
         // write barrier: an orphaned call must not flip a closed/paused task back to
         // `.needsSupervisorInput`, and must not fire the auto-resuming backstop.
         let success = await service.setNeedsSupervisorInput(
-            stepID: "unknown_step", taskID: 0, question: "Q?", sessionID: nil
+            stepID: "unknown_step", taskID: 0, question: "Q?"
         )
 
         XCTAssertFalse(success, "Unregistered (taskID, stepID) must reject the mutation")
@@ -3187,7 +2966,7 @@ final class SetNeedsSupervisorInputBackstopTests: XCTestCase {
         service._testRegisterStepTask(stepID: step.id, taskID: task.id)
 
         _ = await service.setNeedsSupervisorInput(
-            stepID: step.id, taskID: task.id, question: "Q?", sessionID: nil
+            stepID: step.id, taskID: task.id, question: "Q?"
         )
 
         XCTAssertEqual(
@@ -3219,7 +2998,7 @@ final class SetNeedsSupervisorInputBackstopTests: XCTestCase {
         // doesn't model the engine, but the call surface is the same.
         for _ in 1...3 {
             let success = await service.setNeedsSupervisorInput(
-                stepID: step.id, taskID: task.id, question: "Q?", sessionID: nil
+                stepID: step.id, taskID: task.id, question: "Q?"
             )
             XCTAssertTrue(success)
         }
@@ -3263,13 +3042,13 @@ final class SetNeedsSupervisorInputBackstopTests: XCTestCase {
 
         // Role A asks first.
         let successA = await service.setNeedsSupervisorInput(
-            stepID: stepA.id, taskID: task.id, question: "From A", sessionID: nil
+            stepID: stepA.id, taskID: task.id, question: "From A"
         )
         // Role B asks second — engine state would be unchanged in production
         // (already `.needsSupervisorInput` because of A), but the hook still
         // fires from the mutation side. This is the bug condition.
         let successB = await service.setNeedsSupervisorInput(
-            stepID: stepB.id, taskID: task.id, question: "From B", sessionID: nil
+            stepID: stepB.id, taskID: task.id, question: "From B"
         )
 
         XCTAssertTrue(successA)

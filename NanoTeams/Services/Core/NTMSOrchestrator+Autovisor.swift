@@ -86,17 +86,119 @@ extension NTMSOrchestrator {
         await startAutovisorPass(taskID: managerID)
     }
 
-    /// Starts a fresh manager review pass, superseding a parked (`wait_for_events`)
-    /// run if present — `startRun`'s re-entry guard bails on `.needsSupervisorInput`,
-    /// so the parked engine must be stopped first. The parked conversation is
-    /// abandoned by design (events and schedules get a clean pass; only human
-    /// messages continue the parked chat). Queued chat messages survive the
-    /// supersede — the fresh run drains them on iteration 1.
-    func startAutovisorPass(taskID: Int) async {
-        if taskEngineStates[taskID] == .needsSupervisorInput {
+    /// Starts a manager review pass.
+    ///
+    /// NON-force (the default — event wakes, the open-time pass): supersedes a
+    /// PARKED (`wait_for_events`) run only, because `startRun`'s re-entry guard
+    /// bails on `.needsSupervisorInput`. The parked conversation is abandoned by
+    /// design (events and schedules get a clean pass; only human messages continue
+    /// the parked chat). A `.running` manager is left alone — as a backstop, not as
+    /// the primary rule: `wakeAutovisorForEvents` never reaches here while
+    /// `.running` (it returns from its own mid-review injection branch first), so
+    /// this arm exists so that any FUTURE caller reaching it mid-pass cannot
+    /// discard a pass already handling the condition that woke it.
+    ///
+    /// FORCE (both "Run now" buttons — an explicit human "start over, now"):
+    /// supersedes ANY state, `.running` and `.needsAcceptance` included (both were
+    /// silent no-ops before, since the non-force branch only clears the third state
+    /// `startRun` guards on). The order is load-bearing:
+    ///  1. Claim the force slot (and bail if a plain `startRun` is already in
+    ///     flight — it WILL append the run the click asked for, so tearing its
+    ///     engine down here would only risk leaving the manager dead on one of
+    ///     `startRun`'s silent early-returns). The claim must be a WRITE: step 2
+    ///     suspends, so a read-only check serializes nothing.
+    ///  2. `pauseRun` for a LIVE pass — the ONLY way to drain the running step
+    ///     deterministically. It cancels per-step via `cancelStepExecution`, which
+    ///     AWAITS the cancelled Task's `catch is CancellationError` arm (bounded by
+    ///     `LLMConstants.cancelHandlerTimeoutSeconds`). The bulk
+    ///     `cancelExecutions(forTaskID:)` inside `stopEngineForTask` does NOT wait,
+    ///     and the manager team is single-role — so the dead pass's step and the
+    ///     fresh run's step share ONE `TaskStepKey`. A late `persistWireTranscript`
+    ///     (gated only on `executionStates[key] != nil`, writing to
+    ///     `task.runs.indices.last`) would then land the DEAD pass's transcript on
+    ///     the FRESH run. Pausing first also leaves honest history: the abandoned
+    ///     run's step ends `.paused`, not a forever-`.running` lie.
+    ///  3. `stopEngineForTask` — the same clean teardown `fireRecurrence` does.
+    ///     Unconditional (not gated on `taskEngineStates[taskID] != nil`): every
+    ///     step of it is idempotent, and `engineForTask` writes the state mirror
+    ///     only from `onStateChanged`, so a `.pending` engine exists with NO entry
+    ///     and a gated call would skip it.
+    ///
+    /// Force deliberately does NOT consult `autovisorHasPendingHumanContinuation`
+    /// (which `fireRecurrence` defers on): that guard protects UNATTENDED automated
+    /// supersedes, whereas the click IS the human's latest intent. Decisive:
+    /// `supervisorAnswer` is cleared only at the NEXT park, so a `.running` manager
+    /// resumed from an answered park still reports `true` — deferring would make
+    /// "Run now" a no-op in its most common case.
+    ///
+    /// Serialization is `forcingRunTaskIDs` (step 1) for force-vs-force, and
+    /// `startRun`'s own `startingRunTaskIDs` for everything downstream of it — from
+    /// `pauseRun`'s return through that insert there is no suspension point (a
+    /// same-actor async call returns directly to the caller, and `startRun` inserts
+    /// before its first `await`). Concurrent wakes / recurrence fires cannot reach
+    /// here mid-pass at all: both bail on `.running` themselves.
+    ///
+    /// Still-QUEUED chat messages survive both paths — the fresh run drains them on
+    /// iteration 1 (same contract as `fireRecurrence`'s queue preservation). A
+    /// message already DRAINED into the superseded pass does not carry forward: it
+    /// was popped destructively into that run's conversation and stays in its
+    /// history. Accepted — the click means "start over", and the alternative is the
+    /// deferral that would make Run now a no-op (see above).
+    func startAutovisorPass(taskID: Int, force: Bool = false) async {
+        // Zombie guard, mirroring `fireRecurrence`'s: a disabled Autovisor must never
+        // run a review pass. Unconditional (both paths, not just force) and here
+        // rather than on the buttons, because the manager's board outlives the
+        // disable — `setAutovisorEnabled(false)` keeps `autovisorTaskID`, and
+        // `detailView`'s `.task` branch renders `TeamBoardView` (hence a live
+        // "Run now") with no Autovisor gate, reachable via ⌘3 / the command palette
+        // once the manager is the active task. The other two callers already
+        // pre-check the flag, so this only ever fires for a button.
+        if snapshot?.workFolder.settings.autovisorEnabled != true {
+            lastInfoMessage = "Autovisor is off — turn it on to run a review pass."
+            return
+        }
+
+        var supersededLivePass = false
+        if force {
+            // Claim the force slot ATOMICALLY — `insert().inserted` tests and claims
+            // in one step. A read-only check could not serialize two clicks: the
+            // window opens at `pauseRun` below, and the engine mirror stays
+            // `.running` until its last line, so click #2 would observe exactly what
+            // click #1 did, both would tear down, and the loser would kill the
+            // winner's just-started engine and append a second run. Also bails when
+            // a plain `startRun` is already in flight — it WILL append the run the
+            // click asked for.
+            guard !startingRunTaskIDs.contains(taskID),
+                  forcingRunTaskIDs.insert(taskID).inserted
+            else { return }
+            // Defensive: `.running` implies loaded today (the scheduler never evicts
+            // a running task), but an UNLOADED task sends `pauseRun` down its bulk
+            // `cancelExecutions` fallback — the fire-and-forget branch this whole
+            // ordering exists to avoid. No-op when already loaded.
+            await ensureTaskLoaded(taskID)
+            if taskEngineStates[taskID] == .running {
+                await pauseRun(taskID: taskID)
+                supersededLivePass = true
+            }
+            stopEngineForTask(taskID)
+        } else if taskEngineStates[taskID] == .needsSupervisorInput {
             stopEngineForTask(taskID)
         }
+        // Registered AFTER the claim, so the guard's own `return` above (which never
+        // inserted) can't release a slot another call owns.
+        defer { if force { forcingRunTaskIDs.remove(taskID) } }
+
+        let runsBefore = loadedTask(taskID)?.runs.count ?? 0
         await startRun(taskID: taskID)
+
+        // Feedback for the ONE case with no other visible signal: the interrupted
+        // pass was mid-flight, so the board looked "still running" before AND after.
+        // Gated on a run actually landing (`startRun` has several silent
+        // early-returns — CLAUDE.md §7) so the banner can't claim a restart that
+        // never happened.
+        if supersededLivePass, (loadedTask(taskID)?.runs.count ?? 0) > runsBefore {
+            lastInfoMessage = "Autovisor: restarted the review pass."
+        }
     }
 
     /// Seeds the default goal/memory when empty so both fields start populated and
@@ -154,18 +256,25 @@ extension NTMSOrchestrator {
         return true
     }
 
-    /// Whether the Autovisor detail surface should show the first-time SETUP pane
-    /// (goal + Enable) instead of the manager chat. Delegates to the pure
-    /// `AutovisorPolicy.needsSetup` so the routing decision
-    /// (`MainLayoutView.autovisorDetail`), the Watchtower pill's click intercept,
-    /// and the sidebar menu label ALL agree. They used to disagree — the detail
-    /// pane gated on `autovisorTaskID == nil` while the pill/sidebar gated on the
-    /// goal — which stranded a created-then-disabled manager on the chat with no
-    /// way to reach setup or re-enable from the pill.
-    var autovisorNeedsSetup: Bool {
-        AutovisorPolicy.needsSetup(
+    /// Whether the `.autovisor` destination shows the SETUP pane (goal + Enable)
+    /// instead of the manager chat — read by `MainLayoutView.autovisorDetail` and by
+    /// the sidebar menu label that names that destination. Disabled ⇒ setup, so
+    /// turning the manager back on is always one screen away instead of hidden behind
+    /// a chat it can't drive. See `AutovisorPolicy.showsSetupPane`.
+    var autovisorShowsSetupPane: Bool {
+        AutovisorPolicy.showsSetupPane(
             taskExists: autovisorTaskID != nil,
-            enabled: workFolder?.settings.autovisorEnabled ?? false,
+            enabled: workFolder?.settings.autovisorEnabled ?? false
+        )
+    }
+
+    /// Whether an OFF→ON click must route through the setup pane rather than enable
+    /// in place — the Watchtower pill's intercept. True only while the goal is still
+    /// the seeded placeholder (or there is no manager yet); a real goal enables in
+    /// one click. See `AutovisorPolicy.requiresSetupBeforeEnabling`.
+    var autovisorRequiresSetupBeforeEnabling: Bool {
+        AutovisorPolicy.requiresSetupBeforeEnabling(
+            taskExists: autovisorTaskID != nil,
             goalIsUnset: AutovisorPolicy.goalIsUnset(workFolder?.settings.autovisorGoal ?? "")
         )
     }
@@ -214,6 +323,9 @@ extension NTMSOrchestrator {
             clearAutovisorAutoDisable()   // stale deadline (direct settings write) — self-heal silently
             return
         }
+        // Sampled BEFORE the disable — every wake guard reads the enabled flag, so
+        // afterwards this can only report "nothing pending".
+        let hadPendingWork = autovisorHasUnresolvedAttention()
         let errorBaseline = lastErrorMessage
         await setAutovisorEnabled(false)
         // Verify semantic success before announcing (CLAUDE.md §7 — persisted ≠
@@ -228,7 +340,31 @@ extension NTMSOrchestrator {
         //   `fireRecurrence`'s zombie guard).
         guard snapshot?.workFolder.settings.autovisorEnabled == false,
               lastErrorMessage == errorBaseline else { return }
-        lastInfoMessage = "Autovisor turned off — its auto-off timer ended."
+        // Turning off is the LAST thing that can wake this folder — every wake guard
+        // reads the enabled flag, so after this nothing runs, including the recurrence
+        // that is the final recovery path for a manager parked by a reasoning loop.
+        // Say so when it happens mid-work: "the timer ended" reads as routine and is
+        // the difference between a user who turns it back on and one who finds the
+        // folder abandoned tomorrow.
+        lastInfoMessage = hadPendingWork
+            ? "Autovisor turned off — its auto-off timer ended while tasks still needed it. Turn it back on to continue them."
+            : "Autovisor turned off — its auto-off timer ended."
+    }
+
+    /// Whether any watched task currently matches an activation trigger. Instance-level
+    /// convenience over the pure itemizer, using the same inputs the pass-start seed
+    /// does so the two can't disagree about what "needs attention" means.
+    private func autovisorHasUnresolvedAttention() -> Bool {
+        guard let settings = snapshot?.workFolder.settings, let managerID = autovisorTaskID
+        else { return false }
+        let watchable = autovisorWatchableTasks(excluding: managerID)
+        let act = settings.autovisorActivation
+        let stuck = act.onTaskStuck
+            ? computeStuckTaskIDs(watchable: watchable, now: MonotonicClock.shared.now())
+            : []
+        return Self.autovisorNeedsAttention(
+            watchable: watchable, engineStates: taskEngineStates,
+            activation: act, seen: autovisorSeenTaskIDs, stuck: stuck)
     }
 
     /// Fully removes the Autovisor from this folder (sidebar context-menu

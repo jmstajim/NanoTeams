@@ -8,7 +8,7 @@ import XCTest
 /// (`RequestRevisionTests`, `RevisionContinuationTests`) cannot see:
 ///
 /// 1. The wire user message carries exactly ONE "Supervisor Feedback: " prefix.
-/// 2. The stateful session (`previous_response_id`) is used, not a stateless rebuild.
+/// 2. The prior conversation is REPLAYED and the feedback APPENDED — not re-synthesized.
 /// 3. The persisted display `LLMMessage` is tagged `sourceContext: .changeRequest` —
 ///    without the tag, `sourceContextDisplayLabel` falls back to "(consultation)"
 ///    (the exact label bug this guards against; the parameter defaults to `nil`,
@@ -59,8 +59,7 @@ final class RevisionContinuationSendPathTests: XCTestCase {
         let stepID = "swe_revision_send"
         let task = makeRevisionContinuationTask(
             taskID: 7, stepID: stepID,
-            revisionComment: "Fix the restart bug.",
-            sessionID: "resp_42"
+            revisionComment: "Fix the restart bug."
         )
         mockDelegate.taskToMutate = task
 
@@ -77,8 +76,11 @@ final class RevisionContinuationSendPathTests: XCTestCase {
         XCTAssertEqual(
             userMessage?.content?.components(separatedBy: "Supervisor Feedback:").count, 2,
             "Exactly one prefix on the wire — the doubled-prefix bug fired here")
-        XCTAssertEqual(call.session?.responseID, "resp_42",
-                       "Revision continuation must reuse the saved stateful session")
+        XCTAssertTrue(
+            call.messages.contains { $0.role == .assistant && $0.content == "Prior turn" },
+            "Revision continuation must REPLAY the prior conversation, not re-synthesize one")
+        XCTAssertEqual(call.messages.last?.role, .user,
+                       "The feedback is appended last so the replayed prefix stays byte-identical")
 
         // Display: the persisted LLMMessage mirrors the wire content and carries the tag.
         let step = mockDelegate.taskToMutate?.runs.last?.steps.first(where: { $0.id == stepID })
@@ -87,8 +89,6 @@ final class RevisionContinuationSendPathTests: XCTestCase {
         XCTAssertEqual(feedback?.sourceRole, .supervisor)
         XCTAssertEqual(feedback?.sourceContext, .changeRequest,
                        "Without the tag the bubble renders '(consultation)' — the label bug")
-        XCTAssertNil(step?.llmSessionID,
-                     "Saved session must be cleared once consumed (prevents stale-session retry)")
     }
 
     func testRevisionContinuation_legacyPrefixedComment_doesNotDoublePrefix() async throws {
@@ -97,8 +97,7 @@ final class RevisionContinuationSendPathTests: XCTestCase {
         // revisionComment from the already-prefixed message content.
         let task = makeRevisionContinuationTask(
             taskID: 8, stepID: stepID,
-            revisionComment: "Supervisor Feedback: Legacy stored comment.",
-            sessionID: "resp_legacy"
+            revisionComment: "Supervisor Feedback: Legacy stored comment."
         )
         mockDelegate.taskToMutate = task
 
@@ -121,16 +120,15 @@ final class RevisionContinuationSendPathTests: XCTestCase {
     // MARK: - Corner: continuation precedence
 
     /// When BOTH `supervisorAnswer` and `revisionComment` are set, the supervisor
-    /// continuation wins (`hasRevisionContinuation` requires `effectiveSupervisorAnswer
+    /// continuation wins (`hasRevisionFeedback` requires `effectiveSupervisorAnswer
     /// == nil`): the wire carries the answer as a TOOL result resolving the pending
     /// `ask_supervisor` call — sending a user-role feedback turn instead would leave
-    /// that tool call unresolved and poison the stateful chain.
+    /// that call unanswered in the replayed transcript.
     func testBothContinuations_supervisorAnswerWins() async throws {
         let stepID = "swe_precedence"
         var task = makeRevisionContinuationTask(
             taskID: 9, stepID: stepID,
-            revisionComment: "Revise section 2.",
-            sessionID: "resp_both"
+            revisionComment: "Revise section 2."
         )
         task.runs[0].steps[0].supervisorAnswer = "Use PostgreSQL."
         mockDelegate.taskToMutate = task
@@ -150,24 +148,22 @@ final class RevisionContinuationSendPathTests: XCTestCase {
                 $0.role == .user && ($0.content?.hasPrefix("Supervisor Feedback:") ?? false)
             }),
             "Revision feedback must NOT be sent while a supervisor answer is pending")
-        XCTAssertEqual(call.session?.responseID, "resp_both")
     }
 
-    // MARK: - Corner: stateless fallback (no saved session)
+    // MARK: - Corner: no replayable history
 
-    /// With no saved session, the revision-continuation block is skipped entirely:
-    /// the wire is the full stateless rebuild, where the feedback arrives via the
+    /// A step with nothing to replay (no `wireTranscript`, no `llmConversation`) falls
+    /// back to the freshly built conversation, where the feedback arrives via the
     /// single prefixed `StepMessage` relay — exactly once, and with no planning-phase
     /// hijack (a step under revision never enters planning even with a nil scratchpad).
-    func testStatelessFallback_feedbackExactlyOnce_noPlanningHijack() async throws {
-        let stepID = "swe_stateless"
+    func testNoReplayableHistory_feedbackExactlyOnce_noPlanningHijack() async throws {
+        let stepID = "swe_fresh_rebuild"
         let rawComment = "Revise the error handling."
         var task = makeRevisionContinuationTask(
             taskID: 10, stepID: stepID,
-            revisionComment: rawComment,
-            sessionID: "ignored"
+            revisionComment: rawComment
         )
-        task.runs[0].steps[0].llmSessionID = nil  // stateless resume
+        task.runs[0].steps[0].llmConversation = []  // nothing to replay
         task.runs[0].steps[0].messages.append(StepMessage(
             role: .supervisor,
             content: MessageSourceContext.supervisorFeedbackPrefix + rawComment
@@ -181,13 +177,11 @@ final class RevisionContinuationSendPathTests: XCTestCase {
         await service.cancelStepExecution(stepID: stepID, taskID: 10)
 
         let call = stubClient.capturedCalls[0]
-        XCTAssertNil(call.session, "No saved session — must rebuild stateless")
-
         let joined = call.messages.compactMap(\.content).joined(separator: "\n")
         XCTAssertEqual(joined.components(separatedBy: rawComment).count, 2,
-                       "Feedback text exactly once in the stateless rebuild")
+                       "Feedback text exactly once in the rebuild")
         XCTAssertEqual(joined.components(separatedBy: "Supervisor Feedback:").count, 2,
-                       "Exactly one attribution prefix in the stateless rebuild")
+                       "Exactly one attribution prefix in the rebuild")
         XCTAssertFalse(joined.contains("PLANNING PHASE"),
                        "A revision step (nil scratchpad) must not be hijacked into planning")
     }
@@ -195,10 +189,10 @@ final class RevisionContinuationSendPathTests: XCTestCase {
     // MARK: - Helpers
 
     /// Step shaped exactly like the engine leaves it after `resetStepForRevision` +
-    /// `prepareStepForExecution`: `.running`, saved session, raw revisionComment,
-    /// no supervisor answer (the `hasRevisionContinuation` precondition set).
+    /// `prepareStepForExecution`: `.running`, a replayable conversation, raw
+    /// revisionComment, no supervisor answer (the `hasRevisionFeedback` precondition).
     private func makeRevisionContinuationTask(
-        taskID: Int, stepID: String, revisionComment: String, sessionID: String
+        taskID: Int, stepID: String, revisionComment: String
     ) -> NTMSTask {
         let step = StepExecution(
             id: stepID,
@@ -210,7 +204,6 @@ final class RevisionContinuationSendPathTests: XCTestCase {
                 LLMMessage(role: .system, content: "System prompt"),
                 LLMMessage(role: .assistant, content: "Prior turn"),
             ],
-            llmSessionID: sessionID,
             revisionComment: revisionComment
         )
         let run = Run(id: 0, steps: [step])
@@ -240,13 +233,12 @@ final class RevisionContinuationSendPathTests: XCTestCase {
 
 // MARK: - Capturing stub LLM client
 
-/// Records every `streamChat` invocation (messages + session), emits one content delta,
+/// Records every `streamChat` invocation's messages, emits one content delta,
 /// then suspends until cancelled — mimics a live server holding the connection so the
 /// test controls when the call ends via `cancelStepExecution`.
 final class CapturingStubLLMClient: LLMClient, @unchecked Sendable {
     struct CapturedCall {
         let messages: [ChatMessage]
-        let session: LLMSession?
     }
 
     private let lock = NSLock()
@@ -257,13 +249,12 @@ final class CapturingStubLLMClient: LLMClient, @unchecked Sendable {
         config _: LLMConfig,
         messages: [ChatMessage],
         tools _: [ToolSchema],
-        session: LLMSession?,
         logger _: NetworkLogger?,
         stepID _: String?,
         roleName _: String?
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         lock.withLock {
-            _capturedCalls.append(CapturedCall(messages: messages, session: session))
+            _capturedCalls.append(CapturedCall(messages: messages))
         }
         return AsyncThrowingStream { continuation in
             let producer = Task.detached {

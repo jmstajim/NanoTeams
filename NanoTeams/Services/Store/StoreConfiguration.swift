@@ -61,12 +61,51 @@ final class StoreConfiguration {
     var llmProvider: LLMProvider {
         didSet {
             storage.set(llmProvider.rawValue, forKey: Keys.llmProvider)
-            // Auto-update URL and model when provider changes
             if oldValue != llmProvider {
-                llmBaseURLString = llmProvider.defaultBaseURL
-                llmModelName = llmProvider.defaultModel
+                // Remember the OLD provider's endpoint before switching, then
+                // restore the NEW provider's remembered endpoint (or its
+                // defaults). A look at the other provider must never destroy
+                // a customized URL + model — and because the bearer token is
+                // Keychain-keyed by URL, restoring the URL also reconnects
+                // the saved token. Blank/whitespace remembered values restore
+                // the DEFAULTS: resurrecting an empty URL (cleared mid-edit
+                // before the flip) would leave every request throwing
+                // invalidBaseURL with no visible cause.
+                rememberEndpoint(for: oldValue, url: llmBaseURLString, model: llmModelName)
+                let restored = rememberedEndpoint(for: llmProvider)
+                llmBaseURLString = Self.nonBlank(restored?.url) ?? llmProvider.defaultBaseURL
+                llmModelName = Self.nonBlank(restored?.model) ?? llmProvider.defaultModel
             }
         }
+    }
+
+    /// Last-used (URL, model) per provider — what makes the provider picker a
+    /// reversible toggle instead of a destructive reset.
+    nonisolated struct ProviderEndpoint: Codable, Equatable {
+        var url: String
+        var model: String
+    }
+
+    @ObservationIgnored
+    private var providerEndpointMemory: [String: ProviderEndpoint] = [:]
+
+    private func rememberEndpoint(for provider: LLMProvider, url: String, model: String) {
+        providerEndpointMemory[provider.rawValue] = ProviderEndpoint(url: url, model: model)
+        if let data = try? JSONEncoder().encode(providerEndpointMemory) {
+            storage.set(data, forKey: Keys.llmProviderEndpoints)
+        }
+    }
+
+    private func rememberedEndpoint(for provider: LLMProvider) -> ProviderEndpoint? {
+        providerEndpointMemory[provider.rawValue]
+    }
+
+    /// `nil` for nil/empty/whitespace-only — restore-time filter so a blank
+    /// remembered field falls through to the provider default.
+    private static func nonBlank(_ value: String?) -> String? {
+        guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        return value
     }
 
     var llmBaseURLString: String {
@@ -201,6 +240,21 @@ final class StoreConfiguration {
         didSet { storage.set(visionBaseURLString, forKey: Keys.visionBaseURL) }
     }
 
+    /// Which API family the Vision server speaks. `nil` = inherit the global
+    /// provider. Needed because `visionBaseURLString` can point at a DIFFERENT
+    /// server than the global chat LLM — after a global provider flip, an
+    /// explicit LM Studio vision server must not be spoken to in Ollama wire
+    /// format (and vice versa). Resolution lives in `resolvedVisionProvider`.
+    var visionProvider: LLMProvider? {
+        didSet {
+            if let visionProvider {
+                storage.set(visionProvider.rawValue, forKey: Keys.visionProvider)
+            } else {
+                storage.removeObject(forKey: Keys.visionProvider)
+            }
+        }
+    }
+
     var isVisionConfigured: Bool {
         guard visionEnabled else { return false }
         // I3: trim both branches symmetrically. Pre-fix the override branch
@@ -225,10 +279,11 @@ final class StoreConfiguration {
         guard !resolvedURL.isEmpty else { return nil }
 
         return LLMConfig(
-            provider: llmProvider,
+            provider: resolvedVisionProvider,
             baseURLString: resolvedURL,
             modelName: resolvedVisionModel(for: visionModelName),
-            requestTimeoutSeconds: llmRequestTimeoutSeconds
+            requestTimeoutSeconds: llmRequestTimeoutSeconds,
+            keepAliveSeconds: ollamaKeepAliveSeconds
         )
     }
 
@@ -253,6 +308,15 @@ final class StoreConfiguration {
                 return
             }
             storage.set(llmRequestTimeoutSeconds, forKey: Keys.llmRequestTimeoutSeconds)
+        }
+    }
+
+    /// Seconds Ollama is asked to keep the model (and its KV prefix cache) resident.
+    /// Only reaches the wire for Ollama — LM Studio residency is managed explicitly by
+    /// `ChatModelEnsurer`. `0` unloads immediately; negative keeps it loaded indefinitely.
+    var ollamaKeepAliveSeconds: Int {
+        didSet {
+            storage.set(ollamaKeepAliveSeconds, forKey: Keys.ollamaKeepAliveSeconds)
         }
     }
 
@@ -328,24 +392,48 @@ final class StoreConfiguration {
 
     // MARK: - Global LLM Context
 
-    /// App-wide instruction appended to the system prompt of every LLM call
-    /// (step execution, consultation, meeting, planning, supervisor auto-answer,
-    /// work-folder context generation, team generation, vision). Empty string
-    /// disables the append (no separator emitted).
+    /// App-wide instruction injected into the system prompt of every TOOL-LOOP
+    /// LLM call. Exactly three consumers: step execution, `ask_teammate`
+    /// consultation, team meetings. One-shot calls — supervisor auto-answer,
+    /// work-folder context generation, team generation, vision — deliberately do
+    /// NOT receive it. Defaults to `AppDefaults.globalContext`; an empty value
+    /// emits no `## Global guidance` section at all rather than a bodyless header.
     ///
     /// Persistence semantics intentionally diverge from `teamGenSystemPrompt`:
     /// empty string is persisted AS empty (not removed) so the user can clear
     /// the field and have the cleared state stick. First launch with no stored
     /// key reads `AppDefaults.globalContext` via `object(forKey:) as? String ??
-    /// AppDefaults.globalContext`. `resetToDefaults()` removes the key AND
-    /// re-assigns to `AppDefaults.globalContext`.
+    /// AppDefaults.globalContext`, and that fallback does NOT persist (`didSet`
+    /// never fires during `init`) — which is the only reason a new default reaches
+    /// an untouched install at all.
+    ///
+    /// A stored copy of a default is what PINS an install: assigning the default
+    /// fires `didSet` and persists it, after which no future default can reach it.
+    /// Both former offenders are fixed — `resetToDefaults()` re-removes the key
+    /// after its assignment, and the settings card routes through
+    /// `resetGlobalContextToDefault()` instead of assigning directly.
+    /// `purgeStaleDefaultGlobalContext` unwinds the installs already pinned by the
+    /// old behaviour, byte-exactly, without discarding a real customisation.
     ///
     /// LM Studio session caveat: changes only take effect on fresh sessions
-    /// (new run, restart role, revision, planning reset, HTTP 400 fallback).
-    /// `system_prompt` is omitted on stateful continuations, so an in-flight
-    /// step's response chain still uses the value baked in at session start.
+    /// (new run, restart role, revision, HTTP 400 fallback). `system_prompt` is
+    /// omitted on stateful continuations, so an in-flight step's response chain
+    /// still uses the value baked in at session start.
     var globalContext: String {
         didSet { storage.set(globalContext, forKey: Keys.globalContext) }
+    }
+
+    /// Restore `globalContext` to the shipped default WITHOUT pinning a copy of it.
+    ///
+    /// The obvious `config.globalContext = AppDefaults.globalContext` is the exact
+    /// move that created the pinned cohort `purgeStaleDefaultGlobalContext` exists
+    /// to unwind: `didSet` persists the assigned value, so the install stops
+    /// following the shipped default from that click onward. Assign (for the
+    /// in-memory value and the observation it publishes), then drop the key so the
+    /// `init` fallback owns the value again on the next launch.
+    func resetGlobalContextToDefault() {
+        globalContext = AppDefaults.globalContext
+        storage.removeObject(forKey: Keys.globalContext)
     }
 
     // MARK: - Bash (shell command execution)
@@ -696,6 +784,10 @@ final class StoreConfiguration {
         self.storage = storage
         Self.migrateExpandedSearchKeys(storage)
         Self.purgeRetiredKeys(storage)
+        Self.purgeStaleDefaultGlobalContext(storage)
+        self.providerEndpointMemory = storage.data(forKey: Keys.llmProviderEndpoints)
+            .flatMap { try? JSONDecoder().decode([String: ProviderEndpoint].self, from: $0) }
+            ?? [:]
         let providerRaw = storage.string(forKey: Keys.llmProvider)
         let provider = providerRaw.flatMap(LLMProvider.init(rawValue:)) ?? .lmStudio
         self.llmProvider = provider
@@ -709,9 +801,12 @@ final class StoreConfiguration {
             .flatMap(TaskFilter.init(rawValue:)) ?? .all
         self.maxLLMRetries = (storage.object(forKey: Keys.maxLLMRetries) as? Int) ?? LLMConstants.defaultMaxLLMRetries
         self.llmRequestTimeoutSeconds = (storage.object(forKey: Keys.llmRequestTimeoutSeconds) as? Int) ?? LLMConstants.defaultLLMRequestTimeoutSeconds
+        self.ollamaKeepAliveSeconds = (storage.object(forKey: Keys.ollamaKeepAliveSeconds) as? Int) ?? LLMConstants.defaultOllamaKeepAliveSeconds
         self.timelineClearedUpToDate = storage.object(forKey: Keys.timelineClearedUpToDate) as? Date
         self.visionModelName = storage.string(forKey: Keys.visionModelName) ?? ""
         self.visionBaseURLString = storage.string(forKey: Keys.visionBaseURL) ?? ""
+        self.visionProvider = storage.string(forKey: Keys.visionProvider)
+            .flatMap(LLMProvider.init(rawValue:))
         // An explicitly stored toggle value (user touched the setting) always
         // wins; while the key is absent — fresh installs and upgrades that
         // never opened Vision settings — Vision defaults to ON. This subsumes
@@ -907,10 +1002,46 @@ final class StoreConfiguration {
         }
     }
 
+    /// One-shot: drop a stored `globalContext` byte-identical to any RETIRED
+    /// default, so the current `AppDefaults.globalContext` applies again.
+    ///
+    /// Concretely this is what frees an install still carrying the
+    /// `Exception: 2–3 genuinely independent reads` escape clause — the text the
+    /// current bare rule exists to replace, and the one a reasoning model spends
+    /// its turn adjudicating.
+    ///
+    /// A user who never touched the setting has no stored key at all (the
+    /// `?? AppDefaults.globalContext` fallback in `init` does not persist —
+    /// `didSet` never fires during `init`), so they pick up a new default for
+    /// free. The pinned cohort is everyone who clicked "Reset to Default" or ran
+    /// `resetToDefaults()` back when both ASSIGNED the then-current default and
+    /// persisted a copy of it through `didSet`. Both paths are fixed now (they
+    /// share `resetGlobalContextToDefault()`, which drops the key after assigning),
+    /// so the cohort is closed and this purge only unwinds the installs in it.
+    ///
+    /// Removing the KEY rather than overwriting it with today's default is what
+    /// makes those installs track FUTURE defaults too.
+    ///
+    /// Matching byte-exactly is the whole safety property: a value equal to a
+    /// shipped default is a copy, never a choice, so removing it cannot discard
+    /// a customisation. Bumping the key to `.v2` would — that is why this is a
+    /// targeted purge and not a version bump.
+    /// Idempotent. TODO(2027-Q2): remove once all live installs have migrated.
+    private static func purgeStaleDefaultGlobalContext(_ storage: any ConfigurationStorage) {
+        // Unwrap BEFORE the roster lookup. The old `Optional<String> == String`
+        // comparison typechecked; `[String].contains` does not, and the shortcut
+        // fix (`?? ""`) would make an accidental empty roster entry match every
+        // untouched install.
+        guard let stored = storage.object(forKey: Keys.globalContext) as? String,
+              AppDefaults.retiredGlobalContextDefaults.contains(stored) else { return }
+        storage.removeObject(forKey: Keys.globalContext)
+    }
+
     // MARK: - Reset
 
     func resetToDefaults() {
         storage.removeObject(forKey: Keys.llmProvider)
+        storage.removeObject(forKey: Keys.llmProviderEndpoints)
         storage.removeObject(forKey: Keys.llmBaseURL)
         storage.removeObject(forKey: Keys.llmModel)
         storage.removeObject(forKey: Keys.enterSendsMessage)
@@ -919,9 +1050,11 @@ final class StoreConfiguration {
         storage.removeObject(forKey: Keys.loggingEnabled)
         storage.removeObject(forKey: Keys.maxLLMRetries)
         storage.removeObject(forKey: Keys.llmRequestTimeoutSeconds)
+        storage.removeObject(forKey: Keys.ollamaKeepAliveSeconds)
         storage.removeObject(forKey: Keys.visionEnabled)
         storage.removeObject(forKey: Keys.visionModelName)
         storage.removeObject(forKey: Keys.visionBaseURL)
+        storage.removeObject(forKey: Keys.visionProvider)
         storage.removeObject(forKey: Keys.dismissedNotificationIDs)
         storage.removeObject(forKey: Keys.dismissedFeatureTipIDs)
         storage.removeObject(forKey: Keys.seenSupervisorInputKeys)
@@ -966,7 +1099,13 @@ final class StoreConfiguration {
         storage.removeObject(forKey: Keys.computerUseJudgeLLMOverride)
 
         let provider = LLMProvider.lmStudio
+        // Wipe BEFORE the provider assignment (whose didSet would re-remember
+        // the outgoing endpoint) AND re-remove the key after it, so a reset
+        // from a non-default provider leaves no endpoint memory behind.
+        providerEndpointMemory = [:]
         llmProvider = provider
+        providerEndpointMemory = [:]
+        storage.removeObject(forKey: Keys.llmProviderEndpoints)
         llmBaseURLString = provider.defaultBaseURL
         llmModelName = provider.defaultModel
         enterSendsMessage = true
@@ -975,7 +1114,9 @@ final class StoreConfiguration {
         loggingEnabled = Self.defaultLoggingEnabled
         maxLLMRetries = LLMConstants.defaultMaxLLMRetries
         llmRequestTimeoutSeconds = LLMConstants.defaultLLMRequestTimeoutSeconds
+        ollamaKeepAliveSeconds = LLMConstants.defaultOllamaKeepAliveSeconds
         visionEnabled = Self.defaultVisionEnabled
+        visionProvider = nil
         visionModelName = ""
         visionBaseURLString = ""
         dismissedNotificationIDs = []
@@ -1001,7 +1142,12 @@ final class StoreConfiguration {
         searchContextBefore = AppDefaults.searchContextBefore
         searchContextAfter = AppDefaults.searchContextAfter
         searchIndexWatcherDebounceSeconds = AppDefaults.searchIndexWatcherDebounceSeconds
-        globalContext = AppDefaults.globalContext
+        // NOT a bare `globalContext = AppDefaults.globalContext`: that assignment's
+        // `didSet` re-persists the default and undoes the removal near the top of
+        // this function, pinning the install to today's text. The helper assigns
+        // and then drops the key again — same contract as the settings card's
+        // Reset button, so the two can't drift.
+        resetGlobalContextToDefault()
         bashMode = BashConstants.defaultMode
         bashRestrictionLevel = BashConstants.defaultRestrictionLevel
         bashAllowRules = []
@@ -1048,7 +1194,8 @@ final class StoreConfiguration {
             provider: llmProvider,
             baseURLString: llmBaseURLString,
             modelName: llmModelName,
-            requestTimeoutSeconds: llmRequestTimeoutSeconds
+            requestTimeoutSeconds: llmRequestTimeoutSeconds,
+            keepAliveSeconds: ollamaKeepAliveSeconds
         )
     }
     nonisolated deinit {}

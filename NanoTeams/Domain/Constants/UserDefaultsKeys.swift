@@ -10,6 +10,7 @@ nonisolated enum UserDefaultsKeys {
     static let debugModeEnabled = "NanoTeams.ui.debugModeEnabled.v1"
     static let maxLLMRetries = "NanoTeams.llm.maxRetries.v1"
     static let llmRequestTimeoutSeconds = "NanoTeams.llm.requestTimeoutSeconds.v1"
+    static let ollamaKeepAliveSeconds = "NanoTeams.llm.ollamaKeepAliveSeconds.v1"
     static let lastOpenedWorkFolderPath = "LastOpenedProjectPath"
     static let appAppearance = "appAppearance"
     /// Selected dark-mode theme — one of `Theme.allCases.rawValue`. Applied only
@@ -25,6 +26,8 @@ nonisolated enum UserDefaultsKeys {
     static let visionEnabled = "NanoTeams.vision.enabled.v1"
     static let visionModelName = "NanoTeams.vision.model.v1"
     static let visionBaseURL = "NanoTeams.vision.baseURL.v1"
+    static let visionProvider = "NanoTeams.vision.provider.v1"
+    static let llmProviderEndpoints = "NanoTeams.llm.providerEndpoints.v1"
     static let quickCapturePanelFrame = "NanoTeams.QuickCapturePanel"
     static let dismissedNotificationIDs = "NanoTeams.ui.dismissedNotificationIDs.v1"
     static let dismissedFeatureTipIDs = "NanoTeams.ui.dismissedFeatureTipIDs.v1"

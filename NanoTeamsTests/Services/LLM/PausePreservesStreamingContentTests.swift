@@ -684,7 +684,7 @@ final class PausePreservesStreamingContentTests: XCTestCase, @unchecked Sendable
             stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: StreamingStubLLMClient(thinkingChunks: [loopThinking], contentChunks: []),
             config: LLMConfig(), tools: [], conversationMessages: [],
-            session: nil, networkLogger: nil)
+            networkLogger: nil)
 
         XCTAssertNotNil(result.thinkingLoopSignal, "Top-level thinking loop must set the signal")
         XCTAssertEqual(mock.discardStreamingCalls.count, 1, "The planted message must be discarded once")
@@ -783,7 +783,6 @@ private final class StreamingStubLLMClient: LLMClient, @unchecked Sendable {
         config _: LLMConfig,
         messages _: [ChatMessage],
         tools _: [ToolSchema],
-        session _: LLMSession?,
         logger _: NetworkLogger?,
         stepID _: String?,
         roleName _: String?

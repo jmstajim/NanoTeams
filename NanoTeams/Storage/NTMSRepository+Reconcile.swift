@@ -147,6 +147,16 @@ nonisolated extension NTMSRepository {
                 let nextIcon = bundled.icon
                 let nextIconColor = bundled.iconColor
                 let nextIconBG = bundled.iconBackground
+                // Template-owned like the prompt and the toolset. The phase used
+                // to be a single `update_scratchpad` call and was on for every
+                // role; it is now a multi-turn read-and-plan stretch that only
+                // the Software Engineer gets. Without this line a folder created
+                // before that change keeps `usePlanningPhase: true` on all eight
+                // FAANG roles and pays the phase everywhere. CUSTOM roles are
+                // untouched (the loop is `isSystemRole`-gated), so a user's own
+                // choice survives — which is also why the decoder's legacy-key
+                // fallback in `TeamRoleDefinition` still matters.
+                let nextUsesPlanning = bundled.usePlanningPhase
 
                 let changed = role.prompt != nextPrompt
                     || role.toolIDs != nextToolIDs
@@ -154,6 +164,7 @@ nonisolated extension NTMSRepository {
                     || role.icon != nextIcon
                     || role.iconColor != nextIconColor
                     || role.iconBackground != nextIconBG
+                    || role.usePlanningPhase != nextUsesPlanning
 
                 if changed {
                     teams[i].roles[r].prompt = nextPrompt
@@ -162,6 +173,7 @@ nonisolated extension NTMSRepository {
                     teams[i].roles[r].icon = nextIcon
                     teams[i].roles[r].iconColor = nextIconColor
                     teams[i].roles[r].iconBackground = nextIconBG
+                    teams[i].roles[r].usePlanningPhase = nextUsesPlanning
                     teams[i].roles[r].updatedAt = MonotonicClock.shared.now()
                     teamChanged = true
                 }

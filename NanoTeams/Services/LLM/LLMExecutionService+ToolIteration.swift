@@ -10,7 +10,7 @@ extension LLMExecutionService {
     /// Run exactly one assistant generation + optional tool execution pass.
     ///
     /// This method orchestrates a single LLM iteration by delegating to focused methods:
-    /// - `applyPlanningPhase` — manages first-iteration planning constraints
+    /// - `applyPlanningPhase` — authorizes the iteration's toolset for the planning phase
     /// - `performStreamingCall` — executes the LLM streaming call and collects tokens
     /// - `processStreamingResult` — appends messages and detects completion signals
     /// - `handleNoToolCalls` — handles missing tool calls (learning + retry)
@@ -34,7 +34,6 @@ extension LLMExecutionService {
         tracker: ToolCallTracker,
         memoryStore: MemoryTagStore,
         iterationNumber: Int,
-        session: inout LLMSession?,
         cumulativeUsage: inout TokenUsage,
         networkLogger: NetworkLogger? = nil,
         toolObserver: (([StepToolCall], [ToolExecutionResult]) -> Void)? = nil
@@ -48,76 +47,122 @@ extension LLMExecutionService {
         let step = task.runs[runIndex].steps[stepIndex]
         let roleDefinition = resolvedTeam?.findRole(byIdentifier: step.effectiveRoleID)
 
-        // 2. Apply planning phase (first iteration only)
-        let (toolsForIteration, resetSession) = await applyPlanningPhase(
+        // 2. Apply the planning phase. It returns an AUTHORIZATION, not a tool
+        // array: the wire always advertises the full catalog (narrowing it would
+        // change the system prompt, which is where the catalog is rendered, and
+        // break the prompt-prefix cache), and the phase is enforced at the
+        // runtime layer below instead.
+        let authorization = await applyPlanningPhase(
             stepID: stepID,
             taskID: task.id,
-            roleForMessage: roleForMessage,
             tools: tools,
             step: step,
-            tracker: tracker,
+            team: resolvedTeam,
+            memoryStore: memoryStore,
             conversationMessages: &conversationMessages,
             roleDefinition: roleDefinition
         )
-        // After planning→implementation transition, the system prompt changed.
-        // Clear session so the next call sends the full original prompt in a fresh chain
-        // (NativeLMStudioClient omits system_prompt on stateful continuations).
-        if resetSession { session = nil }
 
         // 2a. Consume any queued Supervisor message targeted at this role (or the
         // untargeted Team queue). Appends a user turn to `conversationMessages`
-        // for this iteration's request. Skipped on iteration-1 continuation paths
-        // (see `injectQueuedSupervisorMessage` for the stateful-chain rationale).
+        // for this iteration's request.
+        //
+        // Delivered IMMEDIATELY, including mid-planning — a human writing "you're looking in the
+        // wrong place, check the parser" has to reach the model on its next turn, which is the
+        // whole point of the queue. From the planning phase only the original task statement and
+        // the recorded scratchpad survive the boundary, so a turn appended during it IS destroyed
+        // there; `applyPlanningPhase` re-queues it at the head instead of letting the slice eat
+        // it (`consumeQueuedSupervisorMessage` pops destructively, so the alternative is losing
+        // it outright). Cost of this ordering: the model sees such a message twice — once during
+        // the exploration it was meant to steer, once in the implementation phase.
         if isExecutionLive(stepID: stepID, taskID: task.id) {
             await injectQueuedSupervisorMessage(
                 stepID: stepID,
                 taskID: task.id,
                 roleID: step.effectiveRoleID,
-                iterationNumber: iterationNumber,
-                session: session,
                 conversationMessages: &conversationMessages
             )
         }
 
-        // 2. Determine messages to send: on a stateful continuation, only the new messages
-        // since the last call (the empty-slice case falls back to a fresh stateless turn).
-        let slice = Self.statefulContinuationSlice(
-            conversationMessages: conversationMessages, isStateful: session != nil)
-        if slice.fallBackToStateless { session = nil }
-        let messagesToSend = slice.messages
+        // 2b. Stream LLM response. Every call sends the FULL conversation — the
+        // provider reuses its prompt-prefix cache on the byte-identical prefix.
+        let messagesToSend = conversationMessages
 
-        // 2b. Stream LLM response
+        // Rendered ONCE per iteration and shared by both measurement surfaces below. It walks
+        // every registered tool and is the largest text this app builds (CLAUDE.md: ~60% of the
+        // first wire payload), so re-deriving it per consumer costs main-thread time on the hot
+        // path — and, worse, duplicates the append rule (empty tools AND already-inline) that
+        // keeps the two surfaces pricing and fingerprinting the SAME request. Never goes on the
+        // wire: `performStreamingCall` gets `tools`, and each provider's `buildRequest` renders
+        // its own copy — which for a role step it does NOT, because `PromptBuilder` already put
+        // the catalog in the system message, which is why `messages` decides the answer.
+        let toolSchemaText = NativeLMStudioClient.toolSchemaTextForMeasurement(
+            tools: tools, messages: messagesToSend)
+
+        // 2b-bis. An overflowing prompt is not rejected — it is truncated from the START,
+        // dropping the system prompt and tool catalog, and answered HTTP 200. Warn before
+        // sending so the user can tell "the model ignored its instructions" from "the model
+        // never received them".
+        await warnIfContextBudgetExceeded(
+            stepID: stepID, taskID: task.id, client: client, config: config,
+            toolSchemaText: toolSchemaText, messages: messagesToSend)
+
+        // 2b-ter. Fingerprint what we are about to send against what this step sent last, so a
+        // silent prompt-prefix (KV) cache miss can be attributed. Recorded BEFORE the send: the
+        // server's own numbers only arrive at stream end, and combining the two is what
+        // separates "we broke our own prefix" from "the server dropped it".
+        let prefixObservation = await prefixLedger.record(
+            baseURL: config.baseURLString,
+            model: config.modelName,
+            owner: .step(taskID: task.id, stepID: stepID),
+            messages: messagesToSend,
+            toolSchemaText: toolSchemaText)
+
         let streamResult = try await performStreamingCall(
             stepID: stepID,
             taskID: task.id,
             roleForMessage: roleForMessage,
             client: client,
             config: config,
-            tools: toolsForIteration,
+            tools: tools,
             conversationMessages: messagesToSend,
-            session: session,
             networkLogger: networkLogger,
             roleName: roleForMessage.displayName.isEmpty ? nil : roleForMessage.displayName
         )
 
-        // Update session and accumulate token usage
-        if let newSession = streamResult.session {
-            session = newSession
-        }
         if let usage = streamResult.tokenUsage { cumulativeUsage.accumulate(usage) }
 
-        // Session-chain fix for image turns: LM Studio forces `store:false` when the request
-        // carries an image (RequestBuilder), so it returns a PHANTOM response.id it never
-        // persisted. Reusing that id as `previous_response_id` next iteration → HTTP 400.
-        // Force a stateless rebuild on the following iteration, AND drop the (single-use) image
-        // from the in-memory conversation so that rebuild carries no image → goes `store:true`
-        // again → the chain re-establishes. The model saw the screenshot exactly once.
-        if messagesToSend.contains(where: { !($0.imageContent?.isEmpty ?? true) }) {
-            session = nil
+        // Did the server silently truncate what we just sent? Ordered before the cache report so
+        // the overflow latch suppresses the less severe banner for this same request.
+        //
+        // `serverPrefill?.promptTokens` is preferred but can be absent even when the count is
+        // known: `ServerPrefillReport.isEmpty` deliberately ignores `promptTokens` (a denominator,
+        // not a signal), so a report carrying only the count is dropped at the decoder. The same
+        // number reaches us on `tokenUsage`, which is built independently.
+        await confirmContextTruncation(
+            stepID: stepID, taskID: task.id, config: config,
+            appendedTokens: prefixObservation.appendedTokens,
+            serverPromptTokens: streamResult.serverPrefill?.promptTokens
+                ?? streamResult.tokenUsage?.inputTokens)
+
+        await reportPrefixCacheMissIfAny(
+            stepID: stepID, taskID: task.id, runID: task.runs.last?.id,
+            config: config, observation: prefixObservation,
+            serverPrefill: streamResult.serverPrefill,
+            clientResidency: streamResult.clientResidency)
+
+        // Images are single-use: drop them from the in-memory conversation once sent
+        // so the (otherwise byte-identical) prefix on the next iteration carries no
+        // base64 payload. The model saw the screenshot exactly once.
+        let sentImages = messagesToSend.contains { !($0.imageContent?.isEmpty ?? true) }
+        if sentImages {
             for i in conversationMessages.indices where !(conversationMessages[i].imageContent?.isEmpty ?? true) {
                 conversationMessages[i].imageContent = nil
             }
         }
+        // Remembered so the NEXT iteration does not report the strip's own divergence.
+        executionStates[TaskStepKey(taskID: task.id, stepID: stepID)]?
+            .lastRequestCarriedImages = sentImages
 
         // 2c. Top-level thinking-loop break: the stream was aborted + the looping
         // generation discarded (no anchor in `conversationMessages`, nothing in
@@ -128,7 +173,7 @@ extension LLMExecutionService {
             return await handleStreamLoopBreak(
                 stepID: stepID, signal: loopSignal, task: task,
                 roleForMessage: roleForMessage, supervisorMode: supervisorMode,
-                session: &session)
+                conversationMessages: &conversationMessages)
         }
         resetThinkingLoopBreakCount(stepID: stepID, taskID: task.id)
 
@@ -151,6 +196,10 @@ extension LLMExecutionService {
                 stepIndex: stepIndex,
                 tracker: tracker,
                 roleDefinition: roleDefinition,
+                // Same set `executeToolCalls` authorizes against below (narrowed
+                // during the planning phase), so a nudge can only name a tool this
+                // iteration would actually accept.
+                allowedToolNames: authorization.allowed,
                 runtime: runtime,
                 conversationMessages: &conversationMessages
             )
@@ -162,28 +211,26 @@ extension LLMExecutionService {
         // the call here is also detected by `LLMExecutionServiceParseFailureCapTests`
         // (regression: T1 — the helper-only reset was not exercising this prod path).
         resetCountersOnParseableToolCall(stepID: stepID, taskID: task.id)
-        // Reset advisory no-tool-call counter only when at least one tool call is
-        // *productive*. `ask_supervisor` doesn't qualify under autonomous supervisor
+        // `ask_supervisor` doesn't qualify as productive under autonomous supervisor
         // mode — it gets auto-answered, and the model can ping itself in a loop with
         // it forever without doing any real work. So a turn whose only tool calls are
         // `ask_supervisor` is treated the same as a no-tool-call turn for the purposes
-        // of the advisory auto-finish safeguard (incremented in `handleNoToolCalls`).
+        // of the advisory no-tool backstop (incremented in `handleNoToolCalls`).
         let toolNamesThisTurn = Set(streamResult.resolvedToolCalls.map(\.name))
         let isAskSupervisorOnly = toolNamesThisTurn == [ToolNames.askSupervisor]
         if isAskSupervisorOnly {
             // Non-productive turn: ask_supervisor gets auto-answered in autonomous mode,
             // so the model can ping itself in a loop with it forever. Treat it as a
-            // no-tool-call turn for the advisory auto-finish counter.
-            if let stop = await attemptAdvisoryAutoFinish(
+            // no-tool-call turn for the advisory no-tool-backstop counter.
+            if let stop = await noteNonProductiveTurn(
                 stepID: stepID, taskID: task.id, roleDefinition: roleDefinition)
             {
                 return stop
             }
-        } else {
-            executionStates[TaskStepKey(taskID: task.id, stepID: stepID)]?
-                .consecutiveAdvisoryNoToolTurns = 0
         }
-        let allowedToolNames = Set(toolsForIteration.map(\.name))
+        // The no-tool counter is deliberately NOT reset here — see step 6a below.
+        // Emitting a call is not acting, and the results aren't known yet.
+        let allowedToolNames = authorization.allowed
 
         // 5a. Bash permission gate (pre-pass): intercept shell commands that must
         // be denied or judged (Auto) BEFORE they reach `executeToolCalls`. Returns
@@ -225,6 +272,7 @@ extension LLMExecutionService {
         let executedResults = await executeToolCalls(
             resolvedToolCalls: callsToExecute,
             allowedToolNames: allowedToolNames,
+            phaseWithheldToolNames: authorization.withheldByPhase,
             runtime: runtime,
             tracker: tracker,
             task: task,
@@ -266,6 +314,29 @@ extension LLMExecutionService {
             networkLogger: networkLogger
         )
 
+        // 6a. Productivity accounting — the sole writer of the no-tool ceiling's reset.
+        // The rule lives in `ToolTurnProductivity`; see it for why an all-rejected batch
+        // must NOT re-arm the ceiling.
+        //
+        // Runs AFTER `processToolResults` so the `.tool` turns are already appended —
+        // a terminal taken here leaves a well-formed conversation for the next replay,
+        // instead of an assistant turn whose tool calls have no results.
+        switch ToolTurnProductivity.classify(
+            isAskSupervisorOnly: isAskSupervisorOnly, toolResults: toolResults)
+        {
+        case .productive:
+            executionStates[TaskStepKey(taskID: task.id, stepID: stepID)]?
+                .consecutiveNonProductiveTurns = 0
+        case .nonProductive:
+            if let stop = await noteNonProductiveTurn(
+                stepID: stepID, taskID: task.id, roleDefinition: roleDefinition)
+            {
+                return stop
+            }
+        case .alreadyCounted:
+            break
+        }
+
         // 6b. Handle Supervisor question BEFORE artifact completeness — if the LLM both
         // completed all artifacts AND asked a supervisor question in one batch, the question
         // must not be silently dropped.
@@ -297,7 +368,6 @@ extension LLMExecutionService {
             stepID: stepID,
             taskID: task.id,
             memoryStore: memoryStore,
-            session: session,
             conversationMessages: &conversationMessages
         )
 
@@ -311,5 +381,240 @@ extension LLMExecutionService {
         )
 
         return .continueLoop
+    }
+
+    // MARK: - Context Budget
+
+    /// Fires the context-overflow banner at most once per step.
+    ///
+    /// Once per step, not once per iteration: the banner is a single coalescing slot, and a
+    /// prompt that overflows on iteration N overflows on every later one too (the
+    /// conversation only grows), so re-posting would clobber every other message the user
+    /// needs to see for the rest of the step.
+    ///
+    /// Takes the ALREADY-RENDERED `toolSchemaText` rather than `[ToolSchema]`: the caller shares
+    /// one render with `prefixLedger.record`, and the append rule (empty tools, and a system
+    /// prompt that already carries the catalog) has a single owner in
+    /// `NativeLMStudioClient.toolSchemaTextForMeasurement`. Re-deriving it here is how the two
+    /// measurement surfaces came to carry independent copies of the same wire-mirroring gate.
+    func warnIfContextBudgetExceeded(
+        stepID: String,
+        taskID: Int,
+        client: any LLMClient,
+        config: LLMConfig,
+        toolSchemaText: String,
+        messages: [ChatMessage]
+    ) async {
+        let stepKey = TaskStepKey(taskID: taskID, stepID: stepID)
+        // A missing entry means the step is not executing — `?.` yields nil, which fails
+        // this comparison, so a torn-down step never probes or warns.
+        guard executionStates[stepKey]?.didWarnContextOverflow == false else { return }
+
+        let cacheKey = "\(config.baseURLString.normalizedBaseURL)|\(config.modelName)"
+        // Memoize only a REAL answer. The old code cached `nil` for the service's
+        // lifetime on the rationale that "a server which doesn't report a window won't
+        // start mid-run" — true of `/api/show`, false of `/api/ps`, which reports
+        // nothing precisely while the model is cold. That is the state of the first
+        // probe of every session, so caching it is what left the net permanently
+        // unarmed. Re-probe at most once per step instead: the latch below fires on the
+        // first warning anyway, so a step pays at most one extra round-trip.
+        let contextLength: Int?
+        if let cached = probedContextLengths[cacheKey], let value = cached {
+            contextLength = value
+        } else if executionStates[stepKey]?.probedContextKeys.contains(cacheKey) == true {
+            contextLength = nil
+        } else {
+            executionStates[stepKey]?.probedContextKeys.insert(cacheKey)
+            contextLength = await client.modelContextLength(config: config)
+            if contextLength != nil { probedContextLengths[cacheKey] = contextLength }
+        }
+
+        let estimate = ContextBudgetPolicy.estimateTokens(
+            messages: messages, toolSchemaText: toolSchemaText)
+        guard case .exceeded(let promptTokens, let window) =
+            ContextBudgetPolicy.verdict(promptTokens: estimate, contextLength: contextLength)
+        else { return }
+
+        executionStates[stepKey]?.didWarnContextOverflow = true
+        delegate?.setLastErrorMessageForUI(
+            ContextBudgetPolicy.warningMessage(
+                modelName: config.modelName,
+                promptTokens: promptTokens,
+                contextLength: window,
+                provider: config.provider))
+    }
+
+    /// Post-send counterpart to `warnIfContextBudgetExceeded`, for the case that surface is
+    /// structurally blind to: the window probe FAILED, so nothing warned before sending, and the
+    /// server quietly truncated the prompt.
+    ///
+    /// This is the single most common real misconfiguration on a stock Ollama install — its
+    /// runtime window is `OLLAMA_CONTEXT_LENGTH` (~4096) regardless of what the architecture
+    /// supports, `modelContextLength` deliberately returns nil rather than overstating it, and an
+    /// oversized prompt comes back HTTP 200 with the head silently dropped. The head is segment 0:
+    /// the system prompt and tool catalog the prefix cache keys on. So the cache misses on every
+    /// single turn while the ledger — which fingerprints what we SENT — reports `.reused` and the
+    /// user sees only "the model ignores its instructions, and it's slow".
+    ///
+    /// Measured, never manufactured: the evidence is the server's own token count. The nil-probe
+    /// rule in `ContextBudgetPolicy.verdict` is untouched.
+    ///
+    /// Runs BEFORE `reportPrefixCacheMissIfAny` so the latch it sets suppresses the strictly less
+    /// severe cache banner for this same request (exemption 3) — a prompt whose head is being
+    /// dropped has no cache to reason about.
+    func confirmContextTruncation(
+        stepID: String,
+        taskID: Int,
+        config: LLMConfig,
+        appendedTokens: Int,
+        serverPromptTokens: Int?
+    ) async {
+        let stepKey = TaskStepKey(taskID: taskID, stepID: stepID)
+        guard executionStates[stepKey]?.didWarnContextOverflow == false else { return }
+
+        // Remember this request's count for the next comparison regardless of the verdict — the
+        // signal is a DELTA, so a request that says nothing still has to leave its baseline.
+        let previous = executionStates[stepKey]?.lastServerPromptTokens
+        if let serverPromptTokens, serverPromptTokens > 0 {
+            executionStates[stepKey]?.lastServerPromptTokens = serverPromptTokens
+        }
+
+        // Only when the pre-send probe had no answer. A successful probe already owns this case
+        // and warns before the tokens are spent, which is strictly better.
+        let cacheKey = "\(config.baseURLString.normalizedBaseURL)|\(config.modelName)"
+        if let cached = probedContextLengths[cacheKey], cached != nil { return }
+
+        guard let processed = ContextBudgetPolicy.shouldReportTruncation(
+            appendedTokens: appendedTokens,
+            serverPromptTokens: serverPromptTokens,
+            previousServerPromptTokens: previous)
+        else { return }
+
+        // Deliberately NOT memoized into `probedContextLengths`: the reported count is not the
+        // window (measured at about half of it), and writing a wrong window there would make the
+        // pre-send `verdict` produce confidently wrong `.exceeded` claims for every later step on
+        // this model. One honest banner per step beats a fabricated window.
+        executionStates[stepKey]?.didWarnContextOverflow = true
+        delegate?.setLastErrorMessageForUI(
+            ContextBudgetPolicy.truncationMessage(
+                modelName: config.modelName,
+                serverPromptTokens: processed,
+                provider: config.provider))
+    }
+
+    // MARK: - Prompt-prefix (KV) cache
+
+    /// Record that a self-contained call ran against `config`'s (server, model) — a judge
+    /// verdict, the Supervisor auto-answer, a work-folder context generation.
+    ///
+    /// These have no prefix of their own to lose, so they are never victims. They are recorded
+    /// because they are the only way `serverDroppedCache` can name WHO else was using the model
+    /// when a step's cached prefix went missing, which is the difference between an actionable
+    /// report and "something happened".
+    func noteInterleavingCall(label: String, config: LLMConfig) async {
+        _ = await prefixLedger.record(
+            baseURL: config.baseURLString,
+            model: config.modelName,
+            owner: .oneShot(label: label),
+            messages: [],
+            toolSchemaText: "")
+    }
+
+    /// Combines what we know we sent with what the server said it did, applies the exemptions,
+    /// and reports a genuine miss.
+    ///
+    /// Every exemption here is a DELIBERATE reset. They have to be named positively: a missed one
+    /// becomes a permanent false positive on a surface that is always on, and a warning nobody
+    /// believes is worse than no warning.
+    func reportPrefixCacheMissIfAny(
+        stepID: String,
+        taskID: Int,
+        runID: Int?,
+        config: LLMConfig,
+        observation: PromptPrefixLedger.Observation,
+        serverPrefill: ServerPrefillReport?,
+        clientResidency: ClientResidencyFacts? = nil
+    ) async {
+        let stepKey = TaskStepKey(taskID: taskID, stepID: stepID)
+        // A missing entry means the step is torn down — never report for it.
+        guard let state = executionStates[stepKey] else { return }
+
+        // Feed the warm floor from every request, hit or miss: it is the MINIMUM rate this model
+        // achieves on this machine, and only a hit can produce the minimum. The depth rides
+        // along because the rate is ~`overhead / depth` on a hit — `nsPerToken` is non-nil only
+        // when `promptTokens` is positive, so the fallback is unreachable.
+        if let nsPerToken = serverPrefill?.nsPerToken {
+            await prefixLedger.noteServerPrefill(
+                baseURL: config.baseURLString, model: config.modelName,
+                nsPerToken: nsPerToken, promptTokens: serverPrefill?.promptTokens ?? 0)
+        }
+
+        // Exemption 1: the planning-phase boundary sliced the conversation on purpose.
+        if state.expectedPrefixResetPending {
+            executionStates[stepKey]?.expectedPrefixResetPending = false
+            return
+        }
+
+        // Exemption 2: the single-use image strip. The previous request carried images that were
+        // nilled after sending, so this request legitimately diverges at that message.
+        if state.lastRequestCarriedImages { return }
+
+        // Exemption 3: the overflow banner is strictly more severe — it means the model may never
+        // have received its instructions — and it fires pre-stream. Do not clobber it.
+        // Read fail-closed, matching `warnIfContextBudgetExceeded`'s own nil handling.
+        if executionStates[stepKey]?.didWarnContextOverflow ?? true { return }
+
+        var server = PrefixCachePolicy.ServerSignals(
+            modelLoadMs: serverPrefill?.modelLoadMs,
+            prefillNsPerToken: serverPrefill?.nsPerToken,
+            promptTokens: serverPrefill?.promptTokens)
+
+        // Exemption 4: the user asked for immediate unload, so a reload is what they configured,
+        // not a defect.
+        //
+        // Provider-scoped, because `keepAliveSeconds` is written onto EVERY config regardless of
+        // provider while only Ollama reads it off the wire. On a provider whose residency this
+        // app manages itself, a 0 the user set for their Ollama endpoint says nothing about what
+        // just happened — and blinding the reload signal there is exactly wrong now that a
+        // reload is detectable locally rather than only through a server figure LM Studio always
+        // reports as 0.
+        if config.keepAliveSeconds == 0, !config.provider.managesModelResidency {
+            server.modelLoadMs = nil
+        }
+
+        var verdict = PrefixCachePolicy.resolve(
+            structural: observation.structural,
+            server: server,
+            locallyReloaded: clientResidency?.appLoadedModelForThisRequest ?? false,
+            warmFloorNsPerToken: observation.warmFloorNsPerToken,
+            warmFloorPromptTokens: observation.warmFloorPromptTokens,
+            floorSampleCount: observation.floorSampleCount,
+            suspect: observation.suspect,
+            totalPromptTokens: observation.totalPromptTokens,
+            appendedTokens: observation.appendedTokens)
+
+        // Exemption 5: a genuinely fresh conversation. NOT "iteration 1" — every re-entry replay
+        // is also a first request, and a `.legacyConversation` replay is a documented guaranteed
+        // miss worth reporting. Only a conversation built from scratch (a new step, or
+        // `restartRole`'s deliberate re-synthesis) is inherent.
+        if case .firstRequestForOwner = observation.structural {
+            guard state.replaySource == .legacyConversation else { return }
+            verdict = .missed(PrefixCachePolicy.Diagnosis(
+                cause: .degradedReplay,
+                commonSegments: 0,
+                previousSegments: 0,
+                discardedTokens: observation.totalPromptTokens))
+        }
+
+        guard let diagnosis = verdict.diagnosis else { return }
+
+        // Exemption 6: below this the re-prefill costs well under a second.
+        guard diagnosis.discardedTokens >= PrefixCachePolicy.materialTokenThreshold else { return }
+
+        delegate?.reportPrefixCacheMiss(PrefixCacheMiss(
+            owner: .step(taskID: taskID, stepID: stepID),
+            runID: runID,
+            modelName: config.modelName,
+            diagnosis: diagnosis))
     }
 }

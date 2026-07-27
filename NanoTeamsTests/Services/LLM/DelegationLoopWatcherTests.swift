@@ -10,10 +10,7 @@ import XCTest
 final class DelegationLoopWatcherTests: XCTestCase {
 
     private func makeOrchestrator() -> NTMSOrchestrator {
-        NTMSOrchestrator(
-            repository: NTMSRepository(),
-            searchEmbeddingClient: StubSearchEmbeddingClient()
-        )
+        TestOrchestrator.make()
     }
 
     private func makeWorkFolderRoot() -> URL {

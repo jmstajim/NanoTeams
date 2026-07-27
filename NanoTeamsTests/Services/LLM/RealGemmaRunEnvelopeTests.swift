@@ -23,7 +23,7 @@ final class RealGemmaRunEnvelopeTests: XCTestCase {
         var deltas: [StreamEvent] = []
         func streamChat(
             config: LLMConfig, messages: [ChatMessage], tools: [ToolSchema],
-            session: LLMSession?, logger: NetworkLogger?, stepID: String?, roleName: String?
+            logger: NetworkLogger?, stepID: String?, roleName: String?
         ) -> AsyncThrowingStream<StreamEvent, Error> {
             let events = deltas
             return AsyncThrowingStream { continuation in
@@ -67,7 +67,7 @@ final class RealGemmaRunEnvelopeTests: XCTestCase {
         let result = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .productManager,
             client: mockClient, config: LLMConfig(),
-            tools: [], conversationMessages: [], session: nil, networkLogger: nil
+            tools: [], conversationMessages: [], networkLogger: nil
         )
         return result.resolvedToolCalls
     }

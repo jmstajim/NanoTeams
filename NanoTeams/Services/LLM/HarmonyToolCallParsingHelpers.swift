@@ -141,14 +141,52 @@ nonisolated enum ToolCallParsingHelpers {
         return index
     }
 
+    /// Re-serialises an arguments payload into stable, sorted JSON.
+    ///
+    /// Carries ONE repair, for a shape observed live from `openai/gpt-oss-20b`: the model
+    /// writes the arguments as a quoted ATTRIBUTE — `to=read_file arguments="{\"path\":…}"`
+    /// with no `<|message|>` marker — so `ChannelEnvelopeParser`'s plain-`{` fallback finds the
+    /// first brace inside that string literal and hands us the still-escaped body. Returned
+    /// unchanged (the previous behaviour) it is not JSON at all: the tool runtime receives the
+    /// whole blob as a single argument value, and every later stateless resend carries it
+    /// inside the re-materialized Harmony envelope, where it is unparseable.
+    ///
+    /// The repair is gated on the text having ALREADY failed to parse, so it cannot touch a
+    /// healthy payload — a Windows path or a regex keeps its backslashes byte-for-byte. If the
+    /// unescaped form is not JSON either, the original is returned exactly as before: this
+    /// widens what is recoverable, never what is accepted.
     static func normalizeArgumentsJSONString(_ jsonText: String) -> String {
-        guard let data = jsonText.data(using: .utf8) else { return jsonText }
-        guard let object = try? JSONSerialization.jsonObject(with: data, options: []) else {
-            return jsonText
+        if let normalized = normalizedJSONContainer(jsonText) { return normalized }
+        if let unescaped = unescapedJSONStringBody(jsonText),
+           let normalized = normalizedJSONContainer(unescaped)
+        {
+            return normalized
         }
-        if let dict = object as? [String: Any], let s = stableJSONString(from: dict) { return s }
-        if let arr = object as? [Any], let s = stableJSONString(from: arr) { return s }
         return jsonText
+    }
+
+    /// Stable re-serialisation, or `nil` when `text` is not a JSON object/array.
+    private static func normalizedJSONContainer(_ text: String) -> String? {
+        guard let data = text.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data, options: [])
+        else { return nil }
+        if let dict = object as? [String: Any] { return stableJSONString(from: dict) }
+        if let arr = object as? [Any] { return stableJSONString(from: arr) }
+        return nil
+    }
+
+    /// `text` read as the BODY of a JSON string literal, i.e. with one level of escaping
+    /// removed. `nil` when there is nothing to unescape or the result is not a valid literal —
+    /// letting Foundation own the escape rules rather than restating them here.
+    private static func unescapedJSONStringBody(_ text: String) -> String? {
+        guard text.contains("\\") else { return nil }
+        guard let data = "\"\(text)\"".data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(
+                with: data, options: [.fragmentsAllowed]),
+              let unescaped = object as? String,
+              unescaped != text
+        else { return nil }
+        return unescaped
     }
 
     static func stableJSONString(from object: Any) -> String? {
@@ -478,9 +516,21 @@ nonisolated enum ToolCallParsingHelpers {
     /// The step-flow-control nudge uses this to choose a retry message that
     /// actually names the defect, instead of always blaming "malformed JSON".
     enum HarmonyCallIssue: Equatable {
-        /// Markers were seen (e.g. `<|channel|>`) but no `<|call|>{…}<|end|>` block
-        /// was present, or the block's JSON couldn't be parsed at all.
+        /// A `<|call|>` block was present but its JSON couldn't be parsed.
         case malformedJSON
+        /// Harmony framing was seen — a `<|channel|>` / `<|start|>` envelope — but no
+        /// `<|call|>` block was ever opened, so there is no JSON to be malformed. This
+        /// used to fold into `.malformedJSON`, which told the model to fix braces and
+        /// quotes in an envelope that had none, and charged the parse-failure cap for a
+        /// defect that isn't one. Worse, the escalation the cap produces names
+        /// *"unescaped quotes inside string literals"* — a misdiagnosis aimed at the
+        /// HUMAN, not just the model.
+        ///
+        /// Notably NOT this case any more: an envelope that resolved a recipient and had
+        /// an empty body. `ChannelEnvelopeParser` now emits that as a zero-argument call,
+        /// so it never reaches the classifier. What lands here is framing with no
+        /// recipient, a reserved recipient, or a body that is prose rather than JSON.
+        case noCallEnvelope
         /// JSON between `<|call|>…<|end|>` parsed fine but lacked a top-level tool
         /// name. `inferredToolName` is non-nil when shape inference recognises the
         /// payload — used to craft a concrete retry example for the model.
@@ -523,14 +573,19 @@ nonisolated enum ToolCallParsingHelpers {
 
     /// Scans the assistant's text for the first `<|call|>…<|end|>` block and
     /// reports the nature of the parse failure. Safe to call on responses where
-    /// only `<|channel|>` markers appear (returns `.malformedJSON`).
+    /// only `<|channel|>` markers appear (returns `.noCallEnvelope`).
     static func classifyHarmonyCallIssue(in text: String) -> HarmonyCallIssue {
         if containsOnlyRoleMarkerStarts(in: text) {
             return .noEnvelopeAttempt
         }
         let jsonText: String
         switch postCallJSON(in: text) {
-        case .noCallMarker, .noObject, .unbalanced:
+        case .noCallMarker:
+            // No `<|call|>` block at all — nothing here is malformed JSON, because there
+            // is no JSON. `.noObject` / `.unbalanced` DO mean a block was opened and its
+            // payload is broken, so those keep `.malformedJSON`.
+            return .noCallEnvelope
+        case .noObject, .unbalanced:
             return .malformedJSON
         case .extracted(let extracted):
             jsonText = extracted

@@ -529,16 +529,19 @@ struct SidebarView: View {
                 .terminalNavRowLabelInset(trailing: 0)
             }
             .buttonStyle(.plain)
-            .accessibilityHint("Open the Autovisor chat")
+            .accessibilityHint(
+                store.autovisorShowsSetupPane
+                    ? "Opens the Autovisor setup pane"
+                    : "Open the Autovisor chat"
+            )
 
             Menu {
                 Button { selectedItem = .autovisor } label: {
-                    // Label tracks the destination the SAME predicate routes to:
-                    // `.autovisor` lands on the setup pane iff `autovisorNeedsSetup`,
-                    // else the chat. Keying on `info.isEnabled` mislabeled a
-                    // disabled-but-real-goal manager (routes to chat) as "Open Setup".
+                    // Label names the destination `autovisorDetail` actually routes
+                    // to, from the same predicate — a disabled manager lands on
+                    // setup, so calling it "Open Chat" would be a lie.
                     Label(
-                        store.autovisorNeedsSetup ? "Open Setup" : "Open Chat",
+                        store.autovisorShowsSetupPane ? "Open Setup" : "Open Chat",
                         systemImage: "arrow.right.circle"
                     )
                 }
@@ -547,7 +550,9 @@ struct SidebarView: View {
                 if info.isEnabled {
                     Divider()
                     Button {
-                        if selectedItem == .autovisor { selectedItem = .watchtower }
+                        // Stay on `.autovisor` if that's where we are: disabling now
+                        // flips the pane to setup, which IS the answer to "how do I
+                        // turn this back on". Bouncing to the Watchtower would hide it.
                         Task { await store.setAutovisorEnabled(false) }
                     } label: {
                         Label("Disable", systemImage: "pause.circle")

@@ -58,9 +58,17 @@ extension NTMSOrchestrator {
 
             // Recover stale statuses from a previous session where the app closed
             // while tasks were running. Steps in .running/.needsSupervisorInput → .paused,
-            // roles in .working → .idle.
+            // roles whose step is genuinely mid-flight → .idle, and roles whose step
+            // already reached a terminal status → settled (see StatusRecoveryService).
+            //
+            // Runs BEFORE `apply(snapshot)` deliberately: publishing first would flash the
+            // un-recovered "Working" status in the sidebar, and `syncEngineStateFromRun`
+            // below reads `self.activeTask` immediately after `apply` — it must see
+            // recovered values. The team therefore resolves off the raw snapshot, whose
+            // teams `openOrCreateWorkFolder` has already populated.
             if var activeTask = snapshot.activeTask {
-                if StatusRecoveryService.recoverStaleStatuses(in: &activeTask) {
+                let teamSettings = TeamResolution.teamSettings(for: activeTask, in: snapshot.projection)
+                if StatusRecoveryService.recoverStaleStatuses(in: &activeTask, teamSettings: teamSettings) {
                     snapshot.activeTask = activeTask
                     try repository.updateTaskOnly(at: url, task: activeTask)
                     // Refresh in-memory index so sidebar shows recovered status
@@ -155,14 +163,15 @@ extension NTMSOrchestrator {
         // anything this folder's roster no longer references — per-role
         // overrides differ per work folder, so opening one can orphan a model.
         //
-        // Injectable for the same reason `embeddingLifecycle` is (CLAUDE.md
-        // #49): with the production defaults these two lines issue live HTTP
-        // to `AppDefaults.llmBaseURL` from every one of the ~700 test call
-        // sites, and `ChatModelEnsurer.shared` is process-global, so a suite
-        // that adopted a real model could then unload it from the developer's
-        // running LM Studio.
-        await adoptResidentReferencedModels(client: chatLifecycleClient, ensurer: chatModelEnsurer)
-        await reconcileAndReportResidency(client: chatLifecycleClient, ensurer: chatModelEnsurer)
+        // No arguments by design: both resolve against THIS orchestrator via
+        // `resolvedChatLifecycleClient` / `resolvedEnsurer`. That seam is what
+        // keeps these two lines off the network in tests — with a real client
+        // and the process-global ensurer they would issue live HTTP to
+        // `AppDefaults.llmBaseURL` from every one of the ~700 test call sites,
+        // and a suite that adopted a real model could then unload it from the
+        // developer's running LM Studio.
+        await adoptResidentReferencedModels()
+        await reconcileAndReportResidency()
     }
 
     // MARK: - Stale Status Sweep
@@ -199,9 +208,14 @@ extension NTMSOrchestrator {
                 // In-process re-open: `apply` preserved `loadedTasks` (same folder),
                 // so `ensureTaskLoaded` would short-circuit without recovering.
                 // Probe first so chat-mode steady-state `.running` doesn't churn updatedAt.
-                guard StatusRecoveryService.recoverStaleStatuses(in: &probe) else { continue }
+                // Resolve the acceptance gate ONCE and hand the same value to both the
+                // probe and the mutation — a second resolve could disagree if the
+                // snapshot moved across the await, and the two passes must decide
+                // identically or `persisted` would report on a different outcome.
+                let teamSettings = snapshot.map { TeamResolution.teamSettings(for: probe, in: $0.projection) } ?? nil
+                guard StatusRecoveryService.recoverStaleStatuses(in: &probe, teamSettings: teamSettings) else { continue }
                 let persisted = await mutateTask(taskID: taskID) {
-                    _ = StatusRecoveryService.recoverStaleStatuses(in: &$0)
+                    _ = StatusRecoveryService.recoverStaleStatuses(in: &$0, teamSettings: teamSettings)
                 }
                 if !persisted {
                     failedIDs.append(taskID)
@@ -633,6 +647,10 @@ extension NTMSOrchestrator {
             return .failure("No work folder is open.")
         }
         do {
+            // Always the global model, and it sends a large one-shot prompt — a textbook
+            // interleaver against whatever step is mid-run on the same model.
+            await llmExecutionService.noteInterleavingCall(
+                label: "work folder context", config: globalLLMConfig)
             if let context = try await workFolderManagementService.generateWorkFolderContext(
                 workFolderRoot: workFolderRoot,
                 config: globalLLMConfig,
@@ -860,8 +878,7 @@ extension NTMSOrchestrator {
         // which the `teamsChanged` residency trigger (a `mutateWorkFolder`
         // diff) never sees. Sweep explicitly, silent (housekeeping) — see
         // `sweepResidencyAfterEngineTransition`.
-        await reconcileChatModelResidency(
-            client: chatLifecycleClient, ensurer: chatModelEnsurer)
+        await reconcileChatModelResidency()
     }
 }
 

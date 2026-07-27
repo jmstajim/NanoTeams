@@ -59,7 +59,6 @@ nonisolated struct TeamMeetingService {
         var content: String
         var thinking: String
         var resolvedToolCalls: [StepToolCall]
-        var session: LLMSession? = nil
     }
 
     /// Extended result from a meeting turn (before tool execution).

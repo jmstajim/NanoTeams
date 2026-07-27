@@ -364,15 +364,6 @@ actor ChatModelEnsurer {
         notifyLedgerChanged()
     }
 
-    /// Forgets an instance — call after a successful unload so a later
-    /// reconcile does not try to unload it again.
-    func releaseOwnership(modelName: String, baseURLString: String) {
-        let model = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !model.isEmpty else { return }
-        owned[Self.key(model: model, base: baseURLString)] = nil
-        notifyLedgerChanged()
-    }
-
     // MARK: - Request census
 
     /// Registers an open chat request against (base, model). MUST be balanced

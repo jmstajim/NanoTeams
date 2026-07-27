@@ -19,9 +19,15 @@ struct ModelResidencyHooks: ViewModifier {
         content
             .onChange(of: store.configuration.llmModelName) { oldModel, newModel in
                 let base = store.configuration.llmBaseURLString
+                // Read at handler time: on a provider FLIP the didSet resets
+                // URL+model, so this hook fires with the NEW provider — the
+                // explicit-load half is correctly skipped for Ollama while
+                // reconcile still reclaims the orphaned LM Studio instance.
+                let provider = store.configuration.llmProvider
                 Task {
                     await store.switchChatModel(
-                        oldModel: oldModel, newModel: newModel, baseURLString: base)
+                        oldModel: oldModel, newModel: newModel, baseURLString: base,
+                        provider: provider)
                 }
             }
             .onChange(of: store.configuration.visionModelName) { oldModel, newModel in
@@ -38,9 +44,11 @@ struct ModelResidencyHooks: ViewModifier {
                 let old = config.resolvedVisionModel(for: oldModel)
                 let new = config.resolvedVisionModel(for: newModel)
                 let base = config.resolvedVisionBaseURL
+                let provider = config.resolvedVisionProvider
                 Task {
                     await store.switchChatModel(
-                        oldModel: old, newModel: new, baseURLString: base)
+                        oldModel: old, newModel: new, baseURLString: base,
+                        provider: provider)
                 }
             }
             // Every OTHER setting that can orphan a managed model. These change

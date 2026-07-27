@@ -22,7 +22,7 @@ final class MeetingPromptSurfaceTests: XCTestCase {
 
         func streamChat(
             config _: LLMConfig, messages: [ChatMessage], tools _: [ToolSchema],
-            session _: LLMSession?, logger _: NetworkLogger?, stepID _: String?,
+            logger _: NetworkLogger?, stepID _: String?,
             roleName _: String?
         ) -> AsyncThrowingStream<StreamEvent, Error> {
             captures.append(messages)
@@ -88,7 +88,7 @@ final class MeetingPromptSurfaceTests: XCTestCase {
                        "consultation-template phrasing must not leak into meeting turns")
     }
 
-    func testBuildMeetingMessages_oneConsolidatedUserTurn_withDirective() {
+    func testBuildMeetingMessages_splitsTheTurnSoTheTranscriptCanBeAppended() {
         let faang = TeamTemplateFactory.faang()
         var meeting = TeamMeetingService.createMeeting(
             topic: "API design", initiatedBy: .productManager,
@@ -101,12 +101,17 @@ final class MeetingPromptSurfaceTests: XCTestCase {
             speaker: .softwareEngineer, meeting: meeting, context: makeContext(team: faang)
         )
 
-        // system + ONE consolidated user turn (no artifacts here).
-        XCTAssertEqual(messages.count, 2)
-        let turn = messages.last?.content ?? ""
-        XCTAssertTrue(turn.contains("Discussion so far"), "turn must re-consolidate the discussion")
-        XCTAssertTrue(turn.contains("I propose REST."))
-        XCTAssertTrue(turn.contains("Provide your input"), "turn must end with the directive")
+        // system + header + "Discussion so far:" + one transcript line + directive.
+        // Split deliberately: the transcript grows by APPENDING, so a speaker's next turn reuses
+        // this request's prefix instead of re-prefilling the whole discussion.
+        XCTAssertEqual(messages.count, 5)
+        let joined = messages.compactMap(\.content).joined(separator: "\n")
+        XCTAssertTrue(joined.contains("Discussion so far"))
+        XCTAssertTrue(joined.contains("I propose REST."))
+        XCTAssertEqual(
+            messages.last?.content?.contains("Provide your input"), true,
+            "the directive must be LAST — it is the only volatile element, and it holds the "
+                + "recency slot")
     }
 
     func testBuildMeetingMessages_artifactGroundingInjected() {
@@ -122,9 +127,13 @@ final class MeetingPromptSurfaceTests: XCTestCase {
                                  artifactReader: { _ in "REQ CONTENT" })
         )
 
-        XCTAssertEqual(messages.count, 3, "system + artifact grounding + turn")
+        // system + artifact grounding + header + directive (no transcript yet).
+        XCTAssertEqual(messages.count, 4)
         XCTAssertTrue(messages[1].content?.contains("Product Requirements") ?? false)
         XCTAssertTrue(messages[1].content?.contains("REQ CONTENT") ?? false)
+        XCTAssertTrue(
+            messages[2].content?.contains("## Team meeting") ?? false,
+            "the fixed header sits ahead of the volatile directive")
     }
 
     // MARK: - Tool follow-up continues the SAME conversation

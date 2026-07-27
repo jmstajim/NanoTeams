@@ -22,7 +22,7 @@ struct LLMVisionCard: View {
 
     private var inheritedURLPrompt: String {
         let global = config.llmBaseURLString.trimmingCharacters(in: .whitespaces)
-        return global.isEmpty ? "http://127.0.0.1:1234" : global
+        return global.isEmpty ? config.resolvedVisionProvider.defaultBaseURL : global
     }
 
     private var emptyModelLabel: String {
@@ -62,6 +62,7 @@ struct LLMVisionCard: View {
                     } else {
                         config.visionModelName = ""
                         config.visionBaseURLString = ""
+                        config.visionProvider = nil
                         // Don't touch `apiToken` here — `LLMTokenField` is
                         // removed from the tree when `visionEnabled = false`,
                         // and clearing the binding could race the field's
@@ -78,6 +79,11 @@ struct LLMVisionCard: View {
             .toggleStyle(.terminal)
 
             if config.visionEnabled {
+                // The Vision server can be a DIFFERENT machine/provider than
+                // the global chat LLM — pin its wire format here. `nil` =
+                // inherit the global provider (`resolvedVisionProvider`).
+                LLMProviderOverridePicker(selection: $config.visionProvider)
+
                 LLMEndpointEditor(
                     baseURL: $config.visionBaseURLString,
                     modelName: $config.visionModelName,
@@ -87,16 +93,16 @@ struct LLMVisionCard: View {
                     onTokenSaveError: onTokenSaveError,
                     onTokenLoadError: onTokenLoadError,
                     onURLCommit: {
-                        Task { await modelCatalog.loadIfNeeded(url: effectiveFetchURL, visionOnly: true) }
+                        Task { await modelCatalog.loadIfNeeded(url: effectiveFetchURL, provider: config.resolvedVisionProvider, visionOnly: true) }
                     },
-                    availableModels: modelCatalog.models(for: effectiveFetchURL, visionOnly: true),
-                    isFetchingModels: modelCatalog.isFetching(effectiveFetchURL, visionOnly: true),
+                    availableModels: modelCatalog.models(for: effectiveFetchURL, provider: config.resolvedVisionProvider, visionOnly: true),
+                    isFetchingModels: modelCatalog.isFetching(effectiveFetchURL, provider: config.resolvedVisionProvider, visionOnly: true),
                     status: EndpointStatus.resolve(
-                        fetchError: modelCatalog.error(for: effectiveFetchURL, visionOnly: true),
-                        isFetching: modelCatalog.isFetching(effectiveFetchURL, visionOnly: true)
+                        fetchError: modelCatalog.error(for: effectiveFetchURL, provider: config.resolvedVisionProvider, visionOnly: true),
+                        isFetching: modelCatalog.isFetching(effectiveFetchURL, provider: config.resolvedVisionProvider, visionOnly: true)
                     ),
                     onRefreshModels: {
-                        Task { await modelCatalog.refresh(url: effectiveFetchURL, visionOnly: true) }
+                        Task { await modelCatalog.refresh(url: effectiveFetchURL, provider: config.resolvedVisionProvider, visionOnly: true) }
                     }
                 )
             }
@@ -107,7 +113,7 @@ struct LLMVisionCard: View {
             // keystroke. The Refresh button + URL field's onCommit are the
             // user-driven re-fetch paths.
             guard config.visionEnabled else { return }
-            await modelCatalog.loadIfNeeded(url: effectiveFetchURL, visionOnly: true)
+            await modelCatalog.loadIfNeeded(url: effectiveFetchURL, provider: config.resolvedVisionProvider, visionOnly: true)
         }
     }
 }

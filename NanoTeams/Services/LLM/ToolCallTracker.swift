@@ -97,7 +97,10 @@ nonisolated final class ToolCallTracker: @unchecked Sendable {
     }
 
     /// Returns the most recent `limit` tracked calls. Used by `ToolCallLoopDetector`
-    /// to spot 6-in-a-row patterns and by the planning-phase first-iteration gate.
+    /// to spot 6-in-a-row patterns. (It also fed a first-iteration gate in the
+    /// one-shot planning phase; that gate is gone — `PlanningPhasePolicy` keys on
+    /// `scratchpadIsNil` instead, since a phase built to read things first must
+    /// survive its own first `read_file`.)
     func recentCalls(limit: Int) -> [TrackedCall] {
         Array(calls.suffix(limit))
     }

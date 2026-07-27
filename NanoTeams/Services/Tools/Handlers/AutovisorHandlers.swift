@@ -233,7 +233,7 @@ nonisolated struct ManageRoleTool: ToolHandler {
         name: TN.manageRole,
         description: """
             Act on a specific role within a task. `action`:
-            - restart — re-run the role (and downstream dependents); `comment` = guidance
+            - restart — re-runs the role and its downstream dependents from zero, discarding their messages, tool calls and artifacts; `comment` is the only text that survives into the re-run
             - accept — accept a role awaiting acceptance; on a chat-mode task's advisory role this finishes the role and closes the task once no other role is active
             - request_changes — send a role that finished its work back for revision; `comment` = what to change
             - correct — feed mid-run correction to a paused role; `comment` = the correction
@@ -244,7 +244,7 @@ nonisolated struct ManageRoleTool: ToolHandler {
                 "task_id": JS.integer("The task's id."),
                 "role_id": JS.string("The role's id."),
                 "action": JS.string("The role action.", enumValues: verbs),
-                "comment": JS.string("Guidance / feedback for restart, request_changes, or correct."),
+                "comment": JS.string("Guidance / feedback for restart, request_changes, or correct. Draw it from the task's existing brief."),
             ],
             required: ["task_id", "role_id", "action"]
         )

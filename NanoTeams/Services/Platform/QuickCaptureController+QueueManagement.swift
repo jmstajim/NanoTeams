@@ -151,7 +151,8 @@ extension QuickCaptureController {
     /// genuinely finished — discard the queue with a banner (reopening is
     /// `restartRole`'s job). A CHAT task at `.done` is just an ended turn/pass:
     /// chat-mode advisory steps DO reach `.done` via `markChatModeAdvisoryStepDone`
-    /// (`attemptAdvisoryAutoFinish` after 3 no-tool turns; historically also the
+    /// (`noteNonProductiveTurn` after `LLMConstants.maxNonProductiveTurns`
+    /// no-tool turns; historically also the
     /// Autovisor's `wait_for_events`, which now parks instead) — so a queued
     /// message wakes the task with a FRESH `startRun` (`resumeRun` would re-enter
     /// the all-terminal run, execute no step, and bounce straight back to `.done`).

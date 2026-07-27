@@ -1193,4 +1193,78 @@ We cannot proceed.
             ##"{"content":"# Plan v2","format":"markdown","name":"Implementation Plan"}"##
         )
     }
+
+    // MARK: - Zero-argument channel envelope
+
+    /// Verbatim from the wedged Autovisor pass (turn 6): the model named a tool it does
+    /// not have and gave it no body. The name resolved and was then THROWN AWAY, so the
+    /// turn produced no call at all and the model was told its JSON was malformed — for an
+    /// envelope with no brace to malform. Emitting `{}` sends it through the normal
+    /// authorization path instead, which answers "Tool 'swift_build' is not available for
+    /// this role… do not retry 'swift_build'".
+    func testBodylessChannelEnvelope_resolvesWithEmptyArguments() {
+        let calls = ChannelMarkerStrategy().parse(
+            from: "<|channel|>commentary to=swift_build code<|message|>")
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(calls.first?.name, "swift_build")
+        XCTAssertEqual(calls.first?.argumentsJSON, "{}",
+                       "never \"\" — an empty string splits the loop detector's identity key")
+    }
+
+    /// The same shape for a tool that really does take no arguments — the case the
+    /// Autovisor manager needs, since `wait_for_events` is the only way its pass can end.
+    func testBodylessChannelEnvelope_zeroArgTool_fires() {
+        let calls = ChannelMarkerStrategy().parse(
+            from: "<|channel|>commentary to=wait_for_events<|message|>")
+        XCTAssertEqual(calls.map(\.name), ["wait_for_events"])
+    }
+
+    /// The `to=` path never applied the reserved-channel guard — harmless while a JSON
+    /// body was mandatory, a tool literally named `commentary` the moment it isn't.
+    func testBodylessChannelEnvelope_reservedRecipient_doesNotResolve() {
+        for reserved in ["commentary", "analysis", "final", "Thinking"] {
+            let calls = ChannelMarkerStrategy().parse(
+                from: "<|channel|>commentary to=\(reserved)<|message|>")
+            XCTAssertTrue(calls.isEmpty, "`to=\(reserved)` must never mint a tool call")
+        }
+    }
+
+    /// A channel envelope with no recipient at all still resolves nothing.
+    func testChannelEnvelopeWithNoRecipient_doesNotResolve() {
+        XCTAssertTrue(ChannelMarkerStrategy().parse(from: "<|channel|>commentary<|message|>").isEmpty)
+    }
+
+    /// The zero-arg arm must not steal the JSON branch: a body that parses still wins,
+    /// arguments and all.
+    func testChannelEnvelopeWithBody_isUnaffected() {
+        let calls = ChannelMarkerStrategy().parse(
+            from: ##"<|channel|>commentary to=read_file<|message|>{"path":"a.swift"}"##)
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(calls.first?.name, "read_file")
+        XCTAssertEqual(calls.first?.argumentsJSON, ##"{"path":"a.swift"}"##)
+    }
+
+    /// Forward progress: `nextStart` is `blockEnd`, so a second envelope is still found.
+    func testTwoBodylessEnvelopes_bothResolve_noHang() {
+        let calls = ChannelMarkerStrategy().parse(
+            from: "<|channel|>commentary to=list_tasks<|message|>"
+                + "<|channel|>commentary to=wait_for_events<|message|>")
+        XCTAssertEqual(calls.map(\.name), ["list_tasks", "wait_for_events"])
+    }
+
+    /// `<|start|>` Path 2b shares `ChannelEnvelopeParser`, so it inherits the arm.
+    func testBodylessEnvelope_viaStartMarker_resolves() {
+        let calls = StartMarkerStrategy().parse(from: "<|start|>commentary to=list_tasks<|message|>")
+        XCTAssertEqual(calls.map(\.name), ["list_tasks"])
+    }
+
+    /// The recipient is a HEADER field. Before the zero-arg arm existed, searching into
+    /// the body was harmless because both strategies still needed a `{`; now it would let
+    /// ordinary prose — gpt-oss's most common non-tool emission — mint a call.
+    func testRecipientInsideMessageBody_isNotAName() {
+        let calls = ChannelMarkerStrategy().parse(
+            from: "<|channel|>final<|message|>You could pass to=read_file for that.")
+        XCTAssertTrue(calls.isEmpty,
+                      "`to=` after <|message|> is prose, not the Harmony recipient")
+    }
 }

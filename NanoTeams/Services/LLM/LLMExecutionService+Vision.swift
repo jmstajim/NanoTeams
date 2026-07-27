@@ -51,6 +51,10 @@ extension LLMExecutionService {
                 throw VisionError.notConfigured
             }
             let loaded = try loadVisionImage(imagePath: imagePath)
+            // Vision runs on the SAME (baseURL, model) as the step by default — a blank
+            // vision slot inherits the global one — so it re-prefills that model and can evict
+            // the step's cache. Registered so it can at least be NAMED as a suspect.
+            await noteInterleavingCall(label: "vision", config: visionConfig)
             analysisText = try await VisionAnalysisService.analyze(
                 prompt: prompt,
                 imageBase64: loaded.data.base64EncodedString(),

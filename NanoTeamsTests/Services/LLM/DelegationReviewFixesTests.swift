@@ -405,32 +405,12 @@ final class DelegationReviewFixesTests: XCTestCase {
         XCTAssertEqual(delegate.lastErrorMessages, ["test"])
     }
 
-    // MARK: - C3: shouldRetryStateless classification
+    // MARK: - C3: side-exchange seed construction
 
-    func test_C3_shouldRetryStateless_onHTTP400_true() {
-        let err = LLMClientError.badHTTPStatus(400, "stale previous_response_id")
-        XCTAssertTrue(DelegatedSupervisorAnswerService.shouldRetryStateless(error: err),
-                      "HTTP 400 indicates an invalidated chain — must drive a stateless retry instead of bare nil-return.")
-    }
-
-    func test_C3_shouldRetryStateless_onTransport_false() {
-        // Transport errors are symmetric across stateful/stateless — no
-        // benefit retrying without a session.
-        let err = URLError(.notConnectedToInternet)
-        XCTAssertFalse(DelegatedSupervisorAnswerService.shouldRetryStateless(error: err))
-    }
-
-    func test_C3_shouldRetryStateless_onHTTP500_false() {
-        // 5xx is server-side, not chain-protocol; not a stateless-retry
-        // signal.
-        let err = LLMClientError.badHTTPStatus(500, "internal")
-        XCTAssertFalse(DelegatedSupervisorAnswerService.shouldRetryStateless(error: err))
-    }
-
-    func test_C3_rebuildStatelessSeed_dropsOrphanToolMessages() {
-        // The retry path's seed builder MUST drop `tool` role messages
-        // (their `tool_call_id` was lost on persist), otherwise the
-        // stateless retry hits the same chain-protocol invalidation.
+    func test_C3_buildSeed_dropsOrphanToolMessages() {
+        // The seed builder MUST drop `tool` role messages — their
+        // `tool_call_id` was lost on persist, so a replayed tool result is an
+        // orphan with nothing naming the call it answers.
         var step = StepExecution(id: "r", role: .softwareEngineer, title: "x")
         step.llmConversation = [
             LLMMessage(role: .system, content: "sys"),
@@ -439,10 +419,10 @@ final class DelegationReviewFixesTests: XCTestCase {
             LLMMessage(role: .tool, content: "{\"orphan\":true}"),  // <— drop
         ]
         let q = ChatMessage(role: .user, content: "q")
-        let seed = DelegatedSupervisorAnswerService.rebuildStatelessSeed(step: step, questionTurn: q)
+        let seed = DelegatedSupervisorAnswerService.buildSeed(step: step, questionTurn: q)
         XCTAssertEqual(seed.count, 4, "Expected 3 seed messages + 1 question turn = 4. Got \(seed.count). Tool message must be dropped.")
         XCTAssertFalse(seed.contains(where: { $0.role == .tool }),
-                       "Tool-role messages MUST be dropped — their tool_call_id was lost on persist (CLAUDE.md §LLM #2 chain-protocol invariant).")
+                       "Tool-role messages MUST be dropped — their tool_call_id was lost on persist.")
         XCTAssertEqual(seed.last?.content, "q", "Question turn must come last.")
     }
 
@@ -462,7 +442,6 @@ final class DelegationReviewFixesTests: XCTestCase {
             config _: LLMConfig,
             messages _: [ChatMessage],
             tools _: [ToolSchema],
-            session _: LLMSession?,
             logger _: NetworkLogger?,
             stepID _: String?,
             roleName _: String?

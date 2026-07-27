@@ -133,9 +133,11 @@ struct AutovisorSettingsView: View {
                     if isEnabled, store.autovisorTaskID != nil {
                         SettingsPillButton(title: "Run now", icon: "play") {
                             if let id = store.autovisorTaskID {
-                                // Supersedes a parked (`wait_for_events`) engine —
-                                // plain `startRun` would no-op on `.needsSupervisorInput`.
-                                Task { await store.startAutovisorPass(taskID: id) }
+                                // Same contract as the TeamBoard TopBar's Run now:
+                                // `force: true` supersedes ANY state, including a
+                                // live `.running` pass. Two controls, one label —
+                                // they must not mean different things.
+                                Task { await store.startAutovisorPass(taskID: id, force: true) }
                             }
                         }
                     }
@@ -168,7 +170,13 @@ struct AutovisorSettingsView: View {
     private var goalCard: some View {
         SettingsCard(
             header: "Goal",
-            systemImage: "target"
+            systemImage: "target",
+            // Rides the `┤ GOAL ├` chip via the slot TerminalPane already owns.
+            // `AnyView` is re-wrapped per keystroke, but the wrapped type never
+            // changes, so the tip's `@State` identity survives.
+            headerTrailing: AnyView(
+                AutovisorGoalLintTip(goal: goalDraft, font: Typography.term2xs)
+            )
         ) {
             VStack(spacing: 0) {
                 // Quick Capture-style composer minus the send button. Attachments
@@ -464,6 +472,10 @@ struct AutovisorSettingsView: View {
             header: "Model",
             systemImage: "cpu"
         ) {
+            // The manager's model can live on a different provider than the
+            // global chat LLM — pin its wire format here (`nil` = inherit).
+            LLMProviderOverridePicker(selection: managerProviderBinding)
+
             LLMEndpointEditor(
                 baseURL: baseURLBinding,
                 modelName: modelNameBinding,
@@ -473,22 +485,22 @@ struct AutovisorSettingsView: View {
                 onTokenSaveError: { store.lastErrorMessage = $0.localizedDescription },
                 onTokenLoadError: { store.lastErrorMessage = $0.localizedDescription },
                 onURLCommit: {
-                    Task { await modelCatalog.loadIfNeeded(url: effectiveFetchURL) }
+                    Task { await modelCatalog.loadIfNeeded(url: effectiveFetchURL, provider: effectiveFetchProvider) }
                 },
-                availableModels: modelCatalog.models(for: effectiveFetchURL),
-                isFetchingModels: modelCatalog.isFetching(effectiveFetchURL),
+                availableModels: modelCatalog.models(for: effectiveFetchURL, provider: effectiveFetchProvider),
+                isFetchingModels: modelCatalog.isFetching(effectiveFetchURL, provider: effectiveFetchProvider),
                 status: EndpointStatus.resolve(
-                    fetchError: modelCatalog.error(for: effectiveFetchURL),
-                    isFetching: modelCatalog.isFetching(effectiveFetchURL)
+                    fetchError: modelCatalog.error(for: effectiveFetchURL, provider: effectiveFetchProvider),
+                    isFetching: modelCatalog.isFetching(effectiveFetchURL, provider: effectiveFetchProvider)
                 ),
                 onRefreshModels: {
-                    Task { await modelCatalog.refresh(url: effectiveFetchURL) }
+                    Task { await modelCatalog.refresh(url: effectiveFetchURL, provider: effectiveFetchProvider) }
                 }
             )
         }
         .task {
             // First-appear populate. URL edits re-fetch via onURLCommit / Refresh.
-            await modelCatalog.loadIfNeeded(url: effectiveFetchURL)
+            await modelCatalog.loadIfNeeded(url: effectiveFetchURL, provider: effectiveFetchProvider)
         }
     }
 
@@ -501,7 +513,7 @@ struct AutovisorSettingsView: View {
     }
 
     private var inheritedURLPrompt: String {
-        globalURL.isEmpty ? "http://127.0.0.1:1234" : globalURL
+        globalURL.isEmpty ? effectiveFetchProvider.defaultBaseURL : globalURL
     }
 
     private var emptyModelLabel: String {
@@ -515,12 +527,30 @@ struct AutovisorSettingsView: View {
         return custom.isEmpty ? globalURL : custom
     }
 
+    /// Provider for the model-list fetch — the override's provider when set
+    /// (matches `buildEffectiveConfig` resolution), else the global one.
+    private var effectiveFetchProvider: LLMProvider {
+        managerOverride?.provider ?? store.configuration.llmProvider
+    }
+
     private var baseURLBinding: Binding<String> {
         Binding(
             get: { managerOverride?.baseURLString ?? "" },
             set: { newURL in
                 let model = managerOverride?.modelName
-                Task { await store.setAutovisorLLMOverride(baseURL: newURL, model: model) }
+                let provider = managerOverride?.provider
+                Task { await store.setAutovisorLLMOverride(baseURL: newURL, model: model, provider: provider) }
+            }
+        )
+    }
+
+    private var managerProviderBinding: Binding<LLMProvider?> {
+        Binding(
+            get: { managerOverride?.provider },
+            set: { newProvider in
+                let url = managerOverride?.baseURLString
+                let model = managerOverride?.modelName
+                Task { await store.setAutovisorLLMOverride(baseURL: url, model: model, provider: newProvider) }
             }
         )
     }
@@ -530,7 +560,8 @@ struct AutovisorSettingsView: View {
             get: { managerOverride?.modelName ?? "" },
             set: { newModel in
                 let url = managerOverride?.baseURLString
-                Task { await store.setAutovisorLLMOverride(baseURL: url, model: newModel) }
+                let provider = managerOverride?.provider
+                Task { await store.setAutovisorLLMOverride(baseURL: url, model: newModel, provider: provider) }
             }
         )
     }

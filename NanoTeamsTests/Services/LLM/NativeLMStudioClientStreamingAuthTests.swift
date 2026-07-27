@@ -60,7 +60,6 @@ final class NativeLMStudioClientStreamingAuthTests: XCTestCase {
             config: makeConfig(),
             messages: [ChatMessage(role: .user, content: "hi")],
             tools: [],
-            session: nil,
             logger: nil,
             stepID: nil
         )
@@ -92,7 +91,6 @@ final class NativeLMStudioClientStreamingAuthTests: XCTestCase {
             config: makeConfig(),
             messages: [ChatMessage(role: .user, content: "hi")],
             tools: [],
-            session: nil,
             logger: nil,
             stepID: nil
         )
@@ -112,7 +110,6 @@ final class NativeLMStudioClientStreamingAuthTests: XCTestCase {
             config: makeConfig(),
             messages: [ChatMessage(role: .user, content: "hi")],
             tools: [],
-            session: nil,
             logger: nil,
             stepID: nil
         )

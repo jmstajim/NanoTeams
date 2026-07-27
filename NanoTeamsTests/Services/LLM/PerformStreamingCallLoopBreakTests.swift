@@ -54,7 +54,7 @@ final class PerformStreamingCallLoopBreakTests: XCTestCase {
         try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: ScriptedClient(events: events), config: stubConfig(),
-            tools: [], conversationMessages: [], session: nil, networkLogger: nil)
+            tools: [], conversationMessages: [], networkLogger: nil)
     }
 
     // MARK: - Top-level
@@ -164,7 +164,7 @@ final class PerformStreamingCallLoopBreakTests: XCTestCase {
         init(events: [StreamEvent]) { self.events = events }
         func streamChat(
             config _: LLMConfig, messages _: [ChatMessage], tools _: [ToolSchema],
-            session _: LLMSession?, logger _: NetworkLogger?, stepID _: String?, roleName _: String?
+            logger _: NetworkLogger?, stepID _: String?, roleName _: String?
         ) -> AsyncThrowingStream<StreamEvent, Error> {
             let scripted = events
             return AsyncThrowingStream { continuation in

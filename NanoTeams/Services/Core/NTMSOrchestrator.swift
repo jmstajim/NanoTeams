@@ -17,6 +17,10 @@ final class NTMSOrchestrator {
     /// Extracted engine state — views can observe this directly to avoid
     /// re-evaluating when unrelated orchestrator properties change.
     let engineState: OrchestratorEngineState
+    /// Prompt-prefix (KV) cache-miss aggregate. Drives the always-on status-bar count and
+    /// decides which misses earn the single-slot banner. Injected like the other observables so
+    /// tests get a fresh one.
+    let prefixCacheReporter: PrefixCacheReporter
 
     /// Streaming preview manager for real-time LLM response display.
     let streamingPreviewManager: StreamingPreviewManager
@@ -48,6 +52,13 @@ final class NTMSOrchestrator {
     /// singleton; tests inject a fresh actor so ownership can't leak between
     /// suites — or out to the developer's running LM Studio.
     @ObservationIgnored let chatModelEnsurer: ChatModelEnsurer
+
+    /// Reads/removes the model downloads occupying disk on a provider's host
+    /// (Settings → LLM → Downloaded Models). Injectable for the same reason as
+    /// `chatLifecycleClient` (CLAUDE.md #49), and more urgently: the LM Studio
+    /// implementation walks — and can Trash — real directories under
+    /// `~/.lmstudio/models`, which no test may ever reach.
+    @ObservationIgnored let downloadedModelStore: any DownloadedModelStore
 
     /// `bash` commands currently HELD awaiting the human's in-loop Allow/Deny
     /// decision, keyed by (taskID, stepID). Mirrors the gate's await state so the
@@ -214,6 +225,16 @@ final class NTMSOrchestrator {
     /// load, run creation), so a concurrent second call would double-create runs.
     @ObservationIgnored var startingRunTaskIDs: Set<Int> = []
 
+    /// Tasks whose FORCED Autovisor pass (`startAutovisorPass(force:)`) is between
+    /// its claim and `startRun`. A separate set from `startingRunTaskIDs` because
+    /// the force path's vulnerable window OPENS EARLIER: it `await`s `pauseRun`
+    /// before ever reaching `startRun`, and `TeamEngine.pause()` writes `.paused`
+    /// on its LAST line — so for that whole suspension the engine mirror still
+    /// reads `.running` and a second click observes exactly the state the first
+    /// did. It cannot reuse `startingRunTaskIDs`: `startRun` bails on membership,
+    /// so claiming that set here would make the force path never start a run.
+    @ObservationIgnored var forcingRunTaskIDs: Set<Int> = []
+
     @ObservationIgnored var workFolderContextGenerationTask: Task<Void, Never>?
 
     /// Generation counter for `startGeneratingWorkFolderContext`. The spawned
@@ -358,6 +379,21 @@ final class NTMSOrchestrator {
     /// double-starts a `createNewRun`).
     @ObservationIgnored var autovisorLastPassAttentionKeys: Set<AutovisorAttentionKey> = []
 
+    /// Attention keys already re-delivered once because the pass that baselined them
+    /// died in a reasoning loop rather than reviewing them.
+    ///
+    /// `autovisorLastPassAttentionKeys` encodes "the manager has SEEN this condition",
+    /// and a pass terminated by `LoopRecoveryPolicy.parkForSupervisor` saw nothing — so
+    /// its baseline is a false claim and `noteAutovisorLoopPark` rolls it back. This
+    /// ledger is what keeps that rollback BOUNDED: at most one extra pass per key per
+    /// loop-park episode. Without it, a manager that loops every pass would roll back
+    /// its own baseline forever and the poll would restart it every minute — exactly
+    /// the tight wake loop the deliver-once design exists to prevent.
+    ///
+    /// Cleared on any HEALTHY terminal (`.done` / `.needsAcceptance`), which re-arms
+    /// the one free re-delivery for the next episode.
+    @ObservationIgnored var autovisorLoopParkRedelivered: Set<AutovisorAttentionKey> = []
+
     /// Tasks the Autovisor created during the CURRENT review pass. Reset to 0
     /// on each manager run start (in `startRun`); bounded in `createManagedTask` by
     /// `settings.autovisorTuning.maxManagedTasksPerReview` (default
@@ -392,16 +428,19 @@ final class NTMSOrchestrator {
         workFolderManagementService: WorkFolderManagementService? = nil,
         engineFactory: @MainActor @escaping () -> TeamEngine = { TeamEngine() },
         engineState: OrchestratorEngineState? = nil,
+        prefixCacheReporter: PrefixCacheReporter? = nil,
         streamingPreviewManager: StreamingPreviewManager? = nil,
         configuration: StoreConfiguration? = nil,
         fileManager: FileManager? = nil,
         embeddingLifecycle: EmbeddingModelLifecycleService? = nil,
         searchEmbeddingClient: (any EmbeddingClient)? = nil,
         chatLifecycleClient: (any LLMClient)? = nil,
-        chatModelEnsurer: ChatModelEnsurer = .shared
+        chatModelEnsurer: ChatModelEnsurer = .shared,
+        downloadedModelStore: (any DownloadedModelStore)? = nil
     ) {
         self.chatLifecycleClient = chatLifecycleClient
         self.chatModelEnsurer = chatModelEnsurer
+        self.downloadedModelStore = downloadedModelStore ?? DownloadedModelStoreRouter()
         self.repository = repository
         self.llmExecutionService = llmExecutionService ?? LLMExecutionService(repository: repository)
         self.settingsService = settingsService ?? SettingsService(repository: repository)
@@ -409,6 +448,7 @@ final class NTMSOrchestrator {
         self.workFolderManagementService = workFolderManagementService ?? WorkFolderManagementService(repository: repository)
         self.engineFactory = engineFactory
         self.engineState = engineState ?? OrchestratorEngineState()
+        self.prefixCacheReporter = prefixCacheReporter ?? PrefixCacheReporter()
         self.streamingPreviewManager = streamingPreviewManager ?? StreamingPreviewManager()
         self.configuration = configuration ?? StoreConfiguration()
         self.fileManager = fileManager ?? .default

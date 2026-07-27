@@ -55,7 +55,7 @@ final class EndToEndPauseResumeTests: XCTestCase {
         var task = makeRunningTask()
 
         // Simulate app restart — steps stuck in .running without engine
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
 
         XCTAssertTrue(changed, "Should report changes made")
         XCTAssertEqual(task.runs[0].steps[0].status, .paused,
@@ -67,7 +67,7 @@ final class EndToEndPauseResumeTests: XCTestCase {
     func testStatusRecovery_staleNeedsSupervisorInput_becomesPaused() {
         var task = makeTaskWithSupervisorInput()
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
 
         XCTAssertTrue(changed)
         XCTAssertEqual(task.runs[0].steps[0].status, .paused,
@@ -80,7 +80,7 @@ final class EndToEndPauseResumeTests: XCTestCase {
         var task = makeRunningTask()
         task.runs[0].roleStatuses["swe-role"] = .working
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
 
         XCTAssertTrue(changed)
         XCTAssertEqual(task.runs[0].roleStatuses["swe-role"], .idle,
@@ -93,7 +93,7 @@ final class EndToEndPauseResumeTests: XCTestCase {
         var task = makeRunningTask()
         task.status = .running
 
-        StatusRecoveryService.recoverStaleStatuses(in: &task)
+        StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
 
         XCTAssertEqual(task.status, .paused,
                        "Task status should become .paused after recovery")
@@ -104,7 +104,7 @@ final class EndToEndPauseResumeTests: XCTestCase {
     func testStatusRecovery_doneSteps_notAffected() {
         var task = makeDoneTask()
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
 
         XCTAssertFalse(changed, "Done steps should not be changed")
         XCTAssertEqual(task.runs[0].steps[0].status, .done)

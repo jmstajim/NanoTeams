@@ -221,17 +221,33 @@ nonisolated struct StartMarkerStrategy: ToolCallParsingStrategy {
 ///   - `commentary|final to="NAME" … <|message|>{JSON}` (quoted name)
 ///   - `commentary|final <|constrain|>NAME<|message|>{JSON}` (constrain-as-name fallback)
 ///   - `commentary|final to=NAME … {JSON}` (no `<|message|>`, plain `{` fallback)
+///   - `commentary|final to=NAME <|message|>` (nothing after the marker → zero-arg `{}`)
 ///
-/// Returns nil when no tool name resolves OR no JSON is found.
+/// The recipient is read from the HEADER only — the span before `<|message|>` — so body
+/// text can never supply the tool name.
+///
+/// Returns nil when no tool name resolves, or when a name resolved but the body is
+/// neither valid JSON nor empty.
 nonisolated enum ChannelEnvelopeParser {
     static func parseEnvelope(
         in text: Substring, cursorAfterOpening: String.Index, blockEnd: String.Index
     ) -> (call: StepToolCall, nextStart: String.Index)? {
+        // 0. Split header from body. The Harmony recipient (`to=NAME`) and the
+        //    `<|constrain|>` hint both live in the HEADER — the span between the opening
+        //    marker and `<|message|>`. Searching past it lets text inside the BODY supply
+        //    the tool name, which stayed harmless only while both strategies below still
+        //    required a `{`. The zero-argument arm added in step 2b removes that accident,
+        //    so the search is bounded now: `<|channel|>final<|message|>… to=… ` prose is
+        //    gpt-oss's single most common non-tool emission and must never mint a call.
+        let messageRange = text.range(
+            of: ChannelMarkerStrategy.messageMarker, range: cursorAfterOpening..<blockEnd)
+        let headerEnd = messageRange?.lowerBound ?? blockEnd
+
         // 1. Resolve the tool name — try `to=NAME` first, then `<|constrain|>NAME`.
         var toolName: String?
         var nameEnd: String.Index = cursorAfterOpening
 
-        if let toRange = text.range(of: "to=", range: cursorAfterOpening..<blockEnd) {
+        if let toRange = text.range(of: "to=", range: cursorAfterOpening..<headerEnd) {
             let nameSearchStart = ToolCallParsingHelpers.skipWhitespace(
                 in: text, from: toRange.upperBound)
             if let (name, end) = ToolCallParsingHelpers.extractIdentifierOrQuoted(
@@ -244,7 +260,7 @@ nonisolated enum ChannelEnvelopeParser {
 
         if toolName == nil,
            let constrainRange = text.range(
-            of: ChannelMarkerStrategy.constrainMarker, range: cursorAfterOpening..<blockEnd)
+            of: ChannelMarkerStrategy.constrainMarker, range: cursorAfterOpening..<headerEnd)
         {
             let afterConstrain = constrainRange.upperBound
             if let (candidate, end) = ToolCallParsingHelpers.extractIdentifier(
@@ -263,9 +279,7 @@ nonisolated enum ChannelEnvelopeParser {
         guard let resolvedName = toolName else { return nil }
 
         // 2. Strategy 1: standard `<|message|>{JSON}` framing.
-        if let messageRange = text.range(
-            of: ChannelMarkerStrategy.messageMarker, range: cursorAfterOpening..<blockEnd)
-        {
+        if let messageRange {
             var jsonStart = messageRange.upperBound
             jsonStart = ToolCallParsingHelpers.skipWhitespace(in: text, from: jsonStart)
             if jsonStart < text.endIndex, text[jsonStart] == "{",
@@ -277,6 +291,35 @@ nonisolated enum ChannelEnvelopeParser {
                 let call = StepToolCall(
                     providerID: nil, name: dispatchName, argumentsJSON: dispatchArgs)
                 return (call, endIdx)
+            }
+
+            // 2b. Zero-argument envelope: `… to=NAME <|message|>` with nothing after it.
+            //     The name resolved; only the body is absent. Emitting `{}` instead of nil
+            //     is what lets a genuinely argument-less tool fire, and what lets a
+            //     hallucinated name reach `executeToolCalls` and come back
+            //     `tool_not_authorized` + "do not retry 'X'" — a far more useful answer than
+            //     the "missing closing brace" retry this used to produce for an envelope
+            //     that had no brace to miss.
+            //
+            //     `resolvedName` is used DIRECTLY, bypassing `resolveDispatch`: with no body
+            //     there is no inner envelope whose `name` could out-rank the recipient.
+            //
+            //     The reserved-word guard is applied HERE because the `to=` path never
+            //     applied it (only the `<|constrain|>` path does). That hole stayed masked
+            //     while a JSON body was mandatory; the moment a bodyless envelope can mint a
+            //     call, `… to=commentary<|message|>` would produce a tool named `commentary`.
+            //     Widening the guard to the whole `to=` path is a separate behavioural
+            //     change with its own test surface — deliberately not done here.
+            //
+            //     `nextStart` is `blockEnd`, which is where the caller's loop would resume
+            //     anyway; both callers key their next search off it, so progress is
+            //     guaranteed and two bodyless envelopes in a row both resolve.
+            if text[messageRange.upperBound..<blockEnd].allSatisfy(\.isWhitespace),
+               !ToolCallParsingHelpers.reservedChannelNames.contains(resolvedName.lowercased())
+            {
+                let call = StepToolCall(
+                    providerID: nil, name: resolvedName, argumentsJSON: "{}")
+                return (call, blockEnd)
             }
         }
 
@@ -416,14 +459,17 @@ nonisolated struct ChannelMarkerStrategy: ToolCallParsingStrategy {
 
 nonisolated struct HarmonyToolCallParser: Sendable {
     static let callMarker = CallMarkerStrategy.callMarker
+    static let endMarker = CallMarkerStrategy.endMarker
     static let startMarker = StartMarkerStrategy.startMarker
     static let channelMarker = ChannelMarkerStrategy.channelMarker
 
     /// Single source of truth for "this content contains a Harmony tool-call
-    /// envelope opening." Used by the streamer to flip into `harmonyBuffer`
-    /// mode and by `UniversalToolCallParser` to recognise unknown-format
-    /// candidates. Keep bare `<|start|>` here — the function-prefix variant
-    /// is a subset and adding both would be redundant.
+    /// envelope opening." Used by the streamer to flip into `harmonyBuffer` mode, and as
+    /// the gate that decides whether recovery belongs to this parser or to
+    /// `BareToolCallSalvage` — a marker present means the model committed to a call and
+    /// the failure can be NAMED; absent, intent itself is what's in question. Keep bare
+    /// `<|start|>` here — the function-prefix variant is a subset and adding both would
+    /// be redundant.
     static let harmonyMarkers: [String] = [callMarker, startMarker, channelMarker]
 
     private let strategies: [ToolCallParsingStrategy]

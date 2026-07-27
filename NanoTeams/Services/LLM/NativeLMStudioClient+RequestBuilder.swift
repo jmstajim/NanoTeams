@@ -4,12 +4,20 @@ import Foundation
 
 extension NativeLMStudioClient {
 
+    /// Builds one stateless `/api/v1/chat` request: the FULL conversation every
+    /// call, `system_prompt` always present, `store: false` always.
+    ///
+    /// Server-side response chains (`previous_response_id`) were removed. Measured
+    /// on this project's models, LM Studio reuses its KV cache on a byte-identical
+    /// prompt prefix whether or not a chain is in play (348 ms chained vs 339 ms
+    /// unchained vs 330 ms unchained-with-`store:false`, against a 4333 ms cold
+    /// prefill at 13k tokens) — so the chain bought nothing while being the root
+    /// of a class of provider-specific bugs. `store: false` additionally stops
+    /// orphan chains accumulating server-side.
     static func buildRequest(
         config: LLMConfig,
         messages: [ChatMessage],
-        tools: [ToolSchema],
-        session: LLMSession?,
-        omitSystemPromptOnContinuation: Bool = true
+        tools: [ToolSchema]
     ) -> NativeChatRequest {
         // Extract system prompt
         let systemMessages = messages.filter { $0.role == .system }
@@ -32,56 +40,46 @@ extension NativeLMStudioClient {
         // user wrote that heading literally in their template/role guidance
         // prose without using the `{toolCalling}` chip, leaving the LLM
         // without Harmony format spec.
-        let harmonyBodyMarker = "Call tools using this Harmony format:"
-        if !tools.isEmpty && !systemPrompt.contains(harmonyBodyMarker) {
+        if !tools.isEmpty && !systemPrompt.contains(Self.harmonyBodyMarker) {
             if !systemPrompt.isEmpty { systemPrompt += "\n\n" }
             systemPrompt += buildToolSchemaSection(tools: tools)
         }
 
-        // On stateful continuations, system_prompt can be omitted because `/api/v1/chat`
-        // persists it in the response chain (unlike `/v1/responses` where `instructions`
-        // do NOT carry over). This saves ~2500 tokens per call on iterations 3+.
-        let effectiveSystemPrompt: String?
-        if session != nil && omitSystemPromptOnContinuation {
-            effectiveSystemPrompt = nil
-        } else {
-            effectiveSystemPrompt = systemPrompt.isEmpty ? nil : systemPrompt
-        }
+        // `system_prompt` always ships: the request carries no chain, so nothing
+        // persists it server-side between calls. It also anchors the byte-identical
+        // prefix the KV cache keys on.
+        let effectiveSystemPrompt: String? = systemPrompt.isEmpty ? nil : systemPrompt
 
         // Build input as a plain string. The API documents `input` as `string | array(images)`.
         // For text-only, a string is the most compatible format.
         //
-        // Stateful:  LLMExecutionService already sliced messages to new messages only.
-        //            Tool results and user messages are joined into one string.
-        // Stateless: Full conversation history as labelled text segments.
+        // Full conversation history as labelled text segments, assistant turns
+        // included (mirrors `OllamaClient.buildRequest`) — nothing is held on the
+        // server, so an omitted assistant turn would leave the model reading its
+        // own tool results with no record of having asked for them.
+        //
+        // That applies to the tool CALLS on the turn, not just its prose: the
+        // streaming path truncates the Harmony envelope out of the content and
+        // files the calls under `ChatMessage.toolCalls`, so rendering `content`
+        // alone shipped a bare `[Assistant]\n` ahead of every tool result — the
+        // exact history loss this comment describes. `d2391833` removed the
+        // server-side `previous_response_id` chain that had been carrying it and
+        // re-materialized the envelope on Ollama only.
         let nonSystemMessages = messages.filter { $0.role != .system }
         var textParts: [String] = []
 
-        if session != nil {
-            // Stateful: only user + tool result messages; assistant is in the server chain
-            for msg in nonSystemMessages {
-                switch msg.role {
-                case .user:
-                    textParts.append(msg.content ?? "")
-                case .tool:
-                    textParts.append("[Tool Result]\n\(msg.content ?? "")")
-                case .assistant, .system:
-                    break
-                }
-            }
-        } else {
-            // Stateless: full conversation history (first call or after HTTP 400 session reset)
-            for msg in nonSystemMessages {
-                switch msg.role {
-                case .user:
-                    textParts.append(msg.content ?? "")
-                case .assistant:
-                    textParts.append("[Assistant]\n\(msg.content ?? "")")
-                case .tool:
-                    textParts.append("[Tool Result]\n\(msg.content ?? "")")
-                case .system:
-                    break
-                }
+        for msg in nonSystemMessages {
+            switch msg.role {
+            case .user:
+                textParts.append(msg.content ?? "")
+            case .assistant:
+                textParts.append(
+                    "[Assistant]\n\(msg.content ?? "")"
+                        + HarmonyToolCallEnvelope.appendedWireText(for: msg))
+            case .tool:
+                textParts.append("[Tool Result]\n\(msg.content ?? "")")
+            case .system:
+                break
             }
         }
 
@@ -109,14 +107,20 @@ extension NativeLMStudioClient {
             model: config.modelName,
             systemPrompt: effectiveSystemPrompt,
             input: input,
-            previousResponseID: session?.responseID,
-            store: !hasImages,  // Vision: fresh chat, no server-side storage
+            store: false,  // No chains: nothing ever resumes a stored response
             stream: true,
             temperature: config.temperature
         )
     }
 
     // MARK: - Tool Schema Section
+
+    /// The phrase that ONLY appears inside `buildToolSchemaBody` output —
+    /// the auto-append detection anchor shared by every request builder
+    /// (`buildRequest` here, `OllamaClient.buildRequest`) and the wire
+    /// preview. Must stay in lock-step with the first line of
+    /// `buildToolSchemaBody`.
+    static let harmonyBodyMarker = "Call tools using this Harmony format:"
 
     /// Full `## Tool Calling\n\n<body>` block. Used by direct-LLM-call services
     /// (TeamGenerationService, VisionAnalysisService, etc.) that build static
@@ -128,6 +132,36 @@ extension NativeLMStudioClient {
     /// user-editable template.
     static func buildToolSchemaSection(tools: [ToolSchema]) -> String {
         "## Tool Calling\n\n\(buildToolSchemaBody(tools: tools))"
+    }
+
+    /// The tool-catalog text a request will actually carry, for MEASUREMENT surfaces
+    /// (`ContextBudgetPolicy.estimateTokens`, `PromptPrefixFingerprint.chain`) — never a wire
+    /// path: `buildRequest` here and `OllamaClient.buildRequest` each render their own copy.
+    ///
+    /// Exists so the append rule has ONE owner. It was spelled inline at both measurement sites,
+    /// which meant the token estimator and the prefix fingerprint each carried an independent
+    /// copy of a gate that has to agree with the wire — and disagreeing is silent: the estimator
+    /// under-counts, or the fingerprint reports a phantom system-prompt change.
+    ///
+    /// That rule has TWO halves, and this function used to own only the first. The second is
+    /// `!systemPrompt.contains(harmonyBodyMarker)`: for a role step `PromptBuilder` renders
+    /// `buildToolSchemaBody` INTO the system message via the `{toolCalling}` chip and its first
+    /// line IS the marker, so both builders skip the append and the catalog is already inside
+    /// `messages`. Returning the section anyway priced a copy no request has ever carried — the
+    /// largest single block this app builds (~60% of a first payload), inflating the overflow
+    /// estimate and every cache-miss token figure with it. Same `filter`/`compactMap`/`joined`
+    /// as `buildRequest` above, so the parity is structural rather than remembered.
+    static func toolSchemaTextForMeasurement(
+        tools: [ToolSchema],
+        messages: [ChatMessage]
+    ) -> String {
+        guard !tools.isEmpty else { return "" }
+        let systemPrompt = messages
+            .filter { $0.role == .system }
+            .compactMap(\.content)
+            .joined(separator: "\n\n")
+        guard !systemPrompt.contains(Self.harmonyBodyMarker) else { return "" }
+        return buildToolSchemaSection(tools: tools)
     }
 
     /// Bare body of the Tool Calling block — Harmony format spec, example, the

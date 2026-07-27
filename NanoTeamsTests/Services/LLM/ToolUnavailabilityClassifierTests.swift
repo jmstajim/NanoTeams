@@ -430,4 +430,71 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
             "generic retry suffix is misleading for preconditions, got: \(guidance)"
         )
     }
+
+    // MARK: - Planning phase (the one temporal rejection)
+
+    /// The phase set is derived from the ALREADY-precondition-filtered tool
+    /// array, so membership proves every other reason is inapplicable — hence it
+    /// is checked first. Pinned against the strongest competing reason: a
+    /// default-storage session would otherwise claim `write_file` needs a work
+    /// folder, which is true but not why it was refused THIS iteration.
+    func testClassify_phaseWithheldTool_outranksEveryOtherReason() {
+        let reason = LLMExecutionService.classifyUnavailability(
+            toolName: ToolNames.writeFile,
+            workFolderRoot: URL(fileURLWithPath: "/tmp"),
+            isDefaultStorage: true,
+            isVisionConfigured: false,
+            selectedScheme: nil,
+            phaseWithheldToolNames: [ToolNames.writeFile]
+        )
+        XCTAssertEqual(reason, .withheldUntilPlanRecorded)
+    }
+
+    /// A tool the role genuinely never had must NOT be promised for later.
+    func testClassify_hallucinatedTool_isStillNotInRoleConfig() {
+        let reason = LLMExecutionService.classifyUnavailability(
+            toolName: "run_shell_command",
+            workFolderRoot: URL(fileURLWithPath: "/tmp"),
+            isDefaultStorage: false,
+            isVisionConfigured: true,
+            selectedScheme: "App",
+            phaseWithheldToolNames: [ToolNames.writeFile]
+        )
+        XCTAssertEqual(reason, .notInRoleConfig)
+    }
+
+    /// The envelope keeps the structured `tool` field — unlike the hallucination
+    /// case, this names a real, callable tool — and points at the exit channel.
+    func testEnvelope_withheldUntilPlanRecorded_namesTheToolAndTheExitChannel() {
+        let call = StepToolCall(name: ToolNames.writeFile, argumentsJSON: "{}")
+        let envelope = LLMExecutionService.makeUnavailableToolResult(
+            call: call, canonicalName: ToolNames.writeFile,
+            scope: "for this role", reason: .withheldUntilPlanRecorded
+        )
+
+        XCTAssertTrue(envelope.isError)
+        XCTAssertTrue(envelope.outputJSON.contains("plan_required"), envelope.outputJSON)
+        XCTAssertTrue(envelope.outputJSON.contains(ToolNames.updateScratchpad), envelope.outputJSON)
+        XCTAssertTrue(envelope.outputJSON.contains("\"\(ToolNames.writeFile)\""), envelope.outputJSON)
+    }
+
+    /// The rejection is TEMPORAL: the same call works next turn. Steering toward
+    /// "pick a different tool" — what every other reason says — would send the
+    /// model hunting a substitute that does not exist, and it would never record
+    /// the plan that unblocks it.
+    func testGuidance_planRequired_tellsTheModelToRetryAfterRecordingThePlan() {
+        let sut = LLMExecutionService(repository: NTMSRepository())
+        let call = StepToolCall(name: ToolNames.writeFile, argumentsJSON: "{}")
+        let envelope = LLMExecutionService.makeUnavailableToolResult(
+            call: call, canonicalName: ToolNames.writeFile,
+            scope: "for this role", reason: .withheldUntilPlanRecorded
+        )
+
+        let guidance = sut.buildToolErrorGuidance(result: envelope)
+
+        XCTAssertTrue(guidance.contains(ToolNames.updateScratchpad), guidance)
+        XCTAssertTrue(guidance.contains("works on the next turn"), guidance)
+        XCTAssertFalse(guidance.contains("Do not retry"), "the retry IS the instruction: \(guidance)")
+        XCTAssertFalse(guidance.contains("different tool"), guidance)
+    }
 }

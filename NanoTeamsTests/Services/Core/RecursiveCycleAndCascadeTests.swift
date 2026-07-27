@@ -30,10 +30,7 @@ final class RecursiveCycleAndCascadeTests: XCTestCase, @unchecked Sendable {
     // MARK: - Helpers
 
     private func makeOrchestrator() -> NTMSOrchestrator {
-        NTMSOrchestrator(
-            repository: NTMSRepository(),
-            searchEmbeddingClient: StubSearchEmbeddingClient()
-        )
+        TestOrchestrator.make()
     }
 
     private func makeWorkFolderRoot() -> URL {

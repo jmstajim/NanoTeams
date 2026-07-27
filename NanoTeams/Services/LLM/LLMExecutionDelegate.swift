@@ -82,10 +82,9 @@ protocol LLMStateDelegate: TaskMutationDelegate {
     /// `step.messages` has no UI consumer and mid-iteration mutations don't
     /// feed back into the current run's `fullConversation`.
     ///
-    /// `restartRole` preserves queued messages: `step.reset()` nulls
-    /// `llmSessionID`, so iteration 1 of the restarted step satisfies the
-    /// injection hook's `iterationNumber > 1 || session == nil` guard and the
-    /// queue is consumed then. Do not "fix" this by adding role-level cleanup.
+    /// `restartRole` preserves queued messages: the restarted step consumes the
+    /// queue on its first iteration (the injection hook is unconditional). Do not
+    /// "fix" this by adding role-level cleanup.
     ///
     /// Returns the final prompt text (already including "## Attached Files"
     /// / embedded content per `AnswerTextBuilder`) the caller must append to
@@ -287,10 +286,52 @@ protocol LLMStateDelegate: TaskMutationDelegate {
     /// committed assistant turn and at step completion. Default is a no-op so non-orchestrator
     /// conformers (tests) need not implement it.
     func renderConversationLog(taskID: Int)
+
+    /// Reports that the server could not reuse its prompt-prefix (KV) cache for a request.
+    ///
+    /// The service detects the miss; the orchestrator owns every user-visible surface, so it
+    /// decides whether this one moves the status count, raises a banner, or both. Default is a
+    /// no-op — like `renderConversationLog`, so the narrow test doubles need not implement it.
+    func reportPrefixCacheMiss(_ miss: PrefixCacheMiss)
+
+    /// Registers a request against a prompt-prefix chain from a service that has no ledger of
+    /// its own.
+    ///
+    /// `DelegatedSupervisorAnswerService` is the caller this exists for: it is a stateless enum
+    /// whose escalation recurses up the parent chain, so the recorder has to survive a hop, and
+    /// it ALREADY takes this delegate as a required parameter — carrying the registration here
+    /// means zero new parameters and zero churn across its nine test call sites. `LLMCallOwner`
+    /// names it as a required `.chain`; it accumulates a real growing prefix (each question turn
+    /// is appended to the same seeded conversation) and was never registered at all.
+    ///
+    /// Default is a no-op, like `reportPrefixCacheMiss`, so the narrow doubles need not implement
+    /// it.
+    func recordPrefixChainForTasklessCall(
+        owner: LLMCallOwner, config: LLMConfig, messages: [ChatMessage]) async
+
+    /// Puts a Supervisor message back at the HEAD of the task's queue after it was delivered but
+    /// its wire turn was discarded.
+    ///
+    /// The planning-phase boundary is the only caller: it slices everything after the brief, so a
+    /// human turn appended during the phase is destroyed there — and
+    /// `consumeQueuedSupervisorMessage` already popped it, so without this it is gone. Delivering
+    /// immediately is what lets the human actually steer the exploration ("look at the parser
+    /// instead"); re-queueing is what makes that safe.
+    ///
+    /// Head, not tail, for the same reason as the consumption pipeline's failure path: a message
+    /// the user queued during the phase must not jump ahead of one already in flight.
+    func requeueSupervisorMessageAtHead(taskID: Int, roleID: String, text: String)
 }
 
 extension LLMStateDelegate {
     func renderConversationLog(taskID: Int) {}
+
+    func reportPrefixCacheMiss(_: PrefixCacheMiss) {}
+
+    func recordPrefixChainForTasklessCall(
+        owner _: LLMCallOwner, config _: LLMConfig, messages _: [ChatMessage]) async {}
+
+    func requeueSupervisorMessageAtHead(taskID _: Int, roleID _: String, text _: String) {}
 }
 
 // MARK: - LLMStreamingDelegate

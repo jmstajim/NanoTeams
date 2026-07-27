@@ -57,6 +57,10 @@ extension NTMSOrchestrator {
 
             // Clear closedAt so derived status won't stay .done
             task.closedAt = nil
+            // The reset leaves the restarted steps `.pending`, so a recovery latch left
+            // armed by an earlier launch would render "Paused" over a role that is about
+            // to work. Restarting is a transition back to live — drop the latch.
+            task.clearRecoveryPauseLatch()
 
             for resetRoleID in rolesToReset {
                 if let stepIndex = task.runs[runIndex].steps.firstIndex(
@@ -252,13 +256,12 @@ extension NTMSOrchestrator {
 
     /// Supervisor corrects an active role while the task is paused.
     /// Two branches distinguished by `step.needsSupervisorInput` (set before pause):
-    /// - **Branch A** — step was waiting for Supervisor input when paused. `llmSessionID`
-    ///   was persisted by `setNeedsSupervisorInput`. Route through `answerSupervisorQuestion`
-    ///   with a "Supervisor Feedback: …" prefix so the existing stateful supervisor-
-    ///   continuation path sends the answer via `previous_response_id`. `answerSupervisorQuestion`
-    ///   auto-resumes.
+    /// - **Branch A** — step was waiting for Supervisor input when paused. Route through
+    ///   `answerSupervisorQuestion` with a "Supervisor Feedback: …" prefix so the existing
+    ///   supervisor-continuation path replays the step's `wireTranscript` and appends the
+    ///   answer turn. `answerSupervisorQuestion` auto-resumes.
     /// - **Branch B** — step was mid-stream (`.running`) when paused. Cancellation did
-    ///   not persist the session (`StepLifecycle` only persists on completion paths), so
+    ///   not persist a terminal transcript arm, so
     ///   `runStep` will rebuild `fullConversation` from `step.messages` on resume. Append
     ///   the feedback there and set `revisionComment` as the artifact-completion gate.
     ///

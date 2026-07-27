@@ -1976,6 +1976,49 @@ final class ActivityFeedBuilderTests: XCTestCase {
         else { XCTFail("Expected Also visible at 1") }
     }
 
+    /// The thinking-loop correction is a `.user` turn, so it would hit the
+    /// no-source filter above and vanish — which is exactly what made a real
+    /// loop break leave no trace anywhere but a `cancelled` row in
+    /// `network_log.json` (off by default in Release). Its `.loopCorrection`
+    /// context is what keeps it visible; this pins that it survives.
+    func testLoopCorrectionUserMessage_isNotFiltered() {
+        let step = makeStep(messages: [
+            makeMessage(content: "Visible", at: date(100)),
+            makeMessage(role: .user, content: "Your previous turn was discarded…",
+                        at: date(200), sourceContext: .loopCorrection)
+        ])
+        let result = build(steps: [step])
+        let contents = result.compactMap { item -> String? in
+            if case .llmMessage(let msg, _, _, _) = item.item { return msg.content }
+            return nil
+        }
+        XCTAssertTrue(contents.contains("Your previous turn was discarded…"),
+                      "a .loopCorrection turn must reach the feed — without it the loop "
+                      + "break has no durable user-visible record at all")
+    }
+
+    /// Same class of defect as `.loopCorrection`, and the one the wedged Autovisor pass
+    /// actually presented as: every retry nudge is a `.user` turn with no attribution, so
+    /// all eight of them hit the no-source filter and vanished. The user watched a role
+    /// emit the same reply over and over with nothing on screen saying it was being asked
+    /// to try again, or why.
+    func testRetryNudgeUserMessage_isNotFiltered() {
+        let step = makeStep(messages: [
+            makeMessage(content: "Waiting for the M3 task to finish.", at: date(100)),
+            makeMessage(role: .user,
+                        content: "You replied with text but did not call a tool.",
+                        at: date(200), sourceContext: .retryNudge)
+        ])
+        let result = build(steps: [step])
+        let contents = result.compactMap { item -> String? in
+            if case .llmMessage(let msg, _, _, _) = item.item { return msg.content }
+            return nil
+        }
+        XCTAssertTrue(contents.contains("You replied with text but did not call a tool."),
+                      "a .retryNudge turn must reach the feed — otherwise N identical "
+                      + "assistant bubbles appear with no visible cause")
+    }
+
     func testArtifactContentDedupOrderPreserved() {
         let artifactContent = "# Product Requirements\n\nDetailed content here."
         let step = makeStep(

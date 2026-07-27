@@ -1,7 +1,7 @@
 import Foundation
 
 /// One-shot LLM gatekeeper for "ask" shell commands in Auto mode. Stateless,
-/// DIP over `any LLMClient` (fresh `session: nil` call). The hard rule is
+/// DIP over `any LLMClient` (fresh one-shot call). The hard rule is
 /// **deny on uncertainty**: an empty answer, a parse failure, a transport error,
 /// or an ambiguous verdict all resolve to DENY. Combined with the static deny
 /// rules (which run BEFORE the judge), this keeps a weak local model from
@@ -32,11 +32,12 @@ nonisolated enum BashJudgeService {
         var content = ""
         var thinking = ""
         do {
+            // prefix-cache-owner: registered by the caller — `LLMExecutionService+BashGate` notes
+            // `.oneShot("bash judge")`.
             let stream = client.streamChat(
                 config: configForJudge(config, policy: policy),
                 messages: messages,
                 tools: [],
-                session: nil,
                 logger: logger,
                 stepID: nil
             )

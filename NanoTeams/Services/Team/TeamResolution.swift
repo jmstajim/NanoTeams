@@ -88,4 +88,28 @@ nonisolated enum TeamResolution {
         }
         return .noTeam
     }
+
+    /// Settings of the task's effective team, resolved from an EXPLICIT snapshot.
+    ///
+    /// Usable before `apply(snapshot)` has published the projection to the orchestrator —
+    /// which is exactly what `openWorkFolder`'s stale-status recovery needs, since it runs
+    /// on the raw snapshot so the sidebar never flashes the un-recovered status.
+    ///
+    /// Returns `nil` for `.failed` / `.noTeam` rather than substituting a fallback team's
+    /// settings. `NTMSOrchestrator.resolvedTeam(for:)` is deliberately NOT reused here: it
+    /// coalesces to `activeTeam ?? Team.default` for display purposes, which would silently
+    /// apply a DIFFERENT team's acceptance mode to a task pinned to a deleted team.
+    /// Callers decide what `nil` means (see `AcceptanceService.Gate`).
+    static func teamSettings(for task: NTMSTask, in projection: WorkFolderProjection) -> TeamSettings? {
+        switch resolve(
+            task: task,
+            teamProvider: { projection.team(withID: $0) },
+            activeTeam: projection.activeTeam
+        ) {
+        case .resolved(let team):
+            return team.settings
+        case .failed, .noTeam:
+            return nil
+        }
+    }
 }

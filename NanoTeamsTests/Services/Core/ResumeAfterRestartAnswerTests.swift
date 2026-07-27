@@ -7,7 +7,7 @@ import XCTest
 /// Scenario: chat-mode advisory role calls `ask_supervisor`. App is force-quit
 /// while the step is `.needsSupervisorInput`. On next launch,
 /// `StatusRecoveryService` flips the step to `.paused` and the role to `.idle`,
-/// but preserves `step.needsSupervisorInput=true` and `step.llmSessionID`. The
+/// but preserves `step.needsSupervisorInput=true` and `step.wireTranscript`. The
 /// Supervisor sees the Answer chip in the activity feed and submits an answer.
 ///
 /// Bug before fix: status `.paused` (post-recovery) wasn't covered by either
@@ -17,9 +17,9 @@ import XCTest
 ///
 /// Fix verified here:
 /// - `StepMessagingService.answerSupervisorQuestion` flips `.paused → .pending` too.
-/// - `resumeRun` adds an explicit branch that runs paused/pending steps with a
-///   saved session + answer, so the stateful continuation in `startStepExecution`
-///   fires regardless of `step.messages`/`llmConversation` state.
+/// - `resumeRun` adds an explicit branch that runs any paused/pending step carrying
+///   an answer, so the continuation in `startStepExecution` fires regardless of
+///   `step.messages`/`llmConversation` state.
 @MainActor
 final class ResumeAfterRestartAnswerTests: NTMSOrchestratorTestBase {
 
@@ -72,12 +72,11 @@ final class ResumeAfterRestartAnswerTests: NTMSOrchestratorTestBase {
     private func seedPostRestartState(
         taskID: Int,
         stepID: String = "coding_assistant",
-        sessionID: String? = "resp_xyz",
         roleStatus: RoleExecutionStatus = .idle,
         conversation: [LLMMessage] = []
     ) async {
         await sut.mutateTask(taskID: taskID) { task in
-            var step = StepExecution(
+            let step = StepExecution(
                 id: stepID,
                 role: .softwareEngineer,
                 title: "Chat",
@@ -86,7 +85,6 @@ final class ResumeAfterRestartAnswerTests: NTMSOrchestratorTestBase {
                 supervisorQuestion: "Что дальше?",
                 llmConversation: conversation
             )
-            step.llmSessionID = sessionID
             var run = Run(id: 0, steps: [step], roleStatuses: [stepID: roleStatus])
             run.updatedAt = MonotonicClock.shared.now()
             task.runs = [run]
@@ -178,7 +176,7 @@ final class ResumeAfterRestartAnswerTests: NTMSOrchestratorTestBase {
     /// emit an `ask_supervisor` tool call before any assistant content has
     /// streamed, which leaves `llmConversation` empty for the very first
     /// question. Branch 1.5 must NOT depend on conversation contents — only on
-    /// `effectiveSupervisorAnswer != nil && llmSessionID != nil`.
+    /// `effectiveSupervisorAnswer != nil`.
     func testPostRestart_answer_emptyConversation_stillRestartsRole() async {
         await sut.openWorkFolder(tempDir)
         let id = await sut.createTask(title: "Чат", supervisorTask: "привет")!
@@ -197,38 +195,29 @@ final class ResumeAfterRestartAnswerTests: NTMSOrchestratorTestBase {
                        "Branch 1.5 must fire even when conversation history is empty")
     }
 
-    // MARK: - Guard: no session → branch 1.5 skips
+    // MARK: - An answered step restarts on every provider
 
-    /// If `llmSessionID` is nil for any reason (e.g. provider didn't return a
-    /// response ID before pause), branch 1.5 must skip — there's no stateful
-    /// continuation to make. The run still progresses through the existing
-    /// branch 3 / engine.resume() paths if applicable.
-    func testPostRestart_answer_noSession_branch15Skips() async {
+    /// Branch 1.5 used to additionally require a saved server-chain id, so a step
+    /// answered under a provider that never minted one (and, after the stateless
+    /// unification, EVERY step) silently failed to resume: the answer landed, the
+    /// status moved to `.pending`, and nothing ever ran it. The branch now keys on
+    /// the answer alone — `startStepExecution` replays `wireTranscript` /
+    /// `llmConversation` instead of a server-held chain.
+    func testPostRestart_answer_withoutAnySession_stillRestartsTheStep() async {
         await sut.openWorkFolder(tempDir)
         let id = await sut.createTask(title: "Чат", supervisorTask: "привет")!
-        await seedPostRestartState(
-            taskID: id,
-            sessionID: nil   // explicit: no saved session
-        )
+        await seedPostRestartState(taskID: id)
 
         _ = await sut.answerSupervisorQuestion(
             stepID: "coding_assistant", taskID: id,
             answer: "продолжай"
         )
 
-        // Step status had to transition from .paused — изменение 1 promotes
-        // .paused → .pending in StepMessagingService for symmetry with the
-        // normal flow. Branch 1.5 then fires because the .pending status +
-        // session is checked, but since session is nil, it skips. The fallback
-        // branch 3 (status .pending, role .idle, conversation empty) would
-        // also skip — and that's expected: with no session ID, we can't safely
-        // restart this step (would need a separate fix for that edge case,
-        // out of scope for this change).
         let step = sut.loadedTask(id)?.runs.last?.steps.first
-        XCTAssertEqual(step?.status, .pending,
-                       "Status must still transition to .pending via изменение 1")
         XCTAssertEqual(step?.supervisorAnswer, "продолжай",
-                       "Answer must still be recorded regardless of session presence")
+                       "Answer must be recorded")
+        XCTAssertEqual(sut.loadedTask(id)?.runs.last?.roleStatuses["coding_assistant"], .working,
+                       "Branch 1.5 must restart the answered step with no session involved")
     }
 
     // MARK: - Full user scenarios (restart roundtrip via real recreation)
@@ -247,7 +236,7 @@ final class ResumeAfterRestartAnswerTests: NTMSOrchestratorTestBase {
         await sut.openWorkFolder(tempDir)
         let id = await sut.createTask(title: "Чат", supervisorTask: "привет")!
         await sut.mutateTask(taskID: id) { task in
-            var step = StepExecution(
+            let step = StepExecution(
                 id: "coding_assistant",
                 role: .softwareEngineer,
                 title: "Coding Assistant",
@@ -260,18 +249,13 @@ final class ResumeAfterRestartAnswerTests: NTMSOrchestratorTestBase {
                     LLMMessage(role: .assistant, content: "Что дальше?")
                 ]
             )
-            step.llmSessionID = "resp_chat_xyz"
             var run = Run(id: 0, steps: [step], roleStatuses: ["coding_assistant": .working])
             run.updatedAt = MonotonicClock.shared.now()
             task.runs = [run]
         }
 
         // ── Simulate force-quit + relaunch: new orchestrator, reopen folder ──
-        sut = NTMSOrchestrator(
-            repository: NTMSRepository(),
-            configuration: StoreConfiguration(storage: InMemoryConfigurationStorage()),
-            embeddingLifecycle: EmbeddingModelLifecycleService(client: embeddingClient)
-        )
+        sut = TestOrchestrator.make(embeddingClient: embeddingClient)
         await sut.openWorkFolder(tempDir)
         await sut.switchTask(to: id)
 
@@ -281,8 +265,6 @@ final class ResumeAfterRestartAnswerTests: NTMSOrchestratorTestBase {
                        "StatusRecoveryService must flip .needsSupervisorInput → .paused")
         XCTAssertTrue(recovered?.needsSupervisorInput ?? false,
                       "needsSupervisorInput flag must survive restart so the Answer chip surfaces")
-        XCTAssertEqual(recovered?.llmSessionID, "resp_chat_xyz",
-                       "Saved LLM session ID must survive restart for stateful continuation")
         XCTAssertEqual(sut.activeTask?.runs.last?.roleStatuses["coding_assistant"], .idle,
                        "Working role must be reset to idle by recovery")
         XCTAssertEqual(sut.engineState[id], .paused,
@@ -318,7 +300,7 @@ final class ResumeAfterRestartAnswerTests: NTMSOrchestratorTestBase {
         await sut.openWorkFolder(tempDir)
         let id = await sut.createTask(title: "Чат", supervisorTask: "привет")!
         await sut.mutateTask(taskID: id) { task in
-            var step = StepExecution(
+            let step = StepExecution(
                 id: "coding_assistant",
                 role: .softwareEngineer,
                 title: "Coding Assistant",
@@ -326,17 +308,12 @@ final class ResumeAfterRestartAnswerTests: NTMSOrchestratorTestBase {
                 needsSupervisorInput: true,
                 supervisorQuestion: "Q?"
             )
-            step.llmSessionID = "resp_user_path"
             let run = Run(id: 0, steps: [step], roleStatuses: ["coding_assistant": .working])
             task.runs = [run]
         }
 
         // Restart simulation
-        sut = NTMSOrchestrator(
-            repository: NTMSRepository(),
-            configuration: StoreConfiguration(storage: InMemoryConfigurationStorage()),
-            embeddingLifecycle: EmbeddingModelLifecycleService(client: embeddingClient)
-        )
+        sut = TestOrchestrator.make(embeddingClient: embeddingClient)
         await sut.openWorkFolder(tempDir)
         await sut.switchTask(to: id)
 
@@ -361,7 +338,7 @@ final class ResumeAfterRestartAnswerTests: NTMSOrchestratorTestBase {
         await sut.openWorkFolder(tempDir)
         let id = await sut.createTask(title: "Чат", supervisorTask: "x")!
         await sut.mutateTask(taskID: id) { task in
-            var step = StepExecution(
+            let step = StepExecution(
                 id: "coding_assistant",
                 role: .softwareEngineer,
                 title: "Coding Assistant",
@@ -369,32 +346,22 @@ final class ResumeAfterRestartAnswerTests: NTMSOrchestratorTestBase {
                 needsSupervisorInput: true,
                 supervisorQuestion: "Q?"
             )
-            step.llmSessionID = "resp_first"
             let run = Run(id: 0, steps: [step], roleStatuses: ["coding_assistant": .working])
             task.runs = [run]
         }
 
         // Restart #1
-        sut = NTMSOrchestrator(
-            repository: NTMSRepository(),
-            configuration: StoreConfiguration(storage: InMemoryConfigurationStorage()),
-            embeddingLifecycle: EmbeddingModelLifecycleService(client: embeddingClient)
-        )
+        sut = TestOrchestrator.make(embeddingClient: embeddingClient)
         await sut.openWorkFolder(tempDir)
         await sut.switchTask(to: id)
 
         let afterFirstRestart = sut.activeTask?.runs.last?.steps.first
         XCTAssertEqual(afterFirstRestart?.status, .paused)
-        XCTAssertEqual(afterFirstRestart?.llmSessionID, "resp_first")
 
         // Restart #2 — recovery should be a no-op since status is already .paused
-        // and role is already .idle. Status `.needsSupervisorInput` flag, session
-        // ID, and supervisor question must all still be intact.
-        sut = NTMSOrchestrator(
-            repository: NTMSRepository(),
-            configuration: StoreConfiguration(storage: InMemoryConfigurationStorage()),
-            embeddingLifecycle: EmbeddingModelLifecycleService(client: embeddingClient)
-        )
+        // and role is already .idle. The `.needsSupervisorInput` flag and the
+        // supervisor question must both still be intact.
+        sut = TestOrchestrator.make(embeddingClient: embeddingClient)
         await sut.openWorkFolder(tempDir)
         await sut.switchTask(to: id)
 
@@ -402,8 +369,6 @@ final class ResumeAfterRestartAnswerTests: NTMSOrchestratorTestBase {
         XCTAssertEqual(afterSecondRestart?.status, .paused)
         XCTAssertTrue(afterSecondRestart?.needsSupervisorInput ?? false,
                       "Flag must persist through multiple restarts")
-        XCTAssertEqual(afterSecondRestart?.llmSessionID, "resp_first",
-                       "Session ID must persist through multiple restarts")
         XCTAssertEqual(afterSecondRestart?.supervisorQuestion, "Q?")
 
         // Answer still works.
@@ -424,7 +389,7 @@ final class ResumeAfterRestartAnswerTests: NTMSOrchestratorTestBase {
         let bgID = await sut.createTask(title: "Background", supervisorTask: "do work")!
 
         await sut.mutateTask(taskID: chatID) { task in
-            var step = StepExecution(
+            let step = StepExecution(
                 id: "coding_assistant",
                 role: .softwareEngineer,
                 title: "Coding Assistant",
@@ -432,7 +397,6 @@ final class ResumeAfterRestartAnswerTests: NTMSOrchestratorTestBase {
                 needsSupervisorInput: true,
                 supervisorQuestion: "Q?"
             )
-            step.llmSessionID = "resp_chat"
             let run = Run(id: 0, steps: [step], roleStatuses: ["coding_assistant": .working])
             task.runs = [run]
         }
@@ -450,11 +414,7 @@ final class ResumeAfterRestartAnswerTests: NTMSOrchestratorTestBase {
 
         // Make chat the active task, then restart.
         await sut.switchTask(to: chatID)
-        sut = NTMSOrchestrator(
-            repository: NTMSRepository(),
-            configuration: StoreConfiguration(storage: InMemoryConfigurationStorage()),
-            embeddingLifecycle: EmbeddingModelLifecycleService(client: embeddingClient)
-        )
+        sut = TestOrchestrator.make(embeddingClient: embeddingClient)
         await sut.openWorkFolder(tempDir)
 
         XCTAssertEqual(sut.activeTaskID, chatID,
@@ -486,13 +446,12 @@ final class ResumeAfterRestartAnswerTests: NTMSOrchestratorTestBase {
         let id = await sut.createTask(title: "Test", supervisorTask: "x")!
 
         await sut.mutateTask(taskID: id) { task in
-            var step = StepExecution(
+            let step = StepExecution(
                 id: "swe", role: .softwareEngineer, title: "SWE",
                 status: .needsSupervisorInput,   // <-- normal flow, no recovery
                 needsSupervisorInput: true,
                 supervisorQuestion: "Q?"
             )
-            step.llmSessionID = "resp_normal"
             let run = Run(id: 0, steps: [step], roleStatuses: ["swe": .working])
             task.runs = [run]
         }

@@ -96,7 +96,10 @@ final class WatchtowerSetupSectionLogicTests: XCTestCase {
 
     // MARK: - Autovisor predicate
 
-    func testVisible_autovisorNeedsSetup_appendsCardLast() {
+    /// The tip's own predicate is enabled-only — deliberately NOT the setup-routing
+    /// rules (`AutovisorPolicy.showsSetupPane` / `requiresSetupBeforeEnabling`): the
+    /// card offers to set the manager up, so it shows whenever it's off.
+    func testVisible_autovisorDisabled_appendsCardLast() {
         // Everything else configured; FM off with a real work folder → only FM shows.
         // (Bash held hidden via dismissal so it doesn't pollute the assertion.)
         let visible = WatchtowerSetupSection.visibleTips(

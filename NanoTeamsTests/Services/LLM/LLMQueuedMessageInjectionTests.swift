@@ -40,8 +40,6 @@ final class LLMQueuedMessageInjectionTests: XCTestCase {
             stepID: "pm",
             taskID: 1,
             roleID: "pm",
-            iterationNumber: 2,
-            session: LLMSession(responseID: "resp-1"),
             conversationMessages: &conversation
         )
 
@@ -52,7 +50,7 @@ final class LLMQueuedMessageInjectionTests: XCTestCase {
         XCTAssertTrue(delegate.scriptedQueuedMessages.isEmpty, "Queue drained on delivery")
     }
 
-    func testInject_iterationOne_noSession_allowsInjection() async {
+    func testInject_freshStep_allowsInjection() async {
         delegate.scriptedQueuedMessages = [
             (taskID: 1, roleID: "pm", content: "Supervisor: hi")
         ]
@@ -64,14 +62,12 @@ final class LLMQueuedMessageInjectionTests: XCTestCase {
         await service.injectQueuedSupervisorMessage(
             stepID: "pm",
             taskID: 1,
-            roleID: "pm",
-            iterationNumber: 1,
-            session: nil, // fresh step (e.g. after restartRole)
+            roleID: "pm", // fresh step (e.g. after restartRole)
             conversationMessages: &conversation
         )
 
         XCTAssertEqual(conversation.last?.content, "Supervisor: hi",
-                       "Iteration 1 with no session is allowed — covers the restartRole case")
+                       "A fresh step's first iteration accepts a queued message — the restartRole case")
     }
 
     func testInject_untargetedQueue_consumedWhenNoRoleMatch() async {
@@ -86,8 +82,6 @@ final class LLMQueuedMessageInjectionTests: XCTestCase {
             stepID: "pm",
             taskID: 1,
             roleID: "pm",
-            iterationNumber: 2,
-            session: nil,
             conversationMessages: &conversation
         )
 
@@ -107,8 +101,6 @@ final class LLMQueuedMessageInjectionTests: XCTestCase {
             stepID: "pm",
             taskID: 1,
             roleID: "pm",
-            iterationNumber: 2,
-            session: nil,
             conversationMessages: &conversation
         )
 
@@ -120,33 +112,6 @@ final class LLMQueuedMessageInjectionTests: XCTestCase {
     }
 
     // MARK: - Guards
-
-    func testInject_iterationOne_withSession_skips() async {
-        // Covers finding #4: continuation paths (`hasSupervisorContinuation` /
-        // `hasRevisionContinuation`) seed iteration-1's conversation with a minimal
-        // buffer and a set session. Injecting there would break stateful-chain slicing.
-        delegate.scriptedQueuedMessages = [
-            (taskID: 1, roleID: "pm", content: "Supervisor: would-corrupt-chain")
-        ]
-        var conversation: [ChatMessage] = [
-            ChatMessage(role: .tool, content: "{\"ok\":true}") // supervisor continuation shape
-        ]
-
-        await service.injectQueuedSupervisorMessage(
-            stepID: "pm",
-            taskID: 1,
-            roleID: "pm",
-            iterationNumber: 1,
-            session: LLMSession(responseID: "resp-1"),
-            conversationMessages: &conversation
-        )
-
-        XCTAssertEqual(conversation.count, 1, "Guard blocks injection")
-        XCTAssertTrue(delegate.consumedQueuedMessages.isEmpty,
-                      "Guard must short-circuit BEFORE calling the delegate — message stays queued for iteration 2")
-        XCTAssertFalse(delegate.scriptedQueuedMessages.isEmpty,
-                       "Queue is untouched when the guard fires")
-    }
 
     func testInject_otherRoleTarget_doesNotConsume() async {
         delegate.scriptedQueuedMessages = [
@@ -160,8 +125,6 @@ final class LLMQueuedMessageInjectionTests: XCTestCase {
             stepID: "pm",
             taskID: 1,
             roleID: "pm",
-            iterationNumber: 2,
-            session: nil,
             conversationMessages: &conversation
         )
 
@@ -179,8 +142,6 @@ final class LLMQueuedMessageInjectionTests: XCTestCase {
             stepID: "pm",
             taskID: 1,
             roleID: "pm",
-            iterationNumber: 2,
-            session: nil,
             conversationMessages: &conversation
         )
 
@@ -208,8 +169,6 @@ final class LLMQueuedMessageInjectionTests: XCTestCase {
             stepID: "pm",
             taskID: 1,
             roleID: "pm",
-            iterationNumber: 3,
-            session: LLMSession(responseID: "r"),
             conversationMessages: &conversation
         )
 

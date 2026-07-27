@@ -27,14 +27,26 @@ extension TeamBoardView {
     /// as a bracketed `[ ▷ Run now ]` button — the only action that keeps its
     /// label. Uses `.terminalSecondary` to override the cluster's env-level
     /// `.navbarIcon` style, which would otherwise clamp the label to a 28×28pt
-    /// cell and truncate the text. Starts a fresh manager review pass via
-    /// `startAutovisorPass`, which supersedes a parked (`wait_for_events`)
-    /// engine that plain `startRun` no-ops on.
+    /// cell and truncate the text.
+    ///
+    /// `force: true` — an explicit human restart supersedes ANY engine state,
+    /// including a live `.running` pass. Deliberately always enabled and never
+    /// confirmed: the reported symptom was a silent no-op while the manager was
+    /// mid-pass, and a disabled state or a confirm sheet just re-earns it.
+    ///
+    /// No `autovisorEnabled` check here, but NOT because the board implies enabled —
+    /// it does not. `MainLayoutView.autovisorDetail` gates on
+    /// `!autovisorShowsSetupPane`, yet `detailView`'s `.task` branch renders this
+    /// same board with no Autovisor gate, and `setAutovisorEnabled(false)` keeps
+    /// `autovisorTaskID` — so ⌘3 / the command palette reach it with the feature
+    /// OFF once the manager is the active task. The gate lives in
+    /// `startAutovisorPass` instead (one seam, every entry point, mirroring
+    /// `fireRecurrence`'s zombie guard), which refuses and says why.
     @ViewBuilder
     var autovisorRunNowButton: some View {
         if isAutovisorBoard, !isHistoricalRun, let task {
             Button {
-                Task { await store.startAutovisorPass(taskID: task.id) }
+                Task { await store.startAutovisorPass(taskID: task.id, force: true) }
             } label: {
                 Label("Run now", systemImage: "play")
             }
@@ -42,7 +54,7 @@ extension TeamBoardView {
             .buttonStyle(.terminalSecondary)
             .controlSize(.small)
             .fixedSize()
-            .help("Start a fresh Autovisor review pass now")
+            .help("Restart the Autovisor review pass now — abandons a pass in progress")
         }
     }
 

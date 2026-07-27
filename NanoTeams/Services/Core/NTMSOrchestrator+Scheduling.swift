@@ -308,8 +308,7 @@ extension NTMSOrchestrator {
             guard let self else { return }
             // Silent (scheduler housekeeping) — see
             // `sweepResidencyAfterEngineTransition`.
-            await self.reconcileChatModelResidency(
-                client: self.chatLifecycleClient, ensurer: self.chatModelEnsurer)
+            await self.reconcileChatModelResidency()
         }
     }
 }

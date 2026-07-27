@@ -22,7 +22,7 @@ nonisolated struct ComputerUseJudgeContext: Hashable, Sendable {
 }
 
 /// One-shot LLM gatekeeper for computer-use actions in Auto mode. Stateless, DIP over
-/// `any LLMClient` (fresh `session: nil`). Hard rule: **deny on uncertainty** — an empty
+/// `any LLMClient` (fresh one-shot call). Hard rule: **deny on uncertainty** — an empty
 /// answer, a parse failure, a transport error, or an ambiguous verdict all resolve to DENY.
 nonisolated enum ComputerUseJudgeService {
 
@@ -47,9 +47,11 @@ nonisolated enum ComputerUseJudgeService {
         var content = ""
         var thinking = ""
         do {
+            // prefix-cache-owner: registered by the caller —
+            // `LLMExecutionService+ComputerUseGate` notes `.oneShot("computer-use judge")`.
             let stream = client.streamChat(
                 config: configForJudge(config, policy: policy),
-                messages: messages, tools: [], session: nil, logger: logger, stepID: nil)
+                messages: messages, tools: [], logger: logger, stepID: nil)
             for try await event in stream {
                 content += event.contentDelta
                 thinking += event.thinkingDelta

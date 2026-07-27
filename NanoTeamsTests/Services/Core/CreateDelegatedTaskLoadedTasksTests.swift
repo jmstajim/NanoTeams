@@ -25,10 +25,7 @@ import XCTest
 final class CreateDelegatedTaskLoadedTasksTests: XCTestCase {
 
     private func makeOrchestrator() -> NTMSOrchestrator {
-        NTMSOrchestrator(
-            repository: NTMSRepository(),
-            searchEmbeddingClient: StubSearchEmbeddingClient()
-        )
+        TestOrchestrator.make()
     }
 
     private func makeWorkFolderRoot() -> URL {

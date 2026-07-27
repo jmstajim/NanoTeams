@@ -45,16 +45,17 @@ extension LLMExecutionService {
         // pre-fix pair "Update the plan after each completed action" +
         // "Do NOT call update_scratchpad again" landed back-to-back with
         // opposite surface readings.
+        // Derived from the WIRE, not from a latch. The old
+        // `planningTransitionDone` flag lived in `StepExecutionState`, which is
+        // rebuilt on every entry — so a step resuming after a Supervisor answer
+        // announced a "transition to your full toolset" that had happened long
+        // ago, and a role with no phase at all announced one that never happened.
         let stepKey = TaskStepKey(taskID: taskID, stepID: stepID)
-        let ackMessage: String
-        if executionStates[stepKey]?.planningTransitionDone != true {
-            executionStates[stepKey]?.planningTransitionDone = true
-            ackMessage = "Plan recorded — proceeding to IMPLEMENTATION PHASE with your full toolset. "
-                + "Execute step 1 of your plan now. Call update_scratchpad again only to mark a "
-                + "completed step with ~~strikethrough~~."
-        } else {
-            ackMessage = "Plan updated. Continue with the next step."
-        }
+        // `isMidPlanning`, not `wireCarriesBrief`: after `.closeWithoutRebuild` the brief is
+        // still on the wire but no boundary will ever fire, so the planning wording would
+        // promise a fresh conversation that never arrives.
+        let ackMessage = PlanningPhasePolicy.scratchpadAck(
+            isPlanningWire: PlanningPhasePolicy.isMidPlanning(conversationMessages))
         executionStates[stepKey]?.planMessageIndex = conversationMessages.count
         conversationMessages.append(
             ChatMessage(role: .user, content: ackMessage)
@@ -223,6 +224,19 @@ extension LLMExecutionService {
             let intro = (dict?["message"] as? String).flatMap { $0.isEmpty ? nil : $0 }
                 ?? "Tool '\(toolName)' is not available."
             return "\(intro) Choose a different tool from the list in your system prompt; do not retry '\(toolName)'."
+
+        case "plan_required":
+            // The ONLY rejection that is temporal rather than structural: the
+            // tool is real, the role has it, and the very same call works once
+            // the plan is recorded. Steering toward "pick a different tool"
+            // here (what `precondition_failed` and `tool_not_authorized` both
+            // say) would send the model looking for a substitute that does not
+            // exist, and it would never record the plan that unblocks it.
+            let toolName = (dict?["tool"] as? String) ?? result.toolName
+            let intro = (dict?["message"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                ?? "Tool '\(toolName)' becomes available once your plan is recorded."
+            return "\(intro) Record your findings and numbered plan with update_scratchpad; "
+                + "'\(toolName)' works on the next turn."
 
         case "precondition_failed":
             // Like `tool_not_authorized`, args aren't the cause — the work

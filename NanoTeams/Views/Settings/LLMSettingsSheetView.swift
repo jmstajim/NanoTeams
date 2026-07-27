@@ -20,15 +20,15 @@ struct LLMSettingsView: View {
     @State private var apiToken: String = ""
 
     private var availableModels: [String] {
-        modelCatalog.models(for: config.llmBaseURLString)
+        modelCatalog.models(for: config.llmBaseURLString, provider: config.llmProvider)
     }
 
     private var isFetchingModels: Bool {
-        modelCatalog.isFetching(config.llmBaseURLString)
+        modelCatalog.isFetching(config.llmBaseURLString, provider: config.llmProvider)
     }
 
     private var modelFetchError: String? {
-        modelCatalog.error(for: config.llmBaseURLString)
+        modelCatalog.error(for: config.llmBaseURLString, provider: config.llmProvider)
     }
 
     var body: some View {
@@ -39,7 +39,7 @@ struct LLMSettingsView: View {
                 HStack(spacing: Spacing.s) {
                     Image(systemName: "info.circle")
                         .foregroundStyle(Colors.info)
-                    Text("Requires LM Studio 0.4.0 or later.")
+                    Text(providerRequirementNote)
                         .font(Typography.caption)
                         .foregroundStyle(Colors.textSecondary)
                 }
@@ -55,7 +55,7 @@ struct LLMSettingsView: View {
                     isFetchingModels: isFetchingModels,
                     modelFetchError: modelFetchError,
                     onTestConnection: { Task { await testConnection() } },
-                    onRefreshModels: { Task { await modelCatalog.refresh(url: config.llmBaseURLString) } },
+                    onRefreshModels: { Task { await modelCatalog.refresh(url: config.llmBaseURLString, provider: config.llmProvider) } },
                     onTokenSaveError: { error in
                         store.lastErrorMessage = "Could not save API token: \(error.localizedDescription)"
                     },
@@ -74,6 +74,10 @@ struct LLMSettingsView: View {
                     }
                 )
 
+                LLMModelDetailsCard(config: config)
+
+                DownloadedModelsCard()
+
                 LLMErrorHandlingCard(config: config)
             }
             .padding(Spacing.xl)
@@ -88,7 +92,14 @@ struct LLMSettingsView: View {
             // URL field's onCommit (focus loss / Enter) runs Test Connection
             // which refreshes on success; the Refresh button forces a
             // re-fetch independently.
-            await modelCatalog.loadIfNeeded(url: config.llmBaseURLString)
+            await modelCatalog.loadIfNeeded(url: config.llmBaseURLString, provider: config.llmProvider)
+        }
+    }
+
+    private var providerRequirementNote: String {
+        switch config.llmProvider {
+        case .lmStudio: "Requires LM Studio 0.4.0 or later."
+        case .ollama: "Requires Ollama 0.9 or later."
         }
     }
 
@@ -100,11 +111,12 @@ struct LLMSettingsView: View {
 
         let result = await LLMConnectionChecker.checkWithMessage(
             baseURL: config.llmBaseURLString,
+            provider: config.llmProvider,
             bearerToken: apiToken)
         connectionStatus = result.isReachable ? .success : .failure
         statusMessage = result.message
         if result.isReachable {
-            await modelCatalog.refresh(url: config.llmBaseURLString)
+            await modelCatalog.refresh(url: config.llmBaseURLString, provider: config.llmProvider)
         }
     }
 }

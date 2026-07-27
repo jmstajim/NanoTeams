@@ -53,20 +53,6 @@ extension RoleExecutionStatus {
         return glyph
     }
 }
-
-extension StepStatus {
-    private static let glyphMap: [StepStatus: String] = [
-        .pending: TerminalGlyph.idle,
-        .running: TerminalGlyph.working,
-        .paused: TerminalGlyph.paused,
-        .needsSupervisorInput: TerminalGlyph.prompt,
-        .needsApproval: TerminalGlyph.review,
-        .failed: TerminalGlyph.failed,
-        .done: TerminalGlyph.done,
-    ]
-    var glyph: String { Self.glyphMap[self] ?? TerminalGlyph.bullet }
-}
-
 extension TaskStatus {
     private static let glyphMap: [TaskStatus: String] = [
         .running: TerminalGlyph.working,

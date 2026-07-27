@@ -1251,4 +1251,125 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertFalse(messages.contains { $0.content?.isEmpty == true },
                        "no empty closing turn may be appended")
     }
+
+    // MARK: - Deterministic message order (prompt-prefix stability)
+
+    /// `sorted(by:)` is not guaranteed stable, so a comparator on `createdAt` alone is not a
+    /// total order: two messages sharing a timestamp may come out in either order, and a later
+    /// rebuild (`restartRole`, `correctRole` branch B) may permute them differently. On a
+    /// stateless transport that is the same inputs producing different prompt bytes — a
+    /// `conversationRewritten` whose cause the reader can never locate.
+    ///
+    /// The fixture is deliberately large: Swift's sort falls back to insertion sort for tiny
+    /// arrays, which happens to be stable, so a handful of elements would make this vacuous.
+
+    private func tiedMessages(_ count: Int, at stamp: Date) -> [StepMessage] {
+        (0..<count).map {
+            StepMessage(createdAt: stamp, role: .supervisor, content: "message-\($0)")
+        }
+    }
+
+    private func renderedBodies(_ step: StepExecution) -> [String] {
+        PromptBuilder.buildChatMessages(context: makeContext(step: step), tools: [])
+            .compactMap(\.content)
+            .filter { $0.hasPrefix("message-") }
+    }
+
+    /// The load-bearing assertion, and the only one here that can actually fail today: the
+    /// ordering must be TOTAL. A comparator on `createdAt` alone leaves tied pairs mutually
+    /// incomparable and delegates their order to the sort's (undocumented, currently stable)
+    /// implementation. Asserting totality tests the guarantee directly instead of testing what
+    /// this toolchain happens to do — the tests below would pass either way.
+    func testChronologicalOrdering_isATotalOrder() {
+        let stamp = Date(timeIntervalSince1970: 1_000)
+        let entries = Array(tiedMessages(6, at: stamp).enumerated())
+
+        for lhs in entries {
+            for rhs in entries where lhs.offset != rhs.offset {
+                let forward = PromptBuilder.precedes(lhs, rhs)
+                let backward = PromptBuilder.precedes(rhs, lhs)
+                XCTAssertNotEqual(
+                    forward, backward,
+                    "every distinct pair must be strictly ordered — tied timestamps included")
+            }
+            XCTAssertFalse(
+                PromptBuilder.precedes(lhs, lhs), "the order must be irreflexive")
+        }
+    }
+
+    func testChronologicalOrdering_isIndependentOfTheSortsStability() {
+        let stamp = Date(timeIntervalSince1970: 1_000)
+        let messages = tiedMessages(40, at: stamp)
+
+        // Feeding the comparator a REVERSED array must reverse the output: order is decided by
+        // the index we were handed, not by any incidental property of the sort.
+        XCTAssertEqual(
+            PromptBuilder.chronologicallyOrdered(messages).map(\.content),
+            messages.map(\.content))
+        XCTAssertEqual(
+            PromptBuilder.chronologicallyOrdered(messages.reversed()).map(\.content),
+            messages.reversed().map(\.content))
+    }
+
+    func testBuildChatMessages_duplicateTimestamps_preserveArrayOrder() {
+        var step = StepExecution(id: "test_step", role: .productManager, title: "S")
+        step.messages = tiedMessages(40, at: Date(timeIntervalSince1970: 1_000))
+
+        XCTAssertEqual(
+            renderedBodies(step), (0..<40).map { "message-\($0)" },
+            "with the timestamps tied, the persisted array order IS the chronology")
+    }
+
+    func testBuildChatMessages_duplicateTimestamps_orderIsStableAcrossRebuilds() {
+        let stamp = Date(timeIntervalSince1970: 1_000)
+        var step = StepExecution(id: "test_step", role: .productManager, title: "S")
+        step.messages = tiedMessages(40, at: stamp)
+
+        let first = renderedBodies(step)
+
+        // A rebuild after one more turn must not permute anything that came before it.
+        var grown = step
+        grown.messages.append(
+            StepMessage(createdAt: stamp.addingTimeInterval(1), role: .supervisor, content: "message-later"))
+        let second = renderedBodies(grown)
+
+        XCTAssertEqual(Array(second.dropLast()), first)
+        XCTAssertEqual(second.last, "message-later")
+    }
+
+    /// Interleaved ties: the sort must still order by timestamp FIRST, and only fall back to the
+    /// index inside a tied group.
+    func testBuildChatMessages_mixedTiesAndDistinctStamps_ordersByTimeThenIndex() {
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        var step = StepExecution(id: "test_step", role: .productManager, title: "S")
+        step.messages = [
+            StepMessage(createdAt: t0.addingTimeInterval(2), role: .supervisor, content: "message-c"),
+            StepMessage(createdAt: t0, role: .supervisor, content: "message-a1"),
+            StepMessage(createdAt: t0, role: .supervisor, content: "message-a2"),
+            StepMessage(createdAt: t0.addingTimeInterval(1), role: .supervisor, content: "message-b"),
+        ]
+
+        XCTAssertEqual(
+            renderedBodies(step), ["message-a1", "message-a2", "message-b", "message-c"])
+    }
+
+    func testBuildChatMessages_isByteIdenticalOnTwoCallsWithIdenticalInput() {
+        var step = StepExecution(id: "test_step", role: .productManager, title: "S")
+        step.messages = tiedMessages(40, at: Date(timeIntervalSince1970: 1_000))
+        let context = makeContext(step: step)
+
+        XCTAssertEqual(
+            PromptBuilder.buildChatMessages(context: context, tools: []),
+            PromptBuilder.buildChatMessages(context: context, tools: []),
+            "the builder must be a pure function of its inputs, byte for byte")
+    }
+
+    func testBuildChatMessages_zeroAndOneMessage_stillRenderTheClosingTurn() {
+        let empty = StepExecution(id: "test_step", role: .productManager, title: "S")
+        XCTAssertTrue(renderedBodies(empty).isEmpty)
+
+        var single = StepExecution(id: "test_step", role: .productManager, title: "S")
+        single.messages = tiedMessages(1, at: Date(timeIntervalSince1970: 1_000))
+        XCTAssertEqual(renderedBodies(single), ["message-0"])
+    }
 }

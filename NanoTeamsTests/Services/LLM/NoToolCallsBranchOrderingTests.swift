@@ -45,6 +45,14 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
 
     // MARK: - Branch Ordering
 
+    /// A real broken `<|call|>` block, carried in `harmonyBuffer` the way production does.
+    /// The fixture used to be empty, which meant these tests exercised "Harmony framing
+    /// with no call block" while claiming to exercise "a call block whose JSON is broken" —
+    /// they only passed because both folded into `.malformedJSON`. They are now distinct
+    /// cases, and this constant is what makes the assertions mean what they say.
+    private static let brokenCallEnvelope =
+        ##"<|call|>{"name":"write_file","arguments":{"path":"x""##
+
     func testHarmonyMarkerWithWhitespaceOnlyContent_sendsMalformedJSONRetry() async {
         // Repro of run EAE23A6D: pre-marker content is just "\n\n" from `[reasoning]` tail,
         // `sawHarmonyMarker == true` because parser saw `<|call|>` but failed to extract args.
@@ -55,7 +63,8 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
             sawHarmonyMarker: true,
             task: task,
             roleDefinition: nil,
-            conversationMessages: &messages
+            conversationMessages: &messages,
+            harmonyBuffer: Self.brokenCallEnvelope
         )
 
         guard case .continueLoop = stop else {
@@ -82,7 +91,8 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
             sawHarmonyMarker: true,
             task: task,
             roleDefinition: nil,
-            conversationMessages: &messages
+            conversationMessages: &messages,
+            harmonyBuffer: Self.brokenCallEnvelope
         )
         guard case .continueLoop = stop else {
             XCTFail("Expected .continueLoop")
@@ -90,6 +100,41 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
         }
         XCTAssertEqual(messages.count, 1)
         XCTAssertTrue(messages[0].content?.contains("malformed JSON") == true)
+    }
+
+    /// Harmony framing with NO call block — the shape the wedged Autovisor pass actually
+    /// produced. It must not be described as malformed JSON: there is no JSON to malform,
+    /// the advice about braces and quotes is unactionable, and charging the parse-failure
+    /// cap escalates to the human with a misdiagnosis attached.
+    func testChannelFramingWithNoCallBlock_doesNotClaimMalformedJSON() async {
+        var messages: [ChatMessage] = []
+        let stop = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "",
+            sawHarmonyMarker: true,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            harmonyBuffer: "<|channel|>commentary<|message|>Let me think about this.",
+            allowedToolNames: [ToolNames.readFile]
+        )
+        guard case .continueLoop = stop else {
+            XCTFail("Expected .continueLoop, got \(stop)")
+            return
+        }
+        let retry = messages.last?.content ?? ""
+        XCTAssertFalse(retry.contains("malformed JSON"),
+                       "no `<|call|>` block was opened, so nothing failed to parse: \(retry)")
+        XCTAssertFalse(retry.contains("closing brace"),
+                       "advice about braces is unactionable for an envelope with none")
+        XCTAssertTrue(retry.contains("never made a tool call"),
+                      "the nudge must name the defect that actually occurred: \(retry)")
+        XCTAssertTrue(retry.contains("to=read_file"),
+                      "and it must name the CHANNEL form the model is actually emitting, "
+                      + "with a tool the role really holds: \(retry)")
+        XCTAssertEqual(
+            service._testHarmonyParseFailureCounter(stepID: stepID, taskID: task.id), 0,
+            "a missing call block is not a parse failure and must not charge that cap")
     }
 
     func testMalformedJSONRetry_attachesConcreteParserDiagnostic() async {
@@ -161,6 +206,109 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
         )
     }
 
+    // MARK: - Tool-Aware Nudges
+    //
+    // Every nudge that names a tool must filter through the role's CURRENT schema.
+    // The defect these pin: the generic nudge unconditionally said "send it via
+    // ask_supervisor", but `resolveToolSchemas` strips that tool from the Autovisor
+    // manager entirely — so the one role most likely to reply with plain text was told
+    // to call a tool that can only ever answer `tool_not_authorized`.
+
+    func testGenericNudge_withWaitForEvents_namesItAndDropsTheUnreachableClaim() async {
+        var messages: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "I think we're done here.",
+            sawHarmonyMarker: false,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            allowedToolNames: [ToolNames.waitForEvents, ToolNames.listTasks]
+        )
+        let retry = messages[0].content ?? ""
+        XCTAssertTrue(retry.contains(ToolNames.waitForEvents),
+                      "Must name the role's actual completion channel, got: \(retry)")
+        XCTAssertFalse(retry.contains(ToolNames.askSupervisor),
+                       "Must NOT name a tool the manager does not have, got: \(retry)")
+        // The manager's plain text DOES reach its Supervisor — the human reads that
+        // very chat, and its system prompt calls it "your only reply channel".
+        XCTAssertFalse(retry.contains("does not reach the Supervisor"),
+                       "Must not tell the manager its reply went nowhere, got: \(retry)")
+    }
+
+    func testGenericNudge_withAskSupervisorOnly_keepsTheOriginalText() async {
+        var messages: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "I think we're done here.",
+            sawHarmonyMarker: false,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            allowedToolNames: [ToolNames.askSupervisor, ToolNames.readFile]
+        )
+        let retry = messages[0].content ?? ""
+        XCTAssertTrue(retry.contains(ToolNames.askSupervisor))
+        XCTAssertTrue(retry.contains("does not reach the Supervisor"))
+    }
+
+    func testGenericNudge_withNeitherTool_namesNoToolAtAll() async {
+        var messages: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "I think we're done here.",
+            sawHarmonyMarker: false,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            allowedToolNames: [ToolNames.readFile, ToolNames.search]
+        )
+        let retry = messages[0].content ?? ""
+        XCTAssertTrue(retry.contains("did not call any tools"), "still nudges, got: \(retry)")
+        XCTAssertFalse(retry.contains(ToolNames.askSupervisor))
+        XCTAssertFalse(retry.contains(ToolNames.waitForEvents))
+    }
+
+    /// `.repetitiveNonTool` discriminates on the SCHEMA, not `producesArtifacts`: this
+    /// branch runs ABOVE the planning-phase handler, and the phase withholds
+    /// `create_artifact` — so the config signal would steer a producing role straight
+    /// into the phase's `plan_required` rejection.
+    func testRepetitiveNonToolNudge_producingRoleWithArtifactToolWithheld_doesNotNameIt() {
+        let withheld = LLMExecutionService.repetitiveNonToolNudge(
+            count: 3, allowedToolNames: [ToolNames.readFile, ToolNames.updateScratchpad])
+        XCTAssertFalse(withheld.contains(ToolNames.createArtifact),
+                       "Planning phase withholds create_artifact, got: \(withheld)")
+
+        let granted = LLMExecutionService.repetitiveNonToolNudge(
+            count: 3, allowedToolNames: [ToolNames.createArtifact, ToolNames.askSupervisor])
+        XCTAssertTrue(granted.contains(ToolNames.createArtifact))
+        XCTAssertTrue(granted.contains(ToolNames.askSupervisor))
+    }
+
+    func testRepetitiveNonToolNudge_manager_steersToWaitForEvents() {
+        let text = LLMExecutionService.repetitiveNonToolNudge(
+            count: 4, allowedToolNames: [ToolNames.waitForEvents, ToolNames.listTasks])
+        XCTAssertTrue(text.contains(ToolNames.waitForEvents))
+        XCTAssertFalse(text.contains(ToolNames.askSupervisor))
+        XCTAssertTrue(text.contains("last 4 responses"), "keeps the count, got: \(text)")
+    }
+
+    func testToolNameExamples_filtersToSchema_andNilsOutWhenNoneSurvive() {
+        XCTAssertNil(LLMExecutionService.toolNameExamples(allowedToolNames: []))
+        XCTAssertNil(LLMExecutionService.toolNameExamples(allowedToolNames: [ToolNames.gitStatus]))
+
+        let managerOnly = LLMExecutionService.toolNameExamples(
+            allowedToolNames: [ToolNames.waitForEvents, ToolNames.listTasks])
+        XCTAssertEqual(managerOnly, "\"wait_for_events\"")
+
+        // Capped at three so the explainer stays short.
+        let many = LLMExecutionService.toolNameExamples(allowedToolNames: [
+            ToolNames.createArtifact, ToolNames.writeFile, ToolNames.askSupervisor,
+            ToolNames.readFile, ToolNames.updateScratchpad,
+        ])
+        XCTAssertEqual(many?.components(separatedBy: ", ").count, 3, "got: \(many ?? "nil")")
+    }
+
     // MARK: - Producing Role Interaction (the real run EAE23A6D scenario)
 
     /// Builds a `TeamRoleDefinition` with `producesArtifacts = [name]` — matches the
@@ -197,7 +345,8 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
             sawHarmonyMarker: true,
             task: task,
             roleDefinition: role,
-            conversationMessages: &messages
+            conversationMessages: &messages,
+            harmonyBuffer: Self.brokenCallEnvelope
         )
         guard case .continueLoop = stop else {
             XCTFail("Expected .continueLoop")
@@ -222,22 +371,19 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
     /// appending any user message. The next iteration's stateful slice produced an empty
     /// `newMessages` array → `{"input":""}` → HTTP 400 from LM Studio. Code Reviewer hit
     /// this 6+ times in run EA190834 (seen as repeated "input must not be an empty string"
-    /// retries against the same `previous_response_id`).
+    /// retries against the same unchanged prompt prefix).
     ///
     /// Fix: persist the assistant text as the implicit plan (so applyPlanningPhase
     /// transitions to implementation on the next iteration) and append a user nudge so
     /// the stateful continuation has non-empty input.
     func testPlanningPhaseNoToolCall_appendsUserNudgeAndPersistsScratchpad() async {
-        let planningPrompt = """
-        You are Software Engineer.
-
-        PLANNING PHASE
-        ==============
-        Call update_scratchpad with your plan.
-        """
+        // The phase is detected from the WIRE's brief turn, not from the system
+        // prompt — which the planning phase deliberately never touches.
         var messages: [ChatMessage] = [
-            ChatMessage(role: .system, content: planningPrompt),
-            ChatMessage(role: .user, content: "Build a calculator")
+            ChatMessage(role: .system, content: "You are Software Engineer."),
+            ChatMessage(role: .user, content: "Build a calculator"),
+            ChatMessage(role: .user, content: PlanningPhasePolicy.planningBrief(
+                exploreToolNames: [ToolNames.search], expectedArtifacts: []))
         ]
         let stop = await service._testHandleNoToolCalls(
             stepID: stepID,
@@ -254,14 +400,14 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
         // CRITICAL: a user message MUST be appended so the next stateful continuation
         // produces non-empty `input`.
         let userMessages = messages.filter { $0.role == .user }
-        XCTAssertEqual(userMessages.count, 2, "Expected original user + new nudge")
+        XCTAssertEqual(userMessages.count, 3, "Expected original user + brief + new nudge")
         let nudge = userMessages.last?.content ?? ""
         XCTAssertTrue(
-            nudge.contains("IMPLEMENTATION PHASE"),
+            nudge.contains("implementation phase"),
             "Expected implementation-phase nudge, got: \(nudge)"
         )
 
-        // Scratchpad must be persisted so applyPlanningPhase transitions on the next iteration.
+        // Scratchpad must be persisted so applyPlanningPhase crosses the boundary next iteration.
         let scratchpad = mockDelegate.taskToMutate?.runs[0].steps[0].scratchpad
         XCTAssertNotNil(scratchpad, "Expected scratchpad to be set from assistant text")
         XCTAssertTrue(

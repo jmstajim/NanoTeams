@@ -136,19 +136,3 @@ extension ChangeRequestStatus {
 
     var statusColor: Color { Self.statusColorMap[self] ?? .secondary }
 }
-
-// MARK: - TeamMessageType Display Extensions
-
-extension TeamMessageType {
-    private static let iconMap: [TeamMessageType: String] = [
-        .discussion: "bubble.left",
-        .question: "questionmark.circle",
-        .proposal: "lightbulb",
-        .objection: "exclamationmark.triangle",
-        .agreement: "hand.thumbsup",
-        .summary: "doc.text",
-        .conclusion: "checkmark.seal",
-    ]
-
-    var icon: String { Self.iconMap[self] ?? "bubble.left" }
-}

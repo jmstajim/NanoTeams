@@ -13,10 +13,7 @@ import XCTest
 final class StreamingActivityWiringTests: XCTestCase {
 
     private func makeOrchestrator() -> NTMSOrchestrator {
-        NTMSOrchestrator(
-            repository: NTMSRepository(),
-            searchEmbeddingClient: StubSearchEmbeddingClient()
-        )
+        TestOrchestrator.make()
     }
 
     // MARK: - Direct markStreamActivity

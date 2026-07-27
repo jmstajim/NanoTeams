@@ -36,7 +36,14 @@ final class AutovisorSendMessageTests: NTMSOrchestratorTestBase {
     private func pinRunningManager() async -> Int {
         await sut.openWorkFolder(tempDir)
         let mgrID = await sut.createTask(title: "Manager", supervisorTask: "oversee", makeActive: false)!
-        await sut.mutateWorkFolder { $0.state.autovisorTaskID = mgrID }
+        await sut.mutateWorkFolder {
+            $0.state.autovisorTaskID = mgrID
+            // Enabled, because a pinned-but-disabled manager is not a state
+            // production reaches: `startAutovisorPass`'s zombie guard refuses a pass
+            // while the feature is off (mirroring `fireRecurrence`'s), and both
+            // non-button callers pre-check the flag themselves.
+            $0.settings.autovisorEnabled = true
+        }
         sut.engineState[mgrID] = .running
         return mgrID
     }

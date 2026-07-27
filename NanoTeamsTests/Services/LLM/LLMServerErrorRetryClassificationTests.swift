@@ -176,7 +176,6 @@ final class LLMServerErrorRetryClassificationTests: XCTestCase {
         let contStep = StepExecution(
             id: stepID, role: .softwareEngineer, title: "SWE Step", status: .running,
             llmConversation: [LLMMessage(role: .system, content: "System prompt")],
-            llmSessionID: "resp_saved",
             revisionComment: "Fix it.")
         let task = NTMSTask(id: 4, title: "Test", supervisorTask: "Goal",
                             runs: [Run(id: 0, steps: [contStep])])
@@ -275,7 +274,6 @@ final class ScriptedThrowingStubLLMClient: LLMClient, @unchecked Sendable {
         config _: LLMConfig,
         messages _: [ChatMessage],
         tools _: [ToolSchema],
-        session _: LLMSession?,
         logger _: NetworkLogger?,
         stepID _: String?,
         roleName _: String?

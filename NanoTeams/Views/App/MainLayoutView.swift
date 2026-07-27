@@ -21,6 +21,21 @@ struct MainLayoutView: View {
         case task(Int)
     }
 
+    /// The task the user is actually LOOKING at, for `PrefixCacheReporter.onScreenTaskID`.
+    ///
+    /// An exhaustive `switch`, never an `if case` chain: this enum gains cases (`.autovisor` is
+    /// itself recent), and an `else` arm would silently map a new task-bearing destination to
+    /// `nil` — the cache-miss banner would go quiet there with no compile error anywhere.
+    static func onScreenTaskID(
+        for item: NavigationItem?, autovisorTaskID: Int?
+    ) -> Int? {
+        switch item {
+        case .task(let taskID): taskID
+        case .autovisor: autovisorTaskID
+        case .watchtower, nil: nil
+        }
+    }
+
     // MARK: - Body
 
     var body: some View {
@@ -130,7 +145,21 @@ struct MainLayoutView: View {
         .onReceive(NotificationCenter.default.publisher(for: .resumeRun)) { _ in
             if let taskID = store.activeTaskID { Task { await store.resumeRun(taskID: taskID) } }
         }
+        .onChange(of: selectedItem, initial: true) { _, newValue in
+            // What the user is actually LOOKING at, which `store.activeTaskID` is not: that is
+            // "last task ever opened", it is never reset to nil, and opening the Autovisor pane
+            // calls `switchTask(to:)`. Without this mirror a manager waking every 60 s would
+            // banner about its own cache misses while the user sits on the Watchtower.
+            store.prefixCacheReporter.onScreenTaskID = Self.onScreenTaskID(
+                for: newValue, autovisorTaskID: store.autovisorTaskID)
+        }
         .onChange(of: selectedItem) { _, newValue in
+            // Deliberately a SECOND observer of the same key, not a merge candidate. The mirror
+            // above needs `initial: true` (the first run the user watches must be able to
+            // banner); giving THIS block an initial fire would run `switchTask` /
+            // `markSupervisorInputSeen` / `.scrollFeedToBottom` once at launch. Merging would
+            // therefore need an "is this the initial call" guard around half the closure — more
+            // state than the second observer costs.
             if case .task(let taskID) = newValue {
                 Task {
                     await store.switchTask(to: taskID)
@@ -237,17 +266,16 @@ struct MainLayoutView: View {
 
     /// The Autovisor's activity feed — its hidden task rendered through the
     /// standard TeamBoard (switchTask makes it active; the sidebar still hides it).
-    /// Shows the first-time setup pane (goal field + Enable) whenever the manager
-    /// isn't ready to run — `store.autovisorNeedsSetup`: never created, OR created
-    /// but disabled with an unset goal. Routing on the SAME predicate the pill /
-    /// sidebar use guarantees a "go to setup" click actually lands here, not on a
-    /// chat for a manager that won't run. On enable, `setAutovisorEnabled(true)`
-    /// creates/re-enables the manager; the next body evaluation sees
-    /// `autovisorNeedsSetup == false`, falls into the loader/switchTask branch, and
-    /// lands on the chat.
+    /// Shows the setup pane (goal field + Enable) whenever the manager isn't running
+    /// — `store.autovisorShowsSetupPane`: never created, OR created but disabled.
+    /// A disabled manager keeps its task, so without that rule this would render a
+    /// chat nothing can drive, with no visible way to turn it back on. On enable,
+    /// `setAutovisorEnabled(true)` creates/re-enables the manager; the next body
+    /// evaluation falls into the loader/switchTask branch and lands on the chat,
+    /// prior conversation intact.
     @ViewBuilder
     private var autovisorDetail: some View {
-        if let id = store.autovisorTaskID, !store.autovisorNeedsSetup {
+        if !store.autovisorShowsSetupPane, let id = store.autovisorTaskID {
             if store.activeTask?.id == id {
                 TeamBoardView(workFolder: store.workFolder).id(id)
             } else {

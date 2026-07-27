@@ -17,6 +17,13 @@ final class StoreConfigurationTests: XCTestCase {
     private var originalEnterSendsMessage: Bool?
     private var originalSidebarTaskFilter: String?
     private var originalEmbedFilesInPrompt: Bool?
+    // The provider decides which DEFAULTS `llmBaseURLString` / `llmModelName` fall back
+    // to, so leaving it uncleared makes this suite order-dependent: it passes alone and
+    // fails in a full run, where an earlier suite leaves `llmProvider` = ollama behind
+    // and `testInit_withNoStoredValues_usesDefaults` then sees Ollama's defaults. The
+    // per-provider endpoint memory feeds the same fallback, so it is cleared too.
+    private var originalLLMProvider: String?
+    private var originalProviderEndpoints: Data?
 
     override func setUpWithError() throws {
         try super.setUpWithError()
@@ -27,6 +34,8 @@ final class StoreConfigurationTests: XCTestCase {
         originalEnterSendsMessage = UserDefaults.standard.object(forKey: UserDefaultsKeys.enterSendsMessage) as? Bool
         originalSidebarTaskFilter = UserDefaults.standard.string(forKey: UserDefaultsKeys.sidebarTaskFilter)
         originalEmbedFilesInPrompt = UserDefaults.standard.object(forKey: UserDefaultsKeys.quickCaptureEmbedFiles) as? Bool
+        originalLLMProvider = UserDefaults.standard.string(forKey: StoreConfiguration.Keys.llmProvider)
+        originalProviderEndpoints = UserDefaults.standard.data(forKey: UserDefaultsKeys.llmProviderEndpoints)
 
         // Clear UserDefaults for clean test state
         UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.llmBaseURL)
@@ -35,6 +44,8 @@ final class StoreConfigurationTests: XCTestCase {
         UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.enterSendsMessage)
         UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.sidebarTaskFilter)
         UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.quickCaptureEmbedFiles)
+        UserDefaults.standard.removeObject(forKey: StoreConfiguration.Keys.llmProvider)
+        UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.llmProviderEndpoints)
 
         // Initialize test subject with clean state
         config = StoreConfiguration()
@@ -70,6 +81,18 @@ final class StoreConfigurationTests: XCTestCase {
             UserDefaults.standard.set(original, forKey: UserDefaultsKeys.sidebarTaskFilter)
         } else {
             UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.sidebarTaskFilter)
+        }
+
+        if let original = originalLLMProvider {
+            UserDefaults.standard.set(original, forKey: StoreConfiguration.Keys.llmProvider)
+        } else {
+            UserDefaults.standard.removeObject(forKey: StoreConfiguration.Keys.llmProvider)
+        }
+
+        if let original = originalProviderEndpoints {
+            UserDefaults.standard.set(original, forKey: UserDefaultsKeys.llmProviderEndpoints)
+        } else {
+            UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.llmProviderEndpoints)
         }
 
         if let original = originalEmbedFilesInPrompt {

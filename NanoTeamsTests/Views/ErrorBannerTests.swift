@@ -13,7 +13,7 @@ final class ErrorBannerModifierTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        store = NTMSOrchestrator(repository: NTMSRepository())
+        store = TestOrchestrator.make()
     }
 
     override func tearDown() {

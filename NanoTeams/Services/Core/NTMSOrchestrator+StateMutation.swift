@@ -184,8 +184,7 @@ extension NTMSOrchestrator {
                 // model it pinned. Nothing else observes team state, and
                 // per-role overrides are exactly the multiplier that let
                 // several chat models pile up resident at once.
-                await reconcileAndReportResidency(
-                    client: chatLifecycleClient, ensurer: chatModelEnsurer)
+                await reconcileAndReportResidency()
             }
         } catch {
             let fileHint = partialWriteFileHint(

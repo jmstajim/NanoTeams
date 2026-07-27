@@ -18,7 +18,6 @@ final class NativeLMStudioWireTypesTests: XCTestCase {
         }
         """.data(using: .utf8)!
         let event = try JSONDecoder().decode(NativeLMStudioClient.ChatEndEvent.self, from: json)
-        XCTAssertEqual(event.responseID, "resp-abc")
         XCTAssertEqual(event.stats?.inputTokens, 100)
         XCTAssertEqual(event.stats?.outputTokens, 50)
     }
@@ -36,7 +35,6 @@ final class NativeLMStudioWireTypesTests: XCTestCase {
         }
         """.data(using: .utf8)!
         let event = try JSONDecoder().decode(NativeLMStudioClient.ChatEndEvent.self, from: json)
-        XCTAssertEqual(event.responseID, "resp-xyz")
         XCTAssertEqual(event.stats?.inputTokens, 200)
         XCTAssertEqual(event.stats?.outputTokens, 75)
     }
@@ -97,7 +95,6 @@ final class NativeLMStudioWireTypesTests: XCTestCase {
         }
         """.data(using: .utf8)!
         let event = try JSONDecoder().decode(NativeLMStudioClient.ChatEndEvent.self, from: json)
-        XCTAssertEqual(event.responseID, "resp-only")
         XCTAssertNil(event.stats)
     }
 

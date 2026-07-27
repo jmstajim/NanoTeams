@@ -2,9 +2,10 @@ import XCTest
 @testable import NanoTeams
 
 /// Pins the structural invariants the Autovisor relies on: the team must be
-/// chat-mode + autonomous (so `attemptAdvisoryAutoFinish` ends each review pass),
-/// its role must be ADVISORY (not observer — else the engine skips it), it must be
-/// hidden from pickers, and it must NOT pollute the bundled-template set.
+/// chat-mode + autonomous (so `noteNonProductiveTurn` is armed for a manager
+/// that stops calling tools), its role must be ADVISORY (not observer — else the
+/// engine skips it), it must be hidden from pickers, and it must NOT pollute the
+/// bundled-template set.
 final class AutovisorTeamTests: XCTestCase {
 
     private func managerTeam() -> Team { TeamTemplateFactory.autovisor() }
@@ -13,7 +14,8 @@ final class AutovisorTeamTests: XCTestCase {
         let team = managerTeam()
         XCTAssertTrue(team.isChatMode, "single-role, no supervisor deliverables → chat mode")
         XCTAssertEqual(team.settings.supervisorMode, .autonomous,
-                       "MUST be autonomous so the advisory auto-finish ends a review pass")
+                       "MUST be autonomous so the no-tool backstop is armed (it parks a manager "
+                           + "that stops calling tools; a healthy pass ends at wait_for_events)")
         XCTAssertEqual(team.templateID, AutovisorConstants.teamTemplateID)
     }
 
@@ -80,6 +82,54 @@ final class AutovisorTeamTests: XCTestCase {
                       "manager prompt must address the Review (awaiting-acceptance) state explicitly")
         XCTAssertTrue(prompt.contains("control_task close"),
                       "manager prompt must instruct `control_task close` to finalize reviewed work (not a bare 'close' substring)")
+    }
+
+    /// Regression pin for the 2026-07-25 incident: the manager found a task the app had
+    /// left `paused` mid-planning (5 tool calls on disk) and called `manage_role restart`,
+    /// wiping the conversation and every tool call. `control_task resume` was the right
+    /// verb — but step 3 had no `paused` branch and the word `resume` appeared nowhere in
+    /// this guidance, only as a fragment of the `control_task` schema.
+    func testManagerPrompt_routesPausedTaskToResume() {
+        let prompt = SystemTemplates.rolePrompts["autovisor"] ?? ""
+        XCTAssertTrue(prompt.contains("control_task resume"),
+                      "the manager must be told the verb that continues a paused run")
+        XCTAssertTrue(prompt.contains("status: \"paused\""),
+                      "the branch must key on the literal token `list_tasks` reports")
+    }
+
+    /// Ordering is load-bearing, not cosmetic. A `paused` step structurally CANNOT carry a
+    /// `stuck` verdict (`AutovisorStuckEvaluator` bails on anything not `.running`), so a
+    /// manager that reads the Stuck bullet first has already anchored on restart-vs-correct
+    /// before learning the state doesn't apply to it.
+    func testManagerPrompt_pausedBranchPrecedesStuck() throws {
+        let prompt = SystemTemplates.rolePrompts["autovisor"] ?? ""
+        let paused = try XCTUnwrap(prompt.range(of: "- Paused"))
+        let stuck = try XCTUnwrap(prompt.range(of: "- Stuck"))
+        XCTAssertLessThan(paused.lowerBound, stuck.lowerBound,
+                          "`paused` is the state that gates the others — it must be matched first")
+    }
+
+    /// The Boundaries bullet used to read `prefer pause/restart over delete when unsure`,
+    /// which both omitted restart from the destructive list and paired it with the one verb
+    /// that IS undoable. That sentence is why restart felt like the conservative choice.
+    func testManagerPrompt_doesNotFrameRestartAsSafe() {
+        let prompt = SystemTemplates.rolePrompts["autovisor"] ?? ""
+        XCTAssertFalse(prompt.contains("pause/restart"),
+                       "restart is destructive — it must never be offered as the safe fallback")
+        XCTAssertTrue(prompt.contains("control_task pause"),
+                      "the when-unsure fallback must name the verb that is actually reversible")
+    }
+
+    /// The destructive fact belongs to the `manage_role` SCHEMA, not this guidance: the
+    /// guidance is user-editable (the Autovisor team is visible in the Team Editor) and both
+    /// ship in the same system prompt, so duplicating it would only cost tokens.
+    func testManageRoleSchema_saysRestartDiscardsWork() {
+        let description = ManageRoleTool.schema.description
+        XCTAssertTrue(description.contains("discarding"),
+                      "`restart` reads as 're-run'; only the schema says it erases the work")
+        let comment = try? XCTUnwrap(ManageRoleTool.schema.parameters.properties?["comment"])
+        XCTAssertTrue((comment?.description ?? "").contains("existing brief"),
+                      "the comment becomes the sole surviving message — it must be sourced from the brief")
     }
 
     /// The manager prompt must explain that a chat-mode task never finishes on its own and

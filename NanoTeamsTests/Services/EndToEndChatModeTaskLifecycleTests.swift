@@ -221,7 +221,7 @@ final class EndToEndChatModeTaskLifecycleTests: NTMSOrchestratorTestBase {
                                       preferredTeamID: chatTeamID)!
 
         // Reopen
-        sut = NTMSOrchestrator(repository: NTMSRepository())
+        sut = TestOrchestrator.make()
         await sut.openWorkFolder(tempDir)
         await sut.switchTask(to: id)
 

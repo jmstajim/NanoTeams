@@ -43,6 +43,20 @@ final class RoleEditorStateLoadTests: XCTestCase {
         XCTAssertEqual(state.llmModelName, "")
     }
 
+    func testLoad_providerOverride_seedsProvider() {
+        var state = RoleEditorState()
+        state.load(from: makeRole(llmOverride: LLMOverride(
+            baseURLString: "http://127.0.0.1:11434", provider: .ollama)))
+        XCTAssertEqual(state.llmProviderOverride, .ollama)
+        XCTAssertEqual(state.llmBaseURL, "http://127.0.0.1:11434")
+    }
+
+    func testLoad_overrideWithoutProvider_seedsNilProvider() {
+        var state = RoleEditorState()
+        state.load(from: makeRole(llmOverride: LLMOverride(modelName: "m")))
+        XCTAssertNil(state.llmProviderOverride)
+    }
+
     func testLoad_modelOnlyOverride_seedsModelOnly() {
         var state = RoleEditorState()
         state.load(from: makeRole(llmOverride: LLMOverride(modelName: "qwen-14b")))

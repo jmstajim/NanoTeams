@@ -65,9 +65,27 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
     /// Full LLM conversation (all prompts and responses sent to/from the model).
     var llmConversation: [LLMMessage]
 
-    /// Saved LLM session ID (previous_response_id) for resuming after Supervisor pause or revision.
-    /// Set when step completes or pauses for `needsSupervisorInput`; kept on revision reset.
-    var llmSessionID: String?
+    /// Byte-faithful snapshot of the conversation as last SENT to the model.
+    ///
+    /// Deliberately NOT ``llmConversation``, which is the DISPLAY record and cannot
+    /// double as a replay source: the feed filters it (`ActivityFeedBuilder` skips
+    /// `.system` and `.tool`), it carries entries that were never sent (retry notices
+    /// tagged `.serverError`, delegation Q/A pairs recorded for visibility), it stores
+    /// tool turns in a readable `[CALL] … [RESULT] …` shape rather than the wire shape
+    /// and with the RAW result where the wire got the `MemoryTagStore`-tagged form, and
+    /// the streaming path mutates it in place.
+    ///
+    /// This exists so a step that SUSPENDS (Supervisor question, Autovisor idle park,
+    /// pause) and later RE-ENTERS continues the same conversation instead of
+    /// re-synthesizing one. Re-synthesis through `PromptBuilder` drops every tool call
+    /// and tool result — on a stateless provider that means the model wakes with no
+    /// memory of the work it already did, and on any provider it destroys the server's
+    /// prompt-prefix cache because the resent prefix no longer matches.
+    ///
+    /// Written at every suspend/terminal arm; replayed append-only on re-entry.
+    /// Empty for steps persisted before this field existed — those fall back to a
+    /// best-effort reconstruction from ``llmConversation``.
+    var wireTranscript: [ChatMessage]
 
     /// Non-nil when the step is in revision mode (Supervisor requested changes).
     /// Contains the Supervisor's feedback. Cleared when LLM creates a new artifact via `create_artifact`.
@@ -75,12 +93,12 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
     /// from artifacts created in the prior execution.
     var revisionComment: String?
 
-    /// Bundled delegation state for this step. Three previously-flat fields
-    /// (`delegationSession`, `activeDelegationChildID`, `delegationChildIDs`)
+    /// Bundled delegation state for this step. Two previously-flat fields
+    /// (`activeDelegationChildID`, `delegationChildIDs`)
     /// were aggregated here so the cross-field invariant
     /// (`activeChildID == nil ∨ activeChildID ∈ history`) can be enforced
     /// structurally instead of by convention. Mutate via `setActiveDelegation` /
-    /// `clearActiveDelegation` / `setDelegationSession` rather than touching
+    /// `clearActiveDelegation` rather than touching
     /// the inner struct directly. The legacy field names are still available
     /// as read-only computed properties below for back-compat with the many
     /// existing read sites.
@@ -95,16 +113,6 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
     private(set) var ancillary: AncillaryQuery
 
     // MARK: - Back-compat read accessors (computed, all delegate to bundles)
-
-    /// Stateful chain ID for the side exchange between this role (acting as
-    /// Supervisor of a delegated team) and the child team's roles. Seeded
-    /// with the role's `llmConversation` on the first child question, then
-    /// reused via `previous_response_id` for subsequent questions. Cleared
-    /// when `delegate_to_team` completes. Isolated from `llmSessionID` so
-    /// the parent's main response chain is not perturbed.
-    /// Read via `delegation.session`; back-compat alias for the many
-    /// existing read sites.
-    var delegationSession: String? { delegation.session }
 
     /// Question that bubbled up from a delegated child team's `ask_supervisor`
     /// when the escalation chain bottomed out at the human Supervisor.
@@ -124,7 +132,7 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
     /// Append-only history of every child task this step has delegated to,
     /// in chronological order. Includes the in-flight delegation (if any)
     /// and every completed/failed/timed-out one. Preserved on terminal
-    /// cleanup (only `activeChildID` and `session` are cleared).
+    /// cleanup (only `activeChildID` is cleared).
     var delegationChildIDs: [Int] { delegation.history }
 
     // MARK: - Invariant-enforcing mutators (delegation)
@@ -136,19 +144,11 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         delegation.beginActive(childID: childID)
     }
 
-    /// Marks the current delegation terminal: clears `activeChildID` and
-    /// `session` while preserving the chronological `history`. Use this on
+    /// Marks the current delegation terminal: clears `activeChildID`
+    /// while preserving the chronological `history`. Use this on
     /// every terminal exit path so the step is ready for a fresh delegation.
     mutating func clearActiveDelegation() {
         delegation.clearActive()
-    }
-
-    /// Sets the seeded-chain `previous_response_id` for the active
-    /// delegation. Pass `nil` to drop a poisoned chain (e.g. after HTTP 400)
-    /// — independent of `clearActiveDelegation` because we may want a
-    /// fresh seed without ending the delegation itself.
-    mutating func setDelegationSession(_ id: String?) {
-        delegation.session = id
     }
 
     // MARK: - Invariant-enforcing mutators (ancillary)
@@ -179,9 +179,8 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         supervisorCommentForNext: String? = nil,
         tokenUsage: TokenUsage? = nil,
         llmConversation: [LLMMessage] = [],
-        llmSessionID: String? = nil,
+        wireTranscript: [ChatMessage] = [],
         revisionComment: String? = nil,
-        delegationSession: String? = nil,
         ancillaryQuestion: String? = nil,
         ancillaryAnswer: String? = nil,
         activeDelegationChildID: Int? = nil,
@@ -210,14 +209,13 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         self.supervisorCommentForNext = supervisorCommentForNext
         self.tokenUsage = tokenUsage
         self.llmConversation = llmConversation
-        self.llmSessionID = llmSessionID
+        self.wireTranscript = wireTranscript
         self.revisionComment = revisionComment
-        // Aggregate the five legacy delegation/ancillary parameters into the
+        // Aggregate the four legacy delegation/ancillary parameters into the
         // two structs. The DelegationState init enforces
         // `activeChildID ∈ history`, so callers passing an active id without
         // mentioning it in `delegationChildIDs` get the id appended for free.
         self.delegation = DelegationState(
-            session: delegationSession,
             activeChildID: activeDelegationChildID,
             history: delegationChildIDs
         )
@@ -251,14 +249,13 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         case supervisorCommentForNext
         case tokenUsage
         case llmConversation
-        case llmSessionID
+        case wireTranscript
         case revisionComment
         // New aggregated shape (preferred on encode + decode).
         case delegation
         case ancillary
         // Legacy flat keys (decode-only fallback for files written by
         // builds prior to the I7 refactor; never re-emitted on encode).
-        case delegationSession
         case ancillaryQuestion
         case ancillaryAnswer
         case activeDelegationChildID
@@ -291,21 +288,24 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         self.tokenUsage = try c.decodeIfPresent(TokenUsage.self, forKey: .tokenUsage)
         self.llmConversation =
             try c.decodeIfPresent([LLMMessage].self, forKey: .llmConversation) ?? []
-        self.llmSessionID = try c.decodeIfPresent(String.self, forKey: .llmSessionID)
+        // Absent in every `task.json` written before the transcript existed. An empty
+        // value is the honest answer for those — the continuation seam falls back to a
+        // best-effort reconstruction from `llmConversation` rather than pretending it
+        // has a faithful record.
+        self.wireTranscript =
+            try c.decodeIfPresent([ChatMessage].self, forKey: .wireTranscript) ?? []
         self.revisionComment = try c.decodeIfPresent(String.self, forKey: .revisionComment)
         // Delegation/ancillary: prefer the new nested shape, fall back to
-        // the five legacy flat keys for files written by earlier builds.
+        // the legacy flat keys for files written by earlier builds.
         // Both decodes use `decodeIfPresent` so missing keys default to
         // empty/nil — `DelegationState.init(...)` enforces the
         // `activeChildID ∈ history` invariant in either branch.
         if let bundled = try c.decodeIfPresent(DelegationState.self, forKey: .delegation) {
             self.delegation = bundled
         } else {
-            let legacySession = try c.decodeIfPresent(String.self, forKey: .delegationSession)
             let legacyActive = try c.decodeIfPresent(Int.self, forKey: .activeDelegationChildID)
             let legacyHistory = try c.decodeIfPresent([Int].self, forKey: .delegationChildIDs) ?? []
             self.delegation = DelegationState(
-                session: legacySession,
                 activeChildID: legacyActive,
                 history: legacyHistory
             )
@@ -349,7 +349,9 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         try c.encodeIfPresent(supervisorCommentForNext, forKey: .supervisorCommentForNext)
         try c.encodeIfPresent(tokenUsage, forKey: .tokenUsage)
         try c.encode(llmConversation, forKey: .llmConversation)
-        try c.encodeIfPresent(llmSessionID, forKey: .llmSessionID)
+        // Skipped when empty so steps that never ran (and every pre-existing task on
+        // disk re-encoded after a read) don't grow a `"wireTranscript":[]` key.
+        if !wireTranscript.isEmpty { try c.encode(wireTranscript, forKey: .wireTranscript) }
         try c.encodeIfPresent(revisionComment, forKey: .revisionComment)
         // Encode the new bundled shape only when non-empty (preserves the
         // pre-fix policy of omitting empty delegation/ancillary state from
@@ -364,6 +366,21 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
 
     /// The role ID — same as `id` (kept for backward compatibility at call sites).
     var effectiveRoleID: String { id }
+
+    /// Whether this step holds work a `reset()` would destroy.
+    ///
+    /// `reset()` clears `toolCalls`, `llmConversation`, `artifacts`, `messages`,
+    /// `wireTranscript` and `scratchpad` — irreversibly, for this role and every
+    /// transitive downstream one. Gating a restart on this is what separates
+    /// "re-run a step that never got anywhere" from "discard hours of research".
+    ///
+    /// `messages` is deliberately NOT part of the test: `restartRole` seeds exactly
+    /// one `StepMessage` from its own `comment`, so a step restarted a moment ago
+    /// would otherwise look like it holds work. The three checked collections are
+    /// only ever written by the step actually running.
+    var hasCommittedWork: Bool {
+        !toolCalls.isEmpty || !llmConversation.isEmpty || !artifacts.isEmpty
+    }
 
     /// Combines `supervisorAnswer` text with attachment paths (mirrors `NTMSTask.effectiveSupervisorBrief`).
     /// Returns nil only when both answer and attachments are empty.
@@ -415,7 +432,10 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         supervisorCommentForNext = nil
         tokenUsage = nil
         llmConversation = []
-        llmSessionID = nil
+        // Must be cleared with the display record, not left behind: `restartRole` resets a
+        // step to run again from scratch, and a surviving transcript would let a later
+        // re-entry replay a conversation belonging to the discarded attempt.
+        wireTranscript = []
         revisionComment = nil
         // `reset` clears delegation history too — this is a full re-run, not a
         // continuation, so the audit trail starts fresh.
@@ -462,7 +482,7 @@ nonisolated enum StepStatus: String, Codable, CaseIterable, Hashable {
 // MARK: - DelegationState
 
 /// Aggregated state for the delegation cluster on `StepExecution`. Replaces
-/// three previously-flat fields (`delegationSession`, `activeDelegationChildID`,
+/// two previously-flat fields (`activeDelegationChildID`,
 /// `delegationChildIDs`) so the cross-field invariant — "if `activeChildID`
 /// is set, it must appear in `history`" — can be enforced structurally.
 ///
@@ -471,29 +491,22 @@ nonisolated enum StepStatus: String, Codable, CaseIterable, Hashable {
 /// `step.delegation.history.append(...)` from drifting from the active marker.
 ///
 /// Encoded JSON shape:
-///   `{"session": "resp_…"?, "activeChildID": 42?, "history": [42, 17]?}`
+///   `{"activeChildID": 42?, "history": [42, 17]?}`
 /// (omitted entirely from `step.json` when `isEmpty`).
 nonisolated struct DelegationState: Codable, Hashable {
-    /// Stateful chain id (`previous_response_id`) for the seeded side
-    /// exchange between the parent role and the child team's `ask_supervisor`
-    /// flow. Survives across calls within one delegation; cleared on
-    /// terminal cleanup or by passing `nil` to `setDelegationSession` on
-    /// the owning step (e.g. HTTP 400 chain invalidation).
-    var session: String?
     /// In-flight delegation marker — `nil` when no delegation is currently
     /// blocking the parent step's tool loop.
     private(set) var activeChildID: Int?
     /// Append-only chronological log of every child task this step has
     /// delegated to — including completed/failed/timed-out ones. Preserved
-    /// across terminal cleanup (only `activeChildID` and `session` clear).
+    /// across terminal cleanup (only `activeChildID` clears).
     private(set) var history: [Int]
 
     /// Designated init. Enforces the `activeChildID ∈ history` invariant by
     /// auto-appending `activeChildID` to `history` when the caller forgot
     /// (matches the legacy "set + append" double-write pattern at write
     /// sites). Idempotent on duplicates.
-    init(session: String? = nil, activeChildID: Int? = nil, history: [Int] = []) {
-        self.session = session
+    init(activeChildID: Int? = nil, history: [Int] = []) {
         self.activeChildID = activeChildID
         var h = history
         if let id = activeChildID, !h.contains(id) {
@@ -505,7 +518,7 @@ nonisolated struct DelegationState: Codable, Hashable {
     /// `true` iff every field is at its default — used by Codable to omit
     /// the bundle from JSON for non-delegating roles.
     var isEmpty: Bool {
-        session == nil && activeChildID == nil && history.isEmpty
+        activeChildID == nil && history.isEmpty
     }
 
     /// Begins (or re-begins) an active delegation. Appends to history if
@@ -519,11 +532,10 @@ nonisolated struct DelegationState: Codable, Hashable {
         }
     }
 
-    /// Marks the delegation terminal: clears `activeChildID` + `session`,
+    /// Marks the delegation terminal: clears `activeChildID`,
     /// preserves `history` for audit / graph history layers.
     mutating func clearActive() {
         activeChildID = nil
-        session = nil
     }
 }
 

@@ -105,34 +105,70 @@ final class AutovisorPolicyTests: XCTestCase {
             "default-as-prefix is a real goal, not the unset placeholder")
     }
 
-    // MARK: - needsSetup (setup-pane-vs-chat routing)
+    // MARK: - showsSetupPane (which pane `.autovisor` renders)
 
-    /// No manager task yet → always setup, regardless of enabled/goal (the
+    /// No manager task yet → setup, whatever the enabled flag says (the
     /// never-created first-run state).
-    func testNeedsSetup_noTask_alwaysTrue() {
-        XCTAssertTrue(AutovisorPolicy.needsSetup(taskExists: false, enabled: false, goalIsUnset: true))
-        XCTAssertTrue(AutovisorPolicy.needsSetup(taskExists: false, enabled: false, goalIsUnset: false),
+    func testShowsSetupPane_noTask_alwaysTrue() {
+        XCTAssertTrue(AutovisorPolicy.showsSetupPane(taskExists: false, enabled: false))
+        XCTAssertTrue(AutovisorPolicy.showsSetupPane(taskExists: false, enabled: true),
+            "a persisted enabled flag with no manager behind it still routes through setup")
+    }
+
+    /// THE rule this split exists for: a disabled manager shows the start page, so
+    /// turning it back on is one screen away. The goal is deliberately NOT an input
+    /// — a disabled manager with a real goal used to be stranded on a chat it could
+    /// never drive.
+    func testShowsSetupPane_taskExistsDisabled_trueRegardlessOfGoal() {
+        XCTAssertTrue(AutovisorPolicy.showsSetupPane(taskExists: true, enabled: false),
+            "disabled → setup, not a chat for a manager that won't run")
+    }
+
+    /// An ENABLED manager shows its chat — even on the placeholder goal, don't
+    /// interrupt a live run.
+    func testShowsSetupPane_taskExistsEnabled_false() {
+        XCTAssertFalse(AutovisorPolicy.showsSetupPane(taskExists: true, enabled: true))
+    }
+
+    // MARK: - requiresSetupBeforeEnabling (the pill's OFF→ON intercept)
+
+    /// Nothing to turn on yet → the click must land on setup and create it there.
+    func testRequiresSetupBeforeEnabling_noTask_alwaysTrue() {
+        XCTAssertTrue(AutovisorPolicy.requiresSetupBeforeEnabling(taskExists: false, goalIsUnset: true))
+        XCTAssertTrue(AutovisorPolicy.requiresSetupBeforeEnabling(taskExists: false, goalIsUnset: false),
             "even with a goal pre-set in Settings, a never-created manager routes through setup")
     }
 
-    /// THE regression case: a created-then-disabled manager whose goal is still the
-    /// placeholder must route back to setup — it used to be stranded on the chat.
-    func testNeedsSetup_taskExistsDisabledUnsetGoal_true() {
-        XCTAssertTrue(AutovisorPolicy.needsSetup(taskExists: true, enabled: false, goalIsUnset: true),
-            "disabled manager with no real goal → setup, not a chat for a manager that won't run")
+    /// Placeholder goal → route to setup rather than start the manager on the inert
+    /// "explore & wait" directive.
+    func testRequiresSetupBeforeEnabling_unsetGoal_true() {
+        XCTAssertTrue(AutovisorPolicy.requiresSetupBeforeEnabling(taskExists: true, goalIsUnset: true))
     }
 
-    /// A disabled manager WITH a real goal doesn't need setup — the pill re-enables
-    /// it directly and the chat is meaningful.
-    func testNeedsSetup_taskExistsDisabledRealGoal_false() {
-        XCTAssertFalse(AutovisorPolicy.needsSetup(taskExists: true, enabled: false, goalIsUnset: false))
+    /// Real goal → the pill stays a true one-click toggle, no detour.
+    func testRequiresSetupBeforeEnabling_realGoal_false() {
+        XCTAssertFalse(AutovisorPolicy.requiresSetupBeforeEnabling(taskExists: true, goalIsUnset: false),
+            "an existing manager with a real goal enables in place")
     }
 
-    /// An ENABLED manager never needs setup — it's already running. `enabled`
-    /// dominates an unset goal (don't interrupt a live placeholder run).
-    func testNeedsSetup_taskExistsEnabled_falseEvenWithUnsetGoal() {
-        XCTAssertFalse(AutovisorPolicy.needsSetup(taskExists: true, enabled: true, goalIsUnset: true),
-            "enabled dominates — a running manager on the placeholder goal stays on its chat")
-        XCTAssertFalse(AutovisorPolicy.needsSetup(taskExists: true, enabled: true, goalIsUnset: false))
+    // MARK: - Cross-rule invariant
+
+    /// The intercept can never land on the chat. It only fires while the Autovisor is
+    /// OFF, and every disabled state shows setup — so over the whole
+    /// `(taskExists, goalIsUnset)` matrix,
+    /// `requiresSetupBeforeEnabling ⟹ showsSetupPane(enabled: false)`.
+    /// This is the structural replacement for the old single shared predicate.
+    func testIntercept_alwaysLandsOnSetup() {
+        for taskExists in [false, true] {
+            for goalIsUnset in [false, true] {
+                guard AutovisorPolicy.requiresSetupBeforeEnabling(
+                    taskExists: taskExists, goalIsUnset: goalIsUnset
+                ) else { continue }
+                XCTAssertTrue(
+                    AutovisorPolicy.showsSetupPane(taskExists: taskExists, enabled: false),
+                    "intercept fired for (taskExists: \(taskExists), goalIsUnset: \(goalIsUnset)) but the pane would show the chat"
+                )
+            }
+        }
     }
 }

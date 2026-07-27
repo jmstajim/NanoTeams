@@ -32,7 +32,7 @@ final class EndToEndWorkFolderSettingsTests: NTMSOrchestratorTestBase {
                        "In-memory projection reflects the update")
 
         // Reopen and confirm disk persistence
-        sut = NTMSOrchestrator(repository: NTMSRepository())
+        sut = TestOrchestrator.make()
         await sut.openWorkFolder(tempDir)
         XCTAssertEqual(sut.workFolder?.settings.context,
                        "A really cool project")
@@ -46,7 +46,7 @@ final class EndToEndWorkFolderSettingsTests: NTMSOrchestratorTestBase {
         await sut.updateSelectedScheme("MyApp")
         XCTAssertEqual(sut.workFolder?.settings.selectedScheme, "MyApp")
 
-        sut = NTMSOrchestrator(repository: NTMSRepository())
+        sut = TestOrchestrator.make()
         await sut.openWorkFolder(tempDir)
         XCTAssertEqual(sut.workFolder?.settings.selectedScheme, "MyApp")
     }
@@ -88,7 +88,7 @@ final class EndToEndWorkFolderSettingsTests: NTMSOrchestratorTestBase {
         await sut.openWorkFolder(tempDir)
         await sut.updateWorkFolderContext(multiLine)
 
-        sut = NTMSOrchestrator(repository: NTMSRepository())
+        sut = TestOrchestrator.make()
         await sut.openWorkFolder(tempDir)
 
         XCTAssertEqual(sut.workFolder?.settings.context, multiLine,
@@ -150,7 +150,7 @@ final class EndToEndWorkFolderSettingsTests: NTMSOrchestratorTestBase {
 
         XCTAssertEqual(sut.workFolder?.settings.contextPrompt, customPrompt)
 
-        sut = NTMSOrchestrator(repository: NTMSRepository())
+        sut = TestOrchestrator.make()
         await sut.openWorkFolder(tempDir)
         XCTAssertEqual(sut.workFolder?.settings.contextPrompt, customPrompt,
                        "Custom contextPrompt must round-trip across restart")

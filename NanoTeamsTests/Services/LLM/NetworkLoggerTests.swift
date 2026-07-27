@@ -347,4 +347,46 @@ final class NetworkLoggerTests: XCTestCase {
         XCTAssertEqual(response.stepID, stepID)
     }
 
+    // MARK: - Server prefill mapping
+
+    /// The two fields the prompt-prefix cache audit reads back out of a real run. The `ns → ms`
+    /// division was untested, and a zero written where the server reported nothing would poison
+    /// any attempt to re-derive `minimumLoadMsForReload` from the log.
+
+    private func responseRecord(_ prefill: ServerPrefillReport?) -> NetworkLogRecord {
+        let request = NetworkLogRecord(
+            id: UUID(), createdAt: Date(), direction: .request,
+            httpMethod: "POST", url: "http://localhost/api", statusCode: nil, body: nil,
+            durationMs: nil, errorMessage: nil, correlationID: UUID(), stepID: nil)
+        return NetworkLogger.createResponseRecord(
+            for: request, statusCode: 200, durationMs: 1000, error: nil,
+            serverPrefill: prefill)
+    }
+
+    func testResponseRecord_mapsPrefillNanosecondsToMilliseconds() {
+        // Ollama's real cold row: load_duration 2236645542 ns, prompt_eval_duration 6481316750 ns.
+        let record = responseRecord(
+            ServerPrefillReport(
+                modelLoadMs: 2236.645542, prefillNs: 6_481_316_750, promptTokens: 12927))
+
+        XCTAssertEqual(record.prefillMs ?? 0, 6481.31675, accuracy: 0.0001)
+        XCTAssertEqual(
+            record.modelLoadMs ?? 0, 2236.645542, accuracy: 0.000001,
+            "the load figure is recorded verbatim — no threshold at the log layer")
+    }
+
+    func testResponseRecord_absentPrefill_writesNilNotZero() {
+        let record = responseRecord(nil)
+        XCTAssertNil(record.prefillMs)
+        XCTAssertNil(record.modelLoadMs)
+    }
+
+    /// LM Studio's shape: a load figure, never a rate. A zero here would be indistinguishable
+    /// from "the server said it prefilled instantly".
+    func testResponseRecord_loadWithoutARate_leavesPrefillMsNil() {
+        let record = responseRecord(
+            ServerPrefillReport(modelLoadMs: 0, prefillNs: nil, promptTokens: 900))
+        XCTAssertNil(record.prefillMs)
+        XCTAssertEqual(record.modelLoadMs, 0)
+    }
 }

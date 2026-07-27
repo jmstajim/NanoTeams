@@ -27,7 +27,7 @@ struct RoleEditorLLMTab: View {
 
     private var inheritedURLPrompt: String {
         let global = config.llmBaseURLString.trimmingCharacters(in: .whitespaces)
-        return global.isEmpty ? "http://127.0.0.1:1234" : global
+        return global.isEmpty ? effectiveFetchProvider.defaultBaseURL : global
     }
 
     private var emptyModelLabel: String {
@@ -44,9 +44,17 @@ struct RoleEditorLLMTab: View {
         return config.llmBaseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Provider for the model-list fetch — the override's provider when set
+    /// (matches `buildEffectiveConfig` resolution), else the global one.
+    private var effectiveFetchProvider: LLMProvider {
+        editorState.llmProviderOverride ?? llmProvider
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.l) {
+                LLMProviderOverridePicker(selection: $editorState.llmProviderOverride)
+
                 LLMEndpointEditor(
                     baseURL: $editorState.llmBaseURL,
                     modelName: $editorState.llmModelName,
@@ -56,16 +64,16 @@ struct RoleEditorLLMTab: View {
                     onTokenSaveError: onTokenSaveError,
                     onTokenLoadError: onTokenLoadError,
                     onURLCommit: {
-                        Task { await modelCatalog.loadIfNeeded(url: effectiveFetchURL) }
+                        Task { await modelCatalog.loadIfNeeded(url: effectiveFetchURL, provider: effectiveFetchProvider) }
                     },
-                    availableModels: modelCatalog.models(for: effectiveFetchURL),
-                    isFetchingModels: modelCatalog.isFetching(effectiveFetchURL),
+                    availableModels: modelCatalog.models(for: effectiveFetchURL, provider: effectiveFetchProvider),
+                    isFetchingModels: modelCatalog.isFetching(effectiveFetchURL, provider: effectiveFetchProvider),
                     status: EndpointStatus.resolve(
-                        fetchError: modelCatalog.error(for: effectiveFetchURL),
-                        isFetching: modelCatalog.isFetching(effectiveFetchURL)
+                        fetchError: modelCatalog.error(for: effectiveFetchURL, provider: effectiveFetchProvider),
+                        isFetching: modelCatalog.isFetching(effectiveFetchURL, provider: effectiveFetchProvider)
                     ),
                     onRefreshModels: {
-                        Task { await modelCatalog.refresh(url: effectiveFetchURL) }
+                        Task { await modelCatalog.refresh(url: effectiveFetchURL, provider: effectiveFetchProvider) }
                     }
                 )
 
@@ -82,7 +90,7 @@ struct RoleEditorLLMTab: View {
             // field's onCommit fires loadIfNeeded when the user actually
             // commits a new URL (Enter or focus loss). Refresh button
             // forces a re-fetch.
-            await modelCatalog.loadIfNeeded(url: effectiveFetchURL)
+            await modelCatalog.loadIfNeeded(url: effectiveFetchURL, provider: effectiveFetchProvider)
         }
     }
 }

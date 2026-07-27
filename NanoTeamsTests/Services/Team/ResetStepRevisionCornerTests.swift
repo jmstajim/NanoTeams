@@ -10,7 +10,7 @@ import XCTest
 final class ResetStepRevisionCornerTests: XCTestCase {
 
     private func makeOrchestrator() -> NTMSOrchestrator {
-        NTMSOrchestrator(repository: NTMSRepository(), searchEmbeddingClient: StubSearchEmbeddingClient())
+        TestOrchestrator.make()
     }
 
     private func makeWorkFolderRoot() -> URL {
