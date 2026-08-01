@@ -88,14 +88,14 @@ struct ArtifactListView: View {
             ArtifactEditorSheet(
                 team: $team,
                 mode: .create,
-                onSave: handleSaveArtifact
+                onSave: { _ in handleSaveArtifact() }
             )
         }
         .sheet(item: $showingEditArtifact) { artifact in
             ArtifactEditorSheet(
                 team: $team,
                 mode: .edit(artifact),
-                onSave: handleSaveArtifact
+                onSave: { _ in handleSaveArtifact() }
             )
         }
         .alert("Delete Artifact", isPresented: Binding(

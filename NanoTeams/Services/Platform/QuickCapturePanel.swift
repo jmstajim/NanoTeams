@@ -641,6 +641,8 @@ class QuickCapturePanel: NSPanel, NSWindowDelegate {
 
 // MARK: - Previews
 
+#if DEBUG
+
 // periphery:ignore - used in #Preview macros below
 @MainActor
 private enum QuickCapturePanelPreview {
@@ -655,7 +657,16 @@ private enum QuickCapturePanelPreview {
     static let heightMedium: CGFloat = 420
     static let heightTall: CGFloat = 540
 
-    static func makeStore() -> NTMSOrchestrator {
+    /// Task id used by the `.taskWorking` previews. Any stable value works — it
+    /// only has to match between the seeded task and `store.activeTaskID`.
+    static let workingTaskID = 42
+
+    /// `activeTask` is what separates the two `.taskWorking` previews: the chat
+    /// variant renders `chatWorkingBody` ONLY when `store.activeTaskID != nil`
+    /// (`QuickCaptureFormView.body`), so seeding it is not cosmetic — without it
+    /// the chat preview silently falls through to the non-chat body and shows a
+    /// plausible-but-wrong screen.
+    static func makeStore(activeTask: NTMSTask? = nil) -> NTMSOrchestrator {
         let store = NTMSOrchestrator(repository: NTMSRepository())
         store.snapshot = WorkFolderContext(
             projection: WorkFolderProjection(
@@ -665,9 +676,36 @@ private enum QuickCapturePanelPreview {
             ),
             tasksIndex: TasksIndex(),
             toolDefinitions: [],
-            activeTaskID: nil
+            activeTaskID: activeTask?.id,
+            activeTask: activeTask
         )
+        store.activeTask = activeTask
+        store._setActiveTaskID(activeTask?.id)
         return store
+    }
+
+    /// A task with one `.running` Tech Lead step — the state the `.taskWorking`
+    /// mode renders while a role is mid-turn.
+    static func runningTask(isChatMode: Bool) -> NTMSTask {
+        let team = Team.default
+        let roleID = team.roles.first { $0.systemRoleID == Role.techLead.baseID }?.id
+            ?? Role.techLead.baseID
+        let step = StepExecution(
+            id: roleID,
+            role: .techLead,
+            title: "Implementation Plan",
+            expectedArtifacts: ["Implementation Plan"],
+            status: .running
+        )
+        return NTMSTask(
+            id: workingTaskID,
+            title: "Preview Task",
+            supervisorTask: "Plan the quick capture improvements.",
+            status: .running,
+            runs: [Run(id: 0, steps: [step], roleStatuses: [step.id: .working], teamID: team.id)],
+            preferredTeamID: team.id,
+            isChatMode: isChatMode
+        )
     }
 
     static func makeFormState(
@@ -795,11 +833,24 @@ private enum QuickCapturePanelPreview {
                 mode: .supervisorAnswer(payload: chatPayload),
                 formState: makeFormState(),
                 height: heightTall
+            ),
+            Sample(
+                label: "Working · Task",
+                mode: .taskWorking(roleName: "Tech Lead", isChatMode: false),
+                formState: makeFormState(),
+                height: heightCompact
+            ),
+            Sample(
+                label: "Working · Chat",
+                mode: .taskWorking(roleName: "Tech Lead", isChatMode: true),
+                formState: makeFormState(),
+                height: heightMedium
             )
         ]
     }
 }
 
+// periphery:ignore - used in #Preview macros below
 extension View {
     /// Injects every `@Environment(...)` `QuickCaptureFormView` and its subtree
     /// read — single source of truth so a new env-dependency can't silently
@@ -974,11 +1025,47 @@ extension View {
     .quickCapturePreviewChrome(height: QuickCapturePanelPreview.heightTall)
 }
 
+#Preview("Working / Task") {
+    @Previewable @State var store = QuickCapturePanelPreview.makeStore(
+        activeTask: QuickCapturePanelPreview.runningTask(isChatMode: false))
+    @Previewable @State var formState = QuickCapturePanelPreview.makeFormState()
+
+    QuickCaptureFormView(
+        mode: .taskWorking(roleName: "Tech Lead", isChatMode: false),
+        formState: formState,
+        onSubmit: {},
+        onCancel: {}
+    )
+    .quickCapturePreviewEnvironment(store: store)
+    .quickCapturePreviewChrome(height: QuickCapturePanelPreview.heightCompact)
+}
+
+/// The chat variant renders a DIFFERENT branch (`chatWorkingBody`), reachable
+/// only while `store.activeTaskID` is set — hence the seeded active task above.
+#Preview("Working / Chat") {
+    @Previewable @State var store = QuickCapturePanelPreview.makeStore(
+        activeTask: QuickCapturePanelPreview.runningTask(isChatMode: true))
+    @Previewable @State var formState = QuickCapturePanelPreview.makeFormState()
+
+    QuickCaptureFormView(
+        mode: .taskWorking(roleName: "Tech Lead", isChatMode: true),
+        formState: formState,
+        onSubmit: {},
+        onCancel: {}
+    )
+    .quickCapturePreviewEnvironment(store: store)
+    .quickCapturePreviewChrome(height: QuickCapturePanelPreview.heightMedium)
+}
+
 /// Single-canvas gamut of every panel state — at-a-glance visual audit for
 /// designers / reviewers. Adaptive 2-column grid so the canvas re-flows as
 /// the preview window is resized.
 #Preview("Quick Capture / Showcase") {
-    @Previewable @State var store = QuickCapturePanelPreview.makeStore()
+    // Seeded with a chat-mode active task so the two "Working" rows render their
+    // real branches — `chatWorkingBody` is gated on `store.activeTaskID`. The
+    // overlay / answer rows ignore it.
+    @Previewable @State var store = QuickCapturePanelPreview.makeStore(
+        activeTask: QuickCapturePanelPreview.runningTask(isChatMode: true))
     @Previewable @State var samples = QuickCapturePanelPreview.makeShowcaseSamples()
 
     let cellWidth = QuickCapturePanelPreview.panelWidth + Spacing.l * 2
@@ -1021,3 +1108,5 @@ extension View {
     // the longest two rows (tall + medium) breathe.
     .frame(minWidth: cellWidth * 2 + Spacing.xl * 3, minHeight: 1200)
 }
+
+#endif

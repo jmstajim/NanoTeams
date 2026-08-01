@@ -94,7 +94,7 @@ final class SearchExploratoryHandlerTests: XCTestCase {
         XCTAssertEqual(payload.contextBefore, 2)
         XCTAssertEqual(payload.contextAfter, 3)
         XCTAssertEqual(payload.maxResults, 15)
-        XCTAssertEqual(payload.maxMatchLines, 25)
+        XCTAssertEqual(payload.offset, 0)
     }
 
     // MARK: - expand missing / false → plain search

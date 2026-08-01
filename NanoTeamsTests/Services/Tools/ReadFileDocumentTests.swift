@@ -792,9 +792,10 @@ final class ReadFileDocumentTests: XCTestCase {
                       "context_after=2 should include line after match: \(json)")
     }
 
-    func testSearchDocuments_maxMatchLines_truncatesMidDocument() throws {
-        // 10 paragraphs, each matching the query. With max_match_lines=3 the
-        // search should truncate mid-document and return truncated=true.
+    func testSearchDocuments_pageSizeTruncatesMidDocument() throws {
+        // 10 paragraphs, each matching the query. A page of 3 returns 3 and reports that more
+        // exist. Replaces the old `max_match_lines: 3` variant — that parameter is gone, and
+        // `max_results` is now the only limit on how many matches come back.
         var body = ""
         for i in 0..<10 {
             body += "<w:p><w:r><w:t>SAMEPHRASE \(i)</w:t></w:r></w:p>"
@@ -804,13 +805,59 @@ final class ReadFileDocumentTests: XCTestCase {
         let call = StepToolCall(
             name: "search",
             argumentsJSON: """
-            {"query": "SAMEPHRASE", "max_match_lines": 3}
+            {"query": "SAMEPHRASE", "max_results": 3}
             """
         )
         let results = runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
+        XCTAssertTrue(results[0].outputJSON.contains("\"count\":3"),
+                      "page size governs the returned count: \(results[0].outputJSON)")
         XCTAssertTrue(results[0].outputJSON.contains("\"truncated\":true"),
-                      "max_match_lines hit should mark result as truncated: \(results[0].outputJSON)")
+                      "more matches exist beyond the page: \(results[0].outputJSON)")
+        XCTAssertTrue(results[0].outputJSON.contains("\"has_more\":true"),
+                      "and that is stated explicitly: \(results[0].outputJSON)")
+    }
+
+    func testSearchDocuments_pagesDoNotOverlapOrSkip() throws {
+        var body = ""
+        for i in 0..<10 {
+            body += "<w:p><w:r><w:t>SAMEPHRASE \(i)</w:t></w:r></w:p>"
+        }
+        _ = try makeDOCX(at: "big.docx", body: body)
+
+        func page(offset: Int, limit: Int) -> String {
+            let call = StepToolCall(
+                name: "search",
+                argumentsJSON: "{\"query\": \"SAMEPHRASE\", \"max_results\": \(limit), \"offset\": \(offset)}"
+            )
+            return runtime.executeAll(context: context, toolCalls: [call])[0].outputJSON
+        }
+
+        // Paragraph 4 is on the second page of 4 and must appear exactly once across pages.
+        let first = page(offset: 0, limit: 4)
+        let second = page(offset: 4, limit: 4)
+        XCTAssertTrue(first.contains("SAMEPHRASE 0"), first)
+        XCTAssertFalse(first.contains("SAMEPHRASE 4"), "page 1 stops before the 5th match: \(first)")
+        XCTAssertTrue(second.contains("SAMEPHRASE 4"), "page 2 resumes exactly where page 1 ended: \(second)")
+        XCTAssertFalse(second.contains("SAMEPHRASE 0"), "page 2 does not repeat page 1: \(second)")
+        XCTAssertTrue(second.contains("\"offset\":4"), "offset is echoed back: \(second)")
+    }
+
+    func testSearchDocuments_lastPage_reportsNoMore() throws {
+        var body = ""
+        for i in 0..<5 {
+            body += "<w:p><w:r><w:t>SAMEPHRASE \(i)</w:t></w:r></w:p>"
+        }
+        _ = try makeDOCX(at: "small.docx", body: body)
+
+        let call = StepToolCall(
+            name: "search",
+            argumentsJSON: "{\"query\": \"SAMEPHRASE\", \"max_results\": 50}"
+        )
+        let json = runtime.executeAll(context: context, toolCalls: [call])[0].outputJSON
+        XCTAssertFalse(json.contains("\"has_more\""), "nothing beyond this page: \(json)")
+        XCTAssertTrue(json.contains("\"total_matches\":5"),
+                      "the walk finished and everything fit, so the total is exact: \(json)")
     }
 
     func testSearchDocuments_noMatches_returnsEmptyResult_noSkippedFiles() throws {

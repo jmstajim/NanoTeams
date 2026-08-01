@@ -1,137 +1,5 @@
 import Foundation
 
-/// Input bundle for a grep pass — used by both the plain `SearchTool` handler
-/// and the exploratory-search processor (which constrains the walk to a posting-hit
-/// set before invoking the executor).
-nonisolated struct SearchExecutorInput {
-    let workFolderRoot: URL
-    let resolver: SandboxPathResolver
-    let fileManager: FileManager
-    let queries: [String]
-    let mode: SearchMode
-    let paths: [String]?
-    let fileGlob: String?
-    let contextBefore: Int
-    let contextAfter: Int
-    let maxResults: Int
-    let maxMatchLines: Int
-    /// When non-nil, the executor iterates exactly this set of relative file
-    /// paths instead of walking the directory tree. Used by exploratory search after
-    /// posting-list intersection narrows the candidate files.
-    let constrainToFiles: [String]?
-    /// Optional restriction to a set of internal paths that should never be
-    /// scanned (e.g. `.nanoteams/internal/`).
-    let internalDir: URL?
-
-    init(
-        workFolderRoot: URL,
-        resolver: SandboxPathResolver,
-        fileManager: FileManager,
-        queries: [String],
-        mode: SearchMode = .substring,
-        paths: [String]? = nil,
-        fileGlob: String? = nil,
-        contextBefore: Int = 0,
-        contextAfter: Int = 0,
-        maxResults: Int = 20,
-        maxMatchLines: Int = 40,
-        constrainToFiles: [String]? = nil,
-        internalDir: URL? = nil
-    ) {
-        self.workFolderRoot = workFolderRoot
-        self.resolver = resolver
-        self.fileManager = fileManager
-        self.queries = queries
-        self.mode = mode
-        self.paths = paths
-        self.fileGlob = fileGlob
-        self.contextBefore = contextBefore
-        self.contextAfter = contextAfter
-        self.maxResults = maxResults
-        self.maxMatchLines = maxMatchLines
-        self.constrainToFiles = constrainToFiles
-        self.internalDir = internalDir
-    }
-}
-
-nonisolated enum SearchMode: String {
-    case substring
-    case regex
-
-    /// Parse the string that comes out of `SearchTool` arguments. Anything
-    /// other than `"regex"` — including `nil`, `"substring"`, typos, or
-    /// unknown modes — resolves to `.substring` (the safe default).
-    init(raw: String?) {
-        self = (raw == "regex") ? .regex : .substring
-    }
-}
-
-/// Typed errors raised by `SearchExecutor.run`. Distinct from
-/// `SandboxPathError` (path resolution) so callers can surface the specific
-/// reason — without this, a malformed regex pattern silently produced zero
-/// matches with no signal to the LLM that the query itself was the problem.
-nonisolated enum SearchExecutorError: Error, Equatable, LocalizedError {
-    /// `mode == .regex` and the supplied pattern failed to compile via
-    /// `NSRegularExpression(pattern:options:)`. `query` is the offending
-    /// pattern; `message` carries the platform-specific failure detail.
-    case regexCompileFailed(query: String, message: String)
-
-    /// The supplied `file_glob` failed to compile after escaping. Without
-    /// this throw, `GlobMatcher.matches` would fail-closed on every candidate
-    /// and the envelope would carry zero hits with no signal that the glob
-    /// itself was the problem — see CLAUDE.md "rename complete" review.
-    case invalidFileGlob(pattern: String, message: String)
-
-    /// `LocalizedError` conformance — `error.localizedDescription` is what
-    /// reaches the envelope's `search_error` field, so it must be readable.
-    var errorDescription: String? {
-        switch self {
-        case .regexCompileFailed(let query, let message):
-            return "regex compile failed for pattern '\(query)': \(message)"
-        case .invalidFileGlob(let pattern, _):
-            // Corrective glob vocabulary, matching `list_files`'s name_glob
-            // message — NOT the raw NSRegularExpression detail. Surfacing the
-            // compile error taught weaker models nothing (globs aren't regex to
-            // them) and drove self-correction loops. `message` is retained on
-            // the case for diagnostics/Equatable, just not shown to the model.
-            return "file_glob '\(pattern)' is not a valid glob (only * is a wildcard)."
-        }
-    }
-}
-
-/// Output of a grep pass. Mirrors `SearchData` fields used by `SearchTool` so
-/// the plain path's envelope shape is preserved.
-nonisolated struct SearchExecutorOutput {
-    var matches: [SearchMatch]
-    var skipped: [SkippedFile]
-    var skippedBinaryCount: Int
-    /// Truncated because we hit `maxResults` or `maxMatchLines`.
-    var truncated: Bool
-    /// Files whose name or relative path matched the query, independent of
-    /// content. Computed against the same walk that produced `matches`, so
-    /// `WalkSkipRules` and `internalDir` exclusion are already applied.
-    var filenameMatches: [FilenameMatch]
-
-    init(
-        matches: [SearchMatch],
-        skipped: [SkippedFile],
-        skippedBinaryCount: Int,
-        truncated: Bool,
-        filenameMatches: [FilenameMatch] = []
-    ) {
-        self.matches = matches
-        self.skipped = skipped
-        self.skippedBinaryCount = skippedBinaryCount
-        self.truncated = truncated
-        self.filenameMatches = filenameMatches
-    }
-
-    /// Empty output — convenience for short-circuit branches.
-    static var empty: SearchExecutorOutput {
-        SearchExecutorOutput(matches: [], skipped: [], skippedBinaryCount: 0, truncated: false)
-    }
-}
-
 /// Stateless grep engine shared by plain `SearchTool.handle` and the broad-
 /// search processor in `LLMExecutionService+ExploratorySearch`.
 ///
@@ -141,32 +9,80 @@ nonisolated struct SearchExecutorOutput {
 /// (the original LLM query) come first, expanded terms follow in order.
 nonisolated enum SearchExecutor {
 
+    // MARK: - Paging bounds
+
+    /// Upper bound on `maxResults`, i.e. the largest page a caller may request.
+    ///
+    /// Sourced from `AppDefaults` rather than from `ExploratorySearchPayload.maxAllowedResults`,
+    /// which is the TOOL layer's clamp for the same setting. Reading it from here made a pure
+    /// `Services/Search` engine depend on a `Services/Tools` DTO for its own budget — and the
+    /// inconsistency was visible in one file, since `maxAllowedOffset` right below was local.
+    /// Both aliases now point at the one setting the Settings stepper edits.
+    static let maxAllowedResults = AppDefaults.searchMaxResultsMax
+
+    /// Upper bound on `offset`, i.e. how deep into the result set a caller may page.
+    ///
+    /// The number of PAGES is deliberately unbounded — only the page SIZE is capped. This exists
+    /// solely to keep the paging arithmetic away from `Int` overflow; a billion matches deep is
+    /// unreachable by any real corpus, so it never truncates a legitimate request.
+    static let maxAllowedOffset = 1_000_000_000
+
     static func run(_ input: SearchExecutorInput) throws -> SearchExecutorOutput {
-        // Pre-validate `file_glob` once. Without this, `GlobMatcher.matches`
-        // fail-closes on every candidate and the envelope carries zero hits
+        // All mutable per-run state — matches, counters, skips, stats — lives in one value so the
+        // walk and the extracted per-file scan share it explicitly rather than through implicit
+        // capture. See `SearchScanResults`.
+        var results = SearchScanResults(queryCount: input.queries.count)
+
+        // Compile `file_glob` ONCE. Doubles as the pre-validation that used to live here: without
+        // it a malformed glob fail-closes on every candidate and the envelope carries zero hits
         // with no signal that the user's glob is the problem.
-        if let glob = input.fileGlob {
-            try GlobMatcher.validate(glob: glob)
+        //
+        // `nil` means "no glob supplied" and is checked with `?? true` at the three filter sites.
+        // The old code passed `input.fileGlob ?? "*"` into a function that re-escaped and
+        // re-compiled `^.*$` for EVERY walked file — ~10 ms per search on a 1500-file tree, paid
+        // even when the caller never asked for a glob.
+        let compiledGlob: CompiledGlob? = try input.fileGlob.map {
+            results.stats.globCompilations += 1
+            return try CompiledGlob(glob: $0, caseInsensitive: false)
         }
-        // Dedup — a single source line can match multiple expanded terms.
-        var dedupKeys: Set<String> = []
-        // Bucket matches by query index so we can round-robin the final list.
-        var perQueryMatches: [[SearchMatch]] = Array(repeating: [], count: input.queries.count)
-        var totalMatchLines = 0
-        // Track files that could not be indexed so the LLM/user can see WHY a
-        // match might be missing, instead of interpreting silence as "no
-        // documents matched".
-        var skipped: [SkippedFile] = []
-        // Aggregate counter for files silently skipped as "too noisy to list
-        // individually" (binary blobs on unsupported extensions) — without
-        // this, every `.png`/`.o` in the tree would flood `skipped_files`.
-        // The count still lets the LLM tell "empty scope" from "scope had N
-        // unreadable binaries".
-        var skippedBinaryCount = 0
+
+        // MARK: - Budget: page size, offset, per-query caps
+
+        // Clamp HERE, at the single choke point every caller passes through. The exploratory path
+        // clamps in `ExploratorySearchPayload.init`, but the plain path handed the LLM's raw
+        // integer straight down, which made three failures reachable:
+        //   `max_results: Int.max` -> trap (see `perQueryCap` below)
+        //   `max_results: 0`       -> `totalMatches() >= 0` true on the first check, so a silent
+        //                             empty result with `truncated: false`
+        //   `max_results: -5`      -> `truncated = (0 >= -5)` true on an empty result
+        let effectiveMaxResults = max(
+            1, min(input.maxResults, maxAllowedResults))
+        // The page COUNT is unbounded — only the page SIZE is capped — so `offset` is not clamped
+        // to any small value. It IS bounded away from the top of `Int` so the downstream
+        // arithmetic cannot overflow: `offset: Int.max` made `offset + maxResults` TRAP, and a
+        // trap is not catchable by `ToolErrorHandler`, so one malformed tool call took the app
+        // down.
+        //
+        // The bound has REAL HEADROOM rather than sitting exactly at `Int.max - maxResults - 1`.
+        // That tighter version still trapped, one step further along: `perQueryCap` computes
+        // `collectBudget + queryCount - 1`, which is left-associative, so `collectBudget + 1`
+        // overflows before the `- 1` can bring it back. A billion matches deep is unreachable by
+        // any real corpus (a billion pages of 300), so the headroom costs nothing.
+        let effectiveOffset = min(max(0, input.offset), maxAllowedOffset)
+        // How many matches must be COLLECTED before the page can be cut. The extra +1 is what
+        // makes `has_more` honest without walking the whole tree.
+        let collectTarget = effectiveOffset + effectiveMaxResults
+        let collectBudget = collectTarget + 1
 
         // Cap per query = max(1, ceil(maxResults / N))
         let queryCount = max(1, input.queries.count)
-        let perQueryCap = max(1, Int((Double(input.maxResults) / Double(queryCount)).rounded(.up)))
+        // Integer ceiling division. The old `Int(Double(maxResults).rounded(.up))` TRAPPED on
+        // `max_results: Int.max` — `Double(Int.max)` rounds to exactly 2^63, one past `Int.max`,
+        // and a trap is not catchable by `ToolErrorHandler`. `effectiveMaxResults` already closes
+        // that, but keep the arithmetic integer-only so no future caller can re-open it.
+        let perQueryCap = max(1, (collectBudget + queryCount - 1) / queryCount)
+
+        // MARK: - Query compilation
 
         // Pre-compile regexes (if needed) once per query. A malformed pattern
         // throws so the caller can surface the reason in the envelope's
@@ -184,14 +100,65 @@ nonisolated enum SearchExecutor {
             }
         }
 
+        // Compile each query's byte form once per run rather than re-inspecting it per line.
+        let needles: [LineScanner.CompiledNeedle] = input.queries.map {
+            LineScanner.CompiledNeedle($0)
+        }
+        // Read `Locale.current` ONCE. Turkic locales fold ASCII I/i differently from a plain
+        // A-Z table, so the byte fast path is disabled wholesale there.
+        let asciiFoldMatchesLocale = LineScanner.asciiFoldMatchesLocale
+
+        // Everything the per-file scan reads, frozen for the run.
+        let plan = SearchScanPlan(
+            needles: needles,
+            regexes: regexes,
+            contextBefore: input.contextBefore,
+            contextAfter: input.contextAfter,
+            perQueryCap: perQueryCap,
+            collectBudget: collectBudget,
+            asciiFoldMatchesLocale: asciiFoldMatchesLocale
+        )
+
+        func searchFile(at url: URL, relativePath: String) {
+            SearchExecutor.scanFile(
+                at: url, relativePath: relativePath, plan: plan, into: &results)
+        }
+
         // Early-return when an empty `constrainToFiles` is supplied — nothing to scan.
         if let constrained = input.constrainToFiles, constrained.isEmpty {
-            return SearchExecutorOutput(matches: [], skipped: [], skippedBinaryCount: 0, truncated: false)
+            return .empty
         }
+
+        // MARK: - Walk scope
 
         let fm = input.fileManager
         let workFolderRoot = input.workFolderRoot
+        // Canonical root for the symlink-containment check in the walk. Resolved ONCE, and
+        // resolved on BOTH sides of that comparison: `resolvingSymlinksInPath()` normalises
+        // `/private/var` back to `/var` for paths that exist, so comparing a resolved target
+        // against an unresolved root would reject legitimate in-folder links on macOS temp dirs.
+        let canonicalRoot = workFolderRoot.resolvingSymlinksInPath().standardizedFileURL
         let internalDir = input.internalDir
+        // The internal dir expressed as a work-folder-relative prefix, computed ONCE. The walk
+        // then excludes it with a string compare instead of calling
+        // `SandboxPathResolver.isWithin` (two `standardizedFileURL` normalisations plus two
+        // `pathComponents` arrays) on every single entry.
+        //
+        // `nil` when the internal dir is absent OR lies outside the root — in the latter case
+        // nothing the walk enumerates can be inside it, so "no prefix" is the correct answer.
+        // Canonical internal dir, for the symlink check in the walk. The relative-prefix
+        // exclusion below cannot see a link that reaches it under another name.
+        let internalCanonical = internalDir?.resolvingSymlinksInPath().standardizedFileURL
+        let internalRelPrefix: String? = internalDir.flatMap { dir -> String? in
+            let rootComponents = workFolderRoot.standardizedFileURL.pathComponents
+            let dirComponents = dir.standardizedFileURL.pathComponents
+            guard dirComponents.count > rootComponents.count,
+                  Array(dirComponents.prefix(rootComponents.count)) == rootComponents
+            else { return nil }
+            return dirComponents.dropFirst(rootComponents.count).joined(separator: "/")
+        }
+
+        // MARK: - Roster and stop conditions
 
         // Files we enumerated and would have grepped — fed to `FilenameMatcher`
         // after the walk so name/path matches can be returned alongside
@@ -207,6 +174,8 @@ nonisolated enum SearchExecutor {
         // benefits: a file reachable via two paths is searched once instead of
         // twice (matches were already deduped by `(path, line)`).
         var visitedSet: Set<String> = []
+        // Canonical (symlink-resolved) paths of directories already entered — the cycle guard.
+        var visitedDirs: Set<String> = []
         // Set once list mode discovers a distinct candidate BEYOND `maxResults`
         // (see `admitToRoster`). Distinguishes "stopped early, more exist" from
         // "finished with exactly maxResults" so `truncated` is never a false
@@ -227,11 +196,12 @@ nonisolated enum SearchExecutor {
             $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
 
-        func totalMatches() -> Int { perQueryMatches.reduce(0) { $0 + $1.count } }
-
-        func budgetExhausted() -> Bool {
-            totalMatches() >= input.maxResults || totalMatchLines >= input.maxMatchLines
-        }
+        // Count only. The old second term (`totalMatchLines >= maxMatchLines`, a hardcoded 40)
+        // made CONTEXT govern the RESULT COUNT: at 2+3 lines per match it stopped the walk after
+        // 8 matches and reported `truncated`, leaving most of `max_results` unused, and raising
+        // the context setting silently returned FEWER matches. Context and page size are now
+        // independent.
+        func budgetExhausted() -> Bool { results.budgetExhausted(plan) }
 
         // In list mode there are no content matches, so `budgetExhausted` never
         // trips. Instead the walk halts once `admitToRoster` has confirmed one
@@ -249,7 +219,7 @@ nonisolated enum SearchExecutor {
         // halts the walk via `walkShouldStop` — nothing past the cap is added.
         func admitToRoster(_ path: String) -> Bool {
             guard visitedSet.insert(path).inserted else { return false }
-            if listMode && visitedPaths.count >= input.maxResults {
+            if listMode && visitedPaths.count >= collectTarget {
                 rosterTruncated = true
                 return false
             }
@@ -257,137 +227,148 @@ nonisolated enum SearchExecutor {
             return true
         }
 
-        func searchFile(at url: URL, relativePath: String) {
-            guard !budgetExhausted() else { return }
-            // Cancel checkpoint at file boundary. The detached tool batch in
-            // `LLMExecutionService.executeToolCalls` cancels this task on pause;
-            // a 100-MB project with hundreds of files would otherwise keep
-            // grepping for seconds after pause-and-decide.
-            if Task.isCancelled { return }
-
-            let content: String
-            let ext = url.pathExtension.lowercased()
-            if DocumentTextExtractor.isSupported(extension: ext) {
-                guard let extracted = DocumentTextExtractor.extractText(from: url) else {
-                    skipped.append(SkippedFile(
-                        path: relativePath,
-                        reason: "document extractor could not open file as .\(ext)"
-                    ))
-                    return
-                }
-                if DocumentTextExtractor.isFailureMessage(extracted) {
-                    skipped.append(SkippedFile(path: relativePath, reason: extracted))
-                    return
-                }
-                content = extracted
-            } else {
-                // Chunked 1-MiB streaming read with `Task.isCancelled` checks
-                // between chunks — a paused step stops mid-file. The typed
-                // outcome separates the three failure modes (binary / I/O
-                // error / cancellation) so each routes to the right reporting
-                // channel — collapsing them into one `nil` would silently
-                // inflate `skippedBinaryCount` after a pause.
-                switch readUTF8Streaming(url: url) {
-                case .text(let utf8):
-                    content = utf8
-                case .binary:
-                    skippedBinaryCount += 1
-                    return
-                case .ioError(let reason):
-                    skipped.append(SkippedFile(path: relativePath, reason: reason))
-                    return
-                case .cancelled:
-                    // Don't touch the per-file counters — the count would
-                    // otherwise grow with every file the cancel walked past.
-                    return
-                }
-            }
-
-            let lines = content.components(separatedBy: .newlines)
-
-            for (idx, line) in lines.enumerated() {
-                if budgetExhausted() { return }
-                for (qIdx, query) in input.queries.enumerated() {
-                    guard perQueryMatches[qIdx].count < perQueryCap else { continue }
-                    let found: Bool
-                    if let regex = regexes[qIdx] {
-                        let range = NSRange(line.startIndex..., in: line)
-                        found = regex.firstMatch(in: line, options: [], range: range) != nil
-                    } else {
-                        found = line.localizedCaseInsensitiveContains(query)
-                    }
-                    guard found else { continue }
-
-                    let key = "\(relativePath)\0\(idx + 1)"
-                    if dedupKeys.contains(key) { continue }
-                    dedupKeys.insert(key)
-
-                    var contextBeforeLines: [LineRef]?
-                    var contextAfterLines: [LineRef]?
-                    if input.contextBefore > 0 {
-                        let startIdx = max(0, idx - input.contextBefore)
-                        contextBeforeLines = (startIdx..<idx).map { i in
-                            LineRef(line: i + 1, text: lines[i])
-                        }
-                    }
-                    if input.contextAfter > 0 {
-                        let endIdx = min(lines.count, idx + input.contextAfter + 1)
-                        contextAfterLines = ((idx + 1)..<endIdx).map { i in
-                            LineRef(line: i + 1, text: lines[i])
-                        }
-                    }
-
-                    perQueryMatches[qIdx].append(SearchMatch(
-                        path: relativePath,
-                        line: idx + 1,
-                        text: line,
-                        context_before: contextBeforeLines,
-                        context_after: contextAfterLines
-                    ))
-                    totalMatchLines += 1 + (contextBeforeLines?.count ?? 0) + (contextAfterLines?.count ?? 0)
-                    // Line is consumed — don't double-count against other queries.
-                    break
-                }
-            }
-        }
+        // MARK: - Directory walk
 
         func searchDirectory(at url: URL, relativePath: String) {
             guard !walkShouldStop() else { return }
             if Task.isCancelled { return }
-            guard let contents = try? fm.contentsOfDirectory(atPath: url.path) else { return }
 
-            for name in contents.sorted() {
+            // Cycle detection, mirroring `SearchIndexService.walkRecursive`. `.isDirectoryKey`
+            // FOLLOWS symlinks, so `a/loop -> a` recurses until the stack overflows — and on a
+            // zero-match query `walkShouldStop()` never trips, so nothing else bounds it. One
+            // `resolvingSymlinksInPath()` per DIRECTORY (not per entry) is a few hundred calls
+            // on a real tree, far below the read costs this walk already pays.
+            //
+            // It is reported, not swallowed: silence here is indistinguishable from an empty
+            // subtree, which is exactly the confusion `skipped` exists to prevent. The same
+            // guard also collapses a plain ALIAS (`alias -> real`, no cycle) to one visit, so
+            // the reason names both shapes.
+            let canonical = url.resolvingSymlinksInPath().standardizedFileURL.path
+            guard visitedDirs.insert(canonical).inserted else {
+                results.skipped.append(SkippedFile(
+                    path: relativePath.isEmpty ? "." : relativePath,
+                    reason: "symlink already visited under another path (alias or cycle)"
+                ))
+                return
+            }
+
+            // Prefetch `.isDirectoryKey` so the type comes back with the single readdir the
+            // kernel already performed. The old shape called `contentsOfDirectory(atPath:)`
+            // (names only, discarding `d_type`) and then paid a SEPARATE `fileExists` stat per
+            // entry.
+            guard let urls = try? fm.contentsOfDirectory(
+                at: url,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                // Deliberately NOT `.skipsHiddenFiles`: `.gitignore` and `.nanoteams` are hidden
+                // entries the walk must still see.
+                options: []
+            ) else { return }
+            results.stats.dirsEnumerated += 1
+
+            // Sort by NAME with Swift's `String <`, reproducing the old `contents.sorted()` over
+            // the name array exactly. NOT `localizedStandardCompare` — that is `list_files`'s
+            // ordering and would reorder non-ASCII filenames here
+            // (`SearchExecutorCharacterizationTests.testCharacterization_directoryOrder_*`).
+            var entries: [(name: String, url: URL, isDir: Bool)] = []
+            entries.reserveCapacity(urls.count)
+            for itemURL in urls {
+                // A nil `isDirectory` means the entry vanished or is unreadable.
+                guard let rv = try? itemURL.resourceValues(
+                        forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                      let isDir = rv.isDirectory
+                else { continue }
+
+                var isDirValue = isDir
+                // What the walk descends into / reads. For a symlink this is the RESOLVED
+                // target: `contentsOfDirectory(at:)` returns ZERO entries for a symlink URL
+                // (it is not a directory-path URL), so descending into the link itself silently
+                // yields an empty subtree — measured, and pinned below.
+                var traverseURL = itemURL
+                if rv.isSymbolicLink == true {
+                    // `.isDirectoryKey` describes the LINK, not its target: it reports `false`
+                    // for a symlink to a directory. The pre-rewrite walk asked
+                    // `fileExists(atPath:isDirectory:)`, which DOES follow, so a symlinked source
+                    // tree was searched. Prefetching resource values silently stopped searching
+                    // them and handed the link itself to `searchFile` as though it were a
+                    // document — measured, not reasoned: see the probe in
+                    // `SearchExecutorContractTests`.
+                    var targetIsDir: ObjCBool = false
+                    // A dangling link fails here, which is what `fileExists` did before.
+                    guard fm.fileExists(atPath: itemURL.path, isDirectory: &targetIsDir) else {
+                        continue
+                    }
+                    // Following a link OUT of the work folder would read files this tool is
+                    // sandboxed away from — the walk is the one path that never consults
+                    // `SandboxPathResolver` per entry, so restoring "follow symlinks" without
+                    // this check would re-open an escape (`outside -> /etc` resolves and reads).
+                    // Same rule, for the same reason, as `AgentInstructionsScanner`.
+                    let target = itemURL.resolvingSymlinksInPath().standardizedFileURL
+                    let name = itemURL.lastPathComponent
+                    // `.nanoteams/internal` is excluded below by RELATIVE path prefix, and that
+                    // exclusion rests on an assumption following symlinks breaks: `itemPath` is
+                    // built from enumerated NAMES, so `peek -> .nanoteams/internal` has relative
+                    // path `peek`, matches no prefix, and its target is legitimately inside the
+                    // work folder. Without this the walk read `workfolder.json`, `teams.json` and
+                    // every `task.json`.
+                    //
+                    // Silent, matching `SandboxPathResolver.restrictedPath` (which reports
+                    // internal paths as "not found"): a notice here would tell the model the
+                    // internal directory exists and is worth probing.
+                    if let internalCanonical,
+                       SandboxPathResolver.isWithin(candidate: target, container: internalCanonical) {
+                        continue
+                    }
+                    guard SandboxPathResolver.isWithin(candidate: target, container: canonicalRoot)
+                    else {
+                        results.skipped.append(SkippedFile(
+                            path: relativePath.isEmpty ? name : "\(relativePath)/\(name)",
+                            reason: "symlink points outside the work folder"
+                        ))
+                        continue
+                    }
+                    isDirValue = targetIsDir.boolValue
+                    // Keep the LOGICAL name/path (the link's) for reporting — a match under
+                    // `alias/a.swift` is a path `read_file` can open — but traverse the target.
+                    traverseURL = target
+                }
+                entries.append((itemURL.lastPathComponent, traverseURL, isDirValue))
+            }
+            entries.sort { $0.name < $1.name }
+
+            for (name, itemURL, isDirValue) in entries {
                 if walkShouldStop() { return }
                 if Task.isCancelled { return }
                 guard !WalkSkipRules.skipped.contains(name) else { continue }
 
-                let itemURL = url.appendingPathComponent(name)
-                if let internalDir,
-                   SandboxPathResolver.isWithin(candidate: itemURL, container: internalDir) {
+                let itemPath = relativePath.isEmpty ? name : "\(relativePath)/\(name)"
+                // Relative-path prefix compare instead of `SandboxPathResolver.isWithin`, which
+                // ran `standardizedFileURL` + two `pathComponents` allocations PER ENTRY — 10 ms
+                // of the walk's 25.6 ms. Equivalent because `itemPath` is built purely from names
+                // enumerated under the root.
+                if let prefix = internalRelPrefix,
+                   itemPath == prefix || itemPath.hasPrefix(prefix + "/") {
                     continue
                 }
-                let itemPath = relativePath.isEmpty ? name : "\(relativePath)/\(name)"
-
-                var isDir: ObjCBool = false
-                guard fm.fileExists(atPath: itemURL.path, isDirectory: &isDir) else { continue }
 
                 // RTFD is a file-bundle directory — treat as a single document.
-                if isDir.boolValue && name.hasSuffix(".rtfd") {
+                if isDirValue && name.hasSuffix(".rtfd") {
                     if admitToRoster(itemPath), !listMode {
                         searchFile(at: itemURL, relativePath: itemPath)
                     }
                     continue
                 }
 
-                if isDir.boolValue {
+                if isDirValue {
                     searchDirectory(at: itemURL, relativePath: itemPath)
                 } else {
-                    if !GlobMatcher.matches(name: name, glob: input.fileGlob ?? "*", caseInsensitive: false) { continue }
+                    if !(compiledGlob?.matches(name) ?? true) { continue }
                     guard admitToRoster(itemPath) else { continue }
                     if !listMode { searchFile(at: itemURL, relativePath: itemPath) }
                 }
             }
         }
+
+        // MARK: - Drive the walk
 
         // Walk either the constrained set or the directory tree.
         if let constrained = input.constrainToFiles {
@@ -398,7 +379,7 @@ nonisolated enum SearchExecutor {
                 guard fm.fileExists(atPath: url.path, isDirectory: &isDir) else { continue }
                 // Treat .rtfd bundles as single files; otherwise skip directories.
                 if isDir.boolValue && !url.pathExtension.lowercased().hasSuffix("rtfd") { continue }
-                if !GlobMatcher.matches(name: url.lastPathComponent, glob: input.fileGlob ?? "*", caseInsensitive: false) { continue }
+                if !(compiledGlob?.matches(url.lastPathComponent) ?? true) { continue }
                 guard admitToRoster(relative) else { continue }
                 if !listMode { searchFile(at: url, relativePath: relative) }
             }
@@ -424,7 +405,7 @@ nonisolated enum SearchExecutor {
                         // entry is filtered by the glob just like a file found
                         // in a directory walk, so a non-matching named file
                         // doesn't slip past the filter.
-                        guard GlobMatcher.matches(name: dir.lastPathComponent, glob: input.fileGlob ?? "*", caseInsensitive: false) else { continue }
+                        guard compiledGlob?.matches(dir.lastPathComponent) ?? true else { continue }
                         let rel = dir.path.replacingOccurrences(
                             of: workFolderRoot.path + "/", with: "")
                         // Mirror the dir-walk: also feed single-file `paths`
@@ -443,98 +424,97 @@ nonisolated enum SearchExecutor {
             }
         }
 
-        // Round-robin assemble the final list: original query first, then
-        // expansions in order, cycling through each bucket so no single query
-        // monopolizes the visible slots when they all had plenty of hits.
+        // MARK: - Assemble and cut the page
+
+        // Round-robin assemble: original query first, then expansions in order, cycling through
+        // each bucket so no single query monopolizes the page when they all had plenty of hits.
+        // Assembled up to `collectBudget` (one past the page) so the slice below can tell
+        // "page is full" from "there is more".
         var combined: [SearchMatch] = []
-        combined.reserveCapacity(min(totalMatches(), input.maxResults))
-        var heads = Array(repeating: 0, count: perQueryMatches.count)
-        outer: while combined.count < input.maxResults {
+        combined.reserveCapacity(min(results.totalMatchCount, plan.collectBudget))
+        var heads = Array(repeating: 0, count: results.perQueryMatches.count)
+        outer: while combined.count < plan.collectBudget {
             var progress = false
-            for qIdx in perQueryMatches.indices {
-                if combined.count >= input.maxResults { break outer }
-                guard heads[qIdx] < perQueryMatches[qIdx].count else { continue }
-                combined.append(perQueryMatches[qIdx][heads[qIdx]])
+            for qIdx in results.perQueryMatches.indices {
+                if combined.count >= plan.collectBudget { break outer }
+                guard heads[qIdx] < results.perQueryMatches[qIdx].count else { continue }
+                combined.append(results.perQueryMatches[qIdx][heads[qIdx]])
                 heads[qIdx] += 1
                 progress = true
             }
             if !progress { break }
         }
 
-        let truncated = listMode
-            ? rosterTruncated
-            : (totalMatches() >= input.maxResults || totalMatchLines >= input.maxMatchLines)
+        // Cut the requested page out of an assembled list. An `offset` past the end yields an
+        // empty page rather than an error — the caller paged off the end, which is not a failure.
+        func pageSlice<T>(_ all: [T]) -> [T] {
+            let start = min(effectiveOffset, all.count)
+            let end = min(start + effectiveMaxResults, all.count)
+            return Array(all[start..<end])
+        }
 
-        let filenameMatches = listMode
-            ? FilenameMatcher.matchAll(candidates: visitedPaths, limit: input.maxResults)
-            : FilenameMatcher.match(
+        let page = pageSlice(combined)
+        let hasMoreContent = combined.count > collectTarget
+
+        // Filename matches.
+        //
+        // In LIST mode the roster IS the result, so it is the list `offset` walks.
+        //
+        // In CONTENT mode names are an orientation aid returned ALONGSIDE `matches`, and they
+        // are deliberately NOT paged. `offset` advances over exactly one list and the caller is
+        // told to advance it by `count`; paging both in lockstep — the shape this replaces — is
+        // unsound the moment the two lists differ in length. A query with 3 content hits and 400
+        // name hits returned names[0..<300] on page 1, whereupon the caller advanced by
+        // `count == 3` and got names[3..<303] — 297 of them for the second time.
+        var warnings: [String] = []
+        let filenameMatches: [FilenameMatch]
+        if listMode {
+            filenameMatches = pageSlice(
+                FilenameMatcher.matchAll(candidates: visitedPaths, limit: plan.collectBudget))
+        } else if effectiveOffset == 0 {
+            // One past the cap, so the cut is detectable rather than silent.
+            let all = FilenameMatcher.match(
                 candidates: visitedPaths,
                 queries: input.queries,
-                limit: input.maxResults
+                limit: effectiveMaxResults + 1
             )
+            filenameMatches = Array(all.prefix(effectiveMaxResults))
+            if all.count > effectiveMaxResults {
+                warnings.append(
+                    "filename_matches capped at \(effectiveMaxResults); narrow the query or pass file_glob")
+            }
+        } else {
+            // Page 2+: names already went out with page 1. Repeating them every page is noise.
+            filenameMatches = []
+        }
+
+        let truncated = listMode ? rosterTruncated : hasMoreContent
+
+        // Exact ONLY when nothing was cut anywhere — page boundary, per-query cap, or roster cap.
+        // Reporting it beside `has_more: true` is a direct contradiction, which is what the
+        // previous shape produced on every saturated list-mode search: `combined` is empty in
+        // list mode, so `hasMoreContent` was always false and the envelope carried
+        // `total_matches: 0` next to a full `filename_matches` array.
+        let totalMatches: Int? =
+            (truncated || results.perQueryBucketSaturated || effectiveOffset > 0)
+            ? nil
+            : (listMode ? filenameMatches.count : combined.count)
 
         return SearchExecutorOutput(
-            matches: combined,
-            skipped: skipped,
-            skippedBinaryCount: skippedBinaryCount,
+            matches: page,
+            skipped: results.skipped,
+            skippedBinaryCount: results.skippedBinaryCount,
             truncated: truncated,
-            filenameMatches: filenameMatches
+            filenameMatches: filenameMatches,
+            totalMatches: totalMatches,
+            // The number of results `offset` advances over on THIS page. Content mode pages
+            // `matches`; list mode pages `filename_matches`. The tool description tells the model
+            // to re-issue with `offset` advanced by `count`, so reporting `matches.count` in list
+            // mode — always 0, since list mode has no content matches — told it to advance by
+            // zero, i.e. to request the same page forever.
+            pageCount: listMode ? filenameMatches.count : page.count,
+            warnings: warnings,
+            stats: results.stats
         )
-    }
-
-    /// Outcome of `readUTF8Streaming`. Distinguishing these four lets the
-    /// caller route each to its proper reporting channel — collapsing them
-    /// into one `String?` would (and did) silently inflate the binary-skip
-    /// count on cancellation and hide I/O errors.
-    nonisolated enum StreamReadOutcome {
-        case text(String)
-        /// File is not valid UTF-8 — caller increments `skippedBinaryCount`.
-        case binary
-        /// Mid-read I/O failure (permission, disk error, broken pipe on a
-        /// FIFO/socket). Carries a human-readable reason for `skipped_files`.
-        case ioError(reason: String)
-        /// `Task.isCancelled` observed between chunks. Caller short-circuits
-        /// without touching counters.
-        case cancelled
-    }
-
-    /// Streamed UTF-8 read in 1-MiB chunks with `Task.isCancelled` checkpoints.
-    /// Accumulates raw bytes then decodes once at the end so multi-byte UTF-8
-    /// characters straddling chunk boundaries can't be corrupted.
-    ///
-    /// Why chunked + accumulate (rather than truly streaming per-line): the
-    /// rest of `SearchExecutor` indexes lines by integer (`idx`) and needs
-    /// random access for context-before/context-after windowing. A streaming
-    /// line iterator would force a structural rewrite. Chunked accumulate
-    /// keeps the algorithm identical and adds the cancellation checkpoint.
-    private static func readUTF8Streaming(url: URL) -> StreamReadOutcome {
-        let handle: FileHandle
-        do {
-            handle = try FileHandle(forReadingFrom: url)
-        } catch {
-            return .ioError(reason: "could not open: \(error.localizedDescription)")
-        }
-        defer { try? handle.close() }
-        var buffer = Data()
-        let chunkSize = 1 << 20
-        while true {
-            if Task.isCancelled { return .cancelled }
-            let chunk: Data
-            do {
-                // Per Apple's docs, `nil` from `read(upToCount:)` signals EOF
-                // (NOT a non-regular-handle hiccup — those surface via `throws`).
-                // I/O errors come through the `catch` arm and route to `.ioError`.
-                guard let read = try handle.read(upToCount: chunkSize) else { break }
-                chunk = read
-            } catch {
-                return .ioError(reason: "read failed: \(error.localizedDescription)")
-            }
-            if chunk.isEmpty { break }
-            buffer.append(chunk)
-        }
-        guard let text = String(data: buffer, encoding: .utf8) else {
-            return .binary
-        }
-        return .text(text)
     }
 }

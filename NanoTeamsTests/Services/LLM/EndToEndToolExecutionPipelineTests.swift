@@ -28,9 +28,9 @@ final class EndToEndToolExecutionPipelineTests: XCTestCase {
         tracker.record(toolName: toolName, argumentsJSON: argsJSON, resultJSON: #"{"content":"hello"}"#, isError: false)
 
         // Verify it was tracked
-        XCTAssertEqual(tracker.snapshot().count, 1)
-        XCTAssertEqual(tracker.snapshot()[0].toolName, toolName)
-        XCTAssertTrue(tracker.snapshot()[0].wasSuccessful)
+        XCTAssertEqual(tracker.recentCalls(limit: .max).count, 1)
+        XCTAssertEqual(tracker.recentCalls(limit: .max)[0].toolName, toolName)
+        XCTAssertTrue(tracker.recentCalls(limit: .max)[0].wasSuccessful)
     }
 
     // MARK: - Test 2: Unauthorized tool returns error (tested via tool name check)

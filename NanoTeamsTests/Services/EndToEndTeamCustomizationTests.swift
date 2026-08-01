@@ -192,22 +192,53 @@ final class EndToEndTeamCustomizationTests: XCTestCase {
         XCTAssertFalse(team.artifacts[0].isSystemArtifact)
         XCTAssertNil(team.artifacts[0].systemArtifactName)
 
-        // Verify ID is a UUID string (not empty)
         XCTAssertFalse(team.artifacts[0].id.isEmpty)
         let originalID = team.artifacts[0].id
 
-        // Edit the artifact
-        var updated = team.artifacts[0]
-        updated.name = "REST API Documentation"
-        updated.description = "Updated description"
-        team.updateArtifact(updated)
+        // A role that both produces and consumes the artifact, so the rename
+        // cascade below has something to rewrite.
+        team.addRole(
+            TeamRoleDefinition(
+                id: "writer",
+                name: "Writer",
+                icon: "person",
+                prompt: "Write docs.",
+                toolIDs: [],
+                usePlanningPhase: false,
+                dependencies: RoleDependencies(producesArtifacts: ["API Documentation"])
+            )
+        )
 
-        // Verify artifact was updated
+        // Edit the artifact through the same helper the editor sheet uses, so
+        // this exercises the real save path rather than a hand-rolled splice.
+        let saved = ArtifactEditorMutations.applyEdit(
+            to: &team,
+            existingArtifactID: originalID,
+            draft: .init(
+                name: "REST API Documentation",
+                description: "Updated description",
+                icon: "doc.richtext",
+                mimeType: "text/markdown"
+            )
+        )
+
+        XCTAssertNotNil(saved)
         XCTAssertEqual(team.artifacts[0].name, "REST API Documentation")
         XCTAssertEqual(team.artifacts[0].description, "Updated description")
 
-        // ID should remain the same (it's a stored UUID, not computed from name)
+        // The id is the artifact's stable identity — deliberately NOT re-derived
+        // from the name on rename, exactly as `role.id` isn't. (It is a slug, not
+        // a UUID: `Artifact.slugify` mints it at creation.)
         XCTAssertEqual(team.artifacts[0].id, originalID)
+
+        // A rename must cascade: artifact identity at RUNTIME is the name —
+        // role dependencies, graph edges, validation and on-disk paths all key
+        // on it, and nothing else in the codebase rewrites them.
+        XCTAssertEqual(
+            team.roles.first { $0.id == "writer" }?.dependencies.producesArtifacts,
+            ["REST API Documentation"],
+            "Renaming an artifact must rewrite every role dependency that named it."
+        )
     }
 
     func testCustomArtifact_UsedByRoles() throws {

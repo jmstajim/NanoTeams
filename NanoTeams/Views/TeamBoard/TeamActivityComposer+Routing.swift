@@ -87,7 +87,10 @@ extension TeamActivityComposer {
             // Single-role team (e.g. chat assistant idle between turns): name the role.
             // Otherwise the recipient is an arbitrary `candidateRoles.first` resume target —
             // stay role-agnostic so the composer never names a role the user didn't pick.
-            if roleDefinitions.filter({ !$0.isSupervisor }).count <= 1 {
+            // Counted through `isMessageableRole` so this agrees with the chip row: when
+            // exactly one role is addressable the fallback chip names it, and a placeholder
+            // that went role-agnostic there would contradict the chip beside it.
+            if roleDefinitions.filter(isMessageableRole).count <= 1 {
                 return "Send a message to \(name)…"
             }
             return "Send a message…"
@@ -208,8 +211,18 @@ extension TeamActivityComposer {
         }
     }
 
-    /// Currently-working, non-supervisor, non-observer roles, excluding any role
-    /// currently asking a Supervisor question (those roles have their own "Answer" chips).
+    /// Is this role addressable by the composer at all? The Supervisor is the user,
+    /// and an observer never executes a step, so a message aimed at either would
+    /// never be consumed. Single source of truth for every "which roles count"
+    /// filter in this file — `placeholderText`'s single-role test used to spell the
+    /// predicate itself and diverged by counting observers, which made the chip row
+    /// name a sole worker the placeholder beside it refused to name.
+    static func isMessageableRole(_ role: TeamRoleDefinition) -> Bool {
+        !role.isSupervisor && !role.isObserver
+    }
+
+    /// Currently-working, messageable roles, excluding any role currently asking a
+    /// Supervisor question (those roles have their own "Answer" chips).
     /// Only these are valid queue targets — queueing to an idle role would never flush.
     static func computeSelectableRoles(
         roles: [TeamRoleDefinition],
@@ -217,8 +230,7 @@ extension TeamActivityComposer {
         askingRoleIDs: Set<String>
     ) -> [TeamRoleDefinition] {
         roles.filter {
-            !$0.isSupervisor
-                && !$0.isObserver
+            isMessageableRole($0)
                 && workingRoleIDs.contains($0.id)
                 && !askingRoleIDs.contains($0.id)
         }
@@ -236,8 +248,7 @@ extension TeamActivityComposer {
     ) -> [TeamRoleDefinition] {
         roles.filter {
             failedRoleIDs.contains($0.id)
-                && !$0.isSupervisor
-                && !$0.isObserver
+                && isMessageableRole($0)
                 && !askingRoleIDs.contains($0.id)
         }
     }
@@ -251,7 +262,7 @@ extension TeamActivityComposer {
         askingRoleIDs: Set<String>
     ) -> [TeamRoleDefinition] {
         roles.filter {
-            !$0.isSupervisor && !$0.isObserver && !askingRoleIDs.contains($0.id)
+            isMessageableRole($0) && !askingRoleIDs.contains($0.id)
         }
     }
 

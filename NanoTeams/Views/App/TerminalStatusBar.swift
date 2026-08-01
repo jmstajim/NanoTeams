@@ -72,7 +72,7 @@ struct TerminalStatusBar: View {
 
     private var settingsButton: some View {
         Button {
-            openWindow(id: "settings")
+            SettingsNavigation.open(using: openWindow)
         } label: {
             Image(systemName: "gearshape")
                 .font(Typography.term2xs)

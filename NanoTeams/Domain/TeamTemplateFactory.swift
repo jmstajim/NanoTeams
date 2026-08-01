@@ -14,9 +14,16 @@ nonisolated enum TeamTemplateFactory {
         let description: String
     }
 
+    /// Synthetic id for the "Empty Team" picker card. NOT a real template:
+    /// `allTemplates` never contains it, `SystemTemplates.templateConfigs` has no
+    /// entry for it, and no `Team.templateID` is ever set to it — an empty team is
+    /// a CUSTOM team (`templateID == nil`). It exists only as the picker's
+    /// selection token, resolved by `makeTeam(templateID:name:)`.
+    static let emptyTemplateID = "empty"
+
     /// Ordered list of template metadata including the "Empty Team" entry.
     static let templateMetadata: [TeamTemplateMetadata] = [
-        TeamTemplateMetadata(id: "empty", name: "Empty Team", icon: "plus.square.dashed", description: "Start with no roles or artifacts"),
+        TeamTemplateMetadata(id: emptyTemplateID, name: "Empty Team", icon: "plus.square.dashed", description: "A Supervisor and one Teammate — rename them and add your own roles"),
         TeamTemplateMetadata(id: "codingAssistant", name: "Coding Assistant", icon: "curlybraces", description: "Interactive coding companion with files, git, and Xcode tools"),
         TeamTemplateMetadata(id: "codingAgent", name: "Coding Agent", icon: "wand.and.rays", description: "Hybrid coding agent: handles small edits directly, delegates complex work to teams"),
         TeamTemplateMetadata(id: "assistant", name: "Personal Assistant", icon: "bubble.left.and.text.bubble.right", description: "Interactive assistant for any task"),
@@ -31,6 +38,32 @@ nonisolated enum TeamTemplateFactory {
 
     static var allTemplates: [Team] {
         [codingAssistant(), codingAgent(), assistant(), faang(), engineering(), startup(), questParty(), discussionClub()]
+    }
+
+    /// Resolves a New Team sheet selection (a `templateMetadata` id) into a brand-new team.
+    ///
+    /// - `emptyTemplateID` → `empty(name:)`.
+    /// - A real template id → that template `.duplicate(withName:)`, which is what makes the
+    ///   result CUSTOM (`templateID = nil`, role/artifact ids re-seeded from the new name)
+    ///   rather than a second team wearing the template's identity.
+    /// - Anything else — a stale persisted id, a typo, a metadata row whose factory method was
+    ///   removed, or a hidden templateID like `"generated"` / the Autovisor's (both real ids
+    ///   that are deliberately absent from `allTemplates`) → `empty(name:)`. Falling through
+    ///   to a POPULATED team is the exact bug this method exists to prevent: the old
+    ///   view-layer `else` branch called `TeamManagementService.createTeam`, which cloned
+    ///   `Team.default` (== FAANG), so picking "Empty Team" produced a full 9-role roster.
+    ///
+    /// Resolution lives here rather than in `TeamEditorView+Actions` because that call site
+    /// needs a live orchestrator and `mutateWorkFolder`, which makes the unresolved-id case
+    /// effectively untestable — which is why the FAANG fallback shipped unnoticed.
+    static func makeTeam(templateID: String, name: String) -> Team {
+        // The `emptyTemplateID` check is redundant with the lookup below (no template
+        // carries that id), but it states the intent — the fallback is the safety net,
+        // not the mechanism.
+        guard templateID != emptyTemplateID,
+              let template = allTemplates.first(where: { $0.templateID == templateID })
+        else { return empty(name: name) }
+        return template.duplicate(withName: name)
     }
 
     static func faang() -> Team {
@@ -265,6 +298,162 @@ nonisolated enum TeamTemplateFactory {
             roles[1].dependencies.requiredArtifacts = [SystemTemplates.supervisorTaskArtifactName]
         }
     }
+
+    // MARK: - Empty Team
+
+    /// A brand-new user team: the Supervisor, one Teammate that takes its task, and the
+    /// two artifacts that connect them. The smallest team that actually RUNS, and the
+    /// starting point behind "Empty Team" in the New Team sheet.
+    ///
+    /// Unlike its siblings this takes a `name` — it has no fixed identity, because it is
+    /// not a template. The result is a CUSTOM team (`templateID == nil`), so
+    /// `NTMSRepository+Reconcile` never rewrites its prompts or roles on a version bump,
+    /// and the three prompt templates fall to `Team.init`'s generic defaults.
+    ///
+    /// Deliberately NOT routed through `buildTeam`, for three independent reasons:
+    /// 1. `buildTeam` force-unwraps `SystemTemplates.templateConfigs[templateID]!` and
+    ///    there is no `"empty"` key. Registering one would fabricate a template identity
+    ///    for something that is deliberately not a template, and that unwrap is a
+    ///    load-bearing "you forgot to register a config" tripwire for the ten real ones.
+    /// 2. `buildTeam` requires a non-optional `templateID` and writes it onto the team.
+    /// 3. `buildTeam` overrides the prompt templates from the config.
+    ///
+    /// Why "empty" is not literally empty:
+    /// - **Supervisor.** `RoleEditorMutations.applyCreate` hardcodes
+    ///   `isSystemRole: false, systemRoleID: nil`, so the UI can never add a Supervisor
+    ///   back. A team without one is permanently unusable — the acceptance flow, the
+    ///   graph, and `Team.supervisorRequiredArtifacts` all read `roles.first(where: \.isSupervisor)`.
+    /// - **"Supervisor Task".** `ArtifactDependencyEditor` offers `team.artifactNames` as
+    ///   the Required options. With zero artifacts the first role the user adds would have
+    ///   empty required AND produced lists → `completionType == .observer` →
+    ///   `TeamEngine.findReadyRoles` filters it out and the team never runs.
+    /// - **"Teammate" + "Result".** The Supervisor is the user, not an LLM — a
+    ///   Supervisor-only team has nothing to execute and cannot run at all. Reaching a
+    ///   team that does took four non-obvious edits in the Team Editor (add a role, point
+    ///   its Required at "Supervisor Task", invent an output artifact, then list that
+    ///   artifact on the Supervisor). Shipping the pair makes the smallest team the
+    ///   RUNNABLE one, and it doubles as the worked example of the artifact-dependency
+    ///   model every other template is built on.
+    ///
+    /// Shape (structurally identical to `startup()`): Supervisor produces "Supervisor Task"
+    /// and requires "Result"; Teammate requires "Supervisor Task" and produces "Result" —
+    /// i.e. `.producing`, so it self-completes on `create_artifact` and the task lands in
+    /// Review. The Supervisor↔Teammate artifact loop is NOT a circular dependency:
+    /// `TeamValidationService.validateNoCircularDependencies` skips Supervisor edges
+    /// ("review requirements, not execution edges").
+    static func empty(name: String) -> Team {
+        typealias TN = ToolNames
+
+        // The seed is what keeps two empty teams apart: `SystemTemplates.createRole` /
+        // `createArtifact` derive ids as `NTMSID.from(name: "\(seed):…")`. Re-seeding only
+        // `team.id` (what the deleted `TeamManagementService.createTeam` did) left every
+        // such team sharing role ids — a live namespace shared with `StepExecution.id`
+        // and `settings.hierarchy.reportsTo`.
+        let teamSeed = NTMSID.from(name: name)
+
+        var supervisor = SystemTemplates.createRole(
+            from: SystemTemplates.roles["supervisor"]!,
+            teamSeed: teamSeed
+        )
+        // The Supervisor template already declares `produces: [supervisorTaskArtifactName]`;
+        // requiring the Teammate's output is what makes this a pipeline team rather than a
+        // chat one (`Team.isChatMode == supervisorRequiredArtifacts.isEmpty`).
+        supervisor.dependencies.requiredArtifacts = [resultArtifactName]
+
+        var supervisorTask = SystemTemplates.createArtifact(
+            from: SystemTemplates.artifacts[SystemTemplates.supervisorTaskArtifactName]!,
+            teamSeed: teamSeed
+        )
+        // `templateID == nil` ⇒ nothing ever reconciles this content against a bundled
+        // template, so the system flags would be claims with no referent — and
+        // `Team.removeRole` / `removeArtifact` would record tombstones nothing reads.
+        // Same normalization `Team.duplicate` and `TeamImportExportService.importTeam`
+        // apply. `isSupervisor` keys on `systemRoleID`, which is preserved, so Supervisor
+        // detection is unaffected.
+        supervisor.isSystemRole = false
+        supervisorTask.isSystemArtifact = false
+
+        // "Result" is built inline rather than registered in `SystemTemplates.artifacts`:
+        // it belongs to this one custom team, and a generic entry there would offer itself
+        // in every team's artifact picker. Id shape matches `createArtifact` exactly so
+        // two empty teams stay disjoint.
+        let result = TeamArtifact(
+            id: NTMSID.from(name: "\(teamSeed):artifact:\(resultArtifactName)"),
+            name: resultArtifactName,
+            icon: "doc.text",
+            mimeType: "text/markdown",
+            description: "What the Teammate did and found: the outcome of the Supervisor's task, the steps taken, and anything the Supervisor needs to decide next.",
+            isSystemArtifact: false,
+            systemArtifactName: nil
+        )
+
+        // Built INLINE as a custom role — mirroring `RoleEditorMutations.applyCreate`, the
+        // one path that creates roles in this app — rather than from a
+        // `SystemTemplates.roles` entry. Three reasons, all structural:
+        //   1. `templateID == nil` makes this a custom team; a `systemRoleID` here would be
+        //      a claim with no referent, exactly as for the Supervisor two blocks up.
+        //   2. `TeamManagementService.syncSystemRoleDependencies` gates on `isSystemRole`
+        //      and rewrites `producesArtifacts` from the template on EVERY work-folder
+        //      open. A system-flagged starter role would silently undo the user's first
+        //      edit to it.
+        //   3. A `roles` entry drags in a `Role` enum case + `Role.metadata` +
+        //      `RoleColorDefaults.backgroundHex` (pinned via `Role.builtInCases`) +
+        //      `fallbackToolIDs`, for a role that exists only in custom teams.
+        // `iconBackground` MUST be passed: the memberwise-init default is "#007AFF", not
+        // the custom-role blue `RoleColorDefaults.defaultBackgroundHex(for: nil)` returns.
+        let teammate = TeamRoleDefinition(
+            id: NTMSID.from(name: "\(teamSeed):\(teammateRoleName)"),
+            name: teammateRoleName,
+            icon: "person.fill",
+            prompt: SystemTemplates.rolePrompts[teammateRolePromptID] ?? "",
+            // Ordered literal, never a `Set` union: tool order feeds `{toolList}` and the
+            // tool-schema section, i.e. segment-0 prompt bytes, and Swift reshuffles a
+            // `Set` per process launch — which would re-prefill the prompt cache on every
+            // launch. Read-only by design; the user grants more in the role editor.
+            // `create_artifact` is deliberately absent (auto-injected for any role with
+            // `producesArtifacts`), while `ask_supervisor` must be explicit — it
+            // auto-injects only for NON-producing roles (`shouldAutoInjectAskSupervisor`).
+            toolIDs: [
+                TN.readFile, TN.readLines, TN.listFiles, TN.search,
+                TN.updateScratchpad,
+                TN.askSupervisor,
+            ],
+            usePlanningPhase: false,
+            dependencies: RoleDependencies(
+                requiredArtifacts: [SystemTemplates.supervisorTaskArtifactName],
+                producesArtifacts: [resultArtifactName]
+            ),
+            isSystemRole: false,
+            systemRoleID: nil,
+            iconBackground: RoleColorDefaults.defaultHex
+        )
+
+        let roles = [supervisor, teammate]
+        return Team(
+            id: teamSeed,
+            name: name,
+            description: "Custom team — a starting point: the Supervisor briefs one Teammate, who reports back a Result. Rename the roles and artifacts to fit the real workflow.",
+            templateID: nil,
+            roles: roles,
+            artifacts: [supervisorTask, result],
+            // Reuse the shared builder rather than `TeamSettings.default` so settings stay
+            // DERIVED from the roster: the Teammate reports to the Supervisor, is invitable
+            // to meetings, and the coordinator stays Auto (the meeting initiator).
+            settings: buildSettings(roles: roles, coordinatorIndex: nil),
+            graphLayout: TeamGraphLayout.autoLayout(for: roles)
+        )
+    }
+
+    /// Display name of the starter role in `empty(name:)`. Also the join key its role id
+    /// is derived from — renaming it changes every future empty team's role id.
+    static let teammateRoleName = "Teammate"
+
+    /// The one artifact the starter Teammate produces and the Supervisor requires.
+    static let resultArtifactName = "Result"
+
+    /// Key into `SystemTemplates.rolePrompts` for the starter role's guidance. Deliberately
+    /// NOT a `SystemTemplates.roles` id — see the comment inside `empty(name:)`.
+    private static let teammateRolePromptID = "teammate"
 
     // MARK: - Shared Builder
 

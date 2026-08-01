@@ -195,6 +195,18 @@ final class QuickCaptureController {
         presentPanelSync()
     }
 
+    /// Resolves the form's team pin when it has none, through the same
+    /// `QuickCaptureFormLogic.resolveSelectedTeam` the view's getter uses — so the
+    /// header and the pin can never disagree about which team is selected.
+    private func seedSelectedTeamIfNeeded() {
+        guard formState.selectedTeamID == nil, let store else { return }
+        formState.selectedTeamID = QuickCaptureFormLogic.resolveSelectedTeam(
+            selectedTeamID: nil,
+            activeTeamID: store.snapshot?.workFolder.activeTeamID,
+            availableTeams: store.snapshot?.workFolder.teams ?? []
+        )?.id
+    }
+
     /// Synchronous panel-show pipeline. Shared by the warm `togglePanel` path
     /// (called directly) and the async `showPanel` path (called after
     /// bootstrap + optional clipboard capture).
@@ -217,6 +229,18 @@ final class QuickCaptureController {
         if isNewPanel || modeChanged {
             updatePanelContent()
         }
+        // Seed the team pin HERE and not only in the form's `.onAppear`, because that
+        // appear does not re-fire on a same-mode reopen: `hide()` is `orderOut` with
+        // `isReleasedWhenClosed = false`, and the branch above rebuilds the hosting view
+        // only when the panel is new or the visual mode changed. So a panel dismissed
+        // and reopened in `.overlay` re-orders-in the SAME view graph.
+        //
+        // This matters because "New Team..." deliberately releases the pin
+        // (`teamSelectionAfterNewTeamNavigation`) before navigating away. Without a
+        // re-seed the header still renders correctly — `selectedTeam` is a computed
+        // fallback — but `formState.selectedTeamID` stays nil, so no row shows a
+        // checkmark and `createTask` forwards a nil `teamID` while the UI claims a team.
+        seedSelectedTeamIfNeeded()
         // `expectsFocusableField` is passed as a parameter (not a panel property)
         // so it locks in at show-time — a concurrent re-show can't race the
         // in-flight retry through a mutable flag. Loader-only working mode is

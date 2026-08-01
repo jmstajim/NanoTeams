@@ -584,7 +584,7 @@ final class TeamModelTests: XCTestCase {
         // The picker's metadata array starts with the synthetic "Empty Team" entry,
         // so the first *real* template must be Coding Assistant.
         let metadata = TeamTemplateFactory.templateMetadata
-        XCTAssertEqual(metadata.first?.id, "empty")
+        XCTAssertEqual(metadata.first?.id, TeamTemplateFactory.emptyTemplateID)
         XCTAssertEqual(metadata.dropFirst().first?.id, "codingAssistant")
     }
 

@@ -74,7 +74,7 @@ extension LLMExecutionService {
                 conversationMessages: &conversationMessages, tracker: tracker)
 
         case .typeText(let text, let target):
-            await activateTargetAndSettle(target: target, key: key)
+            await activateTargetAndSettle(target: target)
             InputControlService.typeText(text)
             executionStates[key]?.computerUseActionsSinceCapture += 1
             await finalizeToolResult(
@@ -83,7 +83,7 @@ extension LLMExecutionService {
                 stepID: stepID, taskID: taskID, conversationMessages: &conversationMessages, tracker: tracker)
 
         case .pressKey(let keys, let target):
-            await activateTargetAndSettle(target: target, key: key)
+            await activateTargetAndSettle(target: target)
             do {
                 try InputControlService.pressKeys(keys)
                 executionStates[key]?.computerUseActionsSinceCapture += 1
@@ -303,7 +303,7 @@ extension LLMExecutionService {
                 stepID: stepID, taskID: taskID, conversationMessages: &conversationMessages, tracker: tracker)
             return
         }
-        await activateTargetAndSettle(target: target ?? captured.bundleID ?? captured.appName, key: key)
+        await activateTargetAndSettle(target: target ?? captured.bundleID ?? captured.appName)
         // Echo which ADVERTISED element the point falls in — pure containment against the
         // exact ax_elements list shipped with this capture (no live AX IPC on the click path:
         // a hit-test can block the main actor for seconds and contradicts the advertised list
@@ -342,7 +342,7 @@ extension LLMExecutionService {
     /// asks), then WAITS for window ordering to settle before returning. Without the settle
     /// wait, the click/type event can race ahead of the async raise and land on whatever window
     /// was previously frontmost. No-op (no wait) when there's no resolvable target to raise.
-    private func activateTargetAndSettle(target: String?, key: TaskStepKey) async {
+    private func activateTargetAndSettle(target: String?) async {
         guard delegate?.computerUsePolicy.raiseTargetWindowBeforeClick ?? true else { return }
         guard let spec = target?.trimmingCharacters(in: .whitespacesAndNewlines), !spec.isEmpty,
               spec.caseInsensitiveCompare("screen") != .orderedSame,

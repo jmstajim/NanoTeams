@@ -56,6 +56,25 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
     /// auto-answered") mislabeled human answers to the Autovisor's idle park.
     var supervisorAnswerWasAuto: Bool = false
 
+    /// True while an answer is recorded but has NOT yet been handed to the wire.
+    ///
+    /// `supervisorAnswer` cannot carry this meaning: it is a DISPLAY field the activity
+    /// feed reads for the whole life of the step (`ActivityFeedBuilder` renders the
+    /// answered Q&A card from it), so it stays set long after the answer reached the
+    /// model. Deriving "there is an undelivered answer" from it made
+    /// `LLMExecutionService+StepLifecycle`'s supervisor-continuation branch fire on
+    /// EVERY later re-entry of the same step — a pause/resume after an answered
+    /// question re-appended the identical `ask_supervisor` result envelope, and the
+    /// model dutifully executed the instruction a second time.
+    ///
+    /// Set by every writer of `supervisorAnswer` that expects the wire to receive it;
+    /// deliberately NOT set by `recordAutoSupervisorAnswer`, whose in-loop path injects
+    /// the answer into the live conversation itself. Consumed inside
+    /// `persistWireTranscript` — atomically with the transcript that already contains
+    /// the answer, so no crash window can spend the flag while the stored transcript
+    /// still lacks it.
+    var supervisorAnswerPendingDelivery: Bool = false
+
     /// Optional Supervisor comment that should be injected as an extra message into the next step.
     var supervisorCommentForNext: String?
 
@@ -176,6 +195,11 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         supervisorAnswer: String? = nil,
         supervisorAnswerAttachmentPaths: [String] = [],
         supervisorAnswerWasAuto: Bool = false,
+        // `nil` = infer from the answer, the same rule `init(from:)` applies to a
+        // `task.json` written before this key existed. Callers that construct a
+        // mid-flight step (tests, previews) then keep today's semantics without
+        // restating the flag; only an explicit `false` marks it already delivered.
+        supervisorAnswerPendingDelivery: Bool? = nil,
         supervisorCommentForNext: String? = nil,
         tokenUsage: TokenUsage? = nil,
         llmConversation: [LLMMessage] = [],
@@ -206,6 +230,11 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         self.supervisorAnswer = supervisorAnswer
         self.supervisorAnswerAttachmentPaths = supervisorAnswerAttachmentPaths
         self.supervisorAnswerWasAuto = supervisorAnswerWasAuto
+        self.supervisorAnswerPendingDelivery =
+            supervisorAnswerPendingDelivery
+            ?? Self.inferPendingDelivery(
+                answer: supervisorAnswer,
+                attachmentPaths: supervisorAnswerAttachmentPaths)
         self.supervisorCommentForNext = supervisorCommentForNext
         self.tokenUsage = tokenUsage
         self.llmConversation = llmConversation
@@ -246,6 +275,7 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         case supervisorAnswer
         case supervisorAnswerAttachmentPaths
         case supervisorAnswerWasAuto
+        case supervisorAnswerPendingDelivery
         case supervisorCommentForNext
         case tokenUsage
         case llmConversation
@@ -284,6 +314,15 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         self.supervisorAnswer = try c.decodeIfPresent(String.self, forKey: .supervisorAnswer)
         self.supervisorAnswerAttachmentPaths = try c.decodeIfPresent([String].self, forKey: .supervisorAnswerAttachmentPaths) ?? []
         self.supervisorAnswerWasAuto = try c.decodeIfPresent(Bool.self, forKey: .supervisorAnswerWasAuto) ?? false
+        // Absent in every `task.json` written before the flag existed. Defaulting to
+        // `false` there would swallow the answer of a step that was answered but not
+        // yet resumed at the moment of the upgrade, so absence INFERS from the answer:
+        // legacy data gets exactly one delivery, and the flag governs from then on.
+        self.supervisorAnswerPendingDelivery =
+            try c.decodeIfPresent(Bool.self, forKey: .supervisorAnswerPendingDelivery)
+            ?? Self.inferPendingDelivery(
+                answer: self.supervisorAnswer,
+                attachmentPaths: self.supervisorAnswerAttachmentPaths)
         self.supervisorCommentForNext = try c.decodeIfPresent(String.self, forKey: .supervisorCommentForNext)
         self.tokenUsage = try c.decodeIfPresent(TokenUsage.self, forKey: .tokenUsage)
         self.llmConversation =
@@ -346,6 +385,16 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         if supervisorAnswerWasAuto {
             try c.encode(supervisorAnswerWasAuto, forKey: .supervisorAnswerWasAuto)
         }
+        // Emitted only when it DISAGREES with what `init(from:)` infers from the answer.
+        // Omitting a `false` beside a non-nil `supervisorAnswer` would decode back as
+        // `true` — a delivered answer would be re-delivered on the next re-entry, which
+        // is the exact defect this flag exists to close.
+        if supervisorAnswerPendingDelivery
+            != Self.inferPendingDelivery(
+                answer: supervisorAnswer, attachmentPaths: supervisorAnswerAttachmentPaths)
+        {
+            try c.encode(supervisorAnswerPendingDelivery, forKey: .supervisorAnswerPendingDelivery)
+        }
         try c.encodeIfPresent(supervisorCommentForNext, forKey: .supervisorCommentForNext)
         try c.encodeIfPresent(tokenUsage, forKey: .tokenUsage)
         try c.encode(llmConversation, forKey: .llmConversation)
@@ -380,6 +429,20 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
     /// only ever written by the step actually running.
     var hasCommittedWork: Bool {
         !toolCalls.isEmpty || !llmConversation.isEmpty || !artifacts.isEmpty
+    }
+
+    /// The value `supervisorAnswerPendingDelivery` takes when nothing states it —
+    /// a `task.json` written before the key existed, or a memberwise construction that
+    /// omits it. "An answer is recorded" is the only evidence available there, and it
+    /// reproduces the pre-flag behaviour for exactly one delivery.
+    ///
+    /// Shared by `init(from:)`, the memberwise init, and `encode(to:)`'s
+    /// disagrees-with-inference test, so the three can never drift into a shape that
+    /// fails to round-trip.
+    nonisolated static func inferPendingDelivery(
+        answer: String?, attachmentPaths: [String]
+    ) -> Bool {
+        (answer.map { !$0.isEmpty } ?? false) || !attachmentPaths.isEmpty
     }
 
     /// Combines `supervisorAnswer` text with attachment paths (mirrors `NTMSTask.effectiveSupervisorBrief`).
@@ -429,6 +492,7 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         supervisorAnswer = nil
         supervisorAnswerAttachmentPaths = []
         supervisorAnswerWasAuto = false
+        supervisorAnswerPendingDelivery = false
         supervisorCommentForNext = nil
         tokenUsage = nil
         llmConversation = []

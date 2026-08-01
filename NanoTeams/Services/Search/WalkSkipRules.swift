@@ -10,13 +10,31 @@ import Foundation
 nonisolated enum WalkSkipRules {
     /// Directory and file names skipped during recursive walks.
     ///
-    /// Includes legacy dotfile noise (`.DS_Store`, `.git`, `.svn`, `.hg`,
-    /// `.build`) plus ecosystem-standard dependency/output folders that
-    /// dominate file counts when present (`node_modules`, `Pods`,
-    /// `DerivedData`, `vendor`, `third_party`, `.swiftpm`).
+    /// Matching is on the BARE NAME AT ANY DEPTH, which is what bounds the list: a name is only
+    /// eligible if it could never plausibly be a hand-authored source directory anywhere in a
+    /// tree. `build`, `dist`, `target`, `out`, `bin` and `obj` are deliberately ABSENT for
+    /// exactly that reason — skipping them would silently swallow `src/build/` and
+    /// `Sources/dist/`. Making those cheap is the binary gate's job, not this list's.
+    ///
+    /// Five subsystems share this set — `SearchExecutor`, `list_files`, `SearchIndexService`,
+    /// `AgentInstructionsScanner` and `AgentSkillsScanner` — so an addition also changes what
+    /// `list_files` reports and where `AGENTS.md` / `SKILL.md` can be discovered. None of the
+    /// names here collide with an agent-instruction root (`claude.md`, `agents.md`, `gemini.md`,
+    /// `.cursorrules`, `.github/…`, `.windsurfrules`) or a skill source (`.claude`, `.codex`,
+    /// `.cursor`, `.gemini`, `.github`, `.windsurf`, `.opencode`, `.codeium`).
     static let skipped: Set<String> = [
-        ".DS_Store", ".git", ".svn", ".hg", ".build",
-        "node_modules", "Pods", "DerivedData", "vendor", "third_party", ".swiftpm",
+        // VCS + macOS noise
+        ".DS_Store", ".git", ".svn", ".hg",
+        // Swift / Apple
+        ".build", "Pods", "DerivedData", ".swiftpm", "Carthage",
+        // JS / web
+        "node_modules", "bower_components", ".next", ".nuxt", ".turbo", ".parcel-cache",
+        // Python
+        "__pycache__", "venv", ".venv", ".tox", ".mypy_cache", ".pytest_cache",
+        // JVM / infra / editors
+        ".gradle", ".terraform", ".idea", ".vscode",
+        // Generic vendored + cache trees
+        "vendor", "third_party", ".cache",
     ]
 
     /// Files skipped only when they live directly inside `.nanoteams/`. These

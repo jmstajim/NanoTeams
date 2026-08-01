@@ -72,8 +72,12 @@ final class LLMServerErrorRetryClassificationTests: XCTestCase {
         return NTMSTask(id: taskID, title: "Test", supervisorTask: "Goal", runs: [run])
     }
 
+    /// Scoped by `taskID` on purpose: the mock holds a single task, so an
+    /// unscoped lookup would happily return a step from a DIFFERENT task and
+    /// let an assertion pass against the wrong subject.
     private func step(in taskID: Int, stepID: String) -> StepExecution? {
-        mockDelegate.taskToMutate?.runs.last?.steps.first(where: { $0.id == stepID })
+        guard let task = mockDelegate.taskToMutate, task.id == taskID else { return nil }
+        return task.runs.last?.steps.first(where: { $0.id == stepID })
     }
 
     // MARK: - Permanent error → fail fast, no retry

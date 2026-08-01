@@ -41,15 +41,18 @@ nonisolated enum ToolSelectionLogic {
 struct ToolSelectionView: View {
     @Binding var selectedTools: Set<String>
     let producedArtifacts: [String]
-    let isNonProducingNonObserver: Bool
-    let isMeetingCoordinator: Bool
     let isVisionConfigured: Bool
     /// `StoreConfiguration.isComputerUseEnabled` — drives the computer-use tool hints.
     let isComputerUseEnabled: Bool
-    /// True iff the role has any delegation target configured — drives the
-    /// auto-injection of the 4-tool delegation pack into the LLM schema.
-    /// Mirrors `TeamRoleDefinition.hasDelegationConfigured`.
-    let canDelegate: Bool
+    /// Tool names the runtime will add on top of `selectedTools`, resolved by the
+    /// SAME chain the wire uses (`RoleToolBadgePolicy` → `EffectiveToolset`).
+    ///
+    /// This replaced a set of booleans that re-derived the injection rules here —
+    /// a second model that could disagree with the runtime, and did: it advertised
+    /// the delegation pack whenever any target was configured, while the runtime
+    /// withholds it when every whitelisted team has been deleted or turned
+    /// chat-mode. The per-row wording below stays local; only the SET is shared.
+    let autoInjectedTools: [String]
     /// Human-readable summary of the role's delegation configuration (e.g.
     /// "2 teams + generated" / "1 team" / "generated"). Rendered as the hint
     /// next to the auto-injected `delegate_to_team` row.
@@ -96,16 +99,14 @@ struct ToolSelectionView: View {
         }
     }
 
-    private var showAutoInjected: Bool {
-        if searchText.isEmpty { return true }
+    /// Auto-injected tools matching the current search. Filtering the resolved set
+    /// rather than a hardcoded name list keeps the section honest when the
+    /// injection rules change — the old version searched 7 fixed names whether or
+    /// not the role actually received them.
+    private var visibleAutoInjectedTools: [String] {
+        guard !searchText.isEmpty else { return autoInjectedTools }
         let query = searchText.lowercased()
-        return ToolNames.createArtifact.contains(query)
-            || ToolNames.askSupervisor.contains(query)
-            || ToolNames.concludeMeeting.contains(query)
-            || ToolNames.delegateToTeam.contains(query)
-            || ToolNames.cancelDelegation.contains(query)
-            || ToolNames.resumeDelegation.contains(query)
-            || ToolNames.forwardToTeam.contains(query)
+        return autoInjectedTools.filter { $0.lowercased().contains(query) }
     }
 
     /// Locked tools matching the current search (shown in the Required section).
@@ -116,23 +117,25 @@ struct ToolSelectionView: View {
         return lockedTools.filter { $0.lowercased().contains(query) }
     }
 
+    /// Per-tool precondition wording. Sourced from `ToolAvailabilityRequirement` so
+    /// this list and the role-list badge's tooltip name the same blocker with the
+    /// same words — two surfaces describing one runtime filter.
     private var toolHints: [String: String] {
-        let tn = ToolNames.self
         var hints: [String: String] = [:]
-        hints[tn.analyzeImage] = isVisionConfigured
-            ? "Vision model configured"
-            : "Requires vision model"
+        hints[ToolNames.analyzeImage] = ToolAvailabilityRequirement.visionModel
+            .hint(isMet: isVisionConfigured)
         for tool in ToolHandlerRegistry.computerUseTools {
-            hints[tool] = isComputerUseEnabled
-                ? "Computer Use enabled"
-                : "Off in Settings → Computer Use"
+            hints[tool] = ToolAvailabilityRequirement.computerUse.hint(isMet: isComputerUseEnabled)
         }
         let gitTools = ToolHandlerRegistry.gitReadTools.union(ToolHandlerRegistry.gitWriteTools)
         for tool in ToolHandlerRegistry.defaultStorageBlocked {
             // Git tools need the work folder to be an actual git repo (not just any
             // folder) — `LLMExecutionService.filterForGitAvailability` strips them
-            // at runtime when `.git` is missing. Reflect that precondition in the UI.
-            hints[tool] = gitTools.contains(tool) ? "Requires git repo" : "Requires work folder"
+            // at runtime when `.git` is missing. This view doesn't know the repo
+            // state, so it states the precondition unconditionally.
+            hints[tool] = (gitTools.contains(tool)
+                ? ToolAvailabilityRequirement.gitRepository
+                : ToolAvailabilityRequirement.workFolder).unmetHint
         }
         return hints
     }
@@ -181,7 +184,7 @@ struct ToolSelectionView: View {
             TerminalDivider()
 
             // Categories
-            if filteredCategories.isEmpty && !showAutoInjected && visibleLockedTools.isEmpty {
+            if filteredCategories.isEmpty && visibleAutoInjectedTools.isEmpty && visibleLockedTools.isEmpty {
                 NTMSSearchEmptyState(searchText: searchText)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -191,12 +194,10 @@ struct ToolSelectionView: View {
                             RequiredToolsSection(tools: visibleLockedTools)
                         }
 
-                        if showAutoInjected {
+                        if !visibleAutoInjectedTools.isEmpty {
                             AutoInjectedToolsSection(
+                                tools: visibleAutoInjectedTools,
                                 producedArtifacts: producedArtifacts,
-                                isNonProducingNonObserver: isNonProducingNonObserver,
-                                isMeetingCoordinator: isMeetingCoordinator,
-                                canDelegate: canDelegate,
                                 delegationHint: delegationHint
                             )
                         }
@@ -224,71 +225,52 @@ struct ToolSelectionView: View {
 // MARK: - Auto-Injected Tools Section
 
 private struct AutoInjectedToolsSection: View {
+    /// Already resolved AND already search-filtered by the parent. Only active
+    /// injections reach here — an inactive row was confusing because it looked
+    /// identical to a tool the user could toggle on. Auto-injection semantics are:
+    /// either the system adds it, or it does not apply to this role.
+    let tools: [String]
     let producedArtifacts: [String]
-    let isNonProducingNonObserver: Bool
-    let isMeetingCoordinator: Bool
-    let canDelegate: Bool
     let delegationHint: String
 
-    private var isCreateArtifactActive: Bool { !producedArtifacts.isEmpty }
-
-    /// Only active auto-injections render — an inactive row (empty circle) was confusing
-    /// because it looked identical to a tool the user could toggle on. Auto-injection
-    /// semantics are: either the system adds it, or it does not apply to this role.
-    private var hasAnyActiveInjection: Bool {
-        isCreateArtifactActive || isNonProducingNonObserver || isMeetingCoordinator || canDelegate
+    /// Per-tool wording. Deliberately local: the SET of injected tools is the rule
+    /// (owned by the resolver), the copy explaining each one is presentation.
+    private func hint(for toolName: String) -> String {
+        switch toolName {
+        case ToolNames.createArtifact:
+            return producedArtifacts.isEmpty
+                ? "Role produces artifacts"
+                : "produces: \(producedArtifacts.joined(separator: ", "))"
+        case ToolNames.askSupervisor:
+            return "Role has no output artifacts"
+        case ToolNames.concludeMeeting:
+            return "Role can start team meetings"
+        case ToolNames.delegateToTeam:
+            return delegationHint
+        case ToolNames.cancelDelegation, ToolNames.resumeDelegation, ToolNames.forwardToTeam:
+            return "Pause-and-Decide control plane"
+        default:
+            // A future auto-injection reaches the user as a row with no copy rather
+            // than being silently dropped from the list.
+            return ""
+        }
     }
 
     var body: some View {
-        if hasAnyActiveInjection {
-            VStack(alignment: .leading, spacing: 0) {
-                // Header
-                HStack(spacing: Spacing.xs) {
-                    Image(systemName: "bolt")
-                        .font(Typography.term2xs)
-                        .foregroundStyle(Colors.warning)
-                    MonoLabel(text: "Auto-injected", accent: true)
-                }
-                .padding(.horizontal, Spacing.s)
-                .padding(.top, Spacing.m)
-                .padding(.bottom, Spacing.xs)
+        VStack(alignment: .leading, spacing: 0) {
+            // Header
+            HStack(spacing: Spacing.xs) {
+                Image(systemName: "bolt")
+                    .font(Typography.term2xs)
+                    .foregroundStyle(Colors.warning)
+                MonoLabel(text: "Auto-injected", accent: true)
+            }
+            .padding(.horizontal, Spacing.s)
+            .padding(.top, Spacing.m)
+            .padding(.bottom, Spacing.xs)
 
-                if isCreateArtifactActive {
-                    autoInjectedRow(
-                        toolName: ToolNames.createArtifact,
-                        hint: "produces: \(producedArtifacts.joined(separator: ", "))"
-                    )
-                }
-                if isNonProducingNonObserver {
-                    autoInjectedRow(
-                        toolName: ToolNames.askSupervisor,
-                        hint: "Role has no output artifacts"
-                    )
-                }
-                if isMeetingCoordinator {
-                    autoInjectedRow(
-                        toolName: ToolNames.concludeMeeting,
-                        hint: "Role can start team meetings"
-                    )
-                }
-                if canDelegate {
-                    autoInjectedRow(
-                        toolName: ToolNames.delegateToTeam,
-                        hint: delegationHint
-                    )
-                    autoInjectedRow(
-                        toolName: ToolNames.cancelDelegation,
-                        hint: "Pause-and-Decide control plane"
-                    )
-                    autoInjectedRow(
-                        toolName: ToolNames.resumeDelegation,
-                        hint: "Pause-and-Decide control plane"
-                    )
-                    autoInjectedRow(
-                        toolName: ToolNames.forwardToTeam,
-                        hint: "Pause-and-Decide control plane"
-                    )
-                }
+            ForEach(tools, id: \.self) { toolName in
+                autoInjectedRow(toolName: toolName, hint: hint(for: toolName))
             }
         }
     }
@@ -515,11 +497,9 @@ private struct ToolRow: View {
     ToolSelectionView(
         selectedTools: $selected,
         producedArtifacts: ["Engineering Notes"],
-        isNonProducingNonObserver: false,
-        isMeetingCoordinator: false,
         isVisionConfigured: true,
         isComputerUseEnabled: true,
-        canDelegate: false,
+        autoInjectedTools: [ToolNames.createArtifact, ToolNames.concludeMeeting],
         delegationHint: ""
     )
     .frame(width: 460, height: 600)
@@ -530,11 +510,9 @@ private struct ToolRow: View {
     ToolSelectionView(
         selectedTools: $selected,
         producedArtifacts: [],
-        isNonProducingNonObserver: true,
-        isMeetingCoordinator: false,
         isVisionConfigured: false,
         isComputerUseEnabled: false,
-        canDelegate: false,
+        autoInjectedTools: [ToolNames.askSupervisor],
         delegationHint: ""
     )
     .frame(width: 460, height: 600)
@@ -548,11 +526,9 @@ private struct ToolRow: View {
     ToolSelectionView(
         selectedTools: $selected,
         producedArtifacts: ["Product Requirements", "Design Spec"],
-        isNonProducingNonObserver: false,
-        isMeetingCoordinator: false,
         isVisionConfigured: true,
         isComputerUseEnabled: true,
-        canDelegate: false,
+        autoInjectedTools: [ToolNames.createArtifact],
         delegationHint: ""
     )
     .frame(width: 460, height: 600)
@@ -567,11 +543,9 @@ private struct ToolRow: View {
     ToolSelectionView(
         selectedTools: $selected,
         producedArtifacts: [],
-        isNonProducingNonObserver: true,
-        isMeetingCoordinator: false,
         isVisionConfigured: false,
         isComputerUseEnabled: false,
-        canDelegate: false,
+        autoInjectedTools: [ToolNames.askSupervisor],
         delegationHint: ""
     )
     .frame(width: 460, height: 600)

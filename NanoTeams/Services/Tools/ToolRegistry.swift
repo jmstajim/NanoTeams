@@ -82,7 +82,7 @@ nonisolated enum ToolSignal: Hashable {
 /// - `query` must be non-empty after trimming (empty queries would reach the
 ///   executor and never match anything — the LLM gets nothing back and
 ///   can't tell why).
-/// - Numeric fields (`maxResults`, context lines, `maxMatchLines`) are
+/// - Numeric fields (`maxResults`, `offset`, context lines) are
 ///   clamped to sane ranges so a misbehaving LLM that emits `Int.max` or
 ///   negative values can't crash the executor budget math.
 /// - `paths` is normalized: empty arrays collapse to `nil` so consumers
@@ -95,18 +95,24 @@ nonisolated struct ExploratorySearchPayload: Hashable {
     let contextBefore: Int
     let contextAfter: Int
     let maxResults: Int
-    let maxMatchLines: Int
+    let offset: Int
 
-    /// Upper bound on `maxResults` — the LLM shouldn't need more; the round-
-    /// robin fan-out budget math stays sane; memory stays bounded.
-    static let maxAllowedResults = 1000
+    /// Upper bound on `maxResults`, i.e. the largest page a caller can request.
+    ///
+    /// Single source of truth, deliberately aliased to `AppDefaults.searchMaxResultsMax` so the
+    /// Settings stepper range, the `search` tool description and the runtime clamp cannot drift.
+    /// They had already drifted once: Settings capped the user's default at 500, the schema told
+    /// the model 500, and the executor enforced 1000 — so a model asking for 800 got 800 while
+    /// being told it could not.
+    ///
+    /// Do not restate the value in prose here. This doc block previously said "max 500" while the
+    /// constant read 300 — an anti-drift comment that had itself drifted. The schema string
+    /// interpolates the constant for the same reason.
+    static let maxAllowedResults = AppDefaults.searchMaxResultsMax
     /// Upper bound on `contextBefore`/`contextAfter` — a handful of lines
     /// either side is all any sensible review flow needs; wider only bloats
     /// the envelope.
     static let maxAllowedContextLines = 100
-    /// Upper bound on `maxMatchLines` — protects the truncation accounting
-    /// from overflow.
-    static let maxAllowedMatchLines = 100_000
 
     enum ValidationError: Error, Equatable {
         case emptyQuery
@@ -120,7 +126,7 @@ nonisolated struct ExploratorySearchPayload: Hashable {
         contextBefore: Int,
         contextAfter: Int,
         maxResults: Int,
-        maxMatchLines: Int
+        offset: Int = 0
     ) throws {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw ValidationError.emptyQuery }
@@ -137,7 +143,7 @@ nonisolated struct ExploratorySearchPayload: Hashable {
         self.contextBefore = max(0, min(contextBefore, Self.maxAllowedContextLines))
         self.contextAfter = max(0, min(contextAfter, Self.maxAllowedContextLines))
         self.maxResults = max(1, min(maxResults, Self.maxAllowedResults))
-        self.maxMatchLines = max(1, min(maxMatchLines, Self.maxAllowedMatchLines))
+        self.offset = max(0, offset)
     }
 }
 

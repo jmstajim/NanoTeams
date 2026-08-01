@@ -14,7 +14,6 @@ struct SidebarView: View {
     @Environment(NTMSOrchestrator.self) var store
     @Environment(OrchestratorEngineState.self) var engineState
     @Environment(\.openWindow) var openWindow
-    @AppStorage(UserDefaultsKeys.selectedSettingsTab) var selectedSettingsTab: SettingsView.SettingsTab = .llm
 
     // Note: isPresentingFolderPicker and recentProjects are intentionally
     // internal — accessed from SidebarWorkFolderCards.swift.
@@ -566,8 +565,7 @@ struct SidebarView: View {
                 }
                 Divider()
                 Button {
-                    selectedSettingsTab = .autovisor
-                    openWindow(id: "settings")
+                    SettingsNavigation.open(tab: .autovisor, using: openWindow)
                 } label: {
                     Label("Autovisor Settings", systemImage: "gearshape")
                 }

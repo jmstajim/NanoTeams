@@ -994,7 +994,7 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase {
         await sut.ensureTaskLoaded(mgrID)
         XCTAssertEqual(sut.snapshot?.workFolder.settings.autovisorGoal, "")
 
-        await sut.seedAutovisorDefaultsAndSyncBrief(managerID: mgrID)
+        await sut.seedAutovisorDefaultsAndSyncBrief()
 
         XCTAssertEqual(sut.snapshot?.workFolder.settings.autovisorGoal, AutovisorConstants.defaultGoal)
         XCTAssertEqual(sut.snapshot?.workFolder.settings.autovisorMemory, AutovisorConstants.defaultMemory)
@@ -1009,7 +1009,7 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase {
         await sut.updateAutovisorGoal("Keep docs current")
         await sut.updateAutovisorMemory("Reviewed 3 tasks.")
 
-        await sut.seedAutovisorDefaultsAndSyncBrief(managerID: mgrID)
+        await sut.seedAutovisorDefaultsAndSyncBrief()
 
         XCTAssertEqual(sut.snapshot?.workFolder.settings.autovisorGoal, "Keep docs current")
         XCTAssertEqual(sut.snapshot?.workFolder.settings.autovisorMemory, "Reviewed 3 tasks.")

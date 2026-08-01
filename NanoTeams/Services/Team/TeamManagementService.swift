@@ -7,21 +7,12 @@ nonisolated enum TeamManagementService {
 
     // MARK: - Team CRUD
 
-    /// Create a new team with default FAANG configuration
-    static func createTeam(
-        name: String,
-        settings: TeamSettings = .default
-    ) -> Team {
-        // Create from FAANG template by default
-        var team = Team.default
-        team.id = NTMSID.from(name: name)
-        team.name = name
-        team.templateID = nil
-        team.settings = settings
-        team.createdAt = MonotonicClock.shared.now()
-        team.updatedAt = MonotonicClock.shared.now()
-        return team
-    }
+    // Team CREATION lives in `TeamTemplateFactory` (`empty(name:)` / `makeTeam(templateID:name:)`)
+    // — it is the Creator, seeding roles and artifacts from `SystemTemplates`; this service
+    // owns only CRUD over an already-built team. A `createTeam` here used to clone
+    // `Team.default` (== FAANG) and hand back a 9-role team under whatever name the user
+    // typed, which is what made "Empty Team" produce a full FAANG roster. It also re-seeded
+    // only `team.id`, so any two teams it built collided on every role id.
 
     /// Duplicate an existing team with a new name
     static func duplicateTeam(

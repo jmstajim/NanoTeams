@@ -15,11 +15,14 @@ nonisolated struct WorkFolderContext: Hashable {
     var activeTask: NTMSTask?
     /// Background running tasks loaded in memory (keyed by taskID).
     var loadedTasks: [Int: NTMSTask] = [:]
-    /// Team IDs whose bundled-content reconcile was deferred because at least one
-    /// role is currently executing. Consumed by the orchestrator to surface a
-    /// one-shot info message so the user knows why the watermark isn't advancing.
-    /// Populated only by the initial `openOrCreateWorkFolder` path.
-    var deferredReconcileTeamIDs: [NTMSID] = []
+    /// What the version-bump reconcile could not apply this open, and why.
+    ///
+    /// Populated ONLY by `openOrCreateWorkFolder`. `assembleContext` — the path
+    /// every `mutateWorkFolder` takes — rebuilds `WorkFolderContext` without it,
+    /// so this field is wiped by the first unrelated edit. Anything that must
+    /// outlive the open must read `NTMSOrchestrator.bundledUpdateReport`, which
+    /// latches it.
+    var bundledUpdate: BundledUpdateReport?
 
     /// Back-compat accessor: most callers expect `context.workFolder.teams` etc.
     /// The projection exposes a mimic surface (teams, activeTeamID, activeTeam, name, id)

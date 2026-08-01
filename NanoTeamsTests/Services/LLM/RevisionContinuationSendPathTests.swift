@@ -119,18 +119,24 @@ final class RevisionContinuationSendPathTests: XCTestCase {
 
     // MARK: - Corner: continuation precedence
 
-    /// When BOTH `supervisorAnswer` and `revisionComment` are set, the supervisor
-    /// continuation wins (`hasRevisionFeedback` requires `effectiveSupervisorAnswer
-    /// == nil`): the wire carries the answer as a TOOL result resolving the pending
-    /// `ask_supervisor` call — sending a user-role feedback turn instead would leave
-    /// that call unanswered in the replayed transcript.
-    func testBothContinuations_supervisorAnswerWins() async throws {
+    /// When BOTH an UNDELIVERED `supervisorAnswer` and a `revisionComment` are set, the
+    /// supervisor continuation wins: the wire carries the answer as a TOOL result
+    /// resolving the pending `ask_supervisor` call — sending a user-role feedback turn
+    /// instead would leave that call unanswered in the replayed transcript.
+    ///
+    /// "Undelivered" is load-bearing and is why `supervisorAnswerPendingDelivery` is set
+    /// explicitly here. The precondition used to be the weaker `supervisorAnswer != nil`,
+    /// which never went false — so a step that had EVER been answered could not take the
+    /// revision branch at all. The complement is pinned by
+    /// `SupervisorAnswerDeliveryOnceTests.testRevisionAfterAnAnsweredQuestion_deliversTheFeedback`.
+    func testBothContinuations_undeliveredSupervisorAnswerWins() async throws {
         let stepID = "swe_precedence"
         var task = makeRevisionContinuationTask(
             taskID: 9, stepID: stepID,
             revisionComment: "Revise section 2."
         )
         task.runs[0].steps[0].supervisorAnswer = "Use PostgreSQL."
+        task.runs[0].steps[0].supervisorAnswerPendingDelivery = true
         mockDelegate.taskToMutate = task
 
         service.startStepExecution(

@@ -295,6 +295,85 @@ nonisolated struct Team: Codable, Identifiable {
         }
     }
 
+    /// Rewrite every stored reference to an artifact NAME after a rename.
+    ///
+    /// An artifact's runtime identity is its **name**, not its `id`:
+    /// `RoleDependencies.requiredArtifacts` / `producesArtifacts` hold names,
+    /// `artifact(withName:)` / `rolesProducing` / `rolesRequiring` /
+    /// `supervisorRequiredArtifacts` look up by name, `TeamGraphLayoutCalculator`
+    /// builds `[artifactName: roleID]`, `TeamValidationService` keys
+    /// `missingProducer` / `orphanArtifact` on names, and step artifacts are
+    /// written to `artifact_<slugify(name)>.md`. So renaming the artifact
+    /// WITHOUT this cascade orphans every producer/consumer edge in the team.
+    ///
+    /// Scope is exactly the two per-role arrays — verified exhaustively against
+    /// `Team` / `TeamSettings` / `TeamRoleDefinition` / `TeamGraphLayout`:
+    /// everything else that looks name-shaped (`acceptanceCheckpoints`,
+    /// `invitableRoles`, `meetingCoordinatorRoleID`, `hierarchy.reportsTo`,
+    /// `graphLayout.nodePositions`, `deletedSystemArtifactIDs`) holds role,
+    /// team, or artifact **ids**, which a rename deliberately leaves alone.
+    ///
+    /// The Supervisor is INCLUDED: `supervisorRequiredArtifacts` is derived from
+    /// its `requiredArtifacts` and drives `isChatMode` /
+    /// `requiresSupervisorFinalReview`, so skipping it would silently flip a
+    /// pipeline team into chat mode.
+    ///
+    /// Rewriting is an **order-preserving dedupe**, not a plain `map`. Order is
+    /// load-bearing (it feeds `StepExecution.title` and the `create_artifact`
+    /// schema enum), and renaming `A` → `B` on a role that already lists `B`
+    /// would otherwise manufacture a duplicate entry — which
+    /// `TeamValidationService` reports as a blocking `duplicateProducer` error
+    /// naming the same role twice.
+    ///
+    /// No-op (including no `updatedAt` bump) when nothing actually changed.
+    mutating func renameArtifactReferences(from oldName: String, to newName: String) {
+        guard oldName != newName else { return }
+
+        var changed = false
+        for index in roles.indices {
+            let dependencies = roles[index].dependencies
+            let touchesRequired = dependencies.requiredArtifacts.contains(oldName)
+            let touchesProduced = dependencies.producesArtifacts.contains(oldName)
+            // Only lists that actually named the artifact are rewritten. This is
+            // a rename, not a normalizer: deduping a list that never mentioned
+            // `oldName` would silently edit an unrelated role's data and mark it
+            // as modified.
+            guard touchesRequired || touchesProduced else { continue }
+
+            if touchesRequired {
+                roles[index].dependencies.requiredArtifacts = Self.rewritingArtifactName(
+                    in: dependencies.requiredArtifacts, from: oldName, to: newName)
+            }
+            if touchesProduced {
+                roles[index].dependencies.producesArtifacts = Self.rewritingArtifactName(
+                    in: dependencies.producesArtifacts, from: oldName, to: newName)
+            }
+            roles[index].updatedAt = MonotonicClock.shared.now()
+            changed = true
+        }
+
+        if changed {
+            updatedAt = MonotonicClock.shared.now()
+        }
+    }
+
+    /// `old` → `new` inside one dependency list, dropping duplicates that the
+    /// substitution creates while keeping first-occurrence order.
+    private static func rewritingArtifactName(
+        in names: [String], from oldName: String, to newName: String
+    ) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        result.reserveCapacity(names.count)
+        for name in names {
+            let mapped = name == oldName ? newName : name
+            if seen.insert(mapped).inserted {
+                result.append(mapped)
+            }
+        }
+        return result
+    }
+
     /// Update team name
     mutating func rename(to newName: String) {
         name = newName
@@ -302,34 +381,52 @@ nonisolated struct Team: Codable, Identifiable {
     }
 
     /// Create a duplicate of this team with a new ID derived from the new name.
+    ///
+    /// The team, its roles and its artifacts are all copied by MUTATING a copy,
+    /// never by rebuilding through the memberwise init. Rebuilding enumerates
+    /// fields, so every field the literal forgets silently falls back to its
+    /// default — and it still compiles. That bug was live here at BOTH levels,
+    /// and "New Team from template" (`TeamEditorView+Actions.handleCreateTeam`,
+    /// the only caller besides `TeamManagementService.duplicateTeam`) is the
+    /// path that hit it:
+    ///
+    /// - Team level: all three prompt templates were omitted, so every
+    ///   duplicate silently ran `SystemTemplates.genericTemplate` instead of the
+    ///   template's own system prompt.
+    /// - Role level: `icon`, `iconColor`, `iconBackground`,
+    ///   `allowedDelegationTeamIDs` and `allowDelegationToGeneratedTeams` were
+    ///   omitted — so a duplicated Coding Agent lost its baked-in delegation
+    ///   whitelist (`hasDelegationConfigured` false ⇒ the 4-tool delegation pack
+    ///   was never auto-injected) and every role reset to the generic
+    ///   `person`/blue avatar.
+    ///
+    /// Mutate-a-copy is the shape `TeamImportExportService.importTeam` /
+    /// `importRole` already use, and it is future-proof: a field added to
+    /// `Team` or `TeamRoleDefinition` later carries over with no edit here.
+    /// Everything intentionally NOT carried over is reset explicitly below, so
+    /// the omissions are decisions rather than oversights.
     func duplicate(withName newName: String? = nil) -> Team {
         let resolvedName = newName ?? "\(name) Copy"
 
-        // Generate deterministic IDs for roles and artifacts from the new team name
-        let newRoles = roles.map { role in
-            TeamRoleDefinition(
-                id: NTMSID.from(name: "\(resolvedName):\(role.name)"),
-                name: role.name,
-                prompt: role.prompt,
-                toolIDs: role.toolIDs,
-                usePlanningPhase: role.usePlanningPhase,
-                dependencies: role.dependencies,
-                llmOverride: role.llmOverride,
-                isSystemRole: false,  // Duplicated roles are custom
-                systemRoleID: role.systemRoleID
-            )
+        // Generate deterministic IDs for roles and artifacts from the new team name.
+        // Only identity, provenance and timestamps are rewritten; everything else
+        // is carried over verbatim.
+        let newRoles = roles.map { role -> TeamRoleDefinition in
+            var copy = role
+            copy.id = NTMSID.from(name: "\(resolvedName):\(role.name)")
+            copy.isSystemRole = false  // Duplicated roles are custom
+            copy.createdAt = MonotonicClock.shared.now()
+            copy.updatedAt = MonotonicClock.shared.now()
+            return copy
         }
 
-        let newArtifacts = artifacts.map { artifact in
-            TeamArtifact(
-                id: NTMSID.from(name: "\(resolvedName):artifact:\(artifact.name)"),
-                name: artifact.name,
-                icon: artifact.icon,
-                mimeType: artifact.mimeType,
-                description: artifact.description,
-                isSystemArtifact: false,  // Duplicated artifacts are custom
-                systemArtifactName: artifact.systemArtifactName
-            )
+        let newArtifacts = artifacts.map { artifact -> TeamArtifact in
+            var copy = artifact
+            copy.id = NTMSID.from(name: "\(resolvedName):artifact:\(artifact.name)")
+            copy.isSystemArtifact = false  // Duplicated artifacts are custom
+            copy.createdAt = MonotonicClock.shared.now()
+            copy.updatedAt = MonotonicClock.shared.now()
+            return copy
         }
 
         // Build old → new role ID mapping
@@ -354,14 +451,36 @@ nonisolated struct Team: Codable, Identifiable {
 
         let newSettings = settings.remappingRoleIDs(roleIDMapping)
 
-        return Team(
-            name: resolvedName,
-            description: description,
-            roles: newRoles,
-            artifacts: newArtifacts,
-            settings: newSettings,
-            graphLayout: newGraphLayout
-        )
+        // Mutate a copy of SELF for the same reason the roles above do. The
+        // previous `Team(name:description:roles:artifacts:settings:graphLayout:)`
+        // literal silently accepted the memberwise defaults for everything it
+        // omitted — including all three prompt templates, which fell back to
+        // `SystemTemplates.genericTemplate`. Duplicating any team therefore
+        // discarded the one thing that most defines it: "New Team from template"
+        // → Coding Agent produced a team running the GENERIC system prompt.
+        var copy = self
+        let now = MonotonicClock.shared.now()
+        copy.id = NTMSID.from(name: resolvedName)
+        copy.name = resolvedName
+        copy.createdAt = now
+        copy.updatedAt = now
+        copy.roles = newRoles
+        copy.artifacts = newArtifacts
+        copy.settings = newSettings
+        copy.graphLayout = newGraphLayout
+        // A duplicate is a CUSTOM team, and this is deliberate rather than
+        // inherited: carrying the id over would make `NTMSRepository+Reconcile`
+        // rewrite the copy's prompt templates on every version bump, clobbering
+        // the user's edits, and would put two teams behind one template identity
+        // in every picker that filters on it.
+        copy.templateID = nil
+        // Both lists track deletions of SYSTEM roles/artifacts relative to a
+        // template. Every role and artifact above was just re-stamped
+        // `isSystemRole = false` / `isSystemArtifact = false`, and `templateID`
+        // is now nil, so the lists have nothing left to describe.
+        copy.deletedSystemRoleIDs = []
+        copy.deletedSystemArtifactIDs = []
+        return copy
     }
 
     // MARK: - Bootstrap Defaults

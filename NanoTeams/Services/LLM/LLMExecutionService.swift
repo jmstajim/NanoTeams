@@ -424,15 +424,32 @@ final class LLMExecutionService {
         }
     }
 
+    /// Writing options every collaboration envelope must use.
+    ///
+    /// `.sortedKeys` because the dictionary literal below is a `[String: Any]`, whose
+    /// serialisation order is Swift's per-process-seeded hash order — measured emitting
+    /// `{"ok","response","tool"}` and `{"tool","response","ok"}` for the SAME content
+    /// inside ONE process. These strings go on the wire and into `wireTranscript`, and the
+    /// only speed lever this app has is a byte-identical prefix, so an unstable rendering
+    /// is a cache miss waiting for a re-render.
+    ///
+    /// `.withoutEscapingSlashes` to match every other tool result (`makeWireEncoder`).
+    /// Without it these envelopes alone ship `\/` in file paths — the documented cause of
+    /// small models copying literal backslashes into `edit_file` anchors that then never
+    /// match.
+    nonisolated static let collaborationEnvelopeOptions: JSONSerialization.WritingOptions =
+        [.sortedKeys, .withoutEscapingSlashes]
+
     /// Builds a JSON tool result containing the actual collaboration response.
     func buildCollaborationToolResult(toolName: String, response: String) -> String {
         let dict: [String: Any] = ["ok": true, "tool": toolName, "response": response]
-        if let data = try? JSONSerialization.data(withJSONObject: dict),
+        if let data = try? JSONSerialization.data(
+            withJSONObject: dict, options: Self.collaborationEnvelopeOptions),
            let json = String(data: data, encoding: .utf8)
         {
             return json
         }
-        return #"{"ok":true,"tool":"\#(toolName)","response":"(response available)"}"#
+        return #"{"ok":true,"response":"(response available)","tool":"\#(toolName)"}"#
     }
 
     /// Builds a JSON `{"ok":false,…}` envelope for a failed attribution-bearing
@@ -441,12 +458,13 @@ final class LLMExecutionService {
     /// every other tool's error envelope. `envelopeStatus` reads the top-level `ok`.
     func buildCollaborationErrorResult(toolName: String, message: String) -> String {
         let dict: [String: Any] = ["ok": false, "tool": toolName, "error": ["message": message]]
-        if let data = try? JSONSerialization.data(withJSONObject: dict),
+        if let data = try? JSONSerialization.data(
+            withJSONObject: dict, options: Self.collaborationEnvelopeOptions),
            let json = String(data: data, encoding: .utf8)
         {
             return json
         }
-        return #"{"ok":false,"tool":"\#(toolName)","error":{"message":"(error)"}}"#
+        return #"{"error":{"message":"(error)"},"ok":false,"tool":"\#(toolName)"}"#
     }
 
     /// Parses the top-level `ok` field of a tool envelope JSON string into a

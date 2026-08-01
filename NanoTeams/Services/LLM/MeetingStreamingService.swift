@@ -177,6 +177,9 @@ enum MeetingStreamingService {
             "coordinatorHint": "",
             "teamDescription": context.team?.description ?? "",
             "globalContext": PromptBuilder.formatGlobalContext(context.globalContext),
+            // Role-attached skills ride the STEP prompt only. Resolvable-but-empty
+            // so a hand-typed chip never ships as a literal token.
+            "roleSkills": "",
             "toolCalling": PromptBuilder.formatToolCallingBlock(tools: tools),
             // Backwards-compat alias for stored templates with the older
             // `{toolCallingBlock}` placeholder name.

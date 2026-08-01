@@ -114,6 +114,18 @@ nonisolated enum TeamImportExportService {
         importedTeam.name = resolvedName
         importedTeam.createdAt = MonotonicClock.shared.now()
         importedTeam.updatedAt = MonotonicClock.shared.now()
+        // An imported team is a CUSTOM team, exactly as `Team.duplicate` treats a
+        // copy. Keeping the exported `templateID` had two silent consequences:
+        // the version-bump reconcile claimed the import as its own and rewrote
+        // its role prompts (the very clobber `duplicate` clears the id to
+        // prevent), and two teams shared one template identity — so
+        // "Restore Default Teams" could replace the wrong one and deleting the
+        // copy tombstoned the original's template.
+        importedTeam.templateID = nil
+        // Both lists track deletions of SYSTEM roles/artifacts relative to a
+        // template; with no template they describe nothing.
+        importedTeam.deletedSystemRoleIDs = []
+        importedTeam.deletedSystemArtifactIDs = []
 
         // Regenerate role IDs and build old → new mapping
         var roleIDMapping: [String: String] = [:]
@@ -124,6 +136,18 @@ nonisolated enum TeamImportExportService {
             importedTeam.roles[index].id = newID
             importedTeam.roles[index].createdAt = MonotonicClock.shared.now()
             importedTeam.roles[index].updatedAt = MonotonicClock.shared.now()
+            // Same reasoning as the team id — and `isSystemRole` alone is
+            // enough, because the reconcile's scalar-overwrite loop is gated on
+            // exactly that flag.
+            //
+            // `systemRoleID` is deliberately KEPT, mirroring `Team.duplicate`:
+            // `TeamRoleDefinition.isSupervisor` is `systemRoleID == "supervisor"`,
+            // so clearing it would leave the team with no Supervisor at all —
+            // taking `nonSupervisorRoles`, `supervisorRequiredArtifacts`,
+            // `isChatMode` and the hierarchy wiring down with it. (The
+            // single-role `importRole` does clear it, but that imports INTO a
+            // team that already has its Supervisor.)
+            importedTeam.roles[index].isSystemRole = false
         }
 
         // Remap graph layout role IDs
@@ -146,6 +170,9 @@ nonisolated enum TeamImportExportService {
             importedTeam.artifacts[index].id = Artifact.slugify(artifact.name)
             importedTeam.artifacts[index].createdAt = MonotonicClock.shared.now()
             importedTeam.artifacts[index].updatedAt = MonotonicClock.shared.now()
+            // Matches `Team.duplicate` and `importArtifact`: no template, so
+            // nothing here is a system artifact any more.
+            importedTeam.artifacts[index].isSystemArtifact = false
         }
 
         return importedTeam

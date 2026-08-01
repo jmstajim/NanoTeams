@@ -293,36 +293,3 @@ final class RoleExecutionStatusTests: XCTestCase {
         XCTAssertFalse(skipped.requiresSupervisorAttention)
     }
 }
-
-// MARK: - ConnectionStatus Tests
-
-final class ConnectionStatusTests: XCTestCase {
-
-    func testRawValues() {
-        XCTAssertEqual(ConnectionStatus.waiting.rawValue, "waiting")
-        XCTAssertEqual(ConnectionStatus.satisfied.rawValue, "satisfied")
-        XCTAssertEqual(ConnectionStatus.error.rawValue, "error")
-    }
-
-    func testIsDashed() {
-        XCTAssertTrue(ConnectionStatus.waiting.isDashed)
-        XCTAssertFalse(ConnectionStatus.satisfied.isDashed)
-        XCTAssertTrue(ConnectionStatus.error.isDashed)
-    }
-
-    func testCodable() throws {
-        let encoder = JSONEncoder()
-        let decoder = JSONDecoder()
-
-        for status in [ConnectionStatus.waiting, .satisfied, .error] {
-            let data = try encoder.encode(status)
-            let decoded = try decoder.decode(ConnectionStatus.self, from: data)
-            XCTAssertEqual(decoded, status)
-        }
-    }
-
-    func testHashable() {
-        let statuses: Set<ConnectionStatus> = [.waiting, .satisfied, .error]
-        XCTAssertEqual(statuses.count, 3)
-    }
-}

@@ -73,6 +73,54 @@ final class ToolRuntimeTests: XCTestCase, @unchecked Sendable {
         return (Int(process.terminationStatus), stdout, stderr)
     }
 
+    // MARK: - durationMS invariant
+
+    /// `durationMS != nil` iff a handler body actually ran.
+    ///
+    /// It is documented in CLAUDE.md as an invariant and is the reason `durationMS` is measured
+    /// around `handler(context, args)` rather than around the whole call: the value answers "how
+    /// long did the tool take", so a record for a call that never reached a tool must carry no
+    /// number at all rather than the cost of looking one up and failing.
+    private func loggedRecords() throws -> [[String: Any]] {
+        let text = try String(contentsOf: logURL, encoding: .utf8)
+        return text.split(separator: "\n").compactMap { line in
+            guard let data = line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return nil }
+            return obj
+        }
+    }
+
+    func testDurationMS_presentWhenAHandlerRan() throws {
+        _ = executeTool(runtime: runtime, context: context, name: ToolNames.listFiles, args: ["path": "."])
+
+        let records = try loggedRecords()
+        XCTAssertEqual(records.count, 1)
+        let duration = try XCTUnwrap(records[0]["durationMS"] as? Double, "a handler ran, so it must be timed")
+        XCTAssertGreaterThanOrEqual(duration, 0)
+    }
+
+    /// A tool that ran and FAILED still ran — the catch path times it too.
+    func testDurationMS_presentWhenTheHandlerThrew() throws {
+        _ = executeTool(runtime: runtime, context: context, name: ToolNames.readFile,
+                        args: ["path": "does_not_exist_\(UUID().uuidString).txt"])
+
+        let records = try loggedRecords()
+        XCTAssertEqual(records.count, 1)
+        XCTAssertNotNil(records[0]["durationMS"] as? Double, "an error result is still a run")
+    }
+
+    /// No handler, no duration: an unknown tool never reached one.
+    func testDurationMS_absentWhenNoHandlerExists() throws {
+        let result = executeTool(runtime: runtime, context: context,
+                                 name: "definitely_not_a_tool", args: [:])
+        XCTAssertTrue(result.isError)
+
+        let records = try loggedRecords()
+        XCTAssertEqual(records.count, 1)
+        XCTAssertNil(records[0]["durationMS"], "nothing ran, so there is nothing to time")
+    }
+
     override func setUpWithError() throws {
         try super.setUpWithError()
         workFolderRoot = try makeTempProjectRoot()

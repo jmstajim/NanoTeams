@@ -902,6 +902,73 @@ final class TeamActivityComposerRoutingTests: XCTestCase {
             "Send a message…")
     }
 
+    // MARK: - placeholderText — transitions (the string is load-bearing when it CHANGES)
+
+    /// Transition pin; the AppKit half is `EditableMessageTextViewTests.
+    /// testPlaceholder_changedWhileEmpty_invalidatesDisplay`. Every other
+    /// `placeholderText` test asserts ONE state, but the string matters precisely
+    /// when it changes under an empty composer — that is the only on-screen signal
+    /// that an inert composer went live. The reported case: nothing working yet, so
+    /// the composer reads "No active recipient — accept, restart a role, or request
+    /// changes."; the engine then starts the role and the recipient resolves.
+    /// Driven through `resolveEffectiveRecipient` so a change on either side of the
+    /// pair has to be deliberate.
+    func testPlaceholderText_noRecipientToWorkingRole_stringChanges() {
+        let marketolog = normalRole(id: "marketolog", name: "Marketolog")
+        let writer = normalRole(id: "writer", name: "Writer")
+        let roles = [marketolog, writer]
+
+        let before = TeamActivityComposer.resolveEffectiveRecipient(
+            selected: nil, activeQuestions: [],
+            selectableRoles: [], candidateRoles: roles, allowsRoleFallback: false
+        )
+        XCTAssertNil(before, "Nothing working + fallback disallowed → composer inert.")
+        let beforeText = TeamActivityComposer.placeholderText(
+            recipient: before, workingRoleIDs: [], roleDefinitions: roles)
+
+        let after = TeamActivityComposer.resolveEffectiveRecipient(
+            selected: nil, activeQuestions: [],
+            selectableRoles: [marketolog], candidateRoles: roles, allowsRoleFallback: false
+        )
+        XCTAssertEqual(after, .role(id: "marketolog"))
+        let afterText = TeamActivityComposer.placeholderText(
+            recipient: after, workingRoleIDs: ["marketolog"], roleDefinitions: roles)
+
+        XCTAssertEqual(beforeText, "No active recipient — accept, restart a role, or request changes.")
+        XCTAssertEqual(afterText, "Queue a message for Marketolog…")
+        XCTAssertNotEqual(
+            beforeText, afterText,
+            "The placeholder is the composer's only 'you can type now' signal while the field is empty — these two states must never collapse to the same string.")
+    }
+
+    /// Sweep: the states one role walks through during a run must each produce a
+    /// DISTINCT placeholder. Any pair collapsing to the same string makes that
+    /// transition invisible in an empty composer — and no repaint would even be
+    /// requested, since `EditableNSTextView.placeholderText`'s `didSet` is
+    /// `!= oldValue`-guarded.
+    func testPlaceholderText_lifecycleStates_allDistinct() {
+        let swe = normalRole(id: "swe", name: "SWE")
+        let pm = normalRole(id: "pm", name: "PM")
+        let roles = [swe, pm]
+        let texts = [
+            TeamActivityComposer.placeholderText(
+                recipient: nil, workingRoleIDs: [], roleDefinitions: roles),
+            TeamActivityComposer.placeholderText(
+                recipient: .role(id: "swe"), workingRoleIDs: ["swe"], roleDefinitions: roles),
+            TeamActivityComposer.placeholderText(
+                recipient: .answer(stepID: "swe"), workingRoleIDs: [], roleDefinitions: roles),
+            TeamActivityComposer.placeholderText(
+                recipient: .role(id: "swe"), workingRoleIDs: [],
+                failedRoleIDs: ["swe"], roleDefinitions: roles),
+            TeamActivityComposer.placeholderText(
+                recipient: .role(id: "swe"), workingRoleIDs: [],
+                failedRoleIDs: [], roleDefinitions: roles)
+        ]
+        XCTAssertEqual(
+            Set(texts).count, texts.count,
+            "no-recipient / working / asking / failed-retry / resume placeholders must all differ — a collapsed pair makes the state transition invisible in an empty composer: \(texts)")
+    }
+
     // MARK: - queuedRoleInfoMessage
 
     func testQueuedRoleInfoMessage_workingRole_targetedWording() {
@@ -1174,6 +1241,96 @@ final class TeamActivityComposerRoutingTests: XCTestCase {
                 failedRoleIDs: ["tl"], roleDefinitions: [pm, tl]
             ),
             "Send a message…")
+    }
+
+    /// Sibling of `testPlaceholder_supervisorRoleDefDoesNotInflateCount_namesSoleWorker`.
+    /// Observers are excluded from `computeCandidateRoles`/`computeSelectableRoles`
+    /// everywhere else, so a team of {one worker, one observer} has exactly ONE
+    /// messageable role and must take the named single-role branch. Counting the
+    /// observer pushes it into the role-agnostic wording while the chip row is
+    /// simultaneously naming that same sole worker.
+    func testPlaceholder_observerRoleDefDoesNotInflateCount_namesSoleWorker() {
+        let obs = observerRole(id: "obs")
+        let swe = normalRole(id: "swe", name: "SWE")
+        XCTAssertEqual(
+            TeamActivityComposer.placeholderText(
+                recipient: .role(id: "swe"), workingRoleIDs: [],
+                failedRoleIDs: [], roleDefinitions: [obs, swe]
+            ),
+            "Send a message to SWE…",
+            "An observer is never a messageable role, so it must not push a single-worker team into the role-agnostic branch")
+    }
+
+    func testPlaceholder_supervisorAndObserversTogether_stillNamesSoleWorker() {
+        let sup = supervisorRole()
+        let swe = normalRole(id: "swe", name: "SWE")
+        XCTAssertEqual(
+            TeamActivityComposer.placeholderText(
+                recipient: .role(id: "swe"), workingRoleIDs: [],
+                failedRoleIDs: [],
+                roleDefinitions: [sup, observerRole(id: "o1"), observerRole(id: "o2"), swe]
+            ),
+            "Send a message to SWE…",
+            "Neither the Supervisor nor any number of observers is a messageable role")
+    }
+
+    /// Cross-surface pin — the chip row and the placeholder must agree on whether
+    /// the recipient is nameable. Whenever `computeChipOptions` emits exactly one
+    /// role chip through the single-candidate fallback, it labels that chip with
+    /// the role's name; the placeholder is then the only other thing on screen and
+    /// must not refuse to name the very role the chip just named. Catches the whole
+    /// class rather than the observer instance: any future divergence between the
+    /// two "who counts as a role" filters fails here.
+    func testPlaceholder_singleCandidateFallbackChip_andPlaceholderNameTheSameRole() {
+        let roles = [supervisorRole(), observerRole(id: "obs"), normalRole(id: "swe", name: "SWE")]
+        let options = TeamActivityComposer.computeChipOptions(
+            roles: roles, workingRoleIDs: [], failedRoleIDs: [],
+            activeQuestions: [], allowsRoleFallback: true
+        )
+        XCTAssertEqual(options.map(\.label), ["SWE"],
+                       "Precondition: exactly one named fallback chip.")
+
+        let recipient = TeamActivityComposer.resolveEffectiveRecipient(
+            selected: nil, activeQuestions: [], selectableRoles: [],
+            candidateRoles: TeamActivityComposer.computeCandidateRoles(roles: roles, askingRoleIDs: []),
+            allowsRoleFallback: true
+        )
+        XCTAssertEqual(recipient, .role(id: "swe"))
+
+        XCTAssertEqual(
+            TeamActivityComposer.placeholderText(
+                recipient: recipient, workingRoleIDs: [], roleDefinitions: roles),
+            "Send a message to SWE…",
+            "The chip names this role — the placeholder beside it must not go role-agnostic.")
+    }
+
+    /// `.answer` short-circuits before any role lookup, so neither status set can
+    /// colour the wording. Pinned because the working/failed branches sit directly
+    /// below it and an accidental reorder would be invisible in the single-state tests.
+    func testPlaceholder_answerRecipient_ignoresWorkingAndFailedSets() {
+        let role = normalRole(id: "pm", name: "PM")
+        for working in [Set<String>(), ["pm"]] {
+            for failed in [Set<String>(), ["pm"]] {
+                XCTAssertEqual(
+                    TeamActivityComposer.placeholderText(
+                        recipient: .answer(stepID: "pm"), workingRoleIDs: working,
+                        failedRoleIDs: failed, roleDefinitions: [role]
+                    ),
+                    "Answer…",
+                    "Answering outranks every role-status wording (working: \(working), failed: \(failed))")
+            }
+        }
+    }
+
+    /// Degenerate input: the roster hasn't resolved (empty) while a recipient is
+    /// held. The name falls back to the raw id, and an empty roster trivially
+    /// satisfies the single-role branch — so the wording names the id rather than
+    /// rendering an empty gap.
+    func testPlaceholder_emptyRoleDefinitions_namesTheRawID() {
+        XCTAssertEqual(
+            TeamActivityComposer.placeholderText(
+                recipient: .role(id: "swe"), workingRoleIDs: [], roleDefinitions: []),
+            "Send a message to swe…")
     }
 
     // MARK: - computeFailedRoles — shared filter (resolver ↔ chips single source of truth)

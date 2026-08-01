@@ -49,7 +49,7 @@ struct CommandPaletteView: View {
             }
         })
         commands.append(Command(id: "settings", title: "Go to Settings", icon: "gear", category: .workspace) {
-            openWindow(id: "settings")
+            SettingsNavigation.open(using: openWindow)
         })
         commands.append(Command(id: "open-folder", title: "Open Work Folder...", icon: "folder.badge.plus", category: .workspace) {
             NotificationCenter.default.post(name: .openProject, object: nil)

@@ -137,7 +137,7 @@ final class SearchExploratoryHandlerEdgeCasesTests: XCTestCase {
         XCTAssertEqual(payload.contextBefore, AppDefaults.searchContextBefore)
         XCTAssertEqual(payload.contextAfter, AppDefaults.searchContextAfter)
         XCTAssertEqual(payload.maxResults, AppDefaults.searchMaxResults)
-        XCTAssertEqual(payload.maxMatchLines, 40)
+        XCTAssertEqual(payload.offset, 0)
     }
 
     // MARK: - Signal envelope shape

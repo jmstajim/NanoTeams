@@ -53,6 +53,24 @@ nonisolated struct TeamRoleDefinition: Codable, Identifiable {
     /// Together with `allowedDelegationTeamIDs`, this drives `hasDelegationConfigured`.
     var allowDelegationToGeneratedTeams: Bool
 
+    /// Agent skills attached to this role, as `AgentSkillsSnapshot.Item.id`
+    /// values (`"<agentID>|<origin>|<relPathUnderRoot>"`). Each resolves at run
+    /// time to a `SKILL.md` whose FULL body is injected into this role's system
+    /// prompt as a `## Skill: <name>` section — the same content the composer's
+    /// `/` picker attaches to a single message, made permanent for the role.
+    ///
+    /// A reference, not a snapshot: `teams.json` stays small, edits to the
+    /// source file take effect on the next run, and an id that no longer
+    /// resolves surfaces as a validation warning (the `unknownDelegationTeam`
+    /// treatment) rather than stale inlined text.
+    ///
+    /// **Order is significant and must be preserved** — it is the order of the
+    /// `## Skill:` sections in the system prompt, i.e. segment-0 bytes. Never
+    /// round-trip this through a `Set`: Swift seeds String hashing per process,
+    /// so `Array(Set(...))` reshuffles on every launch and would re-prefill the
+    /// prompt cache for no reason (see `RoleEditorSkillsPolicy`).
+    var attachedSkillIDs: [String]
+
     /// True if this role was created from a built-in template
     var isSystemRole: Bool
 
@@ -85,6 +103,7 @@ nonisolated struct TeamRoleDefinition: Codable, Identifiable {
         llmOverride: LLMOverride? = nil,
         allowedDelegationTeamIDs: [NTMSID] = [],
         allowDelegationToGeneratedTeams: Bool = false,
+        attachedSkillIDs: [String] = [],
         isSystemRole: Bool = false,
         systemRoleID: String? = nil,
         iconColor: String = "#FFFFFF",
@@ -102,6 +121,7 @@ nonisolated struct TeamRoleDefinition: Codable, Identifiable {
         self.llmOverride = llmOverride
         self.allowedDelegationTeamIDs = allowedDelegationTeamIDs
         self.allowDelegationToGeneratedTeams = allowDelegationToGeneratedTeams
+        self.attachedSkillIDs = attachedSkillIDs
         self.isSystemRole = isSystemRole
         self.systemRoleID = systemRoleID
         self.iconColor = iconColor
@@ -130,6 +150,7 @@ nonisolated struct TeamRoleDefinition: Codable, Identifiable {
         case llmOverride
         case allowedDelegationTeamIDs
         case allowDelegationToGeneratedTeams
+        case attachedSkillIDs
         case isSystemRole
         case systemRoleID
         case iconColor
@@ -176,6 +197,8 @@ nonisolated struct TeamRoleDefinition: Codable, Identifiable {
             try container.decodeIfPresent([NTMSID].self, forKey: .allowedDelegationTeamIDs) ?? []
         self.allowDelegationToGeneratedTeams =
             try container.decodeIfPresent(Bool.self, forKey: .allowDelegationToGeneratedTeams) ?? false
+        self.attachedSkillIDs =
+            try container.decodeIfPresent([String].self, forKey: .attachedSkillIDs) ?? []
         self.isSystemRole = try container.decodeIfPresent(Bool.self, forKey: .isSystemRole) ?? false
         self.systemRoleID = try container.decodeIfPresent(String.self, forKey: .systemRoleID)
         self.iconColor =

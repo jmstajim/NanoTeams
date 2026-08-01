@@ -158,8 +158,7 @@ extension SidebarView {
                     }
                     Divider()
                     Button {
-                        selectedSettingsTab = .workFolder
-                        openWindow(id: "settings")
+                        SettingsNavigation.open(tab: .workFolder, using: openWindow)
                     } label: {
                         Label("Work Folder Settings", systemImage: "gearshape")
                     }

@@ -22,15 +22,17 @@ extension NTMSOrchestrator {
         startingRunTaskIDs.insert(taskID)
         defer { startingRunTaskIDs.remove(taskID) }
 
-        // Refresh agent instruction files so this run's first prompt reflects
-        // the current disk state (a CLAUDE.md edited since open is picked up).
-        // Delegation children skip the refresh: `startRunForTask` routes here
-        // too, and rescanning mid-parent-run would swap the shared snapshot's
+        // Refresh agent instruction files and role-attached skills so this run's
+        // first prompt reflects the current disk state (a CLAUDE.md or a
+        // SKILL.md edited since open is picked up).
+        // Delegation children skip both refreshes: `startRunForTask` routes here
+        // too, and rescanning mid-parent-run would swap the shared snapshots'
         // bytes under the parent's already-running steps.
         let isChildTask =
             snapshot?.tasksIndex.tasks.first(where: { $0.id == taskID })?.parentTaskID != nil
         if !isChildTask {
             await refreshAgentInstructions()
+            await refreshAgentSkills()
         }
 
         await ensureTaskLoaded(taskID)

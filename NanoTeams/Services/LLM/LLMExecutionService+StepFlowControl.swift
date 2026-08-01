@@ -675,7 +675,7 @@ extension LLMExecutionService {
         // safety: don't bypass — escalate below instead of finishing.
         let isChatMode = (delegate.loadedTask(taskID).flatMap(resolveTeam(task:))?.isChatMode) ?? false
         if let roleDef = roleDefinition, roleDef.isAdvisory, isChatMode,
-           isAutonomousSupervisorMode(stepID: stepID, taskID: taskID) {
+           isAutonomousSupervisorMode(taskID: taskID) {
             // CLAUDE.md §7 capture-flag discipline lives in the shared helper.
             guard await markChatModeAdvisoryStepDone(stepID: stepID, taskID: taskID) else {
                 // Don't reset the counter — leave it at its current value so a
@@ -759,7 +759,7 @@ extension LLMExecutionService {
     /// chat-advisory finish: with a human Supervisor in the loop
     /// (`.manual`), the role can wait indefinitely for a "Finish Role" click; without
     /// one (`.autonomous`), it would loop forever once it stops calling tools.
-    private func isAutonomousSupervisorMode(stepID: String, taskID: Int) -> Bool {
+    private func isAutonomousSupervisorMode(taskID: Int) -> Bool {
         guard let delegate,
               let task = delegate.loadedTask(taskID),
               let team = resolveTeam(task: task)

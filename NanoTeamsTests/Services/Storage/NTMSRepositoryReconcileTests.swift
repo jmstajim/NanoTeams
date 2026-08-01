@@ -52,8 +52,8 @@ final class NTMSRepositoryReconcileTests: XCTestCase {
         _ = try sut.openOrCreateWorkFolder(at: root)
 
         let state = try AtomicJSONStore().read(WorkFolderState.self, from: paths.workFolderJSON)
-        // WorkFolderState is at schemaVersion 7 (gained `autovisorTaskID`).
-        XCTAssertEqual(state.schemaVersion, 7)
+        // WorkFolderState is at schemaVersion 8 (gained `pendingReconcileTeamIDs`).
+        XCTAssertEqual(state.schemaVersion, 8)
     }
 
     // MARK: - Version-bump triggers reconcile
@@ -309,9 +309,14 @@ final class NTMSRepositoryReconcileTests: XCTestCase {
         try fm.createDirectory(
             at: paths.internalTaskDir(taskID: 0), withIntermediateDirectories: true
         )
+        // The step must be `.needsSupervisorInput` (how a parked pass really
+        // persists), not absent: `pinsTeamAsBusy` requires a LIVE step, so with
+        // `steps: []` this test would pass because the predicate stopped
+        // matching rather than because the Autovisor carve-out fired.
         let run = Run(
             id: 0,
-            steps: [],
+            steps: [StepExecution(id: managerRoleID, role: .autovisor, title: "Review",
+                                  status: .needsSupervisorInput)],
             roleStatuses: [managerRoleID: .working],
             teamID: autovisorTeamID
         )
@@ -444,10 +449,15 @@ final class NTMSRepositoryReconcileTests: XCTestCase {
 
     // MARK: - Running-role deferral (I11 regression)
 
-    /// A team with a role in `.working` status must NOT have its scalar fields
+    /// A team whose role holds a live tool loop must NOT have its scalar fields
     /// overwritten by reconcile (tool-call authorization would break mid-run).
-    /// The watermark must also NOT advance — next open retries.
-    func testRunningRole_defersReconcile_andHoldsWatermark() throws {
+    ///
+    /// The watermark now DOES advance: the outstanding team is carried in
+    /// `pendingReconcileTeamIDs` instead, so one busy team can't force a full
+    /// re-reconcile — and a fresh clobber of every other team's stored prompts —
+    /// on every launch. The retry gate is pinned in
+    /// `NTMSRepositoryReconcileDeferralTests`.
+    func testRunningRole_defersReconcile_andRecordsPendingTeam() throws {
         _ = try sut.openOrCreateWorkFolder(at: root)
 
         let store = AtomicJSONStore()
@@ -467,9 +477,13 @@ final class NTMSRepositoryReconcileTests: XCTestCase {
         try fm.createDirectory(
             at: paths.internalTaskDir(taskID: 0), withIntermediateDirectories: true
         )
+        // The `.running` step is load-bearing: `pinsTeamAsBusy` requires a
+        // `.working` role beside a LIVE step, because that is the only pair
+        // status recovery will heal. See `ReconcileDeferralEquivalenceTests`.
         let run = Run(
             id: 0,
-            steps: [],
+            steps: [StepExecution(id: seRoleID, role: .softwareEngineer, title: "SE",
+                                  status: .running)],
             roleStatuses: [seRoleID: .working],
             teamID: faangTeamID
         )
@@ -506,19 +520,26 @@ final class NTMSRepositoryReconcileTests: XCTestCase {
                        "reconcile must NOT overwrite role fields while a role is .working")
         XCTAssertNotEqual(afterSE.prompt, originalPrompt)
 
-        // Watermark must remain empty (not advanced to current version).
+        // Watermark advances; the deferred team is carried separately.
         let afterState = try store.read(WorkFolderState.self, from: paths.workFolderJSON)
-        XCTAssertTrue(afterState.lastAppliedAppVersion.isEmpty,
-                      "watermark must not advance when any team is deferred")
-        XCTAssertNotEqual(afterState.lastAppliedAppVersion, stampedBeforeReopen)
+        XCTAssertEqual(afterState.lastAppliedAppVersion, stampedBeforeReopen,
+                       "watermark advances even when a team defers")
+        XCTAssertEqual(afterState.pendingReconcileTeamIDs, [faangTeamID],
+                       "the deferred team owes a scoped retry on the next open")
     }
 
     // MARK: - Corrupt tasks_index resilience (S4)
 
-    /// A corrupt `tasks_index.json` can't be decoded → scan is .inconclusive →
-    /// every templated team is fail-closed deferred. Reconcile must not throw,
-    /// must not mutate teams, must not advance watermark.
-    func testCorruptTasksIndex_failsClosed() throws {
+    /// A corrupt `tasks_index.json` is recovered by `loadOrRecoverFile`, which
+    /// now runs BEFORE `migrateIfNeeded` — so the scan sees the recovered (empty)
+    /// index and the reconcile lands in this same open.
+    ///
+    /// It used to fail-closed here and cost an extra launch, because the scan
+    /// read the index itself, a few lines before the recovery that was already
+    /// scheduled to run. The end-to-end assertion lives in
+    /// `NTMSRepositoryReconcileDeferralTests.testCorruptTasksIndex_reconcilesInOneOpen`;
+    /// this one keeps the no-throw guarantee.
+    func testCorruptTasksIndex_doesNotThrow() throws {
         _ = try sut.openOrCreateWorkFolder(at: root)
 
         let store = AtomicJSONStore()
@@ -536,23 +557,19 @@ final class NTMSRepositoryReconcileTests: XCTestCase {
         state.lastAppliedAppVersion = ""
         try store.write(state, to: paths.workFolderJSON)
 
-        // Reopen must not throw even though the index is garbage — loadOrRecoverFile
-        // for tasks_index runs AFTER migrateIfNeeded so we also need to ensure the
-        // scan path doesn't crash the open. The index gets auto-recovered to
-        // defaults on the later `store.read(TasksIndex.self, ...)` call.
         XCTAssertNoThrow(try sut.openOrCreateWorkFolder(at: root))
 
-        // Stale prompt must remain — fail-closed deferral blocked overwrite.
+        // The index was recovered before the scan ran, so nothing was deferred
+        // and the stale edit is overwritten by the bundled prompt.
         let afterTeams = try store.read(TeamsFile.self, from: paths.teamsJSON)
         let afterFaang = try XCTUnwrap(afterTeams.teams.first { $0.templateID == "faang" })
         let afterSE = try XCTUnwrap(afterFaang.roles.first { $0.systemRoleID == "softwareEngineer" })
-        XCTAssertEqual(afterSE.prompt, "STALE USER EDIT",
-                       "corrupt index must cause fail-closed deferral of all teams")
+        XCTAssertNotEqual(afterSE.prompt, "STALE USER EDIT",
+                          "a recovered index must not block the reconcile")
 
-        // Watermark must still be empty — no team was reconciled.
         let afterState = try store.read(WorkFolderState.self, from: paths.workFolderJSON)
-        XCTAssertTrue(afterState.lastAppliedAppVersion.isEmpty,
-                      "watermark must not advance when scan is inconclusive")
+        XCTAssertFalse(afterState.lastAppliedAppVersion.isEmpty,
+                       "nothing deferred → watermark advances")
     }
 
     // MARK: - Generated team immunity
@@ -617,5 +634,63 @@ final class NTMSRepositoryReconcileTests: XCTestCase {
                        "reconcile must rewrite a stored Autovisor team to the dedicated single-role template")
         XCTAssertFalse(mgr.systemPromptTemplate.contains("Submit each deliverable"),
                        "the stale generic deliverable Final reminder must not survive reconcile")
+    }
+
+    // MARK: - Role skills
+
+    /// The `{roleSkills}` chip must reach EXISTING work folders, not just
+    /// freshly-bootstrapped ones — that is the whole reason the version bump
+    /// accompanies the template change.
+    func testVersionBump_deliversRoleSkillsChip_toStoredBuiltInTeams() throws {
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        // Simulate a folder written by a build that predates the chip.
+        let store = AtomicJSONStore()
+        var teamsFile = try store.read(TeamsFile.self, from: paths.teamsJSON)
+        let faangIdx = try XCTUnwrap(teamsFile.teams.firstIndex { $0.templateID == "faang" })
+        teamsFile.teams[faangIdx].systemPromptTemplate = SystemTemplates.softwareTemplate
+            .replacingOccurrences(of: "\n\n        ## Skills\n        {roleSkills}", with: "")
+            .replacingOccurrences(of: "\n\n## Skills\n{roleSkills}", with: "")
+        XCTAssertFalse(teamsFile.teams[faangIdx].systemPromptTemplate.contains("{roleSkills}"),
+                       "fixture must actually lack the chip, or the test proves nothing")
+        try store.write(teamsFile, to: paths.teamsJSON)
+
+        var state = try store.read(WorkFolderState.self, from: paths.workFolderJSON)
+        state.lastAppliedAppVersion = ""
+        try store.write(state, to: paths.workFolderJSON)
+
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        let after = try store.read(TeamsFile.self, from: paths.teamsJSON)
+        let faang = try XCTUnwrap(after.teams.first { $0.templateID == "faang" })
+        XCTAssertTrue(faang.systemPromptTemplate.contains("{roleSkills}"),
+                      "reconcile must deliver the chip to an existing built-in team")
+    }
+
+    /// The other half of the same contract: a CUSTOM team (`templateID == nil`)
+    /// is never rewritten, so it can never gain the chip. That is exactly why
+    /// `TemplateResolver.resolveSystemPrompt` carries the chip-less fallback —
+    /// without it, skills attached on such a team would silently never ship.
+    func testVersionBump_leavesCustomTeamTemplateAlone() throws {
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        let store = AtomicJSONStore()
+        var teamsFile = try store.read(TeamsFile.self, from: paths.teamsJSON)
+        // Exactly what "New Team from template" produces.
+        let custom = TeamTemplateFactory.faang().duplicate(withName: "My Team")
+        XCTAssertNil(custom.templateID, "duplicate produces a custom team")
+        teamsFile.teams.append(custom)
+        try store.write(teamsFile, to: paths.teamsJSON)
+
+        var state = try store.read(WorkFolderState.self, from: paths.workFolderJSON)
+        state.lastAppliedAppVersion = ""
+        try store.write(state, to: paths.workFolderJSON)
+
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        let after = try store.read(TeamsFile.self, from: paths.teamsJSON)
+        let mine = try XCTUnwrap(after.teams.first { $0.name == "My Team" })
+        XCTAssertEqual(mine.systemPromptTemplate, custom.systemPromptTemplate,
+                       "a custom team's template is the user's — reconcile must not touch it")
     }
 }

@@ -463,6 +463,12 @@ struct TerminalSegmentedPicker<Value: Hashable>: View {
                 } label: {
                     Text(option.label)
                         .font(Typography.termXs.weight(.medium))
+                        // Segments are equal-width (`maxWidth: .infinity`), so a
+                        // label that outgrows its share WRAPS — silently doubling
+                        // the strip's height and shoving the content down. Shrink
+                        // to fit instead; truncation would hide which tab it is.
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
                         .foregroundStyle(isSelected ? Colors.textOnAccent : Colors.textSecondary)
                         .padding(.horizontal, Spacing.s)
                         .padding(.vertical, Spacing.xxs)

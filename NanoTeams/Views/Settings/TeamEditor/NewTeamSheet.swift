@@ -4,10 +4,14 @@ import SwiftUI
 
 struct NewTeamSheet: View {
     @Environment(\.dismiss) private var dismiss
-    let onSave: (String, String?) -> Void
+    /// `(name, templateID)` — the templateID is always a `TeamTemplateFactory.templateMetadata`
+    /// id, including the synthetic `emptyTemplateID`. It is deliberately NOT optional: `nil`
+    /// used to be a magic alias for the "Empty Team" card, which let a second meaning
+    /// ("this id didn't resolve") share the same branch — and that branch cloned FAANG.
+    let onSave: (String, String) -> Void
 
     @State private var teamName = ""
-    @State private var selectedTemplateID: String? = nil
+    @State private var selectedTemplateID = TeamTemplateFactory.emptyTemplateID
 
     private let templates = TeamTemplateFactory.templateMetadata
 
@@ -52,9 +56,9 @@ struct NewTeamSheet: View {
                                 name: template.name,
                                 icon: template.icon,
                                 description: template.description,
-                                isSelected: selectedTemplateID == template.id || (selectedTemplateID == nil && template.id == "empty")
+                                isSelected: selectedTemplateID == template.id
                             ) {
-                                selectedTemplateID = template.id == "empty" ? nil : template.id
+                                selectedTemplateID = template.id
                             }
                         }
                     }
@@ -91,7 +95,7 @@ struct NewTeamSheet: View {
 
 #Preview("New Team Sheet") {
     NewTeamSheet { name, templateID in
-        print("Created: \(name), template: \(templateID ?? "empty")")
+        print("Created: \(name), template: \(templateID)")
     }
 }
 

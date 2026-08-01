@@ -42,6 +42,7 @@ struct WorkFolderSettingsView: View {
         ScrollView {
             VStack(spacing: Spacing.xl) {
                 folderHeaderCard
+                bundledUpdateBlockedCard
                 descriptionCard
                 if store.workFolder != nil {
                     schemeCard
@@ -186,6 +187,41 @@ struct WorkFolderSettingsView: View {
             }
         }
         .cardStyle()
+    }
+
+    // MARK: - Blocked Bundled Updates
+
+    /// Durable surface for the ONE permanent failure mode: a `task.json` the
+    /// reconcile can't read, which fail-closes bundled prompt/tool updates for
+    /// every team until the user repairs it.
+    ///
+    /// Deliberately not shown for a deferral — those clear on the next open, so
+    /// a row here would be stale before it could be read, and the open-time
+    /// banner already says so.
+    @ViewBuilder
+    private var bundledUpdateBlockedCard: some View {
+        if let message = store.bundledUpdateReport?.durableMessage {
+            SettingsCard(
+                header: "Prompt Updates Blocked",
+                systemImage: "exclamationmark.triangle"
+            ) {
+                HStack(alignment: .top, spacing: Spacing.s) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(Colors.error)
+                        .accessibilityHidden(true)
+                    Text(message)
+                        .font(Typography.caption)
+                        .foregroundStyle(Colors.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(Spacing.s)
+                .background(
+                    RoundedRectangle.squircle(CornerRadius.small).fill(Colors.errorTint)
+                )
+            }
+        }
     }
 
     // MARK: - Context Card

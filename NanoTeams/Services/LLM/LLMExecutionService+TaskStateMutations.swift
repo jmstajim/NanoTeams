@@ -106,6 +106,13 @@ extension LLMExecutionService {
             task.runs[runIndex].steps[stepIndex].supervisorAnswer = cleanAnswer.isEmpty ? nil : cleanAnswer
             task.runs[runIndex].steps[stepIndex].supervisorAnswerAttachmentPaths = []
             task.runs[runIndex].steps[stepIndex].supervisorAnswerWasAuto = true
+            // Deliberately NOT armed. This path answers INSIDE the live tool loop —
+            // `handleSupervisorAutoAnswer` puts the answer into `conversationMessages`
+            // itself and returns `.continueLoop`, so the step never suspends and the
+            // re-entry seam has nothing to deliver. Arming it would make a later
+            // pause/resume of the same step append the answer a SECOND time, which is
+            // the defect this flag closes on the parked path.
+            task.runs[runIndex].steps[stepIndex].supervisorAnswerPendingDelivery = false
             task.runs[runIndex].steps[stepIndex].needsSupervisorInput = false
 
             if task.runs[runIndex].steps[stepIndex].status == .needsSupervisorInput {
@@ -145,6 +152,7 @@ extension LLMExecutionService {
             task.runs[runIndex].steps[stepIndex].supervisorAnswer = nil  // Clear stale answer from previous Q&A
             task.runs[runIndex].steps[stepIndex].supervisorAnswerAttachmentPaths = []
             task.runs[runIndex].steps[stepIndex].supervisorAnswerWasAuto = false
+            task.runs[runIndex].steps[stepIndex].supervisorAnswerPendingDelivery = false
             task.runs[runIndex].steps[stepIndex].needsSupervisorInput = true
             task.runs[runIndex].steps[stepIndex].status = .needsSupervisorInput
 

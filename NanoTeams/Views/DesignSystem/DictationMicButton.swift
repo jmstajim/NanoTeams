@@ -6,9 +6,9 @@ struct DictationMicButton: View {
 
     @Binding var text: String
     @Environment(DictationService.self) private var dictation
+    /// Handed to `SettingsNavigation`, which owns the tab write — an environment action
+    /// can only be read from the view that declares it.
     @Environment(\.openWindow) private var openWindow
-    @AppStorage(UserDefaultsKeys.selectedSettingsTab)
-    private var selectedSettingsTab: SettingsView.SettingsTab = .llm
 
     @State private var ownerID = UUID()
     @State private var anchorOffset: Int?
@@ -67,8 +67,10 @@ struct DictationMicButton: View {
         if isListeningHere {
             Task { await dictation.toggle(ownerID: ownerID) }
         } else if !dictation.hasUserSelectedLocales {
-            selectedSettingsTab = .dictation
-            openWindow(id: "settings")
+            // Routed through the shared seam: this button is also hosted in the
+            // QuickCapture NSPanel, where a bare `openWindow` opens Settings BEHIND
+            // the frontmost app — measured, see `SettingsNavigation`.
+            SettingsNavigation.open(tab: .dictation, using: openWindow)
         } else {
             Task { await dictation.toggle(ownerID: ownerID) }
         }

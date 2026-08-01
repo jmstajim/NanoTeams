@@ -33,10 +33,12 @@ nonisolated extension NTMSRepository {
         /// True if the bundled tool merge produced a change.
         /// Caller writes `tools.json` iff this is `true`.
         var toolsTouched: Bool
-        /// Team IDs whose reconcile was deferred because at least one of their
-        /// roles is currently executing. If non-empty, the caller MUST NOT
-        /// advance `state.lastAppliedAppVersion` — deferred teams retry next open.
-        var deferred: [NTMSID]
+        /// What could not be applied, and why — for the user-facing banner and
+        /// the pending-retry set. See `BundledUpdateReport`.
+        var report: BundledUpdateReport
+
+        /// Team IDs owed a scoped retry on the next open.
+        var deferredTeamIDs: [NTMSID] { report.deferred.map(\.teamID) }
     }
 
     /// Apply all bundled-content updates to teams and tools.
@@ -46,32 +48,86 @@ nonisolated extension NTMSRepository {
     ///     additive structure are updated in place.
     ///   - tools: inout — merged with `ToolDefinitionRecord.defaultDefinitions()`.
     ///   - paths: used for the running-role scan (`internalTasksDir`).
+    /// Which teams a pass is allowed to touch.
+    enum ReconcileScope {
+        /// A version bump: every templated team is re-applied.
+        case allTemplated
+        /// A retry of teams deferred by an earlier pass. Everything else already
+        /// reconciled at this app version and must not be rewritten again.
+        case only(Set<NTMSID>)
+
+        func includes(_ team: Team) -> Bool {
+            switch self {
+            case .allTemplated: return true
+            case .only(let ids): return ids.contains(team.id)
+            }
+        }
+
+        var isFullPass: Bool {
+            if case .allTemplated = self { return true }
+            return false
+        }
+    }
+
     func applyBundledContentUpdates(
         teams: inout [Team],
         tools: inout [ToolDefinitionRecord],
+        tasksIndex: TasksIndex,
+        activeTeamID: NTMSID?,
+        scope: ReconcileScope = .allTemplated,
         paths: NTMSPaths
     ) -> BundledReconcileResult {
         var touched = false
-        var deferred: [NTMSID] = []
+        var deferred: [BundledUpdateReport.DeferredTeam] = []
 
-        // Fail-closed: if the running-role scan can't complete (corrupt
-        // tasks_index.json / task.json), defer every templated team. Changing
-        // `role.toolIDs` on a running role silently breaks tool authorization.
-        let scan = scanRunningTeamRoles(paths: paths)
-        switch scan {
-        case .inconclusive:
-            for i in teams.indices {
-                guard let tid = teams[i].templateID, tid != "generated" else { continue }
-                deferred.append(teams[i].id)
-            }
-            return BundledReconcileResult(touched: false, toolsTouched: false, deferred: deferred)
-        case .clean:
-            break
+        /// Resolves the scan's role IDs to display names using the team's own
+        /// roster, and folds several blocking tasks into one reportable entry.
+        func makeDeferredTeam(
+            team: Team,
+            evidence: [RunningRoleEvidence]
+        ) -> BundledUpdateReport.DeferredTeam {
+            let nameByRoleID = Dictionary(
+                team.roles.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first }
+            )
+            var seen = Set<String>()
+            let roleNames = evidence
+                .flatMap(\.roleIDs)
+                .compactMap { nameByRoleID[$0] }
+                .filter { seen.insert($0).inserted }
+            let first = evidence.first
+            return BundledUpdateReport.DeferredTeam(
+                teamID: team.id,
+                teamName: team.name,
+                roleNames: roleNames,
+                taskID: first?.taskID ?? -1,
+                taskTitle: first?.taskTitle ?? "",
+                otherBlockingTaskCount: max(0, evidence.count - 1)
+            )
         }
-        let runningByTeam: Set<NTMSID>
-        if case .clean(let set) = scan { runningByTeam = set } else { runningByTeam = [] }
 
-        // Index bundled defaults by templateID once.
+        // 0. Tools — merged BEFORE the running-role scan, so a scan that can't
+        //    complete no longer blocks it. `mergeWithDefaults` is additive and
+        //    normalizing: it never REMOVES a tool, so it cannot revoke anything a
+        //    live tool loop is currently authorized to call, which is the only
+        //    thing deferral protects. Blocking it on the scan just meant a single
+        //    unreadable task.json also froze the built-in tool definitions.
+        //
+        //    Skipped on a scoped retry: the merge is version-keyed and already
+        //    ran on the pass that deferred these teams.
+        var toolsTouched = false
+        if scope.isFullPass {
+            let merged = ToolDefinitionRecord.mergeWithDefaults(existing: tools)
+            if merged != tools {
+                tools = merged
+                toolsTouched = true
+            }
+        }
+
+        // Index bundled defaults by templateID once. Hoisted above the scan so
+        // the fail-closed arm below can tell a team that HAS a bundled
+        // counterpart from one whose template this build no longer ships —
+        // reporting the latter as "deferred" would name a team reconcile would
+        // never have touched anyway.
         var bundledByTemplateID: [String: Team] = [:]
         for t in Team.defaultTeams {
             if let tid = t.templateID { bundledByTemplateID[tid] = t }
@@ -82,10 +138,45 @@ nonisolated extension NTMSRepository {
         // never reach work folders whose Autovisor team was seeded by an older build.
         bundledByTemplateID[AutovisorConstants.teamTemplateID] = TeamTemplateFactory.autovisor()
 
+        /// Teams the reconcile could actually act on — the only ones worth
+        /// deferring or reporting.
+        func isReconcilable(_ team: Team) -> Bool {
+            guard let tid = team.templateID, tid != "generated" else { return false }
+            return bundledByTemplateID[tid] != nil || SystemTemplates.templateConfigs[tid] != nil
+        }
+
+        // Fail-closed: if the running-role scan can't complete, treat every
+        // reconcilable team as busy. An I/O failure tells us nothing about
+        // whether a role is live, and changing `role.toolIDs` under a live tool
+        // loop silently breaks tool authorization.
+        //
+        // Modelled as "everything is busy" rather than an early return so the
+        // single deferral branch below — including its Autovisor carve-out — is
+        // shared by both arms. An early return here duplicated that carve-out,
+        // and the duplicate skipped the Autovisor from the DEFERRED list without
+        // actually reconciling it, so its prompt silently never updated.
+        let evidenceByTeam: [NTMSID: [RunningRoleEvidence]]
+        var scanFailure: BundledUpdateReport.ScanFailure?
+        switch scanRunningTeamRoles(
+            tasksIndex: tasksIndex, teams: teams, activeTeamID: activeTeamID, paths: paths
+        ) {
+        case .clean(let map):
+            evidenceByTeam = map
+        case .inconclusive(let taskID, let relativePath, let reason):
+            evidenceByTeam = Dictionary(
+                teams.filter { isReconcilable($0) }.map { ($0.id, []) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            scanFailure = .taskFileUnreadable(
+                taskID: taskID, relativePath: relativePath, reason: reason
+            )
+        }
+
         for i in teams.indices {
             guard let tid = teams[i].templateID, tid != "generated" else { continue }
+            guard scope.includes(teams[i]) else { continue }
 
-            if runningByTeam.contains(teams[i].id) {
+            if let evidence = evidenceByTeam[teams[i].id] {
                 // The Autovisor manager parks at `.needsSupervisorInput` at the
                 // end of every review pass while its role status stays `.working`,
                 // so an enabled Autovisor would defer reconcile — and hold the
@@ -95,7 +186,17 @@ nonisolated extension NTMSRepository {
                 // reconciling this team is safe: the refreshed prompt/template
                 // are only read at the next pass start.
                 if tid != AutovisorConstants.teamTemplateID {
-                    deferred.append(teams[i].id)
+                    // Only report a team the reconcile could actually have acted
+                    // on. A stored `templateID` this build no longer ships has no
+                    // bundled counterpart, so steps 1/3/4 would skip it anyway —
+                    // naming it as "deferred" would blame a team that was never
+                    // going to change, and (with the pending set) keep the retry
+                    // gate open forever for nothing.
+                    if isReconcilable(teams[i]) {
+                        deferred.append(
+                            makeDeferredTeam(team: teams[i], evidence: evidence)
+                        )
+                    }
                     continue
                 }
             }
@@ -257,19 +358,10 @@ nonisolated extension NTMSRepository {
             }
         }
 
-        // 5. Tools — unified version-bump merge, replaces the old launch-level
-        //    call in `loadToolDefinitions`.
-        let merged = ToolDefinitionRecord.mergeWithDefaults(existing: tools)
-        var toolsTouched = false
-        if merged != tools {
-            tools = merged
-            toolsTouched = true
-        }
-
         return BundledReconcileResult(
             touched: touched,
             toolsTouched: toolsTouched,
-            deferred: deferred
+            report: BundledUpdateReport(scanFailure: scanFailure, deferred: deferred)
         )
     }
 
@@ -308,62 +400,162 @@ nonisolated extension NTMSRepository {
 
     // MARK: - Running-role scan
 
-    enum RunningTeamsScanResult {
-        /// Scan completed cleanly. Empty set means "no active roles anywhere".
-        case clean(Set<NTMSID>)
-        /// Scan could not complete (index or task file corrupt). Caller must
-        /// fail-closed and defer every templated team — reconcile must not
-        /// overwrite `role.toolIDs` while we cannot prove the role is idle.
-        case inconclusive
+    /// One task that pins a team as busy, with enough detail for the user-facing
+    /// message. `roleIDs` (not names) because the scan has no roster — the
+    /// reconcile loop, which does, resolves them (GRASP Information Expert).
+    struct RunningRoleEvidence: Hashable {
+        let taskID: Int
+        let taskTitle: String
+        let roleIDs: [String]
     }
 
-    /// Identifies team IDs that have at least one role currently executing. A
-    /// role is "executing" if any task's most recent run has its
-    /// `roleStatuses[roleID]` in `.working`, `.needsAcceptance`, or
-    /// `.revisionRequested`.
-    ///
-    /// Missing `tasks_index.json` is treated as "no tasks yet" (clean). A file
-    /// that exists but fails to decode returns `.inconclusive`.
-    func scanRunningTeamRoles(paths: NTMSPaths) -> RunningTeamsScanResult {
-        guard fileManager.fileExists(atPath: paths.tasksIndexJSON.path) else {
-            return .clean([])
-        }
-        let index: TasksIndex
-        do {
-            index = try store.read(TasksIndex.self, from: paths.tasksIndexJSON)
-        } catch {
-            print("[NTMSRepository] WARNING: tasks_index.json unreadable during "
-                + "reconcile scan — deferring all team updates (\(error))")
-            return .inconclusive
-        }
+    enum RunningTeamsScanResult {
+        /// Scan completed cleanly. Empty map means "no active roles anywhere".
+        case clean([NTMSID: [RunningRoleEvidence]])
+        /// Scan could not complete because a task file could not be READ. Caller
+        /// must fail-closed and defer — reconcile must not overwrite
+        /// `role.toolIDs` while we cannot prove the role is idle.
+        ///
+        /// Carries the offending task and the reason so the caller can tell the
+        /// user which file to repair; a bare case left this as a `print` nobody
+        /// ever sees, and the resulting block is permanent.
+        case inconclusive(taskID: Int, relativePath: String, reason: String)
+    }
 
-        var running: Set<NTMSID> = []
-        for entry in index.tasks {
-            let ancestors = index.ancestorIDs(of: entry.id)
+    /// Does this task hold a role that could be running a LIVE tool loop right now?
+    ///
+    /// True only for a `.working` role whose step is `.running` or
+    /// `.needsSupervisorInput`.
+    ///
+    /// ## Why exactly this set — the self-heal contract
+    ///
+    /// Deferral is only ever meant to be temporary; the banner promises "will
+    /// retry on next open". That promise holds only if something HEALS the
+    /// status, and the healers are `openWorkFolder` (active task only) and
+    /// `recoverStaleStatusesAcrossIndex`, which filters on the *derived summary*
+    /// status being `.running` / `.needsSupervisorInput`.
+    ///
+    /// This set is exactly what `StatusRecoveryService` parks — step → `.paused`,
+    /// role → `.idle` — which is exactly the set whose derived summary status is
+    /// sweepable. Widening it breaks the promise and turns a deferral into a
+    /// PERMANENT freeze:
+    ///
+    ///  * `.working` + `.paused` step derives `.paused`, which the sweep skips —
+    ///    and `pauseRun` leaves precisely that pair behind, since it moves steps
+    ///    to `.paused` and never touches `roleStatuses`.
+    ///  * `.needsAcceptance` / `.revisionRequested` are `.noAction` in
+    ///    `RoleStepReconciler` (live Supervisor gates), so recovery will never
+    ///    heal them at all. Neither holds a tool loop: the first has a terminal
+    ///    step, the second is re-run only after the folder is open.
+    ///  * A `.pending` or absent step has not started, so it builds a fresh
+    ///    schema from whatever `toolIDs` says when it does. Counting it busy is
+    ///    also unsafe: paired with a `.paused` sibling the task derives `.paused`
+    ///    and drops out of the sweep.
+    ///
+    /// `ReconcileDeferralEquivalenceTests` pins the subset relation directly, so
+    /// a future widening fails loudly instead of silently freezing a folder.
+    ///
+    /// Only `runs.last` is examined. Earlier runs legitimately retain
+    /// `.needsAcceptance` / `.revisionRequested` forever (`StatusRecoveryService`
+    /// collapses historical `.needsAcceptance` to `.done` but never revisits the
+    /// rest), so scanning them would MANUFACTURE permanent deferrals.
+    nonisolated static func pinsTeamAsBusy(_ task: NTMSTask) -> Bool {
+        !busyRoleIDs(task).isEmpty
+    }
+
+    /// The roles making `pinsTeamAsBusy` true, sorted for a stable message.
+    /// Empty ⟺ the task does not pin its team.
+    nonisolated static func busyRoleIDs(_ task: NTMSTask) -> [String] {
+        // A closed task cannot be executing: `closeTask` is the only writer of
+        // `closedAt`, `resumeRun` refuses to revive a closed task, and
+        // `createNewRun` / `restartRole` clear it before anything goes live.
+        // This also covers legacy files closed by a build whose close pass only
+        // finalized `.needsAcceptance`, which strand a `.working` role behind
+        // `closedAt` where nothing ever sweeps it.
+        guard task.closedAt == nil else { return [] }
+        guard let run = task.runs.last else { return [] }
+
+        let stepByRole = run.stepsByRoleBaseID()
+        return run.roleStatuses.compactMap { roleID, status -> String? in
+            guard status == .working else { return nil }
+            switch stepByRole[roleID]?.status {
+            case .running, .needsSupervisorInput: return roleID
+            default: return nil
+            }
+        }
+        // `roleStatuses` is a Dictionary, so iteration order varies per process.
+        // Sorting keeps the banner text stable across launches.
+        .sorted()
+    }
+
+    /// Identifies team IDs that have at least one role holding a live tool loop
+    /// (see `pinsTeamAsBusy` for the predicate and why it is this narrow).
+    ///
+    /// The index is passed IN rather than read here: `openOrCreateWorkFolder`
+    /// loads it through `loadOrRecoverFile`, which backs up and resets a corrupt
+    /// `tasks_index.json`. Reading it independently (as this used to) meant a
+    /// corrupt index poisoned the whole pass for one open even though the very
+    /// same open was about to recover it three lines later.
+    func scanRunningTeamRoles(
+        tasksIndex: TasksIndex,
+        teams: [Team],
+        activeTeamID: NTMSID?,
+        paths: NTMSPaths
+    ) -> RunningTeamsScanResult {
+        let teamsByID = Dictionary(teams.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        // Mirror `WorkFolderProjection.activeTeam`: a stored id that no longer
+        // resolves falls back to the first team, so resolving against the raw
+        // stored id would disagree with what the app actually runs.
+        let effectiveActiveTeam = activeTeamID.flatMap { teamsByID[$0] } ?? teams.first
+
+        var running: [NTMSID: [RunningRoleEvidence]] = [:]
+        for entry in tasksIndex.tasks {
+            let ancestors = tasksIndex.ancestorIDs(of: entry.id)
             let taskURL = paths.taskJSON(taskID: entry.id, ancestors: ancestors)
             guard fileManager.fileExists(atPath: taskURL.path) else { continue }
             let task: NTMSTask
             do {
                 task = try store.read(NTMSTask.self, from: taskURL)
+            } catch let error as DecodingError {
+                // Fail OPEN for this one task. A task.json that won't DECODE
+                // cannot be executing: `loadTask` uses this same `store.read`,
+                // `ensureTaskLoaded` surfaces the error and returns false, and
+                // both `createNewRun` and `resumeRun` bail on
+                // `guard let task = loadedTask(taskID)`. So no role inside it can
+                // hold a live tool loop — it cannot be what deferral protects.
+                //
+                // Nothing ever auto-recovers an individual task.json (unlike the
+                // index), so poisoning the whole pass for it froze bundled
+                // updates for EVERY team in the folder, permanently.
+                print("[NTMSRepository] WARNING: task \(entry.id) task.json is undecodable — "
+                    + "skipping it in the reconcile scan (it cannot be running): \(error)")
+                continue
             } catch {
+                // An I/O error (permissions, unmounted volume, transient read)
+                // says NOTHING about the file's contents — the task may be fine
+                // and running. Stay fail-closed.
                 print("[NTMSRepository] WARNING: task.json for task \(entry.id) "
-                    + "unreadable during reconcile scan — deferring all team updates (\(error))")
-                return .inconclusive
+                    + "unreadable during reconcile scan — deferring team updates (\(error))")
+                return .inconclusive(
+                    taskID: entry.id,
+                    relativePath: paths.relativePathFromProjectRoot(for: taskURL),
+                    reason: error.localizedDescription
+                )
             }
-            guard let run = task.runs.last else { continue }
+            let busyRoleIDs = Self.busyRoleIDs(task)
+            guard !busyRoleIDs.isEmpty else { continue }
 
-            let hasActiveRole = run.roleStatuses.values.contains { status in
-                switch status {
-                case .working, .needsAcceptance, .revisionRequested: return true
-                default: return false
-                }
-            }
-            guard hasActiveRole else { continue }
-
-            if let generated = task.generatedTeam {
-                running.insert(generated.id)
-            } else if let preferred = task.preferredTeamID {
-                running.insert(preferred)
+            // Same order the engine, the LLM services and the deletion guard use.
+            if let teamID = TeamResolution.resolveTeamID(
+                task: task,
+                teamProvider: { teamsByID[$0] },
+                activeTeam: effectiveActiveTeam
+            ) {
+                running[teamID, default: []].append(
+                    RunningRoleEvidence(
+                        taskID: task.id, taskTitle: task.title, roleIDs: busyRoleIDs
+                    )
+                )
             }
         }
 

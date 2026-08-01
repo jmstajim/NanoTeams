@@ -2,9 +2,9 @@ import XCTest
 @testable import NanoTeams
 
 /// Pins the pure section-visibility + ask_supervisor-injection policy behind
-/// `RoleEditorSheet`. The managed singleton (Autovisor) exposes only Prompt + Tools,
-/// the Supervisor only General + Dependencies, and the manager must never be shown
-/// `ask_supervisor` as auto-injected (runtime excludes it).
+/// `RoleEditorSheet`. The managed singleton (Autovisor) exposes Prompt + Tools +
+/// Skills, the Supervisor only General + Dependencies, and the manager must never
+/// be shown `ask_supervisor` as auto-injected (runtime excludes it).
 final class RoleEditorSectionPolicyTests: XCTestCase {
 
     // MARK: - availableSections
@@ -16,10 +16,24 @@ final class RoleEditorSectionPolicyTests: XCTestCase {
         )
     }
 
+    /// The manager gains Skills: it runs a step template like any other role, and
+    /// `syncAutovisorTeamToTemplate` touches only `icon`/`toolIDs`, so attachments
+    /// survive every work-folder open. Identity / dependencies / delegation stay
+    /// hidden — those are structural and template-owned.
     func testAvailableSections_managedSingletonManager() {
         XCTAssertEqual(
             RoleEditorSectionPolicy.availableSections(isSupervisor: false, isManagedSingleton: true),
-            [.prompt, .tools]
+            [.prompt, .tools, .skills]
+        )
+    }
+
+    /// The Supervisor is the user, not an LLM — it has no system prompt, so there
+    /// is nowhere for a skill to land.
+    func testAvailableSections_supervisor_excludesSkills() {
+        XCTAssertFalse(
+            RoleEditorSectionPolicy
+                .availableSections(isSupervisor: true, isManagedSingleton: false)
+                .contains(.skills)
         )
     }
 
@@ -59,11 +73,8 @@ final class RoleEditorSectionPolicyTests: XCTestCase {
         )
     }
 
-    // MARK: - injectsAskSupervisor
-
-    func testInjectsAskSupervisor() {
-        XCTAssertFalse(RoleEditorSectionPolicy.injectsAskSupervisor(isManagedSingleton: true),
-                       "manager IS the top Supervisor — never auto-injected ask_supervisor")
-        XCTAssertTrue(RoleEditorSectionPolicy.injectsAskSupervisor(isManagedSingleton: false))
-    }
+    // `injectsAskSupervisor` was retired: the Tools tab now asks the real resolver
+    // (`RoleEditorSheet.autoInjectedToolNames`) instead of restating step 4/8 here.
+    // The Autovisor strip is pinned on the resolver side by
+    // `AutovisorAskSupervisorGateTests`.
 }

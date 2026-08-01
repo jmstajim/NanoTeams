@@ -1,78 +1,29 @@
 import SwiftUI
 
-// MARK: - Pure predicate: will conclude_meeting be auto-injected?
-
-/// Pure-logic backing for the Tools-tab "auto-injected" badge on
-/// `conclude_meeting`. Must mirror `LLMExecutionService+ToolResolution.swift`
-/// step 6 exactly:
-///   - Coordinator mode (`designatedCoordinatorID` set & live): only the
-///     matching role gets `conclude_meeting`.
-///   - Auto mode (`designatedCoordinatorID == nil` OR orphan-normalized to
-///     nil): every role with `request_team_meeting` in its **live** tool
-///     selection gets it (since the meeting initiator becomes the effective
-///     coordinator).
-enum RoleEditorConcludeMeetingPredicate {
-
-    /// Inner predicate — assumes `designatedCoordinatorID` has already been
-    /// orphan-normalized by the caller. Driven by `liveSelectedTools` so the
-    /// badge tracks in-flight tool toggles, not the persisted snapshot.
-    static func evaluate(
-        roleID: String,
-        liveSelectedTools: Set<String>,
-        designatedCoordinatorID: String?
-    ) -> Bool {
-        guard liveSelectedTools.contains(ToolNames.requestTeamMeeting) else { return false }
-        return designatedCoordinatorID == nil || designatedCoordinatorID == roleID
-    }
-
-    /// Editor-context entry point — wires `editorState.selectedTools` (live)
-    /// + team-side designated coordinator (orphan-normalized) into the inner
-    /// predicate. Returns `false` for create-mode (no concrete role yet),
-    /// for the Supervisor role (Supervisor is the user, never receives
-    /// auto-injected LLM tools), and falls through to `evaluate` otherwise.
-    ///
-    /// Extracting this as a static helper (vs. inlining in the View's
-    /// computed property) makes the wiring regression-testable: a misroute
-    /// to `role.toolIDs` (stale snapshot — the round-1 review I1 bug) or
-    /// missing Supervisor guard (round-3 review CR.2) is caught by
-    /// `RoleEditorConcludeMeetingPredicateTests`'s wiring tests.
-    static func fromEditorContext(
-        mode: EditorMode<TeamRoleDefinition>,
-        editorState: RoleEditorState,
-        team: Team
-    ) -> Bool {
-        guard case .edit(let role) = mode else { return false }
-        guard !role.isSupervisor else { return false }
-        let normalizedCoordID = DesignatedCoordinatorResolver.normalize(
-            storedID: team.settings.meetingCoordinatorRoleID,
-            // Supervisor is structurally not a valid coordinator — filter
-            // it out so a stored Supervisor ID self-heals to Auto-mode
-            // exactly the same way the picker (which only offers
-            // non-Supervisor roles) presents it.
-            availableIDs: team.roles.filter { !$0.isSupervisor }.map(\.id)
-        )
-        return evaluate(
-            roleID: role.id,
-            liveSelectedTools: editorState.selectedTools,
-            designatedCoordinatorID: normalizedCoordID
-        )
-    }
-}
-
 // MARK: - Role Editor Section Policy (pure, testable)
 
-/// Pure policy for which editor sections a role exposes and whether it auto-injects
-/// `ask_supervisor`. Extracted so the managed-singleton (Autovisor) restrictions are
-/// unit-tested without a SwiftUI host. See `RoleEditorSectionPolicyTests`.
+/// Pure policy for which editor sections a role exposes. Extracted so the
+/// managed-singleton (Autovisor) restrictions are unit-tested without a SwiftUI
+/// host. See `RoleEditorSectionPolicyTests`.
+///
+/// The Tools tab's "auto-injected" list used to be answered here too, by a
+/// `conclude_meeting` predicate and an `ask_supervisor` flag that each restated a
+/// rule owned by `LLMExecutionService+ToolResolution`. Both are gone: the sheet now
+/// asks the resolver itself (`RoleEditorSheet.autoInjectedToolNames`), so the editor
+/// cannot claim an injection the runtime won't perform.
 nonisolated enum RoleEditorSectionPolicy {
 
-    /// - Supervisor: General + Dependencies only (user-controlled, not LLM-driven).
-    /// - Managed singleton (Autovisor) manager: Prompt + Tools only (identity,
-    ///   dependencies, delegation are structural/template-owned).
+    /// - Supervisor: General + Dependencies only (user-controlled, not LLM-driven —
+    ///   it has no system prompt, so `.skills` would have nowhere to land).
+    /// - Managed singleton (Autovisor) manager: Prompt + Tools + Skills. Identity,
+    ///   dependencies and delegation are structural/template-owned, but the
+    ///   manager runs a step template like any other role, and
+    ///   `syncAutovisorTeamToTemplate` touches only `icon`/`toolIDs` — so
+    ///   attachments survive every open.
     /// - Any other non-Supervisor role: the full set.
     static func availableSections(isSupervisor: Bool, isManagedSingleton: Bool) -> [RoleSection] {
         if isSupervisor { return [.general, .dependencies] }
-        if isManagedSingleton { return [.prompt, .tools] }
+        if isManagedSingleton { return [.prompt, .tools, .skills] }
         return RoleSection.allCases
     }
 
@@ -82,12 +33,6 @@ nonisolated enum RoleEditorSectionPolicy {
         available.contains(defaultSection) ? defaultSection : (available.first ?? defaultSection)
     }
 
-    /// Whether `ask_supervisor` is actually auto-injected at runtime for this role.
-    /// False for the Autovisor manager — it IS the top Supervisor (runtime excludes it),
-    /// so the editor must not show it as auto-injected.
-    static func injectsAskSupervisor(isManagedSingleton: Bool) -> Bool {
-        !isManagedSingleton
-    }
 }
 
 // MARK: - Role Editor Sheet
@@ -143,14 +88,26 @@ struct RoleEditorSheet: View {
         team.isManagedSingleton && !isEditingSupervisor
     }
 
-    /// True if this role will get `conclude_meeting` auto-injected at runtime
-    /// — used to show the tool with an "auto-injected" badge in the Tools tab.
-    /// All wiring lives in `RoleEditorConcludeMeetingPredicate.fromEditorContext`
-    /// (testable), this property is a thin pass-through.
-    private var willAutoInjectConcludeMeeting: Bool {
-        RoleEditorConcludeMeetingPredicate.fromEditorContext(
-            mode: mode, editorState: editorState, team: team
-        )
+    /// Tools the runtime will add on top of the user's selection, for the Tools
+    /// tab's "Auto-injected" list.
+    ///
+    /// Asks the real resolver against the LIVE draft (`provisionalDefinition`), so
+    /// the list tracks in-flight toggles AND can never advertise an injection the
+    /// runtime declines — the delegation pack is withheld when every whitelisted
+    /// team has been deleted or turned chat-mode, and `ask_supervisor` is stripped
+    /// for the Autovisor manager, neither of which the editor's own booleans knew.
+    private var autoInjectedToolNames: [String] {
+        RoleToolBadgePolicy.model(
+            role: editorState.provisionalDefinition(mode: mode),
+            team: team,
+            allTeams: store.workFolder?.teams ?? [],
+            storage: .from(orchestratorURL: store.workFolderURL),
+            selectedScheme: store.snapshot?.workFolder.settings.selectedScheme,
+            isVisionConfigured: store.configuration.isVisionConfigured,
+            isComputerUseEnabled: store.configuration.isComputerUseEnabled,
+            autovisorAllowTeamGeneration: store.snapshot?.workFolder.settings
+                .autovisorAllowTeamGeneration ?? true
+        ).autoInjected
     }
 
     /// Sections available for the current role:
@@ -231,17 +188,14 @@ struct RoleEditorSheet: View {
         case .tools:
             RoleEditorToolsTab(
                 editorState: $editorState,
-                isMeetingCoordinator: willAutoInjectConcludeMeeting,
+                autoInjectedTools: autoInjectedToolNames,
                 lockedTools: isManagedSingletonRole ? AutovisorConstants.managerMandatoryToolIDs : [],
-                restrictToTools: isManagedSingletonRole ? Set(AutovisorConstants.managerDefaultToolIDs) : nil,
-                // The Autovisor manager IS the top Supervisor — runtime never injects
-                // ask_supervisor for it, so the editor must not show it as auto-injected.
-                injectsAskSupervisor: RoleEditorSectionPolicy.injectsAskSupervisor(
-                    isManagedSingleton: isManagedSingletonRole
-                )
+                restrictToTools: isManagedSingletonRole ? Set(AutovisorConstants.managerDefaultToolIDs) : nil
             )
         case .dependencies:
             RoleEditorDependenciesTab(editorState: $editorState, isEditingSupervisor: isEditingSupervisor, team: $team)
+        case .skills:
+            RoleEditorSkillsTab(editorState: $editorState)
         case .llm:
             RoleEditorLLMTab(
                 editorState: $editorState,

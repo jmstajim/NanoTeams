@@ -22,6 +22,11 @@ nonisolated struct PromptBuilder {
         /// Default `nil` keeps existing test call sites compiling and renders
         /// byte-identically to the legacy work-folder-context output.
         let agentInstructions: AgentInstructionsSnapshot?
+        /// Agent skills the ROLE carries permanently (`TeamRoleDefinition.attachedSkillIDs`
+        /// resolved against the orchestrator's snapshot). Order is the user's, and it is
+        /// the order of the rendered `### Skill:` sections. Default `[]` keeps existing
+        /// call sites compiling and renders byte-identically to the pre-skills prompt.
+        let attachedSkills: [ResolvedRoleSkill]
 
         init(
             task: NTMSTask,
@@ -33,7 +38,8 @@ nonisolated struct PromptBuilder {
             activeTeam: Team?,
             roleDefinition: TeamRoleDefinition?,
             globalContext: String = "",
-            agentInstructions: AgentInstructionsSnapshot? = nil
+            agentInstructions: AgentInstructionsSnapshot? = nil,
+            attachedSkills: [ResolvedRoleSkill] = []
         ) {
             self.task = task
             self.step = step
@@ -45,6 +51,7 @@ nonisolated struct PromptBuilder {
             self.roleDefinition = roleDefinition
             self.globalContext = globalContext
             self.agentInstructions = agentInstructions
+            self.attachedSkills = attachedSkills
         }
     }
 
@@ -151,6 +158,7 @@ nonisolated struct PromptBuilder {
             "expectedArtifacts": expectedArtifactsLine,
             "artifactInstructions": artifactInstructionsBlock,
             "globalContext": formatGlobalContext(context.globalContext),
+            "roleSkills": formatRoleSkills(context.attachedSkills),
             // Merged tool block: when role has tools → Harmony format spec + per-tool
             // entries; when role has none → "no tools" notice. One section in the
             // template covers both cases, so the `## Tool Calling` header is never
@@ -165,7 +173,11 @@ nonisolated struct PromptBuilder {
         let system = TemplateResolver.resolveSystemPrompt(
             template,
             placeholders: placeholders,
-            globalContext: context.globalContext
+            globalContext: context.globalContext,
+            // Chip-less fallback for custom teams — see `resolveSystemPrompt`.
+            // Same value the `{roleSkills}` placeholder carries, so opting in or
+            // out of the chip ships the same section.
+            roleSkills: placeholders["roleSkills"] ?? ""
         )
 
         // Tool schemas are sent via the API request — no need to duplicate in system prompt
@@ -324,6 +336,28 @@ nonisolated struct PromptBuilder {
     /// `TemplateResolver.stripOrphanHeaders`.
     static func formatGlobalContext(_ raw: String) -> String {
         raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Returns the bare body of the `## Skills` section — one `### Skill: <name>`
+    /// block per attached skill, in the ROLE'S ORDER. The `## Skills` header lives
+    /// in the template, so a role with no skills resolves this to `""` and
+    /// `TemplateResolver.stripOrphanHeaders` removes the section entirely — the
+    /// prompt is then byte-identical to the pre-skills build.
+    ///
+    /// Bodies are injected in full (no cap, no truncation — chat parity), but
+    /// re-levelled by `SkillConstants.nestedBody` so a third-party skill's own
+    /// `#`/`##` headings nest under its `### Skill:` header instead of reading as
+    /// prompt-level sections. Empty-bodied entries never reach here — resolution
+    /// drops them (see `RoleSkillsSnapshot.resolve`) so an empty header can't ship.
+    static func formatRoleSkills(_ skills: [ResolvedRoleSkill]) -> String {
+        skills.compactMap { skill -> String? in
+            let body = skill.body.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !body.isEmpty else { return nil }
+            return SkillConstants.systemPromptHeader(name: skill.name)
+                + "\n\n"
+                + SkillConstants.nestedBody(body, under: SkillConstants.systemPromptHeaderLevel)
+        }
+        .joined(separator: "\n\n")
     }
 
     /// Single source of truth for the merged `{toolCalling}` chip value.

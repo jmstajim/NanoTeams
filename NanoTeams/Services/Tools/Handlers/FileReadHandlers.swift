@@ -112,12 +112,13 @@ nonisolated struct ReadLinesTool: ToolHandler {
     static let name = TN.readLines
     static let schema = ToolSchema(
         name: TN.readLines,
-        description: "Read a line range from a file. If `end_line` in the result is below `total_lines`, the range was capped — continue from `end_line + 1`.",
+        description: "Read a line range from a file. When the result carries `next_start_line`, the range was capped — repeat the same call with `start_line` set to it.",
         parameters: JS.object(
             properties: [
                 "path": JS.string("Relative path to file"),
-                "start_line": JS.integer("Start line number (1-based)"),
-                "end_line": JS.integer("End line number (1-based, inclusive). Optional."),
+                "start_line": JS.integer("Start line number (1-based)."),
+                "end_line": JS.integer("End line number (1-based, inclusive). Omit to read to end of file."),
+                "include_line_numbers": JS.boolean("Set false to drop the line-number gutter when you only need raw text."),
             ],
             required: ["path", "start_line"]
         )
@@ -194,9 +195,10 @@ nonisolated struct ReadLinesTool: ToolHandler {
 
             let requestedEndLine = readToEOF ? totalLines : min(endLine, totalLines)
 
-            // `lineLimit == 0` is the "unlimited" sentinel.
-            // Returned `end_line < total_lines` signals the cap to the LLM,
-            // which paginates by passing `start_line: end_line + 1`.
+            // `lineLimit == 0` is the "unlimited" sentinel. A capped read is signalled by
+            // `next_start_line` in the envelope rather than by asking the model to notice
+            // `end_line < total_lines` and then compute `end_line + 1` — the same arithmetic
+            // instruction removed from `search`'s paging, on a much hotter path.
             let actualEndLine: Int
             if lineLimit > 0 {
                 actualEndLine = min(requestedEndLine, startLine + lineLimit - 1)
@@ -224,6 +226,9 @@ nonisolated struct ReadLinesTool: ToolHandler {
                 var start_line: Int
                 var end_line: Int
                 var total_lines: Int
+                /// Where to resume when the range was capped, or `nil` when the file ended here.
+                /// Present exactly when unread lines remain past `end_line`.
+                var next_start_line: Int?
             }
 
             return makeSuccessResult(
@@ -233,7 +238,8 @@ nonisolated struct ReadLinesTool: ToolHandler {
                     content: resultContent,
                     start_line: startLine,
                     end_line: actualEndLine,
-                    total_lines: totalLines
+                    total_lines: totalLines,
+                    next_start_line: actualEndLine < totalLines ? actualEndLine + 1 : nil
                 )
             )
         }
@@ -246,7 +252,7 @@ nonisolated struct ListFilesTool: ToolHandler {
     static let name = TN.listFiles
     static let schema = ToolSchema(
         name: TN.listFiles,
-        description: "List contents of a directory.",
+        description: "List contents of a directory. Returns `files` and `dirs` as separate arrays of paths relative to the work-folder root; pass any entry straight to the other file tools.",
         parameters: JS.object(
             properties: [
                 "path": JS.string("Relative path to directory ('.' or omit = work-folder root)"),
@@ -301,16 +307,21 @@ nonisolated struct ListFilesTool: ToolHandler {
             // SearchExecutorError into a name_glob-named message — surfacing it
             // verbatim would tell the model to fix a `file_glob` arg that
             // `list_files` doesn't have (a loop hazard for weaker models).
-            if let nameGlob {
-                do {
-                    try GlobMatcher.validate(glob: nameGlob)
-                } catch {
-                    return makeErrorResult(
-                        toolName: Self.name, args: args,
-                        code: .invalidArgs,
-                        message: "name_glob '\(nameGlob)' is not a valid glob (only * is a wildcard)."
-                    )
+            // Compiling it here doubles as that validation, and is the whole point: the previous
+            // shape called the now-removed `GlobMatcher.matches(name:glob:)` inside the per-entry loop, which
+            // built a fresh `NSRegularExpression` for EVERY directory entry — the same defect
+            // already fixed in the search walk.
+            let compiledNameGlob: CompiledGlob?
+            do {
+                compiledNameGlob = try nameGlob.map {
+                    try CompiledGlob(glob: $0, caseInsensitive: false)
                 }
+            } catch {
+                return makeErrorResult(
+                    toolName: Self.name, args: args,
+                    code: .invalidArgs,
+                    message: "name_glob '\(nameGlob ?? "")' is not a valid glob (only * is a wildcard)."
+                )
             }
 
             let dirURL = try resolver.resolveFileURL(relativePath: path)
@@ -368,8 +379,7 @@ nonisolated struct ListFilesTool: ToolHandler {
                     // below is unconditional so nested matches under a non-
                     // matching subdirectory are still reachable (mirrors
                     // SearchExecutor's file-glob-filters-files / always-recurse).
-                    let matchesGlob = nameGlob == nil
-                        || GlobMatcher.matches(name: name, glob: nameGlob!, caseInsensitive: false)
+                    let matchesGlob = compiledNameGlob?.matches(name) ?? true
 
                     if matchesGlob {
                         entries.append((path: entryPath, isDir: itemIsDir.boolValue))
@@ -448,16 +458,17 @@ nonisolated struct SearchTool: ToolHandler {
     static let name = TN.search
     static let schema = ToolSchema(
         name: TN.search,
-        description: "Search the work folder for text, or list files when `query` is omitted. Auto-extracts PDF/DOCX/RTF/RTFD/ODT/XLSX/PPTX. Returns content `matches` and `filename_matches` (basename hits first).",
+        description: "Search the work folder for text, or list files when `query` is omitted. Auto-extracts PDF/DOCX/RTF/RTFD/ODT/XLSX/PPTX. Returns `matches` (the matching line) and `filename_matches` (basename hits first). Results are paged: when `has_more` is true, repeat the same call with `offset` set to `next_offset`.",
         parameters: JS.object(
             properties: [
                 "query": JS.string("Case-insensitive literal substring; one keyword per call for distinct concepts. Omit to list all files matching file_glob or paths."),
                 "paths": JS.array(items: JS.string("Relative path under the work folder"), description: "Restrict scope. Folders walked recursively; files scanned in place."),
                 "file_glob": JS.string("Basename glob (e.g. *.swift, test_*.md)."),
-                "max_results": JS.integer("Cap on returned matches."),
-                "context_before": JS.integer("Lines of context before each match."),
-                "context_after": JS.integer("Lines of context after each match."),
-                "exploratory": JS.boolean("Vector-index pass for synonyms, cross-language, and camel/snake variants."),
+                "max_results": JS.integer("Page size, max \(AppDefaults.searchMaxResultsMax)."),
+                "offset": JS.integer("Matches to skip."),
+                "context_before": JS.integer("Lines of context before each match. Omit for the matching line alone."),
+                "context_after": JS.integer("Lines of context after each match. Omit for the matching line alone."),
+                "exploratory": JS.boolean("Set true when a literal `query` found nothing and the wording may differ: adds a vector-index pass over synonyms, cross-language, and camel/snake variants."),
             ]
         )
     )
@@ -510,7 +521,7 @@ nonisolated struct SearchTool: ToolHandler {
             // to the executor too, so the guard and the walk stay consistent.
             let paths = optionalStringArray(canonicalArgs, "paths")?
                 .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            // Trim the glob to its content: `GlobMatcher` anchors with `^…$`, so
+            // Trim the glob to its content: `CompiledGlob` anchors with `^…$`, so
             // a padded `"*.gd "` compiles to `^.*\.gd $` and matches nothing —
             // a silent zero. Store the trimmed value (nil when empty).
             let fileGlob = optionalString(canonicalArgs, "file_glob").flatMap {
@@ -518,9 +529,9 @@ nonisolated struct SearchTool: ToolHandler {
                 return trimmed.isEmpty ? nil : trimmed
             }
             let maxResults = optionalInt(canonicalArgs, "max_results") ?? defaultMaxResults
+            let offset = optionalInt(canonicalArgs, "offset") ?? 0
             let contextBefore = optionalInt(canonicalArgs, "context_before") ?? defaultContextBefore
             let contextAfter = optionalInt(canonicalArgs, "context_after") ?? defaultContextAfter
-            let maxMatchLines = optionalInt(canonicalArgs, "max_match_lines") ?? 40
 
             let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
             let hasConstraint = fileGlob != nil || (paths?.isEmpty == false)
@@ -555,7 +566,7 @@ nonisolated struct SearchTool: ToolHandler {
                     contextBefore: contextBefore,
                     contextAfter: contextAfter,
                     maxResults: maxResults,
-                    maxMatchLines: maxMatchLines
+                    offset: offset
                 )
                 return ToolExecutionResult(
                     toolName: Self.name,
@@ -580,7 +591,7 @@ nonisolated struct SearchTool: ToolHandler {
                 contextBefore: contextBefore,
                 contextAfter: contextAfter,
                 maxResults: maxResults,
-                maxMatchLines: maxMatchLines,
+                offset: offset,
                 constrainToFiles: nil,
                 internalDir: internalDir
             ))
@@ -588,7 +599,28 @@ nonisolated struct SearchTool: ToolHandler {
             struct SearchData: Codable {
                 var query: String
                 var matches: [SearchMatch]
+                /// Results on this page that `offset` advances over — `matches` normally, or
+                /// `filename_matches` in list mode (no `query`), where the file roster IS the
+                /// result. Sourced from `output.pageCount`, never `matches.count`: in list mode
+                /// there are no content matches, so `matches.count` is 0 and "advance `offset`
+                /// by `count`" would re-request the same page forever.
                 var count: Int
+                /// Echoed so a paging caller can see which slice it got back.
+                var offset: Int?
+                /// Another page exists. Repeat the call with `offset: next_offset`.
+                var has_more: Bool?
+                /// Where the next page starts. Present exactly when `has_more` is.
+                ///
+                /// Carried rather than described because the alternative was an instruction to
+                /// compute `offset + count` — arithmetic a 7–32B model performs on every page,
+                /// where a wrong sum silently re-reads or skips results. Costs nothing: the walk
+                /// already knows both terms. NOT a total and not a page count (those would need
+                /// the whole corpus scanned); just the cursor for the next call.
+                var next_offset: Int?
+                /// Exact total for the paged list, present only when it is actually known — the
+                /// walk finished, everything fit on this page, and nothing was capped. Never
+                /// present together with `has_more`.
+                var total_matches: Int?
                 var filename_matches: [FilenameMatch]?
                 var skipped_files: [SkippedFile]?
                 var skipped_binary_count: Int?
@@ -599,12 +631,16 @@ nonisolated struct SearchTool: ToolHandler {
                 data: SearchData(
                     query: query,
                     matches: output.matches,
-                    count: output.matches.count,
+                    count: output.pageCount,
+                    offset: offset > 0 ? offset : nil,
+                    has_more: output.truncated ? true : nil,
+                    next_offset: output.truncated ? offset + output.pageCount : nil,
+                    total_matches: output.totalMatches,
                     filename_matches: output.filenameMatches.isEmpty ? nil : output.filenameMatches,
                     skipped_files: output.skipped.isEmpty ? nil : output.skipped,
                     skipped_binary_count: output.skippedBinaryCount > 0 ? output.skippedBinaryCount : nil
                 ),
-                meta: ToolResultMeta(truncated: output.truncated)
+                meta: ToolResultMeta(truncated: output.truncated, warnings: output.warnings)
             )
         }
     }

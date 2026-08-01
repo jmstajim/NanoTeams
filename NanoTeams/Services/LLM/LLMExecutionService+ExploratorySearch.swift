@@ -286,7 +286,7 @@ extension LLMExecutionService {
                 contextBefore: payload.contextBefore,
                 contextAfter: payload.contextAfter,
                 maxResults: payload.maxResults,
-                maxMatchLines: payload.maxMatchLines,
+                offset: payload.offset,
                 constrainToFiles: constrainToFiles,
                 internalDir: internalDir
             ))

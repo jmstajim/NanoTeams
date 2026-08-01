@@ -85,9 +85,9 @@ struct MessageComposer<SettingsMenu: View>: View {
 
     @Environment(StoreConfiguration.self) private var config
     @Environment(DictationService.self) private var dictation
+    /// Handed to `SettingsNavigation`, which owns the tab write — an environment action
+    /// can only be read from the view that declares it.
     @Environment(\.openWindow) private var openWindow
-    @AppStorage(UserDefaultsKeys.selectedSettingsTab)
-    private var selectedSettingsTab: SettingsView.SettingsTab = .llm
     @State private var isDropTargeted = false
     @State private var quickLookURL: URL?
     @State private var popoverClipIndex: Int?
@@ -488,8 +488,11 @@ struct MessageComposer<SettingsMenu: View>: View {
                     .overlay(alignment: .bottomLeading) {
                         if isImage && !config.isVisionConfigured {
                             Button {
-                                selectedSettingsTab = .vision
-                                openWindow(id: "settings")
+                                // Routed through the shared seam: this composer is also
+                                // hosted in the QuickCapture NSPanel, where a bare
+                                // `openWindow` opens Settings BEHIND the frontmost app —
+                                // measured, see `SettingsNavigation`.
+                                SettingsNavigation.open(tab: .vision, using: openWindow)
                             } label: {
                                 Image(systemName: "eye.trianglebadge.exclamationmark")
                                     .font(.system(size: 10))

@@ -4,28 +4,17 @@ import SwiftUI
 
 struct RoleEditorToolsTab: View {
     @Binding var editorState: RoleEditorState
-    let isMeetingCoordinator: Bool
+    /// Tools the runtime adds on top of the user's selection, resolved once by
+    /// `RoleEditorSheet` against the live draft. Replaces the booleans this tab used
+    /// to derive itself (`isNonProducingNonObserver` / `isMeetingCoordinator` /
+    /// `canDelegate` / `injectsAskSupervisor`) — each was a local restatement of a
+    /// rule that lives in `LLMExecutionService+ToolResolution`, free to drift from it.
+    let autoInjectedTools: [String]
     /// Mandatory tools shown as locked/Required (Autovisor manager). Default empty.
     var lockedTools: [String] = []
     /// When non-nil, only these tools are offered as toggles (Autovisor manager).
     var restrictToTools: Set<String>? = nil
-    /// Whether `ask_supervisor` is actually auto-injected for this role at runtime.
-    /// False for the Autovisor manager (it IS the top Supervisor — see
-    /// `LLMExecutionService+ToolResolution` step 4), so the editor must not claim it.
-    var injectsAskSupervisor: Bool = true
     @Environment(StoreConfiguration.self) private var config
-
-    private var isNonProducingNonObserver: Bool {
-        // Mirrors TeamRoleDefinition.shouldAutoInjectAskSupervisor
-        editorState.producedArtifacts.isEmpty && !editorState.requiredArtifacts.isEmpty
-    }
-
-    /// Mirrors `TeamRoleDefinition.hasDelegationConfigured` for the in-flight editor
-    /// state — drives the Auto-injected delegation rows in `ToolSelectionView`.
-    private var canDelegate: Bool {
-        !editorState.selectedDelegationTeamIDs.isEmpty
-            || editorState.allowDelegationToGeneratedTeams
-    }
 
     /// Hint text describing the delegation configuration. Surfaces target count
     /// + generated-permission so the user can see at a glance what the LLM will
@@ -47,11 +36,9 @@ struct RoleEditorToolsTab: View {
         ToolSelectionView(
             selectedTools: $editorState.selectedTools,
             producedArtifacts: editorState.producedArtifacts,
-            isNonProducingNonObserver: injectsAskSupervisor && isNonProducingNonObserver,
-            isMeetingCoordinator: isMeetingCoordinator,
             isVisionConfigured: config.isVisionConfigured,
             isComputerUseEnabled: config.isComputerUseEnabled,
-            canDelegate: canDelegate,
+            autoInjectedTools: autoInjectedTools,
             delegationHint: delegationHint,
             lockedTools: lockedTools,
             restrictToTools: restrictToTools
@@ -72,7 +59,7 @@ struct RoleEditorToolsTab: View {
         return s
     }()
 
-    RoleEditorToolsTab(editorState: $editorState, isMeetingCoordinator: false)
+    RoleEditorToolsTab(editorState: $editorState, autoInjectedTools: [ToolNames.createArtifact])
         .environment(StoreConfiguration())
         .frame(width: 500, height: 500)
         .background(Colors.surfacePrimary)

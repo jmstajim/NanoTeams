@@ -449,8 +449,7 @@ final class ToolExecutionTests: XCTestCase {
             fileGlob: nil,
             contextBefore: 0,
             contextAfter: 0,
-            maxResults: 10,
-            maxMatchLines: 10
+            maxResults: 10
         )
         let signal: ToolSignal = .exploratorySearch(payload)
         XCTAssertFalse(LLMExecutionService.shouldRecordInTrackerPreFinalize(signal: signal),

@@ -14,8 +14,6 @@ struct WatchtowerSetupSection: View {
     @Environment(StoreConfiguration.self) private var config
     @Environment(LLMStatusMonitor.self) private var monitor
     @Environment(\.openWindow) private var openWindow
-    @AppStorage(UserDefaultsKeys.selectedSettingsTab)
-    private var selectedSettingsTab: SettingsView.SettingsTab = .llm
 
     var body: some View {
         let visible = Self.visibleTips(
@@ -59,8 +57,7 @@ struct WatchtowerSetupSection: View {
     }
 
     private func openSettings(tab: SettingsView.SettingsTab) {
-        selectedSettingsTab = tab
-        openWindow(id: "settings")
+        SettingsNavigation.open(tab: tab, using: openWindow)
     }
 
     // MARK: - Pure helpers (unit-testable)

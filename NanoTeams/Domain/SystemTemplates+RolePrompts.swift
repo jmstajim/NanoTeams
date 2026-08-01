@@ -13,6 +13,8 @@ nonisolated extension SystemTemplates {
 
     /// Default role prompts — the canonical source. Templates in `SystemTemplates.roles`
     /// reference these; runtime fallback callers use `SystemTemplates.roles[id]?.prompt`.
+    /// One key — `"teammate"` — has no `SystemTemplates.roles` entry and is read directly
+    /// by `TeamTemplateFactory.empty(name:)`; see the comment at that entry.
     static let rolePrompts: [String: String] = [
         "supervisor": "",
         "productManager": """
@@ -340,6 +342,26 @@ nonisolated extension SystemTemplates {
             - Investigate before you act — `read_file` / `list_files` / `search` / `git_log` / `git_diff` are your only window into the repo.
             - You are the top authority. When you need direction: a product-development idea → set a task for the right team with `create_managed_task` (or `"generated"` if no catalog team fits); anything else → ask your Supervisor and call `wait_for_events` so they can respond.
             - Be conservative: fewer, higher-value actions. An empty pass (a memory note, then `wait_for_events`) is a fine outcome. Destructive actions are yours to make; when unsure reach for `control_task pause`, the only one you can undo — `delete` and `restart` both lose work for good.
+            """,
+        // MARK: Empty Team starter
+        // The one key with NO `SystemTemplates.roles` entry, by design:
+        // `TeamTemplateFactory.empty(name:)` reads it directly and builds the role
+        // INLINE as a custom role (`isSystemRole: false`, `systemRoleID: nil`) —
+        // an empty team is a CUSTOM team, so its content carries no system identity.
+        // Authored here anyway so it inherits the prompt-quality pins that iterate
+        // this dictionary (`SystemTemplatesSectionPinTests`, `PromptFormatConventionsTests`).
+        "teammate": """
+            Carry out the task the Supervisor assigned, then report what you did.
+
+            ### Workflow
+            1. Read the Supervisor Task brief in full, then gather any context you need with your file tools.
+            2. Do the work the brief describes.
+            3. Call `create_artifact` with the outcome — that submits the Result and ends your step.
+
+            ### Rules
+            1. Call `ask_supervisor` when the brief is ambiguous. Do not invent requirements.
+            2. Report what you actually did and found, not what you intended to do.
+            3. Your tools are read-only. If the task needs files changed, say so in the Result instead of reporting it as done.
             """,
     ]
 }

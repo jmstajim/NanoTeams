@@ -469,7 +469,7 @@ final class SystemTemplatesTests: XCTestCase {
             "toolList",
             "expectedArtifacts", "artifactInstructions",
             "conversationMechanics",
-            "globalContext", "toolCalling",
+            "globalContext", "roleSkills", "toolCalling",
         ]
         XCTAssertEqual(keys, expectedKeys)
     }
@@ -543,6 +543,31 @@ final class SystemTemplatesTests: XCTestCase {
         XCTAssertEqual(
             SystemTemplates.artifacts.count, 16,
             "Should have 16 built-in artifact templates"
+        )
+    }
+
+    // MARK: - Role Prompt Content
+
+    func testImplementationPromptContainsExpectedContent() {
+        // Verify the default Software Engineer prompt carries its identity-
+        // defining lines. The 2026-05 rewrite tightened the wording
+        // (`Focus on implementation` / `Make real code changes using tools`
+        // were replaced by the more direct "Implement the change end-to-end"
+        // opener), so this test pins the stable intent rather than the
+        // earlier verbatim phrasing.
+        let prompt = SystemTemplates.roles["softwareEngineer"]!.prompt
+
+        XCTAssertTrue(
+            prompt.contains("Implement the change"),
+            "Software Engineer prompt should carry the implementation directive"
+        )
+        XCTAssertTrue(
+            prompt.contains("Engineering Standards"),
+            "Software Engineer prompt should expose the Engineering Standards block"
+        )
+        XCTAssertTrue(
+            prompt.contains("No dead code"),
+            "Software Engineer prompt should keep the no-dead-code standard"
         )
     }
 

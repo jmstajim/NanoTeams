@@ -49,6 +49,9 @@ extension NTMSOrchestrator {
         // would re-arm from the OLD folder's still-loaded snapshot; the fresh
         // re-arm for this folder happens after `ensureAutovisorTask()`.
         clearAutovisorAutoDisable()
+        // The report describes the folder we are leaving; the open below either
+        // replaces it or leaves it nil.
+        bundledUpdateReport = nil
         llmExecutionService.cancelAllExecutions()
         await tearDownSearchIndexCoordinator()
         workFolderURL = url
@@ -87,6 +90,9 @@ extension NTMSOrchestrator {
             // AGAIN outside the do/catch (cheap: TTL memo) so an open failure
             // can't strand the PREVIOUS folder's snapshot on the new URL.
             await refreshAgentInstructions()
+            // Same reasoning for role-attached skills: the teams (and therefore
+            // the attached ids) only exist once the folder is loaded.
+            await refreshAgentSkills()
 
             // Pass the whole task so chat-mode awareness in
             // `derivedStatusFromActiveRun` participates.
@@ -134,10 +140,19 @@ extension NTMSOrchestrator {
             // storage, which `closeProject`/`resetAllData` funnel into).
             rearmAutovisorAutoDisable()
 
-            if !snapshot.deferredReconcileTeamIDs.isEmpty {
-                let count = snapshot.deferredReconcileTeamIDs.count
-                let noun = count == 1 ? "team" : "teams"
-                lastInfoMessage = "Bundled updates deferred for \(count) \(noun) — will retry on next open."
+            // Latch first: the snapshot's copy is wiped by the next
+            // `mutateWorkFolder`, and the Work Folder settings row for the
+            // permanent case has to outlive that.
+            bundledUpdateReport = snapshot.bundledUpdate
+            if let message = snapshot.bundledUpdate?.bannerMessage {
+                // A scan failure blocks every team until the user repairs a file;
+                // a deferral resolves itself next open. Same slot, different
+                // severity — the old code reported both as neutral info.
+                if snapshot.bundledUpdate?.bannerIsError == true {
+                    lastErrorMessage = message
+                } else {
+                    lastInfoMessage = message
+                }
             }
 
             // Spin up the search index coordinator if exploratory search is enabled.
@@ -152,6 +167,7 @@ extension NTMSOrchestrator {
         // folder's files against the new URL. On the happy path the TTL memo
         // makes this a no-op.
         await refreshAgentInstructions()
+        await refreshAgentSkills()
         // Sync the LM Studio embed-model state to whatever the coordinator
         // ended up at. Lives outside the do/catch so it runs on both happy
         // and error paths — if openOrCreateWorkFolder threw, the coordinator
@@ -523,6 +539,119 @@ extension NTMSOrchestrator {
         if agentInstructions != scanned { agentInstructions = scanned }
     }
 
+    // MARK: - Agent Skills
+
+    /// Same rationale as `agentInstructionsScanTTL`: collapse back-to-back run
+    /// starts into one scan. Bypassed automatically whenever the attached-id set
+    /// changes, because those ids are part of the memo key.
+    private static let roleSkillsScanTTL: TimeInterval = 5
+
+    /// Rescan for agent skills and re-read the bodies of the ones roles have
+    /// attached, refreshing the in-memory `roleSkills` snapshot. Scan and reads
+    /// both run off the main actor.
+    ///
+    /// **Deliberate divergence from `refreshAgentInstructions`: no
+    /// `hasRealWorkFolder` bail.** Instruction files exist only inside a work
+    /// folder, so clearing the snapshot there is right. Skills do not —
+    /// `~/.claude/skills`, `~/.codex/prompts` and enabled plugin skills are
+    /// available with no folder open at all, and `AgentSkillsScanner.scan`
+    /// takes an OPTIONAL root precisely for that case (the composer's `/`
+    /// picker already passes `nil` in default storage). Copying the bail would
+    /// silently drop every attached global skill in the mode the app boots into.
+    func refreshAgentSkills() async {
+        let root = hasRealWorkFolder ? workFolderURL : nil
+        // Union of every role's attachments across all teams: these are the only
+        // ids whose bodies are worth reading. A typical install discovers 130+
+        // skills totalling half a megabyte — reading them all would be waste.
+        let attachedIDs = attachedSkillIDsAcrossTeams()
+        let key = RoleSkillsScanKey(root: root, attachedIDs: attachedIDs)
+        if key == roleSkillsLastScanKey,
+           let lastScanAt = roleSkillsLastScanAt,
+           Date().timeIntervalSince(lastScanAt) < Self.roleSkillsScanTTL {
+            return
+        }
+
+        roleSkillsScanGeneration += 1
+        let expected = roleSkillsScanGeneration
+        let scanned = await Task.detached(priority: .utility) {
+            let snapshot = AgentSkillsScanner.scan(projectRoot: root)
+            var bodies: [String: String] = [:]
+            var unresolved: Set<String> = []
+            let byID = Dictionary(snapshot.items.map { ($0.id, $0) },
+                                  uniquingKeysWith: { first, _ in first })
+            for id in attachedIDs {
+                guard let item = byID[id],
+                      let body = AgentSkillsScanner.readFullContent(at: item.fileURL)
+                else {
+                    // Deleted, moved, renamed, non-UTF-8 or emptied since it was
+                    // attached. Recorded, never silently dropped.
+                    unresolved.insert(id)
+                    continue
+                }
+                bodies[id] = body
+            }
+            return RoleSkillsSnapshot(items: snapshot.items, bodies: bodies,
+                                      unresolvedIDs: unresolved)
+        }.value
+        // CLAUDE.md #38: a newer refresh started during the await supersedes this one.
+        guard roleSkillsScanGeneration == expected else { return }
+        roleSkillsLastScanKey = key
+        roleSkillsLastScanAt = Date()
+        // Equality guard — @Observable fires on every write (see above).
+        if roleSkills != scanned { roleSkills = scanned }
+    }
+
+    /// Every skill id attached to any role of any team, de-duplicated and sorted
+    /// so the memo key is order-stable. Sorting is safe here precisely because
+    /// this feeds the body CACHE — per-role render order comes from
+    /// `TeamRoleDefinition.attachedSkillIDs` and is never sorted.
+    private func attachedSkillIDsAcrossTeams() -> [String] {
+        var ids: Set<String> = []
+        for team in workFolder?.teams ?? [] {
+            for role in team.roles { ids.formUnion(role.attachedSkillIDs) }
+        }
+        // Generated teams live on tasks, not in `workFolder.teams`; the active
+        // task is deliberately absent from `loadedTasks`, so check both.
+        for task in ([activeTask] + Array(snapshot?.loadedTasks.values ?? [:].values)).compactMap({ $0 }) {
+            for role in task.generatedTeam?.roles ?? [] {
+                ids.formUnion(role.attachedSkillIDs)
+            }
+        }
+        return ids.sorted()
+    }
+
+    /// Reads full bodies for `ids` that the current `roleSkills` snapshot does
+    /// not already carry, resolved against the snapshot's catalogue.
+    ///
+    /// Exists because the snapshot deliberately caches bodies only for ids some
+    /// role has **persisted** (`attachedSkillIDsAcrossTeams`) — which is exactly
+    /// wrong for the Role editor. A skill the user just ticked is unsaved, so
+    /// its body, and therefore its token cost, is absent from the one surface
+    /// whose entire job is stating that cost *before* the user commits to it.
+    /// Without this the cost banner silently under-reports the very skill being
+    /// decided about, and an over-budget prompt is truncated from the HEAD with
+    /// no error.
+    ///
+    /// Returns only what it managed to read; an id that resolves to nothing is
+    /// omitted, matching `RoleSkillsSnapshot.unresolvedIDs` semantics. Reads run
+    /// off the main actor.
+    func skillBodies(forIDs ids: [String]) async -> [String: String] {
+        let known = roleSkills ?? .empty
+        let byID = Dictionary(known.items.map { ($0.id, $0) },
+                              uniquingKeysWith: { first, _ in first })
+        let targets: [(String, URL)] = ids
+            .filter { known.bodies[$0] == nil }
+            .compactMap { id in byID[id].map { (id, $0.fileURL) } }
+        guard !targets.isEmpty else { return [:] }
+        return await Task.detached(priority: .utility) {
+            var out: [String: String] = [:]
+            for (id, url) in targets {
+                if let body = AgentSkillsScanner.readFullContent(at: url) { out[id] = body }
+            }
+            return out
+        }.value
+    }
+
     /// Attach files as agent instructions (Settings grid "+" / file picker).
     /// Only files INSIDE the work folder qualify — the sandbox refuses
     /// `read_file` outside it, so an outside path would be uninjectable dead
@@ -892,4 +1021,18 @@ nonisolated struct AgentInstructionsScanKey: Equatable {
     let extraPaths: [String]
     let excludedPaths: [String]
     let injectedPaths: [String]
+}
+
+// MARK: - Role Skills Scan Key
+
+/// Inputs of one `refreshAgentSkills` pass — the memo key for its short-TTL skip.
+///
+/// `root` is OPTIONAL: `nil` means default storage, where the scan still runs
+/// (global skills and plugins have nothing to do with the work folder). The
+/// attached ids are part of the key because they decide which bodies get read —
+/// keyed on the root alone, attaching a skill and immediately opening the prompt
+/// preview within the TTL would render the previous snapshot.
+nonisolated struct RoleSkillsScanKey: Equatable {
+    let root: URL?
+    let attachedIDs: [String]
 }

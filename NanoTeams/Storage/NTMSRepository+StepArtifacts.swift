@@ -59,28 +59,6 @@ nonisolated extension NTMSRepository {
         return paths.relativePathWithinNanoteams(for: fileURL)
     }
 
-    /// Persist a build diagnostics JSON file under .nanoteams/internal/tasks/<taskID>/runs/<runID>/roles/<roleID>/build_diagnostics.json
-    /// (or the appropriate nested path for delegated child tasks) and return the
-    /// relative path within .nanoteams/.
-    func persistBuildDiagnosticsPersisted(
-        at workFolderRoot: URL,
-        taskID: Int,
-        runID: Int,
-        roleID: String,
-        diagnostics: BuildDiagnosticsPersisted
-    ) throws -> String {
-        let paths = NTMSPaths(workFolderRoot: workFolderRoot)
-        let ancestors = ancestorChain(for: taskID, paths: paths)
-        let jsonURL = paths.buildDiagnosticsJSON(taskID: taskID, runID: runID, roleID: roleID, ancestors: ancestors)
-        try fileManager.createDirectory(at: jsonURL.deletingLastPathComponent(), withIntermediateDirectories: true,
-                                         attributes: Self.internalDirAttributes)
-
-        let data = try JSONCoderFactory.makeExportEncoder().encode(diagnostics)
-        try data.write(to: jsonURL, options: [.atomic])
-
-        return paths.relativePathWithinNanoteams(for: jsonURL)
-    }
-
     /// Reads `tasks_index.json` and walks the ancestor chain for the given task ID.
     /// Top-level tasks (or unknown IDs, which behave as top-level for path resolution)
     /// produce an empty array — matches the original flat layout.

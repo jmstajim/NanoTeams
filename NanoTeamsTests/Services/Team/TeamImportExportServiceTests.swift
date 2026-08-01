@@ -304,6 +304,37 @@ final class TeamImportExportServiceTests: XCTestCase {
         XCTAssertNotEqual(imported.id, originalID)
     }
 
+    /// An imported team must be CUSTOM, exactly like a duplicated one.
+    ///
+    /// Keeping the exported `templateID` had two silent consequences: the
+    /// version-bump reconcile claimed the import as its own and rewrote its role
+    /// prompts — the very clobber `Team.duplicate` clears the id to prevent —
+    /// and two teams shared one template identity, so "Restore Default Teams"
+    /// could replace the wrong one and deleting the copy tombstoned the
+    /// original's template.
+    func testImportTeam_isCustom_soReconcileNeverClobbersIt() throws {
+        let source = try XCTUnwrap(Team.defaultTeams.first { $0.templateID == "faang" })
+        XCTAssertNotNil(source.templateID, "fixture must start as a template team")
+        XCTAssertTrue(source.roles.contains { $0.isSystemRole }, "fixture must have system roles")
+
+        let data = try TeamImportExportService.exportTeam(source)
+        let imported = try TeamImportExportService.importTeam(from: data)
+
+        XCTAssertNil(imported.templateID,
+                     "an imported team must not inherit the template identity")
+        XCTAssertFalse(imported.roles.contains { $0.isSystemRole },
+                       "no role may stay a system role without a template")
+        // `systemRoleID` must SURVIVE: `isSupervisor` is derived from it, so
+        // clearing it would leave the imported team with no Supervisor.
+        XCTAssertTrue(imported.roles.contains { $0.isSupervisor },
+                      "the Supervisor must survive the import")
+        XCTAssertEqual(imported.nonSupervisorRoles.count, source.nonSupervisorRoles.count)
+        XCTAssertFalse(imported.artifacts.contains { $0.isSystemArtifact },
+                       "matches Team.duplicate and importArtifact")
+        XCTAssertTrue(imported.deletedSystemRoleIDs.isEmpty)
+        XCTAssertTrue(imported.deletedSystemArtifactIDs.isEmpty)
+    }
+
     func testImportTeam_regeneratesRoleIDs() throws {
         let role1 = TeamRoleDefinition(
             id: "role-aaa",

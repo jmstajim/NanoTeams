@@ -9,7 +9,6 @@ struct RoleEditorDependenciesTab: View {
 
     @State private var showingNewArtifact = false
     @State private var newArtifactTargetIsProduced = false
-    @State private var artifactNamesBefore: Set<String> = []
 
     var body: some View {
         ScrollView {
@@ -44,8 +43,8 @@ struct RoleEditorDependenciesTab: View {
             }
         }
         .sheet(isPresented: $showingNewArtifact) {
-            ArtifactEditorSheet(team: $team, mode: .create) {
-                autoAssignNewArtifact()
+            ArtifactEditorSheet(team: $team, mode: .create) { artifact in
+                autoAssignNewArtifact(artifact)
             }
         }
     }
@@ -54,17 +53,27 @@ struct RoleEditorDependenciesTab: View {
 
     private func showNewArtifactSheet(forProduced: Bool) {
         newArtifactTargetIsProduced = forProduced
-        artifactNamesBefore = Set(team.artifactNames)
         showingNewArtifact = true
     }
 
-    private func autoAssignNewArtifact() {
-        let newNames = Set(team.artifactNames).subtracting(artifactNamesBefore)
-        guard let newName = newNames.first else { return }
+    /// Assign the artifact the sheet just created to whichever list the user
+    /// opened it from.
+    ///
+    /// Takes the artifact from the callback rather than diffing
+    /// `team.artifactNames` against a pre-sheet snapshot, which could never
+    /// work: `onSave` fires in the same synchronous turn as the sheet's `team`
+    /// Binding write, and that setter is async (`Task { await
+    /// store.mutateWorkFolder … }`), so `team` here is still the pre-write
+    /// snapshot and the diff was always empty — the auto-assign silently never
+    /// fired.
+    private func autoAssignNewArtifact(_ artifact: TeamArtifact) {
+        let name = artifact.name
         if newArtifactTargetIsProduced {
-            editorState.producedArtifacts.append(newName)
+            guard !editorState.producedArtifacts.contains(name) else { return }
+            editorState.producedArtifacts.append(name)
         } else {
-            editorState.requiredArtifacts.append(newName)
+            guard !editorState.requiredArtifacts.contains(name) else { return }
+            editorState.requiredArtifacts.append(name)
         }
     }
 

@@ -4,7 +4,7 @@ import SwiftUI
 
 /// Pure-logic backing for the Delegation tab's "Allowed Teams" list — a static
 /// helper namespace in the same testable-namespace style as
-/// `RoleEditorConcludeMeetingPredicate` (top of `RoleEditorSheet.swift`). Marked
+/// `RoleEditorSkillsPolicy` (top of `RoleEditorSkillsTab.swift`). Marked
 /// `nonisolated` so the unit tests, which don't inherit the app target's
 /// `@MainActor` default, can call it without a `@MainActor` hop.
 ///

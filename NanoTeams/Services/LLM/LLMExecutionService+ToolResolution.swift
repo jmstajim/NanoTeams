@@ -126,7 +126,7 @@ extension LLMExecutionService {
     // MARK: - Tool Definitions
 
     func toolSchemas(for role: Role, team: Team? = nil) -> [ToolSchema] {
-        guard let delegate else { return [] }
+        guard let env = toolResolutionEnvironment() else { return [] }
         // Schema-build is the earliest and most universal detection point for
         // an orphan-coordinator (`reportOrphanCoordinatorIfNeeded` throttles
         // per team so this is safe to call on every iteration). The meeting
@@ -135,6 +135,43 @@ extension LLMExecutionService {
         return Self.resolveToolSchemas(
             for: role,
             team: team,
+            allTeams: env.allTeams,
+            selectedScheme: env.selectedScheme,
+            isVisionConfigured: env.isVisionConfigured,
+            isComputerUseEnabled: env.isComputerUseEnabled,
+            autovisorAllowTeamGeneration: env.autovisorAllowTeamGeneration
+        )
+    }
+
+    /// Definition-taking sibling. Prefer it wherever the caller already resolved
+    /// the role — it skips the lossy `Role → findRole` hop that can bind a
+    /// duplicated system role to its twin's toolset. See the static
+    /// `resolveToolSchemas(forDefinition:…)` for the full rationale.
+    func toolSchemas(forDefinition roleDefinition: TeamRoleDefinition, team: Team? = nil) -> [ToolSchema] {
+        guard let env = toolResolutionEnvironment() else { return [] }
+        reportOrphanCoordinatorIfNeeded(team: team)
+        return Self.resolveToolSchemas(
+            forDefinition: roleDefinition,
+            team: team,
+            allTeams: env.allTeams,
+            selectedScheme: env.selectedScheme,
+            isVisionConfigured: env.isVisionConfigured,
+            isComputerUseEnabled: env.isComputerUseEnabled,
+            autovisorAllowTeamGeneration: env.autovisorAllowTeamGeneration
+        )
+    }
+
+    /// Delegate-sourced inputs shared by both `toolSchemas` shims — kept in one
+    /// place so the two entry points can't drift on which environment they read.
+    private func toolResolutionEnvironment() -> (
+        allTeams: [Team],
+        selectedScheme: String?,
+        isVisionConfigured: Bool,
+        isComputerUseEnabled: Bool,
+        autovisorAllowTeamGeneration: Bool
+    )? {
+        guard let delegate else { return nil }
+        return (
             allTeams: delegate.snapshot?.workFolder.teams ?? [],
             selectedScheme: delegate.snapshot?.workFolder.settings.selectedScheme,
             isVisionConfigured: delegate.visionLLMConfig != nil,
@@ -166,22 +203,92 @@ extension LLMExecutionService {
     ) -> [ToolSchema] {
         // 1. Find role definition — findRole handles id, systemRoleID, and name (custom roles
         // created via Role.fromDefinition carry the role's name, not its id, in `.custom(id:)`).
-        let roleDefinition = team?.findRole(byIdentifier: role.baseID)
-
-        // 2. Resolve Tool IDs
-        let allowedIDs: Set<String>
-        if let roleDefinition {
-            allowedIDs = Set(roleDefinition.toolIDs)
-        } else {
-            if let team {
-                // Always-on so stale `systemRoleID` / id collisions surface in release logs,
-                // not just DEBUG builds — otherwise the role silently runs with the wrong tools.
-                print("[LLMExecutionService] WARNING: role \(role.baseID) not found in team "
-                    + "'\(team.name)' — using fallback tool IDs")
-            }
-            // Fall back to defaults for built-in roles (only when no team role found)
-            allowedIDs = SystemTemplates.fallbackToolIDs[role.baseID] ?? SystemTemplates.fallbackCustomRoleToolIDs
+        //
+        // This lookup is LOSSY and callers holding a definition must NOT round-trip
+        // through it — see the `forDefinition:` overload below.
+        if let roleDefinition = team?.findRole(byIdentifier: role.baseID) {
+            return resolveToolSchemas(
+                forDefinition: roleDefinition,
+                team: team,
+                allTeams: allTeams,
+                selectedScheme: selectedScheme,
+                isVisionConfigured: isVisionConfigured,
+                isComputerUseEnabled: isComputerUseEnabled,
+                autovisorAllowTeamGeneration: autovisorAllowTeamGeneration
+            )
         }
+
+        if let team {
+            // Always-on so stale `systemRoleID` / id collisions surface in release logs,
+            // not just DEBUG builds — otherwise the role silently runs with the wrong tools.
+            print("[LLMExecutionService] WARNING: role \(role.baseID) not found in team "
+                + "'\(team.name)' — using fallback tool IDs")
+        }
+        // Fall back to defaults for built-in roles (only when no team role found)
+        return resolveToolSchemasCore(
+            allowedIDs: SystemTemplates.fallbackToolIDs[role.baseID] ?? SystemTemplates.fallbackCustomRoleToolIDs,
+            roleDefinition: nil,
+            isAutovisorManagerRole: role.baseID == AutovisorConstants.managerRoleSystemID,
+            team: team,
+            allTeams: allTeams,
+            selectedScheme: selectedScheme,
+            isVisionConfigured: isVisionConfigured,
+            isComputerUseEnabled: isComputerUseEnabled,
+            autovisorAllowTeamGeneration: autovisorAllowTeamGeneration
+        )
+    }
+
+    /// Same resolution, entered with the role DEFINITION already in hand.
+    ///
+    /// Prefer this over the `Role`-taking overload whenever you have a
+    /// `TeamRoleDefinition`. `Role.fromDefinition` collapses every role sharing a
+    /// `systemRoleID` onto one enum case, and `Team.findRole` then returns the
+    /// FIRST such role — so a `definition → Role → findRole` round-trip can hand
+    /// back a *different* role's toolset, silently (the lookup succeeds, so the
+    /// warning above never fires). One "Duplicate" click on a system role in the
+    /// team editor reaches that state: `handleDuplicateRole` copies `systemRoleID`
+    /// verbatim. Entering with the definition skips the lossy hop entirely.
+    nonisolated static func resolveToolSchemas(
+        forDefinition roleDefinition: TeamRoleDefinition,
+        team: Team?,
+        allTeams: [Team] = [],
+        selectedScheme: String? = nil,
+        isVisionConfigured: Bool = false,
+        isComputerUseEnabled: Bool = false,
+        autovisorAllowTeamGeneration: Bool = true
+    ) -> [ToolSchema] {
+        resolveToolSchemasCore(
+            allowedIDs: Set(roleDefinition.toolIDs),
+            roleDefinition: roleDefinition,
+            // `fromDefinition` is the FORWARD direction (definition → enum) and is
+            // deterministic; only the reverse lookup is lossy. Computing the step-8
+            // arm this way keeps it byte-identical to what the `Role`-taking entry
+            // point produced before this split.
+            isAutovisorManagerRole: Role.fromDefinition(roleDefinition).baseID
+                == AutovisorConstants.managerRoleSystemID,
+            team: team,
+            allTeams: allTeams,
+            selectedScheme: selectedScheme,
+            isVisionConfigured: isVisionConfigured,
+            isComputerUseEnabled: isComputerUseEnabled,
+            autovisorAllowTeamGeneration: autovisorAllowTeamGeneration
+        )
+    }
+
+    /// Shared core of both entry points: everything from candidate-set assembly
+    /// (step 3) through the Autovisor hard gate (step 8). `roleDefinition` is nil
+    /// only on the fallback-IDs path, where no definition exists by construction.
+    private nonisolated static func resolveToolSchemasCore(
+        allowedIDs: Set<String>,
+        roleDefinition: TeamRoleDefinition?,
+        isAutovisorManagerRole: Bool,
+        team: Team?,
+        allTeams: [Team],
+        selectedScheme: String?,
+        isVisionConfigured: Bool,
+        isComputerUseEnabled: Bool,
+        autovisorAllowTeamGeneration: Bool
+    ) -> [ToolSchema] {
 
         // 3. Build the candidate set from the LIVE handler registry — the
         // authoritative list of tools that actually have runnable handlers —
@@ -373,8 +480,7 @@ extension LLMExecutionService {
         // fire. Residual: team == nil AND a `.custom` role identity would still take
         // the generic custom fallback, but the manager's runtime step role is always
         // the builtin `.autovisor`, and with no team the step fails at the engine.
-        if team?.templateID == AutovisorConstants.teamTemplateID
-            || role.baseID == AutovisorConstants.managerRoleSystemID {
+        if team?.templateID == AutovisorConstants.teamTemplateID || isAutovisorManagerRole {
             allowedTools.removeAll { $0.name == tn.askSupervisor }
         }
 

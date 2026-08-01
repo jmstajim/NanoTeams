@@ -216,6 +216,10 @@ nonisolated enum TaskMutationService {
         task.runs[location.runIndex].steps[location.stepIndex].supervisorAnswer = answer
         task.runs[location.runIndex].steps[location.stepIndex].supervisorAnswerAttachmentPaths = []
         task.runs[location.runIndex].steps[location.stepIndex].supervisorAnswerWasAuto = isAutoAnswer
+        // Arms the one-shot delivery to the wire (see
+        // `StepExecution.supervisorAnswerPendingDelivery`).
+        task.runs[location.runIndex].steps[location.stepIndex].supervisorAnswerPendingDelivery =
+            StepExecution.inferPendingDelivery(answer: answer, attachmentPaths: [])
         task.runs[location.runIndex].steps[location.stepIndex].needsSupervisorInput = false
         task.runs[location.runIndex].steps[location.stepIndex].updatedAt = MonotonicClock.shared.now()
     }

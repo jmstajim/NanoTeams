@@ -55,6 +55,14 @@ struct EditableMessageTextView: NSViewRepresentable {
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        applyUpdate(to: scrollView, coordinator: context.coordinator)
+    }
+
+    /// Shared body for production `updateNSView` and the `#if DEBUG` test seam
+    /// below; both delegate here. Mirrors the `wire(coordinator:)` /
+    /// `computeSize(proposal:nsView:coordinator:)` split already in this file.
+    @MainActor
+    private func applyUpdate(to scrollView: NSScrollView, coordinator: Coordinator) {
         guard let textView = scrollView.documentView as? EditableNSTextView else {
             assertionFailure("scrollView.documentView is not EditableNSTextView — only makeNSView constructs the view")
             return
@@ -62,11 +70,13 @@ struct EditableMessageTextView: NSViewRepresentable {
         // Re-bind every render: SwiftUI rebuilds the representable
         // struct on every parent update, so the closures we captured may
         // have re-pointed.
-        context.coordinator.configure(
+        coordinator.configure(
             textBinding: $text,
             isFocusedBinding: $isFocused,
             onReturnKey: onReturnKey
         )
+        // Assigning this is what keeps the on-screen hint honest — the property's
+        // own `didSet` requests the repaint (see `EditableNSTextView`).
         textView.placeholderText = placeholder
         // Clear the undo stack on unlock: the improve stream wrote via
         // `.string =`, which doesn't register undo actions, so a Cmd+Z after
@@ -76,7 +86,7 @@ struct EditableMessageTextView: NSViewRepresentable {
             textView.undoManager?.removeAllActions()
         }
         textView.isInputLocked = isInputLocked
-        context.coordinator.applyText(text, to: textView)
+        coordinator.applyText(text, to: textView)
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
@@ -232,6 +242,14 @@ struct EditableMessageTextView: NSViewRepresentable {
     @MainActor
     func testHooks_sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, coordinator: Coordinator) -> CGSize? {
         return computeSize(proposal: proposal, nsView: nsView, coordinator: coordinator)
+    }
+
+    /// Mirrors `updateNSView` without a SwiftUI `Context`. Tests use this to
+    /// drive the per-render path — the one that has to keep re-applying the
+    /// placeholder, since dropping that assignment silently re-freezes the hint.
+    @MainActor
+    func testHooks_updateNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
+        applyUpdate(to: scrollView, coordinator: coordinator)
     }
     #endif
 }

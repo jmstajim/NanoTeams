@@ -8,40 +8,30 @@ final class TeamManagementServiceTests: XCTestCase {
         MonotonicClock.shared.reset()
     }
 
-    // MARK: - createTeam
-
-    func testCreateTeam_returnsTeamWithCorrectName() {
-        let team = TeamManagementService.createTeam(name: "Alpha Team")
-
-        XCTAssertEqual(team.name, "Alpha Team")
-    }
-
-    func testCreateTeam_hasRolesFromDefault() {
-        let team = TeamManagementService.createTeam(name: "Default Team")
-        let defaultTeam = Team.default
-
-        XCTAssertFalse(team.roles.isEmpty)
-        XCTAssertEqual(team.roles.count, defaultTeam.roles.count)
-    }
+    // Team creation moved to `TeamTemplateFactory` — see `EmptyTeamTemplateTests`.
+    // The fixtures below use `TeamTemplateFactory.empty(name:)`: they only need "some
+    // team", and an empty one is the better fixture — it makes `testDuplicateTeam_hasNewID`
+    // exercise real id re-seeding instead of comparing two teams that (under the deleted
+    // `TeamManagementService.createTeam`) shared every role id.
 
     // MARK: - duplicateTeam
 
     func testDuplicateTeam_hasNewID() {
-        let original = TeamManagementService.createTeam(name: "Original")
+        let original = TeamTemplateFactory.empty(name: "Original")
         let duplicate = TeamManagementService.duplicateTeam(original)
 
         XCTAssertNotEqual(original.id, duplicate.id)
     }
 
     func testDuplicateTeam_defaultNameHasCopySuffix() {
-        let original = TeamManagementService.createTeam(name: "My Team")
+        let original = TeamTemplateFactory.empty(name: "My Team")
         let duplicate = TeamManagementService.duplicateTeam(original)
 
         XCTAssertEqual(duplicate.name, "My Team Copy")
     }
 
     func testDuplicateTeam_customName_usesIt() {
-        let original = TeamManagementService.createTeam(name: "My Team")
+        let original = TeamTemplateFactory.empty(name: "My Team")
         let duplicate = TeamManagementService.duplicateTeam(original, newName: "Renamed Team")
 
         XCTAssertEqual(duplicate.name, "Renamed Team")
@@ -50,15 +40,15 @@ final class TeamManagementServiceTests: XCTestCase {
     // MARK: - canDeleteTeam
 
     func testCanDeleteTeam_singleTeam_returnsFalse() {
-        let team = TeamManagementService.createTeam(name: "Only Team")
+        let team = TeamTemplateFactory.empty(name: "Only Team")
         let wf = WorkFolderProjection(state: WorkFolderState(name: "TestProject"), settings: .defaults, teams: [team])
 
         XCTAssertFalse(TeamManagementService.canDeleteTeam(in: wf, teamID: team.id))
     }
 
     func testCanDeleteTeam_multipleTeams_returnsTrue() {
-        let team1 = TeamManagementService.createTeam(name: "Team A")
-        let team2 = TeamManagementService.createTeam(name: "Team B")
+        let team1 = TeamTemplateFactory.empty(name: "Team A")
+        let team2 = TeamTemplateFactory.empty(name: "Team B")
         let wf = WorkFolderProjection(state: WorkFolderState(name: "TestProject"), settings: .defaults, teams: [team1, team2])
 
         XCTAssertTrue(TeamManagementService.canDeleteTeam(in: wf, teamID: team1.id))
@@ -66,7 +56,7 @@ final class TeamManagementServiceTests: XCTestCase {
 
     func testCanDeleteTeam_managedSingleton_returnsFalse() {
         // The Autovisor team is never deletable, even alongside other teams.
-        let normal = TeamManagementService.createTeam(name: "Team A")
+        let normal = TeamTemplateFactory.empty(name: "Team A")
         let autovisor = TeamTemplateFactory.autovisor()
         let wf = WorkFolderProjection(state: WorkFolderState(name: "TestProject"), settings: .defaults, teams: [normal, autovisor])
 
@@ -76,7 +66,7 @@ final class TeamManagementServiceTests: XCTestCase {
     func testCanDeleteTeam_lastNonSingletonTeam_returnsFalse() {
         // Deleting the only normal team (leaving just Autovisor) is not allowed —
         // the folder must always retain a usable working team.
-        let normal = TeamManagementService.createTeam(name: "Team A")
+        let normal = TeamTemplateFactory.empty(name: "Team A")
         let autovisor = TeamTemplateFactory.autovisor()
         let wf = WorkFolderProjection(state: WorkFolderState(name: "TestProject"), settings: .defaults, teams: [normal, autovisor])
 
@@ -85,8 +75,8 @@ final class TeamManagementServiceTests: XCTestCase {
 
     func testCanDeleteTeam_normalTeamWithAutovisorPresent_returnsTrue() {
         // Two normal teams + Autovisor → deleting one normal team is allowed.
-        let team1 = TeamManagementService.createTeam(name: "Team A")
-        let team2 = TeamManagementService.createTeam(name: "Team B")
+        let team1 = TeamTemplateFactory.empty(name: "Team A")
+        let team2 = TeamTemplateFactory.empty(name: "Team B")
         let autovisor = TeamTemplateFactory.autovisor()
         let wf = WorkFolderProjection(state: WorkFolderState(name: "TestProject"), settings: .defaults, teams: [team1, team2, autovisor])
 
@@ -94,8 +84,8 @@ final class TeamManagementServiceTests: XCTestCase {
     }
 
     func testCanDeleteTeam_nonExistentID_returnsFalse() {
-        let team1 = TeamManagementService.createTeam(name: "Team A")
-        let team2 = TeamManagementService.createTeam(name: "Team B")
+        let team1 = TeamTemplateFactory.empty(name: "Team A")
+        let team2 = TeamTemplateFactory.empty(name: "Team B")
         let wf = WorkFolderProjection(state: WorkFolderState(name: "TestProject"), settings: .defaults, teams: [team1, team2])
 
         XCTAssertFalse(TeamManagementService.canDeleteTeam(in: wf, teamID: "nonexistent_team"))
@@ -282,7 +272,7 @@ final class TeamManagementServiceTests: XCTestCase {
     // MARK: - hasDuplicateName
 
     func testHasDuplicateName_caseInsensitive_returnsTrue() {
-        let team = TeamManagementService.createTeam(name: "Alpha Team")
+        let team = TeamTemplateFactory.empty(name: "Alpha Team")
 
         let result = TeamManagementService.hasDuplicateName("ALPHA TEAM", in: [team])
 
@@ -290,7 +280,7 @@ final class TeamManagementServiceTests: XCTestCase {
     }
 
     func testHasDuplicateName_differentName_returnsFalse() {
-        let team = TeamManagementService.createTeam(name: "Alpha Team")
+        let team = TeamTemplateFactory.empty(name: "Alpha Team")
 
         let result = TeamManagementService.hasDuplicateName("Beta Team", in: [team])
 
@@ -298,7 +288,7 @@ final class TeamManagementServiceTests: XCTestCase {
     }
 
     func testHasDuplicateName_excludesSelf() {
-        let team = TeamManagementService.createTeam(name: "Alpha Team")
+        let team = TeamTemplateFactory.empty(name: "Alpha Team")
 
         let result = TeamManagementService.hasDuplicateName(
             "Alpha Team",
@@ -311,16 +301,34 @@ final class TeamManagementServiceTests: XCTestCase {
 
     // MARK: - resetGraphLayout
 
-    func testResetGraphLayout_setsDefault() {
-        var team = TeamManagementService.createTeam(name: "Graph Team")
+    func testResetGraphLayout_smallTeam_recomputesOnePositionPerRole() {
+        // `resetGraphLayout` calls `TeamGraphLayout.autoLayout(for: team.roles)` — it does
+        // NOT restore `TeamGraphLayout.default`, a hardcoded 9-node FAANG-shaped constant.
+        // The previous assertion (`== TeamGraphLayout.default.nodePositions.count`) only
+        // passed because the fixture was a FAANG clone that happened to have 9 roles.
+        // Asserted against `team.roles.count`, not a literal: the point is the derivation,
+        // and the empty team's roster is free to change (it grew from 1 to 2 when the
+        // starter Teammate shipped).
+        var team = TeamTemplateFactory.empty(name: "Graph Team")
         // Modify the layout to something non-default
         team.graphLayout.nodePositions = []
         team.graphLayout.transform = TeamGraphTransform(offsetX: 50, offsetY: 50, scale: 2.0)
 
         TeamManagementService.resetGraphLayout(&team)
 
-        XCTAssertEqual(team.graphLayout.nodePositions.count, TeamGraphLayout.default.nodePositions.count)
+        XCTAssertEqual(team.graphLayout.nodePositions.count, team.roles.count)
+        XCTAssertEqual(Set(team.graphLayout.nodePositions.map(\.roleID)), Set(team.roles.map(\.id)))
         XCTAssertEqual(team.graphLayout.transform, TeamGraphTransform.identity)
+    }
+
+    func testResetGraphLayout_multiRoleTeam_recomputesOnePositionPerRole() {
+        var team = TeamTemplateFactory.faang()
+        team.graphLayout.nodePositions = []
+
+        TeamManagementService.resetGraphLayout(&team)
+
+        XCTAssertEqual(team.graphLayout.nodePositions.count, team.roles.count)
+        XCTAssertEqual(Set(team.graphLayout.nodePositions.map(\.roleID)), Set(team.roles.map(\.id)))
     }
 
     // MARK: - updateNodePosition

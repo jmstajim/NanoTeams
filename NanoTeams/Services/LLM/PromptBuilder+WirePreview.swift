@@ -17,33 +17,12 @@ nonisolated enum WirePromptKind: Sendable {
 
 nonisolated extension PromptBuilder {
 
-    /// Two-way state encoding "where the project lives" for the wire-preview's
-    /// tool-resolution pipeline. Replaces the previous `(workFolderRoot: URL?,
-    /// isDefaultStorage: Bool)` pair which encoded 4 combinations for 2 valid
-    /// states (two of which silently lied about the project's git status /
-    /// write permissions).
-    ///
-    /// - `.defaultStorage`: no real folder selected — the orchestrator routes
-    ///   writes to its internal default-storage directory, so write / git /
-    ///   xcode tools get stripped via `filterForDefaultStorage`.
-    /// - `.realFolder(root:)`: a user-chosen project folder. Git tools survive
-    ///   iff `root/.git` exists (checked by `filterForGitAvailability`).
-    enum WireWorkFolder: Hashable, Sendable {
-        case defaultStorage
-        case realFolder(root: URL)
-
-        /// Bridge from the orchestrator's `workFolderURL` state. `nil` URL or
-        /// a URL equal to `NTMSOrchestrator.defaultStorageURL` collapse to
-        /// `.defaultStorage`. Centralizes the rule that previously lived
-        /// inline in both `PromptPreviewSheet` and `TemplatePreviewSheet`.
-        @MainActor
-        static func from(orchestratorURL: URL?) -> WireWorkFolder {
-            guard let url = orchestratorURL, url != NTMSOrchestrator.defaultStorageURL else {
-                return .defaultStorage
-            }
-            return .realFolder(root: url)
-        }
-    }
+    /// Where the project lives, for the tool-resolution pipeline. The type moved
+    /// to `EffectiveToolset.Storage` once that pipeline gained a third consumer
+    /// (the role-list tool badge); this alias keeps every existing
+    /// `PromptBuilder.WireWorkFolder` spelling — and `.from(orchestratorURL:)` —
+    /// resolving against the ONE definition instead of a parallel enum.
+    typealias WireWorkFolder = EffectiveToolset.Storage
 
     /// Inputs for the wire-preview renderer — bundled so the renderer never
     /// touches orchestrator state. Callers thread these explicitly.
@@ -72,6 +51,11 @@ nonisolated extension PromptBuilder {
         /// preview is byte-identical to the wire. Default `nil` keeps existing
         /// call sites compiling and renders as the legacy work-folder-context.
         let agentInstructions: AgentInstructionsSnapshot?
+        /// Role-attached agent skills — mirrors the runtime
+        /// `PromptBuilder.Context.attachedSkills` so the `{roleSkills}` preview is
+        /// byte-identical to the wire. Default `[]` keeps existing call sites
+        /// compiling and renders as the pre-skills prompt.
+        let attachedSkills: [ResolvedRoleSkill]
 
         init(
             role: TeamRoleDefinition,
@@ -84,7 +68,8 @@ nonisolated extension PromptBuilder {
             isComputerUseEnabled: Bool,
             globalContext: String,
             isCoordinator: Bool = false,
-            agentInstructions: AgentInstructionsSnapshot? = nil
+            agentInstructions: AgentInstructionsSnapshot? = nil,
+            attachedSkills: [ResolvedRoleSkill] = []
         ) {
             self.role = role
             self.team = team
@@ -97,6 +82,7 @@ nonisolated extension PromptBuilder {
             self.globalContext = globalContext
             self.isCoordinator = isCoordinator
             self.agentInstructions = agentInstructions
+            self.attachedSkills = attachedSkills
         }
     }
 
@@ -300,7 +286,10 @@ nonisolated extension PromptBuilder {
         return TemplateResolver.resolveSystemPrompt(
             template,
             placeholders: values,
-            globalContext: inputs.globalContext
+            globalContext: inputs.globalContext,
+            // Mirrors the runtime's chip-less fallback. `values` carries "" for
+            // the consultation / meeting kinds, so only step execution can append.
+            roleSkills: values["roleSkills"] ?? ""
         )
     }
 
@@ -376,6 +365,7 @@ nonisolated extension PromptBuilder {
             "expectedArtifacts": expectedArtifactsLine,
             "artifactInstructions": artifactInstructionsBlock,
             "globalContext": PromptBuilder.formatGlobalContext(inputs.globalContext),
+            "roleSkills": PromptBuilder.formatRoleSkills(inputs.attachedSkills),
             "toolCalling": PromptBuilder.formatToolCallingBlock(tools: tools),
             // Backwards-compat alias for stored templates with the older
             // `{toolCallingBlock}` placeholder name.
@@ -400,6 +390,10 @@ nonisolated extension PromptBuilder {
             "roleGuidance": wirePreviewCollaborationRoleGuidance(role: role, team: team),
             "teamDescription": team?.description ?? "",
             "globalContext": PromptBuilder.formatGlobalContext(inputs.globalContext),
+            // Role skills are step-execution-only by design. Mapped to "" rather
+            // than left out so a hand-typed `{roleSkills}` chip resolves away
+            // instead of shipping as a literal token — mirrors the runtime.
+            "roleSkills": "",
         ]
     }
 
@@ -422,6 +416,8 @@ nonisolated extension PromptBuilder {
                 : "",
             "teamDescription": team?.description ?? "",
             "globalContext": PromptBuilder.formatGlobalContext(inputs.globalContext),
+            // Step-execution-only by design — see `wirePreviewConsultationValues`.
+            "roleSkills": "",
             "toolCalling": PromptBuilder.formatToolCallingBlock(tools: tools),
             // Backwards-compat alias for stored templates with the older
             // `{toolCallingBlock}` placeholder name.
@@ -456,14 +452,16 @@ nonisolated extension PromptBuilder {
         return SystemTemplates.roles[builtIn.baseID]?.prompt ?? ""
     }
 
-    /// Production tool-resolution pipeline: `resolveToolSchemas` →
-    /// `filterForDefaultStorage` → (for real folders) `filterForGitAvailability`.
+    /// Production tool-resolution pipeline, composed once in `EffectiveToolset`
+    /// so the preview, the runtime and the role-list badge can't drift on which
+    /// stages count. Enters with the DEFINITION (not `Role.fromDefinition`) —
+    /// the reverse lookup binds a duplicated system role to its twin's toolset.
     private static func runtimeToolPipeline(inputs: WirePreviewInputs) -> [ToolSchema] {
-        let role = Role.fromDefinition(inputs.role)
-        let raw = LLMExecutionService.resolveToolSchemas(
-            for: role,
+        EffectiveToolset.resolve(
+            role: inputs.role,
             team: inputs.team,
             allTeams: inputs.allTeams,
+            storage: inputs.workFolderState,
             selectedScheme: inputs.selectedScheme,
             isVisionConfigured: inputs.isVisionConfigured,
             isComputerUseEnabled: inputs.isComputerUseEnabled,
@@ -472,13 +470,6 @@ nonisolated extension PromptBuilder {
             // byte-identical to the wire when generation is disabled for the folder.
             autovisorAllowTeamGeneration: inputs.workFolder?.settings.autovisorAllowTeamGeneration ?? true
         )
-        switch inputs.workFolderState {
-        case .defaultStorage:
-            return LLMExecutionService.filterForDefaultStorage(raw, isDefaultStorage: true)
-        case .realFolder(let root):
-            let filtered = LLMExecutionService.filterForDefaultStorage(raw, isDefaultStorage: false)
-            return LLMExecutionService.filterForGitAvailability(filtered, workFolderRoot: root)
-        }
     }
 
     /// Mirror of `TemplateResolver.stripOrphanHeaders` for `NSMutableAttributedString`.

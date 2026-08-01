@@ -106,6 +106,63 @@ final class ReadLinesLineLimitTests: XCTestCase {
 
     // MARK: - Range within limit (no truncation)
 
+    // MARK: - Continuation cursor
+
+    /// The description tells the model to repeat the call with `start_line: next_start_line`,
+    /// which replaced an instruction to notice `end_line < total_lines` and then compute
+    /// `end_line + 1`. The field has to be present exactly when there is more to read.
+    private func rangeData(_ args: String, customLimit: Int? = nil) throws -> [String: Any] {
+        let r = runReadLines(args: args, customLimit: customLimit)
+        XCTAssertFalse(r.isError, r.outputJSON)
+        let obj = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(r.outputJSON.utf8)) as? [String: Any])
+        return try XCTUnwrap(obj["data"] as? [String: Any])
+    }
+
+    func testNextStartLine_presentWhenTheRangeWasCapped() throws {
+        _ = try writeFile(name: "big.txt", lineCount: 40)
+
+        let d = try rangeData("{\"path\": \"big.txt\", \"start_line\": 1, \"end_line\": 10}")
+        XCTAssertEqual(d["end_line"] as? Int, 10)
+        XCTAssertEqual(d["next_start_line"] as? Int, 11)
+    }
+
+    /// The cap that matters most is the configured line limit, not an explicit `end_line`.
+    func testNextStartLine_presentWhenTheLineLimitCappedTheRead() throws {
+        _ = try writeFile(name: "big.txt", lineCount: 40)
+
+        let d = try rangeData(
+            "{\"path\": \"big.txt\", \"start_line\": 1}", customLimit: 5)
+        XCTAssertEqual(d["end_line"] as? Int, 5)
+        XCTAssertEqual(d["next_start_line"] as? Int, 6)
+    }
+
+    func testNextStartLine_absentAtEndOfFile() throws {
+        _ = try writeFile(name: "small.txt", lineCount: 5)
+
+        let d = try rangeData("{\"path\": \"small.txt\", \"start_line\": 1, \"end_line\": 5}")
+        XCTAssertEqual(d["end_line"] as? Int, 5)
+        XCTAssertNil(d["next_start_line"], "nothing left, so no cursor to follow")
+    }
+
+    /// Following the cursor verbatim reads the file exactly once: no gap, no overlap.
+    func testNextStartLine_followingItCoversTheFileExactlyOnce() throws {
+        _ = try writeFile(name: "walk.txt", lineCount: 23)
+
+        var covered: [Int] = []
+        var start = 1
+        for _ in 0..<30 {
+            let d = try rangeData(
+                "{\"path\": \"walk.txt\", \"start_line\": \(start), \"end_line\": \(start + 6)}")
+            let from = try XCTUnwrap(d["start_line"] as? Int)
+            let to = try XCTUnwrap(d["end_line"] as? Int)
+            covered += Array(from...to)
+            guard let next = d["next_start_line"] as? Int else { break }
+            start = next
+        }
+        XCTAssertEqual(covered, Array(1...23), "contiguous, in order, no repeats")
+    }
+
     func testReadLines_rangeWithinLimit_returnsRequestedRange() throws {
         // 250-line file, default cap 500, request first 200 lines → exact match.
         _ = try writeFile(name: "small.txt", lineCount: 250)

@@ -30,6 +30,13 @@ nonisolated enum StepMessagingService {
         // `isAutoAnswer` marks answers produced by an automated path (delegating
         // parent role, Autovisor) — drives the feed's "Auto-answered" badge.
         task.runs[location.runIndex].steps[location.stepIndex].supervisorAnswerWasAuto = isAutoAnswer
+        // This answer has NOT reached the model yet — the step's re-entry
+        // (`LLMExecutionService+StepLifecycle`) appends it to the replayed transcript and
+        // `persistWireTranscript` consumes the flag. Keyed on real content so an empty
+        // answer with no attachments (which also leaves `supervisorAnswer` nil) can't
+        // arm a delivery that has nothing to deliver.
+        task.runs[location.runIndex].steps[location.stepIndex].supervisorAnswerPendingDelivery =
+            StepExecution.inferPendingDelivery(answer: clean, attachmentPaths: attachmentPaths)
         task.runs[location.runIndex].steps[location.stepIndex].needsSupervisorInput = false
 
         // Append the supervisor answer to llmConversation in the SAME mutation

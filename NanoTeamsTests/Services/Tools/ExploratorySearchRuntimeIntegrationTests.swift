@@ -158,7 +158,7 @@ final class ExploratorySearchRuntimeIntegrationTests: XCTestCase {
         XCTAssertEqual(payload.contextBefore, 1)
         XCTAssertEqual(payload.contextAfter, 2)
         XCTAssertEqual(payload.maxResults, 5)
-        XCTAssertEqual(payload.maxMatchLines, 8)
+        XCTAssertEqual(payload.offset, 0)
     }
 
     // MARK: - providerID is set by the runtime even on signal results

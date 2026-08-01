@@ -829,6 +829,7 @@ private final class StreamPersistingMockDelegate: LLMExecutionDelegate {
     var workFolderURL: URL?
     var snapshot: WorkFolderContext?
     var agentInstructions: AgentInstructionsSnapshot?
+    var roleSkills: RoleSkillsSnapshot?
     var globalLLMConfig: LLMConfig = LLMConfig()
     var globalLLMContext: String = ""
     var maxLLMRetries: Int = 0

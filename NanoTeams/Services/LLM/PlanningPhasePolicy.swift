@@ -77,6 +77,12 @@ nonisolated enum PlanningPhasePolicy {
     /// same reason: entering the phase writes the display record, and a step
     /// resuming after a Supervisor answer or a revision must not be treated as
     /// fresh.
+    ///
+    /// `supervisorAnswerIsNil` deliberately reads the ANSWER, not
+    /// `supervisorAnswerPendingDelivery`. The question here is "has this step ever been
+    /// through a Supervisor round-trip", and a delivered answer still means yes — a sweep
+    /// that swapped this for the delivery flag would re-open the planning phase on a step
+    /// resuming mid-work and hand it back its opening brief.
     static func isEligible(
         scratchpadIsNil: Bool,
         revisionCommentIsNil: Bool,

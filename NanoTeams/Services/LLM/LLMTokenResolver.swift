@@ -22,26 +22,6 @@ nonisolated struct DefaultLLMTokenResolver: LLMTokenResolver {
     }
 }
 
-#if DEBUG
-/// Test resolver. Construct with a `[urlString: token]` dictionary; lookup
-/// normalizes the URL the same way production does so tests can hit either form.
-nonisolated struct StubLLMTokenResolver: LLMTokenResolver {
-    let tokens: [String: String]
-
-    init(_ tokens: [String: String] = [:]) {
-        var normalized: [String: String] = [:]
-        for (url, token) in tokens {
-            normalized[KeychainSecureTokenStorage.normalize(baseURL: url)] = token
-        }
-        self.tokens = normalized
-    }
-
-    func token(forBaseURL urlString: String) -> String? {
-        tokens[KeychainSecureTokenStorage.normalize(baseURL: urlString)]
-    }
-}
-#endif
-
 /// Resolver that lets the settings UI inject a freshly-typed token for one
 /// URL (the one being tested) while still consulting the Keychain for others.
 /// Empty overrides are dropped at construction so the UI can blindly forward

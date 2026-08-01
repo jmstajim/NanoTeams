@@ -1,7 +1,7 @@
 import Foundation
 
 /// Shared JSON parsing utilities used by tool tracking classes.
-/// Centralizes duplicated parsing logic from ToolCallTracker and ToolCallContextualizer.
+/// Centralizes parsing logic used by ToolCallTracker.
 /// See also: ToolCallSummarizer (argument/result display summarization).
 nonisolated enum ToolCallDataUtils {
 

@@ -36,6 +36,14 @@ nonisolated enum FilenameMatcher {
             .filter { !$0.isEmpty }
         guard !cleanQueries.isEmpty else { return [] }
 
+        // Prepare each query ONCE. The old shape re-derived this per candidate: a `*`-bearing
+        // query re-compiled an `NSRegularExpression` for every path, and a plain one went through
+        // `localizedCaseInsensitiveContains` twice (basename, then full path) — 2 × candidates ×
+        // queries ICU calls, ~44 ms per query on a 1500-file roster and ~1.2 s on the
+        // exploratory path's 31 terms.
+        let prepared: [PreparedQuery] = cleanQueries.map(PreparedQuery.init)
+        let asciiFoldOK = LineScanner.asciiFoldMatchesLocale
+
         var seen: Set<String> = []
         var basenameHits: [FilenameMatch] = []
         var pathHits: [FilenameMatch] = []
@@ -43,16 +51,21 @@ nonisolated enum FilenameMatcher {
         for path in candidates {
             guard !seen.contains(path) else { continue }
 
-            let basename = (path as NSString).lastPathComponent
+            // The basename is a contiguous suffix of the path, so its byte offset is enough —
+            // no `NSString` bridge and no substring allocation.
+            let basenameOffset = path.utf8.lastIndex(of: UInt8(ascii: "/"))
+                .map { path.utf8.index(after: $0) } ?? path.utf8.startIndex
+            let basenameStart = path.utf8.distance(from: path.utf8.startIndex, to: basenameOffset)
 
             var basenameMatched = false
             var pathMatched = false
-            for query in cleanQueries {
-                if matches(query: query, against: basename) {
+            for query in prepared {
+                if query.matches(path: path, fromByteOffset: basenameStart, asciiFoldOK: asciiFoldOK) {
                     basenameMatched = true
                     break
                 }
-                if !pathMatched, matches(query: query, against: path) {
+                if !pathMatched,
+                   query.matches(path: path, fromByteOffset: 0, asciiFoldOK: asciiFoldOK) {
                     pathMatched = true
                 }
             }
@@ -104,11 +117,66 @@ nonisolated enum FilenameMatcher {
 
     // MARK: - Private
 
-    private static func matches(query: String, against candidate: String) -> Bool {
-        if query.contains("*") {
-            return GlobMatcher.matches(name: candidate, glob: query, caseInsensitive: true)
+    /// One query term, with its glob compiled and its bytes folded up front.
+    private struct PreparedQuery {
+        let original: String
+        /// Non-nil when the term contains `*`. Compiled once, not once per candidate.
+        let glob: CompiledGlob?
+        let needle: LineScanner.CompiledNeedle
+
+        init(_ query: String) {
+            original = query
+            glob = query.contains("*")
+                ? try? CompiledGlob(glob: query, caseInsensitive: true)
+                : nil
+            needle = LineScanner.CompiledNeedle(query)
         }
-        return candidate.localizedCaseInsensitiveContains(query)
+
+        /// Matches against `path` starting at `byteOffset` — 0 for the whole relative path, or
+        /// the basename's offset to test just the last component.
+        ///
+        /// Same fast/slow split as the content scanner: the byte path is authoritative only when
+        /// BOTH sides are pure ASCII, because ICU folds `ß`→`ss` and U+212A→`k` and treats
+        /// `e`+combining-acute as a single non-`e` grapheme.
+        func matches(path: String, fromByteOffset byteOffset: Int, asciiFoldOK: Bool) -> Bool {
+            if let glob {
+                // Globs stay on the regex path — anchoring makes a byte scan inapplicable.
+                let candidate = byteOffset == 0 ? path : String(suffixBytes(of: path, from: byteOffset))
+                return glob.matches(candidate)
+            }
+            if needle.isEmpty { return false }
+
+            if needle.isASCII, asciiFoldOK {
+                var matched: Bool?
+                path.utf8.withContiguousStorageIfAvailable { buf in
+                    guard let base = buf.baseAddress, byteOffset <= buf.count else { return }
+                    // Non-ASCII anywhere in the compared region ⇒ defer to ICU. Asked through
+                    // `LineScanner`, so the rule for "which bytes force ICU" has ONE owner and
+                    // cannot drift from the content scanner's copy of the same decision.
+                    var i = byteOffset
+                    while i < buf.count {
+                        if LineScanner.leadByteNeedsICU(base[i]) { return }
+                        i += 1
+                    }
+                    matched = needle.foldedBytes.withUnsafeBufferPointer { nb in
+                        LineScanner.asciiContains(
+                            haystack: base + byteOffset, count: buf.count - byteOffset,
+                            needle: nb.baseAddress!, needleCount: nb.count)
+                    }
+                }
+                if let matched { return matched }
+            }
+
+            let candidate = byteOffset == 0 ? path : String(suffixBytes(of: path, from: byteOffset))
+            return candidate.localizedCaseInsensitiveContains(original)
+        }
+
+        /// A path is always valid UTF-8 and `byteOffset` always lands just after a `/`, so the
+        /// suffix is a well-formed scalar boundary.
+        private func suffixBytes(of path: String, from byteOffset: Int) -> Substring {
+            let idx = path.utf8.index(path.utf8.startIndex, offsetBy: byteOffset)
+            return Substring(path.utf8[idx...]) ?? ""
+        }
     }
 }
 
@@ -116,45 +184,27 @@ nonisolated enum FilenameMatcher {
 /// `SearchExecutor`'s `file_glob` filter. Lifted out of `SearchExecutor` so
 /// the case-insensitive variant has one home and behavior is consistent
 /// across both call sites.
-nonisolated enum GlobMatcher {
+/// A `*`-only glob compiled ONCE, then matched many times.
+///
+/// Exists because the removed `GlobMatcher.matches(name:glob:)` escaped, rewrote and
+/// re-compiled an `NSRegularExpression` on every single call — and `SearchExecutor` called it once
+/// per walked file (via `input.fileGlob ?? "*"`, so even when the caller supplied no glob at all),
+/// while `FilenameMatcher` called it once per candidate per query.
+nonisolated struct CompiledGlob {
+    private let regex: NSRegularExpression
 
-    /// Sentinel that intentionally fails to compile — reserved for tests
-    /// that need to exercise the regex-failure branch deterministically.
-    /// Leading null byte trips `NSRegularExpression(pattern:options:)`.
+    /// Sentinel that intentionally fails to compile — reserved for tests that need to exercise
+    /// the regex-failure branch deterministically. A leading null byte trips
+    /// `NSRegularExpression(pattern:options:)`.
     #if DEBUG
     static let _testUncompilableGlobSentinel = "\0__bad_glob__"
     #endif
 
-    /// Returns `true` when `name` fully matches `glob`. Only `*` is treated
-    /// as a wildcard; every other metacharacter is escaped, so a user-
-    /// supplied `Foo.swift` matches literally and `*.swift` matches by
-    /// extension.
-    ///
-    /// Uncompilable patterns return `false` (fail-closed) — a malformed glob
-    /// must not silently widen the search. Callers can recover by supplying
-    /// a valid pattern.
-    static func matches(name: String, glob: String, caseInsensitive: Bool) -> Bool {
+    /// Only `*` is a wildcard; every other metacharacter is escaped, so `Foo.swift` matches
+    /// literally and `*.swift` matches by extension.
+    init(glob: String, caseInsensitive: Bool) throws {
         #if DEBUG
-        if glob == _testUncompilableGlobSentinel { return false }
-        #endif
-        let escaped = NSRegularExpression.escapedPattern(for: glob)
-        let pattern = escaped.replacingOccurrences(of: "\\*", with: ".*")
-        var options: NSRegularExpression.Options = []
-        if caseInsensitive { options.insert(.caseInsensitive) }
-        guard let regex = try? NSRegularExpression(pattern: "^\(pattern)$", options: options) else {
-            return false
-        }
-        let range = NSRange(name.startIndex..., in: name)
-        return regex.firstMatch(in: name, options: [], range: range) != nil
-    }
-
-    /// Validates that `glob` is compileable. Throws
-    /// `SearchExecutorError.invalidFileGlob` if not — used by `SearchExecutor`
-    /// at the start of each run so a bad pattern surfaces as a typed error
-    /// instead of an empty result set.
-    static func validate(glob: String) throws {
-        #if DEBUG
-        if glob == _testUncompilableGlobSentinel {
+        if glob == Self._testUncompilableGlobSentinel {
             throw SearchExecutorError.invalidFileGlob(
                 pattern: glob, message: "test sentinel — pattern intentionally rejected"
             )
@@ -162,12 +212,18 @@ nonisolated enum GlobMatcher {
         #endif
         let escaped = NSRegularExpression.escapedPattern(for: glob)
         let pattern = escaped.replacingOccurrences(of: "\\*", with: ".*")
+        var options: NSRegularExpression.Options = []
+        if caseInsensitive { options.insert(.caseInsensitive) }
         do {
-            _ = try NSRegularExpression(pattern: "^\(pattern)$", options: [])
+            regex = try NSRegularExpression(pattern: "^\(pattern)$", options: options)
         } catch {
             throw SearchExecutorError.invalidFileGlob(
                 pattern: glob, message: error.localizedDescription
             )
         }
+    }
+
+    func matches(_ name: String) -> Bool {
+        regex.firstMatch(in: name, options: [], range: NSRange(name.startIndex..., in: name)) != nil
     }
 }

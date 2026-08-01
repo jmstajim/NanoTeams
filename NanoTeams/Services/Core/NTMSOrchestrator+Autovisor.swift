@@ -71,7 +71,7 @@ extension NTMSOrchestrator {
             _ = TeamManagementService.syncAutovisorTeamToTemplate(teams: &proj.teams)
         }
 
-        await seedAutovisorDefaultsAndSyncBrief(managerID: managerID)
+        await seedAutovisorDefaultsAndSyncBrief()
 
         // Seed the "seen" set so tasks that already exist at open aren't treated
         // as newly-created by the `onTaskCreated` trigger (the open-time pass below
@@ -209,8 +209,9 @@ extension NTMSOrchestrator {
     /// Goal") to the current goal — they are the same thing for the manager — which
     /// also migrates an existing manager whose brief still holds the old hardcoded
     /// "Oversee this work folder…" text. Extracted from `ensureAutovisorTask` so
-    /// it's unit-testable without starting the engine. `managerID` must already be loaded.
-    func seedAutovisorDefaultsAndSyncBrief(managerID: Int) async {
+    /// it's unit-testable without starting the engine. Operates on folder-level
+    /// state and resolves the manager itself via `syncAutovisorGoalToManagerBrief`.
+    func seedAutovisorDefaultsAndSyncBrief() async {
         await mutateWorkFolder { proj in
             if proj.settings.autovisorGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 proj.settings.autovisorGoal = AutovisorConstants.defaultGoal

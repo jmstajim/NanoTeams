@@ -12,6 +12,15 @@ final class NTMSOrchestrator {
     var selectedRunID: Int?
     var lastErrorMessage: String?
     var lastInfoMessage: String?
+    /// Latched copy of the open-time bundled-update report.
+    ///
+    /// `WorkFolderContext.bundledUpdate` is populated only by
+    /// `openOrCreateWorkFolder`; `assembleContext` (the path every
+    /// `mutateWorkFolder` takes) rebuilds the context without it, so reading the
+    /// snapshot would lose the report on the first unrelated edit. Plain `var`,
+    /// not `private(set)`: the writer lives in the `+WorkFolderManagement`
+    /// extension file and `private(set)` setters are file-scoped (CLAUDE.md #2).
+    var bundledUpdateReport: BundledUpdateReport?
     private(set) var toolDefinitions: [ToolDefinitionRecord] = []
 
     /// Extracted engine state — views can observe this directly to avoid
@@ -99,7 +108,6 @@ final class NTMSOrchestrator {
         configuration.visionLLMConfig
     }
 
-    // periphery:ignore - protocol conformance (LLMStateDelegate)
     var bashPolicy: BashPolicy {
         configuration.bashPolicy
     }
@@ -219,6 +227,27 @@ final class NTMSOrchestrator {
     @ObservationIgnored var agentInstructionsLastScanKey: AgentInstructionsScanKey?
     @ObservationIgnored var agentInstructionsLastScanAt: Date?
 
+    /// Agent skills discoverable for this install, plus the bodies of the ones
+    /// roles have attached (`TeamRoleDefinition.attachedSkillIDs`). In-memory
+    /// only — derived from disk and potentially large, never persisted.
+    /// Refreshed on work-folder open, at each top-level `startRun`, before
+    /// prompt-preview renders, and after a role's skill attachments change.
+    ///
+    /// Unlike `agentInstructions` this is **never nil'd for default storage**:
+    /// global skills (`~/.claude/skills`, `~/.codex/prompts`, plugins) exist
+    /// with no work folder open, which is exactly the mode the app boots into.
+    /// Satisfies `LLMStateDelegate.roleSkills`.
+    var roleSkills: RoleSkillsSnapshot?
+
+    /// CLAUDE.md #38 generation counter for `refreshAgentSkills` — same contract
+    /// as `agentInstructionsScanGeneration`.
+    @ObservationIgnored var roleSkillsScanGeneration: Int = 0
+    /// Inputs + completion time of the last landed skills scan. The key carries
+    /// the attached ids, not just the root: they decide which bodies get read,
+    /// so attaching a skill must bypass the memo immediately.
+    @ObservationIgnored var roleSkillsLastScanKey: RoleSkillsScanKey?
+    @ObservationIgnored var roleSkillsLastScanAt: Date?
+
     /// Tasks whose `startRun` is currently between its guards and `engine.start()`
     /// — the engine-state double-start guard can't see a run that is still being
     /// created across `startRun`'s suspension points (instructions rescan, task
@@ -274,6 +303,16 @@ final class NTMSOrchestrator {
             }
         }
         return tasks
+    }
+
+    /// True when a run pinned to `teamID` is still in flight, so a Team Editor
+    /// edit that would invalidate live run state must be refused.
+    ///
+    /// Reads `allLoadedTasksIncludingChildren` — delegated children run on their
+    /// own team and are just as wedgeable — and defers the rule itself to
+    /// `TeamBusyScan` so it stays unit-testable without an orchestrator.
+    func hasInFlightRun(forTeamID teamID: NTMSID) -> Bool {
+        TeamBusyScan.hasInFlightRun(teamID: teamID, tasks: allLoadedTasksIncludingChildren)
     }
 
     @ObservationIgnored let repository: any NTMSRepositoryProtocol
@@ -477,6 +516,52 @@ final class NTMSOrchestrator {
     /// Signals that a specific role should be selected when TeamBoardView appears.
     func selectRole(roleID: String) {
         pendingRoleSelection = roleID
+    }
+
+    /// Armed by the QuickCapture panel's "New Team..." entry immediately before it
+    /// navigates to Settings → Teams; consumed by `TeamEditorView`.
+    ///
+    /// A flag on this object rather than a `NotificationCenter` post because
+    /// `TeamEditorView()` is constructed lazily inside `SettingsView`'s tab switch —
+    /// it does not exist in the frame that would post, and `NotificationCenter` has no
+    /// replay, so the intent would be dropped. Every *existing* panel→app notification
+    /// is received by `MainLayoutView`, which is always mounted; that is what makes the
+    /// notification idiom look safer here than it is. `MainLayoutView` is also not a
+    /// usable relay: it is a `WindowGroup` root, and the main window can be closed
+    /// (no `NSApplicationDelegateAdaptor` anywhere, ⌘W unclaimed) while the panel keeps
+    /// working off its process-level Carbon hotkey.
+    ///
+    /// This works because the orchestrator is the SAME instance in both places — the app
+    /// root hands it to `QuickCaptureController.setup` and to the Settings `Window`'s
+    /// `.environment`.
+    ///
+    /// Deliberately in-memory, NOT `@AppStorage`: a persisted intent outlives a
+    /// navigation that never completed and then ambushes an unrelated Settings → Teams
+    /// visit with an unexplained sheet, possibly days later. A transient navigation
+    /// intent is not a setting.
+    private(set) var pendingNewTeamSheet = false
+
+    /// Arms the latch. Call BEFORE navigating — window creation and view mount both
+    /// happen later on the run loop, so the consume is strictly after this write.
+    func requestNewTeamSheet() {
+        pendingNewTeamSheet = true
+    }
+
+    /// Read-and-clear. Returns `true` exactly once per arm.
+    ///
+    /// A method rather than the bare `var` + hand-clear that `pendingRoleSelection`
+    /// above uses, because this latch is read from two triggers (appear AND change —
+    /// the Settings window may already be mounted on the Teams tab, where `.onAppear`
+    /// never re-fires) and a bare var is two chances to forget the clear, which leaves
+    /// the sheet re-presenting on every later visit.
+    ///
+    /// Callers must PEEK (`pendingNewTeamSheet`) before consuming and defer while any
+    /// other sheet/alert is up: macOS allows one presentation per window, so consuming
+    /// into a dropped presentation loses the intent with no way to retry.
+    func consumeNewTeamSheetRequest() -> Bool {
+        guard pendingNewTeamSheet else { return false }
+        pendingNewTeamSheet = false
+        return true
     }
 
     var workFolder: WorkFolderProjection? { snapshot?.workFolder }

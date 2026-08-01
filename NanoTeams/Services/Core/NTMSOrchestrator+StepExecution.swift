@@ -35,7 +35,6 @@ extension NTMSOrchestrator {
     /// has no ledger of its own. Routes to THIS orchestrator's execution service — never a
     /// global (CLAUDE.md Swift Style #49), which is the whole reason the ledger is an injected
     /// instance rather than a singleton.
-    // periphery:ignore - protocol conformance (LLMStateDelegate)
     func recordPrefixChainForTasklessCall(
         owner: LLMCallOwner, config: LLMConfig, messages: [ChatMessage]
     ) async {

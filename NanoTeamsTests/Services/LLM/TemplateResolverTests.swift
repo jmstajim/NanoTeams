@@ -415,31 +415,111 @@ final class TemplateResolverTests: XCTestCase {
         XCTAssertEqual(TemplateResolver.resolve("{a} {b}", placeholders: [:]), "{a} {b}")
     }
 
-    // MARK: - insertingGlobalGuidance (tail-slot preservation)
+    // MARK: - insertingSections (tail-slot preservation)
+
+    private func insertGuidance(_ body: String, into text: String) -> String {
+        TemplateResolver.insertingSections([("## Global guidance", body)], into: text)
+    }
 
     func testInsertingGlobalGuidance_beforeTrailingFinalReminder() {
         let text = "## Role\nX\n\n## Final reminder\nSubmit once."
-        let out = TemplateResolver.insertingGlobalGuidance("ctx", into: text)
+        let out = insertGuidance("ctx", into: text)
         XCTAssertEqual(out, "## Role\nX\n\n## Global guidance\n\nctx\n\n## Final reminder\nSubmit once.")
     }
 
     func testInsertingGlobalGuidance_noFinalReminder_appends() {
-        let out = TemplateResolver.insertingGlobalGuidance("ctx", into: "## Role\nX")
-        XCTAssertEqual(out, "## Role\nX\n\n## Global guidance\n\nctx")
+        XCTAssertEqual(insertGuidance("ctx", into: "## Role\nX"),
+                       "## Role\nX\n\n## Global guidance\n\nctx")
     }
 
     func testInsertingGlobalGuidance_emptySuffix_unchanged() {
         let text = "## Role\nX\n\n## Final reminder\nY"
-        XCTAssertEqual(TemplateResolver.insertingGlobalGuidance("  \n ", into: text), text)
+        XCTAssertEqual(insertGuidance("  \n ", into: text), text)
     }
 
     /// A "## Final reminder" mentioned mid-line (not at a line start) is prose,
     /// not a header — must not trigger the insertion split.
     func testInsertingGlobalGuidance_midLineMention_isNotAHeader() {
         let text = "The section named ## Final reminder is special."
-        let out = TemplateResolver.insertingGlobalGuidance("ctx", into: text)
+        let out = insertGuidance("ctx", into: text)
         XCTAssertTrue(out.hasSuffix("## Global guidance\n\nctx"),
                       "mid-line mention must be treated as prose; guidance appends at the end")
+    }
+
+    // MARK: - insertingSections (one anchor, many blocks)
+
+    /// Two sections stack in the order given, both above the tail reminder —
+    /// byte-identical to what two sequential inserts used to produce.
+    func testInsertingSections_twoSections_stackInOrderAboveTheReminder() {
+        let text = "## Role\nX\n\n## Final reminder\nSubmit once."
+
+        let out = TemplateResolver.insertingSections(
+            [("## Skills", "S"), ("## Global guidance", "G")], into: text)
+
+        XCTAssertEqual(out, """
+        ## Role
+        X
+
+        ## Skills
+
+        S
+
+        ## Global guidance
+
+        G
+
+        ## Final reminder
+        Submit once.
+        """)
+    }
+
+    /// The anchor is computed ONCE, before anything is inserted — so a body that
+    /// itself contains a `## Final reminder` line cannot become the anchor for a
+    /// later section and get split open. This is the property that protects
+    /// third-party skill bodies.
+    func testInsertingSections_bodyContainingTheAnchorPhrase_isNotSplitOpen() {
+        let text = "## Role\nX\n\n## Final reminder\nSubmit once."
+        let trickyBody = "before\n## Final reminder\nafter"
+
+        let out = TemplateResolver.insertingSections(
+            [("## Skills", trickyBody), ("## Global guidance", "G")], into: text)
+
+        XCTAssertTrue(out.contains("before\n## Final reminder\nafter\n\n## Global guidance"),
+                      "The second block must land after the whole first body:\n\(out)")
+        XCTAssertTrue(out.hasSuffix("## Final reminder\nSubmit once."),
+                      "The template's own reminder stays last")
+    }
+
+    /// An empty body drops its header rather than shipping a bodiless one; the
+    /// surviving section still lands correctly.
+    func testInsertingSections_emptyBody_dropsOnlyThatSection() {
+        let text = "## Role\nX\n\n## Final reminder\nY"
+
+        let out = TemplateResolver.insertingSections(
+            [("## Skills", "   \n "), ("## Global guidance", "G")], into: text)
+
+        XCTAssertFalse(out.contains("## Skills"))
+        XCTAssertEqual(out, "## Role\nX\n\n## Global guidance\n\nG\n\n## Final reminder\nY")
+    }
+
+    func testInsertingSections_allBodiesEmpty_isUnchanged() {
+        let text = "## Role\nX\n\n## Final reminder\nY"
+        XCTAssertEqual(
+            TemplateResolver.insertingSections([("## Skills", ""), ("## Global guidance", " ")],
+                                               into: text),
+            text)
+    }
+
+    func testInsertingSections_noSections_isUnchanged() {
+        let text = "## Role\nX"
+        XCTAssertEqual(TemplateResolver.insertingSections([], into: text), text)
+    }
+
+    func testInsertingSections_noFinalReminder_appendsInOrder() {
+        let out = TemplateResolver.insertingSections(
+            [("## Skills", "S"), ("## Global guidance", "G")], into: "## Role\nX")
+
+        XCTAssertEqual(out, "## Role\nX\n\n## Skills\n\nS\n\n## Global guidance\n\nG")
     }
 
     /// The legacy auto-append path in `resolveSystemPrompt` (template without a
@@ -455,5 +535,82 @@ final class TemplateResolverTests: XCTestCase {
         }
         XCTAssertLessThan(guidance.lowerBound, fr.lowerBound)
         XCTAssertTrue(out.hasSuffix("Submit once."))
+    }
+
+    // MARK: - roleSkills placement
+
+    /// Chip present → the placeholder carries the value; no append, so the
+    /// author's chosen position wins.
+    func testResolveSystemPrompt_roleSkillsChipPresent_doesNotAlsoAppend() {
+        let out = TemplateResolver.resolveSystemPrompt(
+            "## Skills\n{roleSkills}\n\n## Final reminder\nGo.",
+            placeholders: ["roleSkills": "BODY"],
+            globalContext: "",
+            roleSkills: "BODY")
+
+        XCTAssertEqual(out, "## Skills\nBODY\n\n## Final reminder\nGo.")
+        XCTAssertEqual(out.components(separatedBy: "## Skills").count - 1, 1,
+                       "exactly one Skills section")
+    }
+
+    /// Chip absent → append, before the tail reminder. This is the path every
+    /// team created from the New Team sheet takes: `Team.duplicate` clears
+    /// `templateID`, so the reconcile pass never adds the chip for them.
+    func testResolveSystemPrompt_roleSkillsChipAbsent_appendsBeforeFinalReminder() {
+        let out = TemplateResolver.resolveSystemPrompt(
+            "## Role\nX\n\n## Final reminder\nGo.",
+            placeholders: [:],
+            globalContext: "",
+            roleSkills: "BODY")
+
+        XCTAssertEqual(out, "## Role\nX\n\n## Skills\n\nBODY\n\n## Final reminder\nGo.")
+    }
+
+    func testResolveSystemPrompt_roleSkillsEmpty_appendsNothing() {
+        let out = TemplateResolver.resolveSystemPrompt(
+            "## Role\nX", placeholders: [:], globalContext: "", roleSkills: "")
+
+        XCTAssertEqual(out, "## Role\nX")
+    }
+
+    /// "Control the whole prompt" — a cleared template ships empty, and neither
+    /// fallback may resurrect it.
+    func testResolveSystemPrompt_clearedTemplate_staysEmptyDespiteBothFallbacks() {
+        let out = TemplateResolver.resolveSystemPrompt(
+            "", placeholders: [:], globalContext: "ctx", roleSkills: "BODY")
+
+        XCTAssertEqual(out, "")
+    }
+
+    /// Both fallbacks firing at once must stack in template order — skills above
+    /// global guidance, matching where the chips sit in every built-in template.
+    func testResolveSystemPrompt_bothFallbacks_skillsAboveGlobalGuidance() {
+        let out = TemplateResolver.resolveSystemPrompt(
+            "## Role\nX\n\n## Final reminder\nGo.",
+            placeholders: [:],
+            globalContext: "CTX",
+            roleSkills: "BODY")
+
+        guard let skills = out.range(of: "## Skills"),
+              let guidance = out.range(of: "## Global guidance"),
+              let fr = out.range(of: "## Final reminder") else {
+            return XCTFail("all three sections expected, got:\n\(out)")
+        }
+        XCTAssertLessThan(skills.lowerBound, guidance.lowerBound)
+        XCTAssertLessThan(guidance.lowerBound, fr.lowerBound)
+        XCTAssertTrue(out.hasSuffix("Go."))
+    }
+
+    /// Default `roleSkills: ""` keeps every pre-existing call site — including
+    /// the consultation and meeting builders — byte-identical.
+    func testResolveSystemPrompt_defaultRoleSkills_isByteIdenticalToOmittingIt() {
+        let template = "## Role\n{roleName}\n\n## Final reminder\nGo."
+        let placeholders = ["roleName": "PM"]
+
+        XCTAssertEqual(
+            TemplateResolver.resolveSystemPrompt(template, placeholders: placeholders,
+                                                 globalContext: "ctx"),
+            TemplateResolver.resolveSystemPrompt(template, placeholders: placeholders,
+                                                 globalContext: "ctx", roleSkills: ""))
     }
 }

@@ -110,6 +110,11 @@ extension LLMExecutionService {
                 "roleGuidance": roleGuidance,
                 "teamDescription": team?.description ?? "",
                 "globalContext": PromptBuilder.formatGlobalContext(globalContext),
+                // Role-attached skills ride the STEP prompt only. Mapped to ""
+                // rather than left out so a hand-typed `{roleSkills}` chip in a
+                // user-edited consultation template resolves away instead of
+                // shipping as a literal token.
+                "roleSkills": "",
             ],
             globalContext: globalContext
         )

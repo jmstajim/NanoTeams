@@ -76,6 +76,7 @@ nonisolated enum SystemTemplates {
         ("artifactInstructions", "Artifact Instructions", "artifacts"),
         ("conversationMechanics", "Conversation Mechanics", "context"),
         ("globalContext", "Global Context", "context"),
+        ("roleSkills", "Role Skills", "context"),
         ("toolCalling", "Tool Calling", "tools"),
     ]
 

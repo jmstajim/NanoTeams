@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 
 /// Builds the rows shown in the Team Editor's validation banner. Extracted as a
 /// `nonisolated enum` (same testable-namespace style as
-/// `RoleEditorConcludeMeetingPredicate`) so the combine + severity mapping is
+/// `RoleEditorSkillsPolicy`) so the combine + severity mapping is
 /// unit-testable without rendering the view.
 nonisolated enum TeamEditorValidation {
 
@@ -27,11 +27,24 @@ nonisolated enum TeamEditorValidation {
     /// `displayMessage(in:)`. Dependency/orphan checks are intentionally excluded:
     /// they were never surfaced in this banner and would light up warnings on
     /// otherwise-valid teams.
-    static func issues(team: Team, allTeams: [Team]) -> [Issue] {
+    /// - Parameter knownSkillIDs: ids the agent-skill scanner discovered. Empty
+    ///   means "no catalogue yet" and skips the attached-skill check entirely —
+    ///   see `TeamValidationService.validateAttachedSkills`. Defaults to empty so
+    ///   existing call sites keep compiling with the check inert.
+    static func issues(
+        team: Team,
+        allTeams: [Team],
+        knownSkillIDs: Set<String> = []
+    ) -> [Issue] {
         var issues = TeamManagementService.validate(team).map {
             Issue(isError: true, message: $0.localizedDescription)
         }
         issues += TeamValidationService.validateDelegationPolicy(team: team, allTeams: allTeams).map {
+            Issue(isError: $0.isError, message: $0.displayMessage(in: team))
+        }
+        issues += TeamValidationService.validateAttachedSkills(
+            team: team, knownSkillIDs: knownSkillIDs
+        ).map {
             Issue(isError: $0.isError, message: $0.displayMessage(in: team))
         }
         return issues
@@ -180,7 +193,70 @@ struct TeamEditorView: View {
         }
         .onAppear {
             validateCurrentTeam()
+            presentPendingNewTeamSheetIfPossible()
         }
+        .task {
+            // Nothing in the Team Editor triggered a skill scan before this — the
+            // catalogue was carried entirely by the work-folder-open and startRun
+            // scans, which also left `validateAttachedSkills` (and now the role-list
+            // skills badge) blind to skills added since launch. TTL-memoed (5s) and
+            // equality-guarded, so re-entering the tab costs nothing.
+            await store.refreshAgentSkills()
+            // `.onAppear` above ran before the scan resolved.
+            validateCurrentTeam()
+        }
+        // Level trigger. `.onAppear` covers "Settings was closed" and "the tab was
+        // switched to Teams" (both mount this view), but NOT "Settings is already open
+        // on Teams" — there is no mount, so the appear never re-fires. Observing the
+        // latch itself covers that third case, and it is also what retries a request
+        // that had to defer because another sheet/alert was up.
+        .onChange(of: store.pendingNewTeamSheet) { _, _ in
+            presentPendingNewTeamSheetIfPossible()
+        }
+        // Retry hooks: a deferred request is re-checked as soon as the presentation
+        // that blocked it goes away. macOS allows one presentation per window, so
+        // without these a request that arrived while, say, the delete confirmation was
+        // up would sit armed until the user happened to leave and re-enter the tab.
+        .onChange(of: showingNewTeamSheet) { _, isShowing in
+            if !isShowing { presentPendingNewTeamSheetIfPossible() }
+        }
+        .onChange(of: showingGenerateTeamSheet) { _, isShowing in
+            if !isShowing { presentPendingNewTeamSheetIfPossible() }
+        }
+        .onChange(of: showingDeleteConfirmation) { _, isShowing in
+            if !isShowing { presentPendingNewTeamSheetIfPossible() }
+        }
+        .onChange(of: importError == nil) { _, isClear in
+            if isClear { presentPendingNewTeamSheetIfPossible() }
+        }
+    }
+
+    /// Consumes `NTMSOrchestrator.pendingNewTeamSheet` (armed by the QuickCapture
+    /// panel's "New Team..." entry) and raises the sheet.
+    ///
+    /// **Peeks before consuming, and defers rather than clearing.** macOS presents one
+    /// sheet/alert per window, so setting `showingNewTeamSheet = true` while another is
+    /// up is silently dropped. Consuming first would then destroy the intent with no
+    /// retry path — the user's click would vanish, and `showingNewTeamSheet` would be
+    /// left `true` against a sheet that never appeared, so a later dismissal could pop
+    /// an unrequested one. Leaving the latch armed is recoverable; consuming is not.
+    ///
+    /// It deliberately does NOT dismiss whatever is already presented. Tearing down the
+    /// destructive "Delete Team" confirmation from a background action the user never
+    /// associated with it would read as the delete having gone through.
+    ///
+    /// Presentations owned by descendants (role/artifact editors, the graph's
+    /// `.sheet(item:)`) are not observable from here; those defer until the user closes
+    /// them and the next `.onAppear` / latch change re-checks. Deferring is the
+    /// acceptable failure, losing the request is not.
+    private func presentPendingNewTeamSheetIfPossible() {
+        guard store.pendingNewTeamSheet else { return }
+        guard !showingNewTeamSheet,
+              !showingGenerateTeamSheet,
+              !showingDeleteConfirmation,
+              importError == nil else { return }
+        guard store.consumeNewTeamSheetRequest() else { return }
+        showingNewTeamSheet = true
     }
 
     // MARK: - Top Bar
@@ -283,6 +359,22 @@ struct TeamEditorView: View {
 
     // MARK: - Tab Content
 
+    /// Inputs for the role-list row badges. Read here — this view already holds the
+    /// orchestrator and already reads the skill catalogue for validation — and
+    /// handed down as a value so `RoleListView` and its rows stay orchestrator-free.
+    private var roleRowBadgeInputs: RoleRowBadgeInputs {
+        RoleRowBadgeInputs(
+            skillCatalogue: store.roleSkills?.items ?? [],
+            allTeams: store.snapshot?.workFolder.teams ?? [],
+            storage: .from(orchestratorURL: store.workFolderURL),
+            selectedScheme: store.snapshot?.workFolder.settings.selectedScheme,
+            isVisionConfigured: store.configuration.isVisionConfigured,
+            isComputerUseEnabled: store.configuration.isComputerUseEnabled,
+            autovisorAllowTeamGeneration: store.snapshot?.workFolder.settings
+                .autovisorAllowTeamGeneration ?? true
+        )
+    }
+
     @ViewBuilder
     private func tabContent(for team: Team) -> some View {
         switch selectedTab {
@@ -291,7 +383,11 @@ struct TeamEditorView: View {
         case .prompts:
             TeamPromptsDetailView(team: binding(for: team), onSave: handleSaveTeam)
         case .roles:
-            RoleListView(team: binding(for: team), onSave: handleSaveTeam)
+            RoleListView(
+                team: binding(for: team),
+                onSave: handleSaveTeam,
+                badgeInputs: roleRowBadgeInputs
+            )
         case .artifacts:
             ArtifactListView(team: binding(for: team), onSave: handleSaveTeam)
         }
@@ -354,7 +450,8 @@ struct TeamEditorView: View {
         }
         validationIssues = TeamEditorValidation.issues(
             team: team,
-            allTeams: store.snapshot?.workFolder.teams ?? []
+            allTeams: store.snapshot?.workFolder.teams ?? [],
+            knownSkillIDs: Set(store.roleSkills?.items.map(\.id) ?? [])
         )
     }
 

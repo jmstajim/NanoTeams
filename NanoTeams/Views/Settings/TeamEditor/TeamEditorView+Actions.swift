@@ -22,19 +22,20 @@ extension TeamEditorView {
         }
     }
 
-    func handleCreateTeam(name: String, templateID: String?) {
+    /// Creates a team from the New Team sheet's picker selection. `templateID` is a
+    /// `TeamTemplateFactory.templateMetadata` id — including the synthetic
+    /// `emptyTemplateID` — never an optional sentinel.
+    ///
+    /// Resolution lives in `TeamTemplateFactory.makeTeam` rather than here because this
+    /// call site needs a live orchestrator and `mutateWorkFolder`, which made the
+    /// unresolved-id case untestable. "No template" used to be encoded as `nil`, and the
+    /// nil branch fell through to `TeamManagementService.createTeam`, which cloned FAANG:
+    /// picking "Empty Team" produced a full 9-role team.
+    func handleCreateTeam(name: String, templateID: String) {
         editorSelectedTeamID = nil
         Task {
             await store.mutateWorkFolder { project in
-                let newTeam: Team
-
-                if let templateID = templateID,
-                   let template = Team.defaultTeams.first(where: { $0.templateID == templateID }) {
-                    newTeam = template.duplicate(withName: name)
-                } else {
-                    newTeam = TeamManagementService.createTeam(name: name)
-                }
-
+                let newTeam = TeamTemplateFactory.makeTeam(templateID: templateID, name: name)
                 project.teams.append(newTeam)
                 project.activeTeamID = newTeam.id
             }

@@ -199,25 +199,28 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
     }
 
     /// Zero is the value most likely to be lost: a coercer that treats "0" as
-    /// falsy-and-therefore-absent hands back nil, and the default (3) applies.
-    /// `context_before` is left at its default in the same call as a live
-    /// control — its presence proves the context machinery ran, so the absence
-    /// of `context_after` is a real suppression rather than a dead code path.
+    /// falsy-and-therefore-absent hands back nil, and the default applies.
+    /// `context_before` is passed EXPLICITLY as a live control — its presence proves the context
+    /// machinery ran, so the absence of `context_after` is a real suppression rather than a dead
+    /// code path. It used to rely on `context_before`'s default being non-zero; both context
+    /// defaults are now 0 (search returns just the matching line unless asked otherwise), which
+    /// would have made this test vacuous.
     func testSearch_contextAfterAsStringZero_suppressesTrailingContext() throws {
         let lines = (1...20).map { $0 == 10 ? "ZERONEEDLE" : "filler \($0)" }
         try write("ctx/zero.txt", lines.joined(separator: "\n"))
 
-        let r = run("search", "{\"query\": \"ZERONEEDLE\", \"context_after\": \"0\"}")
+        let r = run("search",
+                    "{\"query\": \"ZERONEEDLE\", \"context_before\": 2, \"context_after\": \"0\"}")
 
         XCTAssertFalse(r.isError, "got: \(r.outputJSON)")
         guard let match = searchMatches(r.outputJSON).first else {
             return XCTFail("expected one match; got: \(r.outputJSON)")
         }
         XCTAssertNotNil(match["context_before"],
-                        "control: context_before must still be populated from its default")
+                        "control: an explicit context_before must be populated")
         XCTAssertNil(match["context_after"],
                      "context_after:\"0\" must suppress trailing context entirely; a rejected "
-                     + "zero falls back to \(AppDefaults.searchContextAfter) lines")
+                     + "zero would fall back to a non-zero default")
     }
 
     // MARK: - search: paths scoping

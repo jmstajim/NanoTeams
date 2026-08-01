@@ -22,8 +22,7 @@ final class ToolSignalExploratorySearchTests: XCTestCase {
             fileGlob: fileGlob,
             contextBefore: 0,
             contextAfter: 0,
-            maxResults: 20,
-            maxMatchLines: 40
+            maxResults: 20
         )
     }
 
@@ -37,8 +36,7 @@ final class ToolSignalExploratorySearchTests: XCTestCase {
             fileGlob: nil,
             contextBefore: 0,
             contextAfter: 0,
-            maxResults: 20,
-            maxMatchLines: 40
+            maxResults: 20
         ))
     }
 
@@ -50,8 +48,7 @@ final class ToolSignalExploratorySearchTests: XCTestCase {
             fileGlob: nil,
             contextBefore: 0,
             contextAfter: 0,
-            maxResults: 20,
-            maxMatchLines: 40
+            maxResults: 20
         ))
     }
 
@@ -60,7 +57,7 @@ final class ToolSignalExploratorySearchTests: XCTestCase {
             query: "x", mode: .substring,
             paths: nil, fileGlob: nil,
             contextBefore: 0, contextAfter: 0,
-            maxResults: -5, maxMatchLines: 40
+            maxResults: -5
         )
         XCTAssertGreaterThanOrEqual(p.maxResults, 1,
             "Negative maxResults must clamp to the positive domain.")
@@ -71,7 +68,7 @@ final class ToolSignalExploratorySearchTests: XCTestCase {
             query: "x", mode: .substring,
             paths: nil, fileGlob: nil,
             contextBefore: 0, contextAfter: 0,
-            maxResults: 1_000_000, maxMatchLines: 40
+            maxResults: 1_000_000
         )
         XCTAssertLessThanOrEqual(p.maxResults, ExploratorySearchPayload.maxAllowedResults,
             "Pathologically large maxResults must clamp.")
@@ -82,7 +79,7 @@ final class ToolSignalExploratorySearchTests: XCTestCase {
             query: "x", mode: .substring,
             paths: nil, fileGlob: nil,
             contextBefore: -1, contextAfter: -1,
-            maxResults: 20, maxMatchLines: 40
+            maxResults: 20
         )
         XCTAssertEqual(p.contextBefore, 0)
         XCTAssertEqual(p.contextAfter, 0)
@@ -93,7 +90,7 @@ final class ToolSignalExploratorySearchTests: XCTestCase {
             query: "x", mode: .substring,
             paths: [], fileGlob: nil,
             contextBefore: 0, contextAfter: 0,
-            maxResults: 20, maxMatchLines: 40
+            maxResults: 20
         )
         XCTAssertNil(p.paths, "Empty `paths` array must normalize to nil so callers don't switch on both.")
     }

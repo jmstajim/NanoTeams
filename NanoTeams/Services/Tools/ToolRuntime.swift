@@ -98,12 +98,21 @@ nonisolated final class ToolRuntime: @unchecked Sendable {
             return result
         }
 
+        // Single measurement site covering every tool. `ContinuousClock` (not `MonotonicClock`,
+        // which is an ordering source — see `ToolCallLogRecord.durationMS`) and suspend-inclusive,
+        // which is the right semantic for perceived tool latency. Two clock reads cost ~40 ns
+        // against calls measured in milliseconds, so this is NOT gated behind `#if DEBUG` — the
+        // numbers are most needed in release builds and headless runs. The sink is already gated:
+        // `logger` is nil when `loggingEnabled` is off.
+        let started = ContinuousClock.now
+        func elapsedMS() -> Double { (ContinuousClock.now - started).milliseconds }
+
         do {
             let rawParsedArgs = try parseAndNormalizeArguments(rawArgs)
             let args = unwrapReentrantEnvelope(rawParsedArgs, expectedToolName: name)
             var result = try handler(context, args)
             result.providerID = providerID
-            logger?.append(baseRecord.withResult(result: result))
+            logger?.append(baseRecord.withResult(result: result, durationMS: elapsedMS()))
             appendNetworkRecord(context: context, call: call, result: result, errorMessage: nil)
             return result
         } catch {
@@ -115,7 +124,8 @@ nonisolated final class ToolRuntime: @unchecked Sendable {
                 outputJSON: toolErrorJSON(type: "execution_failed", message: message),
                 isError: true
             )
-            logger?.append(baseRecord.withResult(result: result, errorMessage: message))
+            logger?.append(baseRecord.withResult(
+                result: result, errorMessage: message, durationMS: elapsedMS()))
             appendNetworkRecord(context: context, call: call, result: result, errorMessage: message)
             return result
         }
@@ -246,9 +256,11 @@ nonisolated final class ToolRuntime: @unchecked Sendable {
 }
 
 nonisolated extension ToolCallLogRecord {
-    fileprivate func withResult(result: ToolExecutionResult, errorMessage: String? = nil)
-        -> ToolCallLogRecord
-    {
+    fileprivate func withResult(
+        result: ToolExecutionResult,
+        errorMessage: String? = nil,
+        durationMS: Double? = nil
+    ) -> ToolCallLogRecord {
         ToolCallLogRecord(
             createdAt: createdAt,
             taskID: taskID,
@@ -257,7 +269,8 @@ nonisolated extension ToolCallLogRecord {
             toolName: toolName,
             argumentsJSON: argumentsJSON,
             resultJSON: result.outputJSON,
-            errorMessage: errorMessage
+            errorMessage: errorMessage,
+            durationMS: durationMS
         )
     }
 }

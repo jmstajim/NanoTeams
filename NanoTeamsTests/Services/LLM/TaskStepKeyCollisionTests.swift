@@ -927,7 +927,7 @@ final class PostTeardownWriteBarrierCornerTests: XCTestCase, @unchecked Sendable
 
         let payload = try! ExploratorySearchPayload(
             query: "collision", mode: .substring, paths: nil, fileGlob: nil,
-            contextBefore: 0, contextAfter: 0, maxResults: 20, maxMatchLines: 40)
+            contextBefore: 0, contextAfter: 0, maxResults: 20)
         let result = ToolExecutionResult(
             providerID: nil, toolName: ToolNames.search,
             argumentsJSON: #"{"query":"collision","exploratory":true}"#,

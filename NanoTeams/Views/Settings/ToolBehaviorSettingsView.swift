@@ -54,14 +54,14 @@ struct ToolBehaviorSettingsView: View {
         ) {
             VStack(spacing: 0) {
                 SettingsStepperRow(
-                    title: "Max results",
+                    title: "Page size",
                     icon: "list.number",
                     value: $config.searchMaxResults,
                     range: AppDefaults.searchMaxResultsMin...AppDefaults.searchMaxResultsMax,
                     step: 5
                 )
 
-                Text("Default cap on the number of `search` hits returned when the LLM doesn't pass `max_results`. The LLM can override per-call.")
+                Text("Matches returned per page when the LLM doesn't pass `max_results`. This is the only limit on how many hits come back — the LLM pages through the rest with `offset`. It can override per-call, up to \(AppDefaults.searchMaxResultsMax).")
                     .font(Typography.caption)
                     .foregroundStyle(Colors.textTertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -77,7 +77,7 @@ struct ToolBehaviorSettingsView: View {
                     zeroLabel: nil
                 )
 
-                Text("Default number of source lines included before each match when the LLM doesn't pass `context_before`. The LLM can override per-call.")
+                Text("Source lines included before each match when the LLM doesn't pass `context_before`. Zero returns just the matching line, like `grep`; the LLM asks for context when it needs it. Does not affect how many matches are returned.")
                     .font(Typography.caption)
                     .foregroundStyle(Colors.textTertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -93,7 +93,7 @@ struct ToolBehaviorSettingsView: View {
                     zeroLabel: nil
                 )
 
-                Text("Default number of source lines included after each match when the LLM doesn't pass `context_after`. The LLM can override per-call.")
+                Text("Source lines included after each match when the LLM doesn't pass `context_after`.")
                     .font(Typography.caption)
                     .foregroundStyle(Colors.textTertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)

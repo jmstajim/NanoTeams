@@ -17,18 +17,22 @@ nonisolated enum AppDefaults {
 
     /// Default cap on the number of `search` matches returned when the LLM
     /// does not pass an explicit `max_results`.
-    static let searchMaxResults = 50
+    static let searchMaxResults = 100
     /// Inclusive lower bound for the configurable `search` result cap.
     static let searchMaxResultsMin = 5
     /// Inclusive upper bound for the configurable `search` result cap.
-    static let searchMaxResultsMax = 500
+    static let searchMaxResultsMax = 300
 
     /// Default number of source lines to include before each `search` match
     /// when the LLM does not pass an explicit `context_before`.
-    static let searchContextBefore = 2
+    ///
+    /// Zero by default, matching `grep`/`rg`: the match line alone locates the hit, and at one
+    /// line per match a page covers far more of the corpus for the same token spend. Callers
+    /// that need surrounding code ask for it explicitly.
+    static let searchContextBefore = 0
     /// Default number of source lines to include after each `search` match
-    /// when the LLM does not pass an explicit `context_after`.
-    static let searchContextAfter = 3
+    /// when the LLM does not pass an explicit `context_after`. Zero — see `searchContextBefore`.
+    static let searchContextAfter = 0
     /// Inclusive lower bound for the configurable `search` context.
     static let searchContextMin = 0
     /// Inclusive upper bound for the configurable `search` context.

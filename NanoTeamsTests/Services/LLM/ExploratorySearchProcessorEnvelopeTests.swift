@@ -50,8 +50,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
                 fileGlob: nil,
                 contextBefore: 0,
                 contextAfter: 0,
-                maxResults: 20,
-                maxMatchLines: 40
+                maxResults: 20
             ))
         )
     }
@@ -341,8 +340,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
             fileGlob: nil,
             contextBefore: 0,
             contextAfter: 0,
-            maxResults: 20,
-            maxMatchLines: 40
+            maxResults: 20
         )
         let result = ToolExecutionResult(
             providerID: "call_a",
@@ -379,8 +377,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
             fileGlob: nil,
             contextBefore: 0,
             contextAfter: 0,
-            maxResults: 20,
-            maxMatchLines: 40
+            maxResults: 20
         )
         let result = ToolExecutionResult(
             providerID: "call_b",
@@ -511,7 +508,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
 
         // The tracker must hold a finalized envelope (contains `exploratory_disabled`
         // or `expanded_terms`), never the interim `"status":"exploring"` placeholder.
-        let recorded = tracker.snapshot().first(where: { $0.toolName == ToolNames.search })
+        let recorded = tracker.recentCalls(limit: .max).first(where: { $0.toolName == ToolNames.search })
         XCTAssertNotNil(recorded, "Finalize step must have recorded the call.")
         XCTAssertFalse(recorded?.resultJSON.contains("\"status\":\"exploring\"") ?? true,
             "Tracker must NOT hold the interim placeholder. Got: \(recorded?.resultJSON ?? "")")
@@ -796,8 +793,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
             fileGlob: nil,
             contextBefore: 0,
             contextAfter: 0,
-            maxResults: 5,
-            maxMatchLines: 40
+            maxResults: 5
         )
         let result = ToolExecutionResult(
             providerID: "call_cap",

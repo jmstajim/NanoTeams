@@ -9,36 +9,17 @@ struct RoleEditorPromptTab: View {
 
     @Environment(NTMSOrchestrator.self) private var store
 
+    /// The role as the editor currently has it — what "Preview Full Prompt"
+    /// renders, so it must reflect EVERY field that reaches the prompt.
+    ///
+    /// Built by mutating the edited role rather than by enumerating fields into
+    /// the memberwise init. The enumerate-fields shape silently dropped whatever
+    /// it forgot — it was missing both delegation fields (so the preview omitted
+    /// the auto-injected 4-tool delegation pack) and `provider:` on the LLM
+    /// override. Mutating a copy also means a field added later shows up in the
+    /// preview with no edit here. Same lesson as `Team.duplicate`.
     private var currentRoleDefinition: TeamRoleDefinition {
-        TeamRoleDefinition(
-            id: {
-                if case .edit(let role) = mode { return role.id }
-                return UUID().uuidString
-            }(),
-            name: editorState.roleName,
-            icon: editorState.roleIcon,
-            prompt: editorState.rolePrompt,
-            toolIDs: Array(editorState.selectedTools),
-            usePlanningPhase: editorState.usePlanningPhase,
-            dependencies: RoleDependencies(
-                requiredArtifacts: editorState.requiredArtifacts,
-                producesArtifacts: editorState.producedArtifacts
-            ),
-            llmOverride: {
-                let candidate = LLMOverride(
-                    baseURLString: editorState.llmBaseURL.isEmpty ? nil : editorState.llmBaseURL,
-                    modelName: editorState.llmModelName.isEmpty ? nil : editorState.llmModelName
-                )
-                return candidate.isEmpty ? nil : candidate
-            }(),
-            isSystemRole: false,
-            systemRoleID: {
-                if case .edit(let role) = mode { return role.systemRoleID }
-                return nil
-            }(),
-            iconColor: editorState.roleIconColor,
-            iconBackground: editorState.roleIconBackground
-        )
+        editorState.provisionalDefinition(mode: mode)
     }
 
     var body: some View {

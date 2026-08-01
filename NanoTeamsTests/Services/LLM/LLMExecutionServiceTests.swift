@@ -9,6 +9,7 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     var workFolderURL: URL?
     var snapshot: WorkFolderContext?
     var agentInstructions: AgentInstructionsSnapshot?
+    var roleSkills: RoleSkillsSnapshot?
     var globalLLMConfig: LLMConfig = LLMConfig()
     var globalLLMContext: String = ""
     var maxLLMRetries: Int = 0
@@ -2002,91 +2003,6 @@ final class LLMExecutionServiceStepCompletionTests: XCTestCase {
 
         XCTAssertEqual(Set(filtered.participants.map(\.baseID)), Set([Role.builtInID(.uxDesigner), Role.builtInID(.sre)]))
         XCTAssertTrue(filtered.rejectedReasons.isEmpty)
-    }
-
-    // MARK: - Helpers
-
-    private func createTestTaskWithStep() -> NTMSTask {
-        let stepExecution = StepExecution(
-            id: "test_step",
-            role: .softwareEngineer,
-            title: "Test Step",
-            status: .running
-        )
-
-        let run = Run(
-            id: 0,
-            steps: [stepExecution]
-        )
-
-        let task = NTMSTask(id: 0, title: "Test Task",
-            supervisorTask: "Test goal",
-            runs: [run]
-        )
-        service._testRegisterStepTask(stepID: stepExecution.id, taskID: task.id)
-        return task
-    }
-}
-
-// MARK: - Implementation Prompt Saving Tests
-
-@MainActor
-final class LLMConversationSavingTests: XCTestCase {
-    private let fileManager = FileManager.default
-    private var tempDir: URL!
-    private var service: LLMExecutionService!
-    private var mockDelegate: MockLLMExecutionDelegate!
-
-    override func setUpWithError() throws {
-        try super.setUpWithError()
-        tempDir = fileManager.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try fileManager.createDirectory(at: tempDir, withIntermediateDirectories: true)
-
-        let nanoteamsDir = tempDir.appendingPathComponent(".nanoteams")
-        try fileManager.createDirectory(at: nanoteamsDir, withIntermediateDirectories: true)
-
-        service = LLMExecutionService(repository: NTMSRepository())
-        mockDelegate = MockLLMExecutionDelegate()
-        mockDelegate.workFolderURL = tempDir
-        service.attach(delegate: mockDelegate)
-    }
-
-    override func tearDownWithError() throws {
-        if let tempDir {
-            try? fileManager.removeItem(at: tempDir)
-        }
-        mockDelegate = nil
-        try super.tearDownWithError()
-    }
-
-    // MARK: - Planning Phase Prompt Restoration Tests
-
-
-
-
-
-    func testImplementationPromptContainsExpectedContent() {
-        // Verify the default Software Engineer prompt carries its identity-
-        // defining lines. The 2026-05 rewrite tightened the wording
-        // (`Focus on implementation` / `Make real code changes using tools`
-        // were replaced by the more direct "Implement the change end-to-end"
-        // opener), so this test pins the stable intent rather than the
-        // earlier verbatim phrasing.
-        let prompt = SystemTemplates.roles["softwareEngineer"]!.prompt
-
-        XCTAssertTrue(
-            prompt.contains("Implement the change"),
-            "Software Engineer prompt should carry the implementation directive"
-        )
-        XCTAssertTrue(
-            prompt.contains("Engineering Standards"),
-            "Software Engineer prompt should expose the Engineering Standards block"
-        )
-        XCTAssertTrue(
-            prompt.contains("No dead code"),
-            "Software Engineer prompt should keep the no-dead-code standard"
-        )
     }
 
     // MARK: - Helpers

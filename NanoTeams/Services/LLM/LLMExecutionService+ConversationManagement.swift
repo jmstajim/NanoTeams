@@ -35,6 +35,13 @@ extension LLMExecutionService {
             return base.isEmpty ? block : base + "\n\n" + block
         }()
 
+        let roleDefinition = resolvedTeam?.findRole(byIdentifier: step.effectiveRoleID)
+        // Resolution drops ids the snapshot could not read (deleted / unreadable
+        // SKILL.md) — those surface as `unresolvedIDs` in the editor rather than
+        // as an empty section here.
+        let attachedSkills = delegate.roleSkills?
+            .resolve(roleDefinition?.attachedSkillIDs ?? []) ?? []
+
         let context = PromptBuilder.Context(
             task: task,
             step: step,
@@ -46,9 +53,10 @@ extension LLMExecutionService {
                 return ArtifactService.readContent(artifact: artifact, workFolderRoot: workFolderRoot)
             },
             activeTeam: resolvedTeam,
-            roleDefinition: resolvedTeam?.findRole(byIdentifier: step.effectiveRoleID),
+            roleDefinition: roleDefinition,
             globalContext: stepGlobalContext,
-            agentInstructions: delegate.agentInstructions
+            agentInstructions: delegate.agentInstructions,
+            attachedSkills: attachedSkills
         )
 
         return PromptBuilder.buildChatMessages(context: context, tools: tools)
@@ -102,6 +110,16 @@ extension LLMExecutionService {
                   let stepIndex = task.runs[runIndex].steps.firstIndex(where: { $0.id == stepID })
             else { return }
             task.runs[runIndex].steps[stepIndex].wireTranscript = messages
+            // The transcript now on disk ALREADY carries whatever supervisor answer this
+            // execution appended, so a later re-entry must replay it rather than append
+            // it again. Consumed here, in the same mutation as the transcript, precisely
+            // so the two can't disagree: clearing the flag where the conversation is
+            // BUILT would open a window in which a crash spends the answer while the
+            // stored transcript still lacks it.
+            //
+            // Unconditional: a step that never had an answer has the flag `false`
+            // already, and the re-park arm (`setNeedsSupervisorInput`) clears it too.
+            task.runs[runIndex].steps[stepIndex].supervisorAnswerPendingDelivery = false
         }
     }
 

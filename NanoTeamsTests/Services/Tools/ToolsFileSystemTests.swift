@@ -1820,7 +1820,7 @@ final class ToolsFileSystemTests: XCTestCase {
         // The uncompilable-glob sentinel must surface as a typed error, not a
         // fail-closed empty listing.
         let argsData = try JSONSerialization.data(
-            withJSONObject: ["path": ".", "name_glob": GlobMatcher._testUncompilableGlobSentinel])
+            withJSONObject: ["path": ".", "name_glob": CompiledGlob._testUncompilableGlobSentinel])
         let argsJSON = String(data: argsData, encoding: .utf8)!
         let call = StepToolCall(name: "list_files", argumentsJSON: argsJSON)
         let results = runtime.executeAll(context: context, toolCalls: [call])

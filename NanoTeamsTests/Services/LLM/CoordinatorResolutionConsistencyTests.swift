@@ -5,7 +5,7 @@ import XCTest
 /// agrees on the orphan-self-heal contract under the same `Team` snapshot:
 ///
 ///   1. Picker UI       — `MeetingCoordinatorPickerLogic.normalizedSelection`
-///   2. Badge predicate — `RoleEditorConcludeMeetingPredicate.fromEditorContext`
+///   2. Editor list   — `RoleToolBadgePolicy.model(...).autoInjected`
 ///                         (via internal `DesignatedCoordinatorResolver.normalize`)
 ///   3. Schema-build    — `LLMExecutionService+ToolResolution` step 6
 ///                         (via internal `DesignatedCoordinatorResolver.normalize`)

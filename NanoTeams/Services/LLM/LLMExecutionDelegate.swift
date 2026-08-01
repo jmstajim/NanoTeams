@@ -66,6 +66,12 @@ protocol LLMStateDelegate: TaskMutationDelegate {
     /// `{workFolderContext}` placeholder into the step system prompt. `nil` in
     /// default storage / no folder.
     var agentInstructions: AgentInstructionsSnapshot? { get }
+    /// Discovered agent skills plus the bodies of every skill some role has
+    /// attached (`TeamRoleDefinition.attachedSkillIDs`). Resolved per-role by
+    /// `buildChatMessages` and rendered into the `{roleSkills}` placeholder.
+    /// Unlike `agentInstructions` this survives default storage — global and
+    /// plugin skills live under the home directory, not the work folder.
+    var roleSkills: RoleSkillsSnapshot? { get }
     /// Whether logging (network_log.json, conversation_log.md, tool_calls.jsonl) is enabled.
     var loggingEnabled: Bool { get }
     /// Loads a task by ID (active or background).

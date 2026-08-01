@@ -7,7 +7,7 @@ import Foundation
 ///   * runtime ID resolution (`LLMExecutionService.resolveCoordinatorRole`)
 ///   * picker UI (`MeetingCoordinatorPickerLogic.normalizedSelection`)
 ///   * schema-build (`+ToolResolution` step 6)
-///   * role-editor badge predicate (`RoleEditorConcludeMeetingPredicate.fromEditorContext`)
+///   * role-editor Auto-injected list (via `RoleToolBadgePolicy` → `resolveToolSchemas`)
 ///
 /// Returns `nil` when stored is nil / empty / orphaned (references a removed
 /// role).

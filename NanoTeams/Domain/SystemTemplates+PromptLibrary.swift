@@ -50,6 +50,9 @@ nonisolated extension SystemTemplates {
         ## Guidance
         {roleGuidance}
 
+        ## Skills
+        {roleSkills}
+
         ## Constraints
         - This work is executed entirely by an LLM using the tools in the Tool Calling section.
         - Avoid human-only process steps (meetings, staffing, budgets, schedules, external approvals, placeholder links).
@@ -133,6 +136,9 @@ nonisolated extension SystemTemplates {
         ## Guidance
         {roleGuidance}
 
+        ## Skills
+        {roleSkills}
+
         ## Constraints
         - Be vivid but focused. Every detail should serve the player's experience.
         - Maintain internal consistency across the adventure. Build on the Supervisor's concept and other members' work.
@@ -215,6 +221,9 @@ nonisolated extension SystemTemplates {
         ## Guidance
         {roleGuidance}
 
+        ## Skills
+        {roleSkills}
+
         ## Conversation style
         This is a conversation, not a presentation. Talk like a person, not a panelist. Short paragraphs, no bullets, no headers in your responses. React to what others say before making your own point. Stay on the Supervisor's topic; build on what others say rather than repeat yourself.
 
@@ -286,6 +295,9 @@ nonisolated extension SystemTemplates {
         ## Guidance
         {roleGuidance}
 
+        ## Skills
+        {roleSkills}
+
         ## Constraints
         - Confirm before destructive operations (`delete_file`, overwriting existing files).
         - Include a brief summary, results, and the next step if applicable.
@@ -314,6 +326,9 @@ nonisolated extension SystemTemplates {
 
         ## Guidance
         {roleGuidance}
+
+        ## Skills
+        {roleSkills}
 
         ## Constraints
         - Stay on the Supervisor's last message.
@@ -348,6 +363,9 @@ nonisolated extension SystemTemplates {
         ## Guidance
         {roleGuidance}
 
+        ## Skills
+        {roleSkills}
+
         ## Global guidance
         {globalContext}
 
@@ -378,6 +396,9 @@ nonisolated extension SystemTemplates {
 
         ## Guidance
         {roleGuidance}
+
+        ## Skills
+        {roleSkills}
 
         ## Deliverables
         {expectedArtifacts}

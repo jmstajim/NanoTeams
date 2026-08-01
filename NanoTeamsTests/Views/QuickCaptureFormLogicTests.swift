@@ -351,4 +351,59 @@ final class QuickCaptureFormLogicTests: XCTestCase {
         XCTAssertEqual(onAppearID, selectedTeam?.id,
                        "onAppear's output must be a fixpoint for selectedTeam — the two sites can't diverge")
     }
+
+    // MARK: - teamSelectionAfterNewTeamNavigation
+
+    func testAfterNewTeamNavigation_ordinaryTeam_releasesThePin() {
+        // The whole point of the entry: come back to a picker showing the team you just
+        // made. `resolveSelectedTeam` honors an explicit id BEFORE `activeTeamID`, so a
+        // retained pin would keep displaying the old team.
+        let teams = [makeIdentifiedTeam(id: "team_a"), makeIdentifiedTeam(id: "team_b")]
+        let result = QuickCaptureFormLogic.teamSelectionAfterNewTeamNavigation(
+            current: "team_a", availableTeams: teams)
+        XCTAssertNil(result)
+    }
+
+    func testAfterNewTeamNavigation_generatedPlaceholder_isKept() {
+        // `selectGeneratedTeamTemplate` writes ONLY the pin (never `setActiveTeam`), so
+        // this choice exists nowhere else — releasing it would silently discard it.
+        let teams = [
+            makeIdentifiedTeam(id: "team_a"),
+            makeIdentifiedTeam(id: "gen", templateID: DelegationConstants.generatedTeamSentinel),
+        ]
+        let result = QuickCaptureFormLogic.teamSelectionAfterNewTeamNavigation(
+            current: "gen", availableTeams: teams)
+        XCTAssertEqual(result, "gen")
+    }
+
+    func testAfterNewTeamNavigation_nilPin_staysNil() {
+        let teams = [makeIdentifiedTeam(id: "team_a")]
+        XCTAssertNil(QuickCaptureFormLogic.teamSelectionAfterNewTeamNavigation(
+            current: nil, availableTeams: teams))
+    }
+
+    func testAfterNewTeamNavigation_stalePin_releases() {
+        // An id that resolves to nothing is worse than no id — re-resolving beats
+        // honoring a pointer to a removed team.
+        let teams = [makeIdentifiedTeam(id: "team_a")]
+        XCTAssertNil(QuickCaptureFormLogic.teamSelectionAfterNewTeamNavigation(
+            current: "deleted_team", availableTeams: teams))
+    }
+
+    func testAfterNewTeamNavigation_emptyTeams_releases() {
+        XCTAssertNil(QuickCaptureFormLogic.teamSelectionAfterNewTeamNavigation(
+            current: "team_a", availableTeams: []))
+    }
+
+    /// Composition guard: after the release, `resolveSelectedTeam` must land on the
+    /// work folder's active team — that is the mechanism by which the newly created
+    /// team shows up in the picker (`handleCreateTeam` sets `activeTeamID`).
+    func testAfterNewTeamNavigation_releasedPin_resolvesOntoTheNewActiveTeam() {
+        let teams = [makeIdentifiedTeam(id: "old_team"), makeIdentifiedTeam(id: "brand_new")]
+        let released = QuickCaptureFormLogic.teamSelectionAfterNewTeamNavigation(
+            current: "old_team", availableTeams: teams)
+        let resolved = QuickCaptureFormLogic.resolveSelectedTeam(
+            selectedTeamID: released, activeTeamID: "brand_new", availableTeams: teams)
+        XCTAssertEqual(resolved?.id, "brand_new")
+    }
 }

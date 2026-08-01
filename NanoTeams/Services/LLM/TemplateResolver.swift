@@ -59,17 +59,35 @@ nonisolated enum TemplateResolver {
     }
 
     /// Like `appendingSeparator`, but when `text` ends in a `## Final reminder`
-    /// section the guidance block is inserted BEFORE it — the tail attention
-    /// slot must keep the single most critical constraint [Liu2024]; an
-    /// arbitrary-length user context block appended after it displaces the
-    /// reminder from the position that makes it work.
-    static func insertingGlobalGuidance(
-        _ suffix: String,
-        into text: String,
-        header: String = "## Global guidance"
+    /// section the block is inserted BEFORE it — the tail attention slot must
+    /// keep the single most critical constraint [Liu2024]; an arbitrary-length
+    /// user content block appended after it displaces the reminder from the
+    /// position that makes it work.
+    ///
+    /// Splices the chip-less fallback sections (`## Skills`, `## Global
+    /// guidance`) at ONE anchor, in the given order, each with an empty body
+    /// dropped.
+    ///
+    /// Computing the `## Final reminder` anchor once — against the text as it
+    /// stands BEFORE any insertion — is what keeps the sections independent of
+    /// each other. Inserting them one at a time would re-find the anchor in text
+    /// that already contains the previous body, so INSERTED content could supply
+    /// the match: a third-party skill body carrying a fenced `## Final reminder`
+    /// line would have the global-guidance block spliced into its middle. The
+    /// bytes for any single section, and for the two stacked in template order,
+    /// are unchanged by this consolidation.
+    static func insertingSections(
+        _ sections: [(header: String, body: String)],
+        into text: String
     ) -> String {
-        let trimmed = suffix.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return text }
+        let blocks = sections.compactMap { section -> String? in
+            let trimmed = section.body.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            return section.header + "\n\n" + trimmed
+        }
+        guard !blocks.isEmpty else { return text }
+        let joined = blocks.joined(separator: "\n\n")
+
         let frHeader = "## Final reminder"
         if let range = text.range(of: frHeader, options: .backwards),
            range.lowerBound == text.startIndex
@@ -77,22 +95,32 @@ nonisolated enum TemplateResolver {
             let head = String(text[..<range.lowerBound])
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let tail = String(text[range.lowerBound...])
-            return head + "\n\n" + header + "\n\n" + trimmed + "\n\n" + tail
+            return head + "\n\n" + joined + "\n\n" + tail
         }
-        return text + "\n\n" + header + "\n\n" + trimmed
+        return text + "\n\n" + joined
     }
 
     /// One-call system-prompt assembly: resolve `{placeholder}` substitutions
     /// and collapse triple-newline runs left by empty placeholders.
     ///
-    /// **globalContext placement** — controlled by the template author:
-    /// - Template contains `{globalContext}` chip → placeholder receives the
-    ///   formatted block (via the caller's placeholders dict), no auto-append.
-    /// - Template does NOT contain `{globalContext}` → auto-append as a
-    ///   trailing `## Global guidance` footer (backwards-compat for templates
-    ///   created before the chip was exposed; also the deliberate
-    ///   "empty template ⇒ empty system_prompt" path — when the user clears
-    ///   the entire template, nothing is appended either).
+    /// **globalContext / roleSkills placement** — controlled by the template
+    /// author, same rule for both:
+    /// - Template contains the chip → the placeholder receives the formatted
+    ///   block (via the caller's placeholders dict), no auto-append.
+    /// - Template does NOT contain the chip → auto-append as a trailing
+    ///   `## Global guidance` / `## Skills` footer, inserted before a trailing
+    ///   `## Final reminder`.
+    ///
+    /// The fallback is not merely backwards-compat. `Team.duplicate` clears
+    /// `templateID`, so EVERY team created from a template in the New Team sheet
+    /// is a "custom" team that `NTMSRepository+Reconcile` never rewrites — it can
+    /// never receive a chip added after its creation. Without the fallback, a
+    /// user attaching a skill to a role on such a team would watch it silently
+    /// never reach the prompt.
+    ///
+    /// Both fallbacks are suppressed when the resolved body is empty — a
+    /// user-cleared template must ship an empty `system_prompt` (the "control the
+    /// whole prompt" contract).
     ///
     /// Bundling these steps eliminates by-construction the drift risk that
     /// previously existed across `PromptBuilder.buildChatMessages`,
@@ -104,9 +132,11 @@ nonisolated enum TemplateResolver {
     static func resolveSystemPrompt(
         _ template: String,
         placeholders: [String: String],
-        globalContext: String
+        globalContext: String,
+        roleSkills: String = ""
     ) -> String {
         let hasExplicitGlobalContext = template.contains("{globalContext}")
+        let hasExplicitRoleSkills = template.contains("{roleSkills}")
         var result = resolve(template, placeholders: placeholders)
         // Strip orphan `Team purpose: ` label-only lines left when
         // `{teamDescription}` resolves to empty. Runs BEFORE `collapseBlankLines`
@@ -131,8 +161,14 @@ nonisolated enum TemplateResolver {
         // ship empty — that's the "control whole prompt" contract). Inserted
         // BEFORE a trailing `## Final reminder` so the legacy-template path
         // never displaces the tail reminder.
-        if !hasExplicitGlobalContext && !result.isEmpty {
-            result = insertingGlobalGuidance(globalContext, into: result)
+        // Skills first so that when BOTH fall back they stack in template order
+        // (skills sit above global guidance in every built-in template). Spliced
+        // in ONE pass at ONE anchor — see `insertingSections`.
+        if !result.isEmpty {
+            var sections: [(header: String, body: String)] = []
+            if !hasExplicitRoleSkills { sections.append(("## Skills", roleSkills)) }
+            if !hasExplicitGlobalContext { sections.append(("## Global guidance", globalContext)) }
+            result = insertingSections(sections, into: result)
         }
         return result
     }

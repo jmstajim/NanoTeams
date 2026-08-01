@@ -64,6 +64,37 @@ enum QuickCaptureFormLogic {
         return selectable.first
     }
 
+    /// The `selectedTeamID` the form should hold after routing the user to
+    /// Settings → Teams to create a new team. `nil` means "release the pin".
+    ///
+    /// Why release it at all: `handleCreateTeam` makes the new team the work-folder
+    /// active team, but `resolveSelectedTeam` above honors an explicit `selectedTeamID`
+    /// against the FULL list BEFORE it ever consults `activeTeamID` — and by the time
+    /// this menu is reachable `selectedTeamID` is non-nil. Left pinned, the user creates
+    /// a team and returns to a picker still showing the old one, which defeats the entry.
+    /// Releasing costs nothing on cancel: every ordinary row pick in this menu also
+    /// writes `activeTeamID`, so the re-resolve lands back on the same team.
+    ///
+    /// The generated placeholder is EXEMPT: `selectGeneratedTeamTemplate` writes only
+    /// `formState.selectedTeamID` and deliberately does NOT call `setActiveTeam`, so that
+    /// pick exists nowhere else. Clearing it would silently drop an in-flight
+    /// "Generate Team…" choice and drop the user back on the ordinary active team with
+    /// no signal.
+    ///
+    /// A `current` that resolves to no team (stale / removed) also releases —
+    /// re-resolving beats honoring an id that points at nothing.
+    static func teamSelectionAfterNewTeamNavigation(
+        current: NTMSID?,
+        availableTeams: [Team]
+    ) -> NTMSID? {
+        guard
+            let current,
+            let team = availableTeams.first(where: { $0.id == current }),
+            team.templateID == DelegationConstants.generatedTeamSentinel
+        else { return nil }
+        return current
+    }
+
     /// Accept/reject decision for an `onGeometryChange` `measuredFormHeight`
     /// update. Returns the new value to store, or `nil` to ignore the callback.
     ///

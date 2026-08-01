@@ -292,7 +292,333 @@ final class EditableMessageTextViewTests: XCTestCase {
         XCTAssertFalse(textView._didDrawPlaceholderForTesting)
     }
 
+    // MARK: - EditableNSTextView: placeholder repaint invalidation
+
+    /// THE regression pin for the frozen-placeholder bug.
+    /// `EditableMessageTextView.updateNSView` re-assigns `placeholderText` on
+    /// every SwiftUI render, and the composer's placeholder changes while the
+    /// field is EMPTY (`TeamActivityComposer`'s recipient going nil → `.role(X)`)
+    /// — the one state where the placeholder is the only thing on screen and
+    /// nothing else dirties the view (the Coordinator's `applyText` early-returns
+    /// on unchanged text). Without the property's `didSet` the OLD string stayed
+    /// painted until a click or a window resize, so a live composer kept
+    /// advertising "No active recipient — accept, restart a role, or request
+    /// changes."
+    ///
+    /// Deliberately NOT hosted in a window (unlike the draw-decision tests
+    /// above): `NSView.needsDisplay` is not assertable either way — it never
+    /// latches on a windowless view, and a freshly hosted one already reads
+    /// `true` before anything sets it — so the counter incremented inside
+    /// `invalidatePlaceholderDisplay()` is the seam. Hosting here would only
+    /// turn the assertion into a tautology.
+    func testPlaceholder_changedWhileEmpty_invalidatesDisplay() {
+        let textView = makeStandaloneEditableNSTextView()
+        textView.string = ""
+        textView.placeholderText = "No active recipient — accept, restart a role, or request changes."
+        let baseline = textView._placeholderInvalidationCountForTesting
+
+        textView.placeholderText = "Queue a message for Marketolog…"
+
+        XCTAssertEqual(
+            textView._placeholderInvalidationCountForTesting, baseline + 1,
+            "A changed placeholder must mark the view dirty — nothing else repaints an empty field, so the previous recipient's hint would stay on screen until the user clicks in."
+        )
+    }
+
+    /// The other edge of the same guard, and the reason it is an equality check
+    /// rather than an unconditional `needsDisplay = true`: `updateNSView` runs on
+    /// EVERY parent re-render — many per second while an LLM streams into the
+    /// feed above the composer — and re-writes the same placeholder each time.
+    /// Repainting this NSScrollView-backed representable per render is the
+    /// per-frame cost CLAUDE.md #50 was written about.
+    func testPlaceholder_reassignedIdenticalValue_doesNotInvalidate() {
+        let textView = makeStandaloneEditableNSTextView()
+        textView.string = ""
+        textView.placeholderText = "Queue a message for Marketolog…"
+        let baseline = textView._placeholderInvalidationCountForTesting
+
+        for _ in 0..<10 {
+            textView.placeholderText = "Queue a message for Marketolog…"
+        }
+
+        XCTAssertEqual(
+            textView._placeholderInvalidationCountForTesting, baseline,
+            "Re-assigning an identical placeholder must be a no-op — updateNSView writes it on every render, and an unconditional invalidation would repaint the representable per frame (CLAUDE.md #50)."
+        )
+    }
+
+    /// Clearing direction: a placeholder that goes away while the field is empty
+    /// must repaint too, or the last string stays painted over an empty field.
+    /// Pins the guard against a plausible "only invalidate when the placeholder
+    /// will actually be drawn" tightening — `shouldDrawPlaceholder()` reads the
+    /// NEW value, so gating on it would skip exactly this case.
+    func testPlaceholder_clearedWhileEmpty_invalidatesDisplay() {
+        let textView = makeStandaloneEditableNSTextView()
+        textView.string = ""
+        textView.placeholderText = "Queue a message for Marketolog…"
+        let baseline = textView._placeholderInvalidationCountForTesting
+
+        textView.placeholderText = nil
+
+        XCTAssertEqual(
+            textView._placeholderInvalidationCountForTesting, baseline + 1,
+            "Removing the placeholder must repaint — gating the invalidation on shouldDrawPlaceholder() (which reads the NEW value) would leave the old string painted over an empty field."
+        )
+    }
+
+    /// Pins the render path itself, not just the property. The `didSet` can only
+    /// fire if `updateNSView` keeps ASSIGNING the placeholder every render —
+    /// dropping that one line silently restores the frozen-hint bug, and the
+    /// three property-level tests above would all stay green.
+    func testUpdateNSView_changedPlaceholder_appliesAndInvalidatesOnce() {
+        let textBinding = MutableBoxBinding(initial: "")
+        let focusBinding = MutableBoxBinding(initial: false)
+        let makeView = { (placeholder: String) in
+            EditableMessageTextView(
+                text: textBinding.binding,
+                isFocused: focusBinding.binding,
+                placeholder: placeholder,
+                maxHeight: 220,
+                minLineCount: 1,
+                autofocusOnAppear: false,
+                onReturnKey: { _, _ in false }
+            )
+        }
+        let coordinator = makeView("No active recipient — accept, restart a role, or request changes.")
+            .makeCoordinator()
+        let scrollView = makeView("No active recipient — accept, restart a role, or request changes.")
+            .testHooks_makeNSView(coordinator: coordinator)
+        guard let textView = scrollView.documentView as? EditableNSTextView else {
+            return XCTFail("testHooks_makeNSView must install an EditableNSTextView as documentView")
+        }
+        // Measure deltas: `wire(...)` already applied the initial placeholder
+        // (nil → string is a change), so absolutes would encode that first bump.
+        let baseline = textView._placeholderInvalidationCountForTesting
+
+        makeView("Queue a message for Marketolog…")
+            .testHooks_updateNSView(scrollView, coordinator: coordinator)
+
+        XCTAssertEqual(textView.placeholderText, "Queue a message for Marketolog…",
+                       "updateNSView must re-apply the placeholder on every render — it is the only writer once the view exists.")
+        XCTAssertEqual(
+            textView._placeholderInvalidationCountForTesting, baseline + 1,
+            "A render carrying a new placeholder must request exactly one repaint."
+        )
+
+        for _ in 0..<5 {
+            makeView("Queue a message for Marketolog…")
+                .testHooks_updateNSView(scrollView, coordinator: coordinator)
+        }
+
+        XCTAssertEqual(
+            textView._placeholderInvalidationCountForTesting, baseline + 1,
+            "Steady-state re-renders carry an unchanged placeholder and must request no further repaints."
+        )
+    }
+
+    // MARK: - EditableNSTextView: placeholder invalidation corner cases
+
+    /// Degenerate no-op: a view that never had a placeholder being re-told it has
+    /// none. `nil != nil` is false, so the guard must swallow it — otherwise every
+    /// render of a placeholder-less composer (`MessageComposer`'s `placeholder`
+    /// defaults to `""`, and several call sites pass nothing) would repaint.
+    func testPlaceholder_nilToNil_doesNotInvalidate() {
+        let textView = makeStandaloneEditableNSTextView()
+        let baseline = textView._placeholderInvalidationCountForTesting
+
+        textView.placeholderText = nil
+
+        XCTAssertEqual(textView._placeholderInvalidationCountForTesting, baseline,
+                       "nil → nil is not a change and must not request a repaint.")
+    }
+
+    func testPlaceholder_identicalEmptyStrings_doNotInvalidate() {
+        let textView = makeStandaloneEditableNSTextView()
+        textView.placeholderText = ""
+        let baseline = textView._placeholderInvalidationCountForTesting
+
+        textView.placeholderText = ""
+
+        XCTAssertEqual(textView._placeholderInvalidationCountForTesting, baseline,
+                       "\"\" → \"\" is not a change — this is the steady state of every composer with no placeholder.")
+    }
+
+    /// Characterization, not a requirement: `nil` and `""` are both non-drawing
+    /// states (`shouldDrawPlaceholder` rejects both), so this repaint is strictly
+    /// wasted — but the guard is deliberately a plain value comparison rather than
+    /// a "will it draw" predicate, because that predicate reads the NEW value and
+    /// would break the clearing case. One wasted repaint on a transition that
+    /// happens at most once per view is the accepted price of that simplicity.
+    func testPlaceholder_nilToEmptyString_invalidatesEvenThoughNeitherDraws() {
+        let textView = makeStandaloneEditableNSTextView()
+        let baseline = textView._placeholderInvalidationCountForTesting
+
+        textView.placeholderText = ""
+
+        XCTAssertEqual(textView._placeholderInvalidationCountForTesting, baseline + 1)
+        XCTAssertFalse(textView.shouldDrawPlaceholder(),
+                       "Both nil and \"\" are non-drawing — the repaint is wasted but harmless.")
+    }
+
+    /// The invalidation is deliberately NOT gated on the field being empty. A draft
+    /// in progress hides the placeholder, but the recipient can change underneath
+    /// it, and the string has to be correct the moment the user clears the field —
+    /// which is exactly when they are most likely to be looking for it.
+    func testPlaceholder_changedWhileFieldNonEmpty_invalidatesAndIsCorrectOnceCleared() {
+        let textView = makeStandaloneEditableNSTextView()
+        textView.string = "half-typed draft"
+        textView.placeholderText = "No active recipient — accept, restart a role, or request changes."
+        let baseline = textView._placeholderInvalidationCountForTesting
+
+        textView.placeholderText = "Queue a message for Marketolog…"
+
+        XCTAssertEqual(textView._placeholderInvalidationCountForTesting, baseline + 1)
+        textView.testHooks_drawForTesting()
+        XCTAssertFalse(textView._didDrawPlaceholderForTesting,
+                       "Nothing is drawn while a draft is present…")
+
+        textView.string = ""
+        textView.testHooks_drawForTesting()
+        XCTAssertTrue(textView._didDrawPlaceholderForTesting)
+        XCTAssertEqual(textView.placeholderText, "Queue a message for Marketolog…",
+                       "…and clearing the draft must reveal the CURRENT hint, not the one from when the draft started.")
+    }
+
+    /// A role finishing and restarting walks the placeholder A → B → A. Nothing
+    /// memoizes "already seen", so each leg is its own change and its own repaint.
+    func testPlaceholder_alternatingValues_invalidatesEveryChange() {
+        let textView = makeStandaloneEditableNSTextView()
+        textView.string = ""
+        let a = "Queue a message for Marketolog…"
+        let b = "No active recipient — accept, restart a role, or request changes."
+        textView.placeholderText = a
+        let baseline = textView._placeholderInvalidationCountForTesting
+
+        textView.placeholderText = b
+        textView.placeholderText = a
+
+        XCTAssertEqual(textView._placeholderInvalidationCountForTesting, baseline + 2,
+                       "Returning to a previously-used string is still a change from what is currently painted.")
+    }
+
+    /// `shouldDrawPlaceholder` gates on `isEmpty`, not on whitespace — a
+    /// whitespace-only placeholder counts as present and paints (invisibly).
+    /// Characterization of the existing predicate so a future "trim it" tweak is
+    /// a deliberate decision rather than a silent one.
+    func testPlaceholder_whitespaceOnly_countsAsPresent() {
+        let textView = makeStandaloneEditableNSTextView()
+        textView.string = ""
+        textView.placeholderText = "   "
+
+        textView.testHooks_drawForTesting()
+
+        XCTAssertTrue(textView._didDrawPlaceholderForTesting,
+                      "Only `isEmpty` suppresses the placeholder; whitespace is treated as content.")
+    }
+
+    // MARK: - updateNSView corner cases (per-render path)
+
+    /// The lock and the placeholder are independent per-render writes. Toggling
+    /// only the lock must not request a placeholder repaint — otherwise every
+    /// improve-prompt stream start/stop would repaint the field for nothing.
+    func testUpdateNSView_onlyInputLockToggled_doesNotInvalidatePlaceholder() {
+        let textBinding = MutableBoxBinding(initial: "")
+        let focusBinding = MutableBoxBinding(initial: false)
+        let coordinator = EditableMessageTextView.Coordinator()
+        let scrollView = makeRepresentable(
+            text: textBinding.binding, isFocused: focusBinding.binding,
+            placeholder: "Send a message…"
+        ).testHooks_makeNSView(coordinator: coordinator)
+        guard let textView = scrollView.documentView as? EditableNSTextView else {
+            return XCTFail("documentView must be an EditableNSTextView")
+        }
+        let baseline = textView._placeholderInvalidationCountForTesting
+
+        makeRepresentable(
+            text: textBinding.binding, isFocused: focusBinding.binding,
+            placeholder: "Send a message…", isInputLocked: true
+        ).testHooks_updateNSView(scrollView, coordinator: coordinator)
+
+        XCTAssertTrue(textView.isInputLocked, "The lock must still land.")
+        XCTAssertEqual(textView._placeholderInvalidationCountForTesting, baseline,
+                       "An unchanged placeholder must not repaint just because a neighbouring property moved.")
+    }
+
+    /// Pins the ordering `applyUpdate` depends on: it reads the OLD lock state to
+    /// decide whether to drop the undo stack, BEFORE assigning the new one. The
+    /// improve stream writes via `.string =`, which registers no undo actions, so
+    /// a Cmd+Z across an unlock would surface incoherent partial states.
+    func testUpdateNSView_unlocking_clearsUndoStack() throws {
+        let textBinding = MutableBoxBinding(initial: "")
+        let focusBinding = MutableBoxBinding(initial: false)
+        let coordinator = EditableMessageTextView.Coordinator()
+        let scrollView = makeRepresentable(
+            text: textBinding.binding, isFocused: focusBinding.binding,
+            placeholder: "", isInputLocked: true
+        ).testHooks_makeNSView(coordinator: coordinator)
+        let textView = try XCTUnwrap(scrollView.documentView as? EditableNSTextView)
+        let window = makeHeadlessWindow(contentView: scrollView)
+        defer { window.orderOut(nil) }
+        let undo = try XCTUnwrap(textView.undoManager, "NSTextView resolves its undo manager through the window.")
+        undo.registerUndo(withTarget: self) { _ in }
+        XCTAssertTrue(undo.canUndo, "Precondition: something is on the undo stack.")
+
+        makeRepresentable(
+            text: textBinding.binding, isFocused: focusBinding.binding,
+            placeholder: "", isInputLocked: false
+        ).testHooks_updateNSView(scrollView, coordinator: coordinator)
+
+        XCTAssertFalse(undo.canUndo,
+                       "Unlocking must drop the undo stack — the transition is detected by comparing the OLD lock value before it is overwritten.")
+    }
+
+    /// A single render can carry both a new draft and a new recipient. Neither
+    /// write may swallow the other.
+    func testUpdateNSView_textAndPlaceholderBothChanged_bothLand() {
+        let textBinding = MutableBoxBinding(initial: "")
+        let focusBinding = MutableBoxBinding(initial: false)
+        let coordinator = EditableMessageTextView.Coordinator()
+        let scrollView = makeRepresentable(
+            text: textBinding.binding, isFocused: focusBinding.binding,
+            placeholder: "No active recipient — accept, restart a role, or request changes."
+        ).testHooks_makeNSView(coordinator: coordinator)
+        guard let textView = scrollView.documentView as? EditableNSTextView else {
+            return XCTFail("documentView must be an EditableNSTextView")
+        }
+        textBinding.binding.wrappedValue = "restored draft"
+
+        makeRepresentable(
+            text: textBinding.binding, isFocused: focusBinding.binding,
+            placeholder: "Queue a message for Marketolog…"
+        ).testHooks_updateNSView(scrollView, coordinator: coordinator)
+
+        XCTAssertEqual(textView.string, "restored draft")
+        XCTAssertEqual(textView.placeholderText, "Queue a message for Marketolog…")
+    }
+
     // MARK: - NSScrollView wiring (native cursor-following preconditions)
+
+    /// `wire(...)` applies the initial placeholder before the text view joins the
+    /// hierarchy, so its `didSet` invalidation is a no-op there — the first paint
+    /// after insertion covers it. Pinned so the initial value can't silently stop
+    /// being applied (which would leave a blank hint until the first change).
+    func testMakeNSView_appliesInitialPlaceholder() {
+        let textBinding = MutableBoxBinding(initial: "")
+        let focusBinding = MutableBoxBinding(initial: false)
+        let view = EditableMessageTextView(
+            text: textBinding.binding,
+            isFocused: focusBinding.binding,
+            placeholder: "Queue a message for Marketolog…",
+            maxHeight: 220,
+            minLineCount: 1,
+            autofocusOnAppear: false,
+            onReturnKey: { _, _ in false }
+        )
+        let scrollView = view.testHooks_makeNSView(coordinator: view.makeCoordinator())
+
+        XCTAssertEqual((scrollView.documentView as? EditableNSTextView)?.placeholderText,
+                       "Queue a message for Marketolog…")
+    }
 
     /// Native cursor-following depends on three structural guarantees:
     /// (1) NSTextView is `isVerticallyResizable` so it can grow beyond
@@ -618,6 +944,26 @@ final class EditableMessageTextViewTests: XCTestCase {
         let view = EditableNSTextView(frame: NSRect(x: 0, y: 0, width: 200, height: 80), textContainer: container)
         view.isEditable = true
         return view
+    }
+
+    /// Builds the representable with the fields these tests never vary, so a
+    /// corner test reads as the one thing it changes.
+    private func makeRepresentable(
+        text: Binding<String>,
+        isFocused: Binding<Bool>,
+        placeholder: String,
+        isInputLocked: Bool = false
+    ) -> EditableMessageTextView {
+        EditableMessageTextView(
+            text: text,
+            isFocused: isFocused,
+            placeholder: placeholder,
+            maxHeight: 220,
+            minLineCount: 1,
+            autofocusOnAppear: false,
+            onReturnKey: { _, _ in false },
+            isInputLocked: isInputLocked
+        )
     }
 
     private func makeHeadlessWindow(contentView: NSView) -> NSWindow {

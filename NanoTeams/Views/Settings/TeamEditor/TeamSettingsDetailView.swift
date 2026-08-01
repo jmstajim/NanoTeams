@@ -14,6 +14,25 @@ struct TeamSettingsDetailView: View {
     @State private var supervisorCanBeInvited: Bool = false
     @State private var limits: TeamLimits = .default
 
+    /// Name and description are edited through local drafts and committed on
+    /// submit / focus loss, matching what every OTHER field in this view
+    /// already does.
+    ///
+    /// They used to bind straight to `$team.name` / `$team.description`. That
+    /// Binding is `TeamEditorView.binding(for:)`, whose setter spawns
+    /// `Task { await store.mutateWorkFolder … }` — so every KEYSTROKE queued a
+    /// full `teams.json` write, each one carrying the same captured pre-edit
+    /// snapshot (the same stale-getter hazard documented on
+    /// `ArtifactEditorMutations` / `RoleEditorMutations`).
+    @State private var draftName: String = ""
+    @State private var draftDescription: String = ""
+    @FocusState private var focusedField: Field?
+
+    private enum Field: Hashable {
+        case name
+        case description
+    }
+
     var body: some View {
         ScrollView {
             VStack(spacing: Spacing.xl) {
@@ -44,8 +63,20 @@ struct TeamSettingsDetailView: View {
         .onChange(of: team.id) { _, _ in
             loadSettings()
         }
-        .onChange(of: team.name) { _, _ in onSave() }
-        .onChange(of: team.description) { _, _ in onSave() }
+        // Commit the draft whichever field the user just LEFT — the blur half of
+        // the submit/blur pair. `onSubmit` covers Return in the name field;
+        // `TextEditor` has no submit, so blur is its only commit point.
+        .onChange(of: focusedField) { previous, _ in
+            switch previous {
+            case .name: commitName()
+            case .description: commitDescription()
+            case nil: break
+            }
+        }
+        .onDisappear {
+            commitName()
+            commitDescription()
+        }
         .onChange(of: acceptanceMode) { _, newValue in
             team.settings.defaultAcceptanceMode = newValue
             onSave()
@@ -73,18 +104,21 @@ struct TeamSettingsDetailView: View {
     private var generalSection: some View {
         SettingsCard(header: "General", systemImage: "info.circle") {
             VStack(alignment: .leading, spacing: Spacing.m) {
-                TextField("Team Name", text: $team.name)
+                TextField("Team Name", text: $draftName)
                     .textFieldStyle(.plain)
                     .terminalField()
+                    .focused($focusedField, equals: .name)
+                    .onSubmit { commitName() }
 
                 VStack(alignment: .leading, spacing: Spacing.xs) {
                     Text("Description")
                         .font(Typography.subheadline)
                         .foregroundStyle(Colors.textSecondary)
-                    TextEditor(text: $team.description)
+                    TextEditor(text: $draftDescription)
                         .font(Typography.termBase)
                         .frame(minHeight: 60, maxHeight: 120)
                         .borderedTextEditorStyle()
+                        .focused($focusedField, equals: .description)
                 }
             }
         }
@@ -173,6 +207,37 @@ struct TeamSettingsDetailView: View {
         supervisorMode = team.settings.supervisorMode
         supervisorCanBeInvited = team.settings.supervisorCanBeInvited
         limits = team.settings.limits
+        draftName = team.name
+        draftDescription = team.description
+    }
+
+    /// Single Binding write, and only when the value actually changed — a
+    /// no-op commit would still queue a `teams.json` write on every focus
+    /// change. Routed through `Team.rename(to:)` so `team.updatedAt` bumps and
+    /// `Team.==`'s id+timestamp shortcut doesn't suppress observers.
+    private func commitName() {
+        let trimmed = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+        // An empty team name is not a rename the user meant — restore rather
+        // than persist a nameless team into the picker.
+        guard !trimmed.isEmpty else {
+            draftName = team.name
+            return
+        }
+        guard trimmed != team.name else { return }
+        var newTeam = team
+        newTeam.rename(to: trimmed)
+        team = newTeam
+        draftName = trimmed
+        onSave()
+    }
+
+    private func commitDescription() {
+        guard draftDescription != team.description else { return }
+        var newTeam = team
+        newTeam.description = draftDescription
+        newTeam.updatedAt = MonotonicClock.shared.now()
+        team = newTeam
+        onSave()
     }
 }
 

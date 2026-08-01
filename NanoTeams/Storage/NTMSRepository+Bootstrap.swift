@@ -26,7 +26,6 @@ nonisolated extension NTMSRepository {
         let state: WorkFolderState = try loadOrRecoverFile(
             at: paths.workFolderJSON,
             default: WorkFolderState(
-                schemaVersion: 6,
                 id: UUID(),
                 name: workFolderRoot.lastPathComponent
             )
@@ -121,16 +120,22 @@ nonisolated extension NTMSRepository {
     ///    unconditional `producesArtifacts`) as a narrow safety net.
     /// 3. If `AppVersion.current > state.lastAppliedAppVersion`, run the
     ///    full reconcile via `applyBundledContentUpdates` (roles / prompt templates
-    ///    / settings / team structure / tools). Teams with running roles are deferred.
-    /// 4. Update `state.lastAppliedAppVersion` only when no teams were deferred.
+    ///    / settings / team structure / tools). Teams with a live tool loop are
+    ///    deferred and recorded in `state.pendingReconcileTeamIDs`.
+    /// 4. If nothing bumped but the pending set is non-empty, run a pass SCOPED to
+    ///    those teams — the retry is independent of the version compare.
+    /// 5. `state.lastAppliedAppVersion` always advances. Holding it back for a
+    ///    deferral (the old behaviour) re-ran the FULL reconcile on every launch,
+    ///    re-clobbering every other team's stored prompts each time.
     @discardableResult
     func migrateIfNeeded(
         teamsFile: inout TeamsFile,
         state: inout WorkFolderState,
+        tasksIndex: TasksIndex,
         paths: NTMSPaths
-    ) throws -> [NTMSID] {
+    ) throws -> BundledUpdateReport {
         var teamsNeedsWrite = false
-        var deferredTeamIDs: [NTMSID] = []
+        var report = BundledUpdateReport()
 
         // 1. Append bundled templates the user hasn't tombstoned.
         let existingTemplateIDs = Set(teamsFile.teams.compactMap(\.templateID))
@@ -178,24 +183,48 @@ nonisolated extension NTMSRepository {
         //    system artifacts, and re-syncs built-in tools.
         let currentAppVersion = AppVersion.current
         var stateNeedsWrite = false
-        if AppVersion.shouldReconcile(from: state.lastAppliedAppVersion, to: currentAppVersion) {
+        let versionBumped = AppVersion.shouldReconcile(
+            from: state.lastAppliedAppVersion, to: currentAppVersion
+        )
+        // Prune ids for teams that no longer exist. Without this a deferred team
+        // the user later deletes keeps the retry gate open forever, re-running a
+        // scoped pass that matches nothing.
+        let liveTeamIDs = Set(teamsFile.teams.map(\.id))
+        let pending = Set(state.pendingReconcileTeamIDs).intersection(liveTeamIDs)
+
+        if versionBumped || !pending.isEmpty {
             var tools = try loadToolDefinitions(paths: paths)
             let result = applyBundledContentUpdates(
                 teams: &teamsFile.teams,
                 tools: &tools,
+                tasksIndex: tasksIndex,
+                activeTeamID: state.activeTeamID,
+                // A version bump re-applies everything; a pure retry touches only
+                // the teams that still owe a pass, so it can't re-clobber a team
+                // that already reconciled (and whose prompts the user may have
+                // edited since).
+                scope: versionBumped ? .allTemplated : .only(pending),
                 paths: paths
             )
             if result.touched { teamsNeedsWrite = true }
             if result.toolsTouched { try store.write(tools, to: paths.toolsJSON) }
-            if result.deferred.isEmpty {
-                // All teams reconciled — safe to record the new watermark.
-                state.lastAppliedAppVersion = currentAppVersion
-                state.updatedAt = MonotonicClock.shared.now()
-                stateNeedsWrite = true
-            } else {
-                deferredTeamIDs = result.deferred
-            }
-            // Otherwise leave `lastAppliedAppVersion` unchanged; next open retries.
+
+            // The watermark ALWAYS advances. Outstanding work is carried in the
+            // pending set, which the gate above retries independently of the
+            // version compare — so one permanently-busy team can no longer force
+            // a full reconcile (and a fresh clobber of every other team's stored
+            // prompts) on every single launch.
+            state.lastAppliedAppVersion = currentAppVersion
+            state.pendingReconcileTeamIDs = result.deferredTeamIDs
+            state.updatedAt = MonotonicClock.shared.now()
+            stateNeedsWrite = true
+            report = result.report
+        } else if state.pendingReconcileTeamIDs.count != pending.count {
+            // Nothing to reconcile, but the stored set named a deleted team —
+            // persist the pruned version so the gate settles.
+            state.pendingReconcileTeamIDs = state.pendingReconcileTeamIDs.filter { pending.contains($0) }
+            state.updatedAt = MonotonicClock.shared.now()
+            stateNeedsWrite = true
         }
 
         if teamsNeedsWrite {
@@ -205,7 +234,7 @@ nonisolated extension NTMSRepository {
             try store.write(state, to: paths.workFolderJSON)
         }
 
-        return deferredTeamIDs
+        return report
     }
 
     func bootstrapIfNeeded(paths: NTMSPaths, workFolderRoot: URL) throws {
@@ -234,7 +263,6 @@ nonisolated extension NTMSRepository {
         sweepOrphanTempFiles(under: paths.internalDir)
 
         let stateDefault = WorkFolderState(
-            schemaVersion: 6,
             id: UUID(),
             name: workFolderRoot.lastPathComponent
         )

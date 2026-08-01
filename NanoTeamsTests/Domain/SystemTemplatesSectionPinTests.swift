@@ -274,6 +274,44 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
         }
     }
 
+    // MARK: - Role skills scope
+
+    /// Role-attached agent skills ride the STEP prompt only — the user's scope
+    /// decision. Every step template carries the chip so the section's position
+    /// is the author's call; no consultation / meeting template does, so a
+    /// role's skills never leak into an `ask_teammate` answer or a meeting turn.
+    func testRoleSkillsChip_isInEveryStepTemplateAndNoCollaborationTemplate() {
+        let stepTemplates: [(String, String)] = [
+            ("softwareTemplate", SystemTemplates.softwareTemplate),
+            ("questPartyTemplate", SystemTemplates.questPartyTemplate),
+            ("discussionTemplate", SystemTemplates.discussionTemplate),
+            ("assistantTemplate", SystemTemplates.assistantTemplate),
+            ("codingAssistantTemplate", SystemTemplates.codingAssistantTemplate),
+            ("genericTemplate", SystemTemplates.genericTemplate),
+            ("autovisorTemplate", SystemTemplates.autovisorTemplate),
+        ]
+        let collaborationTemplates: [(String, String)] = [
+            ("softwareConsultationTemplate", SystemTemplates.softwareConsultationTemplate),
+            ("softwareMeetingTemplate", SystemTemplates.softwareMeetingTemplate),
+            ("questPartyConsultationTemplate", SystemTemplates.questPartyConsultationTemplate),
+            ("questPartyMeetingTemplate", SystemTemplates.questPartyMeetingTemplate),
+            ("discussionConsultationTemplate", SystemTemplates.discussionConsultationTemplate),
+            ("discussionMeetingTemplate", SystemTemplates.discussionMeetingTemplate),
+            ("genericConsultationTemplate", SystemTemplates.genericConsultationTemplate),
+            ("genericMeetingTemplate", SystemTemplates.genericMeetingTemplate),
+        ]
+
+        for (name, template) in stepTemplates {
+            XCTAssertTrue(template.contains("{roleSkills}"), "[\(name)] must carry the chip")
+            XCTAssertTrue(template.contains("## Skills"),
+                          "[\(name)] chip resolves to a bare body — the header lives in the template")
+        }
+        for (name, template) in collaborationTemplates {
+            XCTAssertFalse(template.contains("{roleSkills}"),
+                           "[\(name)] skills are step-execution-only")
+        }
+    }
+
     // MARK: - Section order in opening 20% (Xiao2023 attention sinks / G4)
 
     /// `## Role` → `## Team` (where present) → `## Conversation mechanics`

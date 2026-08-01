@@ -63,6 +63,53 @@ final class SearchToolPlainParityTests: XCTestCase {
         return dict
     }
 
+    // MARK: - Paging cursor
+
+    /// The description tells the model to repeat the call with `offset: next_offset`. That is
+    /// only sound if the field is actually there whenever another page is promised — and if it
+    /// really is where the next page starts.
+    private func searchData(_ args: [String: Any]) throws -> [String: Any] {
+        let result = makeTool().handle(context: ctx(), args: args)
+        XCTAssertFalse(result.isError, result.outputJSON)
+        let dict = try parse(result.outputJSON)
+        return try XCTUnwrap(dict["data"] as? [String: Any])
+    }
+
+    func testPaging_nextOffsetAccompaniesHasMore() throws {
+        for i in 0..<9 { try write("f\(i).swift", content: "NEEDLE\n") }
+
+        let page = try searchData(["query": "NEEDLE", "max_results": 4])
+        XCTAssertEqual(page["has_more"] as? Bool, true)
+        XCTAssertEqual(page["count"] as? Int, 4)
+        XCTAssertEqual(page["next_offset"] as? Int, 4, "0 + 4")
+    }
+
+    /// No further page, no cursor — a cursor there would invite one more empty round trip.
+    func testPaging_nextOffsetAbsentOnTheLastPage() throws {
+        for i in 0..<3 { try write("f\(i).swift", content: "NEEDLE\n") }
+
+        let page = try searchData(["query": "NEEDLE", "max_results": 50])
+        XCTAssertNil(page["has_more"])
+        XCTAssertNil(page["next_offset"])
+    }
+
+    /// Following the cursor verbatim must partition the result set — no repeats, no gaps.
+    func testPaging_followingTheCursorVisitsEveryMatchOnce() throws {
+        for i in 0..<9 { try write("f\(i).swift", content: "NEEDLE\n") }
+
+        var seen: [String] = []
+        var args: [String: Any] = ["query": "NEEDLE", "max_results": 4]
+        for _ in 0..<10 {
+            let page = try searchData(args)
+            let matches = try XCTUnwrap(page["matches"] as? [[String: Any]])
+            seen += matches.compactMap { $0["path"] as? String }
+            guard page["has_more"] as? Bool == true else { break }
+            args["offset"] = try XCTUnwrap(page["next_offset"] as? Int)
+        }
+        XCTAssertEqual(seen.count, 9)
+        XCTAssertEqual(Set(seen).count, 9, "no duplicates across pages: \(seen)")
+    }
+
     // MARK: - Envelope shape
 
     func testPlain_envelopeHasOkDataMetaKeys() throws {

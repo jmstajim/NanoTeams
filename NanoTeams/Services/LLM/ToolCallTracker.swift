@@ -86,15 +86,7 @@ nonisolated final class ToolCallTracker: @unchecked Sendable {
         }
     }
 
-    // MARK: - Snapshots for loop detector / contextualizer
-
-    /// Returns an immutable copy of all tracked calls for consumers that need the
-    /// full history (`ToolCallContextualizer.generateSummary` / `generateStateContext`).
-    /// Swift `Array` is a value type with copy-on-write, so this is O(1) until the
-    /// caller mutates — and callers never do; they iterate / map / filter.
-    func snapshot() -> [TrackedCall] {
-        calls
-    }
+    // MARK: - Snapshots for loop detector
 
     /// Returns the most recent `limit` tracked calls. Used by `ToolCallLoopDetector`
     /// to spot 6-in-a-row patterns. (It also fed a first-iteration gate in the

@@ -137,6 +137,15 @@ enum FirstPromptRenderer {
             ? nil
             : AgentInstructionsScanner.scan(workFolderRoot: workfolderURL, fileManager: fileManager)
 
+        // 5c. Resolve the role's attached agent skills the same way production
+        //     does at run start (`NTMSOrchestrator.refreshAgentSkills`). NOT
+        //     gated on default storage: global and plugin skills live under the
+        //     home directory and resolve with no work folder open — the one place
+        //     this deliberately differs from instruction files above.
+        let attachedSkills = Self.resolveAttachedSkills(
+            role: roleDefinition,
+            projectRoot: isDefaultStorage ? nil : workfolderURL)
+
         // 6. Build chat messages via the production PromptBuilder. No artifacts
         //    exist on first call, so artifactReader returns nil for everything.
         let promptContext = PromptBuilder.Context(
@@ -149,7 +158,8 @@ enum FirstPromptRenderer {
             activeTeam: team,
             roleDefinition: roleDefinition,
             globalContext: config.resolvedGlobalContext,
-            agentInstructions: agentInstructions
+            agentInstructions: agentInstructions,
+            attachedSkills: attachedSkills
         )
         let messages = PromptBuilder.buildChatMessages(context: promptContext, tools: toolSchemas)
 
@@ -314,5 +324,30 @@ enum FirstPromptRenderer {
                 tools_total_chars: toolsAudit.reduce(0) { $0 + $1.chars }
             )
         )
+    }
+
+    /// Offline equivalent of `NTMSOrchestrator.refreshAgentSkills` + the
+    /// per-role resolution `LLMExecutionService.buildChatMessages` performs:
+    /// scan the catalogue, then read the bodies of exactly this role's ids, in
+    /// this role's order. Unreadable / unknown ids are skipped, matching
+    /// `RoleSkillsSnapshot.resolve` — the renderer must show what the wire will
+    /// actually carry, not what was configured.
+    private static func resolveAttachedSkills(
+        role: TeamRoleDefinition?,
+        projectRoot: URL?
+    ) -> [ResolvedRoleSkill] {
+        guard let role, !role.attachedSkillIDs.isEmpty else { return [] }
+        let catalogue = AgentSkillsScanner.scan(projectRoot: projectRoot)
+        let byID = Dictionary(catalogue.items.map { ($0.id, $0) },
+                              uniquingKeysWith: { first, _ in first })
+        var seen: Set<String> = []
+        return role.attachedSkillIDs.compactMap { id in
+            guard seen.insert(id).inserted,
+                  let item = byID[id],
+                  let body = AgentSkillsScanner.readFullContent(at: item.fileURL),
+                  !body.isEmpty
+            else { return nil }
+            return ResolvedRoleSkill(id: id, name: item.name, body: body)
+        }
     }
 }

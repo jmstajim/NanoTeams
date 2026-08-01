@@ -13,8 +13,6 @@ struct ExploratorySearchStatusIndicator: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(NTMSOrchestrator.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @AppStorage(UserDefaultsKeys.selectedSettingsTab)
-    private var selectedSettingsTab: SettingsView.SettingsTab = .llm
 
     private var isBuilding: Bool {
         guard let coordinator = store.searchIndexCoordinator else { return false }
@@ -35,8 +33,7 @@ struct ExploratorySearchStatusIndicator: View {
 
     private var pill: some View {
         Button {
-            selectedSettingsTab = .exploratorySearch
-            openWindow(id: "settings")
+            SettingsNavigation.open(tab: .exploratorySearch, using: openWindow)
         } label: {
             HStack(spacing: Spacing.xs) {
                 NTMSLoader(font: Typography.term2xs, color: Colors.accent)
@@ -63,14 +60,11 @@ struct ExploratorySearchStatusIndicator: View {
 struct LLMStatusIndicator: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(LLMStatusMonitor.self) private var monitor
-    @AppStorage(UserDefaultsKeys.selectedSettingsTab)
-    private var selectedSettingsTab: SettingsView.SettingsTab = .llm
 
     var body: some View {
         let isReachable = monitor.isReachable
         Button {
-            selectedSettingsTab = .llm
-            openWindow(id: "settings")
+            SettingsNavigation.open(tab: .llm, using: openWindow)
         } label: {
             HStack(spacing: Spacing.xs) {
                 Text("●")

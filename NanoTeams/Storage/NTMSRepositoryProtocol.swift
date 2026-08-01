@@ -59,10 +59,6 @@ nonisolated protocol ToolRepository: Sendable {
 }
 
 /// Step artifact file persistence.
-///
-/// Note: `persistBuildDiagnosticsPersisted` is intentionally NOT part of this
-/// protocol — it has no production consumers through the protocol surface and
-/// remains only as a concrete `NTMSRepository` method for direct use (e.g. tests).
 nonisolated protocol ArtifactRepository: Sendable {
     func persistStepArtifactFile(at workFolderRoot: URL, taskID: Int, runID: Int, roleID: String, artifactName: String, content: String) throws -> String
     func persistStepArtifactBinary(at workFolderRoot: URL, taskID: Int, runID: Int, roleID: String, artifactName: String, data: Data, fileExtension: String) throws -> String

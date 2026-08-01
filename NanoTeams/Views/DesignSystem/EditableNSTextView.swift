@@ -8,7 +8,33 @@ import AppKit
 /// is nil, which breaks both placeholder drawing and height measurement.
 final class EditableNSTextView: NSTextView {
 
-    var placeholderText: String?
+    /// Hint string painted by `draw(_:)` while the field is empty.
+    ///
+    /// The `didSet` is load-bearing. `EditableMessageTextView.updateNSView`
+    /// re-assigns this on every SwiftUI render, but when ONLY the placeholder
+    /// changed nothing else marks the view dirty: the Coordinator's `applyText`
+    /// early-returns on unchanged text, and the field is empty in exactly the
+    /// state where the placeholder is the only thing on screen. Without it the
+    /// pixels stay frozen on the OLD string until something unrelated repaints
+    /// (click-to-focus, window resize) — which left `TeamActivityComposer`'s
+    /// "No active recipient…" painted over a composer that had already gone live,
+    /// and froze `QuickCaptureFormView`'s queued-message hint the same way.
+    ///
+    /// The `!= oldValue` guard is load-bearing in the other direction:
+    /// `updateNSView` runs on EVERY parent re-render (many per second while an
+    /// LLM streams into the feed above the composer), so an unconditional
+    /// `needsDisplay = true` would repaint this NSScrollView-backed
+    /// representable per frame — the exact cost CLAUDE.md #50 is about.
+    ///
+    /// Do NOT add `shouldDrawPlaceholder()` to the guard: it reads the NEW
+    /// value, so clearing the placeholder while the field is empty would skip
+    /// the repaint and leave the old string on screen.
+    var placeholderText: String? {
+        didSet {
+            guard placeholderText != oldValue else { return }
+            invalidatePlaceholderDisplay()
+        }
+    }
 
     /// When true, user-originated edits (keystrokes, paste, delete, smart
     /// substitutions) are refused via `shouldChangeText(in:replacementString:)`
@@ -37,6 +63,15 @@ final class EditableNSTextView: NSTextView {
     /// Test hook: latest placeholder-draw decision. Lets tests assert
     /// the decision matrix without an active `NSGraphicsContext`.
     private(set) var _didDrawPlaceholderForTesting: Bool = false
+
+    /// Test hook: number of placeholder-driven display invalidations (see
+    /// `invalidatePlaceholderDisplay`). `NSView.needsDisplay` is NOT assertable
+    /// here — it never latches on a view with no window, and a freshly hosted
+    /// view already reads `true` before anything sets it, so both naive test
+    /// shapes stay green regardless of the fix. This counter is the only
+    /// deterministic evidence the repaint was requested. Pins both edges: a
+    /// CHANGED placeholder invalidates, a re-assigned identical one does not.
+    private(set) var _placeholderInvalidationCountForTesting: Int = 0
     #endif
 
     override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
@@ -94,6 +129,17 @@ final class EditableNSTextView: NSTextView {
     }
 
     // MARK: - Placeholder
+
+    /// Single funnel for placeholder-driven repaints. `needsDisplay = true` and
+    /// the debug counter must stay in ONE body — the counter is the tests' only
+    /// proxy for the invalidation, so splitting them would let a regression drop
+    /// the repaint while the test still passes.
+    private func invalidatePlaceholderDisplay() {
+        needsDisplay = true
+        #if DEBUG
+        _placeholderInvalidationCountForTesting &+= 1
+        #endif
+    }
 
     /// True when the empty / placeholder-present preconditions are met.
     /// Extracted so tests exercise the decision without a live drawing

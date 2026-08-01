@@ -299,12 +299,12 @@ final class AtomicJSONStoreTests: XCTestCase, @unchecked Sendable {
         let loaded = try store.read(WorkFolderState.self, from: testURL)
         XCTAssertEqual(loaded.name, state.name)
         XCTAssertEqual(loaded.activeTaskID, state.activeTaskID)
-        XCTAssertEqual(loaded.schemaVersion, 7)
+        XCTAssertEqual(loaded.schemaVersion, 8)
     }
 
     /// F9 / CLAUDE.md #48: a legacy v6 file (written before the Autovisor
     /// existed, so no `autovisorTaskID`) decodes cleanly AND bumps its in-memory
-    /// `schemaVersion` to the current 7 — so a re-encode doesn't persist the stale
+    /// `schemaVersion` to the current 8 — so a re-encode doesn't persist the stale
     /// version and re-fire the legacy branch forever.
     func testWorkFolderState_legacyV6Decode_defaultsManagerID_andBumpsVersion() throws {
         let json = #"{"schemaVersion":6,"name":"Old","activeTaskID":3}"#
@@ -312,7 +312,35 @@ final class AtomicJSONStoreTests: XCTestCase, @unchecked Sendable {
             .decode(WorkFolderState.self, from: Data(json.utf8))
         XCTAssertNil(state.autovisorTaskID, "missing key decodes to nil, not a crash")
         XCTAssertEqual(state.activeTaskID, 3)
-        XCTAssertEqual(state.schemaVersion, 7, "legacy decode bumps schemaVersion in-memory")
+        XCTAssertEqual(state.schemaVersion, 8, "legacy decode bumps schemaVersion in-memory")
+    }
+
+    /// A v7 file predates `pendingReconcileTeamIDs`. It must decode to an empty
+    /// set — NOT to something that looks like outstanding reconcile work, which
+    /// would make the retry gate fire on every open for a folder that owes
+    /// nothing.
+    func testWorkFolderState_legacyV7Decode_defaultsPendingReconcileToEmpty() throws {
+        let json = #"{"schemaVersion":7,"name":"Old","lastAppliedAppVersion":"1.8.0"}"#
+        let state = try JSONCoderFactory.makeDateDecoder()
+            .decode(WorkFolderState.self, from: Data(json.utf8))
+
+        XCTAssertEqual(state.pendingReconcileTeamIDs, [])
+        XCTAssertEqual(state.lastAppliedAppVersion, "1.8.0", "the watermark must survive")
+        XCTAssertEqual(state.schemaVersion, 8)
+    }
+
+    /// The new field must round-trip, or a deferral recorded on one launch is
+    /// silently forgotten by the next — reintroducing the permanent freeze from
+    /// the other direction.
+    func testWorkFolderState_pendingReconcileTeamIDs_roundTrip() throws {
+        let testURL = tempDir.appendingPathComponent("pending.json")
+        let store = AtomicJSONStore()
+        var state = WorkFolderState(name: "Proj")
+        state.pendingReconcileTeamIDs = ["team_a", "team_b"]
+        try store.write(state, to: testURL)
+
+        let loaded = try store.read(WorkFolderState.self, from: testURL)
+        XCTAssertEqual(loaded.pendingReconcileTeamIDs, ["team_a", "team_b"])
     }
 
     func testWriteAndReadProjectSettings() throws {

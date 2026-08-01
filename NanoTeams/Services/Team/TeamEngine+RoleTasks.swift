@@ -224,7 +224,8 @@ extension TeamEngine {
                 return
             case .failed:
                 // TODO: When per-role error strategies are added to TeamSettings,
-                // consult ErrorRecoveryService here. If strategy == .skip, use .skipped.
+                // branch here — a role configured to skip on failure should land
+                // on `.skipped` rather than `.failed`.
                 await store.updateRoleStatus(roleID: roleID, status: .failed)
                 onRoleStatusChanged?(roleID, .failed)
                 return

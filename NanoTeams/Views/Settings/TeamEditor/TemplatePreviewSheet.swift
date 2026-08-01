@@ -105,6 +105,9 @@ struct TemplatePreviewSheet: View {
             // startRun, so a preview rendered from a stale snapshot would be
             // byte-identical to the PREVIOUS wire, not the upcoming one.
             await store.refreshAgentInstructions()
+            // Same reason for role-attached skills: their bodies are read at
+            // scan time, so a stale snapshot would preview the previous wire.
+            await store.refreshAgentSkills()
             rendered = renderFromEnv()
         }
     }
@@ -147,7 +150,8 @@ struct TemplatePreviewSheet: View {
             isComputerUseEnabled: config.isComputerUseEnabled,
             globalContext: config.globalContext,
             isCoordinator: previewAsCoordinator,
-            agentInstructions: store.agentInstructions
+            agentInstructions: store.agentInstructions,
+            attachedSkills: store.roleSkills?.resolve(role.attachedSkillIDs) ?? []
         )
         return renderWirePreview(kind: templateType.kind, inputs: inputs)
     }

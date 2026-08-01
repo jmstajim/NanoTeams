@@ -23,9 +23,8 @@ final class NTMSRepositoryProtocolSplitTests: XCTestCase {
 
     // MARK: - ArtifactRepository narrowness (ISP guard)
 
-    /// `ArtifactRepository` exposes `persistStepArtifactFile` and `persistStepArtifactBinary`.
-    /// `persistBuildDiagnosticsPersisted` is intentionally concrete-only
-    /// (no production consumer through the protocol surface).
+    /// `ArtifactRepository` exposes `persistStepArtifactFile` and `persistStepArtifactBinary`
+    /// — and nothing else.
     func testArtifactRepository_exposesArtifactPersistenceMethods() throws {
         let repo: any ArtifactRepository = NTMSRepository()
 
@@ -57,52 +56,6 @@ final class NTMSRepositoryProtocolSplitTests: XCTestCase {
         )
         XCTAssertFalse(binPath.isEmpty)
         XCTAssertTrue(binPath.hasSuffix(".pdf"))
-
-        // `persistBuildDiagnosticsPersisted` is NOT on the protocol — a call via
-        // `any ArtifactRepository` would fail to compile. We intentionally do
-        // not write such a call here; the guard is the protocol definition
-        // plus this compile-time usage anchor.
-    }
-
-    // MARK: - Build diagnostics still accessible on concrete type
-
-    /// `persistBuildDiagnosticsPersisted` must remain callable on the concrete
-    /// `NTMSRepository` — removing it from the protocol must not delete the
-    /// underlying functionality that tests and future consumers depend on.
-    func testNTMSRepository_concrete_stillHasBuildDiagnosticsPersistence() throws {
-        let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ArtifactRepoBuildDiagTest-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: tempDir) }
-        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-
-        let repo = NTMSRepository()
-        let record = BuildIssuePersisted(
-            severity: "error",
-            message: "type mismatch",
-            file: "/tmp/main.swift",
-            line: 7,
-            column: 9,
-            toolchainHint: "swiftc",
-            ruleId: nil,
-            excerpt: "type mismatch"
-        )
-        let diagnostics = BuildDiagnosticsPersisted(
-            schemaVersion: 1,
-            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
-            errorCount: 1,
-            warningCount: 0,
-            issues: [record],
-            excerptsRelativePath: "runs/x/steps/y/build_excerpts.txt"
-        )
-
-        let relativePath = try repo.persistBuildDiagnosticsPersisted(
-            at: tempDir,
-            taskID: 0,
-            runID: 0,
-            roleID: "test_role",
-            diagnostics: diagnostics
-        )
-        XCTAssertFalse(relativePath.isEmpty)
     }
 
     // MARK: - TaskMutationDelegate refinement

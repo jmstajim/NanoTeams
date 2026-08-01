@@ -43,12 +43,22 @@ nonisolated enum TeamValidationService {
         /// this rule because `hasDelegationConfigured` would be false.
         case noDelegationTargets(roleID: String)
 
+        /// A role's `attachedSkillIDs` references an agent skill that the scanner
+        /// cannot find — the `SKILL.md` was deleted or renamed, or it lives in a
+        /// work folder that isn't open. A warning, not an error: the run proceeds
+        /// with that skill simply absent from the system prompt, and the id may
+        /// resolve again once the right folder is opened. Silence would be the
+        /// wrong call though — the user configured a role expecting that text to
+        /// be there.
+        case unknownAttachedSkill(roleID: String, skillID: String)
+
         var isError: Bool {
             switch self {
             case .duplicateProducer, .missingProducer, .circularDependency,
                  .nonTopLevelDelegator, .delegationToSelf:
                 return true
-            case .orphanArtifact, .unknownDelegationTeam, .noDelegationTargets:
+            case .orphanArtifact, .unknownDelegationTeam, .noDelegationTargets,
+                 .unknownAttachedSkill:
                 return false  // Warning, not error
             }
         }
@@ -80,6 +90,8 @@ nonisolated enum TeamValidationService {
                 return "\(roleName(roleID)) is set to delegate to its own team, which isn’t allowed."
             case .noDelegationTargets(let roleID):
                 return "\(roleName(roleID)) is set to delegate but has no valid target team. Pick an existing team or allow generating new teams."
+            case .unknownAttachedSkill(let roleID, let skillID):
+                return "\(roleName(roleID)) has an attached skill that can’t be found (\(skillID)). Its text won’t reach the prompt — detach it in the role’s Skills tab, or open the work folder it lives in."
             }
         }
     }
@@ -140,6 +152,30 @@ nonisolated enum TeamValidationService {
             if issue.isError { errors.append(issue) } else { warnings.append(issue) }
         }
         return ValidationResult(errors: errors, warnings: warnings)
+    }
+
+    // MARK: - Attached Skills
+
+    /// Flags every `attachedSkillIDs` entry that the scanner did not discover.
+    ///
+    /// `knownSkillIDs` is passed in rather than scanned here so this stays a pure
+    /// function: the catalogue is orchestrator state (`NTMSOrchestrator.roleSkills`),
+    /// refreshed off the main actor on a TTL. Passing an EMPTY set means "we have
+    /// no catalogue", which is not the same as "nothing resolves" — callers must
+    /// skip the check rather than flag every attachment, or a folder opened before
+    /// the first scan lands would light up warnings on every skilled role.
+    static func validateAttachedSkills(
+        team: Team,
+        knownSkillIDs: Set<String>
+    ) -> [ValidationError] {
+        guard !knownSkillIDs.isEmpty else { return [] }
+        var issues: [ValidationError] = []
+        for role in team.roles {
+            for skillID in role.attachedSkillIDs where !knownSkillIDs.contains(skillID) {
+                issues.append(.unknownAttachedSkill(roleID: role.id, skillID: skillID))
+            }
+        }
+        return issues
     }
 
     // MARK: - Delegation Policy

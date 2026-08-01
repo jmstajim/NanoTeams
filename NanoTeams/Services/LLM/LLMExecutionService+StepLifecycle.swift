@@ -44,12 +44,17 @@ extension LLMExecutionService {
 
         let client = clientFactory()
         let supervisorMode = resolvedTeam?.settings.supervisorMode ?? .manual
-        let tools = Self.filterForGitAvailability(
-            Self.filterForDefaultStorage(
-                toolSchemas(for: roleForMessage, team: resolvedTeam),
-                isDefaultStorage: isDefaultStorage
-            ),
-            workFolderRoot: workFolderRoot
+        // Enter stage 1 with the DEFINITION resolved on line 36 (an exact
+        // `$0.id ==` hit) instead of round-tripping `roleForMessage` through
+        // `findRole` again — that reverse lookup returns the FIRST role sharing a
+        // `systemRoleID`, so a role duplicated in the team editor would silently
+        // run with its twin's toolset. Falls back to the `Role` path only when no
+        // definition exists, which is exactly where the fallback IDs belong.
+        let stage1 = roleDefinition.map { toolSchemas(forDefinition: $0, team: resolvedTeam) }
+            ?? toolSchemas(for: roleForMessage, team: resolvedTeam)
+        let tools = EffectiveToolset.applyStorageFilters(
+            stage1,
+            storage: isDefaultStorage ? .defaultStorage : .realFolder(root: workFolderRoot)
         )
 
         let paths = NTMSPaths(workFolderRoot: workFolderRoot)
@@ -82,17 +87,26 @@ extension LLMExecutionService {
 
         // Re-entry: continue the conversation this step actually sent instead of
         // re-synthesizing one. `resume` is nil only for a genuinely fresh step.
-        // The two re-entry triggers are mutually exclusive by construction: an
-        // answer outranks a revision comment.
+        // The two re-entry triggers are made mutually exclusive below: an
+        // UNDELIVERED answer outranks a revision comment.
         let resumeConversation = ConversationReplay.resume(from: step)
         // `.legacyConversation` is a documented guaranteed prefix-cache miss ("not byte-identical
         // to what was sent"). Recording WHERE the conversation came from is what lets the
         // detector tell that apart from a genuinely fresh step, which is inherent and never
         // reported — the two are otherwise both "this step's first request".
         executionStates[stepKey]?.replaySource = resumeConversation?.source
-        let hasSupervisorAnswer = step.effectiveSupervisorAnswer != nil
-        let hasRevisionFeedback = step.revisionComment != nil
-            && step.effectiveSupervisorAnswer == nil
+        // `supervisorAnswerPendingDelivery`, NOT the answer itself: `supervisorAnswer` is
+        // a display field that survives until the NEXT park, so keying on it made this a
+        // standing condition — every later re-entry of the same step (an ordinary
+        // pause/resume was enough) re-appended the identical `ask_supervisor` envelope and
+        // the model executed the instruction again. Observed in the wild as a role
+        // submitting its deliverable twice.
+        let hasSupervisorAnswer =
+            step.supervisorAnswerPendingDelivery && step.effectiveSupervisorAnswer != nil
+        // Derived from the branch above rather than re-testing the answer, so a DELIVERED
+        // answer no longer outranks a fresh revision: "Request Changes" on a step that had
+        // ever been answered used to replay the stale answer instead of the feedback.
+        let hasRevisionFeedback = step.revisionComment != nil && !hasSupervisorAnswer
 
         let taskHandle = Task { [weak self] in
             guard let self else { return }
@@ -163,6 +177,12 @@ extension LLMExecutionService {
                     // duplicate append here. (Auto-answer path appends from
                     // `handleAutoSupervisorAnswer` within the same iteration
                     // and doesn't re-enter through here.)
+                    //
+                    // ONE-SHOT. `persistWireTranscript` clears
+                    // `supervisorAnswerPendingDelivery` in the same mutation that stores
+                    // the transcript containing this envelope, so the next re-entry of
+                    // this step takes the plain-replay branch below instead of appending
+                    // the answer a second time.
                     let answer = step.effectiveSupervisorAnswer ?? ""
                     let answerJSON = self.buildCollaborationToolResult(
                         toolName: ToolNames.askSupervisor,

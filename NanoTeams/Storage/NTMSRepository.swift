@@ -40,13 +40,22 @@ nonisolated struct NTMSRepository: WorkFolderRepository, TaskRepository, ToolRep
         let paths = try preparePaths(at: workFolderRoot)
 
         var (state, settings, teamsFile) = try loadOrRecoverFiles(paths: paths, workFolderRoot: workFolderRoot)
-        let deferredReconcile = try migrateIfNeeded(teamsFile: &teamsFile, state: &state, paths: paths)
 
-        let toolDefinitions = try loadToolDefinitions(paths: paths)
+        // Loaded BEFORE `migrateIfNeeded` on purpose: the reconcile's running-role
+        // scan needs the index, and `loadOrRecoverFile` backs up + resets a corrupt
+        // one. Reading it inside the scan instead (as it used to) meant a corrupt
+        // index fail-closed the entire pass for one whole open, even though this
+        // very open was about to recover it a few lines later.
         var tasksIndex: TasksIndex = try loadOrRecoverFile(
             at: paths.tasksIndexJSON,
             default: TasksIndex()
         )
+
+        let bundledUpdate = try migrateIfNeeded(
+            teamsFile: &teamsFile, state: &state, tasksIndex: tasksIndex, paths: paths
+        )
+
+        let toolDefinitions = try loadToolDefinitions(paths: paths)
 
         var activeTask: NTMSTask?
         if let activeID = state.activeTaskID {
@@ -83,7 +92,7 @@ nonisolated struct NTMSRepository: WorkFolderRepository, TaskRepository, ToolRep
             toolDefinitions: toolDefinitions,
             activeTaskID: state.activeTaskID,
             activeTask: activeTask,
-            deferredReconcileTeamIDs: deferredReconcile
+            bundledUpdate: bundledUpdate
         )
     }
 

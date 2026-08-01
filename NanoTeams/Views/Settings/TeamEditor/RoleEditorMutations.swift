@@ -57,6 +57,9 @@ nonisolated enum RoleEditorMutations {
             updated.llmOverride = nil
             updated.allowedDelegationTeamIDs = []
             updated.allowDelegationToGeneratedTeams = false
+            // The Supervisor is the user, not an LLM — it has no system prompt
+            // for skills to ride, so the field is cleared rather than round-tripped.
+            updated.attachedSkillIDs = []
         } else {
             updated.dependencies = dependencies
             updated.prompt = editorState.rolePrompt
@@ -69,6 +72,11 @@ nonisolated enum RoleEditorMutations {
             // configured intent.
             updated.allowedDelegationTeamIDs = Array(editorState.selectedDelegationTeamIDs)
             updated.allowDelegationToGeneratedTeams = editorState.allowDelegationToGeneratedTeams
+            // Persisted VERBATIM — never through a `Set`, unlike the whitelist
+            // above. The order is the order of the `### Skill:` sections in the
+            // system prompt, so re-ordering it on save would change segment-0
+            // bytes and cost a full prefix re-prefill for no reason.
+            updated.attachedSkillIDs = editorState.attachedSkillIDs
         }
 
         // Route role splice through `Team.updateRole(_:)` — it owns the
@@ -118,6 +126,7 @@ nonisolated enum RoleEditorMutations {
             llmOverride: llmOverride,
             allowedDelegationTeamIDs: Array(editorState.selectedDelegationTeamIDs),
             allowDelegationToGeneratedTeams: editorState.allowDelegationToGeneratedTeams,
+            attachedSkillIDs: editorState.attachedSkillIDs,
             isSystemRole: false,
             systemRoleID: nil,
             iconColor: editorState.roleIconColor,

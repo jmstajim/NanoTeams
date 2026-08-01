@@ -58,6 +58,11 @@ struct QuickCaptureFormView: View {
     @Environment(StreamingPreviewManager.self) private var streamingManager
     @Environment(DictationService.self) private var dictation
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Read here and handed to `SettingsNavigation` — an environment action resolves
+    /// during body evaluation of the view that declares it, so it cannot be read from a
+    /// non-view helper. Measured to resolve correctly even though this view is hosted in
+    /// a bare `NSHostingView` outside every Scene (see `SettingsNavigation`).
+    @Environment(\.openWindow) private var openWindow
     @State private var isShowingFilePicker = false
 
     /// Active theme observed directly — the panel hosts its own SwiftUI tree
@@ -367,6 +372,18 @@ struct QuickCaptureFormView: View {
                     }
                 }
             }
+
+            Divider()
+
+            // Management action, below the list behind its own divider — the same
+            // shape and wording as `TeamSelectorView` (Settings → Teams), so the two
+            // team menus in the app read identically. Unlike "Generate Team..." above,
+            // which is an inline selection that keeps the draft, this one navigates away.
+            Button {
+                openTeamEditorForNewTeam()
+            } label: {
+                Label("New Team...", systemImage: "plus")
+            }
         } label: {
             // Match the DS `QuickCapture.jsx` team trigger: bold mono team
             // name in `text` (`Colors.textPrimary`) with the lavender chevron
@@ -406,6 +423,33 @@ struct QuickCaptureFormView: View {
                 }
             }
         }
+    }
+
+    /// Routes the user to Settings → Teams with the New Team sheet already up.
+    ///
+    /// Order is load-bearing:
+    /// 1. **Arm first.** `TeamEditorView` may mount only as a consequence of step 2, so
+    ///    the latch has to be set before the window exists.
+    /// 2. Navigate through the shared `SettingsNavigation` seam — see its doc comment for
+    ///    why `openWindow` alone leaves the window behind the frontmost app.
+    /// 3. Release the team pin so the picker re-resolves onto whatever the user creates
+    ///    (`teamSelectionAfterNewTeamNavigation` explains the generated-team exemption).
+    /// 4. Dismiss the panel LAST, because it is `.floating` with `hidesOnDeactivate =
+    ///    false` — it has to be ordered out after Settings has been ordered in, or it
+    ///    covers the window we just raised.
+    ///
+    /// `dismissPanel()` and not `cancelDraft()`: the latter discards the staged-attachment
+    /// draft directory, and the user is stepping out to create a team, not abandoning the
+    /// task they were composing. The draft lives on `QuickCaptureFormState`, which the
+    /// controller owns, so it survives the panel closing.
+    private func openTeamEditorForNewTeam() {
+        store.requestNewTeamSheet()
+        SettingsNavigation.open(tab: .teams, using: openWindow)
+        formState.selectedTeamID = QuickCaptureFormLogic.teamSelectionAfterNewTeamNavigation(
+            current: formState.selectedTeamID,
+            availableTeams: availableTeams
+        )
+        QuickCaptureController.shared.dismissPanel()
     }
 
     // MARK: - Task Working

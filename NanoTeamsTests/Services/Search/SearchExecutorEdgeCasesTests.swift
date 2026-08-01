@@ -52,7 +52,7 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
                 resolver: resolver,
                 fileManager: fm,
                 queries: ["needle"],
-                fileGlob: GlobMatcher._testUncompilableGlobSentinel,
+                fileGlob: CompiledGlob._testUncompilableGlobSentinel,
                 internalDir: internalDir
             ))
         ) { err in
@@ -65,13 +65,13 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
                 XCTFail("expected SearchExecutorError.invalidFileGlob, got \(err)")
                 return
             }
-            XCTAssertEqual(pattern, GlobMatcher._testUncompilableGlobSentinel)
+            XCTAssertEqual(pattern, CompiledGlob._testUncompilableGlobSentinel)
             // The thrown error's description is what reaches the envelope's
             // `search_error` field — assert the model sees corrective glob
             // vocabulary, not the raw compile detail.
             XCTAssertEqual(
                 searchErr.errorDescription,
-                "file_glob '\(GlobMatcher._testUncompilableGlobSentinel)' is not a valid glob (only * is a wildcard)."
+                "file_glob '\(CompiledGlob._testUncompilableGlobSentinel)' is not a valid glob (only * is a wildcard)."
             )
         }
     }
@@ -286,7 +286,7 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
             try SearchExecutor.run(SearchExecutorInput(
                 workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
                 queries: ["target"],
-                fileGlob: GlobMatcher._testUncompilableGlobSentinel,
+                fileGlob: CompiledGlob._testUncompilableGlobSentinel,
                 internalDir: internalDir
             ))
         ) { err in
@@ -374,7 +374,6 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
             workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
             queries: ["target"],
             maxResults: 20,
-            maxMatchLines: 40,
             internalDir: internalDir
         ))
         XCTAssertEqual(out.matches.count, 1)

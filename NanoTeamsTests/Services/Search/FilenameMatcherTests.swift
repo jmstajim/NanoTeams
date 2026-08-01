@@ -184,7 +184,7 @@ final class FilenameMatcherTests: XCTestCase {
     func testGlob_uncompilablePattern_failsClosed() {
         let matches = FilenameMatcher.match(
             candidates: ["foo.swift", "bar.swift"],
-            queries: [GlobMatcher._testUncompilableGlobSentinel],
+            queries: [CompiledGlob._testUncompilableGlobSentinel],
             limit: 10
         )
         XCTAssertTrue(matches.isEmpty,
@@ -497,7 +497,7 @@ final class FilenameMatcherTests: XCTestCase {
     }
 
     func testGlob_starSpansSlash_matchesAcrossDirectories() {
-        // The anchored `*` in `GlobMatcher` is `.*`, which DOES match `/`.
+        // The anchored `*` in `CompiledGlob` is `.*`, which DOES match `/`.
         // Pin this behavior so a future change to "segment-bounded glob"
         // can't silently regress this contract.
         let matches = FilenameMatcher.match(
@@ -520,17 +520,17 @@ final class FilenameMatcherTests: XCTestCase {
                        "Top-level `Deep.swift` does not match `src/*.swift`")
     }
 
-    // MARK: - GlobMatcher.validate
+    // MARK: - CompiledGlob compilation
 
     func testGlobValidate_compileablePattern_doesNotThrow() {
         // Sanity check the validator doesn't reject ordinary patterns.
-        XCTAssertNoThrow(try GlobMatcher.validate(glob: "*.swift"))
-        XCTAssertNoThrow(try GlobMatcher.validate(glob: "Foo*Bar.txt"))
+        XCTAssertNoThrow(try CompiledGlob(glob: "*.swift", caseInsensitive: false))
+        XCTAssertNoThrow(try CompiledGlob(glob: "Foo*Bar.txt", caseInsensitive: false))
     }
 
     func testGlobValidate_uncompilable_throwsTypedInvalidFileGlob() {
         XCTAssertThrowsError(
-            try GlobMatcher.validate(glob: GlobMatcher._testUncompilableGlobSentinel)
+            _ = try CompiledGlob(glob: CompiledGlob._testUncompilableGlobSentinel, caseInsensitive: false)
         ) { err in
             guard let searchErr = err as? SearchExecutorError,
                   case .invalidFileGlob(let pattern, _) = searchErr
@@ -538,7 +538,7 @@ final class FilenameMatcherTests: XCTestCase {
                 XCTFail("expected SearchExecutorError.invalidFileGlob, got \(err)")
                 return
             }
-            XCTAssertEqual(pattern, GlobMatcher._testUncompilableGlobSentinel)
+            XCTAssertEqual(pattern, CompiledGlob._testUncompilableGlobSentinel)
         }
     }
 

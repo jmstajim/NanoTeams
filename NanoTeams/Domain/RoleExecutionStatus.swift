@@ -70,21 +70,3 @@ nonisolated enum RoleExecutionStatus: String, Codable, Hashable, CaseIterable {
     var canStart: Bool { Self.metadata[self]?.canStart ?? false }
     var canRestart: Bool { Self.metadata[self]?.canRestart ?? false }
 }
-
-// MARK: - Connection Status
-
-/// Status of artifact connection between roles
-nonisolated enum ConnectionStatus: String, Codable, Hashable {
-    /// Waiting for artifact to be produced
-    case waiting
-
-    /// Artifact has been produced and is available
-    case satisfied
-
-    /// Artifact is unavailable (producer failed or skipped)
-    case error
-
-    var isDashed: Bool {
-        self != .satisfied
-    }
-}

@@ -5,9 +5,15 @@ import SwiftUI
 /// Sheet for creating/editing team artifacts.
 struct ArtifactEditorSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(NTMSOrchestrator.self) private var store
     @Binding var team: Team
     let mode: EditorMode<TeamArtifact>
-    let onSave: () -> Void
+    /// Carries the stored artifact so callers never have to diff the `team`
+    /// Binding to discover what changed. `RoleEditorDependenciesTab` used to do
+    /// exactly that, and it could not work: `onSave` runs in the same
+    /// synchronous turn as the Binding write, whose setter is async, so the
+    /// diff always came back empty and the auto-assign never fired.
+    let onSave: (TeamArtifact) -> Void
 
     @State private var artifactName: String = ""
     @State private var artifactDescription: String = ""
@@ -56,8 +62,10 @@ struct ArtifactEditorSheet: View {
             .buttonStyle(.terminalSecondary)
 
             Button("Save") {
-                saveArtifact()
-                dismiss()
+                // Mirrors `RoleEditorSheet`: a failed save keeps the sheet open
+                // so the user can copy their work out or cancel explicitly,
+                // instead of dismissing as if the edit had landed.
+                if saveArtifact() { dismiss() }
             }
             .keyboardShortcut(.defaultAction)
             .buttonStyle(.terminalPrimary)
@@ -78,6 +86,17 @@ struct ArtifactEditorSheet: View {
                     TextField("Artifact Name", text: $artifactName)
                         .textFieldStyle(.plain)
                         .terminalField()
+                        .disabled(nameEditingBlocker != nil)
+                }
+
+                if let blocker = nameEditingBlocker {
+                    Label(blocker.message, systemImage: "lock")
+                        .font(Typography.caption)
+                        .foregroundStyle(Colors.textSecondary)
+                } else if let conflict = nameConflictMessage {
+                    Label(conflict, systemImage: "exclamationmark.triangle")
+                        .font(Typography.caption)
+                        .foregroundStyle(Colors.warning)
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
@@ -110,8 +129,12 @@ struct ArtifactEditorSheet: View {
     private var usagePreviewSection: some View {
         SettingsCard(header: "Usage in Team", systemImage: "arrow.triangle.swap") {
             VStack(alignment: .leading, spacing: 12) {
-                if case .edit(let artifact) = mode {
-                    usageInfo(for: artifact)
+                if case .edit = mode {
+                    // Keyed on the LIVE edited name, not the captured
+                    // `mode` payload: mid-rename the payload still holds the
+                    // old name, so the panel would report usage for a name the
+                    // user is in the middle of replacing.
+                    usageInfo(forArtifactNamed: ArtifactEditorMutations.canonicalName(artifactName))
                 } else {
                     Text("Save the artifact to see usage information")
                         .font(Typography.caption)
@@ -122,10 +145,10 @@ struct ArtifactEditorSheet: View {
         }
     }
 
-    private func usageInfo(for artifact: TeamArtifact) -> some View {
+    private func usageInfo(forArtifactNamed artifactName: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             // Producers
-            let producers = team.rolesProducing(artifactName: artifact.name)
+            let producers = team.rolesProducing(artifactName: artifactName)
             if !producers.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 4) {
@@ -144,7 +167,7 @@ struct ArtifactEditorSheet: View {
             }
 
             // Consumers
-            let consumers = team.rolesRequiring(artifactName: artifact.name)
+            let consumers = team.rolesRequiring(artifactName: artifactName)
             if !consumers.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 4) {
@@ -185,8 +208,70 @@ struct ArtifactEditorSheet: View {
         ArtifactConstants.mimeTypeDisplayNames[mimeType] ?? mimeType
     }
 
+    /// Why the name field is read-only, if it is.
+    private enum NameEditingBlocker {
+        case lock(ArtifactEditorMutations.NameLock)
+        case runInFlight
+
+        var message: String {
+            switch self {
+            case .lock(.reservedSupervisorTask):
+                return "“\(SystemTemplates.supervisorTaskArtifactName)” is a reserved name — the engine refers to it directly."
+            case .lock(.systemArtifact):
+                return "Built-in artifact — the name is managed by the team template. Duplicate it to get a renameable copy."
+            case .runInFlight:
+                return "A run is in progress on this team. Renaming now would strand the running step on the old artifact name."
+            }
+        }
+    }
+
+    /// `nil` when the name may be edited. Only meaningful in `.edit` — a
+    /// newly-created artifact is custom by construction and has no live run
+    /// referring to it yet.
+    private var nameEditingBlocker: NameEditingBlocker? {
+        guard case .edit(let artifact) = mode else { return nil }
+        if let lock = ArtifactEditorMutations.nameLock(for: artifact) { return .lock(lock) }
+        if store.hasInFlightRun(forTeamID: team.id) { return .runInFlight }
+        return nil
+    }
+
+    /// Non-nil when the typed name would collide with another artifact.
+    ///
+    /// Only checked when the name actually CHANGED — mirroring
+    /// `ArtifactEditorMutations.applyEdit`, which validates availability only on
+    /// a rename. Checking unconditionally would permanently disable Save on a
+    /// team that already contains two slug-colliding artifacts, locking the user
+    /// out of editing the description of either.
+    private var nameConflictMessage: String? {
+        let trimmed = ArtifactEditorMutations.canonicalName(artifactName)
+        guard !trimmed.isEmpty else { return nil }
+        guard trimmed != originalArtifactName else { return nil }
+        guard !ArtifactEditorMutations.isNameAvailable(
+            trimmed, in: team, excludingArtifactID: editingArtifactID
+        ) else { return nil }
+        return "Another artifact in this team already uses this name."
+    }
+
+    private var editingArtifactID: String? {
+        if case .edit(let artifact) = mode { return artifact.id }
+        return nil
+    }
+
+    /// The stored name of the artifact being edited, or `nil` in `.create`
+    /// (where every name is a "change" and must be checked).
+    private var originalArtifactName: String? {
+        guard let editingArtifactID else { return nil }
+        return team.artifacts.first { $0.id == editingArtifactID }?.name
+    }
+
+    /// Save is gated on a non-empty name AND slug uniqueness. Uniqueness lives
+    /// here rather than in an error channel because it is a pre-condition the
+    /// user can see and fix, not a mid-air failure — and because
+    /// `ArtifactEditorMutations`' `nil` return is reserved for "the row
+    /// vanished", mirroring `RoleEditorMutations.applyEdit`.
     private var isValid: Bool {
-        !artifactName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !ArtifactEditorMutations.canonicalName(artifactName).isEmpty
+            && nameConflictMessage == nil
     }
 
     // MARK: - Actions
@@ -198,42 +283,56 @@ struct ArtifactEditorSheet: View {
         artifactMimeType = artifact.mimeType
     }
 
-    private func saveArtifact() {
+    /// Returns `true` when the save actually landed.
+    ///
+    /// Compose every mutation on a local copy and ship it through the `team`
+    /// Binding via a SINGLE assignment. Multiple consecutive writes to the
+    /// Binding race because `TeamEditorView.binding(for:)` has a captured-value
+    /// getter and an async setter — each write re-reads the same pre-edit
+    /// snapshot and the last one wins. This method previously issued five, so
+    /// only its final `updatedAt` write survived and the rename (plus
+    /// description, icon and MIME type) was silently discarded. See
+    /// `ArtifactEditorMutations` doc.
+    private func saveArtifact() -> Bool {
+        var newTeam = team
+        let draft = ArtifactEditorMutations.Draft(
+            name: artifactName,
+            description: artifactDescription,
+            icon: artifactIcon,
+            mimeType: artifactMimeType
+        )
+
+        let saved: TeamArtifact?
         switch mode {
         case .create:
-            let now = MonotonicClock.shared.now()
-            let newArtifact = TeamArtifact(
-                id: Artifact.slugify(artifactName),
-                name: artifactName,
-                icon: artifactIcon,
-                mimeType: artifactMimeType,
-                description: artifactDescription,
-                isSystemArtifact: false,
-                systemArtifactName: nil,
-                createdAt: now,
-                updatedAt: now
-            )
-            TeamManagementService.addArtifact(to: &team, artifact: newArtifact)
-
+            saved = ArtifactEditorMutations.applyCreate(to: &newTeam, draft: draft)
         case .edit(let artifact):
-            if let index = team.artifacts.firstIndex(where: { $0.id == artifact.id }) {
-                team.artifacts[index].name = artifactName
-                team.artifacts[index].description = artifactDescription
-                team.artifacts[index].icon = artifactIcon
-                team.artifacts[index].mimeType = artifactMimeType
-                team.artifacts[index].updatedAt = MonotonicClock.shared.now()
-            }
+            saved = ArtifactEditorMutations.applyEdit(
+                to: &newTeam,
+                existingArtifactID: artifact.id,
+                draft: draft
+            )
         }
 
-        onSave()
+        guard let saved else {
+            store.lastErrorMessage =
+                "Could not save artifact — “\(ArtifactEditorMutations.canonicalName(artifactName))” could not be applied to this team. It may have been deleted or renamed in another view."
+            return false
+        }
+
+        team = newTeam
+        onSave(saved)
+        return true
     }
 
 }
 
 #Preview {
+    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     ArtifactEditorSheet(
         team: .constant(.default),
         mode: .create,
-        onSave: {}
+        onSave: { _ in }
     )
+    .environment(store)
 }

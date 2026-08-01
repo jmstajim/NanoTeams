@@ -34,9 +34,19 @@ nonisolated struct WorkFolderState: Codable, Hashable {
     /// "which task is the manager" — consumed by sidebar/fallback exclusions and
     /// the supervisor-routing / event-wake self-guards. `nil` = not yet created.
     var autovisorTaskID: Int?
+    /// Teams whose bundled-content reconcile was deferred because a role held a
+    /// live tool loop. Retried — scoped to just these teams — on the next open
+    /// even when `lastAppliedAppVersion` is already current.
+    ///
+    /// Deliberately decoupled from the watermark. Holding the watermark instead
+    /// (the old behaviour) meant one busy team re-ran the FULL reconcile on every
+    /// launch, which re-clobbered every OTHER team's system-role prompts,
+    /// toolIDs and settings each time — so a user edit died at the next launch
+    /// rather than surviving until the next app upgrade.
+    var pendingReconcileTeamIDs: [NTMSID]
 
     init(
-        schemaVersion: Int = 7,
+        schemaVersion: Int = 8,
         id: UUID = UUID(),
         name: String,
         createdAt: Date = MonotonicClock.shared.now(),
@@ -45,7 +55,8 @@ nonisolated struct WorkFolderState: Codable, Hashable {
         activeTaskID: Int? = nil,
         lastAppliedAppVersion: String = "",
         deletedTeamTemplateIDs: [String] = [],
-        autovisorTaskID: Int? = nil
+        autovisorTaskID: Int? = nil,
+        pendingReconcileTeamIDs: [NTMSID] = []
     ) {
         self.schemaVersion = schemaVersion
         self.id = id
@@ -57,6 +68,7 @@ nonisolated struct WorkFolderState: Codable, Hashable {
         self.lastAppliedAppVersion = lastAppliedAppVersion
         self.deletedTeamTemplateIDs = deletedTeamTemplateIDs
         self.autovisorTaskID = autovisorTaskID
+        self.pendingReconcileTeamIDs = pendingReconcileTeamIDs
     }
 
     // Forward-compatible decoding: any missing field falls back to a sensible
@@ -66,9 +78,9 @@ nonisolated struct WorkFolderState: Codable, Hashable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         // Migrate the version in-memory so a successful legacy decode doesn't
         // re-encode under a stale `schemaVersion` (CLAUDE.md #48). A file written by
-        // a newer build (version > 7) keeps its higher version on save.
+        // a newer build (version > 8) keeps its higher version on save.
         let storedVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 5
-        self.schemaVersion = max(storedVersion, 7)
+        self.schemaVersion = max(storedVersion, 8)
         self.id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         self.name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
         self.createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? MonotonicClock.shared.now()
@@ -78,6 +90,8 @@ nonisolated struct WorkFolderState: Codable, Hashable {
         self.lastAppliedAppVersion = try c.decodeIfPresent(String.self, forKey: .lastAppliedAppVersion) ?? ""
         self.deletedTeamTemplateIDs = try c.decodeIfPresent([String].self, forKey: .deletedTeamTemplateIDs) ?? []
         self.autovisorTaskID = try c.decodeIfPresent(Int.self, forKey: .autovisorTaskID)
+        self.pendingReconcileTeamIDs =
+            try c.decodeIfPresent([NTMSID].self, forKey: .pendingReconcileTeamIDs) ?? []
     }
 }
 

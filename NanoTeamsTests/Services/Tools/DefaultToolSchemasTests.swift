@@ -545,8 +545,14 @@ final class DefaultToolSchemasTests: XCTestCase {
         XCTAssertEqual(propertyNames(for: "read_file").count, 1)
     }
 
-    func testReadFileRangeHasThreeProperties() {
-        XCTAssertEqual(propertyNames(for: "read_lines").count, 3)
+    /// Four since `include_line_numbers` was surfaced. The handler had honoured it all along
+    /// (`ReadLinesLineLimitTests` pins that `"false"` drops the gutter) and the arg-coercion
+    /// allowlist listed it, but the schema did not — so the model could not discover the one
+    /// switch that lets it cut a large read's token cost. Accepting an argument without
+    /// advertising it is the mirror of the advertise-then-reject rule this codebase forbids.
+    func testReadLinesHasFourProperties() {
+        XCTAssertEqual(propertyNames(for: "read_lines").count, 4)
+        XCTAssertTrue(propertyNames(for: "read_lines").contains("include_line_numbers"))
     }
 
     func testWriteFileHasTwoProperties() {
@@ -557,8 +563,8 @@ final class DefaultToolSchemasTests: XCTestCase {
         XCTAssertEqual(propertyNames(for: "delete_file").count, 2)
     }
 
-    func testSearchProjectHasSevenProperties() {
-        XCTAssertEqual(propertyNames(for: "search").count, 7)
+    func testSearchProjectHasEightProperties() {
+        XCTAssertEqual(propertyNames(for: "search").count, 8)
     }
 
     func testGitCommitHasTwoProperties() {
@@ -612,7 +618,8 @@ final class DefaultToolSchemasTests: XCTestCase {
     func testSearchProjectPropertyNames() {
         XCTAssertEqual(
             propertyNames(for: "search"),
-            ["query", "paths", "file_glob", "max_results", "context_before", "context_after", "exploratory"])
+            ["query", "paths", "file_glob", "max_results", "offset",
+             "context_before", "context_after", "exploratory"])
     }
 
     func testGitBranchPropertyNames() {

@@ -118,7 +118,7 @@ nonisolated struct BashTool: ToolHandler {
             let result: ProcessRunner.Result
             do {
                 result = try runForeground(
-                    command: command, cwd: cwd, timeout: timeoutSec, sandboxProfile: sandboxProfile, args: args)
+                    command: command, cwd: cwd, timeout: timeoutSec, sandboxProfile: sandboxProfile)
             } catch let ProcessRunnerError.timeout(_, stdout, stderr) {
                 // Surface whatever the command printed before the deadline.
                 return makeSuccessResult(
@@ -152,7 +152,7 @@ nonisolated struct BashTool: ToolHandler {
     /// Runs the command sandboxed; if the sandbox wrapper itself fails to launch
     /// and the policy allows it, retries unsandboxed.
     private func runForeground(
-        command: String, cwd: URL, timeout: TimeInterval, sandboxProfile: String?, args: [String: Any]
+        command: String, cwd: URL, timeout: TimeInterval, sandboxProfile: String?
     ) throws -> ProcessRunner.Result {
         let result = try ProcessRunner.runShell(
             command, in: cwd, timeout: timeout, sandboxProfile: sandboxProfile)
