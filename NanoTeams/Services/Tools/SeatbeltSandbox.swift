@@ -12,9 +12,12 @@ import Foundation
 /// or read your secrets". Pair it with the `BashPermissionService` rule layer
 /// and the Auto judge for behavioral safety.
 ///
-/// All paths are canonicalized via `resolvingSymlinksInPath()` before being
-/// embedded — Seatbelt matches on the real path, so a symlinked work folder
-/// (e.g. `/tmp` → `/private/tmp`) would otherwise escape the write allow-list.
+/// All paths are canonicalized via `realpath(3)` before being embedded — Seatbelt
+/// matches on the real path, so a work folder reached through a symlink (`/tmp` →
+/// `/private/tmp`, `/var` → `/private/var`, a relocated `$HOME`) would otherwise
+/// escape both the allow-list AND the denies. This file claimed that invariant while
+/// using `URL.resolvingSymlinksInPath()`, which hands back the SHORT form for exactly
+/// those root-level symlinks — see `canonical(_:)` for the measurements.
 nonisolated enum SeatbeltSandbox {
 
     /// Builds the SBPL profile text honoring the per-scope read/write grants in
@@ -239,19 +242,88 @@ nonisolated enum SeatbeltSandbox {
     /// Heuristic: did a non-zero result come from Seatbelt refusing to launch /
     /// rejecting the profile (vs. the command itself failing)? Used to decide
     /// whether to honor `allowUnsandboxedFallback`.
+    /// The wrapper and the child it launches write to the SAME stderr pipe, so a `contains` test
+    /// cannot tell them apart — and it did not: any failing command whose stderr merely mentioned
+    /// the wrapper was classified as a wrapper failure. Measured consequences were both a silent
+    /// unconfined re-execution (with the fallback enabled) and a false "Command was not run"
+    /// that discarded the command's real output (with it disabled, the default).
+    ///
+    /// The discriminator is POSITION, not vocabulary: `sandbox-exec` reports its own faults before
+    /// the child produces anything, so its diagnostic is the FIRST thing on stderr. Measured on
+    /// macOS 26 — every wrapper failure opens with `sandbox-exec: `:
+    ///
+    ///     bad profile             exit 65  `sandbox-exec: undefined sharp expression`
+    ///     missing profile file    exit 65  `sandbox-exec: /tmp/x.sb: No such file or directory`
+    ///     unreadable profile file exit 65  `sandbox-exec: /tmp/x.sb: Permission denied`
+    ///     execvp failure          exit 71  `sandbox-exec: execvp() of '…' failed: …`
+    ///
+    /// while confined children that fail on their own do not:
+    ///
+    ///     `cat /usr/bin/sandbox-exec/nope`      exit 1  `cat: …: Not a directory`
+    ///     `set -x; grep -rn "sandbox-exec" …`   exit 2  `+zsh:1> grep -rn sandbox-exec …`
+    ///
+    /// A profile that compiles but denies the system reads the shell needs is exit 134 with EMPTY
+    /// stderr. That is a genuinely CONFINED failure, not a wrapper fault, so it must not license a
+    /// retry — and the prefix rule declines it for the right reason rather than by accident.
+    ///
+    /// No exit-code allowlist: 65 and 71 are the codes observed today, and pinning them would make
+    /// an unobserved wrapper code fail OPEN. Position plus a non-zero exit is the whole rule.
+    ///
+    /// `sandbox_apply:` rides alongside because it is the other wrapper-side identifier this
+    /// project has recorded; it was not reproduced on macOS 26, and it is kept because the
+    /// discriminator is the position of a WRAPPER identifier, not the specific spelling. Both
+    /// directions of error are asymmetric and the conservative one is chosen deliberately: failing
+    /// to recognise a wrapper fault means no retry and the command's real output is reported
+    /// (honest), while a false positive means an unconfined execution (not).
+    private static let wrapperDiagnosticPrefixes = ["sandbox-exec:", "sandbox_apply:"]
+
     static func isSandboxDenialFailure(exitCode: Int32, stderr: String) -> Bool {
         guard exitCode != 0 else { return false }
-        let lower = stderr.lowercased()
-        return lower.contains("sandbox-exec")
-            || lower.contains("sandbox_apply")
-            || lower.contains("failed to initialize sandbox")
-            || lower.contains("profile compilation")
+        let head = stderr.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return wrapperDiagnosticPrefixes.contains { head.hasPrefix($0) }
     }
 
     // MARK: - Helpers
 
+    /// The path the KERNEL sees — which is the only thing Seatbelt matches a
+    /// `(subpath …)` against.
+    ///
+    /// Must be `realpath(3)`, NOT `URL.resolvingSymlinksInPath()`. Foundation's resolver
+    /// does the OPPOSITE for macOS's root-level symlinks: it strips a leading `/private`
+    /// when the result exists, so it hands back the SHORT form. Measured on macOS 26:
+    ///
+    ///     input                      resolvingSymlinksInPath   realpath(3)
+    ///     /tmp                       /tmp                      /private/tmp
+    ///     /var                       /var                      /private/var
+    ///     $TMPDIR (/var/folders/…/T) /var/folders/…/T          /private/var/folders/…/T
+    ///     /Users/alex                /Users/alex               /Users/alex   (agree)
+    ///
+    /// Seatbelt resolves the ACCESSED path to `/private/…` before matching, so a
+    /// short-form subpath matches nothing — and it fails silently in both directions.
+    /// Measured live with the profile this file generates: a work folder under `$TMPDIR`
+    /// was NOT writable despite `workFolderWrite: true`, and with `everythingElseWrite:
+    /// true, tempWrite: false` a write into `$TMPDIR` SUCCEEDED despite the explicit deny.
+    /// The allow direction merely breaks the tool; the deny direction is a grant the user
+    /// switched off still being in force, and the same arithmetic applies to the
+    /// credential denies whenever `$HOME` is reached through a symlink.
+    ///
+    /// `FileSystemWatcher.canonicalPath(for:)` already records this trap and works around
+    /// it by rewriting three known prefixes. `realpath` supersedes that here on purpose: a
+    /// security boundary must not depend on a hand-maintained list of symlinks, and the
+    /// same defect reaches any symlinked ancestor (`/Volumes/…`, a relocated `$HOME`).
+    ///
+    /// `realpath` requires every component to exist. Nothing this file embeds is
+    /// hypothetical — the work folder is open, `$TMPDIR` and `$HOME` exist, `/private/tmp`
+    /// is a literal, and the credential paths are interpolated from an already-canonical
+    /// `home` — so the fallback is only for a folder deleted underneath us, where the
+    /// grant describes a path no access can reach anyway.
     private static func canonical(_ url: URL) -> String {
-        url.resolvingSymlinksInPath().standardizedFileURL.path
+        let standardized = url.standardizedFileURL.path
+        if let resolved = realpath(standardized, nil) {
+            defer { free(resolved) }
+            return String(cString: resolved)
+        }
+        return url.resolvingSymlinksInPath().standardizedFileURL.path
     }
 
     /// SBPL double-quoted string literal with backslash + quote escaping.

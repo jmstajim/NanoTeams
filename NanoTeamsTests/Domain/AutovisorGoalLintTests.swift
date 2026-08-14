@@ -26,9 +26,15 @@ final class AutovisorGoalLintTests: XCTestCase {
     }
 
     /// The gain over the literal list: tools nobody remembered to add.
+    /// `run_xcodebuild` / `run_xcodetests` used to head this list and have been
+    /// removed: the manager now carries them (build/test VERIFY the repo's state
+    /// rather than change it). Their absence here is covered from the other side by
+    /// `testUnavailableToolNames_excludesEveryToolTheManagerActuallyHas`, which
+    /// derives from `managerDefaultToolIDs` and so tracks the toolset automatically.
+    /// Everything below still mutates the repo or belongs to a worker role.
     func testUnavailableToolNames_coversWhatTheLiteralListMissed() {
-        for name in ["run_xcodebuild", "run_xcodetests", "git_commit", "git_push",
-                     "bash_output", "create_artifact"]
+        for name in ["git_commit", "git_push", "bash", "bash_output",
+                     "write_file", "create_artifact"]
         where ToolNames.allNames.contains(name) {
             XCTAssertTrue(AutovisorGoalLint.unavailableToolNames.contains(name), name)
         }
@@ -133,6 +139,38 @@ final class AutovisorGoalLintTests: XCTestCase {
         let findings = AutovisorGoalLint.scanUserAuthored(
             "Run the project's build command yourself and paste its final status line.")
         XCTAssertEqual(findings.map(\.kind), [.selfDirectedBuildClaim])
+    }
+
+    /// The rule's whole contract is "warn only about what the manager CANNOT do".
+    /// When it gained the Xcode runners in 1.8.4, `buildVerbs` still held
+    /// `xcodebuild` — so the lint reported a capability as a gap, on an icon the
+    /// user cannot dismiss. Derived from the toolset, so it re-fires if the runners
+    /// are ever granted under another spelling.
+    func testSelfDirectedBuildClaim_neverWarnsAboutSomethingTheManagerCanRun() {
+        XCTAssertTrue(AutovisorConstants.managerDefaultToolIDs.contains(ToolNames.runXcodebuild),
+                      "premise: the manager runs Xcode builds")
+        for text in ["Run xcodebuild yourself and report the result.",
+                     "You run xcodebuild before deciding."] {
+            XCTAssertTrue(AutovisorGoalLint.scanUserAuthored(text).isEmpty,
+                          "the manager owns run_xcodebuild — warning here is the rule "
+                              + "contradicting the toolset: \(text)")
+        }
+    }
+
+    /// Delegation suppression, in parity with the identifier rule. The canonical
+    /// goal the runners were admitted for names a task, and without this the tip
+    /// warns about precisely the workflow the feature enables.
+    func testSelfDirectedBuildClaim_isSuppressedOnADelegationLine() {
+        for text in ["Build the project yourself, then open a task for whatever fails.",
+                     "Compile it yourself each pass and delegate the fixes."] {
+            XCTAssertTrue(AutovisorGoalLint.scanUserAuthored(text).isEmpty,
+                          "a line addressed at the delegation workflow must not warn: \(text)")
+        }
+        // …and suppression must not swallow the real thing: no delegation cue, still fires.
+        XCTAssertEqual(
+            AutovisorGoalLint.scanUserAuthored("Run npm build yourself.").map(\.kind),
+            [.selfDirectedBuildClaim],
+            "the manager has no shell, so npm remains genuinely unreachable")
     }
 
     func testSelfDirectedBuildClaim_needsBothHalvesInOneSentence() {

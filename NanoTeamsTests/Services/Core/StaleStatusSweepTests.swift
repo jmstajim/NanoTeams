@@ -919,4 +919,47 @@ final class StaleStatusSweepTests: NTMSOrchestratorTestBase {
         XCTAssertEqual(memIndexStatus(a), .needsSupervisorAcceptance)
         XCTAssertNil(sut.snapshot?.loadedTasks[a])
     }
+
+    /// End-to-end proof that the destroyed-generation heal reaches a `task.json` already
+    /// sitting on disk — i.e. that an existing wedged folder unwedges on the next launch.
+    ///
+    /// The wedge: `restartRole` reset the synthetic `team_generation_*` step to `.pending`
+    /// with no tool calls and left a phantom `roleStatuses` key. That derives `.running`
+    /// forever with a dead engine, so the sweep DOES visit it (its filter is
+    /// `.running` / `.needsSupervisorInput`) — and before the fix `recoverStaleStatuses`
+    /// returned `false`, so it `continue`d and the task stayed wedged across every
+    /// relaunch.
+    func testSweep_wedgedGenerationStepOnDisk_isHealedAndStopsDerivingRunning() async {
+        await sut.openWorkFolder(tempDir)
+        let wedged = await sut.createTask(title: "Gen", supervisorTask: "build it")!
+        let generationStepID = "\(StepExecution.teamGenerationIDPrefix)WEDGED"
+        await sut.mutateTask(taskID: wedged) { task in
+            task.setStoredChatMode(false)
+            var run = Run(id: 0)
+            run.steps = [
+                self.makeStep(
+                    id: generationStepID, role: .supervisor, title: "Generate Team",
+                    status: .pending)
+            ]
+            run.roleStatuses = ["supervisor": .done, generationStepID: .idle]
+            task.runs = [run]
+        }
+        // A second task keeps `wedged` OUT of the active slot, so it is the sweep — not
+        // `openWorkFolder`'s active-task block — that has to reach it.
+        _ = await sut.createTask(title: "Other", supervisorTask: "b")!
+        XCTAssertEqual(diskIndexStatus(wedged), .running, "precondition: the wedge is on disk")
+
+        restartOrchestrator()
+        await sut.openWorkFolder(tempDir)
+
+        XCTAssertEqual(
+            diskTask(wedged)?.runs.last?.steps.first?.status, .paused,
+            "the destroyed record is settled, so the task stops claiming to run")
+        XCTAssertNil(
+            diskTask(wedged)?.runs.last?.roleStatuses[generationStepID],
+            "and the phantom role key is gone")
+        XCTAssertEqual(diskIndexStatus(wedged), .paused)
+        XCTAssertEqual(memIndexStatus(wedged), .paused,
+                       "list_tasks reads the in-memory index — it must agree with disk")
+    }
 }

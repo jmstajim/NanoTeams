@@ -105,9 +105,19 @@ extension LLMExecutionService {
 
         // === Consultation Chat Flow ===
 
-        // 1. Get or create consultation chat for the consulted role
+        // 1. Get or create consultation chat for the consulted role.
+        //
+        // Re-read the fresh task first — `task` is a snapshot captured at STEP start and
+        // does not reflect mutations from prior tool-loop iterations (the same reason
+        // `handleChangeRequest` re-reads). Reading the chat out of the stale snapshot
+        // missed one an earlier iteration of this same step had already created, so a
+        // SECOND chat was made and the accumulated history was lost — the exact opposite
+        // of the persistent-chat contract this feature exists for. It also hid artifacts
+        // produced since step start from `collectNewArtifacts`.
+        let chatTask = delegate.loadedTask(task.id) ?? task
+        let chatRunIndex = runIndex < chatTask.runs.count ? runIndex : chatTask.runs.count - 1
         var chat = getOrCreateConsultationChat(
-            roleID: consultedRoleID, task: task, runIndex: runIndex, team: team
+            roleID: consultedRoleID, task: chatTask, runIndex: chatRunIndex, team: team
         )
 
         // 2. Build question message
@@ -158,17 +168,17 @@ extension LLMExecutionService {
                 fullThinking += event.thinkingDelta
             }
 
-            // Prefer the visible content. When a reasoning model emits its whole
-            // answer in the reasoning channel (empty content), fall back to the
-            // cleaned thinking so the answer isn't silently dropped; only when
-            // BOTH are empty do we treat the consultation as failed.
-            let content = ModelTokenCleaner.clean(
-                fullResponse.trimmingCharacters(in: .whitespacesAndNewlines)
-            )
-            let thinking = ModelTokenCleaner.clean(
-                fullThinking.trimmingCharacters(in: .whitespacesAndNewlines)
-            )
-            let answer = content.isEmpty ? thinking : content
+            // Prefer the visible content; fall back to the reasoning channel when a
+            // reasoning model leaves content empty. Only when BOTH are empty is the
+            // consultation genuinely failed. The rule lives in `ModelReplyChannels` —
+            // this site had it right and four others did not.
+            let answer = ModelReplyChannels.answer(
+                content: fullResponse,
+                reasoning: fullThinking,
+                prepare: {
+                    ModelTokenCleaner.clean(
+                        $0.trimmingCharacters(in: .whitespacesAndNewlines))
+                })
             let responseTimeMs = Int(Date().timeIntervalSince(startTime) * 1000)
 
             guard !answer.isEmpty else {
@@ -191,6 +201,15 @@ extension LLMExecutionService {
 
             return .ok(answer)
         } catch {
+            // A Pause is not a failed consultation. `consultation.fail` is DURABLE — the
+            // record is persisted onto `step.consultations` and `RoleConsultationsPanel`
+            // renders it red for the life of the run — so recording "Unable to get response
+            // from X: cancelled" turns the user stopping the run into a permanent defect on
+            // the transcript, and feeds `.failed` back into the wire conversation as the
+            // teammate's answer. Leave the record untouched; the step is being torn down.
+            if CancellationClassifier.isCancellation(error) {
+                return .failed("Consultation cancelled.")
+            }
             let message = "Unable to get response from \(consultedRole.displayName): \(error.localizedDescription)"
             consultation.fail(with: message)
             await recordConsultation(stepID: stepID, taskID: tid, consultation: consultation)

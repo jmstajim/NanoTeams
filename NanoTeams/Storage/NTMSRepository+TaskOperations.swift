@@ -17,7 +17,9 @@ nonisolated extension NTMSRepository {
         var state = try store.read(WorkFolderState.self, from: paths.workFolderJSON)
         let teamsFile = try store.read(TeamsFile.self, from: paths.teamsJSON)
 
-        // Resolve team to set isChatMode at creation.
+        // Resolve team to set isChatMode at creation. Seeded from
+        // `seedChatModeForNewTask`, never bare `isChatMode` — see that predicate for why
+        // the Generated Team placeholder must not latch a vacuous `true` onto the task.
         let team: Team
         if let preferredTeamID, let t = teamsFile.teams.first(where: { $0.id == preferredTeamID }) {
             team = t
@@ -47,7 +49,7 @@ nonisolated extension NTMSRepository {
             title: title,
             supervisorTask: supervisorTask,
             preferredTeamID: team.id,
-            isChatMode: team.isChatMode,
+            isChatMode: team.seedChatModeForNewTask,
             parentTaskID: parentTaskID,
             parentRoleID: parentRoleID,
             delegationDepth: delegationDepth

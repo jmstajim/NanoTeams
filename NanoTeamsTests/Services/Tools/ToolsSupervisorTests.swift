@@ -97,18 +97,34 @@ final class ToolsSupervisorTests: XCTestCase {
         XCTAssertTrue(results[0].outputJSON.contains("question"))
     }
 
-    func testAskSupervisor_emptyQuestion() {
+    /// This test used to assert the OPPOSITE, on the reasoning that "empty string
+    /// is still a valid string" and that "validation of empty questions would be a
+    /// business logic concern". The second half was checkable and false: the
+    /// business logic it deferred to is `+ToolResultDispatching`'s
+    /// `!trimmed.isEmpty` guard, which DROPS the question — so nobody validated
+    /// it, the step never parked, and the handler had already answered `ok: true`.
+    /// The model then waited for an answer nobody had been asked for until the
+    /// non-productive-turn ceiling ended the step.
+    ///
+    /// It is the third instance of the class the 2026-08-08 post-mortem names: a
+    /// characterization test that records a defect as the contract, greppable by
+    /// its FIXTURE (`"question": ""`) rather than by its message.
+    ///
+    /// RED: revert `ask_supervisor` to `requiredString` → the call succeeds and
+    /// emits `.supervisorQuestion("")`, which is exactly what the old assertions
+    /// pinned.
+    func testAskSupervisor_emptyQuestion_isRejected() {
         let call = StepToolCall(
             name: "ask_supervisor",
             argumentsJSON: "{\"question\": \"\"}"
         )
         let results = runtime.executeAll(context: context, toolCalls: [call])
 
-        // Empty string is still a valid string, tool should accept it
-        // (Validation of empty questions would be a business logic concern)
         XCTAssertEqual(results.count, 1)
-        XCTAssertFalse(results[0].isError)
-        XCTAssertEqual(results[0].signal, .supervisorQuestion(""))
+        XCTAssertTrue(results[0].isError, "got \(results[0].outputJSON)")
+        XCTAssertTrue(results[0].outputJSON.contains("INVALID_ARGS"))
+        XCTAssertTrue(results[0].outputJSON.contains("must not be empty"))
+        XCTAssertNil(results[0].signal, "a rejected call must not emit a park signal")
     }
 
     func testAskSupervisor_invalidJSON_recoversViaRawInput() {

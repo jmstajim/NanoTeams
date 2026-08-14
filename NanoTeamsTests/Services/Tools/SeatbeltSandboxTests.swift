@@ -4,6 +4,17 @@ import XCTest
 
 final class SeatbeltSandboxTests: XCTestCase {
 
+    /// The kernel's own answer for a path, which is what Seatbelt matches a `(subpath …)`
+    /// against. Used as the ORACLE for the two temp-dir assertions below rather than
+    /// re-deriving production's rule: both used to compute the expected value with
+    /// `resolvingSymlinksInPath()`, i.e. they mirrored the very bug they were supposed to
+    /// catch. See `SeatbeltCanonicalPathCoverageTests` for the measurements.
+    private func kernelPath(_ path: String) -> String {
+        guard let resolved = realpath(path, nil) else { return path }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+
     func testProfile_allowsWriteToWorkFolderSubpath() {
         let work = URL(fileURLWithPath: "/tmp/nanoteams-sbtest-work").resolvingSymlinksInPath()
         let profile = SeatbeltSandbox.profile(workFolderRoot: work)
@@ -58,10 +69,14 @@ final class SeatbeltSandboxTests: XCTestCase {
     func testProfile_canonicalizesSymlinkedRoot() throws {
         // The profile must embed the RESOLVED real path so Seatbelt's real-path
         // matching doesn't escape the allow. Drive it with a REAL symlinked work
-        // folder (deterministic, unlike the /tmp→/private/tmp well-known symlink
-        // which resolvingSymlinksInPath leaves in short form on this OS). The old
-        // assertion used `|| "/tmp/x"`, which is a substring of "/private/tmp/x" and
-        // so passed even if canonicalization regressed.
+        // folder: user-created symlinks are the case `resolvingSymlinksInPath()` DOES
+        // traverse, which is why this test passed while the well-known `/tmp` and
+        // `/var` symlinks — left in short form by that same resolver — silently escaped
+        // both the allow-list and the denies. That parenthetical used to read as a test
+        // inconvenience; it was the defect. `SeatbeltCanonicalPathCoverageTests` covers
+        // the root-level symlinks and `canonical(_:)` now uses `realpath(3)`. The old
+        // assertion here used `|| "/tmp/x"`, a substring of "/private/tmp/x", and so
+        // passed even if canonicalization regressed.
         let fm = FileManager.default
         let base = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("nanoteams-canon-\(UUID().uuidString)")
@@ -71,7 +86,7 @@ final class SeatbeltSandboxTests: XCTestCase {
         try fm.createSymbolicLink(at: link, withDestinationURL: real)
         defer { try? fm.removeItem(at: base) }
 
-        let resolvedReal = real.resolvingSymlinksInPath().standardizedFileURL.path
+        let resolvedReal = kernelPath(real.standardizedFileURL.path)
         let profile = SeatbeltSandbox.profile(workFolderRoot: link)
         XCTAssertTrue(
             profile.contains("(subpath \"\(resolvedReal)\")"),
@@ -334,8 +349,7 @@ final class SeatbeltSandboxTests: XCTestCase {
     func testProfile_tempTrim_keepsPreciseTmpAndSlashTmp_dropsBroadParents() {
         let work = URL(fileURLWithPath: "/tmp/nanoteams-temptrim").resolvingSymlinksInPath()
         let profile = SeatbeltSandbox.profile(workFolderRoot: work) // defaults: temp write on
-        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
-            .resolvingSymlinksInPath().standardizedFileURL.path
+        let tmp = kernelPath(URL(fileURLWithPath: NSTemporaryDirectory()).standardizedFileURL.path)
         XCTAssertTrue(profile.contains("(subpath \"\(tmp)\")"), "the precise $TMPDIR stays granted")
         XCTAssertTrue(profile.contains("(subpath \"/private/tmp\")"), "/tmp stays granted")
         XCTAssertFalse(profile.contains("/private/var/tmp"), "/var/tmp must be dropped from the allow-list")
@@ -532,8 +546,7 @@ final class SeatbeltSandboxTests: XCTestCase {
         let work = URL(fileURLWithPath: "/opt/nanoteams-notempread").resolvingSymlinksInPath()
         let perms = BashSandboxPermissions(tempRead: false, credentialRead: true)
         let profile = SeatbeltSandbox.profile(workFolderRoot: work, permissions: perms)
-        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
-            .resolvingSymlinksInPath().standardizedFileURL.path
+        let tmp = kernelPath(URL(fileURLWithPath: NSTemporaryDirectory()).standardizedFileURL.path)
         XCTAssertTrue(profile.contains("(allow file-read*)"), "system reads stay broad")
         XCTAssertTrue(
             profile.contains("(deny file-read*\n    (subpath \"\(tmp)\")"),

@@ -56,6 +56,7 @@ struct AutovisorSettingsView: View {
                 goalCard
                 memoryCard
                 activationCard
+                teamsCard
                 limitsCard
                 stuckCard
                 modelCard
@@ -395,12 +396,6 @@ struct AutovisorSettingsView: View {
                 )
                 rowCaption("Cap on tasks Autovisor may create in a single review pass.")
 
-                SettingsToggleRow(
-                    title: "Let Autovisor generate new teams",
-                    icon: "wand.and.stars",
-                    isOn: allowTeamGenerationBinding
-                )
-                rowCaption("On: Autovisor may run team generation. Off: existing teams only.")
             }
         }
     }
@@ -411,6 +406,91 @@ struct AutovisorSettingsView: View {
         Binding(
             get: { store.workFolder?.settings.autovisorAllowTeamGeneration ?? true },
             set: { newValue in Task { await store.setAutovisorAllowTeamGeneration(newValue) } }
+        )
+    }
+
+    // MARK: - Teams
+
+    /// Which teams the manager may create NEW tasks on, plus the generation toggle — one
+    /// card, because they answer the same question. (The toggle used to sit in Limits, which
+    /// is about throughput; it is a team-authority setting.)
+    ///
+    /// Blocking governs CREATION only: `control_task start` and `manage_role restart` re-run
+    /// tasks that already exist, and a started run is pinned to its team.
+    private var teamsCard: some View {
+        SettingsCard(header: "Teams", systemImage: "rectangle.3.group") {
+            VStack(alignment: .leading, spacing: 0) {
+                SettingsToggleRow(
+                    title: "Let Autovisor generate new teams",
+                    icon: "wand.and.stars",
+                    isOn: allowTeamGenerationBinding
+                )
+                rowCaption("On: Autovisor may run team generation. Off: existing teams only.")
+
+                TerminalDivider()
+                    .padding(.vertical, Spacing.xs)
+
+                MonoLabel(text: "Teams it may create new tasks on")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, Spacing.s)
+                    .padding(.bottom, Spacing.xs)
+
+                if teamRows.isEmpty {
+                    rowCaption("This folder has no teams the Autovisor could use.", indented: false)
+                } else {
+                    ForEach(teamRows) { row in
+                        SettingsToggleRow(
+                            title: row.isChatMode ? "\(row.name)  [chat]" : row.name,
+                            icon: row.isOrphan ? "questionmark.square.dashed" : "person.3",
+                            isOn: teamAllowedBinding(row)
+                        )
+                        .opacity(row.isOrphan ? 0.6 : 1)
+                        if row.isOrphan {
+                            rowCaption("No longer in this folder — the block is kept in case it comes back. Switch it on to forget it.")
+                        }
+                    }
+                    rowCaption("Unchecked teams are excluded from `create_managed_task`. A team you add later starts out allowed.", indented: false)
+                }
+
+                if let warning = teamsWarning {
+                    Text(warning.message)
+                        .font(Typography.caption)
+                        .foregroundStyle(Colors.textSecondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(Spacing.s)
+                        .background(
+                            RoundedRectangle.squircle(CornerRadius.small)
+                                .fill(Colors.warningTint)
+                        )
+                        .padding(.top, Spacing.xs)
+                }
+            }
+        }
+    }
+
+    private var autovisorTeamPolicy: AutovisorTeamPolicy {
+        store.workFolder.map { AutovisorTeamPolicy(settings: $0.settings) } ?? .unrestricted
+    }
+
+    private var teamRows: [AutovisorTeamsCardPolicy.Row] {
+        AutovisorTeamsCardPolicy.rows(
+            allTeams: store.workFolder?.teams ?? [], policy: autovisorTeamPolicy)
+    }
+
+    private var teamsWarning: AutovisorTeamsCardPolicy.Warning? {
+        AutovisorTeamsCardPolicy.warning(
+            allTeams: store.workFolder?.teams ?? [],
+            policy: autovisorTeamPolicy,
+            activeTeam: store.workFolder?.activeTeam)
+    }
+
+    /// Checked = allowed. The inversion into the stored block list lives in the orchestrator
+    /// setter, which read-modify-writes INSIDE `mutateWorkFolder` — binding against a value
+    /// captured here would let two quick clicks race and drop one.
+    private func teamAllowedBinding(_ row: AutovisorTeamsCardPolicy.Row) -> Binding<Bool> {
+        Binding(
+            get: { row.isAllowed },
+            set: { allowed in Task { await store.setAutovisorTeamAllowed(row.id, allowed: allowed) } }
         )
     }
 

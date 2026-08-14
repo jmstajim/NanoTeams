@@ -27,7 +27,12 @@ nonisolated struct AskSupervisorTool: ToolHandler {
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            let question = try requiredString(args, "question")
+            // Non-empty, because the dispatcher's own `!trimmed.isEmpty` guard
+            // (`+ToolResultDispatching`) silently declines to park on an empty
+            // question — so accepting one here reports `ok: true` for a step that
+            // never stops, and the model waits for an answer nobody was asked for
+            // until the non-productive-turn ceiling ends the step.
+            let question = try requiredNonEmptyString(args, "question")
             return makeSupervisorQuestionResult(
                 toolName: Self.name,
                 args: args,

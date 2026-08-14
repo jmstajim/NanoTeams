@@ -19,7 +19,16 @@ final class BundledContentFingerprintPinTests: XCTestCase {
     /// To update: run this test, copy the "got" value from the failure message,
     /// paste it here, and bump `MARKETING_VERSION` in `project.pbxproj` (BOTH
     /// app-target entries — the `1.0` pair belongs to the test target).
-    private static let expectedFingerprint = "a4df3893f14fe915"
+    // 1.8.4 — the Autovisor manager gains `run_xcodebuild` / `run_xcodetests` as
+    // allowed-OPTIONAL tools (verification of the repo's state, not implementation of a
+    // change). Three bundled surfaces moved together: `managerOptionalToolIDs` (+ a new
+    // `managerOptionalToolGroups` entry, which is the only path that delivers them to an
+    // EXISTING folder), the role prompt's `### Boundaries` line — which claimed the read
+    // tools were "your only window into the repo" and became false — and the team
+    // template's `## Role`, which said "read plus management tools only".
+    // (The runners also joined the planning phase, but that set is derived at runtime from
+    // the registry and is not bundled content, so it does not move this hash.)
+    private static let expectedFingerprint = "e57da69fdf65bea6"
 
     func testBundledContent_hasNotChangedWithoutAVersionBump() {
         let actual = BundledContentFingerprint.current

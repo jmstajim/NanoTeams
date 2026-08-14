@@ -135,10 +135,16 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
     final class ScriptedLLMClient: LLMClient, @unchecked Sendable {
         struct ScriptedTurn {
             var content: String = ""
+            /// Reasoning channel. A reasoning model puts the whole reply here — escalation
+            /// envelope included — and leaves `content` empty.
+            var reasoning: String = ""
             var toolCalls: [(name: String, argumentsJSON: String)] = []
         }
         var script: [ScriptedTurn] = []
         var captures: [(messages: [ChatMessage], tools: [ToolSchema])] = []
+        /// Thrown instead of streaming. Lets a test distinguish a user Pause from a
+        /// transport failure, which the service must NOT conflate.
+        var shouldThrow: Error?
 
         func streamChat(
             config _: LLMConfig,
@@ -149,8 +155,14 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
             roleName _: String?
         ) -> AsyncThrowingStream<StreamEvent, Error> {
             captures.append((messages, tools))
+            if let shouldThrow {
+                return AsyncThrowingStream { $0.finish(throwing: shouldThrow) }
+            }
             let turn = script.isEmpty ? ScriptedTurn() : script.removeFirst()
             return AsyncThrowingStream { continuation in
+                if !turn.reasoning.isEmpty {
+                    continuation.yield(StreamEvent(thinkingDelta: turn.reasoning))
+                }
                 if !turn.content.isEmpty {
                     continuation.yield(StreamEvent(contentDelta: turn.content))
                 }
@@ -303,6 +315,152 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
     /// server-side chain any more, so the guarantee comes from `persistExchange`
     /// appending each (question, answer) pair to the very `llmConversation` the
     /// seed is rebuilt from.
+    // MARK: - The reasoning channel
+
+    /// RED: drop the `ModelReplyChannels` promotion after the stream loop → the child is
+    /// answered with the literal string "(no answer provided)".
+    ///
+    /// This is the worst blast radius in the one-shot cluster: the value is delivered to a
+    /// whole CHILD TEAM as the Supervisor's decision, and its blocked role acts on it. The
+    /// parent's model had answered — in the channel nobody read.
+    func testReasoningOnlyAnswer_reachesTheChild() async {
+        let delegate = MultiTaskDelegateStub()
+        let parentTeam = makeParentTeam()
+        delegate.workFolderProjection = makeProjection(teams: [parentTeam])
+        delegate.tasks[1] = makeParentTask(seedConversation: [
+            LLMMessage(role: .system, content: "You are PM."),
+        ])
+        delegate.tasks[2] = makeChildTask(question: "Negative numbers?")
+
+        let client = ScriptedLLMClient()
+        client.script = [.init(content: "", reasoning: "Yes, negative numbers are required.")]
+
+        let success = await DelegatedSupervisorAnswerService.handleChildQuestion(
+            childTID: 2, parentTaskID: 1, parentRoleID: "pm", parentTeam: parentTeam,
+            targetTeamName: "Engineering", client: client,
+            globalConfig: delegate.globalLLMConfig, delegate: delegate)
+
+        XCTAssertTrue(success)
+        XCTAssertEqual(delegate.answerSupervisorCalls.count, 1)
+        XCTAssertEqual(
+            delegate.answerSupervisorCalls.first?.answer, "Yes, negative numbers are required.")
+    }
+
+    /// RED: same mutation → the Harmony salvage's `content.contains("<|")` gate never fires,
+    /// so the escalation is invisible and the raw envelope is delivered to the child as the
+    /// Supervisor's answer.
+    ///
+    /// The salvage exists precisely because gpt-oss-class local models emit tool calls as
+    /// text envelopes — and those are exactly the models that put the text on the reasoning
+    /// channel, so the fallback was blind in the case it was written for.
+    func testEscalationEnvelopeInTheReasoningChannel_isSalvaged() async {
+        let delegate = MultiTaskDelegateStub()
+        let parentTeam = makeParentTeam()
+        delegate.workFolderProjection = makeProjection(teams: [parentTeam])
+        delegate.tasks[1] = makeParentTask(seedConversation: [
+            LLMMessage(role: .system, content: "PM"),
+        ])
+        delegate.tasks[2] = makeChildTask(question: "Cannot answer this from PM context")
+
+        let client = ScriptedLLMClient()
+        client.script = [
+            .init(
+                content: "",
+                reasoning: "<|channel|>commentary to=functions.ask_supervisor<|message|>"
+                    + "{\"question\": \"Need exec input\"}<|call|>")
+        ]
+
+        let success = await DelegatedSupervisorAnswerService.handleChildQuestion(
+            childTID: 2, parentTaskID: 1, parentRoleID: "pm", parentTeam: parentTeam,
+            targetTeamName: "Engineering", client: client,
+            globalConfig: delegate.globalLLMConfig, delegate: delegate)
+
+        XCTAssertFalse(success, "an escalation aborts the delegation, it is not an answer")
+        XCTAssertEqual(
+            delegate.answerSupervisorCalls.count, 0,
+            "the raw envelope must never reach the child as the Supervisor's answer")
+        XCTAssertEqual(
+            delegate.tasks[1]?.runs[0].steps[0].ancillaryQuestion, "Need exec input")
+    }
+
+    /// Content still wins when both channels speak.
+    func testContentWins_whenBothChannelsSpeak() async {
+        let delegate = MultiTaskDelegateStub()
+        let parentTeam = makeParentTeam()
+        delegate.workFolderProjection = makeProjection(teams: [parentTeam])
+        delegate.tasks[1] = makeParentTask(seedConversation: [
+            LLMMessage(role: .system, content: "You are PM."),
+        ])
+        delegate.tasks[2] = makeChildTask(question: "Negative numbers?")
+
+        let client = ScriptedLLMClient()
+        client.script = [.init(content: "Yes.", reasoning: "hmm, maybe no")]
+
+        _ = await DelegatedSupervisorAnswerService.handleChildQuestion(
+            childTID: 2, parentTaskID: 1, parentRoleID: "pm", parentTeam: parentTeam,
+            targetTeamName: "Engineering", client: client,
+            globalConfig: delegate.globalLLMConfig, delegate: delegate)
+
+        XCTAssertEqual(delegate.answerSupervisorCalls.first?.answer, "Yes.")
+    }
+
+    // MARK: - Cancellation is not an answering failure
+
+    /// RED: drop the `CancellationClassifier` arm from the catch → a red banner blaming the
+    /// role appears on a user-initiated Pause.
+    ///
+    /// `handleDelegateToTeam` reads a `false` return as an internal failure and tears the
+    /// child team down, so classifying the user's own Pause as one destroys the delegation
+    /// they paused to inspect. The parent step is being cancelled anyway; the child must
+    /// survive for the resume.
+    func testCancellation_raisesNoBannerBlamingTheRole() async {
+        let delegate = MultiTaskDelegateStub()
+        let parentTeam = makeParentTeam()
+        delegate.tasks[1] = makeParentTask(seedConversation: [
+            LLMMessage(role: .system, content: "You are the PM."),
+        ])
+        delegate.tasks[2] = makeChildTask(question: "Negative numbers?")
+
+        let client = ScriptedLLMClient()
+        client.shouldThrow = CancellationError()
+
+        let success = await DelegatedSupervisorAnswerService.handleChildQuestion(
+            childTID: 2, parentTaskID: 1, parentRoleID: "pm", parentTeam: parentTeam,
+            targetTeamName: "Engineering", client: client,
+            globalConfig: delegate.globalLLMConfig, delegate: delegate)
+
+        XCTAssertFalse(success, "a cancelled exchange still produced no answer")
+        XCTAssertTrue(
+            delegate.lastErrorMessages.isEmpty,
+            "a Pause must not post an error banner; got \(delegate.lastErrorMessages)")
+    }
+
+    /// The other half, so the fix cannot become "never report anything": a genuine
+    /// transport failure still names the role and the reason.
+    func testTransportFailure_stillReportsTheReason() async {
+        let delegate = MultiTaskDelegateStub()
+        let parentTeam = makeParentTeam()
+        delegate.tasks[1] = makeParentTask(seedConversation: [
+            LLMMessage(role: .system, content: "You are the PM."),
+        ])
+        delegate.tasks[2] = makeChildTask(question: "Negative numbers?")
+
+        let client = ScriptedLLMClient()
+        client.shouldThrow = NSError(
+            domain: NSURLErrorDomain, code: NSURLErrorCannotConnectToHost,
+            userInfo: [NSLocalizedDescriptionKey: "could not connect"])
+
+        let success = await DelegatedSupervisorAnswerService.handleChildQuestion(
+            childTID: 2, parentTaskID: 1, parentRoleID: "pm", parentTeam: parentTeam,
+            targetTeamName: "Engineering", client: client,
+            globalConfig: delegate.globalLLMConfig, delegate: delegate)
+
+        XCTAssertFalse(success)
+        XCTAssertTrue(
+            delegate.lastErrorMessages.contains { $0.contains("pm") },
+            "a real failure must still surface; got \(delegate.lastErrorMessages)")
+    }
+
     func testSubsequentQuestion_reSeeds_andCarriesThePriorExchange() async {
         let delegate = MultiTaskDelegateStub()
         let parentTeam = makeParentTeam()
@@ -585,4 +743,112 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
                        "model tokens must be stripped from the delivered answer")
     }
 
+
+    // MARK: - Grandparent team unresolvable (resolveTeam's non-.resolved arms)
+
+    /// A grandparent whose run is PINNED to a team that no longer exists must
+    /// abort the escalation LOUDLY. `TeamResolution` refuses to swap rosters
+    /// mid-run, and `resolveTeam` puts that reason on the error banner rather
+    /// than letting the chain answer the child from some other team's context.
+    ///
+    /// RED: delete `delegate.setLastErrorMessageForUI(reason)` from the
+    /// `.failed` arm of `DelegatedSupervisorAnswerService.resolveTeam` →
+    /// `XCTAssertTrue(delegate.lastErrorMessages.contains { $0.contains("deleted-team") })`
+    /// fails (the delegation still aborts, but silently — the user is left
+    /// with an abort and no diagnostic).
+    func testEscalation_grandparentTeamDeletedMidRun_abortsLoudly() async {
+        let delegate = MultiTaskDelegateStub()
+        let parentTeam = makeParentTeam()
+        delegate.workFolderProjection = makeProjection(teams: [parentTeam])
+
+        // Grandparent's run is pinned to a team absent from the work folder —
+        // the deleted-mid-run shape TeamResolution reports as `.failed`.
+        var grandparent = makeParentTask(
+            id: 0,
+            seedConversation: [LLMMessage(role: .system, content: "Top PM")]
+        )
+        grandparent.runs[0].teamID = "deleted-team"
+        delegate.tasks[0] = grandparent
+        delegate.tasks[1] = makeParentTask(id: 1, parentTaskID: 0, parentRoleID: "pm")
+        delegate.tasks[2] = makeChildTask(question: "Need clarification", parentTaskID: 1, parentRoleID: "pm")
+
+        let client = ScriptedLLMClient()
+        client.script = [
+            .init(
+                content: "",
+                toolCalls: [(name: ToolNames.askSupervisor,
+                             argumentsJSON: "{\"question\": \"Escalate me\"}")]
+            ),
+        ]
+
+        let success = await DelegatedSupervisorAnswerService.handleChildQuestion(
+            childTID: 2, parentTaskID: 1, parentRoleID: "pm",
+            parentTeam: parentTeam, targetTeamName: "Engineering",
+            client: client, globalConfig: delegate.globalLLMConfig, delegate: delegate
+        )
+
+        XCTAssertFalse(success, "an unresolvable grandparent must abort the delegation")
+        XCTAssertEqual(client.captures.count, 1,
+                       "recursion must NOT proceed — exactly one streamChat (the parent's escalation)")
+        XCTAssertTrue(delegate.answerSupervisorCalls.isEmpty,
+                      "the child must never receive an answer produced from another team's roster")
+        XCTAssertTrue(
+            delegate.lastErrorMessages.contains { $0.contains("deleted-team") },
+            "the pinned-team-deleted reason must reach the error banner — got \(delegate.lastErrorMessages)"
+        )
+        // Falls through to the same top-of-chain abort as a missing grandparent.
+        XCTAssertEqual(delegate.tasks[1]?.runs[0].steps[0].ancillaryQuestion, "Escalate me")
+        XCTAssertFalse(delegate.lastInfoMessages.isEmpty)
+    }
+
+    /// A grandparent that resolves to NO team (the work folder has none) aborts
+    /// the escalation SILENTLY: `.noTeam` means "nothing selected yet", not a
+    /// failure, so it must not write the error banner. It must still refuse to
+    /// recurse — answering from the delegating role's own team would seat that
+    /// role as its own Supervisor.
+    ///
+    /// RED: change the call site in `askSupervisorRole` from
+    /// `let grandparentTeamRef = resolveTeam(task: grandparentTask, delegate: delegate)`
+    /// to `... = resolveTeam(task: grandparentTask, delegate: delegate) ?? roleTeam`
+    /// → `XCTAssertEqual(client.captures.count, 1)` and `XCTAssertFalse(success)`
+    /// both fail: the recursion proceeds on a borrowed roster and the child is
+    /// handed an answer.
+    func testEscalation_grandparentHasNoTeam_abortsSilently() async {
+        let delegate = MultiTaskDelegateStub()
+        let parentTeam = makeParentTeam()
+        // No teams at all ⇒ preferredTeamID does not resolve and activeTeam is nil.
+        delegate.workFolderProjection = makeProjection(teams: [])
+
+        delegate.tasks[0] = makeParentTask(
+            id: 0,
+            seedConversation: [LLMMessage(role: .system, content: "Top PM")]
+        )
+        delegate.tasks[1] = makeParentTask(id: 1, parentTaskID: 0, parentRoleID: "pm")
+        delegate.tasks[2] = makeChildTask(question: "Need clarification", parentTaskID: 1, parentRoleID: "pm")
+
+        let client = ScriptedLLMClient()
+        client.script = [
+            .init(
+                content: "",
+                toolCalls: [(name: ToolNames.askSupervisor,
+                             argumentsJSON: "{\"question\": \"Escalate me\"}")]
+            ),
+        ]
+
+        let success = await DelegatedSupervisorAnswerService.handleChildQuestion(
+            childTID: 2, parentTaskID: 1, parentRoleID: "pm",
+            parentTeam: parentTeam, targetTeamName: "Engineering",
+            client: client, globalConfig: delegate.globalLLMConfig, delegate: delegate
+        )
+
+        XCTAssertFalse(success, "no resolvable grandparent ⇒ abort, never a borrowed roster")
+        XCTAssertEqual(client.captures.count, 1,
+                       "recursion must NOT proceed on a team the grandparent does not own")
+        XCTAssertTrue(delegate.answerSupervisorCalls.isEmpty)
+        XCTAssertTrue(delegate.lastErrorMessages.isEmpty,
+                      "'no team selected' is not an error — it must not clobber the error banner")
+        XCTAssertEqual(delegate.tasks[1]?.runs[0].steps[0].ancillaryQuestion, "Escalate me")
+        XCTAssertFalse(delegate.lastInfoMessages.isEmpty,
+                       "the user still gets the informational abort banner")
+    }
 }

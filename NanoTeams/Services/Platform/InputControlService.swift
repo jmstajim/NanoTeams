@@ -16,18 +16,98 @@ nonisolated enum MouseButton: String, Sendable {
 
 // MARK: - Errors
 
+/// `accessibilityDenied` is deliberately NOT a case here (wave 32): the trust guard lives
+/// one layer up — `LLMExecutionService+ComputerUse` checks `hasAccessibility()` BEFORE any
+/// input action and answers with its own `.computerUseDenied` envelope
+/// (`LLMExecutionService.accessibilityDeniedMessage`), so a case here could never be thrown.
 nonisolated enum InputControlError: LocalizedError {
-    case accessibilityDenied
     case unknownKeyCombo(String)
 
     var errorDescription: String? {
         switch self {
-        case .accessibilityDenied:
-            "Accessibility permission is required to control the mouse and keyboard. Grant it in System Settings → Privacy & Security → Accessibility."
         case .unknownKeyCombo(let combo):
             "Unrecognized key combination '\(combo)'."
         }
     }
+}
+
+// MARK: - Seam
+
+/// The input-synthesis surface the computer-use finalizer depends on, as a protocol so a test can
+/// drive the dispatcher without a single `CGEvent` reaching the developer's cursor.
+///
+/// Everything here is impure by construction; every *decision* it would otherwise hide
+/// (`mouseEventPlan`, `scrollDeltas`, `parseKeyCombo`, `bestAppIndex`, `imagePixelToGlobalPoint`)
+/// is already a pure static on `InputControlService` and already covered. That is why the seam is
+/// this thin: it exists to make the finalizer's *orchestration* reachable, not to re-test the
+/// arithmetic through a mock.
+///
+/// `activateApp(matching:)` deliberately fuses resolve + activate: `NSRunningApplication` cannot be
+/// constructed in a fixture, so it must never cross the seam. The `Bool` is "an app was found and
+/// raised", which is exactly the fact the caller branches on.
+nonisolated protocol InputControlling: Sendable {
+    func hasAccessibility() -> Bool
+    /// Raises the system Accessibility prompt (opens System Settings) if not already trusted.
+    func requestAccessibilityIfNeeded()
+    func click(globalPoint: CGPoint, button: MouseButton, double: Bool)
+    func scroll(globalPoint: CGPoint, dx: Int, dy: Int)
+    func typeText(_ text: String)
+    func pressKeys(_ combo: String) throws
+    /// Resolves `spec` to a running application and activates it. `false` = nothing matched.
+    func activateApp(matching spec: String) -> Bool
+}
+
+/// The live adapter: one framework round-trip per method, no decision of its own.
+nonisolated struct SystemInputControl: InputControlling {
+    func hasAccessibility() -> Bool { InputControlService.hasAccessibility() }
+    func requestAccessibilityIfNeeded() { InputControlService.requestAccessibilityIfNeeded() }
+
+    func click(globalPoint: CGPoint, button: MouseButton, double: Bool) {
+        InputControlService.click(globalPoint: globalPoint, button: button, double: double)
+    }
+
+    func scroll(globalPoint: CGPoint, dx: Int, dy: Int) {
+        InputControlService.scroll(globalPoint: globalPoint, dx: dx, dy: dy)
+    }
+
+    func typeText(_ text: String) { InputControlService.typeText(text) }
+
+    func pressKeys(_ combo: String) throws { try InputControlService.pressKeys(combo) }
+
+    func activateApp(matching spec: String) -> Bool {
+        guard let app = InputControlService.runningApp(matching: spec) else { return false }
+        InputControlService.activate(app)
+        return true
+    }
+}
+
+/// Everything an untrusted process would do anyway: refuse. Used as the default so a test that
+/// constructs `LLMExecutionService` without naming an environment cannot synthesize input — the
+/// inward-resolving rule, and here it is not a nicety: the live adapter clicks and types at
+/// whatever is under the developer's cursor.
+///
+/// `hasAccessibility() == false` is the honest inert answer — it is the state a process without the
+/// grant is in, and it is the one that ends in "no input synthesized". Returning `true` instead
+/// would let the no-op click report success, which is the exact defect the finalizer's permission
+/// guard was added to fix.
+///
+/// `pressKeys` still throws for an unparseable combo: the parse is pure, so dropping only the OS
+/// effect is what "inert" means here — a fake that silently accepted `"cmd+nonsense"` would hide a
+/// real error arm.
+nonisolated struct InertInputControl: InputControlling {
+    func hasAccessibility() -> Bool { false }
+    func requestAccessibilityIfNeeded() {}
+    func click(globalPoint: CGPoint, button: MouseButton, double: Bool) {}
+    func scroll(globalPoint: CGPoint, dx: Int, dy: Int) {}
+    func typeText(_ text: String) {}
+
+    func pressKeys(_ combo: String) throws {
+        guard InputControlService.parseKeyCombo(combo) != nil else {
+            throw InputControlError.unknownKeyCombo(combo)
+        }
+    }
+
+    func activateApp(matching spec: String) -> Bool { false }
 }
 
 // MARK: - Input Control Service
@@ -108,10 +188,20 @@ nonisolated enum InputControlService {
     /// NanoTeams window that a whole-display capture filtered out of the image but which is still
     /// physically on screen — the model would otherwise click the app's own UI.
     static func ownWindowFrames() -> [CGRect] {
-        let pid = Int(getpid())
         guard let infos = CGWindowListCopyWindowInfo(
             [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]
         else { return [] }
+        return ownWindowRects(from: infos, pid: Int(getpid()))
+    }
+
+    /// Pure half of `ownWindowFrames`: the frames belonging to `pid` in a `CGWindowListCopyWindowInfo`
+    /// payload. Extracted because this filter is the whole self-guard — a window that fails to be
+    /// recognized as ours is a window the model is allowed to click.
+    ///
+    /// The `> 1` size floor drops zero-area bookkeeping windows (status-item shells, offscreen
+    /// 1×1 helpers): a degenerate rect can only ever produce a false DENY, and a deny on a
+    /// point that isn't really covered by our UI reads to the model as an unexplained refusal.
+    static func ownWindowRects(from infos: [[String: Any]], pid: Int) -> [CGRect] {
         var rects: [CGRect] = []
         for info in infos {
             guard let owner = info[kCGWindowOwnerPID as String] as? Int, owner == pid,
@@ -125,34 +215,58 @@ nonisolated enum InputControlService {
 
     // MARK: - Mouse
 
-    static func click(globalPoint: CGPoint, button: MouseButton = .left, double: Bool = false) {
-        let src = CGEventSource(stateID: .hidSystemState)
+    /// One synthesized mouse event: which `CGEventType` and button, and the click-state counter
+    /// that tells AppKit whether this is the first or the second click of a double-click.
+    nonisolated struct MouseEventStep: Equatable, Sendable {
+        let type: CGEventType
+        let button: CGMouseButton
+        let clickState: Int64
+    }
+
+    /// The exact event sequence `click` posts. Extracted so the mapping is pinnable without
+    /// synthesizing real input: a wrong `CGEventType` clicks with the other mouse button, and a
+    /// double-click that doesn't post a SECOND down/up pair at `clickState == 2` is delivered to
+    /// the target app as two unrelated single clicks (no double-click action fires).
+    static func mouseEventPlan(button: MouseButton, double: Bool) -> [MouseEventStep] {
         let (downType, upType, cgButton): (CGEventType, CGEventType, CGMouseButton) = button == .right
             ? (.rightMouseDown, .rightMouseUp, .right)
             : (.leftMouseDown, .leftMouseUp, .left)
-
-        func postPair(clickState: Int64) {
-            if let down = CGEvent(mouseEventSource: src, mouseType: downType,
-                                  mouseCursorPosition: globalPoint, mouseButton: cgButton) {
-                down.setIntegerValueField(.mouseEventClickState, value: clickState)
-                down.post(tap: .cghidEventTap)
-            }
-            if let up = CGEvent(mouseEventSource: src, mouseType: upType,
-                                mouseCursorPosition: globalPoint, mouseButton: cgButton) {
-                up.setIntegerValueField(.mouseEventClickState, value: clickState)
-                up.post(tap: .cghidEventTap)
-            }
+        var plan = [
+            MouseEventStep(type: downType, button: cgButton, clickState: 1),
+            MouseEventStep(type: upType, button: cgButton, clickState: 1),
+        ]
+        if double {
+            plan.append(MouseEventStep(type: downType, button: cgButton, clickState: 2))
+            plan.append(MouseEventStep(type: upType, button: cgButton, clickState: 2))
         }
-        postPair(clickState: 1)
-        if double { postPair(clickState: 2) }
+        return plan
+    }
+
+    static func click(globalPoint: CGPoint, button: MouseButton = .left, double: Bool = false) {
+        let src = CGEventSource(stateID: .hidSystemState)
+        for step in mouseEventPlan(button: button, double: double) {
+            guard let event = CGEvent(mouseEventSource: src, mouseType: step.type,
+                                      mouseCursorPosition: globalPoint, mouseButton: step.button)
+            else { continue }
+            event.setIntegerValueField(.mouseEventClickState, value: step.clickState)
+            event.post(tap: .cghidEventTap)
+        }
+    }
+
+    /// Scroll wheel deltas for a `(dx, dy)` request. `wheel1` is the VERTICAL axis and `wheel2`
+    /// the horizontal one — swapping them scrolls sideways when the model asked to scroll down.
+    /// `Int32(clamping:)` saturates rather than trapping: `dx`/`dy` are model-authored integers
+    /// decoded straight from tool arguments, so `Int.max` is a reachable value.
+    static func scrollDeltas(dx: Int, dy: Int) -> (wheel1: Int32, wheel2: Int32) {
+        (wheel1: Int32(clamping: dy), wheel2: Int32(clamping: dx))
     }
 
     static func scroll(globalPoint: CGPoint, dx: Int, dy: Int) {
         CGWarpMouseCursorPosition(globalPoint)
         let src = CGEventSource(stateID: .hidSystemState)
-        // wheel1 = vertical, wheel2 = horizontal.
+        let deltas = scrollDeltas(dx: dx, dy: dy)
         if let ev = CGEvent(scrollWheelEvent2Source: src, units: .pixel, wheelCount: 2,
-                            wheel1: Int32(clamping: dy), wheel2: Int32(clamping: dx), wheel3: 0) {
+                            wheel1: deltas.wheel1, wheel2: deltas.wheel2, wheel3: 0) {
             ev.post(tap: .cghidEventTap)
         }
     }
@@ -194,12 +308,22 @@ nonisolated enum InputControlService {
         let raw = combo.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !raw.isEmpty else { return nil }
 
-        // Split on "+", tolerating a trailing empty token meaning the key itself is "+".
+        // Split on "+", where "+" is BOTH the separator and a legitimate key ("cmd++" = zoom in).
+        // The two cases are told apart by how many empty tokens trail: `"shift+"` splits to
+        // ["shift", ""] — one trailing empty, i.e. a stray separator, which must stay a
+        // modifier-only combo and be rejected. `"cmd++"` splits to ["cmd", "", ""] — two, the
+        // second of which IS the key.
+        //
+        // The previous rule turned ANY single trailing empty into a "+" key token, which no
+        // keycode table has an entry for, so the branch could not end in a successful parse:
+        // `"cmd++"` returned `unknownKeyCombo` while the code read as if "+" were supported.
         var parts = raw.components(separatedBy: "+")
-        if parts.count > 1, parts.last == "" {
+        var trailingEmpties = 0
+        while parts.last == "" {
             parts.removeLast()
-            parts.append("+")
+            trailingEmpties += 1
         }
+        if trailingEmpties >= 2 { parts.append("+") }
         parts = parts.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         guard let keyToken = parts.last else { return nil }
 
@@ -213,20 +337,53 @@ nonisolated enum InputControlService {
             default: return nil
             }
         }
+        // "+" is shift+"=" on US-ANSI — there is no key of its own to name, so the shift is
+        // implicit and must be OR-ed in rather than required from the caller.
+        if keyToken == "+" {
+            guard let equals = keyCode(for: "=") else { return nil }
+            return (flags.union(.maskShift), equals)
+        }
         guard let code = keyCode(for: keyToken) else { return nil }
         return (flags, code)
     }
 
     // MARK: - App resolution / activation
 
+    /// Plain-value projection of an `NSRunningApplication` — the class can't be constructed in
+    /// tests, so the resolution order is decided over this instead (same split as
+    /// `ScreenCaptureService.WindowCandidate`).
+    nonisolated struct AppCandidate: Equatable, Sendable {
+        let bundleID: String?
+        let localizedName: String?
+        /// `activationPolicy == .regular`, i.e. an ordinary Dock app rather than an agent /
+        /// background helper.
+        let isRegular: Bool
+    }
+
+    /// Index of the app `spec` resolves to, in strict tier order: exact bundle id, then exact
+    /// name, then a name SUBSTRING — and the substring tier alone additionally requires a regular
+    /// (Dock) app, because that is the tier where `"safari"` would otherwise match a background
+    /// helper such as "Open and Save Panel Service (Safari)" and activate the wrong process. The
+    /// tiers must stay ordered: a substring hit that outranked an exact one would let a longer
+    /// app name steal a precisely-named target.
+    static func bestAppIndex(_ candidates: [AppCandidate], spec: String) -> Int? {
+        let needle = spec.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return nil }
+        if let i = candidates.firstIndex(where: { $0.bundleID?.lowercased() == needle }) { return i }
+        if let i = candidates.firstIndex(where: { $0.localizedName?.lowercased() == needle }) { return i }
+        return candidates.firstIndex {
+            ($0.localizedName?.lowercased().contains(needle) ?? false) && $0.isRegular
+        }
+    }
+
     /// Resolves a running application by exact bundle id, exact name, then contains-name.
     static func runningApp(matching spec: String) -> NSRunningApplication? {
-        let s = spec.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !s.isEmpty else { return nil }
         let apps = NSWorkspace.shared.runningApplications
-        return apps.first { $0.bundleIdentifier?.lowercased() == s }
-            ?? apps.first { $0.localizedName?.lowercased() == s }
-            ?? apps.first { ($0.localizedName?.lowercased().contains(s) ?? false) && $0.activationPolicy == .regular }
+        let candidates = apps.map {
+            AppCandidate(bundleID: $0.bundleIdentifier, localizedName: $0.localizedName,
+                         isRegular: $0.activationPolicy == .regular)
+        }
+        return bestAppIndex(candidates, spec: spec).map { apps[$0] }
     }
 
     static func activate(_ app: NSRunningApplication) {

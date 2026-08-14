@@ -298,7 +298,10 @@ final class DictationService {
 
     @available(macOS 26, iOS 26, visionOS 26, *)
     private func handleUpdate(_ update: DictationEngine.TranscriptUpdate) {
-        guard update.slotIndex < slotTranscripts.count else { return }
+        // BOTH bounds. `slotIndex` arrives from the engine seam and every use
+        // below is a direct subscript, so a one-sided check reads like a bounds
+        // guard while a negative index still traps and takes the app down.
+        guard update.slotIndex >= 0, update.slotIndex < slotTranscripts.count else { return }
 
         // Honor `isFinal`: once any recognizer declares the utterance
         // complete, pin its transcript. Further partials from slower
@@ -307,6 +310,14 @@ final class DictationService {
             if !update.text.isEmpty {
                 slotTranscripts[update.slotIndex] = update.text
             }
+            // A recognizer that heard nothing STILL emits a terminal empty
+            // update when its result stream ends (the consumer task in
+            // `DictationEngine.start` does exactly that). Pinning that slot
+            // would publish "" and lock out the sibling recognizer holding the
+            // user's actual words — the same "empty slots never win" rule
+            // `pickLeaderTranscript` enforces for partials. Stay unpinned and
+            // let a slot that actually produced text finalize instead.
+            guard !slotTranscripts[update.slotIndex].isEmpty else { return }
             pinnedSlotIndex = update.slotIndex
             transcript = slotTranscripts[update.slotIndex]
             return

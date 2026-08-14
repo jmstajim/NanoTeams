@@ -56,7 +56,7 @@ nonisolated enum EffectiveToolset {
         selectedScheme: String?,
         isVisionConfigured: Bool,
         isComputerUseEnabled: Bool,
-        autovisorAllowTeamGeneration: Bool,
+        autovisorTeamPolicy: AutovisorTeamPolicy,
         fileManager: FileManager = .default
     ) -> [ToolSchema] {
         let stage1 = LLMExecutionService.resolveToolSchemas(
@@ -66,7 +66,7 @@ nonisolated enum EffectiveToolset {
             selectedScheme: selectedScheme,
             isVisionConfigured: isVisionConfigured,
             isComputerUseEnabled: isComputerUseEnabled,
-            autovisorAllowTeamGeneration: autovisorAllowTeamGeneration
+            autovisorTeamPolicy: autovisorTeamPolicy
         )
         return applyStorageFilters(stage1, storage: storage, fileManager: fileManager)
     }

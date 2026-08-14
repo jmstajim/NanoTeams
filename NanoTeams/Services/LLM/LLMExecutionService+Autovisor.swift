@@ -219,10 +219,11 @@ extension LLMExecutionService {
             if !ids.isEmpty { rolesNeedingAcceptance = ids }
         }
 
+        let derivedStatus = task.derivedStatusFromActiveRun()
         let data = StatusData(
             task_id: taskID,
             title: task.title,
-            status: task.derivedStatusFromActiveRun().rawValue,
+            status: derivedStatus.rawValue,
             chat_mode: task.isChatMode,
             elapsed_seconds: AutovisorStatus.taskElapsedSeconds(run: run, now: now),
             run_timeout_seconds: task.runTimeoutSeconds.map { Int($0) },
@@ -234,7 +235,29 @@ extension LLMExecutionService {
             roles_needing_acceptance: rolesNeedingAcceptance,
             stuck: taskStuck
         )
-        return makeSuccessEnvelope(data: data)
+        // Review with NOTHING at a per-role gate: the one state whose remedy the payload
+        // otherwise never names — `roles_needing_acceptance` is (deliberately) omitted when
+        // empty, so the manager saw `status: "needsSupervisorAcceptance"` and nothing else,
+        // then reached for `manage_role accept` and dead-ended (observed 2026-08-11). The
+        // machine-copyable hint rides the envelope's `next` slot at the decision point,
+        // mirroring `read_file`'s cap hint.
+        // Gated on `isReadyForFinalAcceptance` — the canonical predicate the human UI's
+        // review affordances key on — NOT on `rolesNeedingAcceptance == nil`: that wire
+        // field is step-INTERSECTED, so an orphan `.needsAcceptance` status with no step
+        // row (roster edited mid-run) reads as "no gates" there while a gate still
+        // exists; the canonical predicate reads the raw role set and stays silent. The
+        // same predicate gates the accept-rejection advice (`applyAcceptRole`), so the
+        // two surfaces cannot disagree. No hint while a listed gate awaits (accept those
+        // first — prompt §Review), for chat tasks (excluded by the predicate), or for
+        // closed ones (they derive `.done`).
+        let next: NextHint? = task.isReadyForFinalAcceptance
+            ? NextHint(
+                suggested_cmd: ToolNames.controlTask,
+                suggested_args: ["task_id": String(taskID), "action": "close"],
+                reason: "Task is in Review with no per-role gates; \(AutovisorStatus.closeAcceptsEverything) — or manage_role request_changes if the work falls short."
+            )
+            : nil
+        return makeSuccessEnvelope(data: data, next: next)
     }
 
     // MARK: - Writes (translate signal → AutovisorAction → single hook)

@@ -114,7 +114,13 @@ nonisolated final class BackgroundBashRegistry: @unchecked Sendable {
         } catch {
             try? writeHandle.close()
             try? fm.removeItem(at: outputURL)
-            throw ProcessRunnerError.executableNotFound(executable)
+            // NOT an unconditional `executableNotFound`: `bash` validates the
+            // working directory exists before it gets here, but "exists" is not
+            // "spawnable" — a directory the user cannot search (mode 0o000) still
+            // passes `fileExists` and then fails the spawn with EACCES. Reporting
+            // that as "Executable not found: /bin/zsh" is a false statement about
+            // the one thing that is definitely fine.
+            throw ProcessRunner.launchError(executable: executable, underlying: error)
         }
 
         // Insert, then evict the oldest FINISHED entries of THIS TASK beyond the
@@ -155,6 +161,76 @@ nonisolated final class BackgroundBashRegistry: @unchecked Sendable {
             .map(\.id)
     }
 
+    /// Splits a freshly-read byte run into the part that is decodable NOW and the part that
+    /// must wait for more bytes.
+    ///
+    /// Reads are incremental against a process that is still writing, so a read routinely
+    /// lands in the MIDDLE of a multi-byte character. The previous code did
+    /// `String(data:encoding:.utf8) ?? ""` and then advanced the offset by `data.count`
+    /// unconditionally: one straddling character nilled the decode of the WHOLE chunk, the
+    /// empty string was reported as the new output, and the offset moved past bytes nobody
+    /// had seen. The model got `{newOutput: "", running: true}` — indistinguishable from
+    /// "nothing new yet" — and the lost bytes were unrecoverable. Any non-ASCII log hits
+    /// this; this project's own logs are Russian.
+    ///
+    /// So: decode the longest complete prefix and CONSUME ONLY THAT, leaving a trailing
+    /// incomplete sequence (at most 3 bytes) pending for the next read, which will find it
+    /// completed.
+    ///
+    /// `moreBytesExpected` is what keeps that from becoming a different leak. Once the
+    /// process has exited no further bytes are coming, so a trailing partial sequence would
+    /// be withheld forever — output silently truncated at the last read. On that final read
+    /// the remainder is flushed lossily instead: the replacement character is visible, an
+    /// absent tail is not.
+    ///
+    /// Genuinely non-UTF-8 output (a command that writes binary to stdout) also decodes
+    /// lossily and is consumed, because leaving it pending would wedge every subsequent read
+    /// of that command on the same byte.
+    static func decodeIncremental(_ data: Data, moreBytesExpected: Bool) -> (text: String, consumed: Int) {
+        if data.isEmpty { return ("", 0) }
+        if let whole = String(data: data, encoding: .utf8) { return (whole, data.count) }
+
+        if moreBytesExpected {
+            // Walk back over at most the 3 continuation bytes a 4-byte sequence can trail,
+            // to the byte that starts the final sequence. If that sequence is short of the
+            // length its lead byte declares, it is a straddle, not corruption.
+            let bytes = [UInt8](data)
+            let scanFloor = max(0, bytes.count - 4)
+            var i = bytes.count - 1
+            while i >= scanFloor {
+                let b = bytes[i]
+                let isContinuation = b & 0b1100_0000 == 0b1000_0000
+                if !isContinuation {
+                    let declared: Int
+                    if b & 0b1000_0000 == 0 { declared = 1 }
+                    else if b & 0b1110_0000 == 0b1100_0000 { declared = 2 }
+                    else if b & 0b1111_0000 == 0b1110_0000 { declared = 3 }
+                    else if b & 0b1111_1000 == 0b1111_0000 { declared = 4 }
+                    else { declared = 0 }  // 0xF8… is never a legal lead byte
+                    let present = bytes.count - i
+                    if declared > present {
+                        // The head is decoded LOSSILY, not strictly. Gating the straddle on
+                        // the head decoding cleanly meant one invalid byte ANYWHERE earlier
+                        // in the same read window sent control to the whole-chunk consume
+                        // below — destroying a character that was legitimately split at the
+                        // boundary and whose second half was already on its way. The
+                        // invalid byte is already doomed to render as U+FFFD either way;
+                        // the split character need not be. Measured: with the strict gate,
+                        // `[0xFF] + "Привет".utf8.prefix(11)` loses `т` outright.
+                        //
+                        // `i == 0` (the whole chunk is one partial character) yields
+                        // ("", 0): nothing consumed, so the next read retries from here.
+                        return (String(decoding: data.prefix(i), as: UTF8.self), i)
+                    }
+                    break
+                }
+                i -= 1
+            }
+        }
+
+        return (String(decoding: data, as: UTF8.self), data.count)
+    }
+
     // MARK: - Read
 
     /// Returns output produced since the last read (incremental). `nil` if the
@@ -174,8 +250,9 @@ nonisolated final class BackgroundBashRegistry: @unchecked Sendable {
                 defer { try? handle.close() }
                 try? handle.seek(toOffset: entry.readOffset)
                 let data = (try? handle.readToEnd()) ?? Data()
-                newOutput = String(data: data, encoding: .utf8) ?? ""
-                entry.readOffset += UInt64(data.count)
+                let decoded = Self.decodeIncremental(data, moreBytesExpected: entry.running)
+                newOutput = decoded.text
+                entry.readOffset += UInt64(decoded.consumed)
             }
             return ReadResult(
                 command: entry.command,

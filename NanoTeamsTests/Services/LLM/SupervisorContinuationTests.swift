@@ -69,7 +69,6 @@ final class SupervisorContinuationTests: XCTestCase {
             tools: [],
             step: step,
             team: nil,
-            memoryStore: MemoryTagStore(workFolderRoot: URL(fileURLWithPath: "/tmp")),
             conversationMessages: &conversation,
             roleDefinition: nil
         )
@@ -104,7 +103,6 @@ final class SupervisorContinuationTests: XCTestCase {
             tools: [],
             step: step,
             team: nil,
-            memoryStore: MemoryTagStore(workFolderRoot: URL(fileURLWithPath: "/tmp")),
             conversationMessages: &conversation,
             roleDefinition: nil
         )

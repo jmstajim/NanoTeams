@@ -6,6 +6,17 @@ nonisolated enum ProcessRunnerError: LocalizedError {
     /// stdout/stderr instead of returning empty.
     case timeout(TimeInterval, stdout: String, stderr: String)
     case executableNotFound(String)
+    /// `Process.run()` refused to spawn even though the executable IS a present,
+    /// runnable regular file — so the blame lies elsewhere. The overwhelmingly
+    /// common cause is the working directory: a `currentDirectoryURL` that does
+    /// not exist raises `NSCocoaErrorDomain 4`, and one the user cannot search
+    /// (mode `0o000`) raises `NSPOSIXErrorDomain 13`. Measured 2026-08-08.
+    ///
+    /// Before this case existed both of those were reported as
+    /// `executableNotFound(<login shell>)` — "Executable not found: /bin/zsh" —
+    /// which is not merely vague but FALSE, and sends the model (and the user)
+    /// hunting for a missing shell instead of looking at `working_directory`.
+    case launchFailed(executable: String, reason: String)
     /// The enclosing Swift `Task` was cancelled while the subprocess was running.
     /// `ProcessRunner.run` SIGTERMs (and SIGKILLs after a grace period) the child
     /// process before throwing this so a paused step doesn't leave a runaway
@@ -18,6 +29,10 @@ nonisolated enum ProcessRunnerError: LocalizedError {
             "Process timed out after \(Int(seconds)) seconds"
         case .executableNotFound(let path):
             "Executable not found: \(path)"
+        case .launchFailed(let executable, let reason):
+            // ONE expression: this `switch` is a switch-EXPRESSION (implicit
+            // returns), so an arm cannot be split into statements.
+            "Could not start \(executable): \(reason). The executable itself is present and runnable — check that the working directory exists and is accessible."
         case .cancelled:
             "Process cancelled (run paused or interrupted)."
         }
@@ -72,7 +87,7 @@ nonisolated struct ProcessRunner {
         do {
             try process.run()
         } catch {
-            throw ProcessRunnerError.executableNotFound(executable)
+            throw Self.launchError(executable: executable, underlying: error)
         }
 
         // Read pipes concurrently BEFORE the wait loop to prevent deadlock.
@@ -167,6 +182,25 @@ nonisolated struct ProcessRunner {
             stdout: stdout,
             stderr: stderr
         )
+    }
+
+    /// Classifies a `Process.run()` spawn failure. Shared by `run` and
+    /// `BackgroundBashRegistry.start`, which both used to report EVERY spawn
+    /// failure as `executableNotFound(executable)`.
+    ///
+    /// The check is deliberately three-part rather than a bare
+    /// `isExecutableFile`: that returns `true` for a DIRECTORY on macOS (the `x`
+    /// bit means "searchable"), and a directory passed as the executable really
+    /// is the not-found case. Only a present, non-directory, executable file is
+    /// exonerated — anything else keeps the original, accurate diagnosis.
+    static func launchError(executable: String, underlying: Error) -> ProcessRunnerError {
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        let exists = fm.fileExists(atPath: executable, isDirectory: &isDir)
+        guard exists, !isDir.boolValue, fm.isExecutableFile(atPath: executable) else {
+            return .executableNotFound(executable)
+        }
+        return .launchFailed(executable: executable, reason: underlying.localizedDescription)
     }
 
     /// Run git command in specified directory

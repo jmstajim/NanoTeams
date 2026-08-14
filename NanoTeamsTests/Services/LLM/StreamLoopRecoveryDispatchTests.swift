@@ -90,9 +90,8 @@ final class StreamLoopRecoveryDispatchTests: XCTestCase {
         XCTAssertEqual(service._testThinkingLoopBreakCount(stepID: stepID, taskID: task.id), 1)
     }
 
-    /// The nudge is appended, never spliced in: `planMessageIndex` /
-    /// `memoriesMessageIndex` are ABSOLUTE offsets into this array, so any earlier
-    /// entry moving would silently invalidate them.
+    /// The nudge is appended, never spliced in: any earlier entry moving would
+    /// change an early byte and invalidate the server's KV prefix from that point.
     func testFirstBreak_appendsAtTail_leavingEarlierEntriesInPlace() async {
         var messages = seedConversation()
         let before = messages
@@ -184,8 +183,8 @@ final class StreamLoopRecoveryDispatchTests: XCTestCase {
             "notes accumulate rather than being retired — retiring rewrites an early index and "
                 + "costs a full re-prefill")
 
-        // The seeded turns are untouched, so `planMessageIndex` / `memoriesMessageIndex`
-        // (absolute offsets) still address what they addressed.
+        // The seeded turns are untouched — earlier bytes are exactly where they
+        // were, so the server's KV prefix survives the nudge.
         XCTAssertEqual(messages[0].content, "the task")
         XCTAssertEqual(messages[1].content, "a good prior turn")
         XCTAssertEqual(messages[before].content, snapshot[before].content,

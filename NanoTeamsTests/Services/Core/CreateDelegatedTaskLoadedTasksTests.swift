@@ -232,4 +232,41 @@ final class CreateDelegatedTaskLoadedTasksTests: XCTestCase {
         XCTAssertNotNil(store.loadedTask(child1), "First child must remain loaded after second creation")
         XCTAssertNotNil(store.loadedTask(child2), "Second child must be loaded too")
     }
+
+    /// Creation can fail on disk (a full volume, a revoked security scope, a work
+    /// folder deleted mid-run). The `catch` must return nil AND surface the reason.
+    ///
+    /// The nil is what the caller acts on, but the banner is what makes the failure
+    /// diagnosable, and this is the one delegation failure with no other trace: every
+    /// later stage — eligibility, depth cap, timeout — reports through a tool-result
+    /// envelope the model and the feed both see, whereas here there is no child task
+    /// to hang a step on. Without the banner the role's `delegate_to_team` returns a
+    /// generic failure and nothing anywhere says the task could not be written.
+    ///
+    /// RED: delete `self.lastErrorMessage = error.localizedDescription` → the banner
+    /// assertion fails while the nil still holds, i.e. exactly the silent-failure
+    /// shape. Delete the whole `catch` → the file does not compile (the `do` body
+    /// throws), which is the other half of why this arm is not optional.
+    func testCreateDelegatedTask_repositoryRefusesCreation_returnsNilAndSurfacesWhy() async {
+        let root = makeWorkFolderRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = AOrchFailingRepository(wrapping: NTMSRepository())
+        let store = TestOrchestrator.make(repository: repository)
+
+        await store.openWorkFolder(root)
+        let parentID = await store.createTask(title: "Parent", supervisorTask: "...")
+        guard let parentID else { return XCTFail("parent creation failed") }
+        repository.failCreateTask = true
+        store.lastErrorMessage = nil
+
+        let childID = await store.createDelegatedTask(
+            parentTaskID: parentID, parentRoleID: "r",
+            title: "C", supervisorTask: "B",
+            preferredTeamID: nil, depth: 1
+        )
+
+        XCTAssertNil(childID, "a child that could not be written must not be reported as created")
+        XCTAssertNotNil(store.lastErrorMessage,
+                        "the only trace this failure leaves is the banner — there is no child step to carry an envelope")
+    }
 }

@@ -451,6 +451,100 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
         XCTAssertNil(status.steps.first?.role_kind)
     }
 
+    // MARK: - next-hint contract (Review with no per-role gate → control_task close)
+
+    /// The 2026-08-11 incident's FIRST decision point: a Review task with
+    /// `roles_needing_acceptance` omitted told the manager nothing, and it reached for
+    /// `manage_role accept`. The envelope's `next` slot must carry the machine-copyable
+    /// close command exactly here — and ONLY here (the four omit-tests below pin each
+    /// guard of the condition individually).
+    func testHandleTaskStatus_reviewNoPendingAcceptance_carriesCloseHint() async throws {
+        let step = StepExecution(id: "r", role: .softwareEngineer, title: "R", status: .done)
+        let task = NTMSTask(id: 42, title: "T", supervisorTask: "...",
+                            runs: [Run(id: 0, steps: [step], roleStatuses: ["r": .done])])
+        mockDelegate.taskToMutate = task
+
+        let json = await service.handleTaskStatus(taskID: 42)
+        let next = try XCTUnwrap(Self.decodeNext(from: json),
+                                 "Review with nothing at a per-role gate must carry the close hint")
+        XCTAssertEqual(next.suggested_cmd, ToolNames.controlTask)
+        XCTAssertEqual(next.suggested_args?["task_id"], "42",
+                       "task_id must be copyable verbatim — the model never computes")
+        // Round-trip the action spelling through the REAL decoder so "close" can't
+        // silently drift from what control_task actually parses.
+        let action = try XCTUnwrap(next.suggested_args?["action"])
+        XCTAssertEqual(try ControlVerb.parse(action: action, arg: nil).get(), .close,
+                       "the suggested action must parse as control_task's close verb")
+        XCTAssertNotNil(next.reason, "the hint explains WHY close is the move")
+    }
+
+    /// A genuine mid-pipeline gate: `roles_needing_acceptance` is non-empty, so per-role
+    /// accept applies FIRST (prompt §Review) — the close hint must stay away, byte-level.
+    func testHandleTaskStatus_reviewWithPendingAcceptance_omitsNext() async throws {
+        let steps = [
+            StepExecution(id: "pm", role: .custom(id: "pm"), title: "PM", status: .done),
+            StepExecution(id: "tl", role: .custom(id: "tl"), title: "TL", status: .done),
+        ]
+        let task = NTMSTask(id: 1, title: "T", supervisorTask: "...",
+                            runs: [Run(id: 0, steps: steps,
+                                       roleStatuses: ["pm": .needsAcceptance, "tl": .done])])
+        mockDelegate.taskToMutate = task
+
+        let json = await service.handleTaskStatus(taskID: 1)
+        let status = try Self.decodeStatus(from: json)
+        XCTAssertEqual(status.roles_needing_acceptance, ["pm"], "precondition: the gate is listed")
+        XCTAssertNil(try Self.decodeNext(from: json))
+        XCTAssertFalse(json.contains("\"next\""),
+                       "omitted means ABSENT from the wire, not null — byte-shape pin")
+    }
+
+    func testHandleTaskStatus_runningTask_omitsNext() async throws {
+        let step = StepExecution(id: "r", role: .softwareEngineer, title: "R", status: .running)
+        mockDelegate.taskToMutate = NTMSTask(id: 1, title: "T", supervisorTask: "...",
+                                             runs: [Run(id: 0, steps: [step], roleStatuses: ["r": .working])])
+        let json = await service.handleTaskStatus(taskID: 1)
+        XCTAssertNil(try Self.decodeNext(from: json), "a live run has nothing to close")
+    }
+
+    /// Chat tasks override Review to `.running` in `derivedStatusFromActiveRun` — the
+    /// guard keys on the DERIVED status, so an all-done chat task never gets the hint
+    /// (a chat task ends only when the manager decides the conversation is over).
+    func testHandleTaskStatus_chatModeAllDone_omitsNext() async throws {
+        let step = StepExecution(id: "a", role: .custom(id: "a"), title: "A", status: .done)
+        mockDelegate.taskToMutate = NTMSTask(id: 1, title: "Chat", supervisorTask: "...",
+                                             runs: [Run(id: 0, steps: [step], roleStatuses: ["a": .done])],
+                                             isChatMode: true)
+        let json = await service.handleTaskStatus(taskID: 1)
+        XCTAssertNil(try Self.decodeNext(from: json), "chat never derives Review → never advises close")
+    }
+
+    func testHandleTaskStatus_closedTask_omitsNext() async throws {
+        let step = StepExecution(id: "r", role: .softwareEngineer, title: "R", status: .done)
+        mockDelegate.taskToMutate = NTMSTask(id: 1, title: "T", supervisorTask: "...",
+                                             runs: [Run(id: 0, steps: [step], roleStatuses: ["r": .done])],
+                                             closedAt: Date())
+        let json = await service.handleTaskStatus(taskID: 1)
+        XCTAssertNil(try Self.decodeNext(from: json), "a closed task derives .done — nothing left to close")
+    }
+
+    /// An ORPHAN `.needsAcceptance` status (no step row — roster edited mid-run): the
+    /// wire field is step-intersected and reads empty, but a live gate still exists.
+    /// The hint gates on `isReadyForFinalAcceptance` (the RAW role set), so it must
+    /// stay silent — a `rolesNeedingAcceptance == nil` gate would advise closing over
+    /// the orphan's unreviewed gate.
+    func testHandleTaskStatus_orphanNeedsAcceptanceGate_omitsNext() async throws {
+        let step = StepExecution(id: "r", role: .softwareEngineer, title: "R", status: .done)
+        mockDelegate.taskToMutate = NTMSTask(id: 1, title: "T", supervisorTask: "...",
+                                             runs: [Run(id: 0, steps: [step],
+                                                        roleStatuses: ["r": .done, "ghost": .needsAcceptance])])
+        let json = await service.handleTaskStatus(taskID: 1)
+        let status = try Self.decodeStatus(from: json)
+        XCTAssertNil(status.roles_needing_acceptance,
+                     "precondition: the orphan is filtered from the wire field — that is why the hint cannot key on it")
+        XCTAssertNil(try Self.decodeNext(from: json),
+                     "a gate the payload cannot list is still a gate; no close hint")
+    }
+
     // MARK: - Helpers
 
     /// Builds a single-run task from `steps`/`roleStatuses`, wires it into the mock, and returns
@@ -499,6 +593,20 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
     private static func decodeStatus(from json: String) throws -> StatusDTO {
         struct Envelope: Decodable { let data: StatusDTO }
         return try JSONDecoder().decode(Envelope.self, from: Data(json.utf8)).data
+    }
+
+    private struct NextDTO: Decodable {
+        let suggested_cmd: String?
+        let suggested_args: [String: String]?
+        let reason: String?
+    }
+
+    /// The envelope's top-level `next` slot; nil when the key is absent. THROWS on a
+    /// malformed envelope — with a swallowing `try?`, every omit-test would pass
+    /// vacuously against a broken payload (the anti-vacuum rule from the Грабли log).
+    private static func decodeNext(from json: String) throws -> NextDTO? {
+        struct Envelope: Decodable { let next: NextDTO? }
+        return try JSONDecoder().decode(Envelope.self, from: Data(json.utf8)).next
     }
 
     /// Decodes the `data.artifacts` array out of a `makeSuccessEnvelope` JSON string

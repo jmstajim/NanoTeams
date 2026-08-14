@@ -5,13 +5,22 @@ private typealias JS = JSONSchema
 
 // MARK: - Autovisor management tools
 //
-// Nine tools available ONLY to the hidden "Manager" role of the Autovisor
+// TEN tools available ONLY to the hidden "Manager" role of the Autovisor
 // team (gated by that role's `toolIDs`). All are category `.collaboration` so they
 // route through the deferred-handler path (`appendCollaborationResult`) — sandbox
 // tool handlers can't reach the orchestrator, so even the read tools emit a signal.
 // All `excludedInMeetings`. Each handler validates args and emits a `pending`
-// envelope + a `ToolSignal`; the real work happens in the service-layer handlers
-// (`LLMExecutionService+Autovisor.swift`).
+// envelope + a `ToolSignal`.
+//
+// NINE of the ten do their real work in `LLMExecutionService+Autovisor.swift`, which
+// is why that file's header says nine and this one says ten — the two counts are
+// different sets, not a contradiction. `wait_for_events` is the tenth: it has no
+// service-layer handler, because it asks for a STATE CHANGE rather than an action.
+// Its signal is dispatched in `+ToolResultDispatching` and flips the step's
+// `parkForEventsRequested`, which the tool loop reads at the top of the next
+// iteration to park the pass. Count these from the struct declarations below, never
+// from this sentence — it said "Nine" from the day `wait_for_events` landed until
+// 2026-08-10.
 
 /// `list_tasks` — enumerate every task in the folder with status.
 nonisolated struct ListTasksTool: ToolHandler {
@@ -91,15 +100,16 @@ nonisolated struct CreateManagedTaskTool: ToolHandler {
         has no other context, so put everything they need into `brief`.
         """
 
-    private static let parameterSchema = parameters(allowGenerated: true)
+    private static let parameterSchema = parameters(allowGeneration: true, omitIsViable: true)
 
-    /// The `team_id` param description varies with whether on-the-fly team
-    /// generation is allowed for this folder (the `"generated"` sentinel is only
-    /// mentioned when it's a valid value).
-    private static func parameters(allowGenerated: Bool) -> JSONSchema {
-        let teamIDDescription = allowGenerated
-            ? "A team id from the catalog in this description, or \"generated\" to assemble a new team. Omit to use the folder's active team."
-            : "A team id from the catalog in this description. Omit to use the folder's active team."
+    /// The `team_id` param description varies with what is actually valid for this folder:
+    /// the `"generated"` sentinel is mentioned only when generation is allowed, and the
+    /// "omit it" clause only when the active team can actually receive a task. Advertising
+    /// either while the runtime refuses it is advertise-then-reject.
+    private static func parameters(allowGeneration: Bool, omitIsViable: Bool) -> JSONSchema {
+        var teamIDDescription = "A team id from the catalog in this description"
+        if allowGeneration { teamIDDescription += ", or \"generated\" to assemble a new team" }
+        teamIDDescription += omitIsViable ? ". Omit to use the folder's active team." : "."
         return JS.object(
             properties: [
                 "title": JS.string("Short task title."),
@@ -112,13 +122,35 @@ nonisolated struct CreateManagedTaskTool: ToolHandler {
 
     /// Per-build schema embedding the team catalog inline (same pattern as
     /// `delegate_to_team`). The manager has no other way to discover team ids.
-    /// `allowGenerated` gates the `"generated"` sentinel (Settings → Autovisor →
-    /// "Let Autovisor generate new teams"); when off, the bullet AND the `team_id`
-    /// description drop it so the model never sees generation as an option. Runtime
-    /// enforcement lives in `classifyManagedTeamID` (defense in depth).
-    static func buildSchema(allTeams: [Team], allowGenerated: Bool = true) -> ToolSchema {
+    ///
+    /// The `policy` gates both halves of the catalog: `blockedTeamIDs` filters the bullets
+    /// (via `selectableTeams(from:)`, so this list and the Settings card can never disagree),
+    /// and `allowGeneration` gates the `"generated"` bullet AND the `team_id` description, so
+    /// the model never sees an option the runtime would refuse. Runtime enforcement lives in
+    /// `AutovisorTeamPolicy.classify` (defense in depth).
+    ///
+    /// `create_managed_task` is NEVER stripped when the catalog is empty, unlike the
+    /// `delegate_to_team` pack: it is in `managerMandatoryToolIDs` ("Removing any breaks the
+    /// manager") and the manager's prompt names it in three places, so withholding it would
+    /// leave the model told by an unstoppable prompt to call a tool that vanished. Instead
+    /// the catalog says so outright, and `classify` fails with a terminal message.
+    static func buildSchema(
+        allTeams: [Team],
+        policy: AutovisorTeamPolicy = .unrestricted
+    ) -> ToolSchema {
+        // Derived, not threaded — at the cost of being APPROXIMATE, deliberately in the
+        // conservative direction. A usable active team would itself appear in the catalog, so
+        // an empty catalog is strong evidence omitting `team_id` will be refused, and dropping
+        // the clause avoids advertise-then-reject in the state that matters (everything
+        // blocked). It is not an iff: with a NON-empty catalog the active team can still be
+        // chat-mode and be refused (pre-existing, unchanged), and with an EMPTY team list and
+        // no active team at all the runtime accepts the omit this description withheld. Both
+        // residuals cost at most one wasted turn; threading the active team through the whole
+        // resolution chain to close them would re-create the second gate this policy exists to
+        // avoid. The runtime message is the precise one.
+        let omitIsViable = !policy.hasNoSelectableTeam(in: allTeams)
         var lines: [String] = []
-        for team in allTeams where !team.isHiddenFromPickers {
+        for team in policy.selectableTeams(from: allTeams) {
             let roleNames = team.nonSupervisorRoles.map(\.name).joined(separator: ", ")
             let descPart = team.description.isEmpty ? "" : ": \(team.description)"
             let rolesPart = roleNames.isEmpty ? "" : ". Roles: \(roleNames)"
@@ -128,14 +160,22 @@ nonisolated struct CreateManagedTaskTool: ToolHandler {
             let chatPart = team.isChatMode ? " [chat — open-ended dialog, no deliverables; you must control_task close it]" : ""
             lines.append("- `\(team.id)` — \"\(team.name)\"\(descPart)\(rolesPart)\(chatPart)")
         }
-        if allowGenerated {
+        if policy.allowGeneration {
             lines.append("- `\(DelegationConstants.generatedTeamSentinel)` — assemble a fresh team for a novel task (slower; prefer an existing team when one fits).")
         }
-        let catalog = "Available teams:\n" + lines.joined(separator: "\n")
+        var catalog = "Available teams:\n" + lines.joined(separator: "\n")
+        // Emitted only when BLOCKING is what emptied the catalog. A folder that simply has no
+        // non-infrastructure teams keeps the historical bare header, so a default (empty)
+        // block list leaves these prompt bytes byte-identical to before this feature.
+        if policy.blockingNarrowedCatalog(in: allTeams), lines.isEmpty {
+            catalog += "(none — every team in this folder is excluded from Autovisor task creation"
+                + (policy.allowGeneration ? "" : ", and team generation is off")
+                + "). Report this to your Supervisor and carry on with the rest of the pass."
+        }
         return ToolSchema(
             name: TN.createManagedTask,
             description: baseDescription + "\n\n" + catalog,
-            parameters: parameters(allowGenerated: allowGenerated)
+            parameters: parameters(allowGeneration: policy.allowGeneration, omitIsViable: omitIsViable)
         )
     }
 
@@ -423,7 +463,17 @@ nonisolated struct SetWorkFolderContextTool: ToolHandler {
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
+            // Every sibling text field (`brief`, `answer`, `message`, `role_id`) trims and
+            // rejects empty. This one did not — and what it writes is injected into every
+            // role's prompt on every task in the folder, so an accidental empty emission
+            // silently wiped it.
+            // Validated on the trimmed value, CARRIED verbatim: the folder context is
+            // prose whose leading and trailing structure is the author's.
             let content = try requiredString(args, "content")
+            guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs,
+                                       message: "content must not be empty — it replaces the work-folder context for every role.")
+            }
             return ToolExecutionResult(
                 toolName: Self.name,
                 argumentsJSON: encodeArgsToJSON(args),

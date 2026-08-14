@@ -91,11 +91,16 @@ final class ActivityDetailWindowDedupTests: XCTestCase {
         )
         let meetingTool = ActivityDetailWindow.meetingTool(id: id, summary: summary)
         let meetingTools = ActivityDetailWindow.meetingTools(id: id, summaries: [summary])
+        // A system notice keys on `LLMMessage.id` — the SAME id space as
+        // `.thinking`, so this pair is a real collision risk, not a theoretical
+        // one: one message can own both a thinking window and a notice window.
+        let systemNotice = ActivityDetailWindow.systemNotice(id: id, label: "retry", text: "y")
 
-        // All five should be pairwise-distinct because each case prefixes its
-        // own namespace into `dedupKey`. A bare UUID collision (theoretical)
-        // wouldn't sneak across cases.
-        let cases: [ActivityDetailWindow] = [llm, meeting, supervisor, toolCall, meetingTool, meetingTools]
+        // All pairwise-distinct because each case prefixes its own namespace
+        // into `dedupKey`.
+        let cases: [ActivityDetailWindow] = [
+            llm, meeting, supervisor, toolCall, meetingTool, meetingTools, systemNotice,
+        ]
         for i in 0..<cases.count {
             for j in (i + 1)..<cases.count {
                 XCTAssertNotEqual(cases[i], cases[j],
@@ -197,6 +202,34 @@ final class ActivityDetailWindowDedupTests: XCTestCase {
                           "Two transient same-named artifacts emitted at distinct timestamps must open separate windows.")
     }
 
+    // MARK: - System notice dedup
+
+    /// `.serverError` notices rewrite their text in place across retry attempts
+    /// on the SAME message id, so a payload-sensitive identity would pop a new
+    /// window on every attempt.
+    func testSystemNotice_sameIDDifferentText_areEqual() {
+        let id = UUID()
+        let a = ActivityDetailWindow.systemNotice(
+            id: id, label: "server error", text: "attempt 1/3 … Retrying in 10s…")
+        let b = ActivityDetailWindow.systemNotice(
+            id: id, label: "server error", text: "attempt 2/3 … Retrying in 10s…")
+        XCTAssertEqual(a, b, "A retry rewriting the note in place must reuse the open window.")
+        XCTAssertEqual(a.hashValue, b.hashValue)
+    }
+
+    func testSystemNotice_sameIDDifferentLabel_areEqual() {
+        let id = UUID()
+        let a = ActivityDetailWindow.systemNotice(id: id, label: "retry", text: "x")
+        let b = ActivityDetailWindow.systemNotice(id: id, label: "loop correction", text: "x")
+        XCTAssertEqual(a, b, "Label is display-only — same message id is the same window.")
+    }
+
+    func testSystemNotice_differentIDs_areNotEqual() {
+        let a = ActivityDetailWindow.systemNotice(id: UUID(), label: "retry", text: "x")
+        let b = ActivityDetailWindow.systemNotice(id: UUID(), label: "retry", text: "x")
+        XCTAssertNotEqual(a, b, "Two nudges must open two windows.")
+    }
+
     // MARK: - Codable: encoding emits dedupKey, decoding throws
 
     func testCodable_decodeThrows() throws {
@@ -213,5 +246,13 @@ final class ActivityDetailWindowDedupTests: XCTestCase {
         let decodedAsString = try JSONDecoder().decode(String.self, from: encoded)
         XCTAssertEqual(decodedAsString, "thinking:\(id)",
                        "Encoding must emit the dedupKey only — never the full payload.")
+    }
+
+    func testCodable_encodeWritesDedupKey_forSystemNotice() throws {
+        let id = UUID()
+        let value = ActivityDetailWindow.systemNotice(id: id, label: "retry", text: "x")
+        let encoded = try JSONEncoder().encode(value)
+        let decodedAsString = try JSONDecoder().decode(String.self, from: encoded)
+        XCTAssertEqual(decodedAsString, "system-notice:\(id)")
     }
 }

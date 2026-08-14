@@ -131,6 +131,21 @@ struct MessageBubbleView: View {
         ) && !hasMessageContent
     }
 
+    /// The header's `(source)` label. A collapsed system notice already spells
+    /// its kind out in the row (`system · retry`), so repeating it beside the
+    /// role name says the same thing twice. Suppressed HERE rather than in
+    /// `LLMMessage.sourceContextDisplayLabel` because `ConversationTranscriptRenderer`
+    /// reads that same helper for `conversation_log.md`, where the label is the
+    /// only attribution there is. `nonisolated static` (pure) so the rule is
+    /// pinned against the PRODUCTION symbol — same pattern as
+    /// `isThinkingStreaming` above.
+    nonisolated static func headerSourceLabel(
+        for message: LLMMessage,
+        isSystemNotice: Bool
+    ) -> String? {
+        isSystemNotice ? nil : message.sourceContextDisplayLabel
+    }
+
     // MARK: - Body
 
     var body: some View {
@@ -142,6 +157,14 @@ struct MessageBubbleView: View {
             !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         } ?? false
         let hasMessageContent = !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // System-authored turn (retry nudge / loop correction / server-error
+        // note)? Then the body collapses to a one-line row. Resolved once so
+        // the header and the body agree on it. Depends on `sourceContext`
+        // alone — see `SystemNoticePresentation.resolve` for why content
+        // emptiness must not flip this.
+        let systemNotice = SystemNoticePresentation.resolve(
+            context: message.sourceContext, content: content
+        )
 
         HStack(alignment: .top, spacing: ActivityCardTokens.cardPadding) {
             if showHeader {
@@ -158,7 +181,9 @@ struct MessageBubbleView: View {
                         roleName: roleName,
                         teamSuffix: roleTeamSuffix,
                         tintColor: tintColor,
-                        sourceLabel: message.sourceContextDisplayLabel,
+                        sourceLabel: Self.headerSourceLabel(
+                            for: message, isSystemNotice: systemNotice != nil
+                        ),
                         timestamp: message.createdAt,
                         isStreaming: isStreaming
                     )
@@ -190,30 +215,28 @@ struct MessageBubbleView: View {
                     let contentText = SelectableMessageText(content: content)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    if message.sourceContext == .supervisorMessage {
+                    if let systemNotice {
+                        // The runtime talking to the model on the user's behalf.
+                        // Collapsed to a dim one-liner that opens the full text
+                        // in a window — including in debug mode, where the only
+                        // extra turns are context-LESS ones, which resolve to
+                        // nil and keep rendering as prose.
+                        //
+                        // `.serverError` used to be a full-width red card here;
+                        // its urgency now lives in this row's red label, and the
+                        // row stays live because in-place content rewrites fail
+                        // `MessageBubbleView.==` and force a re-render.
+                        SystemNoticeRow(
+                            notice: systemNotice,
+                            messageID: message.id,
+                            fullText: content
+                        )
+                    } else if message.sourceContext == .supervisorMessage {
                         contentText
                             .padding(ActivityCardTokens.cardPadding)
                             .background(
                                 RoundedRectangle.squircle(ActivityCardTokens.cornerRadius)
                                     .fill(Colors.surfaceElevated)
-                            )
-                    } else if message.sourceContext == .serverError {
-                        // Transient retry-status note → red error bubble so a
-                        // failing/reconnecting LLM call is unmistakable.
-                        Text(content)
-                            .font(Typography.termBase)
-                            .foregroundStyle(Colors.error)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(ActivityCardTokens.cardPadding)
-                            .background(
-                                RoundedRectangle.squircle(ActivityCardTokens.cornerRadius)
-                                    .fill(Colors.errorTint)
-                            )
-                            .overlay(
-                                RoundedRectangle.squircle(ActivityCardTokens.cornerRadius)
-                                    .strokeBorder(Colors.errorBorder, lineWidth: 1)
                             )
                     } else {
                         contentText
@@ -439,6 +462,46 @@ extension MessageBubbleView: Equatable {
                 role: .techLead,
                 roleDefinition: nil,
                 content: "The API should use REST endpoints.",
+                thinking: nil,
+                processingProgress: nil,
+                isStreaming: false,
+                showHeader: true
+            )
+
+            Divider()
+
+            messageBubblePreviewSectionLabel("7b. System notice — retry, continuation (the common case)")
+            MessageBubbleView(
+                message: LLMMessage(
+                    role: .user,
+                    content: "Your previous tool call had malformed JSON and could not be parsed "
+                        + "(parser error: No string key for value in object around line 1, column 1.). "
+                        + "Retry with valid JSON.",
+                    sourceContext: .retryNudge
+                ),
+                role: .softwareEngineer,
+                roleDefinition: nil,
+                content: "Your previous tool call had malformed JSON and could not be parsed "
+                    + "(parser error: No string key for value in object around line 1, column 1.). "
+                    + "Retry with valid JSON.",
+                thinking: nil,
+                processingProgress: nil,
+                isStreaming: false,
+                showHeader: false
+            )
+
+            Divider()
+
+            messageBubblePreviewSectionLabel("7c. System notice — server error, with header (no duplicate label)")
+            MessageBubbleView(
+                message: LLMMessage(
+                    role: .assistant,
+                    content: "LLM server error (attempt 2/3): The request timed out. Retrying in 10s…",
+                    sourceContext: .serverError
+                ),
+                role: .softwareEngineer,
+                roleDefinition: nil,
+                content: "LLM server error (attempt 2/3): The request timed out. Retrying in 10s…",
                 thinking: nil,
                 processingProgress: nil,
                 isStreaming: false,

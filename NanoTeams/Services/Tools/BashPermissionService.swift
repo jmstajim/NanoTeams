@@ -15,7 +15,10 @@ nonisolated enum BashPermissionService {
     static func evaluate(command: String, policy: BashPolicy) -> BashPermissionDecision {
         // Mode Off disables the tool entirely.
         if policy.mode == .off {
-            return .deny(reason: "The bash tool is disabled in Settings (execution mode: Off).")
+            // Model-read (rides `makeErrorEnvelope` into the tool result), so it names the
+            // policy, not the Settings pane the model cannot open. "disabled" stays in the
+            // first sentence — `ComputerUseGateResolutionTests` pins that word.
+            return .deny(reason: "The bash tool is disabled by policy (execution mode: Off). No command can run in this step.")
         }
 
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)

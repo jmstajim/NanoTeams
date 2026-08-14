@@ -416,6 +416,72 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
         )
     }
 
+    // MARK: - Planning phase: a failed tool call is not a plan (regression 2026-08-07)
+
+    /// The observed defect, end to end: `gemma-4-e4b` emitted a bare tool call in a
+    /// planning-phase step, the parser dropped it (no sentinel), and the prose fallback
+    /// wrote the raw JSON into `step.scratchpad` — which `implementationWire` then keeps as
+    /// the SOLE surviving turn across the phase boundary, so the implementation phase began
+    /// with `{"name":"list_files",…}|` as its plan. The user saw it as a chat bubble
+    /// followed by "Plan recorded from your text response."
+    ///
+    /// The guard is the only production consumer of `BareToolCallSalvage.looksLikeToolCallAttempt`,
+    /// and it had no behavioural pin: `&& false` on it left the whole suite green.
+    func testPlanningPhase_failedToolCallIsNotRecordedAsThePlan() async {
+        var messages: [ChatMessage] = [
+            ChatMessage(role: .system, content: "You are Software Engineer."),
+            ChatMessage(role: .user, content: "Build a calculator"),
+            ChatMessage(role: .user, content: PlanningPhasePolicy.planningBrief(
+                exploreToolNames: [ToolNames.search], expectedArtifacts: [])),
+        ]
+        // Verbatim from the run, trailing sentinel byte included.
+        let leaked = #"{"name":"list_files","arguments":{"path":"MeditationApp"}}|"#
+
+        let stop = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: leaked,
+            sawHarmonyMarker: false,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages
+        )
+
+        guard case .continueLoop = stop else {
+            XCTFail("Expected .continueLoop, got \(stop)"); return
+        }
+        // The phase must stay OPEN for a real plan.
+        XCTAssertNil(
+            mockDelegate.taskToMutate?.runs[0].steps[0].scratchpad,
+            "a tool call the parser dropped must not become the step's durable plan")
+
+        let nudge = messages.last(where: { $0.role == .user })?.content ?? ""
+        XCTAssertTrue(nudge.contains("looked like a tool call"), nudge)
+        XCTAssertFalse(
+            nudge.contains("Plan recorded"),
+            "the prose fallback's nudge would tell the model its failed call was accepted")
+    }
+
+    /// The negative that keeps the guard narrow: ordinary prose in the same position still
+    /// takes the plan-recording path, or the phase could never end.
+    func testPlanningPhase_proseStillRecordsThePlan() async {
+        var messages: [ChatMessage] = [
+            ChatMessage(role: .system, content: "You are Software Engineer."),
+            ChatMessage(role: .user, content: PlanningPhasePolicy.planningBrief(
+                exploreToolNames: [ToolNames.search], expectedArtifacts: [])),
+        ]
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "I'll read ContentView.swift, then add the evaluator.",
+            sawHarmonyMarker: false,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages
+        )
+        XCTAssertEqual(
+            mockDelegate.taskToMutate?.runs[0].steps[0].scratchpad,
+            "I'll read ContentView.swift, then add the evaluator.")
+    }
+
     func testProducingRoleWithoutHarmonyMarker_sendsMissingArtifactsNudge() async {
         // Negative of the previous test: same producing role, but no harmony marker
         // and the content is plain text. Should fall through to the producing-role

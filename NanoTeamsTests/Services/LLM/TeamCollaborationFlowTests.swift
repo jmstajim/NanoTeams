@@ -362,9 +362,9 @@ final class TeamCollaborationFlowTests: XCTestCase {
         XCTAssertEqual(result, .approved)
     }
 
-    func testTallyVotes_emptyMessages_returnsTied() {
+    func testTallyVotes_emptyMessages_returnsNoVotes() {
         let result = ChangeRequestService.tallyVotes(meetingMessages: [])
-        XCTAssertEqual(result, .tied, "0 approves vs 0 rejects should return .tied")
+        XCTAssertEqual(result, .noVotes, "0 approves vs 0 rejects is the absence of a decision")
     }
 
     func testTallyVotes_mixedContentWithVotes() {

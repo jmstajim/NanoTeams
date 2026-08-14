@@ -44,31 +44,50 @@ final class EndToEndToolExecutionPipelineTests: XCTestCase {
         XCTAssertFalse(isAuthorized, "write_file should not be in read-only toolset")
     }
 
-    // MARK: - Test 5: Loop detection triggers after repetitive calls
+    // MARK: - Test 5: Loop detection triggers on REPETITION, not on the read category
 
-    func testToolPipeline_loopDetected_guidanceInjected() {
+    /// Six reads of six DIFFERENT files is the ordinary opening of any task (and the
+    /// planning-phase brief prescribes it verbatim). The deleted `.readOnlyLoop` arm
+    /// flagged this window by tool CATEGORY alone and nudged the model to "state your
+    /// conclusion instead" — observed cutting a planning phase short after 5 files.
+    ///
+    /// RED: restore the all-reads category branch in `detectLoopPattern` → this fires.
+    func testToolPipeline_distinctReads_noLoopDetected() {
         let tracker = ToolCallTracker()
-        let toolName = ToolNames.readFile
 
-        // Record 6 read-only calls (loop threshold)
         for i in 0..<6 {
             tracker.record(
-                toolName: toolName,
+                toolName: ToolNames.readFile,
                 argumentsJSON: #"{"path":"file\#(i).swift"}"#,
                 resultJSON: #"{"content":"content"}"#,
                 isError: false
             )
         }
 
-        // Detect loop
-        let recentCalls = tracker.recentCalls(limit: 6)
-        let detection = ToolCallLoopDetector.detectLoopPattern(in: recentCalls)
+        let detection = ToolCallLoopDetector.detectLoopPattern(in: tracker.recentCalls(limit: 6))
+        XCTAssertNil(detection, "Six distinct reads are exploration, not a loop")
+    }
 
-        XCTAssertNotNil(detection, "Should detect read-only loop after 6 read-only calls")
-        if case .readOnlyLoop(let message) = detection {
-            XCTAssertTrue(message.contains("read-only"), "Message should mention read-only pattern")
+    /// The genuine read loop — the SAME file over and over — is still caught, by the
+    /// identity-aware branch the category arm used to mask for all-read windows.
+    func testToolPipeline_identicalReads_loopDetected() {
+        let tracker = ToolCallTracker()
+
+        for _ in 0..<6 {
+            tracker.record(
+                toolName: ToolNames.readFile,
+                argumentsJSON: #"{"path":"file.swift"}"#,
+                resultJSON: #"{"content":"content"}"#,
+                isError: false
+            )
+        }
+
+        let detection = ToolCallLoopDetector.detectLoopPattern(in: tracker.recentCalls(limit: 6))
+        if case .repetitiveTool(let tool, let count) = detection {
+            XCTAssertEqual(tool, ToolNames.readFile)
+            XCTAssertEqual(count, 6)
         } else {
-            XCTFail("Expected readOnlyLoop detection")
+            XCTFail("Expected repetitiveTool for 6x identical read, got \(String(describing: detection))")
         }
     }
 
@@ -93,15 +112,19 @@ final class EndToEndToolExecutionPipelineTests: XCTestCase {
 
     // MARK: - Test: Repetitive tool detection
 
+    /// The detector groups by `toolName + argumentsSummary` and its own warning
+    /// says "with IDENTICAL arguments … the state isn't changing", so the calls
+    /// that must trip it are genuinely identical ones.
     func testToolPipeline_repetitiveToolDetected() {
         let tracker = ToolCallTracker()
         let toolName = ToolNames.editFile
 
-        // Record 6 calls with same edit_file tool (4+ needed for repetitive detection)
-        for i in 0..<6 {
+        // Six genuinely identical calls — the same anchor, over and over, which
+        // is what "the state isn't changing" actually describes.
+        for _ in 0..<6 {
             tracker.record(
                 toolName: toolName,
-                argumentsJSON: #"{"path":"file.swift","old_text":"v\#(i)","new_text":"v\#(i+1)"}"#,
+                argumentsJSON: #"{"path":"file.swift","old_text":"v0","new_text":"v1"}"#,
                 resultJSON: #"{"success":true}"#,
                 isError: false
             )
@@ -111,12 +134,64 @@ final class EndToEndToolExecutionPipelineTests: XCTestCase {
         let detection = ToolCallLoopDetector.detectLoopPattern(in: recentCalls)
 
         XCTAssertNotNil(detection, "Should detect repetitive tool usage")
-        if case .repetitiveTool(let tool, let count, _) = detection {
+        if case .repetitiveTool(let tool, let count) = detection {
             XCTAssertEqual(tool, toolName)
             XCTAssertGreaterThanOrEqual(count, 4)
         } else {
             XCTFail("Expected repetitiveTool detection")
         }
+    }
+
+    /// The counterpart, and the reason `edit_file`'s summary carries its anchor:
+    /// six edits that walk a file forward are how a role legitimately works. This
+    /// case used to be reported as "identical arguments 6 times", telling a role
+    /// making real progress to "try different arguments or move on" — the same
+    /// harm the `screen_capture` and `update_scratchpad` exclusions were added to
+    /// stop, and the same reason `read_lines` carries its range.
+    func testToolPipeline_differentEditsToOneFile_areNotALoop() {
+        let tracker = ToolCallTracker()
+
+        for i in 0..<6 {
+            tracker.record(
+                toolName: ToolNames.editFile,
+                argumentsJSON: #"{"path":"file.swift","old_text":"v\#(i)","new_text":"v\#(i + 1)"}"#,
+                resultJSON: #"{"success":true}"#,
+                isError: false
+            )
+        }
+
+        XCTAssertNil(
+            ToolCallLoopDetector.detectLoopPattern(in: tracker.recentCalls(limit: 6)),
+            "six DIFFERENT edits to one file are progress, not a repeated call")
+    }
+
+    /// Regression (2026-08-11 screenshot): edit_file (a different change each time)
+    /// alternated with run_xcodebuild (identical arguments — build args are naturally
+    /// constant) is the prescribed edit→verify cycle, and the frequency-over-window
+    /// count reported it as "identical arguments 3 times and the state isn't changing"
+    /// — false on both halves, every build followed a successful edit. Driven through
+    /// the real tracker so the canonical-JSON identity path is exercised end to end.
+    func testToolPipeline_editBuildCycles_areNotALoop() {
+        let tracker = ToolCallTracker()
+
+        for i in 0..<3 {
+            tracker.record(
+                toolName: ToolNames.editFile,
+                argumentsJSON: #"{"path":"OnboardingStore.swift","old_text":"v\#(i)","new_text":"v\#(i + 1)"}"#,
+                resultJSON: #"{"success":true}"#,
+                isError: false
+            )
+            tracker.record(
+                toolName: ToolNames.runXcodebuild,
+                argumentsJSON: #"{"scheme":"MeditationApp"}"#,
+                resultJSON: #"{"success":true}"#,
+                isError: false
+            )
+        }
+
+        XCTAssertNil(
+            ToolCallLoopDetector.detectLoopPattern(in: tracker.recentCalls(limit: 6)),
+            "edit→build cycles are the prescribed coding workflow, not a loop")
     }
 
     // MARK: - Test: No loop with fewer than 6 calls

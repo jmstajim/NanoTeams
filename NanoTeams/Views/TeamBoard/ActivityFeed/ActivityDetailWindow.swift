@@ -64,6 +64,13 @@ nonisolated enum ActivityDetailWindow: Hashable, Codable {
     /// All tool summaries for a single meeting message.
     case meetingTools(id: UUID, summaries: [MeetingToolSummary])
 
+    /// System-authored corrective notice — a retry nudge, a loop-break
+    /// correction, or a server-error retry note (see `SystemNoticePresentation`).
+    /// The feed collapses these into a one-line row; this is the full text.
+    /// `id` = `LLMMessage.id`, the same id space as `.thinking` — one message can
+    /// own both windows, which is why the per-case `dedupKey` prefix matters here.
+    case systemNotice(id: UUID, label: String, text: String)
+
     /// Stable dedup key — same key opens / focuses the same window. Picked so
     /// subsequent clicks on the same record (even with mutated payload, e.g.
     /// streaming thinking) reuse the original window.
@@ -94,6 +101,7 @@ nonisolated enum ActivityDetailWindow: Hashable, Codable {
             return "artifact:\(taskID):\(name):\(createdAt.timeIntervalSince1970)"
         case .meetingTool(let id, _):           return "meeting-tool:\(id)"
         case .meetingTools(let id, _):          return "meeting-tools:\(id)"
+        case .systemNotice(let id, _, _):       return "system-notice:\(id)"
         }
     }
 

@@ -19,11 +19,11 @@ final class ApplyPlanningPhaseWiringTests: XCTestCase {
     private var mockDelegate: MockLLMExecutionDelegate!
     private var task: NTMSTask!
     private var stepID: String!
-    private var memoryStore: MemoryTagStore!
 
     private let fullTools: [ToolSchema] = [
         ToolSchema(name: ToolNames.updateScratchpad, description: "Scratchpad", parameters: .object(properties: [:])),
         ToolSchema(name: ToolNames.search, description: "Search", parameters: .object(properties: [:])),
+        ToolSchema(name: ToolNames.runXcodebuild, description: "Build", parameters: .object(properties: [:])),
         ToolSchema(name: ToolNames.writeFile, description: "Write", parameters: .object(properties: [:])),
         ToolSchema(name: ToolNames.createArtifact, description: "Artifact", parameters: .object(properties: [:])),
     ]
@@ -34,7 +34,6 @@ final class ApplyPlanningPhaseWiringTests: XCTestCase {
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
         service.attach(delegate: mockDelegate)
-        memoryStore = MemoryTagStore(workFolderRoot: URL(fileURLWithPath: "/tmp"))
         let step = StepExecution(id: "test_step", role: .softwareEngineer, title: "Notes", status: .running)
         stepID = step.id
         task = NTMSTask(id: 0, title: "Test", supervisorTask: "goal", runs: [Run(id: 0, steps: [step])])
@@ -43,7 +42,7 @@ final class ApplyPlanningPhaseWiringTests: XCTestCase {
     }
 
     override func tearDown() {
-        mockDelegate = nil; service = nil; task = nil; stepID = nil; memoryStore = nil
+        mockDelegate = nil; service = nil; task = nil; stepID = nil
         super.tearDown()
     }
 
@@ -74,7 +73,7 @@ final class ApplyPlanningPhaseWiringTests: XCTestCase {
     ) async -> PlanningPhasePolicy.Authorization {
         await service.applyPlanningPhase(
             stepID: stepID, taskID: task.id, tools: tools ?? fullTools, step: step,
-            team: team, memoryStore: memoryStore,
+            team: team,
             conversationMessages: &conversation, roleDefinition: roleDef)
     }
 
@@ -89,8 +88,10 @@ final class ApplyPlanningPhaseWiringTests: XCTestCase {
                            + "and changing it is what broke the prefix cache")
         XCTAssertTrue(conversation.last?.content?.contains(PlanningPhasePolicy.briefMarker) ?? false,
                       "The brief rides as a trailing user turn on the wire")
-        XCTAssertEqual(auth.allowed, [ToolNames.updateScratchpad, ToolNames.search],
-                       "Read-only tools plus the exit channel")
+        XCTAssertEqual(auth.allowed,
+                       [ToolNames.updateScratchpad, ToolNames.search, ToolNames.runXcodebuild],
+                       "everything that can neither suspend the step nor mutate source, "
+                           + "plus the exit channel")
         XCTAssertEqual(auth.withheldByPhase, [ToolNames.writeFile, ToolNames.createArtifact])
     }
 
@@ -103,6 +104,9 @@ final class ApplyPlanningPhaseWiringTests: XCTestCase {
         let brief = conversation.last?.content ?? ""
 
         XCTAssertTrue(brief.contains(ToolNames.search))
+        XCTAssertTrue(brief.contains(ToolNames.runXcodebuild),
+                      "the brief is derived from `authorization.allowed`, so a tool admitted to "
+                          + "the phase is advertised by construction — never a second literal")
         XCTAssertTrue(brief.contains(ToolNames.updateScratchpad),
                       "the exit channel must be named — it is what the code detects")
         XCTAssertFalse(brief.contains(ToolNames.writeFile))
@@ -127,7 +131,9 @@ final class ApplyPlanningPhaseWiringTests: XCTestCase {
         var conversation = baseConversation()
         let auth = await apply(step: freshStep(), role: role(usePlanning: false), into: &conversation)
 
-        XCTAssertEqual(auth.allowed.count, 4)
+        XCTAssertEqual(auth.allowed.count, fullTools.count,
+                       "unrestricted means everything PASSED IN — derived, so growing the "
+                           + "fixture can never silently weaken this")
         XCTAssertTrue(auth.withheldByPhase.isEmpty)
         XCTAssertFalse(PlanningPhasePolicy.wireCarriesBrief(conversation))
     }
@@ -138,7 +144,7 @@ final class ApplyPlanningPhaseWiringTests: XCTestCase {
         let auth = await apply(step: freshStep(), role: role(usePlanning: true),
                                into: &conversation, tools: toolsWithoutScratchpad)
 
-        XCTAssertEqual(auth.allowed.count, 3, "no exit channel ⇒ no phase")
+        XCTAssertEqual(auth.allowed.count, toolsWithoutScratchpad.count, "no exit channel ⇒ no phase")
         XCTAssertFalse(PlanningPhasePolicy.wireCarriesBrief(conversation))
     }
 
@@ -220,7 +226,8 @@ final class ApplyPlanningPhaseWiringTests: XCTestCase {
         XCTAssertEqual(
             resumed.filter { $0.content?.contains(PlanningPhasePolicy.briefMarker) ?? false }.count,
             1)
-        XCTAssertEqual(auth.allowed, [ToolNames.updateScratchpad, ToolNames.search],
+        XCTAssertEqual(auth.allowed,
+                       [ToolNames.updateScratchpad, ToolNames.search, ToolNames.runXcodebuild],
                        "…and it is still the planning phase")
     }
 }

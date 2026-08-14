@@ -444,7 +444,7 @@ actor VocabVectorIndexService {
 /// Snapshot of the vector-index actor's state. UI renders from this. Enum
 /// cases are distinct enough that `ExploratorySearchEmbeddingsCard` can switch on
 /// them directly without peeking at internals.
-enum VocabVectorIndexState: Equatable, Sendable {
+nonisolated enum VocabVectorIndexState: Equatable, Sendable {
     case missing
     case loading
     case building(progress: VocabVectorIndexBuilder.BuildProgress)

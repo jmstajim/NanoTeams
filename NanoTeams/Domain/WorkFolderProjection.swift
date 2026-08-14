@@ -47,10 +47,59 @@ nonisolated struct WorkFolderProjection: Hashable {
         }
     }
 
-    /// Add a new team.
-    mutating func addTeam(_ team: Team) {
-        teams.append(team)
+    /// A display name whose derived id is free in this folder.
+    ///
+    /// A team's id is DERIVED FROM ITS NAME (`NTMSID.from(name:)`), so two teams that share a
+    /// name share an id — and the derivation lowercases and strips punctuation, so "My Team",
+    /// "MY TEAM" and "My: Team" all derive `my_team` without ever looking alike to the user.
+    /// The collision has to be resolved BEFORE the id is derived, which is the rule
+    /// `TeamImportExportService.importRole` already states in its own comment ("before
+    /// generating ID so ID matches final name") — the team-level doors just never applied it.
+    ///
+    /// Terminates: each suffix derives a distinct id (digits survive the derivation), so among
+    /// any `existingIDs.count + 1` candidates at least one is free.
+    nonisolated static func availableTeamName(_ desired: String, existingIDs: Set<NTMSID>) -> String {
+        guard existingIDs.contains(NTMSID.from(name: desired)) else { return desired }
+        var suffix = 2
+        while existingIDs.contains(NTMSID.from(name: "\(desired) \(suffix)")) {
+            suffix += 1
+        }
+        return "\(desired) \(suffix)"
+    }
+
+    /// Add a new team, renaming it if its derived id is already taken. Returns the id it was
+    /// actually added under — which the caller MUST use to select it, since on a collision the
+    /// team's own `id` is no longer the one in the folder.
+    ///
+    /// Two teams sharing an id is not a cosmetic duplicate. `activeTeam` and every
+    /// `teams.first(where:)` resolve the FIRST, so the second is unreachable and every edit
+    /// lands on the other copy; `removeTeam` is `removeAll { $0.id == teamID }`, so deleting
+    /// one deletes BOTH; a run pinned to that id can resolve the wrong roster; and the team
+    /// pickers hand SwiftUI a duplicate `ForEach` id. Reachable in two clicks — "Duplicate"
+    /// twice names both copies `<team> Copy`.
+    ///
+    /// Only a CUSTOM team is renamed. A template team's id is a fixed identity that bootstrap's
+    /// missing-template detection, `removeTeam`'s tombstone and "Restore Default Teams" all key
+    /// on, so renaming one would make those lookups miss — which is exactly why the custom team
+    /// has to yield FIRST, here, while it is still the one being added.
+    ///
+    /// Hence `lazilyMaterialisedTeamIDs` in the taken set: the Autovisor team and the Generated
+    /// placeholder are created on demand (first enable / first "Generate Team..." pick), so they
+    /// are absent from `teams` precisely when a custom team could take their id, and both
+    /// creators guard on `templateID` — which a custom team does not carry. Reserving them is
+    /// the only door at which the conflict is still resolvable.
+    @discardableResult
+    mutating func addTeam(_ team: Team) -> NTMSID {
+        var incoming = team
+        let existingIDs = Set(teams.map(\.id))
+            .union(TeamTemplateFactory.lazilyMaterialisedTeamIDs)
+        if incoming.templateID == nil, existingIDs.contains(incoming.id) {
+            incoming.name = Self.availableTeamName(incoming.name, existingIDs: existingIDs)
+            incoming.id = NTMSID.from(name: incoming.name)
+        }
+        teams.append(incoming)
         state.updatedAt = MonotonicClock.shared.now()
+        return incoming.id
     }
 
     /// Remove a team by ID (cannot remove the last team).
@@ -61,8 +110,8 @@ nonisolated struct WorkFolderProjection: Hashable {
     mutating func removeTeam(_ teamID: NTMSID) {
         guard teams.count > 1 else { return }
         if let team = teams.first(where: { $0.id == teamID }),
+           !team.isGeneratedPlaceholder,
            let tid = team.templateID,
-           tid != "generated",
            !state.deletedTeamTemplateIDs.contains(tid)
         {
             state.deletedTeamTemplateIDs.append(tid)

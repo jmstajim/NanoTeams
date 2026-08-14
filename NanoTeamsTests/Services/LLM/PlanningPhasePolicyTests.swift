@@ -144,13 +144,38 @@ final class PlanningPhasePolicyTests: XCTestCase {
                        "a tool the role does not have must never be offered")
     }
 
-    func testPlanningToolNames_includesGitReadAndVision() {
+    /// The membership rule is the CRITERION, not a hand-kept list: a tool belongs
+    /// iff it can neither suspend the step nor mutate work-folder source. The
+    /// Xcode runners satisfy both — `ToolHandler.handle` is synchronous by
+    /// signature, they emit no `ToolSignal`, and `build_diagnostics.json` is
+    /// written at step COMPLETION, not in the tool loop. `bash` fails both halves.
+    func testPlanningToolNames_includesGitReadVisionAndXcode() {
         let tools = [tool(ToolNames.gitDiff), tool(ToolNames.analyzeImage),
+                     tool(ToolNames.runXcodebuild), tool(ToolNames.runXcodetests),
                      tool(ToolNames.gitCommit), tool(ToolNames.bash)]
         let names = PlanningPhasePolicy.planningToolNames(in: tools)
-        XCTAssertEqual(names, [ToolNames.gitDiff, ToolNames.analyzeImage])
+        XCTAssertEqual(names, [ToolNames.gitDiff, ToolNames.analyzeImage,
+                               ToolNames.runXcodebuild, ToolNames.runXcodetests])
         XCTAssertFalse(names.contains(ToolNames.bash),
                        "bash can mutate, and its approval gate can park the step")
+        XCTAssertFalse(names.contains(ToolNames.gitCommit),
+                       "git-write mutates the repo — the discarded exploration transcript "
+                           + "would become load-bearing")
+    }
+
+    /// Without a selected scheme, step 3.1 of `resolveToolSchemasCore` has already
+    /// stripped the runners, so the intersection leaves them in NEITHER set. That
+    /// is what keeps `classifyUnavailability` answering `.xcodeSchemeNotSelected`
+    /// (a structural "stop") instead of `plan_required` (a temporal "retry"), and
+    /// it keeps the brief from advertising a tool that cannot run.
+    func testPlanningToolNames_withoutAScheme_xcodeIsNeitherAllowedNorWithheld() {
+        let toolsWithoutScheme = [tool(ToolNames.updateScratchpad), tool(ToolNames.readFile)]
+        let auth = PlanningPhasePolicy.authorization(
+            for: .continuePlanning, tools: toolsWithoutScheme)
+
+        XCTAssertFalse(auth.allowed.contains(ToolNames.runXcodebuild))
+        XCTAssertFalse(auth.withheldByPhase.contains(ToolNames.runXcodebuild),
+                       "the phase must never claim to withhold a tool a precondition removed")
     }
 
     func testAuthorization_partitionsTheToolsetDuringPlanning() {

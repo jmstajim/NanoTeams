@@ -13,10 +13,8 @@ final class BashAdviceOrchestratorTests: NTMSOrchestratorTestBase {
         let token = MonotonicClock.shared.now()
         sut.llmExecutionService.pendingBashApprovals[TaskStepKey(taskID: taskID, stepID: stepID)] =
             PendingBashApproval(
-                commandKeys: commands.map { "key:\($0)" },
                 commands: commands,
                 workingDirectories: commands.map { _ in nil },
-                question: "approve?",
                 judgeConfig: LLMConfig(),
                 createdAt: token)
         return token

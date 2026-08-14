@@ -170,12 +170,12 @@ final class ActivityFeedPersistenceRoundTripTests: XCTestCase {
 
     func testDecoder_acceptsLegacySecondPrecisionDates() throws {
         struct Wrapper: Codable { var d: Date }
-        let legacyJSON = #"{"d":"2026-04-23T14:30:00Z"}"#.data(using: .utf8)!
+        let legacyJSON = #"{"d":"2026-04-23T21:30:00Z"}"#.data(using: .utf8)!
         let decoded = try JSONCoderFactory.makeDateDecoder().decode(Wrapper.self, from: legacyJSON)
-        // Expect 2026-04-23T14:30:00Z — verify by re-parsing with a known formatter.
+        // Expect 2026-04-23T21:30:00Z — verify by re-parsing with a known formatter.
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
-        let expected = formatter.date(from: "2026-04-23T14:30:00Z")!
+        let expected = formatter.date(from: "2026-04-23T21:30:00Z")!
         XCTAssertEqual(decoded.d, expected)
     }
 

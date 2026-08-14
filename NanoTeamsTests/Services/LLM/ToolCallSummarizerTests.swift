@@ -14,11 +14,69 @@ final class ToolCallSummarizerTests: XCTestCase {
         XCTAssertEqual(ToolCallSummarizer.summarizeArguments(toolName: TN.readFile, json: json), "/src/main.swift")
     }
 
-    func testSummarizeArguments_editFile_showsPath() {
+    /// The summary is the loop detector's identity key
+    /// (`ToolCallLoopDetector` groups by `toolName + argumentsSummary` and warns
+    /// at three). This used to be the bare path, so three ordinary edits to one
+    /// file — how a role actually works — grouped as one repeated call and the
+    /// model was told "the state isn't changing, try different arguments or move
+    /// on". The anchor is what makes them distinct, and it is the useful thing
+    /// to show on the card besides.
+    func testSummarizeArguments_editFile_showsPathAndAnchor() {
         let json = """
         {"path": "/src/file.swift", "old_text": "a", "new_text": "b"}
         """
-        XCTAssertEqual(ToolCallSummarizer.summarizeArguments(toolName: TN.editFile, json: json), "/src/file.swift")
+        XCTAssertEqual(
+            ToolCallSummarizer.summarizeArguments(toolName: TN.editFile, json: json),
+            "/src/file.swift ‹a›")
+    }
+
+    func testSummarizeArguments_editFile_differentAnchorsInOneFileAreDistinct() {
+        let a = ToolCallSummarizer.summarizeArguments(
+            toolName: TN.editFile,
+            json: #"{"path": "/src/file.swift", "old_text": "func alpha()", "new_text": "x"}"#)
+        let b = ToolCallSummarizer.summarizeArguments(
+            toolName: TN.editFile,
+            json: #"{"path": "/src/file.swift", "old_text": "func beta()", "new_text": "y"}"#)
+        let c = ToolCallSummarizer.summarizeArguments(
+            toolName: TN.editFile,
+            json: #"{"path": "/src/file.swift", "old_text": "func gamma()", "new_text": "z"}"#)
+
+        XCTAssertEqual(Set([a, b, c]).count, 3,
+                       "three different edits to one file must not group as one repeated call")
+    }
+
+    /// A genuinely repeated identical edit still collapses — the detector is
+    /// supposed to catch that one.
+    func testSummarizeArguments_editFile_identicalCallsStillShareAnIdentity() {
+        let json = #"{"path": "/src/file.swift", "old_text": "a", "new_text": "b"}"#
+        XCTAssertEqual(
+            ToolCallSummarizer.summarizeArguments(toolName: TN.editFile, json: json),
+            ToolCallSummarizer.summarizeArguments(toolName: TN.editFile, json: json))
+    }
+
+    /// Anchors are multi-line in practice; the summary is a one-line card label,
+    /// so whitespace collapses and the tail is cut.
+    func testSummarizeArguments_editFile_multilineAnchorIsSquashedAndCapped() {
+        let json = #"{"path": "/a.swift", "old_text": "let x = 1\n\n    let y = 2\n\n    let z = 3456789", "new_text": "q"}"#
+        let summary = ToolCallSummarizer.summarizeArguments(toolName: TN.editFile, json: json)
+
+        XCTAssertFalse(summary.contains("\n"), "a card label is one line: \(summary)")
+        XCTAssertTrue(summary.hasPrefix("/a.swift ‹let x = 1 let y = 2"), "got: \(summary)")
+        XCTAssertLessThanOrEqual(summary.count, "/a.swift ‹›".count + 32)
+    }
+
+    /// No anchor to distinguish by — fall back to the path rather than inventing
+    /// a discriminator that would make every such call look unique.
+    func testSummarizeArguments_editFile_missingOrBlankAnchor_fallsBackToPath() {
+        for json in [
+            #"{"path": "/src/file.swift", "new_text": "b"}"#,
+            #"{"path": "/src/file.swift", "old_text": "", "new_text": "b"}"#,
+            #"{"path": "/src/file.swift", "old_text": "   ", "new_text": "b"}"#,
+        ] {
+            XCTAssertEqual(
+                ToolCallSummarizer.summarizeArguments(toolName: TN.editFile, json: json),
+                "/src/file.swift", "got a discriminator from: \(json)")
+        }
     }
 
     func testSummarizeArguments_writeFile_showsPath() {

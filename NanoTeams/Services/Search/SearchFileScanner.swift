@@ -29,6 +29,16 @@ nonisolated extension SearchExecutor {
         var content: Data
         let ext = url.pathExtension.lowercased()
         if DocumentTextExtractor.isSupported(extension: ext) {
+            // Unreachable while the supported set and the extractor registry
+            // agree: `extractText` returns `nil` for exactly one reason — no
+            // registered extractor for the extension — and this branch is
+            // already behind `isSupported`. Widening
+            // `DocumentConstants.supportedReadExtensions` without registering an
+            // extractor is what makes it live, and that coupling is pinned by
+            // `DocumentFormatExtractorsTests.
+            // testFacade_everySupportedExtensionResolvesToAStrategy`. Kept as a
+            // report rather than a crash so such a slip degrades to one skipped
+            // file with a reason.
             guard let extracted = DocumentTextExtractor.extractText(from: url) else {
                 results.skipped.append(SkippedFile(
                     path: relativePath,

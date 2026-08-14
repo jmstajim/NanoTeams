@@ -15,8 +15,11 @@ struct LLMModelDetailsCard: View {
     /// provider) selection can't overwrite fresh results (CLAUDE.md #38).
     @State private var fetchGeneration = 0
 
+    /// Keyed on the endpoint COMMIT generation, not the live URL: the Settings URL
+    /// field writes `llmBaseURLString` on every keystroke, so a URL-keyed task
+    /// re-fires per typed character and probes half-typed hosts.
     private var fetchKey: String {
-        "\(config.llmProvider.rawValue)|\(config.llmBaseURLString.normalizedBaseURL)|\(config.llmModelName)"
+        "\(config.llmProvider.rawValue)|\(config.llmEndpointGeneration)|\(config.llmModelName)"
     }
 
     private var footerText: String? {

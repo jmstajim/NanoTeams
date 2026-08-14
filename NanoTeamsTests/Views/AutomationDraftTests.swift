@@ -41,17 +41,17 @@ final class AutomationDraftTests: XCTestCase {
     // MARK: - Kind decomposition
 
     func testInit_dailyAt() {
-        let draft = AutomationDraft(recurrence: TaskRecurrence(rule: .dailyAt(hour: 9, minute: 30, weekdays: [2, 4, 6])), timeoutSeconds: nil)
+        let draft = AutomationDraft(recurrence: TaskRecurrence(rule: .dailyAt(hour: 21, minute: 30, weekdays: [2, 4, 6])), timeoutSeconds: nil)
         XCTAssertTrue(draft.repeatEnabled)
         XCTAssertEqual(draft.kind, .timeOfDay)
         XCTAssertEqual(draft.weekdays, [2, 4, 6])
         let comps = Calendar.current.dateComponents([.hour, .minute], from: draft.timeOfDay)
-        XCTAssertEqual(comps.hour, 9)
+        XCTAssertEqual(comps.hour, 21)
         XCTAssertEqual(comps.minute, 30)
     }
 
     func testInit_monthly() {
-        let draft = AutomationDraft(recurrence: TaskRecurrence(rule: .monthlyAt(day: 15, hour: 18, minute: 45)), timeoutSeconds: nil)
+        let draft = AutomationDraft(recurrence: TaskRecurrence(rule: .monthlyAt(day: 15, hour: 20, minute: 45)), timeoutSeconds: nil)
         XCTAssertEqual(draft.kind, .monthly)
         XCTAssertEqual(draft.dayOfMonth, 15)
     }
@@ -95,9 +95,9 @@ final class AutomationDraftTests: XCTestCase {
             .interval(seconds: 3_660),     // 1 h 1 m
             .interval(seconds: 36_060),    // 10 h 1 m
             .interval(seconds: 172_800),   // 48 h
-            .dailyAt(hour: 9, minute: 30, weekdays: [2, 4, 6]),
+            .dailyAt(hour: 21, minute: 30, weekdays: [2, 4, 6]),
             .dailyAt(hour: 0, minute: 0, weekdays: []),
-            .monthlyAt(day: 15, hour: 18, minute: 45),
+            .monthlyAt(day: 15, hour: 20, minute: 45),
             .once(date: Date().addingTimeInterval(5_000)),
         ]
         for rule in rules {

@@ -68,6 +68,80 @@ final class AutovisorStuckEvaluatorTests: XCTestCase {
         XCTAssertFalse(v.isStuck, "stale identical tool calls (pre-revision) must not flag a loop")
     }
 
+    // MARK: - Loop / information boundary
+
+    /// The reported false positive. An event notice reaches the manager mid-review as
+    /// an injected `.user` turn ("task 7 now needs input"); the prescribed reply is to
+    /// re-check that task, which to a tool-call scan looks like the same call again.
+    /// Only the calls made after the arrival may be counted together.
+    ///
+    /// RED: drop `informationBoundary:` from the evaluator's `scanCommitted` call →
+    /// this flags `.loop`, the manager is woken with "the team appears stuck", and the
+    /// remedy it is handed is to restart a role that is behaving correctly.
+    func testLoop_identicalToolCalls_splitByAnEventNotice_notFlagged() {
+        let first = now.addingTimeInterval(-9)
+        let calls = (0..<DelegationConstants.repetitionMinIdenticalToolCalls).map {
+            toolCall("task_status", #"{"task_id":7}"#, at: first.addingTimeInterval(Double($0) * 2))
+        }
+        // News lands between the first poll and the rest.
+        let notice = LLMMessage(
+            createdAt: first.addingTimeInterval(1),
+            role: .user,
+            content: "Supervisor:\nTask 7 now needs input.",
+            sourceContext: .supervisorMessage
+        )
+        let s = step(createdAt: now.addingTimeInterval(-60), toolCalls: calls, llm: [notice])
+        let v = AutovisorStuckEvaluator.evaluate(step: s, now: now, lastStreamActivityAt: now)
+        XCTAssertFalse(
+            v.isStuck,
+            "Re-checking a task right after being told it changed is the prescribed reaction, not a loop"
+        )
+    }
+
+    /// The boundary resets the count; it does not grant immunity. A manager that gets
+    /// an event and THEN spins on one call is still stuck.
+    ///
+    /// RED: make the boundary suppress the tool scan outright → this fails, and a
+    /// genuinely wedged manager stays invisible for as long as events keep arriving.
+    func testLoop_identicalToolCalls_afterAnEventNotice_stillFlagged() {
+        let notice = LLMMessage(
+            createdAt: now.addingTimeInterval(-30),
+            role: .user,
+            content: "Supervisor:\nTask 7 now needs input.",
+            sourceContext: .supervisorMessage
+        )
+        let first = now.addingTimeInterval(-9)
+        let calls = (0..<DelegationConstants.repetitionMinIdenticalToolCalls).map {
+            toolCall("task_status", #"{"task_id":7}"#, at: first.addingTimeInterval(Double($0)))
+        }
+        let s = step(createdAt: now.addingTimeInterval(-60), toolCalls: calls, llm: [notice])
+        let v = AutovisorStuckEvaluator.evaluate(step: s, now: now, lastStreamActivityAt: now)
+        XCTAssertTrue(v.isStuck, "A full run made after the arrival is a spin")
+        XCTAssertEqual(v.wireRow?.kind, "loop")
+    }
+
+    /// Self-cancellation guard at the evaluator level: the repetition warning is
+    /// persisted as `.retryNudge`, so if that counted as external information the
+    /// detector would clear its own floor every time it fired.
+    ///
+    /// RED: classify `.retryNudge` as external information → this stops flagging, and
+    /// a spinning role becomes permanently undetectable once warned.
+    func testLoop_retryNudgeBetweenIdenticalCalls_stillFlagged() {
+        let first = now.addingTimeInterval(-9)
+        let calls = (0..<DelegationConstants.repetitionMinIdenticalToolCalls).map {
+            toolCall("task_status", #"{"task_id":7}"#, at: first.addingTimeInterval(Double($0) * 2))
+        }
+        let nudge = LLMMessage(
+            createdAt: first.addingTimeInterval(1),
+            role: .user,
+            content: "You've called task_status 3 times in a row…",
+            sourceContext: .retryNudge
+        )
+        let s = step(createdAt: now.addingTimeInterval(-60), toolCalls: calls, llm: [nudge])
+        let v = AutovisorStuckEvaluator.evaluate(step: s, now: now, lastStreamActivityAt: now)
+        XCTAssertTrue(v.isStuck, "The detector's own warning must not reset the detector")
+    }
+
     func testLoop_liveThinkingBuffer() {
         // Reasoning model looping inside its thinking phase, never committing: no tool
         // calls, one empty assistant message, tokens flowing (idle ≈ 0 → not a hang).

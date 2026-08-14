@@ -150,45 +150,137 @@ final class RetryNudgeVisibilityTests: XCTestCase {
             .deletingLastPathComponent()  // repo root
     }
 
-    /// The file the scan pin reads — also the resolves-pin's marker, so the marker is a
-    /// file every compiling checkout carries (the public mirror ships no CLAUDE.md).
-    private static let scannedPath = "NanoTeams/Services/LLM/LLMExecutionService+StepFlowControl.swift"
+    /// The files the scan pin reads, each with the number of `.user` record sites it is
+    /// expected to hold. Also the resolves-pin's markers, so the markers are files every
+    /// compiling checkout carries (the public mirror ships no CLAUDE.md).
+    ///
+    /// `+ToolLoopState.swift` is here because scanning only `+StepFlowControl.swift` was
+    /// precisely the "a branch added later would be invisible on screen" hole this pin
+    /// exists to close — just one file over. Its loop warning shipped with no
+    /// `sourceContext` from the day it was written, so the Supervisor watched a role read
+    /// the same six files forever with nothing on screen saying the app had noticed. The
+    /// pin could not see it: the property is "no site was forgotten", and the pin had
+    /// itself forgotten a site.
+    private static let scannedPaths: [(path: String, expectedUserRecordSites: Int)] = [
+        ("NanoTeams/Services/LLM/LLMExecutionService+StepFlowControl.swift", 10),
+        ("NanoTeams/Services/LLM/LLMExecutionService+ToolLoopState.swift", 2),
+    ]
 
-    /// No `.user` turn may be recorded from the no-tool flow without attribution.
+    /// The only way to record an unattributed `.user` turn: say why, at the call site.
+    /// Assembled at runtime so this file's own prose cannot satisfy the scan.
+    private static var exemptionMarker: String { "feed-invisible" + "-by-design:" }
+
+    /// Index of the `)` closing the argument list that starts at `openAfter`.
+    private static func matchingParen(
+        in source: String, openAfter start: String.Index
+    ) -> String.Index? {
+        var depth = 1
+        var i = start
+        while i < source.endIndex {
+            let c = source[i]
+            if c == "(" { depth += 1 }
+            if c == ")" {
+                depth -= 1
+                if depth == 0 { return i }
+            }
+            i = source.index(after: i)
+        }
+        return nil
+    }
+
+    /// No `.user` turn recorded by the runtime's nudge/correction path may lack attribution.
     ///
     /// A source pin because the property is "no site was forgotten" — and eight of them
     /// were. A ninth branch added later would compile, pass every behavioural test above,
     /// and be invisible on screen, which is precisely the failure mode this fixes.
     func testEveryUserTurnRecordedByFlowControl_carriesAContext() throws {
-        let path = Self.scannedPath
+        for (path, expected) in Self.scannedPaths {
+            let source = try String(
+                contentsOf: repoRoot.appendingPathComponent(path), encoding: .utf8)
+
+            // The call spans lines, so join the whole file and scan each `appendLLMMessage(`
+            // invocation up to its closing paren.
+            let opener = "appendLLMMessage" + "("
+            var searchStart = source.startIndex
+            var checked = 0
+            while let open = source.range(of: opener, range: searchStart..<source.endIndex) {
+                // Balanced scan, NOT the first `)`. A call whose content argument
+                // interpolates — `content: "\(prefix)\(answer)"` — closes a paren before the
+                // argument list ends, so a first-`)` scan cut the call in half and reported
+                // the surviving fragment as unattributed. It flagged a correctly attributed
+                // site, which is the failure mode that gets a pin deleted.
+                guard let close = Self.matchingParen(in: source, openAfter: open.upperBound)
+                else { break }
+                let call = String(source[open.upperBound..<close])
+                searchStart = source.index(after: close)
+                guard call.contains("role: .user") else { continue }
+                checked += 1
+                // An unattributed site is allowed only with a stated reason on the call —
+                // an escape hatch rather than a file-level blind spot, because the property
+                // is "no site was forgotten" and a whole-file exclusion is how one gets
+                // forgotten. Searched in the 400 characters before the call so the reason
+                // can sit in the doc comment above it.
+                let contextStart = source.index(
+                    open.lowerBound, offsetBy: -400, limitedBy: source.startIndex)
+                    ?? source.startIndex
+                let preamble = String(source[contextStart..<open.lowerBound])
+                XCTAssertTrue(
+                    call.contains("sourceContext:") || preamble.contains(Self.exemptionMarker),
+                    "A `.user` turn recorded by \(path) with no sourceContext is dropped by "
+                    + "ActivityFeedBuilder's no-source filter — attribute it, or state why "
+                    + "not with a `\(Self.exemptionMarker)` note. Call: \(call)")
+            }
+            // +StepFlowControl: eight retry nudges plus the thinking-loop correction, which
+            // already carried `.loopCorrection` and is the precedent this fix follows — plus
+            // the planning-phase "that looked like a tool call" nudge, which replaced
+            // recording a failed call as the step's plan.
+            // +ToolLoopState: the loop warning and the supervisor auto-answer.
+            XCTAssertEqual(
+                checked, expected,
+                "Expected \(expected) `.user` record sites in \(path); adjust deliberately")
+        }
+    }
+
+    /// RED: revert `matchingParen` to "first `)` after the opener" → this fires while the
+    /// pin above ALSO fires, for a different and misleading reason.
+    ///
+    /// The supervisor auto-answer's call interpolates into its `content:` argument —
+    /// `"\(MessageSourceContext.supervisorAnswerPrefix)\(answer)"` — so a first-`)` scan
+    /// stops inside the string, hands the assertion a fragment, and reports a correctly
+    /// attributed site as unattributed. A pin that cries wolf about a compliant call is one
+    /// somebody deletes; this test names the scanner as the culprit so the next reader does
+    /// not go looking at the production code.
+    func testTheScanSeesWholeCalls_notFragmentsCutAtAnInterpolation() throws {
+        let path = "NanoTeams/Services/LLM/LLMExecutionService+ToolLoopState.swift"
         let source = try String(
             contentsOf: repoRoot.appendingPathComponent(path), encoding: .utf8)
-
-        // The call spans lines, so join the whole file and scan each `appendLLMMessage(`
-        // invocation up to its closing paren.
         let opener = "appendLLMMessage" + "("
+
         var searchStart = source.startIndex
-        var checked = 0
+        var sawInterpolatingCall = false
         while let open = source.range(of: opener, range: searchStart..<source.endIndex) {
-            guard let close = source.range(of: ")", range: open.upperBound..<source.endIndex) else { break }
-            let call = String(source[open.upperBound..<close.lowerBound])
-            searchStart = close.upperBound
-            guard call.contains("role: .user") else { continue }
-            checked += 1
+            guard let close = Self.matchingParen(in: source, openAfter: open.upperBound)
+            else { break }
+            let call = String(source[open.upperBound..<close])
+            searchStart = source.index(after: close)
+            guard call.contains("supervisorAnswerPrefix") else { continue }
+            sawInterpolatingCall = true
             XCTAssertTrue(
                 call.contains("sourceContext:"),
-                "A `.user` turn recorded by \(path) with no sourceContext is dropped by "
-                + "ActivityFeedBuilder's no-source filter — it must be attributed. Call: \(call)")
+                "the scan must reach past the interpolation to the argument list's end; got: \(call)")
         }
-        // Eight retry nudges plus the thinking-loop correction, which already carried
-        // `.loopCorrection` and is the precedent this fix follows.
-        XCTAssertEqual(checked, 9, "Expected the nine known `.user` record sites; adjust deliberately")
+        XCTAssertTrue(
+            sawInterpolatingCall,
+            "anti-vacuity: the interpolating call this guards must still exist in \(path)")
     }
 
     /// A broken `#filePath`→repoRoot derivation would scan nothing and pass vacuously.
     func testRepoRootResolves() {
-        XCTAssertTrue(
-            FileManager.default.fileExists(
-                atPath: repoRoot.appendingPathComponent(Self.scannedPath).path))
+        for (path, _) in Self.scannedPaths {
+            XCTAssertTrue(
+                FileManager.default.fileExists(
+                    atPath: repoRoot.appendingPathComponent(path).path),
+                "scanned file missing: \(path)")
+        }
     }
 }

@@ -370,8 +370,8 @@ struct TeamEditorView: View {
             selectedScheme: store.snapshot?.workFolder.settings.selectedScheme,
             isVisionConfigured: store.configuration.isVisionConfigured,
             isComputerUseEnabled: store.configuration.isComputerUseEnabled,
-            autovisorAllowTeamGeneration: store.snapshot?.workFolder.settings
-                .autovisorAllowTeamGeneration ?? true
+            autovisorTeamPolicy: store.snapshot.map { AutovisorTeamPolicy(settings: $0.workFolder.settings) }
+                ?? .unrestricted
         )
     }
 

@@ -110,16 +110,19 @@ final class MalformedToolCallEnvelopeCornerTests: XCTestCase {
 
     // MARK: - Shapes the runtime DROPS (→ no card; "only Thinking")
 
-    /// Garbled marker `<|tool_call>call|>` (Tech Lead `update_scratchpad`). It
-    /// does NOT contain the literal `<|call|>` substring, so `sawHarmonyMarker`
-    /// never trips and the envelope flows as plain content — no tool call. In
-    /// production this fell through to the planning-phase prose fallback. This
-    /// is a genuine "silent" case (no card, no visible failure).
-    func testGarbledCallMarker_doesNotResolve() async throws {
+    /// Garbled marker `<|tool_call>call|>` (Tech Lead `update_scratchpad`) — the model
+    /// spliced its own `<|tool_call|>` sentinel into the `<|call|>` the prompt teaches.
+    ///
+    /// This used to belong under "shapes the runtime DROPS" and asserted `calls.isEmpty`
+    /// as the documented silent-drop case. It is not a shape worth dropping: the intent
+    /// is unambiguous and the payload is intact, so `HarmonySentinelNormalizer`
+    /// canonicalises the sentinel and the call is dispatched. Left in this file next to
+    /// the shapes that genuinely stay dropped, because the contrast is the point.
+    func testGarbledCallMarker_nowResolves() async throws {
         let envelope = #"<|tool_call>call|>{"name":"update_scratchpad","arguments":{"content":"1. plan"}}"/>"#
         let calls = try await resolve(content: envelope)
-        XCTAssertTrue(calls.isEmpty,
-            "Garbled `<|tool_call>call|>` marker must not resolve — documents the silent-drop case")
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(calls.first?.name, ToolNames.updateScratchpad)
     }
 
     /// Whole deliverable written as prose with NO `<|call|>` at all (UX Designer

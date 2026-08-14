@@ -191,8 +191,14 @@ final class ConversationAppendInvariantTests: XCTestCase, @unchecked Sendable {
         let exempt: [String: String] = [
             "NanoTeams/Services/LLM/LLMExecutionService+ToolIteration.swift":
                 "single-use image strip — exemption 2",
+            // NOT "unreachable" — the supervisor auto-answer replacement runs on
+            // EVERY autonomous-mode `ask_supervisor`: `handleSupervisorAutoAnswer`
+            // rewrites each pending `.tool` result in place so one answer resolves
+            // all of the merged questions. It is the live reason this file needs an
+            // exemption; calling it unreachable is how a reader concludes the
+            // exemption is vestigial and deletes it.
             "NanoTeams/Services/LLM/LLMExecutionService+ToolLoopState.swift":
-                "injectMemories (disabled) and the unreachable supervisor auto-answer replacement",
+                "the supervisor auto-answer's in-place tool-result replacement (live)",
         ]
 
         var appendCount = 0

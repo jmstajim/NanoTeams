@@ -607,4 +607,84 @@ final class ConsumeQueuedSupervisorMessageTests: NTMSOrchestratorTestBase {
             formState.hasQueuedMessage(for: taskID),
             "skipping the bubble must not skip the pop — that would deliver it forever")
     }
+    // MARK: - requeueSupervisorMessageAtHead (the planning-phase boundary's undo)
+
+    /// The planning boundary SLICES the wire, and a queued Supervisor message delivered
+    /// mid-planning lands inside the slice — so the boundary hands it back here. The pop that
+    /// delivered it was DESTRUCTIVE, so without this witness the human's steering is simply
+    /// gone: typed once, shown once, never acted on.
+    ///
+    /// RED: make the witness a no-op → the queue stays empty and the message is lost.
+    func testRequeueAtHead_putsTheMessageBackForTheSameRole() async {
+        let (taskID, stepID) = await createTaskWithRunningStep()
+
+        sut.requeueSupervisorMessageAtHead(
+            taskID: taskID, roleID: stepID, text: "use the parser, not the regex")
+
+        XCTAssertTrue(formState.hasQueuedMessage(for: taskID),
+                      "a discarded message must come back, or the human's steering is lost")
+        let queued = formState.queuedMessages(for: taskID)
+        XCTAssertEqual(queued.count, 1)
+        XCTAssertEqual(queued[0].text, "use the parser, not the regex")
+        XCTAssertEqual(queued[0].targetRoleID, stepID,
+                       "re-routing on the way back would silently change who the human addressed")
+        XCTAssertTrue(queued[0].isRedelivery,
+                      "marked as a redelivery, or the feed renders the same message a second time")
+        XCTAssertTrue(queued[0].attachments.isEmpty,
+                      "attachments were finalized on first delivery and their paths ride in the "
+                      + "text — re-staging them would duplicate files on disk")
+    }
+
+    /// At the HEAD, not appended: a message queued while the boundary was crossing must not
+    /// jump ahead of the one being handed back, or FIFO inverts for exactly the message the
+    /// user is most likely to be following up on.
+    func testRequeueAtHead_goesAheadOfAMessageQueuedMeanwhile() async {
+        let (taskID, stepID) = await createTaskWithRunningStep()
+        queueRedelivery(taskID: taskID, text: "queued during the boundary", targetRoleID: stepID)
+
+        sut.requeueSupervisorMessageAtHead(taskID: taskID, roleID: stepID, text: "the first one")
+
+        let texts = (formState.queuedMessages(for: taskID)).map(\.text)
+        XCTAssertEqual(texts, ["the first one", "queued during the boundary"])
+    }
+
+    /// The failable initializer rejects an empty payload, so an empty redelivery must be
+    /// dropped rather than crash-unwrapped — the boundary reads its text off the wire and a
+    /// whitespace-only Supervisor turn is representable there.
+    func testRequeueAtHead_emptyText_queuesNothing() async {
+        let (taskID, stepID) = await createTaskWithRunningStep()
+
+        sut.requeueSupervisorMessageAtHead(taskID: taskID, roleID: stepID, text: "   ")
+
+        XCTAssertFalse(formState.hasQueuedMessage(for: taskID))
+    }
+
+    /// No form state (headless runs, and every orchestrator built before the panel exists):
+    /// the witness must return quietly rather than trap on the optional.
+    func testRequeueAtHead_withoutFormState_isANoOp() async {
+        let (taskID, stepID) = await createTaskWithRunningStep()
+        sut.quickCaptureFormState = nil
+
+        sut.requeueSupervisorMessageAtHead(taskID: taskID, roleID: stepID, text: "dropped")
+
+        XCTAssertFalse(formState.hasQueuedMessage(for: taskID))
+    }
+
+    /// Trailing whitespace is trimmed from the raw user text; LEADING whitespace is not,
+    /// because an indented paste is the common case and re-indenting someone's code snippet
+    /// changes what they sent.
+    func testConsume_trimsTrailingWhitespaceOnly() async {
+        let (taskID, stepID) = await createTaskWithRunningStep()
+        formState.appendQueuedMessage(
+            QuickCaptureFormState.QueuedChatMessage(
+                text: "    indented paste\n\n\t ", attachments: [], clippedTexts: [],
+                targetRoleID: stepID)!,
+            for: taskID)
+
+        let delivered = await sut.consumeQueuedSupervisorMessage(
+            taskID: taskID, roleID: stepID, stepID: stepID)
+
+        XCTAssertEqual(delivered, MessageSourceContext.supervisorMessagePrefix + "    indented paste",
+                       "leading indentation is content; trailing whitespace is not")
+    }
 }

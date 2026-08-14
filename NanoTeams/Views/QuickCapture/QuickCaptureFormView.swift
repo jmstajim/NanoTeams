@@ -39,6 +39,36 @@ enum QuickCaptureMode {
             return isChatMode
         }
     }
+
+    /// Which of the two attachment/clip bucket pairs the composer this mode renders is
+    /// bound to: `true` = `answerAttachments` / `answerClippedTexts`, `false` =
+    /// `attachments` / `clippedTexts`.
+    ///
+    /// Lives here, beside `expectsFocusableField` and the three body functions that do the
+    /// binding, because it answers the same kind of question about the same enum — and
+    /// because the alternative is what shipped: `captureClipboardContent` asked "is this
+    /// answer mode?", which is a DIFFERENT question with a different answer for chat-mode
+    /// `.taskWorking`. That mode docks the same `MessageComposer` against the same two
+    /// buckets (see `chatWorkingBody`, and the prose in
+    /// `QuickCaptureController.applyAnswerModeTransition` that already says so), so a
+    /// ⌃⌥⌘K capture routed by the old question landed where that mode renders nothing —
+    /// and `canSubmit(mode:)`, which reads the same pair, left Send disabled.
+    ///
+    /// Deliberately differs from `expectsFocusableField` at `.overlay`: the new-task form
+    /// renders a composer too, just bound to the other pair.
+    var composerBindsAnswerBuckets: Bool {
+        switch self {
+        case .overlay:
+            return false
+        case .supervisorAnswer:
+            return true
+        case .taskWorking(_, let isChatMode):
+            // Non-chat working is a loader with no composer at all. Neither pair is
+            // visible; the task draft is the one the user will eventually submit, so it is
+            // the only destination a stray capture can honestly belong to.
+            return isChatMode
+        }
+    }
 }
 
 // MARK: - Quick Capture Form View
@@ -245,7 +275,7 @@ struct QuickCaptureFormView: View {
             // the composer falling off the bottom edge. Removing this priority
             // re-introduces complaint #6 (composer goes missing on shrink).
             MessageComposer(
-                text: $formState.supervisorTask,
+                text: $formState.answerText,
                 attachments: $formState.answerAttachments,
                 clips: $formState.answerClippedTexts,
                 placeholder: "Type your answer...",
@@ -409,7 +439,7 @@ struct QuickCaptureFormView: View {
         Task {
             var selectedID: NTMSID?
             await store.mutateWorkFolder { project in
-                if let existing = project.teams.first(where: { $0.templateID == "generated" }) {
+                if let existing = project.teams.first(where: { $0.isGeneratedPlaceholder }) {
                     selectedID = existing.id
                 } else {
                     let newTeam = TeamTemplateFactory.generatedTeam()
@@ -511,7 +541,7 @@ struct QuickCaptureFormView: View {
                 }
 
                 MessageComposer(
-                    text: $formState.supervisorTask,
+                    text: $formState.answerText,
                     attachments: $formState.answerAttachments,
                     clips: $formState.answerClippedTexts,
                     placeholder: formState.hasQueuedMessage(for: taskID)

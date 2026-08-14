@@ -349,7 +349,7 @@ extension LLMExecutionService {
         config: LLMConfig,
         delegate: any LLMStateDelegate
     ) async -> String {
-        let deadlineDate = Date().addingTimeInterval(DelegationConstants.delegationTimeoutSeconds)
+        let deadlineDate = Date().addingTimeInterval(delegationTimeoutSeconds)
         // Snapshot the global `lastErrorMessage` BEFORE the awaiter starts.
         // V1 limitation (per docs): error messages are not partitioned
         // per-task; `lastErrorMessageForTask(childTID)` returns the global
@@ -367,10 +367,13 @@ extension LLMExecutionService {
                 // Surface to the human banner — without this, a wedged
                 // child would only manifest as a collapsed tool-call card
                 // 30 minutes after the user stopped paying attention.
-                delegate.setLastErrorMessageForUI("Delegated task #\(childTID) timed out after \(Int(DelegationConstants.delegationTimeoutSeconds / 60)) minutes — the child team did not reach a terminal state.")
+                // Both strings report the budget that actually elapsed, not the shipped
+                // constant — they are read by a human and by the model respectively, and a
+                // configured budget that reports someone else's number is a false report.
+                delegate.setLastErrorMessageForUI("Delegated task #\(childTID) timed out after \(Int(delegationTimeoutSeconds / 60)) minutes — the child team did not reach a terminal state.")
                 return makeErrorEnvelope(
                     code: .delegationTimedOut,
-                    message: "Delegated task #\(childTID) exceeded the \(Int(DelegationConstants.delegationTimeoutSeconds))-second timeout."
+                    message: "Delegated task #\(childTID) exceeded the \(Int(delegationTimeoutSeconds))-second timeout."
                 )
             }
 
@@ -388,6 +391,14 @@ extension LLMExecutionService {
                     delegate: delegate
                 )
                 if !answered {
+                    // Tear the child down BEFORE dropping the marker, like both sibling
+                    // abort arms. Skipping it strands the child permanently: it stays
+                    // parked at `.needsSupervisorInput` with a live engine, the sidebar
+                    // and Watchtower filter it out (`parentTaskID == nil`), and the very
+                    // next line clears `activeDelegationChildID` — which is what every
+                    // follow-up verb and `notifyDelegationInterrupt` validate against.
+                    // Nothing could ever reach it again.
+                    delegate.stopEngineForTask(childTID)
                     await clearDelegationFields(parentTID: parentTID, stepID: stepID, delegate: delegate)
                     return makeErrorEnvelope(
                         code: .commandFailed,

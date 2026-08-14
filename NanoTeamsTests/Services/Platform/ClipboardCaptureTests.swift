@@ -169,7 +169,7 @@ final class SourceContextParseTests: XCTestCase {
 final class SourceContextStructTests: XCTestCase {
 
     func testInit_allFields() {
-        let ctx = SourceContext(filePath: "/Users/alex/Project/file.swift", fileName: "file.swift", lineStart: 10, lineEnd: 20)
+        let ctx = SourceContext(filePath: "/Users/alex/Project/file.swift",lineStart: 10, lineEnd: 20)
 
         XCTAssertEqual(ctx.filePath, "/Users/alex/Project/file.swift")
         XCTAssertEqual(ctx.fileName, "file.swift")
@@ -178,14 +178,14 @@ final class SourceContextStructTests: XCTestCase {
     }
 
     func testInit_nilLines() {
-        let ctx = SourceContext(filePath: "/path/to/file.txt", fileName: "file.txt", lineStart: nil, lineEnd: nil)
+        let ctx = SourceContext(filePath: "/path/to/file.txt",lineStart: nil, lineEnd: nil)
 
         XCTAssertNil(ctx.lineStart)
         XCTAssertNil(ctx.lineEnd)
     }
 
     func testInit_singleLine() {
-        let ctx = SourceContext(filePath: "/path", fileName: "f.swift", lineStart: 5, lineEnd: 5)
+        let ctx = SourceContext(filePath: "/path",lineStart: 5, lineEnd: 5)
 
         XCTAssertEqual(ctx.lineStart, 5)
         XCTAssertEqual(ctx.lineEnd, 5)

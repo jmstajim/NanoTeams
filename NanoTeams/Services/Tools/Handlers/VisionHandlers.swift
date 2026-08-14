@@ -31,7 +31,20 @@ nonisolated struct AnalyzeImageTool: ToolHandler {
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            let path = try requiredString(args, "path")
+            // Empty `path` does not "fail loudly one layer down" the way the other
+            // path arguments do: `resolveFileURL("")` returns the work-folder ROOT
+            // rather than throwing, so the extension check fires first and the model
+            // is told its image is in an unsupported FORMAT — for a call that named
+            // no file at all.
+            let path = try requiredNonEmptyString(args, "path")
+            // Deliberately `requiredString`, NOT `requiredNonEmptyString`: an empty
+            // prompt is a DESIGNED input here. `VisionAnalysisService.systemPrompt`
+            // says verbatim "If no question is given, describe the image concisely",
+            // and `analyze_image` is the only caller that can produce that case —
+            // the computer-use path always passes `captureDescriptionPrompt`. A
+            // non-empty guard here would make that branch of the shipped system
+            // prompt dead code and cost a role a turn for asking "what is in this
+            // file", which is the most natural first use of the tool.
             let prompt = try requiredString(args, "prompt")
 
             let fileURL = try resolver.resolveFileURL(relativePath: path)

@@ -9,6 +9,9 @@ struct LLMSettingsView: View {
     @Environment(StoreConfiguration.self) var config
     @Environment(NTMSOrchestrator.self) var store
     @Environment(ModelCatalog.self) var modelCatalog
+    /// Optional on purpose: this view's `#Preview` injects no monitor, and a
+    /// missing `@Observable` environment value is a runtime trap rather than nil.
+    @Environment(LLMStatusMonitor.self) private var statusMonitor: LLMStatusMonitor?
 
     @State private var connectionStatus: LLMConnectionStatus = .idle
     @State private var statusMessage: String = ""
@@ -63,6 +66,10 @@ struct LLMSettingsView: View {
                         store.lastErrorMessage = "Could not read saved API token: \(error.localizedDescription)"
                     },
                     onURLCommit: {
+                        // The commit boundary endpoint-keyed views watch. Bumped
+                        // here rather than from `llmBaseURLString`'s setter, which
+                        // fires on every keystroke.
+                        config.noteLLMEndpointCommitted()
                         Task { await testConnection() }
                         // Reconcile from the COMMIT boundary, never from the
                         // live binding: the URL field writes on every
@@ -115,6 +122,13 @@ struct LLMSettingsView: View {
             bearerToken: apiToken)
         connectionStatus = result.isReachable ? .success : .failure
         statusMessage = result.message
+        // Feed the shared monitor so the status strip agrees with what this card
+        // just reported, instead of holding the stale verdict until the next poll
+        // tick. Success publishes directly; failure triggers the monitor's own
+        // probe rather than publishing red — this probe's token may differ from
+        // the Keychain-resolved one the monitor uses, so a failure here is
+        // evidence, not a verdict.
+        await statusMonitor?.noteProbeOutcome(reachable: result.isReachable)
         if result.isReachable {
             await modelCatalog.refresh(url: config.llmBaseURLString, provider: config.llmProvider)
         }

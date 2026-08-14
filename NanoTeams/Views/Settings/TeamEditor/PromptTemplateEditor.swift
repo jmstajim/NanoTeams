@@ -82,7 +82,6 @@ struct PromptTemplateEditor: NSViewRepresentable {
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
 
         scrollView.documentView = textView
-        coordinator.textView = textView
 
         // Load initial content with chips. `textStorage` is non-nil because we
         // attached it via the explicit TextKit 1 init above — a nil here means
@@ -188,7 +187,6 @@ struct PromptTemplateEditor: NSViewRepresentable {
     class Coordinator: NSObject, NSTextViewDelegate {
         var template: Binding<String>
         var placeholders: [(key: String, label: String, category: String)]
-        weak var textView: NSTextView?
         var isEditing = false
         /// Last theme rawValue stamped into the textView — drives the
         /// theme-change branch in `updateNSView`.

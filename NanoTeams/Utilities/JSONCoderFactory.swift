@@ -83,7 +83,15 @@ nonisolated enum JSONCoderFactory {
     }
 
     /// Display encoder: prettyPrinted + sortedKeys + withoutEscapingSlashes. No dates.
-    /// Used by: NativeLMStudioClient+RequestBuilder (tool schemas in prompt), ToolDefinitionEditorSheetView.
+    ///
+    /// Used by: `ToolDefinitionEditorSheetView` — and ONLY there. This comment used to also name
+    /// `NativeLMStudioClient+RequestBuilder (tool schemas in prompt)`, which has not been true
+    /// since the wire switched to `renderParameters`' flat `Args:` list: a pretty-printed JSON
+    /// Schema is exactly what that change removed, because small models pattern-match the
+    /// `"properties":{…}` wrapper and copy it into their tool-call arguments.
+    ///
+    /// Left as a doc correction rather than a deletion because the remaining consumer is real.
+    /// A comment naming consumers that do not exist is what makes dead code look live.
     static func makeDisplayEncoder() -> JSONEncoder {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]

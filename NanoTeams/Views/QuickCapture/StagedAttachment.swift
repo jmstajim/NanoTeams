@@ -65,13 +65,19 @@ nonisolated struct StagedAttachment: Identifiable, Hashable {
     /// Returns a thumbnail image for this attachment.
     /// Images get a scaled-down preview; other files get their system icon.
     ///
-    /// Image-derived thumbnails are cached process-wide by `(stagedRelativePath, size)`
-    /// to avoid re-decoding from disk on every SwiftUI body re-evaluation.
+    /// Image-derived thumbnails are cached process-wide by `(url, size)` to avoid
+    /// re-decoding from disk on every SwiftUI body re-evaluation.
     /// Workspace-icon fallbacks are NOT cached: a transient `NSImage(contentsOf:)`
     /// failure (file briefly missing, sandbox handoff in flight) would otherwise
     /// pin the generic icon under that key for the rest of the process lifetime.
+    ///
+    /// Keyed on the absolute `url`, not `stagedRelativePath`: for an in-project
+    /// attachment that path is relative to the WORK FOLDER, so two projects that both
+    /// keep `assets/icon.png` shared one entry and the second one attached rendered the
+    /// first one's picture. A relative path identifies a file only within the folder it
+    /// is relative to, and this cache outlives the folder.
     func thumbnail(size: CGFloat = 60) -> NSImage {
-        let key = "\(stagedRelativePath)|\(Int(size))" as NSString
+        let key = "\(url.path)|\(Int(size))" as NSString
         if let cached = StagedAttachment.thumbnailCache.object(forKey: key) {
             return cached
         }

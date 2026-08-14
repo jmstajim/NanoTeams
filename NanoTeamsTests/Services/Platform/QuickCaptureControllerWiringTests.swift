@@ -16,6 +16,28 @@ import XCTest
 final class QuickCaptureControllerWiringTests: XCTestCase {
 
     var sut: QuickCaptureController!
+    /// Retained for the refocus tests only. The caret restore now lives inside
+    /// `updatePanelContent`, behind the same `guard let panel, let store, let dictation`
+    /// as the content build — which is the honest coupling (nothing was swapped, so
+    /// nothing needs restoring), but it means a refocus assertion has to supply all three.
+    var store: NTMSOrchestrator!
+    var dictation: DictationService!
+
+    /// Wires the two prerequisites `setUp` deliberately leaves nil, so
+    /// `updatePanelContent` runs its body instead of skipping.
+    ///
+    /// Wiring them is exactly what makes the SwiftUI form get built, which is what the
+    /// mirror's CI runner cannot survive — so the availability skip belongs HERE rather
+    /// than in `setUp`: the four tests that never call this are unaffected and keep
+    /// running everywhere. They are also the controlled half of the comparison that
+    /// identified the trigger (see `PanelHostingAvailability`).
+    func wireContentPrerequisites() throws {
+        try PanelHostingAvailability.skipUnlessTheFormCanBeHosted()
+        store = TestOrchestrator.make()
+        dictation = DictationService()
+        sut.store = store
+        sut.dictation = dictation
+    }
 
     override func setUp() {
         super.setUp()
@@ -38,6 +60,10 @@ final class QuickCaptureControllerWiringTests: XCTestCase {
         sut._testForceNewTaskMode = false
         sut._testIsPanelVisible = false
         sut._testPanel?._testLastShowExpectsFocusableField = nil
+        sut.store = nil
+        sut.dictation = nil
+        store = nil
+        dictation = nil
         sut = nil
         super.tearDown()
     }
@@ -91,7 +117,8 @@ final class QuickCaptureControllerWiringTests: XCTestCase {
 
     // MARK: - showNewTask refocus wiring
 
-    func testShowNewTask_whenAlreadyVisible_invokesRefocusInputField() {
+    func testShowNewTask_whenAlreadyVisible_invokesRefocusInputField() async throws {
+        try wireContentPrerequisites()
         sut._testPresentPanelSync()
         XCTAssertTrue(sut._testIsPanelVisible, "presentPanelSync must mark panel visible")
         let baseline = sut._testPanel?._testRefocusInvocationCount ?? -1
@@ -121,7 +148,8 @@ final class QuickCaptureControllerWiringTests: XCTestCase {
     /// would silently break repeat-press caret recovery. (Panel-level
     /// coalescing of in-flight retry Tasks is intentional and orthogonal —
     /// the counter increments before Task spawn.)
-    func testShowNewTask_repeatedOnVisible_invokesRefocusOncePerCall() {
+    func testShowNewTask_repeatedOnVisible_invokesRefocusOncePerCall() async throws {
+        try wireContentPrerequisites()
         sut._testPresentPanelSync()
         let baseline = sut._testPanel?._testRefocusInvocationCount ?? -1
         XCTAssertGreaterThanOrEqual(baseline, 0)
@@ -139,7 +167,8 @@ final class QuickCaptureControllerWiringTests: XCTestCase {
     /// If a future async refactor of `exitAnswerMode` defers the refocus,
     /// this fails — the user gets exit-from-answer but no caret in the new
     /// task field.
-    func testShowNewTask_fromAnswerMode_stillRefocusesAndExitsAnswerMode() {
+    func testShowNewTask_fromAnswerMode_stillRefocusesAndExitsAnswerMode() async throws {
+        try wireContentPrerequisites()
         sut._testPresentPanelSync()
         sut._testEnterAnswerMode(.supervisorAnswer(payload: SupervisorAnswerPayload(
             stepID: "test-step",

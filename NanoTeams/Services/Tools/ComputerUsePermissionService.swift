@@ -36,7 +36,9 @@ nonisolated enum ComputerUsePermissionService {
 
         // 3. Off disables everything.
         if policy.mode == .off {
-            return .deny(reason: "Computer Use is disabled in Settings (mode: Off).")
+            // Model-read (see the sibling in `BashPermissionService`): name the policy,
+            // not a Settings pane. "disabled" stays in the first sentence — pinned.
+            return .deny(reason: "Computer Use is disabled by policy (mode: Off). No screen or input action can run in this step.")
         }
 
         // 4. Blocked typing / key patterns.

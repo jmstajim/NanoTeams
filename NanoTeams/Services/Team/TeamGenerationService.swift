@@ -67,7 +67,74 @@ nonisolated enum TeamGenerationService {
             systemPrompt: systemPrompt,
             logger: logger, stepID: stepID
         )
+        if case .success = outcome.result { return try outcome.result.get() }
+
+        // ONE corrective retry. The failure class this exists for is a well-formed call
+        // with one field wrong — `gemma-4-e4b` lost a whole milestone to a missing
+        // `roles[].name`, with no retry and no nudge, while the role tool loop next door
+        // has both. `describeDecodingError` already produces the exact sentence
+        // (`Key not found: name at \`roles.Index 0\``); handing it back is usually
+        // sufficient. Retry only when there is something to correct WITH: a transport
+        // failure re-run verbatim would just pay the latency twice.
+        //
+        // Exactly one, never a loop — every caller blocks on this. The delegation path
+        // (`handleDelegateToTeam`) is the one that hurts: a parent role's tool loop is
+        // suspended for the whole duration.
+        //
+        // `lastArgumentsJSON != nil` IS the discriminator, and it is the only one needed:
+        // it is set exactly on the three parse paths (`.toolCall` / `.harmony` /
+        // `.jsonExtract`), each of which sets it BEFORE calling `decodeTeamConfig`, while
+        // the transport `catch`, `firstContentTimedOut` and `noResponse` arms leave it nil.
+        // An additional `!(error is GenerationError)` clause was tried and is WRONG — it
+        // reads as "not a generation-layer error" but `decodeTeamConfig` wraps every one of
+        // its throws in `GenerationError.invalidResponse`, so the two conditions are
+        // mutually exclusive and the retry never ran (dead from the day it was written).
+        guard case .failure(let error) = outcome.result,
+              let attempted = outcome.diagnostics.lastArgumentsJSON
+        else { return try outcome.result.get() }
+
+        // Never spend a second request on a run the user already stopped. The guard above
+        // can still be satisfied under cancellation (the cancel can land while the parse
+        // cascade is running, after `lastArgumentsJSON` is set), and `pauseRun` cancelling
+        // team generation is a routine action, not an edge case.
+        if Task.isCancelled { throw CancellationError() }
+
+        let retry = await generateWithDiagnostics(
+            taskDescription: taskDescription, config: config, client: client,
+            systemPrompt: systemPrompt,
+            logger: logger, stepID: stepID,
+            priorAttempt: (arguments: attempted,
+                           reason: TeamConfigParser.describeDecodingError(error))
+        )
+        if case .success = retry.result { return try retry.result.get() }
+
+        // A CANCELLATION during the retry is the user stopping the run, and it must reach
+        // the caller intact — `runTeamGeneration` classifies it with `isCancellation` to
+        // mark the step `.paused` and suppress the error banner. Reporting attempt 1's
+        // parse error instead makes that read false, so a Pause during the (multi-second)
+        // retry surfaced as "AI returned invalid team configuration" and the Autovisor was
+        // told the generation "failed again". Before the retry existed there was a single
+        // stream, so a cancellation always reached the classifier — this is the one way the
+        // retry could regress behaviour, and it is the reason the arm below is not simply
+        // `return try outcome.result.get()`.
+        if case .failure(let retryError) = retry.result, isCancellation(retryError) {
+            throw retryError
+        }
+        // Otherwise report the FIRST error: it describes the model's own config, whereas
+        // the retry's may describe a different, less representative one.
         return try outcome.result.get()
+    }
+
+    /// True for `CancellationError` and for the `URLError.cancelled` that `URLSession`
+    /// emits when its streaming task is cancelled mid-request.
+    ///
+    /// Shared with `NTMSOrchestrator.runTeamGeneration`'s failure arm — the two must agree,
+    /// or a paused generation is marked `.failed` at one layer and `.paused` at the other.
+    /// The rule itself belongs to cancellation, not to team generation, so it now lives in
+    /// `CancellationClassifier`, where three other services that were getting it wrong can
+    /// reach it. Kept as a forwarding alias: this name is the one the call sites read.
+    static func isCancellation(_ error: Error) -> Bool {
+        CancellationClassifier.isCancellation(error)
     }
 
     /// Diagnostics-emitting variant — never throws; failures surface via `outcome.result`.
@@ -85,7 +152,8 @@ nonisolated enum TeamGenerationService {
         firstContentDeadlineSeconds: Double? = nil,
         systemPrompt: String? = nil,
         logger: NetworkLogger? = nil,
-        stepID: String? = nil
+        stepID: String? = nil,
+        priorAttempt: (arguments: String, reason: String)? = nil
     ) async -> GenerationOutcome {
         let startedAt = Date()
         var diagnostics = GenerationDiagnostics(
@@ -97,7 +165,7 @@ nonisolated enum TeamGenerationService {
             lastArgumentsJSON: nil
         )
 
-        let messages: [ChatMessage] = [
+        var messages: [ChatMessage] = [
             ChatMessage(role: .system, content: systemPrompt ?? Self.defaultSystemPrompt),
             ChatMessage(role: .user, content: """
                 Task:
@@ -106,9 +174,31 @@ nonisolated enum TeamGenerationService {
                 Analyze this task and call create_team ONCE with the optimal team configuration.
                 """),
         ]
+        if let priorAttempt {
+            // Show the model its own payload back, then name the single defect. Anything
+            // vaguer ("that failed, try again") reproduces the same config.
+            messages.append(ChatMessage(role: .assistant, content: priorAttempt.arguments))
+            messages.append(ChatMessage(role: .user, content: """
+                That config was rejected: \(priorAttempt.reason)
+
+                Call create_team once more. Keep everything that was fine and fix only that.
+                """))
+        }
 
         var toolAccumulator = ToolCallAccumulator()
         var fullContent = ""
+        var fullReasoning = ""
+
+        /// What the parse cascade below actually consumes, and what the diagnostics must
+        /// therefore record. `prepare` only trims: `ModelTokenCleaner.clean` would strip the
+        /// very `<|channel|>…<|call|>` envelope path 2 exists to read, and path 3 cleans for
+        /// itself. Reading it at call time, so it sees whatever has streamed in so far.
+        func parseSource() -> String {
+            ModelReplyChannels.answer(
+                content: fullContent,
+                reasoning: fullReasoning,
+                prepare: { $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+        }
 
         // Wire `logger` + `stepID` through to the streaming call so the
         // request/response land in the per-task `network_log.json`. Pre-fix
@@ -143,6 +233,10 @@ nonisolated enum TeamGenerationService {
                     sawContent = true
                 }
                 fullContent += event.contentDelta
+                // Collected but deliberately NOT counted towards `sawContent`: that guard
+                // exists to catch a model stuck emitting reasoning and nothing else, so
+                // feeding this channel into it would disable the one detector aimed at it.
+                fullReasoning += event.thinkingDelta
                 if !event.toolCallDeltas.isEmpty {
                     toolAccumulator.absorb(event.toolCallDeltas)
                 }
@@ -158,14 +252,23 @@ nonisolated enum TeamGenerationService {
                     break
                 }
             }
+            // The in-loop `checkCancellation` only fires when ANOTHER event is delivered,
+            // so a stream that ends right after the cancel lands falls through here. Without
+            // this guard the parse cascade below runs on a truncated payload:
+            // `ToolCallAccumulator.finalize` returns a call for any non-empty NAME regardless
+            // of whether its arguments are complete JSON, so a cancelled run would set
+            // `lastArgumentsJSON`, throw a parse error, and be reported to the user as a bad
+            // config for an action they took themselves. Mirrors the role-step streaming
+            // path, which carries the same post-loop guard beside its in-loop one.
+            try Task.checkCancellation()
         } catch {
-            diagnostics.rawContent = fullContent
+            diagnostics.rawContent = parseSource()
             diagnostics.elapsedSeconds = Date().timeIntervalSince(startedAt)
             return GenerationOutcome(result: .failure(error), diagnostics: diagnostics)
         }
 
         if firstContentTimedOut {
-            diagnostics.rawContent = fullContent
+            diagnostics.rawContent = parseSource()
             diagnostics.elapsedSeconds = Date().timeIntervalSince(startedAt)
             let seconds = firstContentDeadlineSeconds ?? 0
             return GenerationOutcome(
@@ -176,7 +279,7 @@ nonisolated enum TeamGenerationService {
             )
         }
 
-        diagnostics.rawContent = fullContent
+        diagnostics.rawContent = parseSource()
         diagnostics.elapsedSeconds = Date().timeIntervalSince(startedAt)
 
         // Cascade through all three parsing paths. A path that extracts an arguments
@@ -199,7 +302,7 @@ nonisolated enum TeamGenerationService {
         }
 
         // 2. Harmony-format tool call.
-        let harmony = HarmonyToolCallParser().extractAllToolCalls(from: fullContent)
+        let harmony = HarmonyToolCallParser().extractAllToolCalls(from: parseSource())
         if let call = harmony.first(where: { $0.name == ToolNames.createTeam }) {
             diagnostics.parsingPath = .harmony
             diagnostics.lastArgumentsJSON = call.argumentsJSON
@@ -213,7 +316,7 @@ nonisolated enum TeamGenerationService {
 
         // 3. Balanced JSON object scanned from the content — handles models that
         //    return JSON as prose instead of calling the tool.
-        let cleanedContent = ModelTokenCleaner.clean(fullContent)
+        let cleanedContent = ModelTokenCleaner.clean(parseSource())
         if let json = TeamConfigParser.extractJSONObject(from: cleanedContent) {
             diagnostics.parsingPath = .jsonExtract
             diagnostics.lastArgumentsJSON = json
@@ -244,6 +347,10 @@ nonisolated enum TeamGenerationService {
         - **Producing** — has `produces_artifacts`; auto-finishes when all artifacts are submitted via create_artifact.
         - **Chat** — has `requires_artifacts` only, empty `produces_artifacts`; talks via ask_supervisor until paused. A team with empty `supervisor_requires` runs in Chat mode.
         - **Observer** — no artifacts; speaks only in meetings. Use for personality-driven debate teams.
+
+        ## Role object
+        Every role needs `name` AND `prompt` — both required, no defaults:
+        `{"name":"Backend Engineer","prompt":"…","tools":["read_file","write_file"],"requires_artifacts":["Supervisor Task"],"produces_artifacts":["API Specification"]}`
 
         ## Design rules
         - `Supervisor Task` is always the first dependency. The Supervisor produces it automatically.

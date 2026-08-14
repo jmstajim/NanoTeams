@@ -36,8 +36,13 @@ nonisolated enum LLMAuthErrorClassifier {
         authFailureKind(status: status) != nil
     }
 
-    /// User-facing message. Generic for non-auth errors so we don't drown the
+    /// HUMAN-facing message. Generic for non-auth errors so we don't drown the
     /// signal: only 401/403 get the "go add a token" guidance.
+    ///
+    /// Naming the Settings pane is CORRECT here and must stay — the reader can click it
+    /// (settings cards, `lastErrorMessage`, `EmbeddingClientError`). Pinned by
+    /// `LLMAuthErrorClassifierTests` and `EmbeddingAuthErrorMessageTests`.
+    /// A model-read caller must use `modelFacingMessage(forStatus:)` instead.
     static func message(forStatus status: Int, body: String?) -> String {
         if isAuthFailure(status: status) {
             return "Authentication required — add your API token in Settings → LLM. "
@@ -47,5 +52,20 @@ nonisolated enum LLMAuthErrorClassifier {
             return "Server returned HTTP \(status): \(body)"
         }
         return "Server returned HTTP \(status)."
+    }
+
+    /// MODEL-facing rendering of the same condition, for callers whose text lands in the
+    /// conversation (today: `preflightDecision`'s `appendSystemMessage`, which persists as a
+    /// `.system` turn the degraded replay path keeps).
+    ///
+    /// A second RENDERER rather than a second copy of the string: both live on the type that
+    /// owns the question, so they cannot drift. The model cannot open a Settings pane, and
+    /// retrying will not help — say so and name who can fix it.
+    static func modelFacingMessage(forStatus status: Int) -> String {
+        guard isAuthFailure(status: status) else {
+            return "The LLM server rejected this request (HTTP \(status))."
+        }
+        return "The LLM server rejected this request for lack of valid credentials (HTTP \(status)). "
+            + "Only the supervisor can supply them; this will not succeed on retry."
     }
 }

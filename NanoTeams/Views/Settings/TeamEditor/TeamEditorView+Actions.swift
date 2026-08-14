@@ -36,8 +36,10 @@ extension TeamEditorView {
         Task {
             await store.mutateWorkFolder { project in
                 let newTeam = TeamTemplateFactory.makeTeam(templateID: templateID, name: name)
-                project.teams.append(newTeam)
-                project.activeTeamID = newTeam.id
+                // Through `addTeam`, and selecting the id it RETURNS: a team id is derived
+                // from its name, so two teams named alike would share one — and the id the
+                // team carries is then not the id it was added under.
+                project.activeTeamID = project.addTeam(newTeam)
             }
         }
     }
@@ -73,12 +75,17 @@ extension TeamEditorView {
                 acceptanceMode: store.configuration.teamGenForcedAcceptanceMode
             )
             let team = buildResult.team
-            let priorError = store.lastErrorMessage
+            // Counted, not slot-compared: `mutateWorkFolder` surfaces its refusal into
+            // `lastErrorMessage`, which the error banner nils on any render — and this
+            // sheet is on screen for the whole generation. A consumed slot read back as
+            // "no error", so a refused `teams.json` write reported the generated team as
+            // installed while nothing had been persisted.
+            let priorErrorCount = store.errorSurfaceCount
             await store.mutateWorkFolder { project in
                 project.teams.append(team)
                 project.activeTeamID = team.id
             }
-            if store.lastErrorMessage != priorError, let err = store.lastErrorMessage {
+            if let err = store.errorSurfaced(since: priorErrorCount) {
                 return err
             }
             if !buildResult.warnings.isEmpty {
@@ -99,8 +106,8 @@ extension TeamEditorView {
         Task {
             await store.mutateWorkFolder { project in
                 let duplicated = TeamManagementService.duplicateTeam(team, newName: "\(team.name) Copy")
-                project.teams.append(duplicated)
-                project.activeTeamID = duplicated.id
+                // The two-click case: duplicating twice names both copies `<team> Copy`.
+                project.activeTeamID = project.addTeam(duplicated)
             }
         }
     }
@@ -191,8 +198,8 @@ extension TeamEditorView {
             editorSelectedTeamID = nil
             Task {
                 await store.mutateWorkFolder { project in
-                    project.teams.append(importedTeam)
-                    project.activeTeamID = importedTeam.id
+                    // Importing the same file twice derives `<team> (Imported)` both times.
+                    project.activeTeamID = project.addTeam(importedTeam)
                 }
             }
         } catch let error as ImportExportError {

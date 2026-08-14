@@ -21,7 +21,10 @@ extension UserDefaults: ConfigurationStorage {}
 /// User-selected cadence for the background "is there a newer NanoTeams release?"
 /// check. The user-initiated "Check for Updates" button bypasses this entirely
 /// — `force == true` always fires the network call regardless of the setting.
-enum AppUpdateCheckInterval: String, CaseIterable, Identifiable, Codable, Hashable {
+/// `nonisolated` per the house rule for pure value types: it is a `Codable` enum persisted into
+/// UserDefaults with no UI dependency, so it has no business inheriting the app target's
+/// `@MainActor` default isolation. Every sibling of this shape in `Domain/` is already marked.
+nonisolated enum AppUpdateCheckInterval: String, CaseIterable, Identifiable, Codable, Hashable {
     case daily, weekly, biweekly, monthly, never
 
     var id: String { rawValue }
@@ -75,8 +78,31 @@ final class StoreConfiguration {
                 let restored = rememberedEndpoint(for: llmProvider)
                 llmBaseURLString = Self.nonBlank(restored?.url) ?? llmProvider.defaultBaseURL
                 llmModelName = Self.nonBlank(restored?.model) ?? llmProvider.defaultModel
+                // A flip rewrites the URL programmatically, so there is no field
+                // commit for endpoint-keyed views to observe. Bump for them.
+                noteLLMEndpointCommitted()
             }
         }
+    }
+
+    /// Bumped when the LLM endpoint changes at a COMMIT boundary: the URL field's
+    /// Return / focus-loss, a provider flip (which rewrites URL + model
+    /// programmatically, so there is no commit event to observe), and
+    /// `resetToDefaults`.
+    ///
+    /// Endpoint-keyed views key `.task(id:)` off this instead of the live
+    /// `llmBaseURLString`, which the Settings URL `TextField` writes on EVERY
+    /// keystroke — a live key re-fires the task per typed character, each time with
+    /// a brand-new uncached key, producing one request per keystroke against
+    /// half-typed hosts. Same rule the residency reconcile already follows
+    /// ("reconcile from commit boundaries only").
+    ///
+    /// Session-scoped, deliberately not persisted: it identifies "which endpoint
+    /// generation is this process on", which has no meaning across launches.
+    private(set) var llmEndpointGeneration: Int = 0
+
+    func noteLLMEndpointCommitted() {
+        llmEndpointGeneration &+= 1
     }
 
     /// Last-used (URL, model) per provider — what makes the provider picker a
@@ -1165,6 +1191,11 @@ final class StoreConfiguration {
         computerUseRaiseTargetWindowBeforeClick = true
         computerUseGateFirstCaptureOnly = true
         computerUseJudgeLLMOverride = nil
+        // The URL and model above were reset programmatically. `llmProvider`'s
+        // `didSet` bumps only when the provider actually CHANGED, so a reset that
+        // leaves the provider alone would otherwise strand endpoint-keyed views on
+        // the pre-reset generation.
+        noteLLMEndpointCommitted()
     }
 
     // MARK: - Work Folder Path

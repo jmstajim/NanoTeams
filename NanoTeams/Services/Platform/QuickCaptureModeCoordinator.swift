@@ -60,8 +60,12 @@ struct DefaultQuickCaptureModeCoordinator: QuickCaptureModeCoordinator {
                 task.runs.last?.steps.first(where: { $0.effectiveRoleID == id })
             }
             let roleDef = workingStepRoleID.flatMap { activeTeam?.findRole(byIdentifier: $0) }
-            let fallbackName = activeTeam?.nonSupervisorRoles.first?.name ?? ""
-            let roleName = roleDef?.name ?? workingStep?.role.displayName ?? fallbackName
+            // No arbitrary fallback: with no running step the queue target is nil (untargeted),
+            // so naming the team's first role told the user their message was going somewhere
+            // it was not. Both names below derive from `workingStepRoleID`, which is exactly
+            // what `submitQueuedMessageFromForm` targets — an empty name renders as
+            // "Thinking…", which is the honest thing to say about a role nobody has picked.
+            let roleName = roleDef?.name ?? workingStep?.role.displayName ?? ""
             return .taskWorking(roleName: roleName, isChatMode: task.isChatMode)
         }
 

@@ -58,6 +58,17 @@ final class DictationEngine: DictationEngineProtocol {
     private var slots: [Slot] = []
     private var tapInstalled = false
 
+    /// The asset seam behind the planner's viability sweep. Defaults to the
+    /// live Speech-backed conformance; injectable so a test can stage
+    /// installed locales without models on disk. Reads only — the system
+    /// conformance downloads nothing, reserves nothing, and prompts for
+    /// nothing.
+    private let assetInventory: any DictationAssetInventory
+
+    init(assetInventory: any DictationAssetInventory = SystemDictationAssetInventory()) {
+        self.assetInventory = assetInventory
+    }
+
     var activeLocales: [Locale] { slots.map(\.locale) }
     var isRunning: Bool { !slots.isEmpty }
 
@@ -66,23 +77,14 @@ final class DictationEngine: DictationEngineProtocol {
     /// Starts dictation for the given locales. Uses only already-installed
     /// on-device models; downloads happen exclusively from the Dictation
     /// settings UI. Throws if no usable model is present.
+    ///
+    /// The decision half — which locales are viable, and which error to throw
+    /// when none are — is `DictationStartPlanner.viableLocales` (Speech-free,
+    /// tested by `DictationStartPlannerTests`). Everything below the planner
+    /// call is hardware assembly.
     func start(locales: [Locale]) async throws {
-        guard !locales.isEmpty else {
-            throw EngineError.noSupportedLocales
-        }
-
-        var viable: [(Locale, DictationTranscriber)] = []
-        for locale in locales {
-            let transcriber = DictationTranscriber(locale: locale, preset: .progressiveLongDictation)
-            let status = await AssetInventory.status(forModules: [transcriber])
-            if status == .installed {
-                viable.append((locale, transcriber))
-            }
-        }
-
-        guard !viable.isEmpty else {
-            throw EngineError.noInstalledModel
-        }
+        let viable = try await DictationStartPlanner.viableLocales(
+            requested: locales, inventory: assetInventory)
 
         let engine = AVAudioEngine()
         let inputNode = engine.inputNode
@@ -91,9 +93,18 @@ final class DictationEngine: DictationEngineProtocol {
         var builtSlots: [Slot] = []
         var tapBridges: [TapBridge] = []
 
-        for (index, pair) in viable.enumerated() {
-            let slotIndex = index
-            let transcriber = pair.1
+        for locale in viable {
+            // Dense over BUILT slots — never the position in `viable`.
+            // `DictationService` sizes `slotTranscripts` by
+            // `activeLocales.count` (= built count) and `handleUpdate`
+            // bounds-checks every update against it, so a position-in-`viable`
+            // index (the previous spelling) broke that contract whenever a
+            // middle locale's `prepareToAnalyze` failed: the locales after it
+            // kept their sparse indices, every update they emitted fell to the
+            // bounds guard, and the user's speech in those languages was
+            // silently discarded.
+            let slotIndex = builtSlots.count
+            let transcriber = DictationTranscriber(locale: locale, preset: .progressiveLongDictation)
 
             let preferred = await SpeechAnalyzer.bestAvailableAudioFormat(
                 compatibleWith: [transcriber],
@@ -161,7 +172,7 @@ final class DictationEngine: DictationEngineProtocol {
 
             builtSlots.append(
                 Slot(
-                    locale: pair.0,
+                    locale: locale,
                     analyzer: analyzer,
                     continuation: continuation,
                     consumerTask: consumer,
@@ -294,19 +305,12 @@ final class DictationEngine: DictationEngineProtocol {
 
     // MARK: - Errors
 
-    enum EngineError: Error, LocalizedError {
-        case noSupportedLocales
-        case noInstalledModel
-
-        var errorDescription: String? {
-            switch self {
-            case .noSupportedLocales:
-                return "No speech-recognition locales are configured."
-            case .noInstalledModel:
-                return "No dictation model is installed. Open Settings → Dictation to download one."
-            }
-        }
-    }
+    /// The cases and their user-facing strings live on
+    /// `DictationStartPlanner.StartError` so the error selection is testable
+    /// without the macOS 26 gate; the alias keeps every existing spelling —
+    /// `DictationEngine.EngineError` — compiling unchanged. Same move as
+    /// `DictationModelCatalog.InstallError`.
+    typealias EngineError = DictationStartPlanner.StartError
 }
 
 // MARK: - Audio Tap Bridge

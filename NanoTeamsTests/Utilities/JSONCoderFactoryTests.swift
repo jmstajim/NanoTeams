@@ -108,20 +108,47 @@ final class JSONCoderFactoryTests: XCTestCase {
     /// decoding strategy, this test fails and task.json loading breaks for
     /// existing installations.
     func testDateDecoderDecodesLegacySecondPrecisionFormat() throws {
-        let json = #"{"date":"2020-06-15T12:34:56Z"}"#  // no fractional seconds
+        let json = #"{"date":"2020-06-15T21:34:56Z"}"#  // no fractional seconds
         let data = json.data(using: .utf8)!
         let decoder = JSONCoderFactory.makeDateDecoder()
         let wrapper = try decoder.decode(DateWrapper.self, from: data)
-        // Expected: 2020-06-15 12:34:56 UTC = 1592224496
-        XCTAssertEqual(wrapper.date.timeIntervalSince1970, 1_592_224_496, accuracy: 1)
+        // Expected: 2020-06-15 21:34:56 UTC = 1592256896
+        XCTAssertEqual(wrapper.date.timeIntervalSince1970, 1_592_256_896, accuracy: 1)
     }
 
     func testDateDecoderDecodesFractionalSecondsFormat() throws {
-        let json = #"{"date":"2020-06-15T12:34:56.789Z"}"#
+        let json = #"{"date":"2020-06-15T21:34:56.789Z"}"#
         let data = json.data(using: .utf8)!
         let decoder = JSONCoderFactory.makeDateDecoder()
         let wrapper = try decoder.decode(DateWrapper.self, from: data)
-        XCTAssertEqual(wrapper.date.timeIntervalSince1970, 1_592_224_496.789, accuracy: 0.01)
+        XCTAssertEqual(wrapper.date.timeIntervalSince1970, 1_592_256_896.789, accuracy: 0.01)
+    }
+
+    /// Both formatters refusing the string is a REAL outcome — a hand-edited or truncated
+    /// `task.json` reaches here — and it must throw rather than fall through to some default. A
+    /// silent 1970 would make a corrupt timestamp look like a legitimately ancient record, and
+    /// every ordering the activity feed and the monotonic clock depend on would quietly invert.
+    ///
+    /// This arm was previously covered only BY ACCIDENT, by whichever test happened to feed a bad
+    /// date, so it appeared and disappeared between coverage runs. Same treatment as
+    /// `createNewRun`'s persist catch: a number that oscillates is a number nobody trusts, and this
+    /// one carries a real contract.
+    ///
+    /// RED: replace the `throw` with `return Date(timeIntervalSince1970: 0)` → no error is raised.
+    func testDateDecoder_stringNeitherFormatterAccepts_throwsNamingTheString() throws {
+        let data = Data(#"{"date":"yesterday afternoon"}"#.utf8)
+
+        XCTAssertThrowsError(
+            try JSONCoderFactory.makeDateDecoder().decode(DateWrapper.self, from: data)
+        ) { error in
+            guard case DecodingError.dataCorrupted(let context) = error else {
+                return XCTFail("expected .dataCorrupted, got \(error)")
+            }
+            XCTAssertTrue(
+                context.debugDescription.contains("yesterday afternoon"),
+                "the offending string must be in the message — it is the only clue to which "
+                    + "record on disk is corrupt; got: \(context.debugDescription)")
+        }
     }
 
     // MARK: - Roundtrip

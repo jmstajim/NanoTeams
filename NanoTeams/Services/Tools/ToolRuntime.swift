@@ -1,21 +1,20 @@
 import Foundation
 
+/// Exactly one case, on purpose (wave 32). Its three former siblings were declared error
+/// routes the runtime deliberately replaced with RECOVERY, so none could ever fire:
+/// `toolNotFound` → the missing-handler guard builds its own `tool_not_found` envelope
+/// inline; `invalidArgumentsJSON` → unparseable args are wrapped as `__raw_input__` for
+/// handler-side recovery; `emptyKeyInArguments` → empty keys are silently stripped
+/// (gpt-oss-20b emits `{"":""}` for no-parameter tools). A declared case nobody can
+/// construct makes the reader tracing "how does an unknown tool fail" end in a route that
+/// never runs — the `LLMStepStop.needsAcceptance` class.
 nonisolated enum ToolRuntimeError: LocalizedError {
-    case toolNotFound(String)
-    case invalidArgumentsJSON(String)
     case argumentsNotObject
-    case emptyKeyInArguments
 
     var errorDescription: String? {
         switch self {
-        case .toolNotFound(let name):
-            "Tool not found: \(name)"
-        case .invalidArgumentsJSON(let raw):
-            "Tool arguments are not valid JSON: \(raw). Expected format: {\"param\": \"value\"}"
         case .argumentsNotObject:
             "Tool arguments must be a JSON object. Expected format: {\"param\": \"value\"}"
-        case .emptyKeyInArguments:
-            "Tool arguments contain empty key. Expected format: {\"param\": \"value\"}, not {\"\"} or {\"\": \"\"}"
         }
     }
 }

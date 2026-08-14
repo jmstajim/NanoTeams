@@ -67,7 +67,14 @@ nonisolated extension MemoryTagStore {
             for failure in failures.prefix(10) {
                 let message = failure["message"] as? String ?? "?"
                 let file = failure["file"] as? String
-                let line = failure["line"] as? Int
+                // The producer is `XcodeBuildRunner.TestResult.failures`, typed
+                // `[[String: String]]`, so `line` arrives as a STRING and the
+                // old `as? Int` never once succeeded — the `:line` suffix below
+                // was unreachable and every test failure reached the model
+                // without its line number. Accept both spellings rather than
+                // depending on which side is right.
+                let line = (failure["line"] as? Int)
+                    ?? (failure["line"] as? String).flatMap(Int.init)
                 var failLine = "[F] \(message)"
                 if let file = file {
                     failLine += " — \(file)"
@@ -80,13 +87,5 @@ nonisolated extension MemoryTagStore {
         }
 
         return lines.joined(separator: "\n")
-    }
-
-    /// Parse "[E] message — file:line" lines from a build summary for delta comparison.
-    func parseBuildErrorLines(from summary: String) -> Set<String> {
-        Set(
-            summary.components(separatedBy: "\n")
-                .filter { $0.hasPrefix("[E]") || $0.hasPrefix("[F]") }
-        )
     }
 }

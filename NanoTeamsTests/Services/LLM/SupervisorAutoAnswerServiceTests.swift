@@ -227,7 +227,8 @@ extension SupervisorAutoAnswerServiceTests {
             artifactReader: { _ in nil }
         )
 
-        // The answer should either be from LLM or fallback
-        XCTAssertFalse(answer.isEmpty)
+        // The answer should either be from LLM or fallback — never nil, which now means
+        // "cancelled" and must not be produced by a plain connection failure.
+        XCTAssertFalse(answer?.isEmpty ?? true)
     }
 }

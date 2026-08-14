@@ -428,6 +428,48 @@ final class SwitchChatModelTests: NTMSOrchestratorTestBase {
         XCTAssertEqual(unloadedIDs(client), ["qwen"], "The deferral must not become a leak")
     }
 
+    /// A duplicate that refuses to unload must SAY so. The ordinary orphan reclaim
+    /// already reports its failures; the sibling reap — added later — was the one
+    /// unload in the pass whose failure went nowhere.
+    ///
+    /// It matters more than the orphan case, not less: a duplicate of the model the
+    /// user is actively chatting with is, by construction, a second full copy of the
+    /// largest thing in memory, and the pile-up that motivated the reap was observed
+    /// on the ACTIVE model (three co-resident instances until a 26B refused to load).
+    /// A silent failure there reads to the user as "NanoTeams is leaking memory".
+    ///
+    /// The model stays referenced (`llmModelName == "qwen"`), so the orphan reclaim
+    /// below is skipped and the duplicate's unload is the only one in the pass —
+    /// which is what makes the blanket `unloadError` a precise instrument here.
+    ///
+    /// RED: drop the `if case .failed(let error) = outcome { notices.append(…) }` arm
+    /// → `lastInfoMessage` is nil and both assertions fail, while the reap itself
+    /// still ran (the attempt assertion keeps this from passing vacuously).
+    func testReconcile_duplicateReapFails_saysSoInsteadOfSilentlyLeakingIt() async {
+        let client = RecordingLLMClient()
+        client.listLoadedInstancesResults = [
+            LoadedModelInstance(modelName: "qwen", instanceID: "qwen"),
+        ]
+        sut.configuration.llmBaseURLString = baseURL
+        sut.configuration.llmModelName = "qwen"
+        let ensurer = await managed(["qwen"], client: client)
+        client.listLoadedInstancesResults = [
+            LoadedModelInstance(modelName: "qwen", instanceID: "qwen"),
+            LoadedModelInstance(modelName: "qwen", instanceID: "qwen:2"),
+        ]
+        client.unloadError = TestError.boom
+
+        await sut.reconcileAndReportResidency(client: client, ensurer: ensurer)
+
+        XCTAssertEqual(unloadedIDs(client), ["qwen:2"],
+                       "precondition: the reap was attempted on the duplicate only")
+        let notice = sut.lastInfoMessage ?? ""
+        XCTAssertTrue(notice.contains("qwen:2"),
+                      "the notice must name the instance that is still resident; got: \(notice)")
+        XCTAssertTrue(notice.contains("duplicate"),
+                      "and say it was a duplicate, so the user can tell it from an orphan; got: \(notice)")
+    }
+
     /// An unreferenced model with a duplicate pile goes entirely — the sibling
     /// through the reap, the owned instance through the ordinary orphan path.
     func testReconcile_unreferencedModelWithDuplicates_reapsAllInstances() async {

@@ -366,4 +366,51 @@ final class CreateTeamToolTests: XCTestCase {
                        "Signal must carry the typed enum (not the raw string)")
         XCTAssertEqual(config.acceptanceMode, .afterEachRole)
     }
+    // MARK: - Unserializable object
+
+    /// `team_config` arrives as `[String: Any]`, and that type can carry values JSON cannot
+    /// express. Through the runtime it is always JSON-parsed and therefore always
+    /// re-serializable — so this drives the handler DIRECTLY, which is the only caller shape
+    /// that can produce the value.
+    ///
+    /// The `do`/`catch` that used to stand here could never fire: for a value JSON cannot
+    /// express, `data(withJSONObject:)` raises an ObjC `NSInvalidArgumentException` instead of
+    /// throwing a Swift error (measured, 2026-08-08). The guard read as "we surface
+    /// re-serialization failures explicitly"; what it actually did was terminate the process.
+    /// `isValidJSONObject` is the check Foundation documents for exactly this, and it makes the
+    /// comment true.
+    ///
+    /// RED: drop the `isValidJSONObject` guard → this test does not fail, it CRASHES the
+    /// worker, which is the whole point.
+    func testCreateTeam_objectJSONSerializationCannotExpress_saysSo() {
+        let tool = CreateTeamTool.makeInstance(dependencies: ToolHandlerDependencies(
+            workFolderRoot: tempDir, resolver: SandboxPathResolver(workFolderRoot: tempDir),
+            fileManager: .default, internalDir: tempDir.appendingPathComponent(".nanoteams"),
+            searchExploratoryByDefault: false, readFileMaxLines: 500,
+            searchMaxResults: 100, searchContextBefore: 0, searchContextAfter: 0))
+
+        let result = tool.handle(
+            context: context,
+            args: ["team_config": ["name": Double.nan]])
+
+        XCTAssertTrue(result.isError, "got: \(result.outputJSON)")
+        XCTAssertTrue(result.outputJSON.contains("INVALID_ARGS"), "got: \(result.outputJSON)")
+        XCTAssertTrue(result.outputJSON.contains("team_config"),
+                      "the model must learn WHICH argument it cannot express: \(result.outputJSON)")
+        XCTAssertNil(result.signal, "nothing may be installed from an object that never decoded")
+    }
+    /// The same trap one level down, in the helper EVERY tool's error path calls to render its
+    /// arguments. `encodeArgsToJSON`'s `guard/else { return "{}" }` shape promises totality;
+    /// `try?` does not deliver it, because the failure mode here is an ObjC exception. So the
+    /// helper died on exactly the input it exists to render safely — on the error path, where
+    /// arguments are least trustworthy by definition.
+    ///
+    /// RED: drop the `isValidJSONObject` guard → this crashes the worker rather than failing.
+    func testEncodeArgsToJSON_valueJSONCannotExpress_returnsEmptyObject() {
+        XCTAssertEqual(encodeArgsToJSON(["x": Double.nan]), "{}")
+        XCTAssertEqual(encodeArgsToJSON(["x": Double.infinity]), "{}")
+        XCTAssertEqual(encodeArgsToJSON(["d": Date()]), "{}")
+        // …and still renders an ordinary payload, sorted.
+        XCTAssertEqual(encodeArgsToJSON(["b": 2, "a": 1]), #"{"a":1,"b":2}"#)
+    }
 }

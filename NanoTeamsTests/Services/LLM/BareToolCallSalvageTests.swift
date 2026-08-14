@@ -245,4 +245,114 @@ final class BareToolCallSalvageTests: XCTestCase {
             FileManager.default.fileExists(
                 atPath: repoRoot.appendingPathComponent(Self.expectedCallSitePath).path))
     }
+
+    // MARK: - Rule A tail: sentinel debris vs. prose
+
+    /// `gemma-4-e4b` appends a stray `|` after the closing brace in 30% of its envelopes.
+    /// One of those bytes was the entire reason a `list_files` call was dropped.
+    func testTrailingSentinelDebris_stillSalvages() {
+        for tail in ["|", ">", "/", "|>", " | ", "</"] {
+            let call = BareToolCallSalvage.salvage(
+                from: #"{"name":"list_files","arguments":{"path":"src"}}"# + tail,
+                advertised: [])
+            XCTAssertEqual(call?.name, ToolNames.listFiles, "tail \(tail.debugDescription)")
+        }
+    }
+
+    /// The contract this rule exists for is unchanged: prose around the object means the
+    /// model was writing ABOUT a call.
+    func testTrailingProse_stillRefuses() {
+        XCTAssertNil(BareToolCallSalvage.salvage(
+            from: #"{"name":"list_files","arguments":{}} — I will run this next."#,
+            advertised: []))
+    }
+
+    // MARK: - looksLikeToolCallAttempt
+
+    /// The planning phase used to record this verbatim as the step's durable plan, and
+    /// the phase boundary then made it the only surviving memory of the exploration.
+    func testLooksLikeToolCallAttempt_recognisesTheDroppedCall() {
+        XCTAssertTrue(BareToolCallSalvage.looksLikeToolCallAttempt(
+            #"{"name":"list_files","arguments":{"path":"MeditationApp"}}|"#))
+    }
+
+    func testLooksLikeToolCallAttempt_rejectsARealPlan() {
+        XCTAssertFalse(BareToolCallSalvage.looksLikeToolCallAttempt(
+            "1. Read ContentView.swift\n2. Add navigation\n3. Build and verify"))
+    }
+
+    /// `{name, content}` is the canonical shape of a document record, and the tool id
+    /// must be explicit — an unknown `name` is an ordinary JSON blob, not an attempt.
+    func testLooksLikeToolCallAttempt_rejectsUnknownToolName() {
+        XCTAssertFalse(BareToolCallSalvage.looksLikeToolCallAttempt(
+            #"{"name":"my-app","version":"1.0"}"#))
+    }
+
+    // MARK: - The pair may differ ONLY on the tail
+
+    /// `looksLikeToolCallAttempt` IS Rule A with the tail requirement relaxed — same chain,
+    /// one differing guard term. Any other divergence would be a silent bug: the planning
+    /// nudge firing for payloads route 4 dispatches, or the reverse.
+    ///
+    /// The equivalence is asserted BOTH ways, which is what makes the test non-vacuous. A
+    /// one-way `dispatched ⟹ recognized` over a JSON-only corpus with `advertised: []` is a
+    /// theorem no payload can falsify: with nothing advertised, Rule B cannot fire, so
+    /// `salvage` collapses to the same call with `requireCleanTail: true`, and `false` makes
+    /// that term unconditionally satisfied. Rule B is therefore exercised separately below.
+    func testRecognitionMatchesRuleA_bothWays() {
+        let payloads = [
+            #"{"name":"list_files","arguments":{"path":"src"}}"#,
+            #"{"tool":"read_file","args":{"path":"a.swift"}}"#,
+            #"{"function":{"name":"search"},"arguments":{"query":"x"}}"#,
+            #"{"name":"wait_for_events"}"#,
+            #"{"name":"list_files","arguments":{"path":"src"}}|"#,   // stray sentinel byte
+            #"{"name":"my-app","version":"1.0"}"#,                   // not a tool
+            #"{"arguments":{"path":"src"}}"#,                        // no explicit name
+            #"{"name":"final","arguments":{}}"#,                     // reserved channel name
+            #"{"name":"list_files","arguments":{"path":"src"}} then I'll read it."#,
+            "not json at all",
+            "",
+        ]
+        var agreedOnTrue = 0
+        for payload in payloads {
+            let dispatched = BareToolCallSalvage.salvage(from: payload, advertised: []) != nil
+            let recognized = BareToolCallSalvage.looksLikeToolCallAttempt(payload)
+            // Trailing prose is the ONE sanctioned divergence (pinned on its own below).
+            let looseTailOnly = payload.hasSuffix("then I'll read it.")
+            if looseTailOnly {
+                XCTAssertFalse(dispatched, payload)
+                XCTAssertTrue(recognized, payload)
+            } else {
+                XCTAssertEqual(dispatched, recognized, "disagreed on: \(payload)")
+                if dispatched { agreedOnTrue += 1 }
+            }
+        }
+        XCTAssertGreaterThanOrEqual(
+            agreedOnTrue, 4, "corpus must contain dispatchable payloads or the test is vacuous")
+    }
+
+    /// Rule B — the bare identifier — dispatches but is deliberately NOT "an attempt".
+    ///
+    /// The recognizer runs Rule A only, which hard-requires a leading `{`. That asymmetry is
+    /// correct and must stay explicit: the planning guard exists to stop a failed call being
+    /// recorded as the step's plan, and a Rule B dispatch never reaches `handleNoToolCalls`
+    /// at all. Stated here so the "same chain, one differing term" claim above is not read
+    /// as covering `salvage` in its entirety.
+    func testBareIdentifier_dispatchesButIsNotAnAttempt() {
+        let advertised = [ToolSchema(
+            name: ToolNames.waitForEvents, description: "", parameters: JSONSchema(type: "object"))]
+        XCTAssertNotNil(
+            BareToolCallSalvage.salvage(from: ToolNames.waitForEvents, advertised: advertised))
+        XCTAssertFalse(BareToolCallSalvage.looksLikeToolCallAttempt(ToolNames.waitForEvents))
+    }
+
+    /// The one sanctioned asymmetry, stated positively so it can't be lost in a refactor:
+    /// trailing PROSE makes an object un-dispatchable (the model was writing about a call)
+    /// while still being a recognizable attempt for the planning guard, which dispatches
+    /// nothing and only needs to know not to record it as the step's plan.
+    func testTrailingProse_isRecognizedButNotDispatched() {
+        let text = #"{"name":"list_files","arguments":{"path":"src"}} — I'll start there."#
+        XCTAssertNil(BareToolCallSalvage.salvage(from: text, advertised: []))
+        XCTAssertTrue(BareToolCallSalvage.looksLikeToolCallAttempt(text))
+    }
 }

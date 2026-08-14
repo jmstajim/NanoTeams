@@ -126,6 +126,25 @@ nonisolated struct ProjectSettings: Codable, Hashable {
     // (`CreateManagedTaskTool.buildSchema`) and runtime (`classifyManagedTeamID`)
     // layers when off.
     var autovisorAllowTeamGeneration: Bool
+    // Teams the Autovisor may NOT create tasks on. Additive, tolerant decode (no version
+    // bump — same policy as the field above). A BLOCK list, so the default `[]` means
+    // "every team allowed", identical to the behaviour before it existed, and a team added
+    // later is usable without revisiting Settings. Normalized on decode (sorted + deduped)
+    // so a hand-edited file self-heals and a reordering can't spuriously dirty the settings
+    // diff. See `AutovisorTeamPolicy` for the predicates and for why stale ids are never
+    // pruned.
+    // `didSet` (not just the setters + decode) because the whole point of storing a SORTED,
+    // deduped array is that `ProjectSettings` is `Hashable` and `mutateWorkFolder` diffs it
+    // structurally — two orderings of the same block set must not read as a change. A plain
+    // `var` left that guarantee resting on every future writer remembering to normalize;
+    // this makes it structural. Does not fire during `init`, so both inits still normalize
+    // explicitly.
+    var autovisorBlockedTeamIDs: [NTMSID] {
+        didSet {
+            let normalized = AutovisorTeamPolicy.normalizedBlockList(autovisorBlockedTeamIDs)
+            if normalized != autovisorBlockedTeamIDs { autovisorBlockedTeamIDs = normalized }
+        }
+    }
     // Goal-composer attachments + skill/clip cards (additive, tolerant decode — no
     // version bump, same policy as the agent-instruction fields below). Project-
     // relative paths into the folder-level `.nanoteams/autovisor/attachments/` store
@@ -154,6 +173,7 @@ nonisolated struct ProjectSettings: Codable, Hashable {
         autovisorActivation: AutovisorActivation = .default,
         autovisorTuning: AutovisorTuning = .default,
         autovisorAllowTeamGeneration: Bool = true,
+        autovisorBlockedTeamIDs: [NTMSID] = [],
         autovisorGoalAttachmentPaths: [String] = [],
         autovisorGoalClips: [String] = [],
         agentInstructionExtraPaths: [String] = [],
@@ -170,6 +190,7 @@ nonisolated struct ProjectSettings: Codable, Hashable {
         self.autovisorActivation = autovisorActivation
         self.autovisorTuning = autovisorTuning
         self.autovisorAllowTeamGeneration = autovisorAllowTeamGeneration
+        self.autovisorBlockedTeamIDs = AutovisorTeamPolicy.normalizedBlockList(autovisorBlockedTeamIDs)
         self.autovisorGoalAttachmentPaths = autovisorGoalAttachmentPaths
         self.autovisorGoalClips = autovisorGoalClips
         self.agentInstructionExtraPaths = agentInstructionExtraPaths
@@ -188,6 +209,7 @@ nonisolated struct ProjectSettings: Codable, Hashable {
         case autovisorActivation
         case autovisorTuning
         case autovisorAllowTeamGeneration
+        case autovisorBlockedTeamIDs
         case autovisorGoalAttachmentPaths
         case autovisorGoalClips
         case agentInstructionExtraPaths
@@ -221,6 +243,10 @@ nonisolated struct ProjectSettings: Codable, Hashable {
         self.autovisorTuning = try c.decodeIfPresent(AutovisorTuning.self, forKey: .autovisorTuning) ?? .default
         self.autovisorAllowTeamGeneration =
             try c.decodeIfPresent(Bool.self, forKey: .autovisorAllowTeamGeneration) ?? true
+        // Normalize on the way in: a hand-edited file converges on first load, and two
+        // orderings of the same block set can't read as a settings change.
+        self.autovisorBlockedTeamIDs = AutovisorTeamPolicy.normalizedBlockList(
+            try c.decodeIfPresent([NTMSID].self, forKey: .autovisorBlockedTeamIDs) ?? [])
         self.autovisorGoalAttachmentPaths =
             try c.decodeIfPresent([String].self, forKey: .autovisorGoalAttachmentPaths) ?? []
         self.autovisorGoalClips =
@@ -245,6 +271,7 @@ nonisolated struct ProjectSettings: Codable, Hashable {
         try c.encode(autovisorActivation, forKey: .autovisorActivation)
         try c.encode(autovisorTuning, forKey: .autovisorTuning)
         try c.encode(autovisorAllowTeamGeneration, forKey: .autovisorAllowTeamGeneration)
+        try c.encode(autovisorBlockedTeamIDs, forKey: .autovisorBlockedTeamIDs)
         try c.encode(autovisorGoalAttachmentPaths, forKey: .autovisorGoalAttachmentPaths)
         try c.encode(autovisorGoalClips, forKey: .autovisorGoalClips)
         try c.encode(agentInstructionExtraPaths, forKey: .agentInstructionExtraPaths)

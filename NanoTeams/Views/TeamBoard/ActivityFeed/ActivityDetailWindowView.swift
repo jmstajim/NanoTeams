@@ -87,6 +87,8 @@ struct ActivityDetailWindowView: View {
                 MeetingToolDetailBody(summaries: [summary])
             case .meetingTools(_, let summaries):
                 MeetingToolDetailBody(summaries: summaries)
+            case .systemNotice(_, let label, let text):
+                textBody(eyebrow: "System", title: label, text: text)
             }
         }
         .frame(minWidth: 480, minHeight: 320)

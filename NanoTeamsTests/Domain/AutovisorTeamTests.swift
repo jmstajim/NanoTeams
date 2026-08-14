@@ -41,7 +41,11 @@ final class AutovisorTeamTests: XCTestCase {
         XCTAssertFalse(role.dependencies.requiredArtifacts.isEmpty)
     }
 
-    func testManagerRole_isReadOnly_plusManagement_notDelegation() {
+    /// Renamed from `…isReadOnly…`: the manager also carries the Xcode runners,
+    /// which are not reads. The invariant that actually holds — and the one the
+    /// prompt's "never implement it yourself" boundary rests on — is NON-MUTATING:
+    /// it may inspect and verify the repo, never change it.
+    func testManagerRole_isNonMutating_plusManagement_notDelegation() {
         guard let role = managerTeam().nonSupervisorRoles.first else { return XCTFail() }
         let ids = Set(role.toolIDs)
         for t in [ToolNames.listTasks, ToolNames.taskStatus, ToolNames.createManagedTask,
@@ -55,6 +59,13 @@ final class AutovisorTeamTests: XCTestCase {
                          ToolNames.gitStatus, ToolNames.gitLog, ToolNames.gitDiff, ToolNames.gitBranchList,
                          ToolNames.analyzeImage] {
             XCTAssertTrue(ids.contains(readTool), "manager must keep read tool \(readTool)")
+        }
+        // VERIFICATION tools — build/test answer "does the repo currently compile and
+        // pass?", a question about the repo's STATE, not a change to it (DerivedData is
+        // not the repo). That is why they sit beside the read tools and not beside the
+        // write tools below.
+        for verifyTool in [ToolNames.runXcodebuild, ToolNames.runXcodetests] {
+            XCTAssertTrue(ids.contains(verifyTool), "manager must carry verification tool \(verifyTool)")
         }
         // It has NO repo-mutation tools — neither file-write nor git-write. It delegates instead.
         for writeTool in [ToolNames.writeFile, ToolNames.editFile, ToolNames.deleteFile,
@@ -71,6 +82,29 @@ final class AutovisorTeamTests: XCTestCase {
                        "the manager IS the top Supervisor — never ask_supervisor")
         XCTAssertFalse(AutovisorConstants.managerDefaultToolIDs.contains(ToolNames.askSupervisor),
                        "managerDefaultToolIDs feeds fallbackToolIDs[\"autovisor\"] — must exclude ask_supervisor")
+    }
+
+    /// The delivery trap, pinned structurally.
+    ///
+    /// Two mechanisms maintain a stored manager's toolset and NEITHER delivers a
+    /// new OPTIONAL tool on its own: `syncAutovisorTeamToTemplate` union-enforces
+    /// only the MANDATORY ones (and happily strips anything out-of-set), while the
+    /// version-bump reconcile adds optional tools only in whole GROUPS. An optional
+    /// tool that is in no group therefore reaches brand-new Autovisor teams and
+    /// *never* an existing work folder — silently.
+    ///
+    /// The names are spelled LITERALLY on purpose: deriving the expectation from
+    /// `managerOptionalToolGroups` would make the fixture the thing under test, and
+    /// a deleted group entry would read as "nothing to check" instead of failing.
+    func testXcodeRunners_areInADeliveryGroup_notJustTheOptionalList() {
+        let grouped = Set(AutovisorConstants.managerOptionalToolGroups.flatMap { $0 })
+        for tool in [ToolNames.runXcodebuild, ToolNames.runXcodetests] {
+            XCTAssertTrue(AutovisorConstants.managerOptionalToolIDs.contains(tool),
+                          "\(tool) must be offered to the manager")
+            XCTAssertTrue(grouped.contains(tool),
+                          "\(tool) is in managerOptionalToolIDs but in no delivery group — it "
+                              + "would never reach an EXISTING work folder's manager")
+        }
     }
 
     /// The manager prompt must tell it to FINALIZE reviewed work via `control_task close`

@@ -43,6 +43,45 @@ final class AutovisorGoalAttachmentTests: NTMSOrchestratorTestBase {
                       "the finalized copy must exist on disk")
     }
 
+    /// The in-project branch is gated on `fileManager.fileExists`, then reads the
+    /// file's attributes through `StagedAttachment.init`. Those are two separate
+    /// filesystem trips, so a file that disappears between them — a checkout, a
+    /// clean script, an editor's atomic save — lands in the `catch`.
+    ///
+    /// Worth pinning rather than shrugging at: the in-project branch REFERENCES the
+    /// user's real file instead of copying it, so the window between the check and
+    /// the read is the whole point of that branch existing, and this is the only arm
+    /// that keeps a vanished file from being carried into the goal as a live card
+    /// pointing at nothing.
+    ///
+    /// The gap is opened deliberately (an orchestrator whose injected `FileManager`
+    /// lies about one path) rather than raced for, because a race would be a flake.
+    /// `StagedAttachment.init` reads through `FileManager.default`, which is what
+    /// makes the one-sided lie sufficient.
+    ///
+    /// RED: replace the `catch { lastErrorMessage = …; return nil }` with
+    /// `try!` → the test crashes instead of failing; replace it with
+    /// `catch { return nil }` → the banner assertion fails while the nil holds,
+    /// which is the failure mode that matters (a silently ignored attach).
+    func testStage_inProjectFileVanishesAfterTheExistenceCheck_returnsNilAndBanners() async throws {
+        let missing = tempDir.appendingPathComponent("vanished.txt")
+        let liar = PathLyingFileManager(claimingExists: missing.standardizedFileURL.path)
+        let store = TestOrchestrator.make(fileManager: liar)
+        await store.openWorkFolder(tempDir)
+        let mgrID = await store.createTask(title: "Manager", supervisorTask: "oversee", makeActive: false)!
+        await store.mutateWorkFolder { $0.state.autovisorTaskID = mgrID }
+        store.lastErrorMessage = nil
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: missing.path),
+                       "precondition: the file really is absent")
+
+        let staged = store.stageAutovisorGoalAttachment(url: missing)
+
+        XCTAssertNil(staged, "a file that cannot be read must not become a card")
+        XCTAssertNotNil(store.lastErrorMessage,
+                        "and the failure must be surfaced, not swallowed")
+    }
+
     func testStage_inProjectFile_isReference_noCopy() async throws {
         _ = await openAndPinManager()
         // A file already inside the work folder (outside .nanoteams/).
@@ -294,5 +333,31 @@ final class AutovisorGoalAttachmentTests: NTMSOrchestratorTestBase {
         XCTAssertEqual(cards.count, 1)
         XCTAssertTrue(cards[0].isProjectReference,
                       "a path outside the store reconstructs as a project reference")
+    }
+}
+
+/// Claims one exact path exists while telling the truth about every other. Opens
+/// the check-then-read window deterministically instead of racing a real deletion.
+///
+/// One path, not a blanket `true`: `openWorkFolder` and the layout writes run
+/// through this same instance, and a blanket lie would change what they do.
+private final class PathLyingFileManager: FileManager, @unchecked Sendable {
+    private let claimed: String
+
+    init(claimingExists path: String) {
+        self.claimed = path
+        super.init()
+    }
+
+    override func fileExists(atPath path: String) -> Bool {
+        path == claimed || super.fileExists(atPath: path)
+    }
+
+    override func fileExists(atPath path: String, isDirectory: UnsafeMutablePointer<ObjCBool>?) -> Bool {
+        if path == claimed {
+            isDirectory?.pointee = false
+            return true
+        }
+        return super.fileExists(atPath: path, isDirectory: isDirectory)
     }
 }

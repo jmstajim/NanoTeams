@@ -116,7 +116,54 @@ nonisolated extension Team {
         supervisorRequiredArtifacts.isEmpty
     }
 
+    /// The `isChatMode` value a task created against this team must be SEEDED with — what
+    /// `NTMSRepository.createTask` persists into `NTMSTask.storedIsChatMode`.
+    ///
+    /// Identical to `isChatMode` for every real team. It differs for exactly one: the
+    /// Generated Team placeholder, whose `isChatMode` is true only VACUOUSLY. The
+    /// placeholder is built with `roleIDs: []`, so `buildTeam`'s prepended Supervisor is
+    /// its only role and requires no artifacts — `supervisorRequiredArtifacts.isEmpty`
+    /// describes an ABSENT ROSTER, not an open-ended conversation. The real roster arrives
+    /// later via `adoptGeneratedTeam`, which re-seeds the stored value from the team that
+    /// actually executes.
+    ///
+    /// Seeding `true` is not cosmetic. `storedIsChatMode` has four writers and none of
+    /// them is a failure path, so the value LATCHES whenever generation fails, is
+    /// cancelled, or never runs. A latched `true` then makes `derivedStatusFromActiveRun`
+    /// map `.done → .running` (the task never reaches Review, killing the Autovisor's
+    /// `onTaskCompleted` wake and `isReadyForFinalAcceptance`), makes
+    /// `AcceptanceService.routeAccept` return `.finishChatRole` for a real build role, and
+    /// reports `chat_mode: true` to the Autovisor — whose role prompt answers that with
+    /// `control_task close`.
+    ///
+    /// Deliberately NOT folded into `isChatMode` itself. `isValidDelegationTarget` is
+    /// `!isChatMode`, and `RoleEditorDelegationPolicy.delegatableTeams` filters on that
+    /// ALONE without checking `isHiddenFromPickers` — so the placeholder's vacuous
+    /// `isChatMode` is the only thing keeping "Generated Team" out of a user-facing
+    /// delegation whitelist. `LLMExecutionService+DelegateToTeam`'s chat rejection is
+    /// likewise what catches an LLM passing the placeholder's UUID as `team_id`.
+    var seedChatModeForNewTask: Bool {
+        !isGeneratedPlaceholder && isChatMode
+    }
+
     // MARK: - Visibility / Authorization Predicates
+
+    /// True for the "Generated Team" placeholder — the transient, Supervisor-only stand-in
+    /// a task carries until `create_team` produces its real roster.
+    ///
+    /// Single source of truth for `templateID == DelegationConstants.generatedTeamSentinel`.
+    /// NOT interchangeable with the sentinel's OTHER job: `"generated"` is also the wire
+    /// value of `delegate_to_team` / `create_managed_task`'s `team_id` argument
+    /// (`LLMExecutionService+DelegateToTeam`, `NTMSOrchestrator+AutovisorActions`,
+    /// `DelegationHandlers`, `ToolCallSummarizer`). Those are String-vs-String compares on
+    /// an LLM-supplied token, not team predicates, and must never route through here.
+    ///
+    /// The placeholder has exactly one role, so every roster- or artifact-derived predicate
+    /// on it is VACUOUS rather than meaningful — see `seedChatModeForNewTask` for the one
+    /// place that distinction is load-bearing.
+    var isGeneratedPlaceholder: Bool {
+        templateID == DelegationConstants.generatedTeamSentinel
+    }
 
     /// True when this team can be a *target* of `delegate_to_team`. Chat-mode
     /// teams never produce supervisor deliverables (they never auto-complete),
@@ -145,7 +192,7 @@ nonisolated extension Team {
     /// filtering. NOTE: the Settings → Teams *config editor* is an exception — it uses
     /// `isHiddenFromTeamEditor` instead, so Autovisor shows there as a protected entry.
     var isHiddenFromPickers: Bool {
-        templateID == DelegationConstants.generatedTeamSentinel
+        isGeneratedPlaceholder
             || templateID == AutovisorConstants.teamTemplateID
     }
 
@@ -154,7 +201,7 @@ nonisolated extension Team {
     /// The Autovisor team IS shown in the editor (as a protected, non-deletable,
     /// non-duplicable entry) so it can be inspected/configured like any other team.
     var isHiddenFromTeamEditor: Bool {
-        templateID == DelegationConstants.generatedTeamSentinel
+        isGeneratedPlaceholder
     }
 
     /// True for the managed singleton (the Autovisor team) — a permanent fixture the

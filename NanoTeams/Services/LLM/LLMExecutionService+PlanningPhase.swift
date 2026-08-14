@@ -25,7 +25,6 @@ extension LLMExecutionService {
         tools: [ToolSchema],
         step: StepExecution,
         team: Team?,
-        memoryStore: MemoryTagStore,
         conversationMessages: inout [ChatMessage],
         roleDefinition: TeamRoleDefinition?
     ) async -> PlanningPhasePolicy.Authorization {
@@ -88,16 +87,16 @@ extension LLMExecutionService {
                 from: conversationMessages,
                 seedTurn: PlanningPhasePolicy.implementationSeedTurn(
                     notes: step.scratchpad ?? "", expectedArtifacts: expected))
-            // The array those indices pointed into no longer exists.
-            executionStates[stepKey]?.resetConversationIndices()
+            // The conversation those latches and baselines described no longer exists.
+            executionStates[stepKey]?.resetConversationScopedState()
             // This slice is a DELIBERATE prefix reset. Flag it so the prompt-prefix cache
             // detector does not report the phase boundary as a defect.
             executionStates[stepKey]?.expectedPrefixResetPending = true
-            // The tags describe a conversation that was just discarded: without
-            // this, a repeat read returns `{"status":"unchanged","ref":"<§R1§>"}`
-            // — a pointer to content the model can no longer see, plus an
-            // instruction not to re-read it.
-            memoryStore.resetForFreshConversation()
+            // `MemoryTagStore` needs no reset here: it keeps no cross-action
+            // state, and its tag counters stay monotonic across the boundary so
+            // a phase-2 tag can never reuse a phase-1 handle still present in
+            // `network_log.json` (the one artifact that records the tagged
+            // wire — the feed and `tool_calls.jsonl` carry raw envelopes).
 
         case .closeWithoutRebuild:
             conversationMessages.append(ChatMessage(

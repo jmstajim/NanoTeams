@@ -5,14 +5,22 @@ import XCTest
 
 /// THE construction site for `NTMSOrchestrator` in the test target.
 ///
-/// `NTMSOrchestrator.init` leaves four seams optional, and each one's `nil`
+/// Several seams on `NTMSOrchestrator.init` are optional, and each one's `nil`
 /// resolves to something that reaches the outside world: a real
-/// `LMStudioEmbeddingClient`, a real `LLMClientRouter` (twice), and the
-/// process-global `ChatModelEnsurer.shared`. A forgotten argument therefore
-/// compiles cleanly and silently sends the test at the developer's LM Studio —
-/// `openWorkFolder` alone issues two `GET /api/v0/models` with a 5 s timeout,
-/// and an adopted instance can later be UNLOADED out from under a model the
-/// developer hand-loaded.
+/// `LMStudioEmbeddingClient`, a real `LLMClientRouter` (three times now — chat
+/// lifecycle, team generation, and the STEP-EXECUTION client inside a defaulted
+/// `LLMExecutionService`), and the process-global `ChatModelEnsurer.shared`. A
+/// forgotten argument therefore compiles cleanly and silently sends the test at
+/// the developer's LM Studio — `openWorkFolder` alone issues two
+/// `GET /api/v0/models` with a 5 s timeout, and an adopted instance can later be
+/// UNLOADED out from under a model the developer hand-loaded.
+///
+/// The count is deliberately not written down here any more. It was "four", then
+/// "five", and each correction arrived only after a seam had already been missed —
+/// so `OrchestratorTestConstructionPinTests.testTheFactoryStubsEverySeam` now
+/// DERIVES the list from the init signature instead of restating it. Adding a
+/// parameter of an outward-reaching type turns that pin red until this factory
+/// passes it.
 ///
 /// Routing every test through here makes that unrepresentable rather than
 /// remembered. Enforced by `OrchestratorTestConstructionPinTests`, which fails
@@ -32,6 +40,20 @@ import XCTest
 @MainActor
 enum TestOrchestrator {
 
+    /// The automation poll delay a factory orchestrator gets: one year — no test
+    /// worker process lives to see a tick. NOT `.infinity` (a Duration built from
+    /// an infinite Double is undefined), and NOT zero-suppression of the loop
+    /// itself (the scheduler pins assert `automationPollTask` arms and stops).
+    ///
+    /// Why the loop must never tick in a test: `openWorkFolder` arms it with the
+    /// production cadence — phase-aligned wall-clock MINUTE boundaries — so any
+    /// test staging a condition the tick body acts on (a due recurrence, an
+    /// over-budget run, an Autovisor-wakeable task) raced the wall clock, in
+    /// every run mode, with p ≈ window/60 s per test. That race is exactly the
+    /// D-4 form-B flake (DEBTS.md §5). A scheduler test that WANTS ticks passes
+    /// its own sub-second `automationTickInterval` instead.
+    static let automationTickNever: TimeInterval = 31_536_000
+
     /// Builds an orchestrator with every network seam stubbed and a
     /// per-instance model ledger. Pass a parameter only when the test asserts
     /// on that collaborator.
@@ -50,12 +72,27 @@ enum TestOrchestrator {
         embeddingClient: RecordingLLMClient? = nil,
         searchEmbeddingClient: (any EmbeddingClient)? = nil,
         chatLifecycleClient: RecordingLLMClient? = nil,
+        teamGenerationClient: (any LLMClient)? = nil,
         chatModelEnsurer: ChatModelEnsurer? = nil,
-        downloadedModelStore: (any DownloadedModelStore)? = nil
+        downloadedModelStore: (any DownloadedModelStore)? = nil,
+        stepExecutionClient: (any LLMClient)? = nil,
+        automationTickInterval: TimeInterval? = nil
     ) -> NTMSOrchestrator {
-        NTMSOrchestrator(
-            repository: repository ?? NTMSRepository(),
-            llmExecutionService: llmExecutionService,
+        let resolvedRepository = repository ?? NTMSRepository()
+        return NTMSOrchestrator(
+            repository: resolvedRepository,
+            // The FIFTH seam, and the one the doc above missed: `nil` here builds
+            // `LLMExecutionService(repository:)`, whose `clientFactory` default is
+            // `{ LLMClientRouter() }` — so every suite that reaches `startRun` →
+            // `runStep` → `performStreamingCall` issued a genuine chat request at
+            // whatever is listening on the developer's machine. Stubbed as an
+            // UNREACHABLE server, which is exactly what those suites already
+            // experience whenever LM Studio is down; the point is that it no longer
+            // depends on whether it is.
+            llmExecutionService: llmExecutionService ?? LLMExecutionService(
+                repository: resolvedRepository,
+                clientFactory: { stepExecutionClient ?? UnreachableChatClient() }
+            ),
             settingsService: settingsService,
             taskService: taskService,
             workFolderManagementService: workFolderManagementService,
@@ -71,12 +108,22 @@ enum TestOrchestrator {
             // /v1/embeddings — ~2.5 s of round-trip per index build.
             searchEmbeddingClient: searchEmbeddingClient ?? StubSearchEmbeddingClient(),
             chatLifecycleClient: chatLifecycleClient ?? RecordingLLMClient(),
+            // `runTeamGeneration` issues a real `create_team` chat request. Unstubbed,
+            // every suite that reaches `startRun` on a Generated Team task posts it at
+            // the developer's LM Studio. Same "server isn't listening" stub as
+            // `stepExecutionClient`, and for the same reason: a suite not asserting on
+            // team generation must not have its behaviour changed by one.
+            teamGenerationClient: teamGenerationClient ?? UnreachableChatClient(),
             // A FRESH ledger, never `.shared`: ownership must not survive
             // between suites, or one test's adoption becomes another's unload.
             chatModelEnsurer: chatModelEnsurer ?? ChatModelEnsurer(),
             // Unstubbed, the LM Studio half of the real router walks — and can
             // Trash — directories under the developer's `~/.lmstudio/models`.
-            downloadedModelStore: downloadedModelStore ?? StubDownloadedModelStore()
+            downloadedModelStore: downloadedModelStore ?? StubDownloadedModelStore(),
+            // `nil` on the ORCHESTRATOR's init means "production cadence" (wall-clock
+            // minute boundaries) — the nondeterminism source, so the factory never
+            // forwards it. See `automationTickNever`.
+            automationTickInterval: automationTickInterval ?? Self.automationTickNever
         )
     }
 
@@ -93,6 +140,32 @@ enum TestOrchestrator {
         configuration.searchIndexWatcherDebounceSeconds =
             AppDefaults.searchIndexWatcherDebounceSecondsMin
         return configuration
+    }
+}
+
+/// The step-execution client for orchestrator tests: behaves like a server that
+/// isn't listening.
+///
+/// Deliberately NOT a client that returns an empty stream. A suite reaching
+/// `runStep` without injecting its own client is not asserting on the LLM, and an
+/// empty-but-successful response would silently push those steps down the
+/// no-tool-call recovery arms — changing behaviour rather than pinning it. An
+/// unreachable server is what they already got whenever LM Studio was down, which
+/// on CI is always; this only removes the dependency on whether it happens to be up.
+final class UnreachableChatClient: LLMClient, @unchecked Sendable {
+    func streamChat(
+        config _: LLMConfig,
+        messages _: [ChatMessage],
+        tools _: [ToolSchema],
+        logger _: NetworkLogger?,
+        stepID _: String?,
+        roleName _: String?
+    ) -> AsyncThrowingStream<StreamEvent, Error> {
+        AsyncThrowingStream { $0.finish(throwing: URLError(.cannotConnectToHost)) }
+    }
+
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] {
+        throw URLError(.cannotConnectToHost)
     }
 }
 

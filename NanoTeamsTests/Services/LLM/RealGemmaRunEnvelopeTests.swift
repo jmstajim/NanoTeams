@@ -72,6 +72,82 @@ final class RealGemmaRunEnvelopeTests: XCTestCase {
         return result.resolvedToolCalls
     }
 
+    /// Same wire split, but returns the whole result so a test can assert on the
+    /// marker flag, the preserved envelope, and the visible prose.
+    private func replayFull(
+        reasoning: String, content: String
+    ) async throws -> LLMExecutionService.StreamingResult {
+        mockClient.deltas = [
+            StreamEvent(thinkingDelta: reasoning),
+            StreamEvent(contentDelta: content),
+        ]
+        return try await service.performStreamingCall(
+            stepID: stepID, taskID: taskID, roleForMessage: .productManager,
+            client: mockClient, config: LLMConfig(),
+            tools: [], conversationMessages: [], networkLogger: nil
+        )
+    }
+
+    // MARK: - MeditationApp run, 2026-08-07 — the two silently dropped calls
+
+    /// Record `[33]` @13:51:15.910Z, verbatim. Garbled OPENING sentinel plus the stray
+    /// `|` this model appends in 30% of envelopes. Before the normalizer both defects
+    /// had to be survived at once and neither was: `sawHarmonyMarker` stayed false, and
+    /// `BareToolCallSalvage` Rule A rejected the payload on the single trailing `|`.
+    /// The JSON then reached the user as a chat bubble and was recorded as the step's
+    /// plan.
+    func testMeditationApp_record33_garbledSentinelPlusStrayPipe_resolves() async throws {
+        let result = try await replayFull(
+            reasoning: "I should list files inside the `MeditationApp` directory.",
+            content: #"<|tool_call>call|>{"name":"list_files","arguments":{"path":"MeditationApp"}}|<|<end|>"#
+        )
+        XCTAssertTrue(result.sawHarmonyMarker)
+        XCTAssertEqual(result.resolvedToolCalls.count, 1)
+        XCTAssertEqual(result.resolvedToolCalls.first?.name, ToolNames.listFiles)
+        XCTAssertTrue(result.assistantContent.isEmpty,
+            "the envelope must never survive as visible assistant prose")
+    }
+
+    /// Record `[39]` @13:52:24.821Z, body excerpted. The model invented a batch schema
+    /// (`call_multiple` + `{"contributions":[…]}`) NanoTeams never advertised.
+    ///
+    /// This deliberately does NOT resolve: the payload carries no top-level `name`, and
+    /// a batch envelope contradicts the one-tool-per-response rule. What the fix buys is
+    /// that the failure becomes NAMEABLE — `sawHarmonyMarker` is now set, so
+    /// `classifyHarmonyCallIssue` (gated on it) can run at all, and `ModelTokenCleaner`
+    /// no longer eats the payload on the way. Before, the model was told only "you
+    /// haven't submitted all expected artifacts" — for an attempt the harness had
+    /// swallowed.
+    ///
+    /// The named defect is `.malformedJSON`, not `.missingToolName`: this record carries
+    /// TWO defects, and the closers are wrong (`…"}}}]}`) so the brace walker stops on an
+    /// unparseable span before the absent `name` is ever reachable. That is the more
+    /// useful of the two nudges here anyway — the JSON genuinely is malformed.
+    func testMeditationApp_record39_inventedBatchSchema_isNamedNotSwallowed() async throws {
+        let content = #"""
+        This completes the implementation of M1. I have introduced a minimal navigation structure using `NavigationView` in `ContentView.swift`.
+
+        <|tool_call>call_multiple{"contributions":[{"toolName":"create_artifact","arguments":{"name":"Engineering Notes","content":"# Engineering Notes\n\n## Summary of Work Implemented (M1)\n"}}}]}<|end|>
+        """#
+        let result = try await replayFull(
+            reasoning: "I will submit the Engineering Notes artifact.", content: content)
+
+        XCTAssertTrue(result.sawHarmonyMarker,
+            "the mangled sentinel must be recognised so the diagnostic path is reachable")
+        XCTAssertTrue(result.resolvedToolCalls.isEmpty,
+            "an invented batch schema names no tool and must not be inferred into one")
+        XCTAssertTrue(result.harmonyBuffer.contains("create_artifact"),
+            "the payload must survive for the diagnostic — this is what ModelTokenCleaner used to eat")
+        let issue = ToolCallParsingHelpers.classifyHarmonyCallIssue(in: result.harmonyBuffer)
+        XCTAssertEqual(issue, .malformedJSON,
+            "must be classified as a named defect, not `.noCallEnvelope` / `.noEnvelopeAttempt` "
+            + "(which are what an unrecognised sentinel produces, and neither yields a usable nudge)")
+        XCTAssertTrue(result.assistantContent.hasPrefix("This completes the implementation of M1."),
+            "genuine pre-marker prose stays visible")
+        XCTAssertFalse(result.assistantContent.contains("contributions"),
+            "no part of the envelope may reach the chat as text")
+    }
+
     // MARK: - Product Manager
 
     /// Record `F241CA4A` (planning). Trailing `}}|<|end|>` — a stray `|` between
@@ -108,17 +184,22 @@ final class RealGemmaRunEnvelopeTests: XCTestCase {
 
     // MARK: - Tech Lead
 
-    /// Record `1716B94F` (planning). Garbled marker `<|tool_call>call|>` — does NOT
-    /// contain the literal `<|call|>` substring, so it never trips
-    /// `sawHarmonyMarker`. Log: fell through to the planning prose fallback
-    /// ("Plan recorded from your text response") — NO tool call. The "silent" case.
-    func testTechLead_updateScratchpad_garbledToolCallMarker_doesNotResolve() async throws {
+    /// Record `1716B94F` (planning). Garbled marker `<|tool_call>call|>` — the model
+    /// spliced its own `<|tool_call|>` sentinel into the `<|call|>` the system prompt
+    /// teaches, and the result contains none of the three literal `harmonyMarkers`.
+    ///
+    /// This assertion is INVERTED from what it pinned before 2026-08-07. It used to
+    /// assert `calls.isEmpty` "matches the prose-fallback the run took" — i.e. it froze
+    /// the observed behaviour as desired. That behaviour is the defect:
+    /// `HarmonySentinelNormalizer` now canonicalises the sentinel, so the call the model
+    /// plainly made is dispatched instead of reaching the user as a raw-JSON bubble.
+    func testTechLead_updateScratchpad_garbledToolCallMarker_nowResolves() async throws {
         let calls = try await replay(
             reasoning: "I will use update_scratchpad to create my plan.",
             content: #"<|tool_call>call|>{"name":"update_scratchpad","arguments":{"content":"1. Review requirements.\n2. Define architecture."}}"/>"#
         )
-        XCTAssertTrue(calls.isEmpty,
-            "Garbled `<|tool_call>call|>` marker must not resolve (matches the prose-fallback the run took)")
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(calls.first?.name, ToolNames.updateScratchpad)
     }
 
     /// Record `F905540C`. Extreme trailing garbage after the balanced object:

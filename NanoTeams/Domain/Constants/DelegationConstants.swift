@@ -101,14 +101,27 @@ nonisolated enum DelegationConstants {
     /// false-positive, and `1500 * 4 = 6000` fits the 9000 tail window.
     static let repetitionVeryLargeBlockMinRepeats = 4
 
-    /// Min consecutive identical `(toolName, argumentsJSON)` pairs in a child
-    /// step's `toolCalls` history before the tool-call-sequence detector
-    /// fires. The hook reads `step.toolCalls` from inside `commitStreaming`,
-    /// which runs BEFORE the current iteration's `appendToolCalls` — so when
-    /// `step.toolCalls` already contains 3 identical entries, the model has
-    /// just emitted (and is about to persist) a 4th. Effective fire is on
-    /// the 4th emit. 3 in persisted history is the smallest threshold safe
-    /// against legitimate workflows like read → edit → re-read (which lands
-    /// at most 2 identical reads before a write breaks the chain).
+    /// Min CONSECUTIVE identical tool calls before a repetition detector fires. Both
+    /// readers are consecutive AND tail-anchored, so "consecutive" describes both.
+    ///
+    /// Reader 1 — committed history: `MessageRepetitionDetector.
+    /// detectIdenticalToolCallSequence` via `LoopScanner.scanCommitted`, over identical
+    /// `(toolName, argumentsJSON)` pairs in a child step's `toolCalls`. The hook reads
+    /// `step.toolCalls` from inside `commitStreaming`, which runs BEFORE the current
+    /// iteration's `appendToolCalls` — so when `step.toolCalls` already contains 3
+    /// identical entries, the model has just emitted (and is about to persist) a 4th.
+    /// Effective fire is on the 4th emit. (`AutovisorStuckEvaluator` and
+    /// `NTMSOrchestrator+Streaming` read this constant only to size the `+5` suffix
+    /// window they feed to that scan.)
+    ///
+    /// Reader 2 — in-loop, per iteration: `ToolCallLoopDetector.detectLoopPattern`, as
+    /// the length threshold for the TRAILING run of identical
+    /// `(toolName, argumentsIdentity)` calls among the last 6 tracked successful,
+    /// non-excluded calls. No commit lag there — the tracker is written before the
+    /// check, so the fire lands on the 3rd identical call.
+    ///
+    /// 3 is the smallest threshold safe against legitimate workflows like
+    /// read → edit → re-read (which lands at most 2 identical reads before a write
+    /// breaks the chain).
     static let repetitionMinIdenticalToolCalls = 3
 }

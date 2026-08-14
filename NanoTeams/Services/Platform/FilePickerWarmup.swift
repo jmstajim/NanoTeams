@@ -26,21 +26,34 @@ enum FilePickerWarmup {
         multiple: Bool = true,
         allowDirectories: Bool = false
     ) -> [URL]? {
-        if isPresenting { return nil }
-        isPresenting = true
-        defer { isPresenting = false }
+        presentationGuard.withClaim { runModally(FilePickerConfiguration.forRequest(
+            allowedContentTypes: allowedContentTypes,
+            multiple: multiple,
+            allowDirectories: allowDirectories)) }
+    }
 
+    /// The modal leg, and the only part of this file that cannot be reached from a test.
+    /// Kept to three statements deliberately: `runModal()` runs a nested event loop, so
+    /// everything left in here is permanently uncovered and the honest move is to leave as
+    /// little in here as possible rather than to arrange it more pleasantly.
+    private static func runModally(_ configuration: FilePickerConfiguration) -> [URL] {
         let panel = sharedPanel
-        panel.allowsMultipleSelection = multiple
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = allowDirectories
-        panel.canCreateDirectories = false
-        panel.directoryURL = nil
-        panel.allowedContentTypes = allowedContentTypes
+        configuration.apply(to: panel)
         return panel.runModal() == .OK ? panel.urls : []
     }
 
-    private static var isPresenting = false
+    /// Guards the one shared panel against re-entry from inside its own nested modal
+    /// loop. A named guard rather than a bare `static var` because the claim/release
+    /// pairing is the only part of `present(...)` that can misbehave and it is invisible
+    /// when it does: a claim that is never released wedges every subsequent `+` click in
+    /// the app, with no error anywhere.
+    private static let presentationGuard = ModalPresentationGuard()
+
+    #if DEBUG
+    /// The shared instance, for tests that pin its identity and initial configuration.
+    /// `present(...)` cannot be driven from a test — it runs a nested modal event loop.
+    static var _testSharedPanel: NSOpenPanel { sharedPanel }
+    #endif
 
     private static let sharedPanel: NSOpenPanel = {
         let panel = NSOpenPanel()

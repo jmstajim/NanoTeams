@@ -80,6 +80,52 @@ nonisolated struct AXCollectionResult: Sendable {
     static let empty = AXCollectionResult(elements: [], totalAfterDedup: 0, warnings: [])
 }
 
+// MARK: - Accessibility tree seam
+
+/// A UTF-16 text range as reported by Accessibility. `CFRange` carries `CFIndex` and is awkward to
+/// construct in a fixture; this is the plain value the decisions above the seam work with.
+nonisolated struct AXTextRange: Sendable, Equatable {
+    let location: Int
+    let length: Int
+}
+
+/// Read + announce access to ONE process's Accessibility tree, parameterised over the node type.
+///
+/// An AX tree belongs to another process and cannot be constructed, so while the traversal below
+/// called `AXUIElementCopyAttributeValue` directly, none of it was reachable from a test — and what
+/// it contains is a **budget state machine**: a depth cap, a node cap, a wall-clock deadline, a
+/// cancellation poll, web-area propagation down the recursion, and a deliberate
+/// set-the-flag-on-the-way-out so that no budget cut is silent. The no-silent-caps contract those
+/// flags implement was stated in prose and enforced nowhere; the incident it exists to prevent is a
+/// truncated element list read by the model as a complete one.
+///
+/// `HotkeyRegistry<Ref>` in this directory is the same shape: parameterise over the opaque OS
+/// handle, keep the bookkeeping generic, and let the live conformance be the only part that talks
+/// to the framework.
+nonisolated protocol AXNodeReading: Sendable {
+    associatedtype Node
+
+    /// Root node for a process. Called INSIDE the detached walk so no node ever crosses a task
+    /// boundary — only the `pid` and the reader itself do.
+    func applicationNode(pid: pid_t) -> Node
+
+    func string(_ attribute: String, of node: Node) -> String?
+    func boolValue(_ attribute: String, of node: Node) -> Bool?
+    func frame(of node: Node) -> CGRect?
+    func children(of node: Node) -> [Node]
+    func element(_ attribute: String, of node: Node) -> Node?
+    func elements(_ attribute: String, of node: Node) -> [Node]
+    func selectedRange(of node: Node) -> AXTextRange?
+
+    /// Announce this process as an assistive client. Advisory: an app that rejects the write
+    /// degrades to its native tree.
+    func setTrue(_ attribute: String, on node: Node)
+
+    /// Bound each AX IPC round-trip. The walk's deadline is only checked BETWEEN nodes, so a single
+    /// hung `AXUIElementCopyAttributeValue` would otherwise block ~6 s at the framework default.
+    func setMessagingTimeout(_ seconds: Double, on node: Node)
+}
+
 // MARK: - Accessibility Inspector
 
 /// Enumerates the Accessibility tree of a target application and returns actionable elements
@@ -104,9 +150,11 @@ nonisolated enum AccessibilityInspector {
     /// nil when there's nothing to say (elements present, or AX granted so empty is genuine).
     static func emptyElementsNote(hasAccessibility: Bool, elementCount: Int) -> String? {
         guard elementCount == 0, !hasAccessibility else { return nil }
-        return "No UI element coordinates are available because NanoTeams lacks Accessibility "
-            + "permission. Grant it in System Settings → Privacy & Security → Accessibility to get "
-            + "clickable element positions; until then, act from the screenshot pixels directly."
+        // Model-read (rides the capture envelope's `warnings`), so the recourse is one the
+        // model can act on — only the supervisor can grant the permission.
+        return "No UI element coordinates are available because NanoTeams lacks macOS Accessibility "
+            + "permission. Only the supervisor can grant it; until then, act from the screenshot "
+            + "pixels directly."
     }
 
     /// Enumerate actionable elements of the request's `pid`, returning frames in image-pixel
@@ -124,7 +172,19 @@ nonisolated enum AccessibilityInspector {
     /// Cancellation-responsive: `Task.detached` does NOT inherit the caller's cancellation, so a
     /// shared atomic flag (flipped by `withTaskCancellationHandler`) is what the walk polls —
     /// otherwise a Pause landing mid-walk would block the caller past the bounded-wait budget.
+    /// Production entry point, and the ONLY place the live reader is named. Deliberately not a
+    /// defaulted parameter on the generic overload below: a default that resolves OUTWARD is the
+    /// shape CLAUDE.md §49 records as a 93-site disaster, and one resolving INWARD (an inert reader)
+    /// would make a forgotten injection in production look exactly like "this app has no
+    /// accessibility tree" — the chrome-only capture incident, silently. A separate overload makes
+    /// the reader mandatory for every other caller, so forgetting it is a compile error.
     static func collectElements(_ request: AXCollectionRequest) async -> AXCollectionResult {
+        await collectElements(request, reader: SystemAXNodeReader())
+    }
+
+    static func collectElements<R: AXNodeReading>(
+        _ request: AXCollectionRequest, reader: R
+    ) async -> AXCollectionResult {
         guard request.pixelWidth > 0, request.pixelHeight > 0,
               request.regionWidthPt > 0, request.regionHeightPt > 0 else { return .empty }
         let cancelled = WalkCancellationFlag()
@@ -135,15 +195,13 @@ nonisolated enum AccessibilityInspector {
                     regionWidthPt: request.regionWidthPt, regionHeightPt: request.regionHeightPt,
                     pixelWidth: request.pixelWidth, pixelHeight: request.pixelHeight)
 
-                let appElement = AXUIElementCreateApplication(request.pid)
-                // Bound each AX IPC round-trip so a beachballing target can't stall the walk past
-                // its wall-clock deadline (the deadline is only checked BETWEEN nodes; a single
-                // hung `AXUIElementCopyAttributeValue` would otherwise block ~6 s at the default).
-                AXUIElementSetMessagingTimeout(appElement, Float(AccessibilityWalkPolicy.axMessagingTimeoutSeconds))
+                let appElement = reader.applicationNode(pid: request.pid)
+                reader.setMessagingTimeout(
+                    AccessibilityWalkPolicy.axMessagingTimeoutSeconds, on: appElement)
                 let region = CGRect(x: request.regionOriginX, y: request.regionOriginY,
                                     width: request.regionWidthPt, height: request.regionHeightPt)
                 let root = request.matchWindowToRegion
-                    ? (windowMatchingRegion(appElement: appElement, region: region) ?? appElement)
+                    ? (windowMatchingRegion(appElement: appElement, reader: reader, region: region) ?? appElement)
                     : appElement
 
                 // Enable idempotently and DON'T restore: read-before-set means a second capture
@@ -153,8 +211,8 @@ nonisolated enum AccessibilityInspector {
                 // chrome-only incident — and (b) made every subsequent capture re-pay the
                 // settle+retry. Leaving it enabled matches what VoiceOver does; it resets on app
                 // quit. The click path never needs live AX (it uses the saved element list).
-                enableWebAccessibility(on: appElement)
-                let first = runWalk(root: root, geom: geom, cancelled: cancelled)
+                enableWebAccessibility(on: appElement, reader: reader)
+                let first = runWalk(root: root, reader: reader, geom: geom, cancelled: cancelled)
                 var outcome = first
                 if AccessibilityWalkPolicy.shouldRetryForWebContent(
                     sawWebArea: first.sawWebArea,
@@ -165,32 +223,53 @@ nonisolated enum AccessibilityInspector {
                     // its deadline deep in a now-huge web subtree can return fewer than attempt 1,
                     // and the model must not end up with neither the chrome nor the page content.
                     try? await Task.sleep(for: .milliseconds(AccessibilityWalkPolicy.webSettleMilliseconds))
-                    let second = runWalk(root: root, geom: geom, cancelled: cancelled)
+                    let second = runWalk(root: root, reader: reader, geom: geom, cancelled: cancelled)
                     outcome = second.elements.count >= first.elements.count ? second : first
                 }
 
-                // Dedup BEFORE the cap so nested duplicates don't consume emission slots.
-                let deduped = dedupNested(outcome.elements)
-                let capped = AccessibilityWalkPolicy.capEmission(
-                    deduped, limit: AccessibilityWalkPolicy.maxEmittedElements)
-                let webAreaEmpty = outcome.sawWebArea && !deduped.contains(where: \.web)
-                let warnings = AccessibilityWalkPolicy.collectionWarnings(
-                    stoppedEarly: outcome.stoppedEarly, webAreaEmpty: webAreaEmpty,
-                    visited: outcome.visitedNodes,
-                    kept: capped.kept.count, totalAfterDedup: deduped.count)
-                return AXCollectionResult(
-                    elements: capped.kept, totalAfterDedup: deduped.count, warnings: warnings)
+                return finalize(
+                    elements: outcome.elements, sawWebArea: outcome.sawWebArea,
+                    stoppedEarly: outcome.stoppedEarly, visitedNodes: outcome.visitedNodes)
             }.value
         } onCancel: {
             cancelled.cancel()
         }
     }
 
-    private static func runWalk(root: AXUIElement, geom: Geometry, cancelled: WalkCancellationFlag) -> AXWalkOutcome {
+    /// Pure post-walk composition: dedup → emission cap → no-silent-caps warnings → wire result.
+    /// Split out of the detached walk for the same reason `AccessibilityWalkPolicy` was — every
+    /// decision here is a plain function of the walk's raw stats, and none of it is testable while
+    /// it sits inside a closure that first needs a live accessibility tree.
+    ///
+    /// The ORDER is load-bearing: dedup runs BEFORE the cap so nested duplicates don't consume
+    /// emission slots (capping first would evict real targets to make room for the copies dedup is
+    /// about to delete). `totalAfterDedup` and `webAreaEmpty` are therefore both judged on the
+    /// deduped list — the list the model actually receives, which is what the warnings describe.
+    static func finalize(
+        elements: [AXElementInfo], sawWebArea: Bool, stoppedEarly: Bool, visitedNodes: Int
+    ) -> AXCollectionResult {
+        let deduped = dedupNested(elements)
+        let capped = AccessibilityWalkPolicy.capEmission(
+            deduped, limit: AccessibilityWalkPolicy.maxEmittedElements)
+        let webAreaEmpty = sawWebArea && !deduped.contains(where: \.web)
+        let warnings = AccessibilityWalkPolicy.collectionWarnings(
+            stoppedEarly: stoppedEarly, webAreaEmpty: webAreaEmpty,
+            visited: visitedNodes,
+            kept: capped.kept.count, totalAfterDedup: deduped.count)
+        return AXCollectionResult(
+            elements: capped.kept, totalAfterDedup: deduped.count, warnings: warnings)
+    }
+
+    /// One walk attempt with a freshly-armed deadline. `internal`, not `private`, so a test can
+    /// drive the traversal against a fixture tree and assert on every budget flag — the whole
+    /// point of the seam.
+    static func runWalk<R: AXNodeReading>(
+        root: R.Node, reader: R, geom: Geometry, cancelled: WalkCancellationFlag,
+        deadlineMilliseconds: Int = AccessibilityWalkPolicy.walkDeadlineMilliseconds
+    ) -> AXWalkOutcome {
         var outcome = AXWalkOutcome()
-        let deadline = ContinuousClock.now
-            + .milliseconds(AccessibilityWalkPolicy.walkDeadlineMilliseconds)
-        walk(root, depth: 0, insideWebArea: false, deadline: deadline,
+        let deadline = ContinuousClock.now + .milliseconds(deadlineMilliseconds)
+        walk(root, reader: reader, depth: 0, insideWebArea: false, deadline: deadline,
              cancelled: cancelled, outcome: &outcome, geom: geom)
         return outcome
     }
@@ -207,25 +286,22 @@ nonisolated enum AccessibilityInspector {
     /// on — including when another assistive client set it). Never restored (see the call-site
     /// rationale). All AX errors are advisory: an app that rejects the set degrades to its
     /// native tree.
-    private static func enableWebAccessibility(on appElement: AXUIElement) {
+    static func enableWebAccessibility<R: AXNodeReading>(on appElement: R.Node, reader: R) {
         for attribute in webAXAttributes {
-            var current: AnyObject?
-            if AXUIElementCopyAttributeValue(appElement, attribute as CFString, &current) == .success,
-               (current as? Bool) == true {
-                continue
-            }
-            _ = AXUIElementSetAttributeValue(appElement, attribute as CFString, kCFBooleanTrue)
+            if reader.boolValue(attribute, of: appElement) == true { continue }
+            reader.setTrue(attribute, on: appElement)
         }
     }
 
     /// The app's AXWindow whose frame (global top-left points) mutually covers the captured
     /// region — i.e. the window the screenshot actually shows. nil when none matches
     /// (screen captures, moved/ambiguous frames); the caller falls back to the app root.
-    private static func windowMatchingRegion(appElement: AXUIElement, region: CGRect) -> AXUIElement? {
-        var value: AnyObject?
-        guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &value) == .success,
-              let windows = value as? [AXUIElement], !windows.isEmpty else { return nil }
-        let frames = windows.map { frame(of: $0) ?? .null }
+    static func windowMatchingRegion<R: AXNodeReading>(
+        appElement: R.Node, reader: R, region: CGRect
+    ) -> R.Node? {
+        let windows = reader.elements(kAXWindowsAttribute as String, of: appElement)
+        guard !windows.isEmpty else { return nil }
+        let frames = windows.map { reader.frame(of: $0) ?? .null }
         guard let index = bestWindowMatchIndex(windowFrames: frames, region: region) else { return nil }
         return windows[index]
     }
@@ -381,7 +457,28 @@ nonisolated enum AccessibilityInspector {
             let overlaps = corner.x + iw > 0 && corner.y + ih > 0
                 && corner.x < Double(pixelWidth) && corner.y < Double(pixelHeight) && iw >= 1 && ih >= 1
             guard overlaps else { return nil }
-            return (Int(corner.x.rounded()), Int(corner.y.rounded()), Int(iw.rounded()), Int(ih.rounded()))
+            // The overlap test above is pre-rounding; the RETURNED rect is the rounded one, and
+            // rounding can push a marginal element off the image entirely (a corner half a pixel
+            // inside the far edge rounds to `pixelWidth`). Such an element covers no pixel column,
+            // yet `clampedCenter` still clamps its centre back INTO the image — advertising a
+            // `cx`/`cy` that is not inside the element's own advertised `(x, w)` box, so the click
+            // echo reports a miss for the exact coordinate the model was told to click. Restate the
+            // contract on the integer rect the caller actually receives.
+            //
+            // The conversions are also total by construction rather than by assumption: AX geometry
+            // comes from ANOTHER process, and `Int(_: Double)` TRAPS (uncatchable — it aborts the
+            // app from inside the detached walk) for anything outside `Int`'s range, as do the
+            // `w * h` area products in `dedupNested` / `elementContaining`. Unrepresentable geometry
+            // is dropped exactly like a sub-pixel element: it has no clickable pixel either.
+            let rx = corner.x.rounded(), ry = corner.y.rounded()
+            let rw = iw.rounded(), rh = ih.rounded()
+            guard rx < Double(pixelWidth), ry < Double(pixelHeight),
+                  rx + rw > 0, ry + rh > 0,
+                  let x = Int(exactly: rx), let y = Int(exactly: ry),
+                  let w = Int(exactly: rw), let h = Int(exactly: rh),
+                  !w.multipliedReportingOverflow(by: h).overflow
+            else { return nil }
+            return (x, y, w, h)
         }
     }
 
@@ -391,7 +488,7 @@ nonisolated enum AccessibilityInspector {
     /// warnings. Each `hit*` flag marks a place the walk abandoned a subtree; `stoppedEarly`
     /// folds them for the warning so no budget cut is silent (the incident's failure mode was a
     /// truncated list read as complete). Not `Task.isCancelled` — a cancelled result is discarded.
-    private struct AXWalkOutcome {
+    struct AXWalkOutcome: Equatable {
         var elements: [AXElementInfo] = []
         var sawWebArea = false
         var visitedNodes = 0
@@ -402,8 +499,8 @@ nonisolated enum AccessibilityInspector {
         var stoppedEarly: Bool { hitNodeCap || hitDeadline || hitDepthCap }
     }
 
-    private static func walk(
-        _ element: AXUIElement, depth: Int, insideWebArea: Bool,
+    private static func walk<R: AXNodeReading>(
+        _ element: R.Node, reader: R, depth: Int, insideWebArea: Bool,
         deadline: ContinuousClock.Instant, cancelled: WalkCancellationFlag,
         outcome: inout AXWalkOutcome, geom: Geometry
     ) {
@@ -415,6 +512,11 @@ nonisolated enum AccessibilityInspector {
             outcome.hitDepthCap = true
             return
         }
+        // Defense in depth, and currently unreachable by construction: the child loop below refuses
+        // to recurse once the budget is spent, and the only other entry is `runWalk` with a fresh
+        // outcome. It is kept — rather than deleted as dead — because it makes "no entry to `walk`
+        // may exceed the node budget" a property of `walk` itself instead of an obligation on every
+        // caller, and a third call site would otherwise inherit the obligation silently.
         guard outcome.visitedNodes < AccessibilityWalkPolicy.maxVisitedNodes else {
             outcome.hitNodeCap = true
             return
@@ -425,27 +527,27 @@ nonisolated enum AccessibilityInspector {
         }
         outcome.visitedNodes += 1
 
-        let role = stringAttr(element, kAXRoleAttribute as String)
+        let role = reader.string(kAXRoleAttribute as String, of: element)
         let inWebArea = insideWebArea || role == "AXWebArea"
         if role == "AXWebArea" { outcome.sawWebArea = true }
 
         if let role,
            actionableRoles.contains(role),
-           let frame = frame(of: element),
+           let frame = reader.frame(of: element),
            let mapped = geom.mapFrame(frame) {
             let center = clampedCenter(
                 x: mapped.x, y: mapped.y, w: mapped.w, h: mapped.h,
                 pixelWidth: geom.pixelWidth, pixelHeight: geom.pixelHeight)
             outcome.elements.append(AXElementInfo(
                 role: role,
-                label: label(of: element),
+                label: label(of: element, reader: reader),
                 x: mapped.x, y: mapped.y, w: mapped.w, h: mapped.h,
                 cx: center.cx, cy: center.cy,
                 web: inWebArea
             ))
         }
 
-        for child in children(of: element) {
+        for child in reader.children(of: element) {
             // Set the flag on the way out so the cap/deadline cut isn't silent — the child's own
             // entry guard would set it, but breaking here avoids O(children) no-op recursions.
             if outcome.hitDeadline || cancelled.isCancelled { break }
@@ -453,46 +555,131 @@ nonisolated enum AccessibilityInspector {
                 outcome.hitNodeCap = true
                 break
             }
-            walk(child, depth: depth + 1, insideWebArea: inWebArea,
+            walk(child, reader: reader, depth: depth + 1, insideWebArea: inWebArea,
                  deadline: deadline, cancelled: cancelled, outcome: &outcome, geom: geom)
         }
     }
 
     // MARK: - AX attribute helpers
 
-    private static func stringAttr(_ element: AXUIElement, _ attribute: String) -> String? {
-        var value: AnyObject?
-        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
-        return value as? String
+    /// Title → value → description, first non-nil wins. The ORDER is the decision: a text field's
+    /// `AXValue` is its live contents, so preferring it over `AXTitle` would label a search box by
+    /// whatever the user has typed into it — a label that changes under the model between captures.
+    static func label<R: AXNodeReading>(of element: R.Node, reader: R) -> String {
+        normalizedLabel(
+            reader.string(kAXTitleAttribute as String, of: element)
+                ?? reader.string(kAXValueAttribute as String, of: element)
+                ?? reader.string(kAXDescriptionAttribute as String, of: element))
     }
 
-    private static func label(of element: AXUIElement) -> String {
-        let raw = stringAttr(element, kAXTitleAttribute as String)
-            ?? stringAttr(element, kAXValueAttribute as String)
-            ?? stringAttr(element, kAXDescriptionAttribute as String)
-            ?? ""
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    /// Pure normalisation of a raw AX title/value/description into the label that ships on the
+    /// wire: trim first, then cap at `maxLabelChars` with an ellipsis. Split out of `label(of:)`
+    /// (which needs a live AX element) because this is the ONLY place the per-element label budget
+    /// is enforced — `maxLabelChars` × the emission cap is the worst-case payload of a capture, and
+    /// nothing else could pin that the cap is actually APPLIED rather than merely declared.
+    /// Truncation is by `Character`, so a grapheme cluster (emoji, combining marks) is never split.
+    static func normalizedLabel(_ raw: String?) -> String {
+        let trimmed = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.count > maxLabelChars ? String(trimmed.prefix(maxLabelChars)) + "…" : trimmed
     }
 
-    private static func frame(of element: AXUIElement) -> CGRect? {
+}
+
+// MARK: - Live Accessibility conformance
+
+/// The only code here that talks to `ApplicationServices`. Every method is a single framework
+/// round-trip with its documented failure folded to nil/empty — there is no decision left in it,
+/// which is exactly why the walk above was lifted out.
+///
+/// The `as!` casts are the sanctioned CF idiom (CLAUDE.md #35): `as?` on a CoreFoundation type is a
+/// compiler error ("conditional downcast will always succeed"), and the framework guarantees the
+/// type once the copy returned `.success`.
+nonisolated struct SystemAXNodeReader: AXNodeReading {
+
+    func applicationNode(pid: pid_t) -> AXUIElement {
+        AXUIElementCreateApplication(pid)
+    }
+
+    func string(_ attribute: String, of node: AXUIElement) -> String? {
+        var value: AnyObject?
+        guard AXUIElementCopyAttributeValue(node, attribute as CFString, &value) == .success else { return nil }
+        return value as? String
+    }
+
+    func boolValue(_ attribute: String, of node: AXUIElement) -> Bool? {
+        var value: AnyObject?
+        guard AXUIElementCopyAttributeValue(node, attribute as CFString, &value) == .success else { return nil }
+        return value as? Bool
+    }
+
+    func frame(of node: AXUIElement) -> CGRect? {
         var posVal: AnyObject?
         var sizeVal: AnyObject?
-        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posVal) == .success,
-              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeVal) == .success,
+        guard AXUIElementCopyAttributeValue(node, kAXPositionAttribute as CFString, &posVal) == .success,
+              AXUIElementCopyAttributeValue(node, kAXSizeAttribute as CFString, &sizeVal) == .success,
               let posRef = posVal, let sizeRef = sizeVal else { return nil }
         var point = CGPoint.zero
         var size = CGSize.zero
-        // CF bridge guaranteed after .success.
         guard AXValueGetValue(posRef as! AXValue, .cgPoint, &point),
               AXValueGetValue(sizeRef as! AXValue, .cgSize, &size) else { return nil }
         return CGRect(origin: point, size: size)
     }
 
-    private static func children(of element: AXUIElement) -> [AXUIElement] {
-        var value: AnyObject?
-        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &value) == .success,
-              let children = value as? [AXUIElement] else { return [] }
-        return children
+    func children(of node: AXUIElement) -> [AXUIElement] {
+        elements(kAXChildrenAttribute as String, of: node)
     }
+
+    func element(_ attribute: String, of node: AXUIElement) -> AXUIElement? {
+        var value: AnyObject?
+        guard AXUIElementCopyAttributeValue(node, attribute as CFString, &value) == .success,
+              let ref = value else { return nil }
+        return (ref as! AXUIElement)
+    }
+
+    func elements(_ attribute: String, of node: AXUIElement) -> [AXUIElement] {
+        var value: AnyObject?
+        guard AXUIElementCopyAttributeValue(node, attribute as CFString, &value) == .success,
+              let list = value as? [AXUIElement] else { return [] }
+        return list
+    }
+
+    func selectedRange(of node: AXUIElement) -> AXTextRange? {
+        var value: AnyObject?
+        guard AXUIElementCopyAttributeValue(node, kAXSelectedTextRangeAttribute as CFString, &value) == .success,
+              let ref = value else { return nil }
+        var range = CFRange(location: 0, length: 0)
+        guard AXValueGetValue(ref as! AXValue, .cfRange, &range) else { return nil }
+        return AXTextRange(location: range.location, length: range.length)
+    }
+
+    func setTrue(_ attribute: String, on node: AXUIElement) {
+        _ = AXUIElementSetAttributeValue(node, attribute as CFString, kCFBooleanTrue)
+    }
+
+    func setMessagingTimeout(_ seconds: Double, on node: AXUIElement) {
+        AXUIElementSetMessagingTimeout(node, Float(seconds))
+    }
+}
+
+// MARK: - Computer-use facade seam
+
+/// What the computer-use finalizer needs from this file: one call. Separate from `AXNodeReading`
+/// on purpose — that seam exists so *this file's* budget state machine is testable, while this one
+/// exists so the finalizer can be driven without an accessibility tree at all. A test of the
+/// dispatcher has no business building AX nodes.
+nonisolated protocol AXElementCollecting: Sendable {
+    func collectElements(_ request: AXCollectionRequest) async -> AXCollectionResult
+}
+
+nonisolated struct SystemAXElementCollector: AXElementCollecting {
+    func collectElements(_ request: AXCollectionRequest) async -> AXCollectionResult {
+        await AccessibilityInspector.collectElements(request)
+    }
+}
+
+/// No tree — the same answer an untrusted process gets. The inert default for
+/// `ComputerUseEnvironment`; `AccessibilityInspector.emptyElementsNote` turns it into a warning
+/// rather than a silently blank list, which is the behaviour under test.
+nonisolated struct InertAXElementCollector: AXElementCollecting {
+    func collectElements(_ request: AXCollectionRequest) async -> AXCollectionResult { .empty }
 }

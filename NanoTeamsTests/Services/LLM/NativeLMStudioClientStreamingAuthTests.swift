@@ -49,6 +49,85 @@ final class NativeLMStudioClientStreamingAuthTests: XCTestCase {
         )
     }
 
+    /// Throws a real `CancellationError` out of the transport — the shape
+    /// `URLSession.bytes(for:)` produces when its task is cancelled, which is what
+    /// Pause / `cancelStepExecution` / a work-folder switch do to a live stream.
+    private final class CancellingBytesSession: NetworkSession, @unchecked Sendable {
+        func sessionData(for request: URLRequest) async throws -> (Data, URLResponse) {
+            // `ensureLoaded`'s adopt probe (`GET /api/v0/models`). An empty listing
+            // is enough: nothing to adopt, and the load attempt that follows lands
+            // on the same empty body, so the stream reaches `sessionBytes` either way.
+            (Data(), HTTPURLResponse(url: request.url!, statusCode: 200,
+                                     httpVersion: nil, headerFields: nil)!)
+        }
+
+        func sessionBytes(for _: URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse) {
+            throw CancellationError()
+        }
+    }
+
+    /// Cancellation is not a transport failure, and the two are handled by different
+    /// arms of the same `do` — so the observable difference is what the LOG says.
+    ///
+    /// The generic `catch` writes a response record with `statusCode: 0` and the
+    /// error text; the `catch is CancellationError` above it deliberately writes
+    /// nothing and just finishes the stream. That asymmetry is the contract: every
+    /// Pause during a stream would otherwise append a fabricated transport failure to
+    /// `network_log.json` — the file the prefix-cache and latency work reads as
+    /// ground truth, where a run littered with `statusCode: 0` rows reads as an
+    /// unstable server rather than as the user pressing Pause.
+    ///
+    /// Until wave 12 this line was covered only INCIDENTALLY, by whichever unrelated
+    /// test happened to cancel a stream mid-flight that run — it flipped between runs
+    /// and showed up as unattributable drift in the coverage table. Pinning it removes
+    /// a jitter source as well as covering the arm.
+    ///
+    /// RED: change `catch is CancellationError { continuation.finish(throwing:
+    /// CancellationError()) }` to fall through to the generic `catch` (delete the arm)
+    /// → a response record appears and both log assertions fail; the thrown-error
+    /// assertion also fails, since the generic arm rethrows the original error wrapped
+    /// as a transport failure.
+    func testStreamChat_transportCancelled_finishesCleanlyAndLogsNoFailure() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let logURL = tempDir.appendingPathComponent("network_log.json")
+        let logger = NetworkLogger(logURL: logURL)
+
+        let client = NativeLMStudioClient(
+            session: CancellingBytesSession(),
+            tokenResolver: StubLLMTokenResolver(),
+            modelEnsurer: ChatModelEnsurer()
+        )
+
+        var thrown: Error?
+        do {
+            for try await _ in client.streamChat(
+                config: makeConfig(),
+                messages: [ChatMessage(role: .user, content: "hi")],
+                tools: [],
+                logger: logger,
+                stepID: "step-1"
+            ) {}
+        } catch {
+            thrown = error
+        }
+
+        XCTAssertTrue(thrown is CancellationError,
+                      "a cancelled transport must surface as CancellationError, not as a "
+                      + "transport failure the caller would banner; got \(String(describing: thrown))")
+
+        let data = try Data(contentsOf: logURL)
+        let records = try JSONCoderFactory.makeDateDecoder().decode([NetworkLogRecord].self, from: data)
+        XCTAssertTrue(records.contains { $0.direction == .request },
+                      "precondition: the request was logged, so the run really reached the transport")
+        XCTAssertFalse(records.contains { $0.direction == .response },
+                       "a cancellation must not fabricate a response record; got: \(records)")
+        XCTAssertFalse(records.contains { $0.errorMessage != nil },
+                       "…nor an error record; got: \(records)")
+    }
+
     func testStreamChat_setsAuthorizationHeader_whenResolverHasToken() async {
         let session = CapturingBytesSession()
         let client = NativeLMStudioClient(

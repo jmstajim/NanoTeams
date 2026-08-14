@@ -87,11 +87,15 @@ extension LLMExecutionService {
         )
 
         // If the voting meeting cannot run (no participants, meeting-limit reached,
-        // cancellation, no work folder), DO NOT fall through to the tally: an empty
-        // `meetingMessages` makes `tallyVotes([])` return `.tied`, which would
-        // auto-approve and amend the target's work with zero real votes. Reject
-        // honestly instead. (Also avoids tallying a stale prior `meetings.last`,
-        // which a non-persisted voting meeting would leave pointing at.)
+        // cancellation, no work folder), DO NOT fall through to the tally. This guard
+        // predates `.noVotes` and used to be the ONLY thing standing between an empty
+        // `meetingMessages` and an auto-approving `.tied`; `tallyVotes([])` now answers
+        // `.noVotes`, so the tally is no longer a trapdoor. The guard stays because the
+        // two situations are not the same fact and must not read alike to the requester:
+        // "the meeting never happened" is an infrastructure failure it can retry, while
+        // `.noVotes` is a meeting that ran and decided nothing. It also still avoids
+        // tallying a stale prior `meetings.last`, which a non-persisted voting meeting
+        // would leave pointing at — a real vote from an EARLIER meeting deciding this one.
         let meetingReply = await handleTeamMeeting(
             stepID: stepID,
             topic: voting.topic,
@@ -130,7 +134,7 @@ extension LLMExecutionService {
 
             let amendmentResult = await executeAmendment(
                 taskID: tid,
-                targetRoleID: resolvedTargetID,
+                targetRole: targetRoleDef,
                 changes: changes,
                 reasoning: reasoning,
                 requestingRoleID: requestingRole.baseID,
@@ -139,21 +143,38 @@ extension LLMExecutionService {
                 team: team
             )
 
-            return .ok("Change request APPROVED by team vote. \(amendmentResult)")
+            if case .failed = amendmentResult {
+                return .failed("Change request APPROVED by team vote, but \(amendmentResult.text)")
+            }
+            return .ok("Change request APPROVED by team vote. \(amendmentResult.text)")
 
         case .rejected:
             changeRequest.status = .rejected
             await recordChangeRequest(taskID: tid, changeRequest: changeRequest)
             return .ok("Change request REJECTED by team vote. The existing work stands.")
 
+        case .noVotes:
+            // The meeting ran and decided nothing — no participant emitted a VOTE: token.
+            // Rejecting is the only direction that cannot destroy work: approving here would
+            // reset the target role and cascade a revision downstream on the strength of zero
+            // votes. The existing work stands and the requester is told why.
+            changeRequest.status = .rejected
+            await recordChangeRequest(taskID: tid, changeRequest: changeRequest)
+            return .ok(
+                "Change request NOT carried — the voting meeting produced no votes. "
+                + "Participants must reply with `VOTE: APPROVE` or `VOTE: REJECT`. "
+                + "The existing work stands; ask again with a clearer request if the change is still needed."
+            )
+
         case .tied:
-            // V1: auto-approve on tie (Supervisor escalation in V2)
+            // V1: auto-approve on a genuine deadlock (Supervisor escalation in V2). Reachable
+            // only with at least one vote on each side — 0-0 is `.noVotes` above.
             changeRequest.status = .approved
             await recordChangeRequest(taskID: tid, changeRequest: changeRequest)
 
             let amendmentResult = await executeAmendment(
                 taskID: tid,
-                targetRoleID: resolvedTargetID,
+                targetRole: targetRoleDef,
                 changes: changes,
                 reasoning: reasoning,
                 requestingRoleID: requestingRole.baseID,
@@ -162,27 +183,50 @@ extension LLMExecutionService {
                 team: team
             )
 
-            return .ok("Change request had a TIED VOTE — auto-approved. \(amendmentResult)")
+            if case .failed = amendmentResult {
+                return .failed("Change request had a TIED VOTE — auto-approved, but \(amendmentResult.text)")
+            }
+            return .ok("Change request had a TIED VOTE — auto-approved. \(amendmentResult.text)")
+        }
+    }
+
+    /// Outcome of `executeAmendment`. Typed rather than a bare `String` because the
+    /// caller has to ROUTE it: an amendment that never ran must not be reported to the
+    /// model inside a `.ok(...)` reply, which is what happens when success and failure
+    /// share one return type and the caller string-interpolates it.
+    nonisolated enum AmendmentOutcome {
+        case initiated(String)
+        case failed(String)
+
+        var text: String {
+            switch self {
+            case .initiated(let t), .failed(let t): return t
+            }
         }
     }
 
     func executeAmendment(
         taskID: Int,
-        targetRoleID: String,
+        targetRole: TeamRoleDefinition,
         changes: String,
         reasoning: String,
         requestingRoleID: String,
         requesterStepID: String,
         meetingID: UUID?,
         team: Team?
-    ) async -> String {
-        guard let delegate else { return "Amendment failed: no delegate." }
+    ) async -> AmendmentOutcome {
+        // The `roleStatuses` key, which the engine seeds from `role.id`
+        // (`RunService.initialRoleStatuses`) — deliberately NOT the step's id, which
+        // may be the system role id on the runs `targetStep(in:for:)` exists for.
+        let targetRoleID = targetRole.id
+        guard let delegate else { return .failed("Amendment failed: no delegate.") }
 
-        // Read current task state to get step info
+        // Read current task state to get step info. Resolved through the SAME predicate
+        // validation used — see `ChangeRequestService.targetStep(in:for:)`.
         guard let currentTask = delegate.loadedTask(taskID),
               let run = currentTask.runs.last,
-              let targetStep = run.steps.first(where: { $0.id == targetRoleID }) else {
-            return "Amendment failed: target step not found."
+              let targetStep = ChangeRequestService.targetStep(in: run, for: targetRole) else {
+            return .failed("Amendment failed: target step not found.")
         }
 
         // Snapshot current artifacts
@@ -205,7 +249,7 @@ extension LLMExecutionService {
         // Record amendment and inject context into step.messages
         await delegate.mutateTask(taskID: taskID) { task in
             guard let runIndex = task.runs.indices.last else { return }
-            guard let stepIndex = task.runs[runIndex].steps.firstIndex(where: { $0.id == targetRoleID }) else { return }
+            guard let stepIndex = task.runs[runIndex].steps.firstIndex(where: { $0.id == targetStep.id }) else { return }
 
             task.runs[runIndex].steps[stepIndex].amendments.append(amendment)
 
@@ -252,7 +296,7 @@ extension LLMExecutionService {
             )
         }
 
-        return "Amendment initiated for \(targetRoleID). \(propagation.summary)"
+        return .initiated("Amendment initiated for \(targetRoleID). \(propagation.summary)")
     }
 
     /// Result of fanning an amendment out to downstream roles.

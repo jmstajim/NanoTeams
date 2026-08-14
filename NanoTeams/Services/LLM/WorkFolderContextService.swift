@@ -77,6 +77,7 @@ nonisolated final class WorkFolderContextService: @unchecked Sendable {
         ]
 
         var collected = ""
+        var reasoning = ""
         // prefix-cache-owner: registered by the caller —
         // `NTMSOrchestrator+WorkFolderManagement` notes `.oneShot("work folder context")`.
         for try await event in client.streamChat(
@@ -89,10 +90,31 @@ nonisolated final class WorkFolderContextService: @unchecked Sendable {
             if !event.contentDelta.isEmpty {
                 collected += event.contentDelta
             }
+            if !event.thinkingDelta.isEmpty {
+                reasoning += event.thinkingDelta
+            }
         }
 
-        let trimmed = collected.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+        // Cleaned, and cleaned HERE, because nothing downstream does it: the return value
+        // travels `WorkFolderManagementService` → `generateWorkFolderContext` →
+        // `updateWorkFolderContext` → `repository`, which only trims, and lands in
+        // `settings.context` — which `PromptBuilder.buildWorkFolderContextMessage` renders
+        // into the system prompt of EVERY role on EVERY request. A leaked `<|channel|>final`
+        // would sit in segment 0 for the life of the work folder, invalidating nothing and
+        // fixable only by hand-editing the field.
+        // `cleanHarmonyTokens`, not the bare `ModelTokenCleaner.clean`: the latter strips
+        // `<|channel|>` and leaves the glued protocol keyword behind, so a reasoning model's
+        // reply arrives as "finalA Swift package." — and THAT is the string that becomes the
+        // first line of every role's work-folder section. The keywords it removes
+        // (`final`/`commentary`/`message`/…) are Harmony header syntax, never prose.
+        let answer = ModelReplyChannels.answer(
+            content: collected,
+            reasoning: reasoning,
+            prepare: {
+                ConversationRepairService.cleanHarmonyTokens($0)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            })
+        return answer.isEmpty ? nil : answer
     }
     nonisolated deinit {}
 }

@@ -109,6 +109,14 @@ nonisolated struct EditFileTool: ToolHandler {
     func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let path = try requiredString(args, "path")
+            // Both stay on `requiredString`, for DIFFERENT reasons. `new_text`
+            // because replacing a span with nothing is how a deletion is spelled.
+            // `old_text` because the fallback below already diagnoses an empty
+            // anchor better than a generic emptiness guard could — measured, the
+            // envelope carries `old_text is whitespace-only — anchor on adjacent
+            // non-blank lines instead`, which prescribes the recovery. Adding
+            // "must not be empty" ahead of it would replace a specific diagnosis
+            // with a vaguer one.
             let oldText = try requiredString(args, "old_text")
             let newText = try requiredString(args, "new_text")
             let replaceAll = optionalBool(args, "replace_all", default: false)
@@ -124,37 +132,53 @@ nonisolated struct EditFileTool: ToolHandler {
 
             let content = try String(contentsOf: fileURL, encoding: .utf8)
 
+            // Each repair is paired with the replacement it belongs to, and a repaired
+            // anchor is only ever used together with its repaired replacement.
+            // A model that pasted the `read_lines` gutter (or JSON-escaped its slashes)
+            // into `old_text` pasted it into `new_text` too — that is the same habit,
+            // one call apart — so repairing only the anchor located the right region
+            // and then wrote the gutter INTO the file under `ok:true`. The pairing is
+            // also why the repair stays conditional: a replacement that legitimately
+            // contains `│` or `\/` and needed no repair to match is spliced verbatim.
             let stripped = Self.stripLineNumberPrefixes(oldText)
             let unescaped = Self.unescapeJSONSequences(oldText)
-            var candidates = [oldText]
-            if !stripped.isEmpty && stripped != oldText { candidates.append(stripped) }
-            if unescaped != oldText { candidates.append(unescaped) }
+            var candidates = [EditCandidate(old: oldText, new: newText)]
+            if !stripped.isEmpty && stripped != oldText {
+                candidates.append(EditCandidate(old: stripped, new: Self.stripLineNumberPrefixes(newText)))
+            }
+            if unescaped != oldText {
+                candidates.append(EditCandidate(old: unescaped, new: Self.unescapeJSONSequences(newText)))
+            }
 
             let newContent: String
             let count: Int
             var matchedIgnoringTrailingWhitespace = false
-            if let effectiveOldText = candidates.first(where: { content.contains($0) }) {
+            // Selection goes through range(of:) — the same primitive the
+            // single-replacement arm splices with — so "located but could not be
+            // replaced" is unrepresentable. The previous shape selected via
+            // contains() and re-searched, which needed a defensive arm for the two
+            // primitives disagreeing; measured (macOS 26, NFC anchor over NFD
+            // content) they agree, and if a future Foundation ever splits them,
+            // a range miss now falls through to the tolerant path's honest
+            // anchorNotFound instead of an unactionable "Internal error".
+            var selected: (winner: EditCandidate, range: Range<String.Index>)?
+            for candidate in candidates {
+                if let range = content.range(of: candidate.old) {
+                    selected = (candidate, range)
+                    break
+                }
+            }
+            if let (winner, range) = selected {
                 if replaceAll {
-                    count = content.components(separatedBy: effectiveOldText).count - 1
-                    newContent = content.replacingOccurrences(of: effectiveOldText, with: newText)
+                    count = content.components(separatedBy: winner.old).count - 1
+                    newContent = content.replacingOccurrences(of: winner.old, with: winner.new)
                 } else {
                     count = 1
-                    guard let range = content.range(of: effectiveOldText) else {
-                        // contains() and range(of:) disagreeing would mean a Foundation
-                        // behavior change; fail loudly instead of writing the file
-                        // unchanged while reporting a successful replacement.
-                        return makeErrorResult(
-                            toolName: Self.name, args: args,
-                            code: .commandFailed,
-                            message: "Internal error: old_text was located but could not be replaced. Retry the edit."
-                        )
-                    }
-                    newContent = content.replacingCharacters(in: range, with: newText)
+                    newContent = content.replacingCharacters(in: range, with: winner.new)
                 }
             } else {
                 switch Self.whitespaceTolerantEdit(
-                    content: content, candidates: candidates,
-                    newText: newText, replaceAll: replaceAll
+                    content: content, candidates: candidates, replaceAll: replaceAll
                 ) {
                 case .replaced(let replacedContent, let replacedCount):
                     newContent = replacedContent
@@ -196,37 +220,38 @@ nonisolated struct EditFileTool: ToolHandler {
         }
     }
 
+    /// Matches the `read_lines` gutter forms: `6\t`, `6   │ `, `6  | `.
+    /// Compiled once — the pattern is a literal, so `try!` either always succeeds
+    /// or fails every test run; it cannot ship broken. NSRegularExpression is
+    /// immutable and documented thread-safe (same idiom as the shared
+    /// ISO8601DateFormatter statics).
+    nonisolated(unsafe) private static let lineNumberPrefixPattern = try! NSRegularExpression(
+        pattern: #"^\d+(\t|\s*[\x{2502}|]\s?)"#
+    )
+
     /// Strips line-number prefixes from each line of text.
     /// Handles formats: `6\t`, `6   │ `, `6  | ` (from read_lines output).
-    /// Only strips if ALL non-empty lines match the prefix pattern to avoid false positives.
+    /// Only strips if ALL non-empty lines match the prefix pattern to avoid false
+    /// positives — one pass: build the stripped lines while checking, and bail
+    /// with the original text on the first non-matching non-empty line.
     private static func stripLineNumberPrefixes(_ text: String) -> String {
         let lines = text.components(separatedBy: "\n")
-        guard let prefixPattern = try? NSRegularExpression(
-            pattern: #"^\d+(\t|\s*[\x{2502}|]\s?)"#
-        ) else {
-            return text
-        }
-
-        let nonEmptyLines = lines.filter { !$0.isEmpty }
-        guard !nonEmptyLines.isEmpty else { return text }
-
-        let allMatch = nonEmptyLines.allSatisfy { line in
-            let range = NSRange(line.startIndex..., in: line)
-            return prefixPattern.firstMatch(in: line, range: range) != nil
-        }
-
-        guard allMatch else { return text }
-
-        let stripped = lines.map { line in
-            guard !line.isEmpty else { return line }
-            let range = NSRange(line.startIndex..., in: line)
-            if let match = prefixPattern.firstMatch(in: line, range: range) {
-                let matchRange = Range(match.range, in: line)!
-                return String(line[matchRange.upperBound...])
+        var sawNonEmptyLine = false
+        var stripped: [String] = []
+        stripped.reserveCapacity(lines.count)
+        for line in lines {
+            guard !line.isEmpty else {
+                stripped.append(line)
+                continue
             }
-            return line
+            sawNonEmptyLine = true
+            let range = NSRange(line.startIndex..., in: line)
+            guard let match = lineNumberPrefixPattern.firstMatch(in: line, range: range) else {
+                return text
+            }
+            stripped.append(String(line[Range(match.range, in: line)!.upperBound...]))
         }
-
+        guard sawNonEmptyLine else { return text }
         return stripped.joined(separator: "\n")
     }
 
@@ -236,6 +261,18 @@ nonisolated struct EditFileTool: ToolHandler {
     }
 
     // MARK: Whitespace-tolerant fallback
+
+    /// An anchor spelling paired with the replacement that belongs to it.
+    ///
+    /// The two anchor repairs (`stripLineNumberPrefixes`, `unescapeJSONSequences`) are applied to
+    /// BOTH sides or neither, so a repair that located the region can never leave its own artefact
+    /// in the file. Keeping them in one value is what makes that inseparable — the tolerant path
+    /// picks its winner by index, several frames away from the caller that built the list, and a
+    /// bare `[String]` of anchors beside a single `newText` is exactly how the two came apart.
+    nonisolated struct EditCandidate {
+        let old: String
+        let new: String
+    }
 
     enum TolerantEditOutcome {
         /// `count` is always >= 1 — a zero-match scan returns `.notFound` instead.
@@ -263,12 +300,22 @@ nonisolated struct EditFileTool: ToolHandler {
     /// leaving a blank line. Replacement lines adopt `\r` endings when the
     /// matched window is CRLF, so the file's line-ending convention survives.
     static func whitespaceTolerantEdit(
-        content: String, candidates: [String], newText: String, replaceAll: Bool
+        content: String, candidates: [EditCandidate], replaceAll: Bool
     ) -> TolerantEditOutcome {
         let contentLines = content.components(separatedBy: "\n")
+        // `components(separatedBy:)` on content ending in a newline leaves a trailing
+        // "" that marks the terminator — it is not a line, and the longer-than-file
+        // diagnostic below already excludes it. `windowMatches` used to count it as
+        // matchable, so an anchor carrying a blank line the file does NOT have matched
+        // the sentinel and consumed the file's final newline under `ok:true`. The same
+        // phantom line cannot be "not a line" for counting and "a line" for matching.
+        let scanBound = contentLines.last == "" ? contentLines.count - 1 : contentLines.count
         // A whitespace-only anchor would match any blank run anywhere — refuse it.
-        let lineCandidates: [(lines: [String], hadTerminator: Bool)] = candidates
-            .map { splitAnchorLines($0) }
+        let lineCandidates: [(lines: [String], hadTerminator: Bool, newText: String)] = candidates
+            .map { candidate in
+                let split = splitAnchorLines(candidate.old)
+                return (lines: split.lines, hadTerminator: split.hadTerminator, newText: candidate.new)
+            }
             .filter { candidate in
                 candidate.lines.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             }
@@ -279,8 +326,9 @@ nonisolated struct EditFileTool: ToolHandler {
 
         var ambiguousCount: Int?
         for (index, candidate) in lineCandidates.enumerated() {
-            let (oldLines, hadTerminator) = candidate
-            let matches = windowMatches(contentLines: contentLines, oldLines: oldLines, trim: trimTrailing)
+            let (oldLines, hadTerminator, newText) = candidate
+            let matches = windowMatches(
+                contentLines: contentLines, oldLines: oldLines, scanBound: scanBound, trim: trimTrailing)
             guard !matches.isEmpty else { continue }
             if !replaceAll && matches.count > 1 {
                 // Index 0 is the model's literal anchor: it demonstrably exists in
@@ -294,15 +342,22 @@ nonisolated struct EditFileTool: ToolHandler {
                 continue
             }
             var lines = contentLines
-            let newLines: [String]
+            let rawNewLines: [String]
             if hadTerminator {
                 // Mirror the anchor's terminator semantics on the replacement side:
                 // empty new_text deletes the matched lines outright, and a trailing
                 // newline on new_text doesn't insert a blank line.
-                newLines = newText.isEmpty ? [] : splitAnchorLines(newText).lines
+                rawNewLines = newText.isEmpty ? [] : splitAnchorLines(newText).lines
             } else {
-                newLines = newText.components(separatedBy: "\n")
+                rawNewLines = newText.components(separatedBy: "\n")
             }
+            // Line endings are the TOOL's business (see the reattach below), so whatever
+            // convention the model happened to emit is normalised away first. Without
+            // this, `read_file` — which returns a CRLF file's bytes verbatim — hands the
+            // model `\r\n`, it echoes `\r\n` back, and the CRLF reattach appends a SECOND
+            // `\r`, writing `\r\r\n`. That is not a valid line ending, and it shipped
+            // under `ok:true` with no disclosure.
+            let newLines = rawNewLines.map { $0.hasSuffix("\r") ? String($0.dropLast()) : $0 }
             let windows = replaceAll ? matches : [matches[0]]
             for start in windows.reversed() {
                 let windowRange = start..<(start + oldLines.count)
@@ -320,16 +375,18 @@ nonisolated struct EditFileTool: ToolHandler {
             return .ambiguous(count: ambiguousCount)
         }
 
-        for (oldLines, _) in lineCandidates {
-            let matches = windowMatches(contentLines: contentLines, oldLines: oldLines, trim: trimBoth)
+        for (oldLines, _, _) in lineCandidates {
+            let matches = windowMatches(
+                contentLines: contentLines, oldLines: oldLines, scanBound: scanBound, trim: trimBoth)
             guard !matches.isEmpty else { continue }
             let lineList = matches.prefix(3).map { String($0 + 1) }.joined(separator: ", ")
             let plural = matches.count > 1 ? "s" : ""
             return .notFound(hint: "Lines match ignoring indentation near line\(plural) \(lineList) — check leading whitespace (tabs vs spaces).")
         }
 
-        // Don't count the split sentinel after the file's final newline as a line.
-        let fileLineCount = contentLines.last == "" ? contentLines.count - 1 : contentLines.count
+        // Don't count the split sentinel after the file's final newline as a line —
+        // the same rule `scanBound` applies when matching.
+        let fileLineCount = scanBound
         if lineCandidates.allSatisfy({ $0.lines.count > fileLineCount }) {
             return .notFound(hint: "old_text has more lines (\(lineCandidates[0].lines.count)) than the file (\(fileLineCount)).")
         }
@@ -351,15 +408,15 @@ nonisolated struct EditFileTool: ToolHandler {
     /// whose lines all equal `oldLines` after per-line `trim` (after a match at `i`,
     /// scanning resumes at `i + n` — replace_all results depend on this selection).
     private static func windowMatches(
-        contentLines: [String], oldLines: [String], trim: (String) -> String
+        contentLines: [String], oldLines: [String], scanBound: Int, trim: (String) -> String
     ) -> [Int] {
         let n = oldLines.count
-        guard n > 0, contentLines.count >= n else { return [] }
+        guard n > 0, scanBound >= n else { return [] }
         let trimmedOld = oldLines.map(trim)
         let trimmedContent = contentLines.map(trim)
         var matches: [Int] = []
         var i = 0
-        while i + n <= trimmedContent.count {
+        while i + n <= scanBound {
             var isMatch = true
             for j in 0..<n where trimmedOld[j] != trimmedContent[i + j] {
                 isMatch = false

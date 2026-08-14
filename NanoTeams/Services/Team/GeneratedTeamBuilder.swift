@@ -69,6 +69,25 @@ nonisolated enum GeneratedTeamBuilder {
                     "Role '\(roleConfig.name)': dropped unknown tool(s) \(dropped.joined(separator: ", "))."
                 )
             }
+            // A producing role with no tools is a hallucination generator by construction:
+            // `create_artifact` is auto-injected because it produces artifacts, so it can
+            // submit a deliverable asserting the work is done while being physically
+            // unable to read or write a single file. That is M1's fabricated build claim
+            // reproduced structurally rather than by accident.
+            //
+            // `validateToolNames([])` returns `([], [])`, so the `dropped` warning above
+            // cannot fire for it — absence and an explicit empty list are indistinguishable
+            // after `decodeIfPresent(...) ?? []`. A warning rather than a hard error:
+            // an artifact-less observer role legitimately holds no tools, and the
+            // `producesArtifacts` clause is what keeps this precise.
+            if validTools.isEmpty, !roleConfig.producesArtifacts.isEmpty {
+                warnings.append(
+                    "Role '\(roleConfig.name)' must produce "
+                        + "\(roleConfig.producesArtifacts.joined(separator: ", "))"
+                        + " but was given no tools — it can submit an artifact without being able "
+                        + "to read or change anything. Add tools to it in the Team Editor."
+                )
+            }
 
             var role = TeamRoleDefinition(
                 id: UUID().uuidString,
@@ -236,7 +255,6 @@ nonisolated enum GeneratedTeamBuilder {
         }
         var splits: [RoleSplit] = []
         var rewriteMap: [String: String] = [:]   // strippedName → target (fallback, OR the role's first kept artifact)
-        var droppedNames: Set<String> = []        // strippedName → drop downstream refs (only when neither fallback nor kept exists)
 
         for role in config.roles {
             var kept: [String] = []
@@ -258,28 +276,30 @@ nonisolated enum GeneratedTeamBuilder {
             // (the warning surfaced only as `lastInfoMessage`, easily missed).
             // The redirect target is the same producing role, so the edge still
             // forces the downstream wait — only the artifact NAME changes.
-            for s in stripped {
-                if let fb = fallback {
-                    rewriteMap[s] = fb
-                } else if let firstKept = kept.first {
-                    rewriteMap[s] = firstKept
-                } else {
-                    // Truly orphan: role had zero valid produces (impossible reachable
-                    // since `kept.isEmpty && !stripped.isEmpty` triggers the fallback
-                    // branch above). Defensive only.
-                    droppedNames.insert(s)
-                }
+            //
+            // `fallback ?? kept.first` is TOTAL for a role with any stripped name, and
+            // that totality is the reason there is no drop path: `fallback` is non-nil
+            // *exactly* when `kept` is empty (it is computed from that same condition,
+            // and neither list is mutated in between), so `kept.first` covers the
+            // complement. A stripped name therefore always has somewhere to redirect —
+            // it can never lose its downstream edge.
+            //
+            // There used to be a third arm here, and a `droppedNames` set it fed. Both
+            // were dead by the argument above, and the dead state was the costlier
+            // half: permanently empty, yet READ in two places (`rewriteList`'s
+            // drop-to-nil branch and the pass-through early-out below), where it
+            // advertised a "reference gets dropped" outcome this function cannot
+            // produce. The comment on the old arm already said "impossible reachable …
+            // defensive only" — what it missed is that an impossible producer makes
+            // every consumer dead too.
+            if let redirect = fallback ?? kept.first {
+                for s in stripped { rewriteMap[s] = redirect }
             }
             splits.append(RoleSplit(kept: kept, stripped: stripped, fallback: fallback))
-            if !stripped.isEmpty {
-                let action: String
-                if let fb = fallback {
-                    action = "replaced with '\(fb)'"
-                } else if let firstKept = kept.first {
-                    action = "downstream references redirected to '\(firstKept)' (role's existing deliverable)"
-                } else {
-                    action = "dropped"
-                }
+            if !stripped.isEmpty, let redirect = fallback ?? kept.first {
+                let action = fallback != nil
+                    ? "replaced with '\(redirect)'"
+                    : "downstream references redirected to '\(redirect)' (role's existing deliverable)"
                 warnings.append(
                     "Role '\(role.name)': stripped \(stripped.count) file-shaped artifact name(s) [\(stripped.joined(separator: ", "))] — \(action). Use write_file for actual files; artifacts are conceptual deliverables."
                 )
@@ -287,11 +307,11 @@ nonisolated enum GeneratedTeamBuilder {
         }
 
         // No file-shaped names → original config passes through unchanged.
-        if rewriteMap.isEmpty && droppedNames.isEmpty {
+        if rewriteMap.isEmpty {
             return CleanupResult(config: config, warnings: [])
         }
 
-        // Rewrites a list of artifact names through `rewriteMap` / `droppedNames`,
+        // Rewrites a list of artifact names through `rewriteMap`,
         // de-duplicating the result. Self-loops (a role's own stripped output appearing
         // in its own requires_artifacts) are filtered out for the producing role —
         // the caller's `producingRole` parameter, when non-nil, suppresses any rewrite
@@ -300,17 +320,13 @@ nonisolated enum GeneratedTeamBuilder {
             var result: [String] = []
             var seen: Set<String> = []
             for name in names {
-                let target: String?
-                if let fb = rewriteMap[name] {
-                    target = fb
-                } else if droppedNames.contains(name) {
-                    target = nil
-                } else {
-                    target = name
-                }
-                if let t = target, !seen.contains(t), !selfArtifacts.contains(t) {
-                    result.append(t)
-                    seen.insert(t)
+                // Total by the argument above: a stripped name is always in `rewriteMap`,
+                // an unstripped one passes through as itself. Nothing is ever dropped
+                // here — only de-duplicated, and self-edges filtered.
+                let target = rewriteMap[name] ?? name
+                if !seen.contains(target), !selfArtifacts.contains(target) {
+                    result.append(target)
+                    seen.insert(target)
                 }
             }
             return result

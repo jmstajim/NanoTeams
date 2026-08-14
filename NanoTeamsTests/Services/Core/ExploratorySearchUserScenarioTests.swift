@@ -230,7 +230,8 @@ final class ExploratorySearchUserScenarioTests: NTMSOrchestratorTestBase {
         sut.searchIndexCoordinator = SearchIndexCoordinator(
             workFolderRoot: tempDir,
             internalDir: tempDir.appendingPathComponent(".nanoteams/internal"),
-            fileManager: FileManager.default
+            fileManager: FileManager.default,
+            makeWatcher: FakeWatcherFactory.inert
         )
         // `onChange` fires synchronously in willSet-like fashion, but yield
         // once so any Task-scheduled observer has a chance to run.

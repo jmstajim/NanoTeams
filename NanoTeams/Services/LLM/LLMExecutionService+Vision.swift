@@ -27,7 +27,9 @@ extension LLMExecutionService {
         // is on, so the default `analyze_image` sub-model behavior is unchanged for
         // everyone else. Falls through to the sub-model path if the file can't be read.
         if delegate?.computerUsePolicy.isEnabled == true,
-           await mainModelSeesImages(config: config, client: client),
+           await mainModelSeesImages(
+               config: config, client: client,
+               stepKey: TaskStepKey(taskID: taskID, stepID: stepID)),
            let loaded = try? loadVisionImage(imagePath: imagePath) {
             let rep = NSBitmapImageRep(data: loaded.data)
             let envelope = makeSuccessEnvelope(data: [
@@ -63,6 +65,18 @@ extension LLMExecutionService {
                 client: client,
                 logger: networkLogger
             )
+            // An empty analysis is a FAILURE, not an empty success. As `ok:true` it told the
+            // model the image had been analysed and handed it nothing, and — because a
+            // non-error result is what `ToolTurnProductivity.classify` reads through
+            // `effectiveResults` — it re-armed the shape-independent no-tool ceiling, so a
+            // vision model answering with silence could be asked forever. Same rule as every
+            // other tool since wave 19: the envelope reports the outcome, not the attempt.
+            if analysisText.isEmpty {
+                analysisText = "Vision analysis failed: the vision model returned an empty response. "
+                    + "Try a more specific question; if it keeps coming back empty, ask the "
+                    + "supervisor to check the vision model."
+                isError = true
+            }
         } catch is CancellationError {
             // Task was paused/cancelled — propagate without recording an error
             return
@@ -120,8 +134,10 @@ enum VisionError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        // Model-read: rendered into `"Vision analysis failed: \(…)"` → `commandFailed`
+        // envelope. Name a recourse the model can act on, not a Settings pane.
         case .notConfigured:
-            "Vision model not configured. Set up a vision model in Settings → LLM."
+            "No vision model is configured for this work folder. Do not retry analyze_image — ask the supervisor to configure one, or continue without image analysis."
         case .noProject:
             "No work folder available."
         case .fileNotFound(let path):

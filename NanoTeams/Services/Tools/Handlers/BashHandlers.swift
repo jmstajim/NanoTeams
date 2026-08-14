@@ -115,53 +115,81 @@ nonisolated struct BashTool: ToolHandler {
             }
 
             // MARK: Foreground
-            let result: ProcessRunner.Result
-            do {
-                result = try runForeground(
-                    command: command, cwd: cwd, timeout: timeoutSec, sandboxProfile: sandboxProfile)
-            } catch let ProcessRunnerError.timeout(_, stdout, stderr) {
+            // ProcessRunnerError.cancelled propagates to ToolErrorHandler → makeCancelledResult.
+            let outcome = try runForeground(
+                command: command, cwd: cwd, timeout: timeoutSec, sandboxProfile: sandboxProfile)
+
+            switch outcome {
+            case .timedOut(let stdout, let stderr, let ranSandboxed):
                 // Surface whatever the command printed before the deadline.
                 return makeSuccessResult(
                     toolName: Self.name, args: args,
                     data: BashResult(
                         exit_code: nil, stdout: stdout, stderr: stderr, timed_out: true,
-                        sandboxed: sandboxProfile != nil))
-            }
-            // ProcessRunnerError.cancelled propagates to ToolErrorHandler → makeCancelledResult.
+                        sandboxed: ranSandboxed))
 
-            // Sandbox failed to launch and no fallback was allowed.
-            if let sandboxProfile, sandboxProfile != "",
-               SeatbeltSandbox.isSandboxDenialFailure(exitCode: result.exitCode, stderr: result.stderr),
-               !allowUnsandboxedFallback {
-                return makeErrorResult(
-                    toolName: Self.name, args: args, code: .bashDenied,
-                    message: "The macOS sandbox failed to initialize for this command, and the unsandboxed fallback is disabled in Settings. Command was not run.")
-            }
+            case .completed(let result, let ranSandboxed):
+                // Sandbox failed to launch and no fallback was allowed. `ranSandboxed` keeps this
+                // branch off the post-fallback path, where the command demonstrably DID run.
+                if ranSandboxed, let sandboxProfile, sandboxProfile != "",
+                   SeatbeltSandbox.isSandboxDenialFailure(exitCode: result.exitCode, stderr: result.stderr),
+                   !allowUnsandboxedFallback {
+                    return makeErrorResult(
+                        toolName: Self.name, args: args, code: .bashDenied,
+                        message: "The macOS sandbox failed to initialize for this command, and running unsandboxed is not permitted. The command was not run — this is an environment failure, not an argument problem.")
+                }
 
-            return makeSuccessResult(
-                toolName: Self.name, args: args,
-                data: BashResult(
-                    exit_code: Int(result.exitCode),
-                    stdout: result.stdout,
-                    stderr: result.stderr,
-                    timed_out: false,
-                    sandboxed: sandboxProfile != nil))
+                return makeSuccessResult(
+                    toolName: Self.name, args: args,
+                    data: BashResult(
+                        exit_code: Int(result.exitCode),
+                        stdout: result.stdout,
+                        stderr: result.stderr,
+                        timed_out: false,
+                        sandboxed: ranSandboxed))
+            }
         }
     }
 
-    /// Runs the command sandboxed; if the sandbox wrapper itself fails to launch
-    /// and the policy allows it, retries unsandboxed.
+    /// What a foreground run actually did, including whether a sandbox was in effect.
+    ///
+    /// `ProcessRunner.Result` carries only exit code / stdout / stderr, so returning it alone
+    /// discarded the one fact the caller could not recover: after an unsandboxed retry the caller's
+    /// `sandboxProfile` local is still non-nil, and the envelope rebuilt `sandboxed` from it —
+    /// reporting `true` for a command that ran with no confinement at all. The timeout arm needs
+    /// the same fact, and a `throw` cannot carry it, so the timeout is returned as data here rather
+    /// than thrown past the boundary. Cancellation still propagates: it is not an outcome.
+    private enum ForegroundOutcome {
+        case completed(ProcessRunner.Result, ranSandboxed: Bool)
+        case timedOut(stdout: String, stderr: String, ranSandboxed: Bool)
+    }
+
+    /// Runs the command sandboxed; if the sandbox WRAPPER itself fails to launch and the policy
+    /// allows it, retries unsandboxed. A timeout is never a wrapper failure, so it never retries.
+    ///
+    /// The retry deliberately gets the full `timeout` again: a wrapper failure is decided before
+    /// the child starts, so the first attempt costs milliseconds, and shortening the second would
+    /// silently give the model less time than it asked for.
     private func runForeground(
         command: String, cwd: URL, timeout: TimeInterval, sandboxProfile: String?
-    ) throws -> ProcessRunner.Result {
-        let result = try ProcessRunner.runShell(
-            command, in: cwd, timeout: timeout, sandboxProfile: sandboxProfile)
-        if sandboxProfile != nil,
-           SeatbeltSandbox.isSandboxDenialFailure(exitCode: result.exitCode, stderr: result.stderr),
-           allowUnsandboxedFallback {
-            return try ProcessRunner.runShell(command, in: cwd, timeout: timeout, sandboxProfile: nil)
+    ) throws -> ForegroundOutcome {
+        func run(profile: String?) throws -> ForegroundOutcome {
+            do {
+                let result = try ProcessRunner.runShell(
+                    command, in: cwd, timeout: timeout, sandboxProfile: profile)
+                return .completed(result, ranSandboxed: profile != nil)
+            } catch let ProcessRunnerError.timeout(_, stdout, stderr) {
+                return .timedOut(stdout: stdout, stderr: stderr, ranSandboxed: profile != nil)
+            }
         }
-        return result
+
+        let first = try run(profile: sandboxProfile)
+        guard case .completed(let result, _) = first,
+              sandboxProfile != nil,
+              SeatbeltSandbox.isSandboxDenialFailure(exitCode: result.exitCode, stderr: result.stderr),
+              allowUnsandboxedFallback
+        else { return first }
+        return try run(profile: nil)
     }
 }
 

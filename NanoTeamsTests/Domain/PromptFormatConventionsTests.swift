@@ -77,9 +77,9 @@ final class PromptFormatConventionsTests: XCTestCase {
 
         // Builder-injected helpers (sample both branches of conditional helpers).
         s.append(("conversationMechanicsGuidance/withFileReadTools",
-                  PromptBuilder.buildConversationMechanicsGuidance(hasFileReadTools: true)))
+                  PromptBuilder.buildConversationMechanicsGuidance(hasTagProducingTools: true)))
         s.append(("conversationMechanicsGuidance/withoutFileReadTools",
-                  PromptBuilder.buildConversationMechanicsGuidance(hasFileReadTools: false)))
+                  PromptBuilder.buildConversationMechanicsGuidance(hasTagProducingTools: false)))
 
         // Tool schema descriptions — `ToolHandlerRegistry.allSchemas` is the
         // single source of truth for what ships in `## Tool Calling` blocks.
@@ -195,15 +195,116 @@ final class PromptFormatConventionsTests: XCTestCase {
         }
     }
 
-    // MARK: - Invariant 4: no `Settings → …` UI paths in LLM-facing prompts
+    // MARK: - Invariant 4: no Settings/Preferences UI paths in LLM-facing text
+
+    /// Every spelling of "go click something in the app" that has actually appeared in this
+    /// codebase. The rule is NOT arrow-anchored: an arrow-only needle let
+    /// `"…disabled in Settings (mode: Off)"` and `"Set Computer Use to Auto in Settings"`
+    /// through for months, and the latter is a line-for-line twin of the bash denial that
+    /// prompted the sweep.
+    ///
+    /// `Preferences →` / `in Preferences` rather than a bare `Preferences`: the bare token's
+    /// only hit in the corpus is `rolePrompts["sre"]`'s "Not for style preferences", which is
+    /// legitimate prose. Shaping the needle beats adding an exemption.
+    ///
+    /// Note the historical `"Settings -> "` needle carried a TRAILING SPACE, so
+    /// `"Settings ->LLM"` slipped past it. The variants below are space-free.
+    static let settingsPathNeedles = [
+        "Settings →", "Settings ->", "System Settings",
+        "in Settings", "app's settings", "Preferences →", "in Preferences",
+    ]
 
     func testNoSettingsArrowInLLMFacingPrompts() {
         for (label, contents) in Self.auditedSurfaces {
-            XCTAssertFalse(
-                contents.contains("Settings →") || contents.contains("Settings -> "),
-                "[\(label)] contains `Settings → …` UI path — the LLM can't click; defaults belong in JSONSchemaLeaf.default"
-            )
+            for needle in Self.settingsPathNeedles where contents.contains(needle) {
+                XCTFail("[\(label)] names the UI path \"\(needle)\" — the LLM can't click it. "
+                        + "Name the capability and who can change it, not where they'd click.")
+            }
         }
+    }
+
+    /// Invariant 4, second surface: the tool-rejection envelopes.
+    ///
+    /// `auditedSurfaces` covers prompts and STATIC tool schemas. It never saw
+    /// `makeUnavailableToolResult`'s messages, which are built inline in a `switch` and reach
+    /// the model as `precondition_failed` / `tool_not_authorized` envelopes. `CaseIterable`
+    /// makes a future reason sweep automatically rather than relying on someone remembering.
+    func testNoSettingsPathInToolUnavailabilityMessages() {
+        for reason in LLMExecutionService.ToolUnavailabilityReason.allCases {
+            let envelope = LLMExecutionService.makeUnavailableToolResult(
+                call: StepToolCall(name: ToolNames.readFile, argumentsJSON: "{}"),
+                canonicalName: ToolNames.readFile,
+                scope: "role",
+                reason: reason
+            ).outputJSON
+            for needle in Self.settingsPathNeedles where envelope.contains(needle) {
+                XCTFail("ToolUnavailabilityReason.\(reason) names the UI path \"\(needle)\" — "
+                        + "the model reads this envelope and cannot click it.")
+            }
+            XCTAssertFalse(envelope.isEmpty, "every reason must produce an envelope")
+        }
+    }
+
+    // MARK: - Invariant 4, third surface: a source scan over model-facing constructions
+
+    /// The value-surface sweeps above can only see strings something hands them. Most
+    /// model-read text is an inline literal interpolated into an envelope at the point of
+    /// failure, and no registry enumerates those — `makeErrorEnvelope` takes a free-form
+    /// `String`, and `ToolErrorCode` enumerates CODES, not messages.
+    ///
+    /// So scope by the CONSTRUCTION SHAPE that makes a string model-facing rather than by
+    /// directory. Two properties fall out of that choice, and both are the point:
+    ///
+    /// - It reaches `Services/Core`, where `AutovisorActionResult.failure(…)` strings become
+    ///   `commandFailed` envelopes. A directory list drawn around `Services/LLM|Tools|Team`
+    ///   misses it — and that is exactly where the Autovisor's team-block denials live.
+    /// - It excludes `Views/`, so human-facing Settings copy (which SHOULD name panes) can
+    ///   never become collateral of its own sweep.
+    ///
+    /// Files whose Settings references are genuinely human-facing opt out with an explicit
+    /// `NTMS-USER-FACING-STRING:` marker carrying a rationale.
+    private static let modelFacingConstructions = [
+        "makeErrorEnvelope(", "makeErrorResult(", ".deny(reason:",
+        "AutovisorActionResult.failure(", "appendSystemMessage:",
+    ]
+
+    /// Assembled at runtime so this test's own prose can't match itself.
+    private static let userFacingOptOut = "NTMS-USER-FACING" + "-STRING:"
+
+    func testNoSettingsPathInFilesThatBuildModelFacingErrors() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // Domain
+            .deletingLastPathComponent()   // NanoTeamsTests
+            .deletingLastPathComponent()   // repo root
+        let sources = root.appendingPathComponent("NanoTeams")
+        guard let walker = FileManager.default.enumerator(
+            at: sources, includingPropertiesForKeys: nil) else {
+            return XCTFail("could not walk \(sources.path)")
+        }
+
+        var scanned = 0
+        for case let url as URL in walker where url.pathExtension == "swift" {
+            // Views build the Settings UI itself; naming a pane there is correct.
+            guard !url.path.contains("/NanoTeams/Views/") else { continue }
+            guard let raw = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            guard Self.modelFacingConstructions.contains(where: { raw.contains($0) }) else { continue }
+            guard !raw.contains(Self.userFacingOptOut) else { continue }
+            scanned += 1
+
+            // Comments legitimately cite Settings paths to explain WHY a gate exists.
+            for line in raw.split(separator: "\n", omittingEmptySubsequences: false) {
+                let code = line.contains("//") ? String(line[line.startIndex..<line.range(of: "//")!.lowerBound]) : String(line)
+                for needle in Self.settingsPathNeedles where code.contains(needle) {
+                    XCTFail("\(url.lastPathComponent) builds model-facing errors and names the UI "
+                            + "path \"\(needle)\": \(code.trimmingCharacters(in: .whitespaces)). "
+                            + "Name the capability and who can change it — or, if this string is "
+                            + "genuinely human-facing, add a \(Self.userFacingOptOut) <why> marker.")
+                }
+            }
+        }
+        // Anti-vacuum: the shape list must still select a real population.
+        XCTAssertGreaterThan(scanned, 10, "the construction-shape filter selected almost nothing — "
+                             + "the shapes probably drifted and the scan is now vacuous")
     }
 
     // MARK: - Helpers

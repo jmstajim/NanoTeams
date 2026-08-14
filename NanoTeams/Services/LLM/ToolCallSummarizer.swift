@@ -33,7 +33,21 @@ nonisolated enum ToolCallSummarizer {
                 return path
             },
             TN.deleteFile: pathExtractor,
-            TN.editFile: pathExtractor,
+            // Same reasoning as `readLines` above, one tool over: the summary IS
+            // the loop-detector's identity key, so the bare path made every edit
+            // to a given file look like the same call. An honest sequence of
+            // different edits to one file — the normal way a role works — read
+            // as a repeat and got interrupted. The anchor is what distinguishes
+            // them, and it is also the most useful thing to show on the card.
+            TN.editFile: { dict in
+                let path = (dict["path"] as? String) ?? "?"
+                guard let anchor = optionalString(dict, "old_text"),
+                      !anchor.isEmpty
+                else { return path }
+                let squashed = anchor.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+                guard !squashed.isEmpty else { return path }
+                return "\(path) ‹\(squashed.prefix(32))›"
+            },
             TN.listFiles: { dict in
                 let raw = (dict["path"] as? String) ?? "."
                 let path = raw.isEmpty ? "." : raw

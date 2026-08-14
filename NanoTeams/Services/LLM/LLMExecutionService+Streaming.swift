@@ -274,7 +274,21 @@ extension LLMExecutionService {
                         uiBuffer += delta
                         pendingUI += delta
                         let harmonyMarkers = HarmonyToolCallParser.harmonyMarkers
-                        if harmonyMarkers.contains(where: { uiBuffer.contains($0) }) {
+                        // Canonicalize a mangled OPENING sentinel before the exact-substring
+                        // test — `gemma-4-e4b` splices its own `<|tool_call|>` into the
+                        // `<|call|>` this prompt teaches, and the result matches none of the
+                        // three markers. See `HarmonySentinelNormalizer`.
+                        let normalizedBuffer = HarmonySentinelNormalizer.normalize(uiBuffer)
+                        if harmonyMarkers.contains(where: { normalizedBuffer.contains($0) }) {
+                            // Adopt the normalized buffer WHOLESALE rather than keeping it
+                            // local. Everything below indexes into `uiBuffer`
+                            // (`range(of: marker)`, `uiBuffer[..<lower]`, `uiBuffer[lower...]`)
+                            // and normalization changes length, so two strings here would
+                            // desynchronize by exactly the repaired span. The single
+                            // assignment is also what makes the three downstream consumers
+                            // agree: this detection, `harmonyBuffer` (route 2 at the tail of
+                            // this method), and `envelopeSource` in `classifyHarmonyCallIssue`.
+                            uiBuffer = normalizedBuffer
                             sawHarmonyMarker = true
                             // The stream just committed to an envelope:
                             // visible PROSE freezes here and raw tokens flow
@@ -288,6 +302,21 @@ extension LLMExecutionService {
                             // while the thinking preview is still empty.
                             delegate.markStreamingToolCall(stepID: stepID, taskID: taskID)
                             harmonyBuffer = uiBuffer
+                            // Seed the close-marker count from what THIS delta already
+                            // carried. Counting only inside the `sawHarmonyMarker` branch
+                            // above under-counted by exactly the detection delta, so the
+                            // gate was chunking-dependent: two byte-identical envelopes
+                            // framed as two deltas left the counter at 1, and framed as one
+                            // coalesced delta never reached the check at all. Either way the
+                            // break never fired — and since the post-loop dedup is gated on
+                            // `loopDetected`, BOTH identical calls were dispatched.
+                            harmonyCloseCount += Self.closeMarkerCount(in: harmonyBuffer)
+                            if harmonyCloseCount >= 2,
+                               Self.containsDuplicateToolCalls(
+                                   harmonyParser.extractAllToolCalls(from: harmonyBuffer)) {
+                                loopDetected = true
+                                break
+                            }
                             // Truncate to content before the earliest marker.
                             // uiBuffer is the complete record of all deltas — use it as
                             // source of truth to handle markers split across flush boundaries.
@@ -496,6 +525,15 @@ extension LLMExecutionService {
     /// compare — most observed loops emit byte-identical args, so this fast path catches
     /// them without JSON work. Only if the raw fast path doesn't hit do we fall back to
     /// canonicalized comparison (handles whitespace / key-order differences).
+    /// How many tool-call envelopes a buffer could hold, for the cheap gate in front of
+    /// the (expensive) re-parse. `max` rather than a sum because one envelope commonly
+    /// carries BOTH terminators — summing would report 2 for a single call and re-parse
+    /// on every stream.
+    nonisolated static func closeMarkerCount(in buffer: String) -> Int {
+        max(buffer.components(separatedBy: HarmonyToolCallParser.callMarker).count - 1,
+            buffer.components(separatedBy: "<|end|>").count - 1)
+    }
+
     nonisolated static func containsDuplicateToolCalls(_ calls: [StepToolCall]) -> Bool {
         guard calls.count >= 2 else { return false }
 
@@ -529,16 +567,43 @@ extension LLMExecutionService {
         return unique
     }
 
+    /// Longest unresolved Harmony buffer replayed back to the model. Big enough for any
+    /// real tool call (the largest observed `create_artifact` envelope is well under it),
+    /// small enough that a model stuck emitting a wall of text cannot pin a huge block
+    /// into every subsequent request's prefix.
+    nonisolated static let maxUnresolvedEnvelopeAnchorLength = 2000
+
+    /// What an assistant turn carries when its Harmony envelope resolved to no tool call:
+    /// the raw bytes, capped, or nil when there were none.
+    ///
+    /// Nil rather than `""` for an empty buffer — `content: nil` is the existing "the turn
+    /// happened but said nothing" anchor, and fabricating content the model never emitted
+    /// would be a different lie from the one this fixes.
+    nonisolated static func unresolvedEnvelopeAnchor(_ harmonyBuffer: String) -> String? {
+        let trimmed = harmonyBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard trimmed.count > maxUnresolvedEnvelopeAnchorLength else { return trimmed }
+        return String(trimmed.prefix(maxUnresolvedEnvelopeAnchorLength)) + "… [truncated]"
+    }
+
     // MARK: - Post-Stream Processing
 
-    /// Appends the assistant/tool-call messages to the conversation and persisted LLM log.
-    /// Returns `.completed` if the LLM signaled task completion, `nil` otherwise.
+    /// Appends the assistant/tool-call turn to the conversation and the persisted log.
+    ///
+    /// Returns nothing, and used to claim otherwise: the signature was `-> LLMStepStop?` with the
+    /// doc "returns `.completed` if the LLM signaled task completion", but the body's only
+    /// function-level return was `return nil`, so the caller's `if let completionStop` could not
+    /// fire on any input. There is no such signal to detect — a step ends through
+    /// `checkArtifactCompleteness` after `create_artifact`, or through `handleNoToolCalls` — so
+    /// the honest fix is to delete the promise rather than invent a producer for it. Removing the
+    /// optional also turned two `XCTAssertNil(stop)` assertions into compile errors, which is what
+    /// they deserved: they could never have failed.
     func processStreamingResult(
         _ result: StreamingResult,
         stepID: String,
         taskID: Int,
         conversationMessages: inout [ChatMessage]
-    ) async -> LLMStepStop? {
+    ) async {
         let hasContent = !result.assistantContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let hasToolCalls = !result.resolvedToolCalls.isEmpty
 
@@ -579,7 +644,20 @@ extension LLMExecutionService {
             // user-visible LLMMessage/StepMessage commit is owned by commitStreaming()
             // (the streaming LLMMessage is pre-created at stream start), so appending this
             // anchor has no UI or persistence effect.
-            conversationMessages.append(ChatMessage(role: .assistant, content: nil))
+            //
+            // When there IS a Harmony buffer, the anchor carries it VERBATIM instead of
+            // being empty. Truncating content at the first marker exists so the envelope
+            // can be re-materialized from `toolCalls` — but with zero resolved calls
+            // there is nothing to re-materialize, so the truncation only erases the one
+            // thing the model needs. The 2026-08-13 gemma run shows the cost: it was told
+            // "your JSON could not be parsed" while its own turn replayed as a bare
+            // `[Assistant]`, and spent a 19-second reasoning block insisting it had sent
+            // the arguments — which it had. Capped, because a runaway buffer must not
+            // become a permanent prefix.
+            conversationMessages.append(
+                ChatMessage(
+                    role: .assistant,
+                    content: Self.unresolvedEnvelopeAnchor(result.harmonyBuffer)))
         }
 
         if hasToolCalls {
@@ -591,8 +669,6 @@ extension LLMExecutionService {
             }
             await appendToolCalls(stepID: stepID, taskID: taskID, toolCalls: restamped)
         }
-
-        return nil
     }
 
 }

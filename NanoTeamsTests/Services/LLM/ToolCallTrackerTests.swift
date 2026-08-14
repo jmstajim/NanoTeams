@@ -293,8 +293,11 @@ final class ToolCallTrackerTests: XCTestCase {
         XCTAssertNil(ToolCallLoopDetector.detectLoopPattern(in: tracker.recentCalls(limit: 6)))
     }
 
-    func testDetectLoopPatternReadOnlyLoop() {
-        // 6 consecutive read-only calls
+    func testDetectLoopPattern_allReadsAcrossDistinctTools_isNotALoop() {
+        // 6 consecutive read-only calls, each a DIFFERENT tool: that's orientation in a
+        // work folder, not a loop. The tool name is part of the repetition identity, so
+        // six empty payloads on six different tools never form a repeated call. The old
+        // `.readOnlyLoop` category-predicate flagged exactly this window.
         let readOnlyTools = ["read_file", "git_status", "list_files", "read_lines", "git_branch_list", "search"]
 
         for tool in readOnlyTools {
@@ -306,30 +309,22 @@ final class ToolCallTrackerTests: XCTestCase {
             )
         }
 
-        let loop = ToolCallLoopDetector.detectLoopPattern(in: tracker.recentCalls(limit: 6))
-        XCTAssertNotNil(loop)
-
-        if case .readOnlyLoop(let message) = loop {
-            XCTAssertTrue(message.contains("read-only"))
-        } else {
-            XCTFail("Expected readOnlyLoop")
-        }
+        XCTAssertNil(ToolCallLoopDetector.detectLoopPattern(in: tracker.recentCalls(limit: 6)))
     }
 
     func testDetectLoopPatternRepetitiveTool() {
-        // Add write tool to prevent readOnlyLoop from triggering
         tracker.record(toolName: "write_file", argumentsJSON: "{}", resultJSON: "{\"ok\": true}", isError: false)
-        // Call git_status 4 times out of last 6
-        tracker.record(toolName: "git_status", argumentsJSON: "{}", resultJSON: "{\"ok\": true}", isError: false)
-        tracker.record(toolName: "git_status", argumentsJSON: "{}", resultJSON: "{\"ok\": true}", isError: false)
-        tracker.record(toolName: "git_status", argumentsJSON: "{}", resultJSON: "{\"ok\": true}", isError: false)
-        tracker.record(toolName: "git_status", argumentsJSON: "{}", resultJSON: "{\"ok\": true}", isError: false)
         tracker.record(toolName: "read_file", argumentsJSON: "{}", resultJSON: "{\"ok\": true}", isError: false)
+        // git_status 4 times IN A ROW at the tail — the window state production fires on
+        tracker.record(toolName: "git_status", argumentsJSON: "{}", resultJSON: "{\"ok\": true}", isError: false)
+        tracker.record(toolName: "git_status", argumentsJSON: "{}", resultJSON: "{\"ok\": true}", isError: false)
+        tracker.record(toolName: "git_status", argumentsJSON: "{}", resultJSON: "{\"ok\": true}", isError: false)
+        tracker.record(toolName: "git_status", argumentsJSON: "{}", resultJSON: "{\"ok\": true}", isError: false)
 
         let loop = ToolCallLoopDetector.detectLoopPattern(in: tracker.recentCalls(limit: 6))
         XCTAssertNotNil(loop)
 
-        if case .repetitiveTool(let tool, let count, _) = loop {
+        if case .repetitiveTool(let tool, let count) = loop {
             XCTAssertEqual(tool, "git_status")
             XCTAssertEqual(count, 4)
         } else {
@@ -353,19 +348,19 @@ final class ToolCallTrackerTests: XCTestCase {
     // These tests are based on issues discovered in actual conversation logs
 
     func testRepetitiveToolDetectionForGitAdd() {
-        // Issue: git_add was called 6+ times consecutively without commit
-        // Loop detection should catch this
+        // Issue: git_add was called 6+ times CONSECUTIVELY without commit — the run
+        // sits at the tail, exactly as the original incident had it.
         tracker.record(toolName: "write_file", argumentsJSON: "{}", resultJSON: "{\"ok\": true}", isError: false)
-        tracker.record(toolName: "git_add", argumentsJSON: "{\"paths\": [\"a.swift\"]}", resultJSON: "{\"ok\": true}", isError: false)
-        tracker.record(toolName: "git_add", argumentsJSON: "{\"paths\": [\"a.swift\"]}", resultJSON: "{\"ok\": true}", isError: false)
-        tracker.record(toolName: "git_add", argumentsJSON: "{\"paths\": [\"a.swift\"]}", resultJSON: "{\"ok\": true}", isError: false)
-        tracker.record(toolName: "git_add", argumentsJSON: "{\"paths\": [\"a.swift\"]}", resultJSON: "{\"ok\": true}", isError: false)
         tracker.record(toolName: "read_file", argumentsJSON: "{}", resultJSON: "{\"ok\": true}", isError: false)
+        tracker.record(toolName: "git_add", argumentsJSON: "{\"paths\": [\"a.swift\"]}", resultJSON: "{\"ok\": true}", isError: false)
+        tracker.record(toolName: "git_add", argumentsJSON: "{\"paths\": [\"a.swift\"]}", resultJSON: "{\"ok\": true}", isError: false)
+        tracker.record(toolName: "git_add", argumentsJSON: "{\"paths\": [\"a.swift\"]}", resultJSON: "{\"ok\": true}", isError: false)
+        tracker.record(toolName: "git_add", argumentsJSON: "{\"paths\": [\"a.swift\"]}", resultJSON: "{\"ok\": true}", isError: false)
 
         let loop = ToolCallLoopDetector.detectLoopPattern(in: tracker.recentCalls(limit: 6))
 
         XCTAssertNotNil(loop, "Should detect git_add being called repeatedly")
-        if case .repetitiveTool(let tool, let count, _) = loop {
+        if case .repetitiveTool(let tool, let count) = loop {
             XCTAssertEqual(tool, "git_add")
             XCTAssertGreaterThanOrEqual(count, 4)
         } else {
@@ -374,25 +369,33 @@ final class ToolCallTrackerTests: XCTestCase {
     }
 
     func testLoopDetectionMessageIsActionable() {
-        // Verify loop detection messages provide actionable guidance
+        // Verify loop detection messages provide actionable guidance (run at the tail)
         tracker.record(toolName: "write_file", argumentsJSON: "{}", resultJSON: "{\"ok\": true}", isError: false)
-        tracker.record(toolName: "git_add", argumentsJSON: "{}", resultJSON: "{\"ok\": true}", isError: false)
-        tracker.record(toolName: "git_add", argumentsJSON: "{}", resultJSON: "{\"ok\": true}", isError: false)
-        tracker.record(toolName: "git_add", argumentsJSON: "{}", resultJSON: "{\"ok\": true}", isError: false)
-        tracker.record(toolName: "git_add", argumentsJSON: "{}", resultJSON: "{\"ok\": true}", isError: false)
         tracker.record(toolName: "read_file", argumentsJSON: "{}", resultJSON: "{\"ok\": true}", isError: false)
+        tracker.record(toolName: "git_add", argumentsJSON: "{}", resultJSON: "{\"ok\": true}", isError: false)
+        tracker.record(toolName: "git_add", argumentsJSON: "{}", resultJSON: "{\"ok\": true}", isError: false)
+        tracker.record(toolName: "git_add", argumentsJSON: "{}", resultJSON: "{\"ok\": true}", isError: false)
+        tracker.record(toolName: "git_add", argumentsJSON: "{}", resultJSON: "{\"ok\": true}", isError: false)
 
         let loop = ToolCallLoopDetector.detectLoopPattern(in: tracker.recentCalls(limit: 6))
 
         XCTAssertNotNil(loop)
-        let message = loop?.message ?? ""
+        // Advice now lives in `loopWarningMessage`, the only layer that knows which tools
+        // the role actually holds; the detection value carries the fact alone.
+        let message = loop.map {
+            LLMExecutionService.loopWarningMessage(
+                loopDetection: $0, allowedToolNames: [ToolNames.gitAdd, ToolNames.editFile])
+        } ?? ""
         // Message should:
         // 1. Identify the tool
         XCTAssertTrue(message.contains("git_add"), "Message should identify the tool")
         // 2. Show count
         XCTAssertTrue(message.contains("4") || message.contains("5") || message.contains("6"), "Message should show count")
         // 3. Suggest trying a different approach
-        XCTAssertTrue(message.lowercased().contains("different") || message.lowercased().contains("try"), "Message should suggest alternative")
+        XCTAssertTrue(
+            message.lowercased().contains("change the arguments")
+                || message.lowercased().contains("move on"),
+            "Message should suggest an alternative; got: \(message)")
     }
 
     // MARK: - Additional Conversation Log Issues (Round 2)
@@ -476,7 +479,7 @@ final class ToolCallTrackerTests: XCTestCase {
         // Should not detect loop for update_scratchpad
         // (But note: current implementation skips duplicate scratchpad content)
         if let detected = loop {
-            if case .repetitiveTool(let tool, _, _) = detected {
+            if case .repetitiveTool(let tool, _) = detected {
                 XCTAssertNotEqual(tool, "update_scratchpad", "Should not flag update_scratchpad as loop")
             }
         }
@@ -510,5 +513,96 @@ final class ToolCallTrackerTests: XCTestCase {
         let calls = tracker.recentCalls(limit: 10)
         let scratchpadCalls = calls.filter { $0.toolName == "update_scratchpad" }
         XCTAssertEqual(scratchpadCalls.count, 1, "Duplicate scratchpad content should be skipped")
+    }
+
+    // MARK: - Information epoch
+
+    private func recordRead(_ path: String) {
+        tracker.record(
+            toolName: ToolNames.readFile,
+            argumentsJSON: "{\"path\":\"\(path)\"}",
+            resultJSON: "{\"ok\":true}",
+            isError: false)
+    }
+
+    /// The marker rides the next call the model makes, because that is the first
+    /// decision taken with the new information in hand.
+    func testNoteExternalInformation_flagsTheNextRecordedCall() {
+        recordRead("before.swift")
+        tracker.noteExternalInformationArrived()
+        recordRead("after.swift")
+
+        let calls = tracker.recentCalls(limit: 10)
+        XCTAssertEqual(calls.count, 2)
+        XCTAssertEqual(calls[0].informationEpoch, 0)
+        XCTAssertEqual(calls[1].informationEpoch, 1)
+    }
+
+    /// The epoch is a MODE the tracker stays in, not a mark on one call: every call made
+    /// after an arrival carries the same ordinal. That is what lets a run form inside an
+    /// epoch — the detector breaks only where the ordinal CHANGES, so if the arrival
+    /// marked one call and the rest reverted, three post-arrival repeats would be split
+    /// into 1 + 2 and never reach the threshold.
+    ///
+    /// RED: stamp the epoch on only the first call after an arrival → this fails on the
+    /// second, and a genuine post-arrival spin stops firing.
+    func testNoteExternalInformation_stampsEveryLaterCall() {
+        tracker.noteExternalInformationArrived()
+        recordRead("a.swift")
+        recordRead("b.swift")
+
+        let calls = tracker.recentCalls(limit: 10)
+        XCTAssertEqual(calls[0].informationEpoch, 1)
+        XCTAssertEqual(calls[1].informationEpoch, 1,
+                       "the epoch persists — a run must be able to form inside it")
+    }
+
+    /// Two arrivals with nothing between them are two epochs. Nothing counts epochs, so
+    /// there is no idempotence to preserve; what matters is that calls on either side of
+    /// either arrival compare unequal.
+    func testNoteExternalInformation_consecutiveArrivals_advanceTwice() {
+        recordRead("before.swift")
+        tracker.noteExternalInformationArrived()
+        tracker.noteExternalInformationArrived()
+        recordRead("after.swift")
+
+        let calls = tracker.recentCalls(limit: 10)
+        XCTAssertEqual(calls[0].informationEpoch, 0)
+        XCTAssertEqual(calls[1].informationEpoch, 2)
+    }
+
+    /// `record` drops a byte-identical scratchpad rewrite BEFORE appending. That path
+    /// must not consume the pending marker — recording what was just learned is the
+    /// single likeliest move right after an event, and losing the epoch there would
+    /// restore the very false positive this mechanism exists to remove.
+    ///
+    /// RED: move the `pendingExternalInformation = false` reset above `record`'s
+    /// scratchpad early return → this test goes red.
+    func testNoteExternalInformation_survivesADroppedScratchpadDuplicate() {
+        let content = "same plan"
+        tracker.record(
+            toolName: ToolNames.updateScratchpad,
+            argumentsJSON: "{\"content\":\"\(content)\"}",
+            resultJSON: "{\"ok\":true}",
+            isError: false)
+        tracker.noteExternalInformationArrived()
+        tracker.record(  // dropped: byte-identical content
+            toolName: ToolNames.updateScratchpad,
+            argumentsJSON: "{\"content\":\"\(content)\"}",
+            resultJSON: "{\"ok\":true}",
+            isError: false)
+        recordRead("after.swift")
+
+        let calls = tracker.recentCalls(limit: 10)
+        XCTAssertEqual(calls.count, 2, "the duplicate scratchpad write is still dropped")
+        XCTAssertEqual(calls.last?.informationEpoch, 1,
+                       "a dropped call must not hide the epoch from the calls that follow")
+    }
+
+    /// Without the signal nothing is flagged — the pre-boundary behaviour is unchanged.
+    func testRecord_withoutExternalInformation_flagsNothing() {
+        recordRead("a.swift")
+        recordRead("b.swift")
+        XCTAssertTrue(tracker.recentCalls(limit: 10).allSatisfy { $0.informationEpoch == 0 })
     }
 }

@@ -22,7 +22,7 @@ nonisolated struct VocabVectorIndexBuilder {
 
     // MARK: - Types
 
-    struct BuildProgress: Sendable, Equatable {
+    nonisolated struct BuildProgress: Sendable, Equatable {
         /// Tokens successfully embedded so far.
         let processed: Int
         /// Tokens queued for embedding this run (== count of addedTokens).
@@ -214,9 +214,21 @@ nonisolated struct VocabVectorIndexBuilder {
         var newVectors: [Float] = []
         newVectors.reserveCapacity(allTokens.count * dims)
         var newTokenMap: [String: Int] = [:]
+        // Tokens with no vector AT THIS RUN'S WIDTH. Re-queued as failures so
+        // the next build sees them in `added` and re-embeds them — see the
+        // `else` arm below for why they exist at all.
+        var droppedTokens: [String] = []
+        // Row indices must be compact (`Meta` validates the bijection onto
+        // `0..<count`), so the counter advances only on a token that is
+        // actually placed — `allTokens.enumerated()` would leave holes as soon
+        // as one token is dropped.
+        var row = 0
+        // New tokens that actually made it into the map. NOT `embeddings.count`:
+        // an embedding of the wrong width is dropped below, and counting it as
+        // "added" would report work that did not land.
+        var placedNewCount = 0
 
-        for (row, token) in allTokens.enumerated() {
-            newTokenMap[token] = row
+        for token in allTokens {
             // Branch by SET membership, not by "does token exist in current's
             // tokenMap". When `force: true`, `reused` is empty and every
             // target token must consume its fresh embedding — checking
@@ -231,16 +243,30 @@ nonisolated struct VocabVectorIndexBuilder {
                 newVectors.append(contentsOf: current.vectors[start..<end])
             } else if let vec = embeddings[token], vec.count == dims {
                 newVectors.append(contentsOf: vec)
+                placedNewCount += 1
             } else {
-                // Unreachable by construction (every token in allTokens is
-                // either in `reused` with a valid current vector, or in
-                // `embeddings` with dims that match the first embed result
-                // by definition). Fail loud rather than silently corrupt.
-                preconditionFailure(
-                    "Builder contract violated: token '\(token)' is in allTokens but has no vector source"
-                )
+                // A token with no vector at `dims`. This used to be a
+                // `preconditionFailure` labelled "unreachable by construction",
+                // and it is not: the diff keys on `meta.modelName` alone, so a
+                // server that changes its embedding WIDTH under an unchanged
+                // model name (Matryoshka truncation, a re-quantised model)
+                // leaves every REUSED token at the old width while `dims` is the
+                // new one — the reused arm's `current.meta.dims == dims` fails
+                // and `embeddings` has nothing for a reused token. Trapping
+                // there killed the app, and killed it again on the next launch,
+                // because the on-disk index still carried the old width.
+                //
+                // Dropping the token instead is recoverable AND self-healing: it
+                // is absent from `newTokenMap`, so the next build classifies it
+                // as `added` and re-embeds it at the current width. One extra
+                // build converges.
+                droppedTokens.append(token)
+                continue
             }
+            newTokenMap[token] = row
+            row += 1
         }
+        failedTokens.append(contentsOf: droppedTokens)
 
         let meta = try VocabVectorIndex.Meta(
             generatedAt: Date(),
@@ -255,7 +281,7 @@ nonisolated struct VocabVectorIndexBuilder {
         return BuildResult(
             index: index,
             needsPersist: true,
-            addedCount: embeddings.count,
+            addedCount: placedNewCount,
             removedCount: goneCount,
             failedCount: failedTokens.count
         )

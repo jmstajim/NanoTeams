@@ -90,8 +90,22 @@ nonisolated struct CreateArtifactTool: ToolHandler {
 
     func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
+            // NOT the shared `requiredNonEmptyString` helper, deliberately — see the
+            // rejection branch below, which is where an empty name is handled.
             let name = try requiredString(args, "name")
-            let content = resolveContentString(args, excludeKeys: ["name"]) ?? ""
+            // BOTH structural keys are excluded, or step 3 of `resolveContentString`
+            // ("if exactly one non-excluded string value remains, use it") adopts
+            // `format` as the body: `{"name": X, "format": "markdown"}` produced an
+            // artifact whose entire content was the word `markdown`, `ok: true`, and an
+            // auto-completed step — the empty-content guard below never saw an empty
+            // string. `format` is not in `nonContentKeys`, and it is the companion key
+            // the worked example in every producing role's system prompt suggests
+            // (`NativeLMStudioClient+RequestBuilder`), beside a `content` that is a
+            // literal `"..."` placeholder — so "copied the example, dropped the
+            // placeholder" lands exactly here. The same exclusion also rescues a REAL
+            // body sent under an alias (`{"name": X, "markdown": "# body", "format": …}`),
+            // which step 3 previously discarded as ambiguous.
+            let content = resolveContentString(args, excludeKeys: ["name", "format"]) ?? ""
 
             // Defense-in-depth on top of `GeneratedTeamBuilder.stripFileShapedArtifactNames`.
             // The team-level cleanup catches file-shaped names in `produces_artifacts`
@@ -125,11 +139,42 @@ nonisolated struct CreateArtifactTool: ToolHandler {
                         message: "create_artifact is not authorized for this role (no declared deliverables). Remove the call, or add producesArtifacts to the role definition."
                     )
                 }
+                // `isValidArtifactName` rejects two different things, and for a long
+                // time both got the filename message — so an EMPTY name was told it
+                // "looks like a filename", sending the model to strip an extension it
+                // never wrote. The diagnosis splits here; the recovery data does not.
+                // That second half is the part a naive fix loses: the old message was
+                // wrong about the cause and RIGHT about the cure, because it
+                // enumerated the role's declared deliverables — which is exactly what
+                // the model that submitted no name at all is least able to supply.
                 let list = context.expectedArtifacts.map { "'\($0)'" }.joined(separator: ", ")
+                let diagnosis = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? "Argument 'name' must not be empty."
+                    : "Artifact name '\(name)' looks like a filename."
                 return makeErrorResult(
                     toolName: Self.name, args: args,
                     code: .invalidArgs,
-                    message: "Artifact name '\(name)' looks like a filename. Your role is expected to produce: [\(list)]. Use one of those names."
+                    message: "\(diagnosis) Your role is expected to produce: [\(list)]. Use one of those names."
+                )
+            }
+
+            // `content` is `required` in the schema, and the model still omits it. Until now
+            // that resolved to `""` and returned `ok:true`: a zero-byte artifact was written
+            // to disk, `checkArtifactCompleteness` counted it as the role's deliverable, and
+            // the step AUTO-COMPLETED on it. So the pipeline advanced, and the next role
+            // received an empty required artifact with no signal that anything had gone
+            // wrong — the failure surfaces, if at all, as a downstream role inventing the
+            // content it was supposed to be handed. Advertising a parameter as required and
+            // then accepting its absence is the mirror of the advertise-then-reject rule.
+            //
+            // Whitespace-only is the same hole behind a different byte: a body of "\n" is not
+            // a deliverable, and a role that has genuinely produced nothing must say so
+            // through `ask_supervisor`, not through a blank artifact.
+            if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return makeErrorResult(
+                    toolName: Self.name, args: args,
+                    code: .invalidArgs,
+                    message: "Artifact '\(name)' has no content. Pass the full deliverable body in the `content` parameter — it is what the next role receives."
                 )
             }
 

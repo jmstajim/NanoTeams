@@ -36,13 +36,14 @@ final class LLMQueuedMessageInjectionTests: XCTestCase {
             ChatMessage(role: .assistant, content: "prior"),
         ]
 
-        await service.injectQueuedSupervisorMessage(
+        let delivered = await service.injectQueuedSupervisorMessage(
             stepID: "pm",
             taskID: 1,
             roleID: "pm",
             conversationMessages: &conversation
         )
 
+        XCTAssertTrue(delivered, "Delivery is the caller's only signal that external information arrived")
         XCTAssertEqual(conversation.count, 4, "A single user turn should be appended")
         XCTAssertEqual(conversation.last?.role, .user)
         XCTAssertEqual(conversation.last?.content, "Supervisor: доложи статус")
@@ -59,13 +60,14 @@ final class LLMQueuedMessageInjectionTests: XCTestCase {
             ChatMessage(role: .user, content: "initial"),
         ]
 
-        await service.injectQueuedSupervisorMessage(
+        let delivered = await service.injectQueuedSupervisorMessage(
             stepID: "pm",
             taskID: 1,
             roleID: "pm", // fresh step (e.g. after restartRole)
             conversationMessages: &conversation
         )
 
+        XCTAssertTrue(delivered)
         XCTAssertEqual(conversation.last?.content, "Supervisor: hi",
                        "A fresh step's first iteration accepts a queued message — the restartRole case")
     }
@@ -78,13 +80,14 @@ final class LLMQueuedMessageInjectionTests: XCTestCase {
             ChatMessage(role: .assistant, content: "prior")
         ]
 
-        await service.injectQueuedSupervisorMessage(
+        let delivered = await service.injectQueuedSupervisorMessage(
             stepID: "pm",
             taskID: 1,
             roleID: "pm",
             conversationMessages: &conversation
         )
 
+        XCTAssertTrue(delivered)
         XCTAssertEqual(conversation.last?.content, "Supervisor: team-wide note")
     }
 
@@ -97,13 +100,14 @@ final class LLMQueuedMessageInjectionTests: XCTestCase {
             ChatMessage(role: .assistant, content: "prior")
         ]
 
-        await service.injectQueuedSupervisorMessage(
+        let delivered = await service.injectQueuedSupervisorMessage(
             stepID: "pm",
             taskID: 1,
             roleID: "pm",
             conversationMessages: &conversation
         )
 
+        XCTAssertTrue(delivered)
         XCTAssertEqual(conversation.last?.content, "Supervisor: PM specific",
                        "Role-targeted message pops before untargeted even when untargeted is older")
         XCTAssertEqual(delegate.scriptedQueuedMessages.count, 1)
@@ -121,13 +125,14 @@ final class LLMQueuedMessageInjectionTests: XCTestCase {
             ChatMessage(role: .assistant, content: "prior")
         ]
 
-        await service.injectQueuedSupervisorMessage(
+        let delivered = await service.injectQueuedSupervisorMessage(
             stepID: "pm",
             taskID: 1,
             roleID: "pm",
             conversationMessages: &conversation
         )
 
+        XCTAssertFalse(delivered, "No match must NOT open an information epoch")
         XCTAssertEqual(conversation.count, 1, "Nothing appended when no match")
         XCTAssertFalse(delegate.scriptedQueuedMessages.isEmpty,
                        "Message targeted at another role stays queued")
@@ -138,13 +143,14 @@ final class LLMQueuedMessageInjectionTests: XCTestCase {
             ChatMessage(role: .assistant, content: "prior")
         ]
 
-        await service.injectQueuedSupervisorMessage(
+        let delivered = await service.injectQueuedSupervisorMessage(
             stepID: "pm",
             taskID: 1,
             roleID: "pm",
             conversationMessages: &conversation
         )
 
+        XCTAssertFalse(delivered, "An empty queue must NOT open an information epoch")
         XCTAssertEqual(conversation.count, 1)
     }
 
@@ -165,13 +171,14 @@ final class LLMQueuedMessageInjectionTests: XCTestCase {
             ChatMessage(role: .assistant, content: "drift"),
         ]
 
-        await service.injectQueuedSupervisorMessage(
+        let delivered = await service.injectQueuedSupervisorMessage(
             stepID: "pm",
             taskID: 1,
             roleID: "pm",
             conversationMessages: &conversation
         )
 
+        XCTAssertTrue(delivered)
         let roles = conversation.map(\.role)
         XCTAssertEqual(roles, [.system, .user, .assistant, .user, .assistant, .user])
         XCTAssertEqual(conversation.last?.content, "Supervisor: go")

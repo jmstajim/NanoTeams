@@ -162,7 +162,7 @@ final class OllamaChatStreamParserTests: XCTestCase {
     }
 
     func testLineWithoutMessageKey_notDone_noEvents() {
-        XCTAssertEqual(parser.parse(line: #"{"model":"m","created_at":"2026-07-23T10:00:00Z"}"#), [])
+        XCTAssertEqual(parser.parse(line: #"{"model":"m","created_at":"2026-07-23T22:00:00Z"}"#), [])
     }
 
     func testPromptEvalCountOnly_usageWithZeroOutput() {

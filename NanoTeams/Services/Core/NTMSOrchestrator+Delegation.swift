@@ -123,6 +123,7 @@ extension NTMSOrchestrator {
     func ensureDelegationDescendantsLoaded(of taskID: Int?) async {
         guard let taskID, let index = snapshot?.tasksIndex else { return }
         let baselineBanner = lastErrorMessage
+        let baselineCount = errorSurfaceCount
         var failedIDs: [Int] = []
         for childID in index.descendantIDs(of: taskID) {
             await ensureTaskLoaded(childID)
@@ -135,10 +136,15 @@ extension NTMSOrchestrator {
                 failedIDs.append(childID)
             }
         }
-        // Restore the baseline banner regardless of outcome so a per-iteration
-        // overwrite from `ensureTaskLoaded` doesn't leak the last error in
-        // the success-without-failures case.
-        lastErrorMessage = baselineBanner
+        // Restore the baseline banner so a per-iteration overwrite from
+        // `ensureTaskLoaded` doesn't leak the last error in the
+        // success-without-failures case — but only when the loop actually wrote.
+        // An UNCONDITIONAL assignment re-fires `lastErrorMessage`'s `didSet` on every
+        // clean run, fabricating an `errorSurfaceCount` bump for callers that read the
+        // counter to mean "something failed", and re-showing a banner a render had
+        // already consumed. The counter is the exact test for "did the loop write":
+        // comparing the VALUES cannot tell a clean run from a consumed slot.
+        if errorSurfaceCount != baselineCount { lastErrorMessage = baselineBanner }
         guard !failedIDs.isEmpty else { return }
         let list = failedIDs.map { "#\($0)" }.joined(separator: ", ")
         let plural = failedIDs.count == 1 ? "descendant" : "descendants"

@@ -403,4 +403,28 @@ final class ToolCallParsingHelpersTests: XCTestCase {
         XCTAssertEqual(result?.argumentsJSON, "",
                        "Empty synthesis must fall back to the empty-args convention")
     }
+    // MARK: - normalizeArgumentsJSON (Any? overload, via parseToolCallFromJSON)
+
+    /// A model that emits `"arguments"` as an ARRAY rather than an object. Small models do
+    /// this — the handler will reject it, but it has to reject a VALID JSON payload it can
+    /// quote back, not Swift's `String(describing:)` rendering of a Foundation array.
+    ///
+    /// The distinction is invisible for `["a.txt"]` (both spellings agree) and total for a
+    /// nested value: `String(describing:)` prints Swift syntax (unquoted keys,
+    /// `Optional(...)`), which is not JSON, and it rides straight into `wireTranscript` and
+    /// the stable prefix from there.
+    ///
+    /// RED: delete the `[Any]` branch → the nested case comes back as Swift's description
+    /// and `JSONSerialization` refuses to parse it.
+    func testParseToolCall_argumentsAsArray_serializesAsJSON() throws {
+        let call = try XCTUnwrap(ToolCallParsingHelpers.parseToolCallFromJSON(
+            #"{"name":"read_file","arguments":[{"path":"a.txt"},"b.txt"]}"#))
+
+        XCTAssertEqual(call.name, "read_file")
+        let parsed = try JSONSerialization.jsonObject(with: Data(call.argumentsJSON.utf8))
+        let array = try XCTUnwrap(parsed as? [Any], "got: \(call.argumentsJSON)")
+        XCTAssertEqual(array.count, 2)
+        XCTAssertEqual((array[0] as? [String: Any])?["path"] as? String, "a.txt")
+        XCTAssertEqual(array[1] as? String, "b.txt")
+    }
 }

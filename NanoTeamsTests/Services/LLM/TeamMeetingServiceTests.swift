@@ -704,11 +704,8 @@ final class TeamMeetingServiceTests: XCTestCase {
 
         let limits = TeamLimits(maxMeetingTurns: 20)
         let context = TeamMeetingService.MeetingContext(
-            topic: "Test",
             initiatedBy: .softwareEngineer,
             participants: [.uxDesigner, .softwareEngineer],
-            additionalContext: nil,
-            task: NTMSTask(id: 0, title: "Test", supervisorTask: "Goal"),
             availableArtifacts: [],
             artifactReader: { _ in nil },
             team: Team.default,
@@ -742,11 +739,8 @@ final class TeamMeetingServiceTests: XCTestCase {
 
         let limits = TeamLimits(maxMeetingTurns: 20)
         let context = TeamMeetingService.MeetingContext(
-            topic: "Test",
             initiatedBy: .softwareEngineer,
             participants: [.uxDesigner, .softwareEngineer],
-            additionalContext: nil,
-            task: NTMSTask(id: 0, title: "Test", supervisorTask: "Goal"),
             availableArtifacts: [],
             artifactReader: { _ in nil },
             team: Team.default,
@@ -780,26 +774,4 @@ final class TeamMeetingServiceTests: XCTestCase {
         XCTAssertEqual(TeamMessageType.determine(from: "The system runs well"), .discussion)
     }
 
-    // MARK: - MeetingTurnResult Tests
-
-    func testMeetingTurnResult_StructFields() {
-        let meeting = createBasicMeeting()
-        let streamResult = TeamMeetingService.MeetingStreamResult(
-            content: "test",
-            thinking: "thinking",
-            resolvedToolCalls: []
-        )
-
-        let turnResult = TeamMeetingService.MeetingTurnResult(
-            meeting: meeting,
-            shouldContinue: true,
-            speaker: .uxDesigner,
-            streamResult: streamResult
-        )
-
-        XCTAssertTrue(turnResult.shouldContinue)
-        XCTAssertEqual(turnResult.speaker, .uxDesigner)
-        XCTAssertEqual(turnResult.streamResult.content, "test")
-        XCTAssertEqual(turnResult.streamResult.thinking, "thinking")
-    }
 }

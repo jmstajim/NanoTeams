@@ -37,6 +37,48 @@ final class AutovisorGoalLintCopyTests: XCTestCase {
                       "a bare limitation with no resolution is the defect this sentence fixes")
     }
 
+    /// The copy is HAND-WRITTEN prose about a DERIVED toolset, so nothing corrects
+    /// it when the toolset moves — and in 1.8.4 it did: admitting the Xcode runners
+    /// left this sentence telling users the manager "has no shell, write or build
+    /// tools" while its own prompt instructed it to build. Every other test in this
+    /// file compares the copy to itself, which is exactly why the whole suite stayed
+    /// green through that.
+    ///
+    /// So: derive the PREMISES from `managerDefaultToolIDs` and assert the prose
+    /// against them. If a premise ever flips, it fails HERE, naming the sentence to
+    /// rewrite, instead of shipping a confident falsehood in the first-run UI.
+    /// Checks POLARITY, not presence. The first cut of this test asserted only
+    /// `copy.contains("build")` and passed against the very sentence it was written
+    /// to reject — "it has no shell, write or **build** tools" contains the word
+    /// while asserting the opposite. So split the sentence at its own hinge and
+    /// require each capability to sit on the correct side of it.
+    func testCapabilityCopy_agreesWithTheManagersActualToolset() {
+        let has = Set(AutovisorConstants.managerDefaultToolIDs)
+        let copy = AutovisorGoalLintCopy.capability.lowercased()
+
+        let halves = copy.components(separatedBy: "it has no")
+        guard halves.count == 2 else {
+            return XCTFail("`capability` must state absences as \"it has no …\" — that hinge is "
+                           + "what lets this test tell a capability from a denial:\n\(copy)")
+        }
+        let can = halves[0], cannot = halves[1]
+
+        XCTAssertTrue(has.contains(ToolNames.runXcodebuild),
+                      "premise: the manager CAN build — if this flips, rewrite `capability`")
+        XCTAssertTrue(can.contains("build"),
+                      "the manager builds, so building belongs on the CAN side of the sentence")
+        XCTAssertFalse(cannot.contains("build"),
+                       "…and must not be listed among the things it lacks")
+
+        XCTAssertFalse(has.contains(ToolNames.bash),
+                       "premise: the manager has NO shell — if this flips, rewrite `capability`")
+        XCTAssertTrue(cannot.contains("shell"), "a real gap the user might ask for must be named")
+
+        XCTAssertFalse(has.contains(ToolNames.writeFile),
+                       "premise: the manager cannot write — if this flips, rewrite `capability`")
+        XCTAssertTrue(cannot.contains("write"), "…same for writes")
+    }
+
     func testNoFindings_usesTheNeutralSymbol() {
         XCTAssertEqual(AutovisorGoalLintCopy.symbolName(for: []), "info.circle")
     }

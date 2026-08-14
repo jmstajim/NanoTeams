@@ -41,13 +41,26 @@ nonisolated final class PlaceholderAttachment: NSTextAttachment {
     // restart). Acceptable for chips (small surface, rare appearance flips).
     nonisolated(unsafe) private static let imageCache = NSCache<NSString, NSImage>()
 
+    /// What the rendered chip actually depends on. Deliberately NOT `key`: two slots naming the
+    /// same placeholder with the same label and category render identical pixels, and paying for
+    /// that render twice is the cost this cache exists to avoid.
+    ///
+    /// Extracted so the contract is pinnable purely. The test that used to state it asserted that
+    /// two lookups return the SAME `NSImage` instance — which asks `NSCache` for a guarantee it
+    /// does not make: eviction is legal at any moment, and under a coverage-instrumented parallel
+    /// run it happens, so the assertion failed intermittently and cost a five-minute measurement
+    /// each time. The key is the part that is actually ours to get right.
+    static func imageCacheKey(label: String, category: String) -> NSString {
+        "\(label)|\(category)" as NSString
+    }
+
     init(key: String, label: String, category: String) {
         self.key = key
         self.label = label
         self.category = category
         super.init(data: nil, ofType: nil)
 
-        let cacheKey = "\(label)|\(category)" as NSString
+        let cacheKey = Self.imageCacheKey(label: label, category: category)
         let chipImage: NSImage
         if let cached = Self.imageCache.object(forKey: cacheKey) {
             chipImage = cached

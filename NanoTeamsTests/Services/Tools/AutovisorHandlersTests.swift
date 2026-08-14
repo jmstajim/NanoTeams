@@ -315,7 +315,7 @@ final class AutovisorHandlersTests: XCTestCase {
     }
 
     func testBuildSchema_marksChatModeTeams() async throws {
-        let schema = CreateManagedTaskTool.buildSchema(allTeams: [chatProbeTeam()], allowGenerated: false)
+        let schema = CreateManagedTaskTool.buildSchema(allTeams: [chatProbeTeam()], policy: AutovisorTeamPolicy(allowGeneration: false))
         XCTAssertTrue(schema.description.contains("chat-probe"),
                       "a chat team is still listed in the catalog")
         XCTAssertTrue(schema.description.contains("[chat"),
@@ -323,7 +323,7 @@ final class AutovisorHandlersTests: XCTestCase {
     }
 
     func testBuildSchema_pipelineTeam_isNotMarkedChat() async throws {
-        let schema = CreateManagedTaskTool.buildSchema(allTeams: [probeTeam()], allowGenerated: false)
+        let schema = CreateManagedTaskTool.buildSchema(allTeams: [probeTeam()], policy: AutovisorTeamPolicy(allowGeneration: false))
         XCTAssertTrue(schema.description.contains("catalog-probe"))
         XCTAssertFalse(schema.description.contains("[chat"),
                        "a pipeline team's catalog line must NOT carry the [chat] mark")
@@ -333,13 +333,13 @@ final class AutovisorHandlersTests: XCTestCase {
         // Pins the "mark, don't filter" decision: chat teams are marked but remain
         // selectable (unlike delegate_to_team, which excludes them) — the Autovisor can
         // close a chat task, so it may legitimately open one.
-        let schema = CreateManagedTaskTool.buildSchema(allTeams: [chatProbeTeam()], allowGenerated: false)
+        let schema = CreateManagedTaskTool.buildSchema(allTeams: [chatProbeTeam()], policy: AutovisorTeamPolicy(allowGeneration: false))
         XCTAssertTrue(schema.description.contains("`chat-probe`"),
                       "chat teams must appear as a selectable catalog bullet")
     }
 
     func testBuildSchema_allowGeneratedTrue_advertisesGeneratedSentinel() async throws {
-        let schema = CreateManagedTaskTool.buildSchema(allTeams: [probeTeam()], allowGenerated: true)
+        let schema = CreateManagedTaskTool.buildSchema(allTeams: [probeTeam()], policy: AutovisorTeamPolicy(allowGeneration: true))
         XCTAssertTrue(schema.description.contains("`\(DelegationConstants.generatedTeamSentinel)`"),
                       "the catalog must carry the `generated` bullet when allowed")
         let teamIDDesc = schema.parameters.properties?["team_id"]?.description ?? ""
@@ -348,7 +348,7 @@ final class AutovisorHandlersTests: XCTestCase {
     }
 
     func testBuildSchema_allowGeneratedFalse_hidesGeneratedSentinel() async throws {
-        let schema = CreateManagedTaskTool.buildSchema(allTeams: [probeTeam()], allowGenerated: false)
+        let schema = CreateManagedTaskTool.buildSchema(allTeams: [probeTeam()], policy: AutovisorTeamPolicy(allowGeneration: false))
         XCTAssertFalse(schema.description.contains("generated"),
                        "the catalog must NOT mention generation when disallowed")
         XCTAssertTrue(schema.description.contains("catalog-probe"),
@@ -372,7 +372,7 @@ final class AutovisorHandlersTests: XCTestCase {
     /// active team (documented in the team_id description).
     func testBuildSchema_hiddenOnlyTeams_disabled_emitsNoBullets() async throws {
         let hidden = TeamTemplateFactory.autovisor()   // isHiddenFromPickers == true
-        let schema = CreateManagedTaskTool.buildSchema(allTeams: [hidden], allowGenerated: false)
+        let schema = CreateManagedTaskTool.buildSchema(allTeams: [hidden], policy: AutovisorTeamPolicy(allowGeneration: false))
         XCTAssertTrue(schema.description.contains("Available teams:"),
                       "the catalog header is always present")
         XCTAssertFalse(schema.description.contains("- `"),
@@ -384,7 +384,7 @@ final class AutovisorHandlersTests: XCTestCase {
     /// team is still filtered out).
     func testBuildSchema_hiddenOnlyTeams_enabled_showsOnlyGenerated() async throws {
         let hidden = TeamTemplateFactory.autovisor()
-        let schema = CreateManagedTaskTool.buildSchema(allTeams: [hidden], allowGenerated: true)
+        let schema = CreateManagedTaskTool.buildSchema(allTeams: [hidden], policy: AutovisorTeamPolicy(allowGeneration: true))
         XCTAssertTrue(schema.description.contains("`\(DelegationConstants.generatedTeamSentinel)`"))
         XCTAssertFalse(schema.description.contains(hidden.id),
                        "a hidden team must not appear even when generation is on")
@@ -393,7 +393,7 @@ final class AutovisorHandlersTests: XCTestCase {
     /// Empty catalog + generation off: still a valid schema — required params intact,
     /// team_id present without a generation mention.
     func testBuildSchema_emptyTeams_disabled_isValidSchema() async throws {
-        let schema = CreateManagedTaskTool.buildSchema(allTeams: [], allowGenerated: false)
+        let schema = CreateManagedTaskTool.buildSchema(allTeams: [], policy: AutovisorTeamPolicy(allowGeneration: false))
         XCTAssertEqual(schema.parameters.required ?? [], ["title", "brief"],
                        "required params must be preserved regardless of the flag")
         XCTAssertNotNil(schema.parameters.properties?["team_id"],

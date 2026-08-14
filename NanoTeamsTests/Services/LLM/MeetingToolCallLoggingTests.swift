@@ -68,10 +68,8 @@ final class MeetingToolCallLoggingTests: XCTestCase {
         let initial = TeamMeetingService.MeetingStreamResult(
             content: "", thinking: "", resolvedToolCalls: emitted)
         let task = NTMSTask(id: 7, title: "T", supervisorTask: "g", runs: [Run(id: 0, steps: [])])
-        let context = TeamMeetingService.MeetingContext(
-            topic: "t", initiatedBy: .softwareEngineer,
-            participants: [.softwareEngineer, .productManager],
-            additionalContext: nil, task: task, availableArtifacts: [],
+        let context = TeamMeetingService.MeetingContext( initiatedBy: .softwareEngineer,
+            participants: [.softwareEngineer, .productManager], availableArtifacts: [],
             artifactReader: { _ in nil }, team: nil,
             coordinatorRole: .softwareEngineer, limits: TeamLimits())
         let toolContext = ToolExecutionContext(

@@ -87,10 +87,16 @@ final class PreflightDecisionTests: XCTestCase {
         )
         let messages = await collector.messages
         XCTAssertEqual(messages.count, 1)
-        XCTAssertTrue(
-            messages.first?.contains("Authentication required") == true,
-            "Auth-required message must be posted; got: \(messages.first ?? "")"
-        )
+        // This message is appended to the step's conversation as a `.system` turn, so it is
+        // MODEL-read (the degraded-replay path keeps a nil-context system message). It must
+        // therefore name the condition and who can fix it, not the Settings pane a human
+        // would click — that is what `modelFacingMessage` exists for. The human-facing
+        // renderer (`message(forStatus:body:)`) is unchanged and still says
+        // "add your API token in Settings → LLM".
+        let message = try! XCTUnwrap(messages.first)
+        XCTAssertTrue(message.contains("401"), "must name the status; got: \(message)")
+        XCTAssertTrue(message.contains("credentials"), "must name the blocker; got: \(message)")
+        XCTAssertFalse(message.contains("Settings"), "the model cannot open a Settings pane; got: \(message)")
     }
 
     func testPreflight_403_keepsOverride_andPostsAuthRequiredMessage() async {
@@ -107,7 +113,10 @@ final class PreflightDecisionTests: XCTestCase {
 
         XCTAssertEqual(result.baseURLString, overrideConfig.baseURLString)
         let messages = await collector.messages
-        XCTAssertTrue(messages.first?.contains("Authentication required") == true)
+        let message = try! XCTUnwrap(messages.first)
+        XCTAssertTrue(message.contains("403"))
+        XCTAssertTrue(message.contains("credentials"))
+        XCTAssertFalse(message.contains("Settings"), "the model cannot open a Settings pane")
     }
 
     // MARK: - Other non-2xx ⇒ fall back to global

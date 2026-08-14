@@ -125,4 +125,109 @@ final class AutovisorActionTests: XCTestCase {
         let task = NTMSTask(id: 1, title: "T", supervisorTask: "do", runs: [Run(id: 0, steps: [step])])
         XCTAssertEqual(AutovisorStatus.lastError(for: task), "Role 'pm' failed.")
     }
+
+    // MARK: - AutovisorStatus.acceptRejectionAdvice (remedy at the decision point)
+
+    private func advice(_ status: RoleExecutionStatus?, chat: Bool = false, ready: Bool = false) -> String? {
+        AutovisorStatus.acceptRejectionAdvice(
+            roleStatus: status, isChatModeTask: chat, taskReadyToClose: ready)
+    }
+
+    func testAcceptAdvice_doneInReview_advisesClose() {
+        XCTAssertTrue(advice(.done, ready: true)?.contains("control_task close") == true,
+                      "the incident case: a .done role on a ready-to-close Review task must be steered to close")
+    }
+
+    func testAcceptAdvice_acceptedInReview_advisesClose() {
+        XCTAssertTrue(advice(.accepted, ready: true)?.contains("control_task close") == true,
+                      "an already-accepted role on a ready-to-close Review task is finalized the same way")
+    }
+
+    func testAcceptAdvice_doneOrAcceptedNotReadyToClose_neutral_noCloseMention() {
+        for status in [RoleExecutionStatus.done, .accepted] {
+            let a = advice(status, ready: false)
+            XCTAssertNotNil(a, "\(status) still deserves advice when the task is not closeable")
+            XCTAssertFalse(a?.contains("control_task close") == true,
+                           "\(status) beside working OR gated siblings must NOT be told to close")
+            XCTAssertTrue(a?.contains("task_status") == true,
+                          "\(status) outside ready-to-close points at task_status to see what remains")
+        }
+    }
+
+    func testAcceptAdvice_doneOrAcceptedOnChatTask_advisesChatClose() {
+        for status in [RoleExecutionStatus.done, .accepted] {
+            XCTAssertTrue(advice(status, chat: true)?.contains("control_task close") == true,
+                          "\(status): a chat task's honest exit is close — a chat task never finishes on its own")
+        }
+    }
+
+    func testAcceptAdvice_failed_advisesRestart_neverDelete() {
+        for ready in [false, true] {
+            let a = advice(.failed, ready: ready)
+            XCTAssertTrue(a?.contains("manage_role restart") == true,
+                          "a failed role's remedy is restart, never a forced accept")
+            XCTAssertFalse(a?.contains("delete") == true,
+                           "an error string a small model may obey verbatim must not volunteer the irreversible cascade")
+        }
+    }
+
+    func testAcceptAdvice_working_advisesWaitOrMessageTask() {
+        XCTAssertTrue(advice(.working)?.contains("message_task") == true,
+                      "a live role can be steered, not accepted")
+    }
+
+    func testAcceptAdvice_idleAndReady_adviseNothingProducedYet() {
+        for status in [RoleExecutionStatus.idle, .ready] {
+            XCTAssertTrue(advice(status)?.contains("task_status") == true,
+                          "\(status) has produced nothing to accept — point back at task_status")
+        }
+    }
+
+    func testAcceptAdvice_revisionRequested_advisesRevisionInFlight() {
+        XCTAssertTrue(advice(.revisionRequested)?.contains("revision") == true)
+    }
+
+    func testAcceptAdvice_skipped_advisesRestart_namingTheCascade() {
+        let a = advice(.skipped)
+        XCTAssertTrue(a?.contains("manage_role restart") == true)
+        XCTAssertTrue(a?.contains("downstream") == true,
+                      "restart resets downstream roles — a Review task's accepted work is at stake, so the cost must be stated")
+    }
+
+    func testAcceptAdvice_missingStatusEntry_advisesTaskStatus() {
+        XCTAssertTrue(advice(nil)?.contains("task_status") == true,
+                      "no status entry → the manager needs the per-role view, not a bare refusal")
+    }
+
+    func testAcceptAdvice_needsAcceptance_isNil() {
+        for ready in [false, true] {
+            XCTAssertNil(advice(.needsAcceptance, ready: ready),
+                         ".needsAcceptance routes to .accept — routeAccept never rejects it, so no advice exists")
+        }
+    }
+
+    /// Capability lint through the house lint, NOT a hand-written tool list: the
+    /// derived denylist in `AutovisorGoalLint` is `ToolHandlerRegistry.allTypes` minus
+    /// the manager's real toolset, so a tool added or renamed tomorrow is covered the
+    /// same day — its own doc records that the previous hand-list-in-a-test missed
+    /// 19 of the 25 real gaps. Advising a tool the manager's schema withholds is the
+    /// loopWarningMessage defect class.
+    func testAcceptAdvice_namesOnlyManagerTools() {
+        var checked = 0
+        for status in RoleExecutionStatus.allCases {
+            for chat in [false, true] {
+                for ready in [false, true] {
+                    guard let a = advice(status, chat: chat, ready: ready) else { continue }
+                    checked += 1
+                    let findings = AutovisorGoalLint.scanStrict(a)
+                    XCTAssertTrue(findings.isEmpty,
+                                  "\(status) chat=\(chat) ready=\(ready): advice names tools the manager lacks: \(findings.map(\.token))")
+                }
+            }
+        }
+        // Exactly .needsAcceptance (all four flag combinations) returns nil — a lower
+        // count means an arm of the table stopped producing advice.
+        XCTAssertEqual(checked, RoleExecutionStatus.allCases.count * 4 - 4,
+                       "anti-vacuum: every non-.needsAcceptance arm must produce advice under every flag combination")
+    }
 }

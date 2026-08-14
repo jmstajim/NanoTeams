@@ -25,12 +25,13 @@ nonisolated enum AutovisorConstants {
         ToolNames.waitForEvents,
     ]
 
-    /// Tools the manager MAY use — file + git READ-only, plus image inspection and memory.
+    /// Tools the manager MAY use — file + git READ-only, build/test verification, plus
+    /// image inspection and memory.
     /// The manager is a pure supervisor: it INSPECTS the repo to triage/steer and DELEGATES
     /// all work via `create_managed_task`; it has NO repo-mutation tools (no write_file /
     /// edit_file / delete_file, no git-write). These are the tools offered for toggling in
     /// the role editor; everything outside (mandatory ∪ optional) is hidden (can't be added —
-    /// write/xcode/delegation/meetings/team-creation don't apply to the manager) AND is
+    /// write/delegation/meetings/team-creation don't apply to the manager) AND is
     /// stripped from a stored manager on open by `syncAutovisorTeamToTemplate`.
     /// (`update_scratchpad` writes the manager's MEMORY and `set_work_folder_context` the
     /// shared context — neither touches repo files, so both stay.)
@@ -52,6 +53,16 @@ nonisolated enum AutovisorConstants {
         // computer-use permission layer at call time.
         ToolNames.screenCapture, ToolNames.uiClick, ToolNames.uiType,
         ToolNames.uiKey, ToolNames.uiScroll,
+        // Build + test — VERIFICATION, not implementation. "Does this repo currently
+        // compile / pass?" is a question about the repo's STATE, the same class as a
+        // read, and it is what tells the manager whether to open a fix task at all;
+        // build products land in DerivedData, never in the repo, so the "no
+        // repo-mutation" rule above holds. The prompt's `### Boundaries` names them
+        // next to the read tools and immediately re-states the line they must not
+        // cross: verify, then DELEGATE the fix — never edit code. A long build cannot
+        // trip the stuck-detector either: an in-flight tool suppresses the hang
+        // verdict (see `stuckHangSeconds`, which names `run_xcodebuild` outright).
+        ToolNames.runXcodebuild, ToolNames.runXcodetests,
     ]
 
     /// Default toolset seeded into the Autovisor role template (mandatory + optional).
@@ -64,9 +75,22 @@ nonisolated enum AutovisorConstants {
     /// `testVersionBump_refreshesAutovisorManagerPrompt_preservingToolToggles`).
     /// Known edge: a user who disables an ENTIRE group is indistinguishable from
     /// never-offered, so the next version bump re-delivers it once.
+    /// EVERY optional tool added after a manager could already exist on disk needs an
+    /// entry here, or it is undeliverable: `syncAutovisorTeamToTemplate` union-enforces
+    /// only the MANDATORY list, so nothing else ever ADDS an optional tool to a stored
+    /// manager. The failure is silent and asymmetric — the tool appears on brand-new
+    /// Autovisor teams and never on an existing work folder. (The file+git reads, image
+    /// inspection and memory need no group: they shipped WITH the manager, so no stored
+    /// manager can predate them.)
+    /// Pinned by `AutovisorTeamTests.testXcodeRunners_areInADeliveryGroup_notJustTheOptionalList`
+    /// and, behaviourally, by
+    /// `NTMSRepositoryReconcileTests.testVersionBump_deliversXcodeRunners_toAManagerFromABuildWithoutThem`
+    /// — both spell the names literally, because a test that reads this array cannot
+    /// notice an entry that was never written.
     static let managerOptionalToolGroups: [[String]] = [
         [ToolNames.screenCapture, ToolNames.uiClick, ToolNames.uiType,
          ToolNames.uiKey, ToolNames.uiScroll],
+        [ToolNames.runXcodebuild, ToolNames.runXcodetests],
     ]
 
     /// Max new tasks the manager may create in ONE review pass. Enforced in

@@ -662,6 +662,79 @@ final class TeamGenerationOrchestratorTests: NTMSOrchestratorTestBase {
         XCTAssertEqual(countAfterSecond, 1, "Repeated save must not duplicate")
     }
 
+    // MARK: - Chat mode is never seeded from the placeholder
+
+    /// The Generated Team placeholder is VACUOUSLY chat-mode (no roles ⇒ its Supervisor
+    /// requires no artifacts), and `createTask` used to copy that straight onto the task.
+    /// Nothing on the generation-failure path ever rewrites `storedIsChatMode`, so a task
+    /// whose generation failed reported `chat_mode: true` forever — to the Autovisor,
+    /// whose prompt answers that with `control_task close`.
+    ///
+    /// Both surfaces are asserted because they have DIFFERENT readers: `task_status`
+    /// loads the task, while `list_tasks` reads the index summary and never loads
+    /// anything.
+    func testCreateTask_onGeneratedPlaceholder_isNotChatMode_onTaskAndIndex() async {
+        await sut.openWorkFolder(tempDir)
+        await seedGeneratedTemplate()
+        guard let placeholder = sut.workFolder?.teams.first(where: { $0.isGeneratedPlaceholder })
+        else { XCTFail("seedGeneratedTemplate did not install the placeholder"); return }
+        XCTAssertTrue(
+            placeholder.isChatMode,
+            "precondition: the placeholder IS vacuously chat-mode — that is the trap")
+
+        guard let taskID = await sut.createTask(
+            title: "Gen", supervisorTask: "build a calculator", preferredTeamID: placeholder.id)
+        else { XCTFail("createTask returned nil"); return }
+
+        XCTAssertEqual(
+            sut.loadedTask(taskID)?.isChatMode, false,
+            "task.json must not inherit the placeholder's vacuous chat mode")
+        XCTAssertEqual(
+            sut.snapshot?.tasksIndex.tasks.first(where: { $0.id == taskID })?.isChatMode, false,
+            "tasks_index.json is what list_tasks reads — it must agree")
+    }
+
+    /// The seeding change must not touch genuinely chat-mode teams.
+    func testCreateTask_onARealChatTeam_staysChatMode() async {
+        await sut.openWorkFolder(tempDir)
+        guard let chatTeam = sut.workFolder?.teams.first(where: { $0.isChatMode }) else {
+            XCTFail("expected a bundled chat-mode team"); return
+        }
+        guard let taskID = await sut.createTask(
+            title: "Chat", supervisorTask: "hello", preferredTeamID: chatTeam.id)
+        else { XCTFail("createTask returned nil"); return }
+
+        XCTAssertEqual(sut.loadedTask(taskID)?.isChatMode, true)
+        XCTAssertEqual(
+            sut.snapshot?.tasksIndex.tasks.first(where: { $0.id == taskID })?.isChatMode, true)
+    }
+
+    /// Adoption still governs: a generated team that comes out chat-shaped flips the task
+    /// to chat mode, which is what `adoptGeneratedTeam` is for.
+    func testAdoptGeneratedTeam_chatShapedRoster_flipsTheTaskToChatMode() async {
+        await sut.openWorkFolder(tempDir)
+        await seedGeneratedTemplate()
+        guard let placeholder = sut.workFolder?.teams.first(where: { $0.isGeneratedPlaceholder }),
+              let taskID = await sut.createTask(
+                title: "Gen", supervisorTask: "chat with me", preferredTeamID: placeholder.id)
+        else { XCTFail("setup failed"); return }
+        XCTAssertEqual(sut.loadedTask(taskID)?.isChatMode, false, "precondition")
+
+        let chatRoster = Team(
+            id: "gen_chat", name: "Gen Chat",
+            roles: [
+                TeamRoleDefinition(
+                    id: "sup", name: "Supervisor", prompt: "", toolIDs: [],
+                    usePlanningPhase: false, dependencies: RoleDependencies(),
+                    isSystemRole: true, systemRoleID: "supervisor")
+            ],
+            artifacts: [], settings: TeamSettings(), graphLayout: TeamGraphLayout())
+        XCTAssertTrue(chatRoster.isChatMode, "fixture sanity")
+        await sut.mutateTask(taskID: taskID) { $0.adoptGeneratedTeam(chatRoster) }
+
+        XCTAssertEqual(sut.loadedTask(taskID)?.isChatMode, true)
+    }
+
     // MARK: - Helpers
 
     /// Appends the Generated Team placeholder to the workfolder. Mirrors the

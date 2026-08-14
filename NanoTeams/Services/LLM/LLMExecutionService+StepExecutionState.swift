@@ -11,12 +11,6 @@ extension LLMExecutionService {
     /// eliminating the need for 7 parallel dictionaries. Entry exists iff step is executing.
     struct StepExecutionState {
         var runningTask: Task<Void, Never>?
-        /// Index of the plan message in conversationMessages (for in-place update).
-        var planMessageIndex: Int?
-        /// Index of the Memories message in conversationMessages (for in-place update).
-        var memoriesMessageIndex: Int?
-        /// Memories version counter (increments on each update).
-        var memoriesVersion: Int = 0
         /// The (base, model) residency key this step resolved its effective
         /// config to, set once after config resolution in `runStep`. Read by
         /// `LLMExecutionService.activeModelKeys()` so residency reconciliation
@@ -28,13 +22,17 @@ extension LLMExecutionService {
         /// and the condition is static across a step's iterations — re-posting it every
         /// iteration would clobber every other message the user needs to see.
         var didWarnContextOverflow: Bool = false
-    /// The server's own `prompt_eval_count` on this step's previous request.
-    ///
-    /// The truncation detector needs a DELTA, not an absolute: a server that has started dropping
-    /// the head stops growing this number even as the conversation grows. Comparing against our own
-    /// token estimate instead was measured to be unusable — the estimator is 2.2× high on Cyrillic
-    /// and 2.6× low on emoji, so no threshold survives both.
-    var lastServerPromptTokens: Int?
+        /// The server's own `prompt_eval_count` on this step's previous request.
+        ///
+        /// The truncation detector needs a DELTA, not an absolute: a server that has started
+        /// dropping the head stops growing this number even as the conversation grows. Comparing
+        /// against our own token estimate instead was measured to be unusable — the estimator is
+        /// 2.2× high on Cyrillic and 2.6× low on emoji, so no threshold survives both.
+        ///
+        /// Cleared by `resetConversationScopedState` for exactly the reason stated on
+        /// `didWarnContextOverflow`: the delta is only readable while the conversation GROWS, and
+        /// the planning boundary is the one place that makes it shrink.
+        var lastServerPromptTokens: Int?
 
         /// `"<normalizedBase>|<model>"` keys whose context-window probe this step has
         /// already spent.
@@ -49,6 +47,17 @@ extension LLMExecutionService {
         /// keying — a step that resolves a different (server, model) is a different
         /// question and deserves its own probe.
         var probedContextKeys: Set<String> = []
+
+        /// The same bound for the vision-capability probe, which had none.
+        ///
+        /// `mainModelVisionCache` memoizes only a DEFINITIVE verdict, deliberately — a
+        /// transient failure must not pin "no vision" for the service's lifetime. But the
+        /// probe is consulted once per `screen_capture` and once per `analyze_image`, carries
+        /// a 5s timeout, and returns `nil` by construction against any endpoint that reports
+        /// no capability metadata. Uncapped, that is up to five dead seconds before every
+        /// screenshot of an agent loop, forever. Same split as `probedContextKeys`: lifetime
+        /// memo for a real answer, per-step latch for an undeterminable one.
+        var probedVisionKeys: Set<String> = []
 
         /// Where this step's conversation came from when it (re-)entered.
         ///
@@ -109,6 +118,19 @@ extension LLMExecutionService {
         /// `resetCountersOnParseableToolCall`, which would miss clean no-tool turns —
         /// and on `cleanup()`.
         var consecutiveThinkingLoopBreaks: Int = 0
+
+        /// Loop CONDITIONS already warned about in this step
+        /// (`LLMExecutionService.loopWarningSignature` — kind + tool + information epoch,
+        /// never the count: a growing run is the same condition, but a run resumed after
+        /// the model was told something it could not have derived is a new one).
+        ///
+        /// `ToolCallLoopDetector` is stateless and reads the tail of the tracker, so a
+        /// condition it reports keeps reporting until the model's behaviour changes. Without
+        /// this set the identical sentence was appended to the conversation on every
+        /// iteration for the rest of the step. Reset on `cleanup()` and at the
+        /// planning→implementation boundary, where the conversation the warning lived in is
+        /// discarded and the implementation phase deserves its own warning.
+        var warnedLoopSignatures: Set<String> = []
 
         /// Count of consecutive turns, by ANY role, that produced no productive activity.
         /// A turn is "non-productive" when it has (a) no tool calls at all, (b) tool calls
@@ -188,25 +210,44 @@ extension LLMExecutionService {
         /// stop in-flight subprocesses or file I/O.
         var currentToolBatchTask: Task<[ToolExecutionResult], Never>?
 
-        /// Clears everything that points INTO `conversationMessages`.
+        /// Clears every per-conversation latch and baseline.
         ///
-        /// Called when the planning→implementation boundary REPLACES that array,
-        /// not just on teardown. The indices are absolute offsets, and
-        /// `injectMemories` only guards `index < count` — a stale index that
-        /// happens to remain in range would OVERWRITE the seed turn instead of
-        /// appending. `didWarnContextOverflow` rides along because its
-        /// once-per-step latch is justified by "the conversation only grows",
-        /// and the boundary is the one place that makes it shrink: leaving the
-        /// latch set would silence a real overflow later in the step.
-        mutating func resetConversationIndices() {
-            planMessageIndex = nil
-            memoriesMessageIndex = nil
-            memoriesVersion = 0
+        /// Called when the planning→implementation boundary REPLACES
+        /// `conversationMessages`, not just on teardown. Two distinct premises,
+        /// stated per field in the inline comments below: the latches and the
+        /// delta baseline assume "the conversation only grows" (the boundary is
+        /// the one place that makes it shrink), while the two probe sets reset
+        /// on a WARM-UP argument — the fresh phase deserves a fresh probe now
+        /// that the model is loaded. `didWarnContextOverflow`: leaving the
+        /// once-per-step latch set would silence a real overflow later in the
+        /// step.
+        mutating func resetConversationScopedState() {
             didWarnContextOverflow = false
+            // The same sentence, one field over, and it was the one the list was missing:
+            // `lastServerPromptTokens` is a DELTA baseline whose entire premise is that the
+            // conversation only grows. Carrying it across the slice hands the next request a
+            // pre-boundary count to be measured against, which is the shape of a false
+            // "the server is truncating from the START" banner.
+            //
+            // Inert until now, and only by an accident that lives in another file:
+            // `PromptPrefixLedger.record` prices `appendedTokens` ONLY on the `.reused` branch,
+            // so the boundary's own first request — a structural miss — reports 0 appended and
+            // dies on `shouldReportTruncation`'s material-append gate before the stale baseline
+            // is ever read. That zero is documented there as an optimization ("pointless on a
+            // hit"), not as a safety property of this detector, so the protection is one
+            // reasonable edit away from evaporating. Pinned by
+            // `PlanningBoundaryStateResetCoverageTests`.
+            lastServerPromptTokens = nil
+            // The warning itself lived in the array that was just replaced, so the
+            // implementation phase has never been told; same argument as the latch above.
+            warnedLoopSignatures = []
             // Same reasoning one level down: the implementation phase is a fresh
             // conversation, so it deserves a fresh chance to learn the window — by
             // then the model is warm and `/api/ps` can finally answer.
             probedContextKeys = []
+            // And its sibling, for the same reason: a probe that couldn't answer while the
+            // model was cold deserves one more chance now that the phase has turned over.
+            probedVisionKeys = []
         }
 
         /// Cancels the running task and resets all fields to defaults.
@@ -215,7 +256,7 @@ extension LLMExecutionService {
             runningTask = nil
             currentToolBatchTask?.cancel()
             currentToolBatchTask = nil
-            resetConversationIndices()
+            resetConversationScopedState()
             finishRequested = false
             parkForEventsRequested = false
             parkQuestionOverride = nil

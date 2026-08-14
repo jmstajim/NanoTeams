@@ -128,6 +128,11 @@ nonisolated struct SkippedFile: Codable {
 nonisolated struct GitPathStatus: Codable {
     var path: String
     var status: String
+    /// Set only for a staged rename. Porcelain v1 emits `old.txt -> new.txt` in ONE
+    /// field; passing that through verbatim breaks the house rule that every path a
+    /// tool reports is usable as a `read_file`/`git_add` argument, so `path` carries
+    /// the NEW name and the old one moves here.
+    var old_path: String?
 }
 
 nonisolated struct Commit: Codable {

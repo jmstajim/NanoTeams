@@ -29,8 +29,11 @@ nonisolated struct CallMarkerStrategy: ToolCallParsingStrategy {
             if idx >= tail.endIndex { break }
 
             if tail[idx] == "{" {
-                if let (jsonText, endIdx) = ToolCallParsingHelpers.extractJSONBracedValue(
-                    in: tail, from: idx)
+                // `extractCallObject`, not the bare walker: it adds the premature-closer
+                // repair, which the walker cannot perform because it returns at the first
+                // depth-0 close — several members too soon when the model closed early.
+                if let (jsonText, endIdx) = ToolCallParsingHelpers.extractCallObject(
+                    in: tail, from: idx, endMarker: Self.endMarker)
                 {
                     if let call = ToolCallParsingHelpers.parseToolCallFromJSON(jsonText) {
                         results.append(call)
@@ -484,6 +487,15 @@ nonisolated struct HarmonyToolCallParser: Sendable {
 
     func extractAllToolCalls(from text: String) -> [StepToolCall] {
         var results: [StepToolCall] = []
+
+        // Repair a mangled OPENING sentinel first — every strategy below is gated on an
+        // exact `<|call|>` / `<|start|>` / `<|channel|>` substring, so a spliced
+        // `<|tool_call>call|>` reaches none of them. Normalizing at the parser (not only
+        // at the streaming detection point) is what covers the callers that parse a
+        // finished body with no marker-detection pass of their own: `TeamGenerationService`
+        // and `DelegatedSupervisorAnswerService`. Idempotent, and a no-op for text without
+        // the alien token.
+        let text = HarmonySentinelNormalizer.normalize(text)
 
         func key(for call: StepToolCall) -> String {
             call.name.lowercased() + "|" + call.argumentsJSON

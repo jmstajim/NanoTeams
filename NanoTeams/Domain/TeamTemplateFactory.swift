@@ -251,6 +251,31 @@ nonisolated enum TeamTemplateFactory {
         }
     }
 
+    /// Ids that a template team WILL claim once it is materialised, for the two templates
+    /// created lazily rather than at bootstrap: the Autovisor team on first enable, the
+    /// Generated placeholder on the first "Generate Team..." pick. Exactly `Team.isHiddenFromPickers`.
+    ///
+    /// They need reserving because a template team's id is derived from its NAME
+    /// (`buildTeam` does `NTMSID.from(name:)`), not from its `templateID` — so a user team
+    /// named "Autovisor" derives `autovisor` — and because both creators guard on
+    /// `templateID`, which a custom team does not carry:
+    /// `ensureAutovisorTeam` appends when no team has `templateID == "autovisor"`, and the
+    /// QuickCapture picker appends the placeholder on the same test. Neither sees the
+    /// custom team sitting on the id, and `WorkFolderProjection.addTeam` deliberately does
+    /// not rename a TEMPLATE team (its id is the identity bootstrap and the tombstone key
+    /// on), so without this the collision is unresolvable at the later door.
+    ///
+    /// Consequence if unreserved: the Autovisor task's `preferredTeamID` is that id, and
+    /// every resolution is `teams.first { $0.id == ... }` — which returns the user's team,
+    /// so the manager runs on the wrong roster; and `removeTeam` is `removeAll`, so deleting
+    /// either deletes both.
+    ///
+    /// Derived, never spelled: reading the ids off the factories is what keeps this true
+    /// when a template is renamed.
+    nonisolated static var lazilyMaterialisedTeamIDs: Set<NTMSID> {
+        [autovisor().id, generatedTeam().id]
+    }
+
     /// "Generated Team" — Supervisor-only placeholder. When a task is started with this
     /// template, the orchestrator triggers a background `create_team` generation (attributed
     /// to Supervisor, shown in activity feed like `analyze_image`). The resulting team is

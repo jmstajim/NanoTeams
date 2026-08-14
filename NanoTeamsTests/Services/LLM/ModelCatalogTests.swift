@@ -263,4 +263,156 @@ final class ModelCatalogTests: XCTestCase {
         XCTAssertEqual(catalog.models(for: "http://x:1234", provider: .lmStudio), ["lm-model"])
         XCTAssertEqual(catalog.models(for: "http://x:1234", provider: .ollama), ["ollama-model"])
     }
+
+    // MARK: - refresh's success return (reachability evidence)
+
+    /// A returned list is a 2xx from `reachabilityProbePath` — the same path the
+    /// status pill probes — so the status-bar picker may use it to turn the pill
+    /// green without paying a second round-trip.
+    func testRefresh_onSuccess_reportsTrue() async {
+        let stub = StubClient()
+        let catalog = ModelCatalog(clientFactory: { stub })
+
+        let reached = await catalog.refresh(url: "http://x:1234", provider: .lmStudio)
+
+        XCTAssertTrue(reached)
+    }
+
+    /// A failure proves nothing about reachability (401 = reachable but
+    /// unauthorized; a decode error = reachable but mismatched), so it must not be
+    /// reported as evidence in either direction.
+    func testRefresh_onFailure_reportsFalse() async {
+        let stub = StubClient()
+        stub.errorToThrow = NSError(domain: "test", code: 1)
+        let catalog = ModelCatalog(clientFactory: { stub })
+
+        let reached = await catalog.refresh(url: "http://x:1234", provider: .lmStudio)
+
+        XCTAssertFalse(reached)
+    }
+
+    /// Coalescing means THIS call observed no outcome. Reporting the in-flight
+    /// caller's eventual success would be claiming evidence we never saw.
+    /// Mutation: return `true` from the in-flight early return → a picker open that
+    /// piggybacks on a doomed fetch turns the pill green.
+    func testRefresh_whenCoalescingOntoAnInFlightFetch_reportsFalse() async {
+        let stub = StubClient()
+        stub.fetchDelayNanos = 200_000_000
+        let catalog = ModelCatalog(clientFactory: { stub })
+
+        async let first = catalog.refresh(url: "http://x:1234", provider: .lmStudio)
+        // Let the first call insert its key before the second checks it.
+        try? await Task.sleep(for: .milliseconds(30))
+        let second = await catalog.refresh(url: "http://x:1234", provider: .lmStudio)
+        let firstResult = await first
+
+        XCTAssertTrue(firstResult, "The call that actually fetched saw the outcome")
+        XCTAssertFalse(second, "The coalesced call observed nothing and must claim nothing")
+        XCTAssertEqual(stub.fetchCount, 1)
+    }
+
+    func testRefresh_emptyURL_reportsFalse() async {
+        let stub = StubClient()
+        let catalog = ModelCatalog(clientFactory: { stub })
+
+        let reached = await catalog.refresh(url: "   ", provider: .lmStudio)
+
+        XCTAssertFalse(reached)
+        XCTAssertEqual(stub.fetchCount, 0)
+    }
+
+    // MARK: - hasLoaded discriminator
+
+    func testHasLoaded_falseBeforeAnyFetch() async {
+        let stub = StubClient()
+        let catalog = ModelCatalog(clientFactory: { stub })
+
+        XCTAssertFalse(catalog.hasLoaded("http://x:1234", provider: .lmStudio),
+                       "Nothing fetched yet — 'never fetched' must read false")
+    }
+
+    func testHasLoaded_trueAfterSuccessfulFetch() async {
+        let stub = StubClient()
+        let catalog = ModelCatalog(clientFactory: { stub })
+
+        await catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio)
+
+        XCTAssertTrue(catalog.hasLoaded("http://x:1234", provider: .lmStudio))
+    }
+
+    /// The whole reason `hasLoaded` exists: `models(for:)` collapses "never
+    /// fetched" and "fetched, server offered none" into `[]`, and the picker
+    /// must say opposite things about them. An implementation derived from the
+    /// list's emptiness (the natural shortcut) fails exactly here.
+    func testHasLoaded_trueAfterFetchReturningEmptyList() async {
+        let stub = StubClient()
+        stub.modelsToReturn = []
+        let catalog = ModelCatalog(clientFactory: { stub })
+
+        await catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio)
+
+        XCTAssertTrue(catalog.hasLoaded("http://x:1234", provider: .lmStudio),
+                      "A returned EMPTY list is still a completed fetch — a fact about the server, not about us")
+        XCTAssertEqual(catalog.models(for: "http://x:1234", provider: .lmStudio), [],
+                       "…and is indistinguishable from 'never fetched' through models(for:) alone")
+    }
+
+    func testHasLoaded_falseAfterFailedFetch() async {
+        let stub = StubClient()
+        stub.errorToThrow = NSError(domain: "test", code: 1)
+        let catalog = ModelCatalog(clientFactory: { stub })
+
+        await catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio)
+
+        XCTAssertFalse(catalog.hasLoaded("http://x:1234", provider: .lmStudio),
+                       "fetch writes modelsByKey only on success — a failure must not read as 'loaded'")
+    }
+
+    func testHasLoaded_isScopedToItsKey() async {
+        let stub = StubClient()
+        let catalog = ModelCatalog(clientFactory: { stub })
+
+        await catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio)
+
+        XCTAssertFalse(catalog.hasLoaded("http://other:1234", provider: .lmStudio))
+        XCTAssertFalse(catalog.hasLoaded("http://x:1234", provider: .ollama))
+        XCTAssertFalse(catalog.hasLoaded("http://x:1234", provider: .lmStudio, visionOnly: true))
+        XCTAssertTrue(catalog.hasLoaded("http://x:1234/", provider: .lmStudio),
+                      "Trivial URL variations must hit the same cache entry")
+    }
+
+    // MARK: - isFetching observability
+
+    /// The picker's spinner and its disabled Refresh button both read this, and it
+    /// had no test at all.
+    func testIsFetching_isTrueDuringAFetchAndFalseAfter() async {
+        let stub = StubClient()
+        stub.fetchDelayNanos = 200_000_000
+        let catalog = ModelCatalog(clientFactory: { stub })
+
+        XCTAssertFalse(catalog.isFetching("http://x:1234", provider: .lmStudio))
+        async let inFlight: Bool = catalog.refresh(url: "http://x:1234", provider: .lmStudio)
+        try? await Task.sleep(for: .milliseconds(30))
+        XCTAssertTrue(catalog.isFetching("http://x:1234", provider: .lmStudio))
+
+        _ = await inFlight
+        XCTAssertFalse(catalog.isFetching("http://x:1234", provider: .lmStudio))
+    }
+
+    /// `isFetching` is per key, so one endpoint's spinner never appears on another's
+    /// picker.
+    func testIsFetching_isScopedToItsKey() async {
+        let stub = StubClient()
+        stub.fetchDelayNanos = 200_000_000
+        let catalog = ModelCatalog(clientFactory: { stub })
+
+        async let inFlight: Bool = catalog.refresh(url: "http://x:1234", provider: .lmStudio)
+        try? await Task.sleep(for: .milliseconds(30))
+
+        XCTAssertTrue(catalog.isFetching("http://x:1234", provider: .lmStudio))
+        XCTAssertFalse(catalog.isFetching("http://other:1234", provider: .lmStudio))
+        XCTAssertFalse(catalog.isFetching("http://x:1234", provider: .ollama))
+
+        _ = await inFlight
+    }
 }

@@ -164,12 +164,25 @@ enum DelegatedSupervisorAnswerService {
                 logger: nil,
                 stepID: nil
             )
+            var reasoning = ""
             for try await event in stream {
                 captured.content += event.contentDelta
+                reasoning += event.thinkingDelta
                 if !event.toolCallDeltas.isEmpty {
                     accumulator.absorb(event.toolCallDeltas)
                 }
             }
+            // Promote the reasoning channel BEFORE any consumer looks, because all three
+            // read `captured.content`: the Harmony salvage gate below (so an escalation
+            // emitted as a reasoning-channel envelope was invisible), `persistExchange`'s
+            // feed record, and the plain-text return — which handed the CHILD TEAM
+            // "(no answer provided)" as the Supervisor's decision while the answer sat
+            // unread in the other channel. Trim only: `cleanHarmonyTokens` runs later on
+            // the plain path, and stripping the envelope here would blind the salvage.
+            captured.content = ModelReplyChannels.answer(
+                content: captured.content,
+                reasoning: reasoning,
+                prepare: { $0.trimmingCharacters(in: .whitespacesAndNewlines) })
             captured.toolCalls = accumulator.finalize()
             // Harmony fallback (CLAUDE.md 3-fallback rule for direct LLM
             // calls): gpt-oss-class local models emit tool calls as text
@@ -188,6 +201,12 @@ enum DelegatedSupervisorAnswerService {
                     }
             }
         } catch {
+            // A Pause is not an answering failure. `handleDelegateToTeam` reads a nil return
+            // as an internal failure and tears the child team down, so classifying the
+            // user's own Pause as one destroys the delegation they paused to inspect — and
+            // posts a red banner blaming the role. Return nil without the banner: the parent
+            // step is being cancelled anyway, and the child stays intact for the resume.
+            if CancellationClassifier.isCancellation(error) { return nil }
             let reason = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             delegate.setLastErrorMessageForUI(
                 "Delegated supervisor answer failed for role \(roleID): \(reason)"

@@ -4,40 +4,57 @@ import Foundation
 
 nonisolated extension MemoryTagStore {
 
-    /// Extract "path" from arguments JSON: {"path": "..."}, canonicalized to one
-    /// repo-relative spelling when a `workFolderRoot` is set. This keeps dedup,
-    /// edit-invalidation, and the MEMORIES index from fragmenting when the model varies
-    /// the path form (`src/x` vs `Foo/src/x` vs `./src/x` vs an absolute path). `nil`
-    /// `workFolderRoot` → raw passthrough (no work-folder context). Paths that don't
-    /// resolve cleanly (relative `..`, absolute-outside-root) hit `relativizePathspec`'s
-    /// raw fallback and stay un-canonicalized — harmless, because such tool calls error
-    /// upstream and every file processor discards the result via `.passthrough` (the
-    /// `!result.isError` guard) before any key is built.
+    /// Extract "path" from arguments JSON: {"path": "..."}, canonicalized via
+    /// `canonicalizePath`. The canonical spelling is what gets RENDERED into the
+    /// tagged envelope's `path` field, so the model sees one stable spelling
+    /// regardless of how it spelled the argument (`src/x` vs `Foo/src/x` vs
+    /// `./src/x` vs an absolute path) — that display stability is the sole
+    /// remaining purpose since the 2026-08-11 simplification removed all
+    /// path-keyed bookkeeping. Paths that don't resolve cleanly (relative `..`,
+    /// absolute-outside-root) hit `relativizePathspec`'s raw fallback and stay
+    /// un-canonicalized — harmless, because such tool calls error upstream and
+    /// every file processor discards the result via `.passthrough` (the
+    /// `!result.isError` guard).
     func extractPath(from argsJSON: String) -> String? {
         guard let raw = extractString(from: argsJSON, key: "path") else { return nil }
+        return canonicalizePath(raw)
+    }
+
+    /// One repo-relative spelling for a model-supplied path when a
+    /// `workFolderRoot` is set; raw passthrough otherwise (no work-folder
+    /// context).
+    func canonicalizePath(_ raw: String) -> String {
         guard let root = workFolderRoot else { return raw }
         return SandboxPathResolver(workFolderRoot: root).relativizePathspec(raw)
+    }
+
+    /// One parse of a tool-result envelope, returning its `data` object — read
+    /// multiple keys off the returned dictionary instead of re-parsing the
+    /// envelope once per key.
+    func dataObject(from outputJSON: String) -> [String: Any]? {
+        parseJSON(outputJSON)?["data"] as? [String: Any]
     }
 
     /// Extract a string value from the "data" object of an envelope JSON:
     /// {"ok": true, "data": {"content": "...", ...}, ...}
     func extractDataString(from outputJSON: String, key: String) -> String? {
-        guard let parsed = parseJSON(outputJSON),
-              let data = parsed["data"] as? [String: Any],
-              let value = data[key] as? String else {
-            return nil
-        }
-        return value
+        dataObject(from: outputJSON)?[key] as? String
     }
 
     /// Extract an int value from the "data" object of an envelope JSON.
     func extractDataInt(from outputJSON: String, key: String) -> Int? {
-        guard let parsed = parseJSON(outputJSON),
-              let data = parsed["data"] as? [String: Any],
-              let value = data[key] as? Int else {
-            return nil
-        }
-        return value
+        dataObject(from: outputJSON)?[key] as? Int
+    }
+
+    /// Wraps a tool-result envelope under a fresh tag. The body is spliced RAW
+    /// when it is itself a JSON object (the normal case — every handler envelope
+    /// comes from `encodeToJSON`), so the model reads plain nested JSON instead
+    /// of a double-escaped string whose every quote costs an escape-pair token;
+    /// anything else (non-JSON test fixtures, corrupt output) is escaped as a
+    /// string value so the wrapper stays valid JSON.
+    func taggedEnvelope(tag: String, wrapping body: String) -> String {
+        let content = parseJSON(body) != nil ? body : jsonEscape(body)
+        return "{\"tag\":\"\(tag)\",\"content\":\(content)}"
     }
 
     /// Extract a string value from a flat JSON object.
@@ -72,18 +89,5 @@ nonisolated extension MemoryTagStore {
             return str
         }
         return "\"\(string)\""
-    }
-
-    // MARK: - Unchanged Reference
-
-    /// Builds a compact JSON reference for an unchanged resource.
-    /// `extras` are additional key-value pairs inserted before the ref/hint fields.
-    func buildUnchangedReference(tag: String, extras: [(String, String)] = []) -> String {
-        var parts = ["{\"status\":\"unchanged\""]
-        for (key, value) in extras {
-            parts.append(",\"\(key)\":\(jsonEscape(value))")
-        }
-        parts.append(",\"ref\":\"\(tag)\",\"_hint\":\"Do NOT re-read. See \(tag) above.\"}")
-        return parts.joined()
     }
 }

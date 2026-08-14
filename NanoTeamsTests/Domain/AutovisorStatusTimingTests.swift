@@ -133,6 +133,26 @@ final class AutovisorStatusTimingTests: XCTestCase {
         XCTAssertEqual(AutovisorStatus.taskElapsedSeconds(run: run, now: now), 120)
     }
 
+    /// The third member of this trio was the one without the clock default — inert only
+    /// because its single caller passes `MonotonicClock.shared.now()`. This pins the
+    /// signature, not that caller.
+    ///
+    /// RED: change the default to `Date()` → a run 190s old on the stamping clock reads as
+    /// `190 - drift` seconds, which `max(0, ...)` floors at 0.
+    func testTaskElapsed_defaultNow_isOnTheStampingClock() {
+        defer { MonotonicClock.shared.reset() }
+        for _ in 0..<40_000 { _ = MonotonicClock.shared.now() }
+        let drift = MonotonicClock.shared.now().timeIntervalSince(Date())
+        XCTAssertGreaterThan(drift, 10, "Setup invariant: need drift > 10s to separate the two clocks")
+
+        let run = Run(id: 0, createdAt: MonotonicClock.shared.now().addingTimeInterval(-190))
+
+        XCTAssertGreaterThan(
+            AutovisorStatus.taskElapsedSeconds(run: run) ?? 0, 180,
+            "a run 190s old on the clock that stamped it must report ~190s, not a "
+                + "drift-shortened value the max(0,) clamp flattens to zero")
+    }
+
     // MARK: - isResumable
 
     /// Truth table. This predicate mirrors `resumeRun` branch 3; the manager acts on
@@ -198,5 +218,31 @@ final class AutovisorStatusTimingTests: XCTestCase {
             createdAt: now, status: .paused,
             messages: [StepMessage(role: .softwareEngineer, content: "x")])
         XCTAssertFalse(AutovisorStatus.isResumable(step: s, roleStatus: nil, taskIsClosed: false))
+    }
+
+    /// The synthetic generation step belongs to no roster, so it has no `roleStatuses`
+    /// entry and both ordinary arms fail — but `resumeRun` short-circuits to
+    /// `spawnTeamGeneration` for it ahead of branch 3, so `.paused` IS resumable.
+    /// Without this the manager is told `resumable: false` for the one task whose
+    /// prescribed remedy (`control_task resume`) now works.
+    func testIsResumable_pausedGenerationStep_isResumableWithNoRoleEntry() {
+        var s = step(createdAt: now, status: .paused)
+        s.id = "\(StepExecution.teamGenerationIDPrefix)ABC"
+        XCTAssertTrue(s.isTeamGenerationStep, "fixture sanity")
+        XCTAssertTrue(AutovisorStatus.isResumable(step: s, roleStatus: nil, taskIsClosed: false))
+    }
+
+    /// Step-local and exact: only `.paused` is resumable, and a closed task still wins.
+    func testIsResumable_generationStep_respectsStatusAndClosedGuards() {
+        var failedStep = step(createdAt: now, status: .failed)
+        failedStep.id = "\(StepExecution.teamGenerationIDPrefix)ABC"
+        XCTAssertFalse(
+            AutovisorStatus.isResumable(step: failedStep, roleStatus: nil, taskIsClosed: false),
+            "a failed generation is retried, not resumed — the ordinary guard still applies")
+
+        var pausedStep = step(createdAt: now, status: .paused)
+        pausedStep.id = "\(StepExecution.teamGenerationIDPrefix)ABC"
+        XCTAssertFalse(
+            AutovisorStatus.isResumable(step: pausedStep, roleStatus: nil, taskIsClosed: true))
     }
 }

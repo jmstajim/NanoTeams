@@ -414,4 +414,129 @@ final class GeneratedTeamConfigTests: XCTestCase {
         XCTAssertEqual(config.roles[1].name, "Beta")
         XCTAssertEqual(config.roles[2].name, "Gamma")
     }
+
+    // MARK: - `prompt` is required by VALUE, not merely by key
+
+    /// `try c.decode(String.self, forKey: .prompt)` enforced the KEY. An empty
+    /// value decoded clean, and because the `name` fallback reads the prompt, the
+    /// team installed a role literally called "Role" with an empty
+    /// `{roleGuidance}` — which then RAN, unguided, with no signal that anything
+    /// was wrong. The doc comment on the field had asserted the opposite
+    /// ("`prompt` stays hard-required: a role with no prompt has nothing to act
+    /// on") since the day the `name` fallback was written.
+    ///
+    /// RED: revert to the bare `decode` → this decodes, and
+    /// `testEmptyPrompt_doesNotProduceARoleCalledRole` shows what shipped.
+    func testEmptyPrompt_isRejected() {
+        let json = """
+        {
+            "name": "T",
+            "roles": [{"name": "Engineer", "prompt": "", "produces_artifacts": ["X"], "requires_artifacts": ["Supervisor Task"]}],
+            "artifacts": [{"name": "X", "description": "X"}],
+            "supervisor_requires": ["X"]
+        }
+        """.data(using: .utf8)!
+        XCTAssertNotNil(try? JSONSerialization.jsonObject(with: json), "precondition: valid JSON")
+        XCTAssertThrowsError(try JSONDecoder().decode(GeneratedTeamConfig.self, from: json))
+    }
+
+    /// Whitespace is not guidance either, and it is the likelier emission: a
+    /// model that "left the prompt for later" writes a newline, not `""`.
+    ///
+    /// RED: guard on `declaredPrompt.isEmpty` instead of the trimmed value →
+    /// this decodes and the role ships with a newline for guidance.
+    func testWhitespaceOnlyPrompt_isRejected() {
+        let json = """
+        {
+            "name": "T",
+            "roles": [{"name": "Engineer", "prompt": "  \\n\\t ", "produces_artifacts": ["X"], "requires_artifacts": ["Supervisor Task"]}],
+            "artifacts": [{"name": "X", "description": "X"}],
+            "supervisor_requires": ["X"]
+        }
+        """.data(using: .utf8)!
+        // Anti-vacuity: a raw newline inside a JSON string is INVALID JSON, and
+        // the first cut of this fixture carried one — the decode threw for the
+        // wrong reason and the test passed against the unfixed code.
+        XCTAssertNotNil(try? JSONSerialization.jsonObject(with: json), "precondition: valid JSON")
+        XCTAssertThrowsError(try JSONDecoder().decode(GeneratedTeamConfig.self, from: json))
+    }
+
+    /// The corrective retry hands the model `describeDecodingError(error)`, so
+    /// the coding path is the whole value of failing here rather than shipping a
+    /// blank role: it names the offending role by index and the field by name.
+    ///
+    /// RED: throw a bare `DecodingError.dataCorrupted` with an empty codingPath →
+    /// the retry prompt says "Data corrupted:" and the model is told a team-level
+    /// parse failed, with no way to find which role it was.
+    func testEmptyPromptError_namesTheRoleIndexAndTheField() {
+        let json = """
+        {
+            "name": "T",
+            "roles": [
+                {"name": "Alpha", "prompt": "ok", "produces_artifacts": ["X"], "requires_artifacts": ["Supervisor Task"]},
+                {"name": "Beta", "prompt": "", "produces_artifacts": ["Y"], "requires_artifacts": ["X"]}
+            ],
+            "artifacts": [{"name": "X", "description": "X"}, {"name": "Y", "description": "Y"}],
+            "supervisor_requires": ["Y"]
+        }
+        """.data(using: .utf8)!
+        XCTAssertNotNil(try? JSONSerialization.jsonObject(with: json), "precondition: valid JSON")
+        XCTAssertThrowsError(try JSONDecoder().decode(GeneratedTeamConfig.self, from: json)) { error in
+            let described = TeamConfigParser.describeDecodingError(error)
+            XCTAssertTrue(described.contains("prompt"), "must name the field — got \(described)")
+            XCTAssertTrue(described.contains("1"), "must name role index 1 — got \(described)")
+        }
+    }
+
+    /// The `name` fallback stays intact: an omitted name is still synthesized
+    /// from the prompt, which is the whole point of the wave-8 change this guard
+    /// sits beside.
+    ///
+    /// RED: move the emptiness check to `name` instead of `prompt` → this throws
+    /// and one omitted key kills a whole generation again.
+    func testMissingName_withARealPrompt_isStillSynthesized() throws {
+        let json = """
+        {
+            "name": "T",
+            "roles": [{"prompt": "Build the payment flow. Ship it.", "produces_artifacts": ["X"], "requires_artifacts": ["Supervisor Task"]}],
+            "artifacts": [{"name": "X", "description": "X"}],
+            "supervisor_requires": ["X"]
+        }
+        """.data(using: .utf8)!
+        let config = try JSONDecoder().decode(GeneratedTeamConfig.self, from: json)
+        XCTAssertEqual(config.roles[0].name, "Build the payment flow")
+        XCTAssertFalse(config.roles[0].prompt.isEmpty)
+    }
+
+    /// The DECLARED artifact list is filtered for empty names; the auto-stub loop
+    /// that back-fills from `produces_artifacts` was not, so an empty name removed
+    /// by the filter came straight back six lines later — and then SURVIVED the
+    /// unknown-reference check, because `declared` now contained it.
+    ///
+    /// Filtered where it ENTERS, not at the consumer: the first attempt filtered
+    /// the auto-stub loop instead, which turned the blank into an unresolvable
+    /// reference and rejected the WHOLE team with "Unknown artifact reference(s):
+    /// ." — one stray comma costing a generation. Measured, not assumed.
+    ///
+    /// RED: drop `nonBlank(...)` from `producesArtifacts` → an artifact named "" is
+    /// synthesized, and it then survives the unknown-reference check because
+    /// `declared` contains it.
+    func testEmptyProducedArtifactName_isNotResurrectedByTheAutoStubLoop() throws {
+        let json = """
+        {
+            "name": "T",
+            "roles": [{"name": "Engineer", "prompt": "p", "produces_artifacts": ["X", "  "], "requires_artifacts": ["Supervisor Task", ""]}],
+            "artifacts": [{"name": "X", "description": "X"}],
+            "supervisor_requires": ["X"]
+        }
+        """.data(using: .utf8)!
+        let config = try JSONDecoder().decode(GeneratedTeamConfig.self, from: json)
+        XCTAssertFalse(
+            config.artifacts.contains { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty },
+            "no artifact may be synthesized with a blank name — got \(config.artifacts.map(\.name))")
+        XCTAssertEqual(config.roles[0].producesArtifacts, ["X"], "the blank entry is dropped, not kept")
+        XCTAssertEqual(
+            config.roles[0].requiresArtifacts, ["Supervisor Task"],
+            "requiresArtifacts is the half no consumer re-filters — a blank there leaves the role permanently un-ready")
+    }
 }

@@ -16,9 +16,15 @@ extension TeamEngine {
                 return
             }
 
-            // Check iteration limit
+            // Check iteration limit. `<= 0` means UNBOUNDED, matching the sibling
+            // convention on `LLMConstants.maxToolIterations`. Without that reading a
+            // stored `0` — reachable through team import, which has no UI editor to
+            // catch it — made `1 >= 0` true on the FIRST pass: the run paused
+            // immediately telling the user to press Resume, and Resume resets
+            // `iterationCount` and re-enters the identical state. An unbreakable loop
+            // whose own message names the thing that cannot work.
             iterationCount += 1
-            if iterationCount >= autoIterationLimit {
+            if autoIterationLimit > 0, iterationCount >= autoIterationLimit {
                 transition(to: .paused)
                 store.setLastErrorMessageForUI(
                     "Run paused: iteration limit (\(autoIterationLimit)) reached. " +
@@ -159,10 +165,14 @@ extension TeamEngine {
                     // Wait a bit and check again
                     try? await Task.sleep(for: .milliseconds(250))
                     continue
-                } else if !isChatMode && roleStatuses.values.contains(.needsAcceptance) {
-                    // Waiting for Supervisor
-                    transition(to: .needsAcceptance)
-                    return
+                    // No non-chat `.needsAcceptance` arm here, deliberately. The acceptance gate
+                    // is decided ~80 lines above, on the SAME frozen `roleStatuses` and the same
+                    // `isChatMode`, with the same predicate (`getPendingAcceptances` is
+                    // `status == .needsAcceptance`) and the same `transition(to: .needsAcceptance)`.
+                    // Nothing between the two reassigns either value — `roleStatuses` is a `let`
+                    // bound once per iteration — so an arm here could never run. It existed and
+                    // read as the sibling of the chat-mode arm below, which is exactly why it was
+                    // misleading: it implied non-chat acceptance is settled in this block.
                 } else if isChatMode && Run.activeWorkRoleIDs(roleStatuses: roleStatuses, definitions: teamRoles).isEmpty {
                     // Chat-mode auto-complete arm: every non-supervisor non-observer role
                     // has reached a terminal status. Named by WRITER rather than by caller,

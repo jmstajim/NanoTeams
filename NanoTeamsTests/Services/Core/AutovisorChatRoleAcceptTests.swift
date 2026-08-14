@@ -126,6 +126,23 @@ final class AutovisorChatRoleAcceptTests: NTMSOrchestratorTestBase {
         XCTAssertNil(sut.loadedTask(taskID)?.closedAt)
     }
 
+    /// A chat task's producing role at `.done`: the reject stands (producing roles never
+    /// take the chat-finish exit), but the appended remedy must name the chat task's one
+    /// honest ending — `control_task close` — instead of the non-chat "other roles may
+    /// still be active" wording, which loops the manager between accept and a
+    /// task_status that (correctly) carries no hint for chat tasks.
+    func testManageRoleAccept_chatModeProducingDoneRole_rejectsWithChatCloseAdvice() async {
+        _ = await pinManager()
+        guard let taskID = await makeChatTeamTask(roles: [producing("p")], statuses: ["p": .done]) else { return }
+        let r = await sut.performAutovisorAction(.manageRole(taskID: taskID, roleID: "p", verb: .accept))
+        XCTAssertFalse(r.ok, "advice steers; it must not convert the reject into an action")
+        XCTAssertTrue(r.message.hasPrefix("Role already completed"), "fact preserved; got: \(r.message)")
+        XCTAssertTrue(r.message.contains("control_task close"),
+                      "the chat arm's remedy is close — a chat task never ends on its own; got: \(r.message)")
+        XCTAssertEqual(sut.loadedTask(taskID)?.runs.last?.roleStatuses["p"], .done)
+        XCTAssertNil(sut.loadedTask(taskID)?.closedAt, "advice only — nothing may close the task")
+    }
+
     func testManageRoleAccept_chatModeNeedsAcceptanceRole_takesOrdinaryAcceptPath() async {
         _ = await pinManager()
         // Quest Party shape: a producing role at a mid-pipeline acceptance gate in a chat team.

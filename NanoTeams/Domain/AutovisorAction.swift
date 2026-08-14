@@ -37,9 +37,19 @@ nonisolated enum ControlVerb: Hashable {
             }
             return .success(.rename(title: title))
         case "set_timeout":
-            // > 0 seconds sets the timeout; 0 / missing / non-numeric clears it.
-            let seconds = arg.flatMap(Double.init)
-            return .success(.setTimeout(seconds: (seconds ?? 0) > 0 ? seconds : nil))
+            // Absent or "0" CLEARS the timeout — that is the documented way to remove it.
+            // A present-but-unparseable `arg` ("600s", "10 minutes") must be REJECTED, not
+            // silently treated as a clear: that did the opposite of what the manager asked
+            // and reported ok:true, leaving it no signal to act on. `rename` above already
+            // rejects an unusable `arg`; this is the same rule.
+            let raw = (arg ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !raw.isEmpty else { return .success(.setTimeout(seconds: nil)) }
+            guard let seconds = Double(raw), seconds.isFinite, seconds >= 0 else {
+                return .failure(.init(
+                    message: "set_timeout needs a number of SECONDS in `arg` (or omit it / pass \"0\" to clear). Got '\(raw)'."
+                ))
+            }
+            return .success(.setTimeout(seconds: seconds > 0 ? seconds : nil))
         default:
             return .failure(.init(message: "action must be one of: \(actionNames.joined(separator: ", "))."))
         }
@@ -57,25 +67,50 @@ nonisolated enum RoleVerb: Hashable {
     case correct(comment: String)
     case finishAdvisory
 
-    static let actionNames = ["restart", "accept", "request_changes", "correct", "finish_advisory"]
+    /// Every wire spelling, written ONCE. Three sites need them — the legal-set message,
+    /// the reverse mapping for error text, and `parse` — and before this each spelled its
+    /// own literals, so a renamed verb could be accepted by `parse`, absent from the
+    /// "must be one of" list, and reported back under a fourth name.
+    enum Wire {
+        static let restart = "restart"
+        static let accept = "accept"
+        static let requestChanges = "request_changes"
+        static let correct = "correct"
+        static let finishAdvisory = "finish_advisory"
+    }
+
+    static let actionNames = [
+        Wire.restart, Wire.accept, Wire.requestChanges, Wire.correct, Wire.finishAdvisory,
+    ]
+
+    /// The wire spelling of this verb, for error text that has to name it back.
+    var autovisorVerbName: String {
+        switch self {
+        case .restart: Wire.restart
+        case .accept: Wire.accept
+        case .requestChanges: Wire.requestChanges
+        case .correct: Wire.correct
+        case .finishAdvisory: Wire.finishAdvisory
+        }
+    }
 
     static func parse(action: String, comment: String?) -> Result<RoleVerb, AutovisorVerbError> {
         let trimmed = comment?.trimmingCharacters(in: .whitespacesAndNewlines)
         let nonEmpty = (trimmed?.isEmpty == false) ? trimmed : nil
         switch action.lowercased() {
-        case "restart": return .success(.restart(comment: nonEmpty))
-        case "accept": return .success(.accept)
-        case "request_changes":
+        case Wire.restart: return .success(.restart(comment: nonEmpty))
+        case Wire.accept: return .success(.accept)
+        case Wire.requestChanges:
             guard let c = nonEmpty else {
-                return .failure(.init(message: "request_changes requires `comment` describing what to change."))
+                return .failure(.init(message: "\(Wire.requestChanges) requires `comment` describing what to change."))
             }
             return .success(.requestChanges(comment: c))
-        case "correct":
+        case Wire.correct:
             guard let c = nonEmpty else {
-                return .failure(.init(message: "correct requires `comment` with the correction."))
+                return .failure(.init(message: "\(Wire.correct) requires `comment` with the correction."))
             }
             return .success(.correct(comment: c))
-        case "finish_advisory": return .success(.finishAdvisory)
+        case Wire.finishAdvisory: return .success(.finishAdvisory)
         default:
             return .failure(.init(message: "action must be one of: \(actionNames.joined(separator: ", "))."))
         }
@@ -163,6 +198,29 @@ nonisolated enum AutovisorStatus {
         if let note = failed.messages.last(where: { $0.content.hasPrefix("LLM error") }) {
             return note.content
         }
+        // Failures that never ran through the role tool loop write their detail into the
+        // tool call's error ENVELOPE, not as an `"LLM error"`-prefixed `StepMessage` —
+        // `runTeamGeneration` is the one that matters (`makeErrorEnvelope(message:)`).
+        // Without this the manager was handed the tautology `Role '…' failed.` for a
+        // decode error the harness held in full. Observed 2026-08-07: it noticed
+        // ("The failure message is vague"), asked for the diagnosis, got none, and
+        // restarted blind — which then destroyed the envelope it had asked for.
+        if let envelopeError = failed.toolCalls.reversed()
+            .lazy
+            .filter({ $0.isError == true })
+            .compactMap(\.errorMessage)
+            .first
+        {
+            return envelopeError
+        }
+        // The synthetic generation step's id is an opaque UUID that names no role, so the
+        // tautology below would hand the manager `Role 'team_generation_<uuid>' failed.`
+        // Say what actually happened and what fixes it — `control_task resume` and
+        // `manage_role restart` on that id both re-enter generation.
+        if failed.isTeamGenerationStep {
+            return "Team generation failed for this task; its record carries no detail. "
+                + "Retry generation before the team can run."
+        }
         return "Role '\(failed.effectiveRoleID)' failed."
     }
 
@@ -205,7 +263,13 @@ nonisolated enum AutovisorStatus {
     }
 
     /// Seconds since the run started, or nil if there is no run.
-    static func taskElapsedSeconds(run: Run?, now: Date) -> Int? {
+    ///
+    /// Same clock contract as the two above, and for the same operand: `run.createdAt` is a
+    /// `MonotonicClock` stamp, so a wall-clock `now` understates the age by the accumulated
+    /// drift and `max(0, ...)` clamps the shortfall to a flat 0. It was the one member of this
+    /// trio without the default — inert only because its single caller happens to pass the
+    /// right clock, which is precisely the state a second caller would end.
+    static func taskElapsedSeconds(run: Run?, now: Date = MonotonicClock.shared.now()) -> Int? {
         guard let run else { return nil }
         return max(0, Int(now.timeIntervalSince(run.createdAt)))
     }
@@ -243,7 +307,89 @@ nonisolated enum AutovisorStatus {
         taskIsClosed: Bool
     ) -> Bool {
         guard !taskIsClosed, step.status == .paused else { return false }
+        // The synthetic generation step belongs to no roster, so it has no `roleStatuses`
+        // entry and neither arm below could ever fire — but `resumeRun` short-circuits to
+        // `spawnTeamGeneration` for it, ahead of branch 3, so `.paused` IS resumable.
+        // Step-local and exact: the success arm writes `.done`, so a task that adopted a
+        // team never carries a `.paused` generation step.
+        if step.isTeamGenerationStep { return true }
         if roleStatus == .working { return true }
         return roleStatus == .idle && !(step.messages.isEmpty && step.llmConversation.isEmpty)
+    }
+
+    // MARK: - Accept-rejection advice
+
+    /// The one sentence explaining WHY `control_task close` finalizes a Review task.
+    /// Shared by the accept-rejection advice below and `handleTaskStatus`'s close hint
+    /// so the two channels a manager reads in one pass cannot drift apart (a third,
+    /// hand-authored copy lives in the manager prompt's §Review line, which is pinned).
+    static let closeAcceptsEverything = "close accepts every role's output"
+
+    /// Manager-facing remedy appended (never substituted) to a `manage_role accept`
+    /// rejection in `applyAcceptRole`'s `.reject` arm. The raw `acceptanceErrors`
+    /// string names the fact ("Role already completed") but not the way out, and the
+    /// manager has no other recovery channel — `buildToolErrorGuidance` never runs for
+    /// collaboration-path tools, and the Autovisor error funnel passes no `next` hint
+    /// (the envelope has the slot; `applyAutovisorAction` leaves it empty). Observed
+    /// 2026-08-11: a manager facing a Review task tried `accept` on the `.done` role,
+    /// got the bare fact, and stalled instead of `control_task close`.
+    ///
+    /// String-only ON PURPOSE: returning a `NextHint` here would make `AutovisorStatus`
+    /// the first Domain type to reference one from `Services/Tools` — the boundary the
+    /// `StepToolCall.errorMessage` placement deliberately kept. The machine-copyable
+    /// close hint rides the `task_status` success envelope instead (`handleTaskStatus`).
+    ///
+    /// `taskReadyToClose` MUST be `NTMSTask.isReadyForFinalAcceptance` — the canonical
+    /// "Review with nothing left at a per-role gate" predicate every review affordance
+    /// keys on. A bare "derives Review" test is NOT it: the `onlyAcceptanceOrComplete`
+    /// arm of `derivedStatusFromActiveRun` also derives Review while a sibling still
+    /// holds a live `.needsAcceptance` gate, and advising close there sweeps that
+    /// role's output past the Supervisor unreviewed (`finalizeRoleStatusesForClose`
+    /// rewrites the gate to `.done` — the silent acceptance `RoleStepReconciler`
+    /// refuses to perform). `isChatModeTask` covers the branch that predicate can never
+    /// reach (chat is excluded from it by definition): a chat task's completed
+    /// producing role rejects here too, and its honest exit is also close — a chat
+    /// task runs until closed. `.needsAcceptance` returns nil — `routeAccept` never
+    /// rejects it. Every tool named must survive `AutovisorGoalLint.scanStrict`
+    /// (pinned by `AutovisorActionTests.testAcceptAdvice_namesOnlyManagerTools`).
+    static func acceptRejectionAdvice(
+        roleStatus: RoleExecutionStatus?,
+        isChatModeTask: Bool,
+        taskReadyToClose: Bool
+    ) -> String? {
+        guard let roleStatus else {
+            return "call task_status for each role's current status"
+        }
+        switch roleStatus {
+        case .needsAcceptance:
+            return nil
+        case .done, .accepted:
+            // Deliberately does NOT repeat the table facts ("already completed" /
+            // "already accepted"): the composed message would read the fact twice, and
+            // the duplicate substring let the replace-not-append mutation slip past the
+            // existing `failsWithSpecificReason` pin (its needle matched the advice alone).
+            if taskReadyToClose {
+                return "nothing further awaits per-role acceptance; finalize with control_task close (\(closeAcceptsEverything))"
+            }
+            if isChatModeTask {
+                return "nothing awaits acceptance on it; a chat task runs until control_task close ends it"
+            }
+            return "no acceptance is pending for it; other roles may still be active — check task_status"
+        case .working:
+            return "wait for it to finish, or steer it with message_task"
+        case .failed:
+            // Names the RECOVERABLE verbs only — `delete` is an irreversible cascade
+            // (removes delegated children too) and must not ride an error string a
+            // small model may obey verbatim; the prompt's Failed triage owns that call.
+            return "restart it with manage_role restart plus guidance, or control_task stop if the task no longer serves the goal"
+        case .revisionRequested:
+            return "a revision is already in flight; check task_status for its progress"
+        case .idle, .ready:
+            return "it has not produced work to accept yet; task_status shows its progress"
+        case .skipped:
+            // Restart is not free: it cascades. Say so, so the manager weighs it against
+            // downstream roles whose accepted work the reset would discard.
+            return "it was skipped; manage_role restart re-runs it and resets its downstream roles"
+        }
     }
 }

@@ -1,0 +1,8 @@
+Test Suite 'All tests' started at 2026-08-08 01:00:00.000
+Test case 'CalculatorTests.testAddition()' passed on 'My Mac - Calculator (12345)' (0.001 seconds)
+/Users/me/Proj/Tests/CalculatorTests/DivisionTests.swift:42: error: -[CalculatorTests.DivisionTests testDivideByZero] : XCTAssertEqual failed: ("inf") is not equal to ("0")
+Test case 'DivisionTests.testDivideByZero()' failed on 'My Mac - Calculator (12345)' (0.004 seconds)
+Tests/CalculatorTests/ParsingTests.swift:8: error: -[CalculatorTests.ParsingTests testParsesUnicode] : XCTAssertTrue failed
+Test case 'ParsingTests.testParsesUnicode()' failed on 'My Mac - Calculator (12345)' (0.002 seconds)
+Test case 'CalculatorTests.testSubtraction()' skipped on 'My Mac - Calculator (12345)' (0.000 seconds)
+** TEST FAILED **

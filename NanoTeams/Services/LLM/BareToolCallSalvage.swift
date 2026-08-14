@@ -64,9 +64,40 @@ nonisolated enum BareToolCallSalvage {
             ?? bareIdentifierCall(in: cleaned, advertised: advertised)
     }
 
+    /// True when `text` is a tool-call payload the runtime failed to dispatch — the whole
+    /// reply is one JSON object naming a real tool.
+    ///
+    /// Separate from `salvage` on purpose: this answers "was that an ATTEMPT?", which has
+    /// callers that must not dispatch anything. The planning phase is the motivating one —
+    /// its prose fallback records the turn as the step's durable plan, and a failed call
+    /// recorded there survives the phase boundary as the only memory of the exploration
+    /// (observed 2026-08-07: a step's `scratchpad` became
+    /// `{"name":"list_files","arguments":{"path":"MeditationApp"}}|`, so the implementation
+    /// phase began with no plan and the role never ran the build its contract demanded).
+    ///
+    /// Rule A with the tail requirement relaxed — the point is recognition, not dispatch,
+    /// so trailing prose or sentinel wreckage must not make an attempt unrecognisable.
+    ///
+    /// The rest of the chain is Rule A's, EXACTLY, by running Rule A: the two must not be
+    /// able to disagree about what counts as an attempt. Every future tightening (a new
+    /// reserved name, a different resolver, an added shape rejection) then applies to both
+    /// at once — a divergence here would either make the planning nudge fire for payloads
+    /// route 4 dispatches, or leave a dispatched call unrecognised as an attempt.
+    static func looksLikeToolCallAttempt(_ text: String) -> Bool {
+        let cleaned = unwrappingFence(
+            ModelTokenCleaner.clean(text).trimmingCharacters(in: .whitespacesAndNewlines))
+        guard !cleaned.isEmpty else { return false }
+        return jsonEnvelopeCall(in: cleaned, requireCleanTail: false) != nil
+    }
+
     // MARK: - Rule A — the whole reply is one JSON object
 
-    private static func jsonEnvelopeCall(in cleaned: String) -> StepToolCall? {
+    /// - Parameter requireCleanTail: whether everything after the object must be
+    ///   whitespace or sentinel debris. `true` for dispatch (see `isSentinelDebris`);
+    ///   `false` only for `looksLikeToolCallAttempt`, which dispatches nothing.
+    private static func jsonEnvelopeCall(
+        in cleaned: String, requireCleanTail: Bool = true
+    ) -> StepToolCall? {
         // The object must span the ENTIRE reply. Prose around a JSON object means the
         // model was writing about a call, not making one — and this is deliberately not
         // `TeamConfigParser.extractJSONObject`, which SCANS for the first object anywhere
@@ -75,7 +106,7 @@ nonisolated enum BareToolCallSalvage {
         guard cleaned.hasPrefix("{"),
               let (jsonText, end) = ToolCallParsingHelpers.extractJSONBracedValue(
                 in: Substring(cleaned), from: cleaned.startIndex),
-              cleaned[end...].allSatisfy(\.isWhitespace)
+              !requireCleanTail || isSentinelDebris(cleaned[end...])
         else { return nil }
 
         // STRICT parse only. The repair chain (`parseAfterRepair`, control-character
@@ -106,6 +137,20 @@ nonisolated enum BareToolCallSalvage {
 
         return StepToolCall(
             providerID: nil, name: resolved, argumentsJSON: arguments(in: dict))
+    }
+
+    /// Whether everything after the object is whitespace or the wreckage of a sentinel
+    /// the token cleaner half-removed.
+    ///
+    /// The rule that the object must span the ENTIRE reply is what keeps Rule A safe —
+    /// prose around a JSON object means the model was writing ABOUT a call. But
+    /// `allSatisfy(\.isWhitespace)` is a stricter tail test than the parser it backstops:
+    /// `gemma-4-e4b` appends a stray `|` after the closing brace in 9 of 30 envelopes,
+    /// and a single one of those bytes was the entire reason one call was dropped.
+    /// These characters cannot form a sentence the way a trailing clause can, so
+    /// admitting them costs none of the contract.
+    private static func isSentinelDebris(_ tail: Substring) -> Bool {
+        tail.allSatisfy { $0.isWhitespace || "|></".contains($0) }
     }
 
     /// The tool identity, read from an explicit top-level key only.

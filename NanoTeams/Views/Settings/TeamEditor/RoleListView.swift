@@ -15,7 +15,7 @@ struct RoleRowBadgeInputs: Equatable {
     var selectedScheme: String? = nil
     var isVisionConfigured: Bool = false
     var isComputerUseEnabled: Bool = false
-    var autovisorAllowTeamGeneration: Bool = true
+    var autovisorTeamPolicy: AutovisorTeamPolicy = .unrestricted
 }
 
 /// Precomputed badge models for one role. Handed to the row as a plain value so
@@ -212,7 +212,7 @@ struct RoleListView: View {
                     selectedScheme: badgeInputs.selectedScheme,
                     isVisionConfigured: badgeInputs.isVisionConfigured,
                     isComputerUseEnabled: badgeInputs.isComputerUseEnabled,
-                    autovisorAllowTeamGeneration: badgeInputs.autovisorAllowTeamGeneration
+                    autovisorTeamPolicy: badgeInputs.autovisorTeamPolicy
                 ),
                 skills: RoleEditorSkillsPolicy.badge(
                     attachedIDs: role.attachedSkillIDs,

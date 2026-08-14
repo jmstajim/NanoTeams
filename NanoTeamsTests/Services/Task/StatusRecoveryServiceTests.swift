@@ -399,4 +399,129 @@ final class StatusRecoveryServiceTests: XCTestCase {
         XCTAssertEqual(task.runs[1].steps[0].status, .paused)
         XCTAssertEqual(task.runs[1].roleStatuses["softwareEngineer"], .idle)
     }
+
+    // MARK: - Destroyed team-generation records
+
+    private static let generationStepID = "\(StepExecution.teamGenerationIDPrefix)ABC"
+
+    /// The observed production wedge: `restartRole` reset the synthetic generation step,
+    /// leaving it `.pending` with an empty `toolCalls` and a phantom `roleStatuses` key.
+    private func makeWedgedGenerationTask(
+        stepStatus: StepStatus = .pending,
+        generatedTeam: Team? = nil,
+        phantomRoleStatus: RoleExecutionStatus? = .idle
+    ) -> NTMSTask {
+        let step = StepExecution(
+            id: Self.generationStepID, role: .supervisor, title: "Generate Team",
+            status: stepStatus)
+        var roleStatuses: [String: RoleExecutionStatus] = ["supervisor": .done]
+        if let phantomRoleStatus { roleStatuses[Self.generationStepID] = phantomRoleStatus }
+        var task = NTMSTask(id: 0, title: "Gen", supervisorTask: "build it")
+        task.runs = [Run(id: 0, steps: [step], roleStatuses: roleStatuses)]
+        if let generatedTeam { task.adoptGeneratedTeam(generatedTeam) }
+        return task
+    }
+
+    func testDestroyedGenerationRecord_withNoTeam_settlesToPaused() {
+        var task = makeWedgedGenerationTask()
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+
+        XCTAssertTrue(changed)
+        XCTAssertEqual(
+            task.runs[0].steps[0].status, .paused,
+            ".paused, not .failed: resumeRun re-enters generation for it, so it is genuinely "
+                + "resumable — and .failed would hide the toolbar control entirely")
+        XCTAssertNotNil(task.runs[0].steps[0].completedAt)
+    }
+
+    /// The whole point of settling it. A `.pending` step makes `derivedTaskStatus()` fall
+    /// through to `.running` forever with a dead engine — invisible to the Autovisor's
+    /// triage, which has no `running` bullet, and blocking every milestone behind it
+    /// under the manager's ONE-TASK-IN-FLIGHT rule.
+    func testDestroyedGenerationRecord_taskStopsDerivingRunning() {
+        var task = makeWedgedGenerationTask()
+        XCTAssertEqual(
+            task.derivedStatusFromActiveRun(), .running, "precondition: the wedge")
+
+        _ = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+        XCTAssertEqual(task.derivedStatusFromActiveRun(), .paused)
+    }
+
+    /// With a team already adopted there is nothing left to generate, so the record
+    /// settles `.done` — otherwise `allDone` can never be true and the task never
+    /// reaches Review.
+    func testDestroyedGenerationRecord_afterAdoption_settlesToDone() {
+        var task = makeWedgedGenerationTask(generatedTeam: TeamTemplateFactory.startup())
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+
+        XCTAssertTrue(changed)
+        XCTAssertEqual(task.runs[0].steps[0].status, .done)
+        XCTAssertNotEqual(task.derivedStatusFromActiveRun(), .running)
+    }
+
+    /// Removing the phantom key is not cosmetic: left in place, the role pass below
+    /// reconciles it against the step and settles it, after which `resumeRun`'s
+    /// failed-step revival would call `runStep` on a step belonging to no roster.
+    func testPhantomGenerationRoleKey_isRemovedFromEveryRun() {
+        let older = Run(
+            id: 0,
+            steps: [StepExecution(id: Self.generationStepID, role: .supervisor, title: "G", status: .failed)],
+            roleStatuses: ["supervisor": .done, Self.generationStepID: .failed])
+        var task = makeWedgedGenerationTask()
+        task.runs.insert(older, at: 0)
+
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+
+        XCTAssertTrue(changed)
+        for (index, run) in task.runs.enumerated() {
+            XCTAssertNil(
+                run.roleStatuses[Self.generationStepID],
+                "phantom key survived in run \(index)")
+        }
+    }
+
+    /// Nothing was interrupted, so the durable latch must stay disarmed — the step's own
+    /// `.paused` already drives the derived status.
+    func testDestroyedGenerationRecord_doesNotArmTheRecoveryPauseLatch() {
+        var task = makeWedgedGenerationTask(phantomRoleStatus: nil)
+        _ = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+        XCTAssertNotEqual(task.status, .paused)
+    }
+
+    /// `.paused` is HONEST for a generation cancelled by `pauseRun` or parked here after
+    /// an app quit — and it carries the "was cancelled" envelope the pane renders. Only
+    /// `.pending` (which has exactly one writer, `StepExecution.reset()`) is a wedge.
+    func testHonestGenerationStepStatuses_areLeftAlone() {
+        for status in [StepStatus.paused, .failed, .done] {
+            var task = makeWedgedGenerationTask(stepStatus: status, phantomRoleStatus: nil)
+            _ = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+            XCTAssertEqual(task.runs[0].steps[0].status, status, "status \(status) was rewritten")
+        }
+    }
+
+    /// A `.running` generation step belongs to the ordinary parking pass, which writes
+    /// `.paused` AND arms the latch — the settle must not intercept it.
+    func testRunningGenerationStep_isParkedByTheOrdinaryPass_andArmsTheLatch() {
+        var task = makeWedgedGenerationTask(stepStatus: .running, phantomRoleStatus: nil)
+        _ = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+        XCTAssertEqual(task.runs[0].steps[0].status, .paused)
+        XCTAssertEqual(task.status, .paused, "genuinely interrupted work arms the latch")
+    }
+
+    /// A REAL role's `.pending` step is the ordinary "hasn't started yet" state and must
+    /// never be settled — only the synthetic generation prefix qualifies.
+    func testPendingStepOfARealRole_isUntouched() {
+        var task = makePairedTask(stepStatus: .pending, roleStatus: .idle)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+        XCTAssertFalse(changed)
+        XCTAssertEqual(task.runs[0].steps[0].status, .pending)
+    }
+
+    func testDestroyedGenerationRecord_isIdempotent() {
+        var task = makeWedgedGenerationTask()
+        XCTAssertTrue(StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default))
+        XCTAssertFalse(
+            StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default),
+            "a second pass has nothing left to do")
+    }
 }

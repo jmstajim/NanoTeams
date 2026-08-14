@@ -152,6 +152,24 @@ final class TaskEngineStoreAdapter: TeamEngineStore {
     /// (no parent `activeTeam` inheritance — spec #91 Coding Agent self-recursion).
     private var resolvedTeam: Team? {
         guard let task = activeTask else { return nil }
+        // Team generation never completed, so the only team this task resolves to is the
+        // Generated Team PLACEHOLDER — a Supervisor-only roster the engine cannot execute.
+        // Running on it is not a no-op: `Run.activeWorkRoleIDs` is trivially empty, so the
+        // chat-mode auto-complete arm retires the run `.done` with no team ever generated
+        // and no toolbar control left. Fail loudly instead; `resumeRun` / `startRun` /
+        // Retry all re-enter generation, which is the actual remedy.
+        //
+        // The engine's single team-resolution point, so this covers every entry at once
+        // (resume, the `restartRole` wake, `notifyExternalEvent`, recurrence, the queued-
+        // message backstop). Deliberately NOT in shared `TeamResolution.resolve`:
+        // `TeamBoardView` routes through that and would start rendering `Team.default`'s
+        // roster during a legitimate generation. Unreachable on the happy path — no engine
+        // exists until `spawnTeamGeneration` starts one AFTER the team is adopted.
+        if orchestrator?.needsTeamGeneration(taskID: taskID) == true {
+            orchestrator?.lastErrorMessage =
+                "Team generation hasn't completed for task \(taskID) — retry it before the team can run."
+            return nil
+        }
         switch TeamResolution.resolve(
             task: task,
             teamProvider: { orchestrator?.workFolder?.team(withID: $0) },

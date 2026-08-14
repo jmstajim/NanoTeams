@@ -214,6 +214,51 @@ final class NTMSRepositoryReconcileTests: XCTestCase {
                       "version bump must deliver the whole never-offered group")
     }
 
+    /// The same delivery, asserted for the Xcode runners with their names spelled
+    /// LITERALLY.
+    ///
+    /// The test above takes its fixture from `managerOptionalToolGroups.first`, so
+    /// it is structurally incapable of noticing a group that was never added — the
+    /// list under test IS the list it reads. This one names the tools, so removing
+    /// their group entry (while leaving them in `managerOptionalToolIDs`) fails
+    /// here and nowhere else. That mutation is the whole failure mode: the feature
+    /// would work on a brand-new Autovisor team and never on an existing folder.
+    ///
+    /// `syncAutovisorTeamToTemplate` cannot mask this — it union-enforces MANDATORY
+    /// tools only, and it does not run on the repository-level open this test drives.
+    func testVersionBump_deliversXcodeRunners_toAManagerFromABuildWithoutThem() throws {
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        let runners = [ToolNames.runXcodebuild, ToolNames.runXcodetests]
+        let store = AtomicJSONStore()
+        var teamsFile = try store.read(TeamsFile.self, from: paths.teamsJSON)
+        var autovisor = TeamTemplateFactory.autovisor()
+        let managerIdx = try XCTUnwrap(autovisor.roles.firstIndex {
+            $0.systemRoleID == AutovisorConstants.managerRoleSystemID
+        })
+        autovisor.roles[managerIdx].toolIDs.removeAll { runners.contains($0) }
+        XCTAssertFalse(autovisor.roles[managerIdx].toolIDs.contains(ToolNames.runXcodebuild),
+                       "fixture precondition: the stored manager predates the runners")
+        teamsFile.teams.append(autovisor)
+        try store.write(teamsFile, to: paths.teamsJSON)
+
+        var state = try store.read(WorkFolderState.self, from: paths.workFolderJSON)
+        state.lastAppliedAppVersion = ""
+        try store.write(state, to: paths.workFolderJSON)
+
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        let reconciled = try store.read(TeamsFile.self, from: paths.teamsJSON)
+        let manager = try XCTUnwrap(reconciled.teams
+            .first { $0.templateID == AutovisorConstants.teamTemplateID }?
+            .roles.first { $0.systemRoleID == AutovisorConstants.managerRoleSystemID })
+        for tool in runners {
+            XCTAssertTrue(manager.toolIDs.contains(tool),
+                          "\(tool) must reach an EXISTING manager on version bump — the group "
+                              + "in managerOptionalToolGroups is its only delivery path")
+        }
+    }
+
     /// Two consecutive version bumps must not duplicate group members: the
     /// first delivers (group absent), the second sees the group present and
     /// skips. A duplicate toolID would double-render the tool row in the

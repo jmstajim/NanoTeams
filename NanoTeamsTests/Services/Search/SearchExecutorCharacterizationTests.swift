@@ -75,6 +75,15 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
 
     /// `CharacterSet.newlines` = U+000A, U+000B, U+000C, U+000D, U+0085, U+2028, U+2029.
     /// Each of the six single-separator cases puts the needle on line 2.
+    ///
+    /// CHOICE: split on all seven scalars, or on `\n` alone — which is what a byte scanner does
+    /// naturally and what nearly every other tool means by "line". Seven wins for one concrete
+    /// reason, re-verified 2026-08-09: `ReadLinesTool` splits with `components(separatedBy:
+    /// .newlines)`, the same set, and `SearchMatch.line` is what the model feeds straight into it.
+    /// A `\n`-only scanner here would renumber every file containing VT/FF/NEL/LS/PS relative to
+    /// the tool that then reads it, and the model would be handed a line that resolves elsewhere.
+    ///
+    /// FIXTURE: one file per separator, `alpha<sep>NEEDLE<sep>omega`.
     func testCharacterization_lineNumbering_eachSeparatorSplitsOnce() throws {
         let separators: [(name: String, scalar: String)] = [
             ("LF", "\u{000A}"),
@@ -103,6 +112,14 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
     /// pair yields an EMPTY line between them and the needle lands on line 3.
     ///
     /// This is the single most dangerous case for the rewrite — a `\n`-only scanner reports 2.
+    ///
+    /// CHOICE: CRLF as two separators with an empty line between, or as one line ending. Two is
+    /// forced by the same `.newlines` set as above, and the alternative is not merely different —
+    /// it is off by one on every CRLF file, silently, for the one field the model copies verbatim
+    /// into `read_lines`.
+    ///
+    /// FIXTURE: `alpha\r\nNEEDLE\r\nomega\r\n`, read back with `contextBefore: 2` so the empty
+    /// line is asserted directly rather than inferred from the number.
     func testCharacterization_lineNumbering_crlfIsTwoSeparators() throws {
         try write("crlf.txt", content: "alpha\r\nNEEDLE\r\nomega\r\n")
 
@@ -117,6 +134,13 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
 
     /// A trailing separator produces a final EMPTY line. `testContextAfter_atFileEnd_clamped`
     /// depends on this, and a byte scanner that stops at the last terminator would drop it.
+    ///
+    /// CHOICE: a trailing separator yields a final empty line, or is absorbed as a terminator so
+    /// the file has one fewer line. Absorbing it reads more naturally, and is wrong here for the
+    /// same handoff reason: `read_lines` does not absorb it, so `total_lines` and every line
+    /// number past the last content line would disagree between the two tools.
+    ///
+    /// FIXTURE: `"NEEDLE\n"` read with `contextAfter: 3`.
     func testCharacterization_trailingSeparator_producesEmptyFinalLine() throws {
         try write("trail.txt", content: "NEEDLE\n")
 
@@ -130,6 +154,14 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
     }
 
     /// No trailing separator: the last line is real content and there is no phantom empty line.
+    ///
+    /// CHOICE: at EOF, `context_after` is present-but-EMPTY rather than nil. Either shape is
+    /// defensible — nil says "no window", empty says "a window was requested and clamped to
+    /// nothing" — and the executor deliberately keeps the distinction, because the envelope layer
+    /// above is where a field is omitted. Collapsing it here would take the choice away from the
+    /// only layer that knows what the caller asked for.
+    ///
+    /// FIXTURE: `"alpha\nNEEDLE"` — no terminator — read with `contextAfter: 3`.
     func testCharacterization_noTrailingSeparator_lastLineIsContent() throws {
         try write("notrail.txt", content: "alpha\nNEEDLE")
 
@@ -148,6 +180,15 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
     /// NOT `localizedStandardCompare`. The two genuinely disagree — localized ordering would give
     /// `["_", "a", "Ä", "B", "Z", "б"]`. `list_files` uses the localized variant; the executor
     /// must not drift into it when the walk is rewritten to prefetch resource values.
+    ///
+    /// CHOICE: scalar order, or `localizedStandardCompare` as `list_files` uses. The two tools
+    /// legitimately differ because their outputs are read differently — `list_files` renders a
+    /// listing a human or model browses, where `f2` before `f10` matters, while search results are
+    /// consumed by path and no caller reads meaning from their order. What must NOT vary is the
+    /// order within one tool across runs, which is what this pins.
+    ///
+    /// FIXTURE: six filenames straddling ASCII punctuation, Latin-1 and Cyrillic — exactly the
+    /// range where the two comparators disagree.
     func testCharacterization_directoryOrder_isUnicodeScalarNotLocalized() throws {
         for name in ["Z.swift", "a.swift", "Ä.swift", "_.swift", "B.swift", "б.swift"] {
             try write(name, content: "NEEDLE\n")
@@ -165,6 +206,14 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
 
     /// A zero-byte file decodes to the empty string, so it is TEXT with one empty line — not a
     /// binary. The rewrite's size gate must special-case 0 rather than treating it as unreadable.
+    ///
+    /// CHOICE: zero bytes is text with one empty line, or unreadable. "Unreadable" is the tempting
+    /// arm — there is nothing to decode — and it is wrong because it puts an ordinary empty file
+    /// into the same bucket as a corrupt one, teaching the model that an empty `__init__.py` is a
+    /// file it failed to read rather than a file with nothing in it.
+    ///
+    /// FIXTURE: a zero-byte file beside a matching one, so "no hits from empty.txt" is
+    /// distinguishable from "the walk never ran".
     func testCharacterization_emptyFile_isTextNotBinary() throws {
         try write("empty.txt", content: "")
         try write("other.txt", content: "NEEDLE\n")
@@ -178,6 +227,15 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
     /// Invalid UTF-8 WITHOUT a NUL byte. Today it is classified binary only after a full read +
     /// failed decode. After the rewrite an 8 KB NUL sniff runs first — this file has no NUL, so it
     /// must still fall through to the decode and land in the same bucket.
+    ///
+    /// CHOICE: binaries are counted in aggregate (`skipped_binary_count`), never listed
+    /// individually in `skipped_files`. Listing them is the more informative arm and is rejected
+    /// on volume — one `Assets.xcassets` floods the envelope — while the aggregate still preserves
+    /// the distinction the model actually needs: "no hits" versus "some files were not read".
+    /// `skipped_files` stays for the exceptional case, a file that should have been readable.
+    ///
+    /// FIXTURE: three bytes, `FF FE FD` — invalid UTF-8 with no NUL, so the 8 KB NUL sniff cannot
+    /// classify it and it must fall through to the decode.
     func testCharacterization_invalidUTF8WithoutNUL_isBinaryNotSkipped() throws {
         let url = tempDir.appendingPathComponent("bytes.txt")
         try Data([0xFF, 0xFE, 0xFD]).write(to: url)
@@ -192,6 +250,15 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
     /// The four cases where a naive ASCII byte fold disagrees with ICU. All four involve a line
     /// containing non-ASCII, which is precisely why the rewrite routes such lines to ICU
     /// unconditionally instead of trusting the byte result.
+    ///
+    /// CHOICE: ICU is the oracle for case-insensitive matching, or the byte fold is. Byte-exact is
+    /// a defensible answer for a CODE search — `straße` arguably should not match `strasse` in a
+    /// source file — and it is rejected because the tool also searches prose, and because the two
+    /// disagree in BOTH directions, so no single fast path can be "close enough": `cafe` + U+0301
+    /// matches under bytes and not ICU, `ß`/`ss` and U+212A/`k` match under ICU and not bytes.
+    ///
+    /// FIXTURE: four files, one per disagreement — combining acute, eszett, KELVIN SIGN, and a
+    /// plain-ASCII file probed with a non-ASCII needle.
     func testCharacterization_nonASCIILines_followICUNotByteFolding() throws {
         // Byte scan would say YES (the literal bytes "cafe" are present), ICU says NO because the
         // grapheme is "é", not "e".
@@ -218,7 +285,14 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
 
     /// The ASCII fold must be `A-Z -> a-z` only. A naive `| 0x20` also maps `[`->`{`, `@`->backtick,
     /// `^`->`~` and NUL->space, which in a code search means `foo{` would match `foo[`.
-    func testCharacterization_asciiPunctuation_isNotCaseFolded() throws {
+    /// NOT a characterization, despite where it sits — renamed 2026-08-09 during the audit that
+    /// added `CHOICE:` lines to this file. Writing one for it would have meant inventing an
+    /// alternative that does not exist: there is no reading under which `foo{` matching `foo[` is
+    /// a defensible answer for a code search. It pins a CONTRACT against one specific wrong
+    /// implementation — `c | 0x20`, which also maps `[`→`{`, `@`→`` ` ``, `^`→`~` and NUL→space —
+    /// and that implementation was actually written and shipped in a draft (CLAUDE.md, Грабли
+    /// 2026-08-01). Labelling it a choice is how a defect gets cemented by a green test.
+    func testASCIIPunctuation_isNotCaseFolded() throws {
         try write("brackets.swift", content: "let a = arr[0]\n")
 
         XCTAssertTrue(try run(["arr{0}"]).matches.isEmpty,
@@ -232,6 +306,16 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
     /// An empty needle matches nothing — `NSString` returns `NSNotFound` for an empty search
     /// string. A byte scanner returns "found at offset 0" unless it guards this explicitly.
     /// Reached via a MIXED query array, which is not list mode.
+    ///
+    /// CHOICE: an empty needle matches nothing, matches every line (what `grep ''` does), or is
+    /// rejected as an invalid argument. Matching everything is the POSIX reading and is wrong
+    /// here because a model that emits `["beta", ""]` meant to send one query and produced a
+    /// stray element; answering with the whole tree spends the page budget on noise and buries
+    /// the hit it asked for. Rejecting the whole call would throw away the good query with the
+    /// bad one, so the empty element is dropped and the rest is answered.
+    ///
+    /// FIXTURE: the mixed array `["beta", ""]` — mixed on purpose, since an all-empty array is
+    /// list mode and never reaches this path.
     func testCharacterization_emptyNeedleInMixedArray_matchesNothing() throws {
         try write("a.swift", content: "alpha\nbeta\n")
 

@@ -206,8 +206,19 @@ nonisolated private func encodeToJSON<T: Encodable>(_ value: T) -> String {
     return str
 }
 
+/// Renders a tool call's arguments for the envelope. Total by contract — every failure
+/// answers `"{}"`.
+///
+/// The `isValidJSONObject` guard is what makes that contract true, and it is not
+/// belt-and-braces: `data(withJSONObject:)` RAISES an ObjC `NSInvalidArgumentException` for a
+/// value JSON cannot express (NaN/infinity, a non-string key, a `Date`), and `try?` catches
+/// Swift errors, not ObjC exceptions — so without it this helper terminates the process
+/// (measured against Foundation, 2026-08-08). It is called on every tool ERROR path, i.e.
+/// precisely where the arguments are least trustworthy, and the surrounding `guard/else`
+/// shape advertises a safety it did not have. `stableJSONString` already guards this way.
 nonisolated func encodeArgsToJSON(_ args: [String: Any]) -> String {
-    guard let data = try? JSONSerialization.data(withJSONObject: args, options: [.sortedKeys]),
+    guard JSONSerialization.isValidJSONObject(args),
+        let data = try? JSONSerialization.data(withJSONObject: args, options: [.sortedKeys]),
         let str = String(data: data, encoding: .utf8)
     else {
         return "{}"

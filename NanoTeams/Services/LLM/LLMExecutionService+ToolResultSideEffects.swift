@@ -10,7 +10,6 @@ extension LLMExecutionService {
         result: ToolExecutionResult,
         stepID: String,
         taskID: Int,
-        memoryStore: MemoryTagStore,
         conversationMessages: inout [ChatMessage]
     ) async {
         guard result.toolName == ToolNames.updateScratchpad, !result.isError else { return }
@@ -37,8 +36,6 @@ extension LLMExecutionService {
             }
         }
 
-        memoryStore.registerPlanUpdate(content: content, iteration: memoryStore.currentIteration)
-
         // ONE acknowledgement per update. The plan itself is NOT echoed back —
         // it is verbatim in the model's own tool-call turn one message earlier
         // (a stateful chain carries it; echoing was pure duplication), and the
@@ -50,13 +47,11 @@ extension LLMExecutionService {
         // rebuilt on every entry — so a step resuming after a Supervisor answer
         // announced a "transition to your full toolset" that had happened long
         // ago, and a role with no phase at all announced one that never happened.
-        let stepKey = TaskStepKey(taskID: taskID, stepID: stepID)
         // `isMidPlanning`, not `wireCarriesBrief`: after `.closeWithoutRebuild` the brief is
         // still on the wire but no boundary will ever fire, so the planning wording would
         // promise a fresh conversation that never arrives.
         let ackMessage = PlanningPhasePolicy.scratchpadAck(
             isPlanningWire: PlanningPhasePolicy.isMidPlanning(conversationMessages))
-        executionStates[stepKey]?.planMessageIndex = conversationMessages.count
         conversationMessages.append(
             ChatMessage(role: .user, content: ackMessage)
         )
@@ -285,19 +280,19 @@ extension LLMExecutionService {
                 ?? "old_text matches multiple regions of the file — include more surrounding lines in old_text to pinpoint one."
 
         case "anchor_not_found":
-            // `old_text` didn't match the file's current content. This is almost
-            // always a transcription error in the anchor (a wrong character, lost
-            // whitespace, or `/` ↔ `\` slash confusion), NOT a file mutation — so
-            // do not claim "the content changed" and do not hard-demand a re-read
-            // (the read-dedup would answer "unchanged, do NOT re-read", deadlocking
-            // the model). Steer it to compare against the content it already read
-            // and fix the anchor character-for-character. Path comes from args
-            // (handler envelope doesn't include it in details).
+            // `old_text` didn't match the file's current content. Two common
+            // causes: a transcription error in the anchor (a wrong character,
+            // lost whitespace, `/` ↔ `\` slash confusion), or an anchor copied
+            // from a PRE-EDIT read after the model's own edit changed the
+            // region. A re-read always returns the file's CURRENT content in
+            // full (the tag store performs no dedup — 2026-08-11), so it is the
+            // reliable remedy and the guidance recommends it outright. Path
+            // comes from args (handler envelope doesn't include it in details).
             let argsDict = JSONUtilities.parseJSONDictionary(result.argumentsJSON)
             let path = (argsDict?["path"] as? String)
                 .flatMap { $0.isEmpty ? nil : $0 }
             let target = path.map { "'\($0)'" } ?? "the file"
-            var guidance = "old_text not found in \(target). It must match the file's current content exactly, character for character — including whitespace, indentation, and slash direction (`/` vs `\\`). Compare your old_text against the content you already read and correct it; only re-read if you have not yet read this region."
+            var guidance = "old_text not found in \(target). It must match the file's current content exactly, character for character — including whitespace, indentation, and slash direction (`/` vs `\\`). If you edited this file after reading it, your copy is stale — re-read the region first. Otherwise compare your old_text against the content you read and fix the transcription."
             // The handler attaches a specific diagnosis (indentation mismatch,
             // whitespace-only anchor, anchor longer than file) when it found one —
             // re-state it last so the generic character-level steering doesn't bury it.
@@ -326,7 +321,14 @@ extension LLMExecutionService {
             let direction: String
             switch code {
             case "INVALID_ARGS":
+                // Name the WHOLE contract, not just the first key that tripped. Handlers
+                // throw on the first missing argument they read, so a call short three
+                // arguments costs three round-trips of "Missing required argument: X" —
+                // and the model is never told which of the ones it DID send arrived. The
+                // schema is the authority; `result.argumentsJSON` is what actually landed.
                 direction = "Fix the arguments and retry."
+                    + Self.requiredArgumentsHint(
+                        toolName: result.toolName, argumentsJSON: result.argumentsJSON)
             case let c? where c.hasSuffix("_TIMED_OUT") || c == "TIMEOUT":
                 direction = "This may be transient — retry once; if it fails again, choose a different approach."
             case let c? where c.hasSuffix("_DENIED") || c == "tool_not_authorized":
@@ -338,4 +340,27 @@ extension LLMExecutionService {
         }
     }
 
+    /// " `edit_file` requires: new_text, old_text, path. Your call carried: new_text."
+    /// — or "" when the tool has no schema here, or declares nothing required.
+    ///
+    /// A runtime failure envelope, not schema text: it ships once, on the call that
+    /// already failed, so the instruction budget that keeps `ToolSchema.description`
+    /// lean does not apply. What it buys is the difference between one corrective
+    /// round-trip and one per missing argument.
+    nonisolated static func requiredArgumentsHint(
+        toolName: String, argumentsJSON: String
+    ) -> String {
+        guard let schema = ToolHandlerRegistry.allSchemas.first(where: { $0.name == toolName })
+        else { return "" }
+        let required = schema.parameters.required ?? []
+        guard !required.isEmpty else { return "" }
+
+        var hint = " `\(toolName)` requires: \(required.sorted().joined(separator: ", "))."
+        if let carried = JSONUtilities.parseJSONDictionary(argumentsJSON), !carried.isEmpty {
+            hint += " Your call carried: \(carried.keys.sorted().joined(separator: ", "))."
+        } else {
+            hint += " Your call carried no arguments."
+        }
+        return hint
+    }
 }

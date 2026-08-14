@@ -90,14 +90,18 @@ extension NTMSOrchestrator {
         taskID: Int,
         answer: String,
         attachments: [StagedAttachment] = [],
-        draftID: UUID? = nil,
         isAutoAnswer: Bool = false
     ) async -> Bool {
         // Bash approvals are NOT answered here — they are held in-loop by the gate
         // and resolved DIRECTLY via the Allow/Deny buttons (`resolveBashApproval`),
         // bypassing the model. This path handles only normal `ask_supervisor`.
 
-        // Finalize staged attachments and clean up draft directory
+        // Finalize staged attachments. There is deliberately no draft-directory cleanup here:
+        // the parameter that drove one (`draftID`) had no caller and its body was the same
+        // whole-directory delete `cancelDraft` had to stop doing — `formState.draftID` names one
+        // `.nanoteams/staged/<id>/` that the task draft and every saved answer draft write into.
+        // Staged copies that outlive a submit are swept at the next `openWorkFolder`
+        // (`cleanupAllStagedDrafts`), so removing it costs nothing and removes a landmine.
         var finalPaths: [String] = []
         if let workFolderRoot = workFolderURL {
             if !attachments.isEmpty {
@@ -113,10 +117,6 @@ extension NTMSOrchestrator {
                     lastErrorMessage = "Failed to finalize attachments: \(error.localizedDescription)"
                     return false  // Do not submit answer without the attachments the user expects
                 }
-            }
-            // Clean up the staging directory used for this answer's attachments.
-            if let draftID {
-                try? repository.cleanupStagedDraft(at: workFolderRoot, draftID: draftID)
             }
         }
 

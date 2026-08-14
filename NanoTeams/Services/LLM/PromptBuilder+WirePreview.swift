@@ -269,7 +269,7 @@ nonisolated extension PromptBuilder {
     // MARK: - Private
 
     private static func guardRenderable(team: Team?) throws(WirePreviewError) {
-        if team?.templateID == "generated" {
+        if team?.isGeneratedPlaceholder == true {
             throw .generatedTeamNotRenderable
         }
     }
@@ -337,8 +337,8 @@ nonisolated extension PromptBuilder {
             teamArtifacts: team?.artifacts ?? []
         )
         let toolList = renderToolListPlaceholder(toolNames: toolNames)
-        let hasFileReadTools = !Set(toolNames).isDisjoint(with: ToolHandlerRegistry.fileReadTools)
-        let conversationMechanics = buildConversationMechanicsGuidance(hasFileReadTools: hasFileReadTools)
+        let hasTagProducingTools = !Set(toolNames).isDisjoint(with: MemoryTagStore.tagProducingTools)
+        let conversationMechanics = buildConversationMechanicsGuidance(hasTagProducingTools: hasTagProducingTools)
         let workFolderContext = buildWorkFolderContextMessage(
             workFolder: inputs.workFolder,
             agentInstructions: inputs.agentInstructions
@@ -468,7 +468,7 @@ nonisolated extension PromptBuilder {
             // Sourced from the real projection (single source of truth) so the
             // Autovisor Manager role's create_managed_task preview stays
             // byte-identical to the wire when generation is disabled for the folder.
-            autovisorAllowTeamGeneration: inputs.workFolder?.settings.autovisorAllowTeamGeneration ?? true
+            autovisorTeamPolicy: inputs.workFolder.map { AutovisorTeamPolicy(settings: $0.settings) } ?? .unrestricted
         )
     }
 

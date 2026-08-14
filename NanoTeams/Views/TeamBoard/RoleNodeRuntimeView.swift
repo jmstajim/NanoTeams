@@ -211,8 +211,6 @@ struct RoleNodeRuntimeView: View {
                 borderColor: Colors.purple,
                 borderWidth: 2,
                 backgroundColor: Colors.purpleTint,
-                glowRadius: 0,
-                shouldAnimate: false,
                 opacity: 1.0
             )
         }
@@ -223,8 +221,6 @@ struct RoleNodeRuntimeView: View {
                 borderColor: Colors.warning,
                 borderWidth: style.borderWidth,
                 backgroundColor: Colors.warningTint,
-                glowRadius: 0,
-                shouldAnimate: false,
                 opacity: 1.0
             )
         }
@@ -235,8 +231,6 @@ struct RoleNodeRuntimeView: View {
                 borderColor: Colors.accent,
                 borderWidth: 2,
                 backgroundColor: style.backgroundColor,
-                glowRadius: 0,
-                shouldAnimate: false,
                 opacity: 1.0
             )
         }

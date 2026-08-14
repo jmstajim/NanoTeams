@@ -41,15 +41,14 @@ final class DelegationLoopWatcherTests: XCTestCase {
         w.considerCommitted(
             taskID: taskID,
             recentAssistant: [(thinking: thinking, content: content, createdAt: MonotonicClock.shared.now())],
-            toolCalls: []
-        )
+            toolCalls: [], informationBoundary: nil)
     }
 
     /// Drives the across-messages path: N finalized assistant turns (content-only).
     private func commitAcross(_ w: DelegationLoopWatcher, _ taskID: Int, messages: [String]) {
         let tuples: [(thinking: String?, content: String, createdAt: Date)] =
             messages.map { (thinking: nil, content: $0, createdAt: MonotonicClock.shared.now()) }
-        w.considerCommitted(taskID: taskID, recentAssistant: tuples, toolCalls: [])
+        w.considerCommitted(taskID: taskID, recentAssistant: tuples, toolCalls: [], informationBoundary: nil)
     }
 
     /// Drives the tool-call-sequence path.
@@ -57,7 +56,7 @@ final class DelegationLoopWatcherTests: XCTestCase {
         _ w: DelegationLoopWatcher, _ taskID: Int,
         calls: [(name: String, argsJSON: String, createdAt: Date)]
     ) {
-        w.considerCommitted(taskID: taskID, recentAssistant: [], toolCalls: calls)
+        w.considerCommitted(taskID: taskID, recentAssistant: [], toolCalls: calls, informationBoundary: nil)
     }
 
     // MARK: - Child-task gating
@@ -678,7 +677,7 @@ final class DelegationLoopWatcherTests: XCTestCase {
         store.delegationLoopWatcher.considerCommitted(
             taskID: childID,
             recentAssistant: [(thinking: nil, content: loopText(), createdAt: firstTriggerAt.addingTimeInterval(-10))],
-            toolCalls: [])
+            toolCalls: [], informationBoundary: nil)
 
         try? await Task.sleep(for: .milliseconds(50))
         XCTAssertNil(outcomeBox.value,
@@ -707,7 +706,7 @@ final class DelegationLoopWatcherTests: XCTestCase {
         store.delegationLoopWatcher.considerCommitted(
             taskID: childID,
             recentAssistant: [(thinking: nil, content: loopText(), createdAt: firstTriggerAt.addingTimeInterval(60))],
-            toolCalls: [])
+            toolCalls: [], informationBoundary: nil)
 
         await handlerTask.value
         guard case .parentMessageQueued(let text)? = outcomeBox.value else {

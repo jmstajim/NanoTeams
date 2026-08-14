@@ -251,6 +251,21 @@ extension TeamBoardView {
                     Label("Save Team...", systemImage: "square.and.arrow.down")
                 }
             }
+
+            // Mirror of "Save Team..." for the pre-adoption half. The graph pane is
+            // hideable and a genuinely `.failed` generation shows no run control
+            // (`TeamBoardRunControl.select` returns nil for `.failed`), so without this
+            // that combination leaves no affordance at all but deleting the task.
+            if let task, store.needsTeamGeneration(taskID: task.id) {
+                Divider()
+
+                Button {
+                    Task { await store.retryTeamGeneration(taskID: task.id) }
+                } label: {
+                    Label("Retry Team Generation", systemImage: "arrow.clockwise")
+                }
+                .disabled(store.isGeneratingTeam(taskID: task.id))
+            }
         } label: {
             Label("More", systemImage: "ellipsis")
         }

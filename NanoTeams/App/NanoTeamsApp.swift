@@ -2,7 +2,12 @@ import SwiftUI
 
 // MARK: - Menu Command Notifications
 
-extension Notification.Name {
+/// `nonisolated` — these are Foundation value constants with no actor
+/// affinity. Without it the app target's `SWIFT_DEFAULT_ACTOR_ISOLATION =
+/// MainActor` makes each `static let` main-actor isolated, which blocks any
+/// `nonisolated` type (e.g. the `AppMenuCommand` effect table) from naming
+/// them.
+nonisolated extension Notification.Name {
     static let navigateToWatchtower = Notification.Name("navigateToWatchtower")
     static let navigateToActiveTask = Notification.Name("navigateToActiveTask")
     static let navigateToAutovisor = Notification.Name("navigateToAutovisor")
@@ -89,20 +94,15 @@ struct NanoTeamsApp: App {
                     // acceptable in exchange for an instant, complete visual
                     // swap including AppKit-resident views.
                     .id(activeThemeRaw)
+                    // Every hand-off lives in `AppDependencyWiring` — this closure is
+                    // unreachable under XCTest (see `isRunningTests` above), so wiring
+                    // written inline here can never be verified.
                     .onAppear {
-                        QuickCaptureController.shared.setup(store: store, dictation: dictation)
-                        // Bridge the Quick Capture queue into the orchestrator so the
-                        // LLM pipeline can consume queued Supervisor messages on each
-                        // role's next iteration. Weak ref — QCC owns the strong reference.
-                        store.quickCaptureFormState = QuickCaptureController.shared.formState
-                        dictation.userSelectedLocalesProvider = {
-                            store.configuration.dictationLocaleIdentifiers.map {
-                                Locale(identifier: $0)
-                            }
-                        }
-                        llmStatusMonitor.startMonitoring(
-                            endpointProvider: { (store.configuration.llmBaseURLString,
-                                                 store.configuration.llmProvider) }
+                        AppDependencyWiring.wire(
+                            store: store,
+                            dictation: dictation,
+                            quickCapture: .shared,
+                            statusMonitor: llmStatusMonitor
                         )
                     }
                     .task {
@@ -116,73 +116,43 @@ struct NanoTeamsApp: App {
             width: WindowLayout.mainDefaultWidth,
             height: WindowLayout.mainDefaultHeight
         )
+        // Which commands appear in which menu, and in what order, is genuine
+        // SwiftUI declaration and stays here. WHAT each command is — title,
+        // shortcut, effect — lives in `AppMenuCommand`, where the table can be
+        // checked for shortcut collisions and dead notifications.
         .commands {
             // File Menu - Open Work Folder
             CommandGroup(after: .newItem) {
-                Button("Open Work Folder...") {
-                    NotificationCenter.default.post(name: .openProject, object: nil)
-                }
-                .keyboardShortcut("o", modifiers: .command)
-
+                AppMenuButton(.openWorkFolder)
                 Divider()
-
-                Button("Close Work Folder") {
-                    NotificationCenter.default.post(name: .closeProject, object: nil)
-                }
-                .keyboardShortcut("w", modifiers: [.command, .shift])
+                AppMenuButton(.closeWorkFolder)
             }
 
             // Replace New Item with New Task
             CommandGroup(replacing: .newItem) {
-                Button("New Task...") {
-                    NotificationCenter.default.post(name: .createNewTask, object: nil)
-                }
-                .keyboardShortcut("n", modifiers: .command)
+                AppMenuButton(.newTask)
             }
 
             // View Menu — append to system View menu (preserves Show/Hide Sidebar)
             CommandGroup(after: .sidebar) {
                 Divider()
-
-                Button("Watchtower") {
-                    NotificationCenter.default.post(name: .navigateToWatchtower, object: nil)
-                }
-                .keyboardShortcut("1", modifiers: .command)
-
-                Button("Active Task") {
-                    NotificationCenter.default.post(name: .navigateToActiveTask, object: nil)
-                }
-                .keyboardShortcut("3", modifiers: .command)
+                AppMenuButton(.watchtower)
+                AppMenuButton(.activeTask)
             }
 
             // Task Menu (context-sensitive commands)
             CommandMenu("Task") {
-                Button("Quick Task...") {
-                    QuickCaptureController.shared.togglePanel()
-                }
-                .keyboardShortcut("0", modifiers: [.command, .option, .control])
-
+                AppMenuButton(.quickTask)
                 Divider()
-
-                Button("Start Run...") {
-                    NotificationCenter.default.post(name: .startRun, object: nil)
-                }
-                .keyboardShortcut("r", modifiers: .command)
-
-                Button("Pause") {
-                    NotificationCenter.default.post(name: .pauseRun, object: nil)
-                }
-                .keyboardShortcut("p", modifiers: [.command, .shift])
-
-                Button("Resume") {
-                    NotificationCenter.default.post(name: .resumeRun, object: nil)
-                }
-                .keyboardShortcut(".", modifiers: .command)
+                AppMenuButton(.startRun)
+                AppMenuButton(.pause)
+                AppMenuButton(.resume)
             }
 
             // Help Menu addition
             CommandGroup(replacing: .help) {
-                Link("NanoTeams Help", destination: URL(string: "https://github.com/NanoTeams/docs")!)
+                Link(AppMenuCommand.HelpLink.title,
+                     destination: AppMenuCommand.HelpLink.destination)
             }
         }
 
@@ -195,6 +165,9 @@ struct NanoTeamsApp: App {
                 .environment(dictation)
                 .environment(appUpdateState)
                 .environment(modelCatalog)
+                // Without this, Test Connection can report SUCCESS while the status
+                // strip keeps saying OFFLINE until the next poll tick.
+                .environment(llmStatusMonitor)
                 .preferredColorScheme(activeTheme.preferredColorScheme)
                 .fontDesign(.monospaced)
                 .tint(Colors.accent)

@@ -298,11 +298,6 @@ final class SandboxPathResolverTests: XCTestCase {
 
     // MARK: - Error Descriptions
 
-    func testEmptyPathErrorDescription() {
-        let error = SandboxPathError.emptyPath
-        XCTAssertEqual(error.errorDescription, "Path is empty.")
-    }
-
     func testAbsolutePathErrorDescription() {
         let error = SandboxPathError.absolutePathNotAllowed("/etc/passwd")
         XCTAssertEqual(

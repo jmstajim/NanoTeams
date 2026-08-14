@@ -193,11 +193,24 @@ nonisolated enum FilenameMatcher {
 nonisolated struct CompiledGlob {
     private let regex: NSRegularExpression
 
-    /// Sentinel that intentionally fails to compile — reserved for tests that need to exercise
-    /// the regex-failure branch deterministically. A leading null byte trips
-    /// `NSRegularExpression(pattern:options:)`.
+    /// Sentinel reserved for tests that need the invalid-glob path deterministically.
+    ///
+    /// The rejection comes from the explicit `throw` below and NOTHING else — that guard is
+    /// load-bearing, not belt-and-braces. The doc here used to claim "a leading null byte trips
+    /// `NSRegularExpression(pattern:options:)`"; measured on this toolchain it does not (nor do
+    /// `\Q`/`\E`, 5000 stars, or U+FFFF — `escapedPattern(for:)` neutralises everything, so no
+    /// glob string is known to fail the compile). Delete the guard on the strength of that old
+    /// claim and the sentinel silently becomes a glob that COMPILES and matches nothing: every
+    /// invalid-glob test would still pass while asserting nothing.
+    /// The trailing `*` is load-bearing too, and for a different reason: `PreparedQuery.init`
+    /// only compiles a glob when the term `contains("*")`, so a starless sentinel never reached
+    /// this type from `FilenameMatcher.match` at all — `testGlob_uncompilablePattern_failsClosed`
+    /// was passing because the substring needle happened to match nothing, i.e. for a reason
+    /// unrelated to the branch it names.
+    ///
+    /// Pinned by `ESearchFilenameMatcherTailTests`.
     #if DEBUG
-    static let _testUncompilableGlobSentinel = "\0__bad_glob__"
+    static let _testUncompilableGlobSentinel = "\0__bad_glob__*"
     #endif
 
     /// Only `*` is a wildcard; every other metacharacter is escaped, so `Foo.swift` matches

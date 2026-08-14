@@ -89,48 +89,90 @@ nonisolated enum XcodeBuildHelpers {
     /// - Parameter workFolderRoot: The project root URL.
     /// - Parameter fileManager: Used to enumerate the project directory before the
     ///   detached `xcodebuild` call. Honored end-to-end so test mocks aren't dropped.
+    /// - Parameter runner: The `xcodebuild -list` invocation. No default, for the
+    ///   reason `XcodebuildRunning` states — and because the detached body below was
+    ///   entirely uncovered while the only thing standing between a test and it was
+    ///   whether the temp directory happened to contain a project.
     /// - Returns: An array of scheme names.
-    static func fetchAvailableSchemes(workFolderRoot: URL, fileManager: FileManager = .default) async -> [String] {
+    static func fetchAvailableSchemes(
+        workFolderRoot: URL,
+        runner: any XcodebuildRunning,
+        fileManager: FileManager = .default
+    ) async -> [String] {
         // Enumerate the project directory on the calling thread using the injected
         // `fileManager`. Pass the resulting `[String]` into `Task.detached` (Strings
         // are Sendable) — this preserves the DI contract that previously got
         // dropped when the body re-created `FileManager.default`.
         let contents = (try? fileManager.contentsOfDirectory(atPath: workFolderRoot.path)) ?? []
-        return await Task.detached { [contents] in
-            var args: [String] = ["-list"]
-            if let workspace = contents.first(where: { $0.hasSuffix(".xcworkspace") }) {
-                args += ["-workspace", workspace]
-            } else if let project = contents.first(where: { $0.hasSuffix(".xcodeproj") }) {
-                args += ["-project", project]
-            } else {
+        guard let args = listArguments(forDirectoryContents: contents) else { return [] }
+        return await Task.detached { [args] in
+            guard let result = try? runner.run(args, in: workFolderRoot, timeout: 60) else {
                 return []
             }
-
-            guard let result = try? ProcessRunner.runXcodebuild(args, in: workFolderRoot, timeout: 60) else {
-                return []
-            }
-
-            // Parse schemes from text output
-            let lines = result.stdout.components(separatedBy: .newlines)
-            var schemes: [String] = []
-            var captureSchemes = false
-
-            for line in lines {
-                let trimmed = line.trimmingCharacters(in: .whitespaces)
-                if trimmed.hasSuffix("Schemes:") {
-                    captureSchemes = true
-                    continue
-                }
-                if captureSchemes {
-                    if trimmed.isEmpty {
-                        break
-                    }
-                    if !trimmed.contains(":") {
-                        schemes.append(trimmed)
-                    }
-                }
-            }
-            return schemes
+            return parseSchemes(fromListOutput: result.stdout)
         }.value
+    }
+
+    /// Picks the `xcodebuild -list` arguments for a directory listing, or `nil`
+    /// when the directory holds neither a workspace nor a project (nothing to ask
+    /// `xcodebuild` about).
+    ///
+    /// Extracted from `fetchAvailableSchemes`' detached closure: this is a pure
+    /// decision over a `[String]`, and inside the closure it was reachable only by
+    /// spawning a real `xcodebuild` subprocess. Same seam rationale as
+    /// `TeamSwitchPlanner` / `RoleStepReconciler`. Workspace wins over project —
+    /// a workspace that references the project would otherwise report a subset of
+    /// the schemes the user actually builds.
+    static func listArguments(forDirectoryContents contents: [String]) -> [String]? {
+        if let workspace = contents.first(where: { $0.hasSuffix(".xcworkspace") }) {
+            return ["-list", "-workspace", workspace]
+        }
+        if let project = contents.first(where: { $0.hasSuffix(".xcodeproj") }) {
+            return ["-list", "-project", project]
+        }
+        return nil
+    }
+
+    /// Parses the scheme names out of `xcodebuild -list` stdout.
+    ///
+    /// Extracted from `fetchAvailableSchemes`' detached closure for the same reason
+    /// as `listArguments`: a text parser whose only entry point was a subprocess is
+    /// a parser nobody can pin. The shape it consumes is `xcodebuild`'s, which has
+    /// three properties worth stating because each one is a branch here: the
+    /// `Schemes:` header may be indented, the list ends at the first blank line, and
+    /// any line containing `:` is a *different* section header (`Targets:`,
+    /// `Build Configurations:`) rather than a scheme.
+    ///
+    /// THE SINGLE PARSER for both consumers — the Settings scheme picker
+    /// (`fetchAvailableSchemes`) and the tool path (`XcodeBuildRunner.detectSchemes`).
+    /// They used to have one each and disagreed three ways; see the note at the
+    /// delegation site for what each got wrong.
+    ///
+    /// A section header ENDS the block rather than being skipped over. Skipping was
+    /// the original rule and it is unsafe in the direction that matters: everything
+    /// after a header belongs to that header's section, so continuing to scan reports
+    /// `Debug` and `Release` as schemes. Both consumers hand the result to
+    /// `xcodebuild -scheme`, where a phantom name fails the build with an error about
+    /// a scheme the user never configured — so the conservative rule is the correct
+    /// one, and stopping can only ever under-report a shape `xcodebuild` does not
+    /// emit (measured 2026-08-08: `Schemes:` is the last section, blank-line
+    /// separated from the rest).
+    static func parseSchemes(fromListOutput stdout: String) -> [String] {
+        var schemes: [String] = []
+        var captureSchemes = false
+
+        for line in stdout.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasSuffix("Schemes:") {
+                captureSchemes = true
+                continue
+            }
+            if captureSchemes {
+                // A blank line ends the section; so does the next section's header.
+                if trimmed.isEmpty || trimmed.contains(":") { break }
+                schemes.append(trimmed)
+            }
+        }
+        return schemes
     }
 }

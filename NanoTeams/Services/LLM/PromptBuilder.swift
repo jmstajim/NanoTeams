@@ -119,10 +119,12 @@ nonisolated struct PromptBuilder {
         )
 
         // Build conversation-mechanics guidance. The resource-tracking sentence is
-        // only emitted when the role can actually produce tagged tool results.
+        // only emitted when the role can actually produce tagged tool results —
+        // gated on the tag store's own set, not on file-read tools alone, so a
+        // bash- or git-only role still gets the legend for the tags it will see.
         let toolNameSet = Set(toolNames)
-        let hasFileReadTools = !toolNameSet.isDisjoint(with: ToolHandlerRegistry.fileReadTools)
-        let conversationMechanics = buildConversationMechanicsGuidance(hasFileReadTools: hasFileReadTools)
+        let hasTagProducingTools = !toolNameSet.isDisjoint(with: MemoryTagStore.tagProducingTools)
+        let conversationMechanics = buildConversationMechanicsGuidance(hasTagProducingTools: hasTagProducingTools)
 
         // Resolve system prompt from team template
         let template = context.activeTeam?.systemPromptTemplate ?? SystemTemplates.genericTemplate
@@ -379,26 +381,23 @@ nonisolated struct PromptBuilder {
     /// `## Conversation mechanics` wrap). The header lives in the template
     /// — author controls naming and position. NOT role guidance: the content
     /// is invariant across roles. The resource-tracking sentence is only
-    /// emitted when the role actually has file-read tools that produce tags.
-    static func buildConversationMechanicsGuidance(hasFileReadTools: Bool) -> String {
+    /// emitted when the role actually has tools that produce tagged results
+    /// (`MemoryTagStore.tagProducingTools`).
+    static func buildConversationMechanicsGuidance(hasTagProducingTools: Bool) -> String {
         var parts = [
             "The Supervisor Task and upstream artifacts are already in the conversation — act on them directly, don't re-search or re-summarize.",
         ]
-        if hasFileReadTools {
-            // The rolling `## Memories vN` index injection stays gated off
-            // (`LLMExecutionService.isMemoriesInjectionEnabled` in
-            // `LLMExecutionService+ToolLoopState.swift`). Per-result tag emission +
-            // the `{"status":"unchanged","ref":…,"_hint":…}` envelope are still
-            // active; this sentence only teaches the tag legend and steers reuse.
-            // The unchanged envelope is NOT pre-explained here — its own `_hint`
-            // ("Do NOT re-read. See <§R1§> above.") carries that instruction at
-            // point of use, so re-stating it in the cached system prompt would be
-            // pure duplication.
+        if hasTagProducingTools {
+            // This sentence only teaches the tag legend and steers reuse: every
+            // supported result gets a fresh tag, and referencing the tag beats
+            // re-quoting the content.
             // Scope note: only the listed result kinds carry tags — `list_files`
-            // / `search` / `git_log` results are untagged, so don't claim "every"
-            // tool result is tagged (the legend's enumeration is the boundary).
+            // / `search` / `git_log` / `delete_file` results are untagged, so
+            // don't claim "every" tool result is tagged. The enumeration must
+            // cover every live `TagType`; it drifted once (a dead `<§P1§>` was
+            // advertised while the live `<§S1§>` was not).
             parts.append(
-                "Tool results may carry a tag: <§R1§> read, <§E1§> edit, <§W1§> write, <§B1§> build, <§G1§> git, <§P1§> plan. Reference a tag in your reasoning instead of re-quoting that result."
+                "Tool results may carry a tag: <§R1§> read, <§E1§> edit, <§W1§> write, <§B1§> build, <§G1§> git, <§S1§> shell. Reference a tag in your reasoning instead of re-quoting that result."
             )
         }
         return parts.joined(separator: "\n")

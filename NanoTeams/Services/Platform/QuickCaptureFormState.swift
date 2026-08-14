@@ -13,14 +13,24 @@ final class QuickCaptureFormState {
     // MARK: - Task Creation Fields
 
     var title: String = ""
-    /// User-editable composer text. `didSet` maintains
-    /// `hasSubmittableText` so submit-button-style views can subscribe to
-    /// the **threshold crossing** (empty ↔ non-empty) instead of every
-    /// keystroke. Reading `supervisorTask` directly inside a SwiftUI view
-    /// body subscribes that view to per-keystroke invalidation — which
-    /// rebuilds the entire `QuickCaptureFormView.body` every time the
-    /// user types a character. Routes through `hasSubmittableText` for
-    /// the validity check.
+    /// The NEW-TASK composer's text, and nothing else's.
+    ///
+    /// It used to be all three composers' text — `answerModeBody`, `taskCreationBody` and
+    /// `chatWorkingBody` all bound this one property, with `savedSupervisorTask` stashing the
+    /// task-draft meaning while the field held one of the other two. A stash covers exactly the
+    /// transition that takes it; every other route between the meanings (open the panel onto a
+    /// running chat task with a draft in hand, or navigate to Watchtower with a half-typed chat
+    /// message) delivered content to a composer it was not written for — and both arriving
+    /// composers have a live send button, so the leak submitted rather than merely displayed.
+    /// The two attachment/clip buckets beside it were split per-purpose long ago; the text was
+    /// simply left behind.
+    ///
+    /// `didSet` maintains `hasSubmittableText` so submit-button-style views can subscribe to
+    /// the **threshold crossing** (empty ↔ non-empty) instead of every keystroke. Reading
+    /// `supervisorTask` directly inside a SwiftUI view body subscribes that view to
+    /// per-keystroke invalidation — which rebuilds the entire `QuickCaptureFormView.body` every
+    /// time the user types a character. Routes through `hasSubmittableText` for the validity
+    /// check.
     var supervisorTask: String = "" {
         didSet { refreshHasSubmittableText() }
     }
@@ -43,11 +53,36 @@ final class QuickCaptureFormState {
     // MARK: - Answer Mode Sub-State
 
     private(set) var pendingAnswer: SupervisorAnswerPayload?
+    /// The text of whichever composer is bound to the answer buckets — `.supervisorAnswer` and
+    /// chat-mode `.taskWorking`, exactly the pair `QuickCaptureMode.composerBindsAnswerBuckets`
+    /// already names. Third member of that bucket, and split out of `supervisorTask` for the
+    /// reason recorded there.
+    ///
+    /// Carries its own threshold flag for the same per-keystroke-invalidation reason.
+    var answerText: String = "" {
+        didSet { refreshHasSubmittableAnswerText() }
+    }
+    private(set) var hasSubmittableAnswerText: Bool = false
     var answerAttachments: [StagedAttachment] = []
     var answerClippedTexts: [String] = []
 
     @ObservationIgnored private(set) var isInAnswerMode: Bool = false
-    @ObservationIgnored private var savedSupervisorTask: String?
+
+    /// Which task the live answer bucket currently holds content for, or nil when it is
+    /// unclaimed. The bucket is ONE set of fields shared by every task's answer and chat
+    /// composer, so "whose content is in there" has to be recorded rather than inferred.
+    ///
+    /// It was inferred, from the panel's previous VISUAL mode — a proxy that agrees with the
+    /// answer only while the panel goes straight from one chat task to another. Any detour (the
+    /// new-task form, Watchtower) made the previous mode `.newTask`, the hand-off decline, and
+    /// the message typed for A arrive in B's composer under B's send button.
+    @ObservationIgnored private(set) var answerFieldsOwnerTaskID: Int?
+
+    private func refreshHasSubmittableAnswerText() {
+        let computed = !answerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard computed != hasSubmittableAnswerText else { return }
+        hasSubmittableAnswerText = computed
+    }
 
     /// Per-task answer draft storage. Keyed by taskID. `@ObservationIgnored` because this
     /// map is a snapshot store — readers (`enterAnswerMode`, `switchAnswerTask`,
@@ -142,16 +177,17 @@ final class QuickCaptureFormState {
 
     // MARK: - Answer Mode Transitions
 
-    /// Enters answer mode: stashes the current `supervisorTask` so it can be restored
-    /// on exit, then either restores a saved per-task answer draft or starts with
-    /// empty answer fields. The old `supervisorTask` content is preserved only via
-    /// `savedSupervisorTask` — it is NOT carried over as the initial answer so a
-    /// new-task draft does not leak into the answer field.
-    /// Re-entry is non-destructive — if already in answer mode, only the payload is
-    /// updated so the original `savedSupervisorTask` (the user's task draft) is
-    /// preserved. When the same-task re-entry finds empty answer fields but a saved
-    /// draft exists (the panel was dismissed via `clearAnswerSession`), the draft's
-    /// clips and attachments are restored so the open/close cycle keeps them intact.
+    /// Enters answer mode: loads this task's saved answer draft, or starts with empty answer
+    /// fields. `supervisorTask` is not read and not written — the task draft is a different
+    /// composer's content and simply stays where it is, which is what removed the
+    /// `savedSupervisorTask` stash along with every route the stash did not cover.
+    ///
+    /// The hand-off cycle runs through the FRESH branch below, not the re-entry guard: the
+    /// controller's only call site is gated on `!isInAnswerMode`, so a working→answer transition
+    /// arrives here having just snapshotted the live composer, and the draft load restores text,
+    /// attachments and clips together. The re-entry guard is defensive — it keeps a second call
+    /// from clobbering live fields, and routes a task change the same way the controller's own
+    /// already-in-answer-mode branch does.
     func enterAnswerMode(payload: SupervisorAnswerPayload) {
         guard !isInAnswerMode else {
             // Task changed while already in answer mode — switch drafts
@@ -159,10 +195,10 @@ final class QuickCaptureFormState {
                 switchAnswerTask(from: oldTaskID, to: payload)
             } else {
                 pendingAnswer = payload
-                // Re-entry after `clearAnswerSession` on panel dismiss: clips and
-                // attachments were cleared but a draft was saved. Restore them so
-                // they persist across open/close cycles. supervisorTask is preserved
-                // by `clearAnswerSession` so it is already correct.
+                answerFieldsOwnerTaskID = payload.taskID
+                // Re-entry after a hand-off that saved a draft. Restore the buckets so the
+                // cycle keeps clips and attachments intact; `answerText` was left correct by
+                // whoever saved.
                 if answerAttachments.isEmpty && answerClippedTexts.isEmpty,
                    let draft = answerDrafts[payload.taskID] {
                     answerAttachments = draft.attachments
@@ -171,33 +207,31 @@ final class QuickCaptureFormState {
             }
             return
         }
-        savedSupervisorTask = supervisorTask
         if let draft = answerDrafts[payload.taskID] {
-            supervisorTask = draft.text
+            answerText = draft.text
             answerAttachments = draft.attachments
             answerClippedTexts = draft.clippedTexts
         } else {
-            // Fresh entry for this task — start with empty answer fields. The
-            // old supervisorTask content is in `savedSupervisorTask` and will be
-            // restored on `exitAnswerMode`.
-            supervisorTask = ""
+            answerText = ""
             answerAttachments = []
             answerClippedTexts = []
         }
         pendingAnswer = payload
+        answerFieldsOwnerTaskID = payload.taskID
         isInAnswerMode = true
     }
 
-    /// Exits answer mode: saves current answer draft per-task, restores `supervisorTask`.
+    /// Exits answer mode: saves the current answer draft per-task, then clears the answer
+    /// composer. Nothing is restored — the task composer's text was never moved.
     func exitAnswerMode() {
         // Save current answer state as draft before exiting
         if let payload = pendingAnswer {
             saveCurrentAnswerDraft(taskID: payload.taskID)
         }
-        supervisorTask = savedSupervisorTask ?? ""
-        savedSupervisorTask = nil
+        answerText = ""
         answerAttachments = []
         answerClippedTexts = []
+        answerFieldsOwnerTaskID = nil
         pendingAnswer = nil
         isInAnswerMode = false
     }
@@ -214,25 +248,52 @@ final class QuickCaptureFormState {
         saveCurrentAnswerDraft(taskID: oldTaskID)
         // Load draft for the new task (or start fresh)
         if let draft = answerDrafts[newPayload.taskID] {
-            supervisorTask = draft.text
+            answerText = draft.text
             answerAttachments = draft.attachments
             answerClippedTexts = draft.clippedTexts
         } else {
-            supervisorTask = ""
+            answerText = ""
             answerAttachments = []
             answerClippedTexts = []
         }
         pendingAnswer = newPayload
+        answerFieldsOwnerTaskID = newPayload.taskID
     }
 
-    /// Clears answer-mode clips/attachments without restoring the saved supervisor task.
-    /// Used on panel dismiss — saves draft first so it persists across open/close.
-    func clearAnswerSession() {
-        if let payload = pendingAnswer {
-            saveCurrentAnswerDraft(taskID: payload.taskID)
-        }
+    /// Drops every piece of form state that is keyed by a **folder-local task id**, or
+    /// that points at a file staged inside the folder being left.
+    ///
+    /// Task ids are allocated from each folder's own `TasksIndex.nextTaskID`, so the first
+    /// task of every folder carries the same id — collision across folders is the norm,
+    /// not an edge case. `NTMSOrchestrator.apply(_:)` already says exactly that and already
+    /// drops `loadedTasks` for it; this map and `answerDrafts` are the same class of state
+    /// one layer up, in a process-global singleton, and were simply not included. Left
+    /// behind, a message the user typed for folder A's task #3 is delivered to folder B's
+    /// unrelated task #3, and `tryFlushQueuedMessages` — which iterates the surviving keys
+    /// — wakes runs on tasks the user never touched.
+    ///
+    /// Deliberately NOT dropped: `title` / `supervisorTask` / `clippedTexts`. Unsent task text
+    /// is folder-agnostic; the task it becomes is created in whichever folder is open when
+    /// the user submits. `answerText` is the opposite — it is a reply to a question asked by a
+    /// task in the folder being closed — so it goes with the rest of the answer bucket.
+    func discardFolderScopedState() {
+        queuedChatMessages.removeAll()
+        answerDrafts.removeAll()
+        // Torn down directly rather than through `exitAnswerMode()`, whose first act is to
+        // SAVE the very draft we are discarding.
+        pendingAnswer = nil
+        isInAnswerMode = false
+        answerText = ""
         answerAttachments = []
         answerClippedTexts = []
+        answerFieldsOwnerTaskID = nil
+        // Staged files live under the closed folder's `.nanoteams/staged/<draftID>/`, so
+        // their relative paths resolve to nothing under the new root. A fresh `draftID`
+        // keeps the next drop out of a directory keyed to the folder we just left.
+        attachments = []
+        draftID = UUID()
+        // Team ids are per-folder; a nil pin is re-seeded by `presentPanelSync`.
+        selectedTeamID = nil
     }
 
     /// Discards the answer draft for a specific task. Called on successful submit or explicit cancel.
@@ -249,13 +310,21 @@ final class QuickCaptureFormState {
         saveCurrentAnswerDraft(taskID: taskID)
     }
 
+    /// Records that the live answer bucket now holds content for `taskID`. Called by the
+    /// controller every time it resolves a composer bound to that bucket, so the claim is made
+    /// where the binding is, not inferred later from which surface happened to precede it.
+    func claimAnswerFields(for taskID: Int) {
+        answerFieldsOwnerTaskID = taskID
+    }
+
     /// Loads `answerDrafts[taskID]` into the live composer fields. No-op when no draft exists.
     /// Called by the controller after `.supervisorAnswer` → `.taskWorking` (chat) transitions
     /// for the same task so the just-saved draft becomes visible again in the chat-working
     /// composer (which binds to the same three live fields).
     func restoreAnswerDraftToLiveFields(taskID: Int) {
+        answerFieldsOwnerTaskID = taskID
         guard let draft = answerDrafts[taskID] else { return }
-        supervisorTask = draft.text
+        answerText = draft.text
         answerAttachments = draft.attachments
         answerClippedTexts = draft.clippedTexts
     }
@@ -364,15 +433,32 @@ final class QuickCaptureFormState {
     /// character.
     func canSubmit(mode: QuickCaptureMode) -> Bool {
         if case .supervisorAnswer = mode {
-            return hasSubmittableText || !answerAttachments.isEmpty || !answerClippedTexts.isEmpty
+            return hasSubmittableAnswerText || !answerAttachments.isEmpty
+                || !answerClippedTexts.isEmpty
         }
         // Chat-mode working lets the user queue the next message — same rules as answer mode.
         // Non-chat working has no composer, so submit is always disabled there.
         if case .taskWorking(_, let isChatMode) = mode {
             guard isChatMode else { return false }
-            return hasSubmittableText || !answerAttachments.isEmpty || !answerClippedTexts.isEmpty
+            return hasSubmittableAnswerText || !answerAttachments.isEmpty
+                || !answerClippedTexts.isEmpty
         }
-        return hasSubmittableText
+        // A captured clip IS a request: ⌃⌥⌘K files text into `clippedTexts` and never into
+        // `supervisorTask`, and `AnswerTextBuilder` folds clips into the task body the title is
+        // derived from — so a clip-only draft submits fine, and refusing it left the panel
+        // showing a chip beside a dead send button. `hasTaskDraftContent` already counted the
+        // same clip as content worth confirming the discard of; the two disagreed.
+        //
+        // Attachments stay excluded on purpose: with no text and no clip the built body is
+        // empty, `createPreparedTaskAndStart` can derive no title and returns nil without a
+        // word — enabling the button there would trade a dead button for a dead press.
+        return hasSubmittableText || hasSubmittableClip
+    }
+
+    /// True when at least one clip carries something other than whitespace. Same trim as
+    /// `hasTaskDraftContent`, so the submit gate and the discard prompt agree.
+    private var hasSubmittableClip: Bool {
+        clippedTexts.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 
     /// True when any task-draft content is present. Used to decide whether to show a
@@ -389,12 +475,12 @@ final class QuickCaptureFormState {
     // MARK: - Private
 
     private func saveCurrentAnswerDraft(taskID: Int) {
-        let text = supervisorTask.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = answerText.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty && answerAttachments.isEmpty && answerClippedTexts.isEmpty {
             answerDrafts.removeValue(forKey: taskID)
         } else {
             answerDrafts[taskID] = AnswerDraft(
-                text: supervisorTask,
+                text: answerText,
                 attachments: answerAttachments,
                 clippedTexts: answerClippedTexts
             )
@@ -404,12 +490,11 @@ final class QuickCaptureFormState {
     // MARK: - Test Helpers
 
     #if DEBUG
-    var _testSavedSupervisorTask: String? { savedSupervisorTask }
     var _testAnswerDrafts: [Int: AnswerDraft] { answerDrafts }
     func _testClearAnswerDrafts() { answerDrafts.removeAll() }
 
     /// Full form-state reset for test isolation, driven by `QuickCaptureController._testReset()`.
-    /// `exitAnswerMode()` already clears `pendingAnswer` / `isInAnswerMode` / `savedSupervisorTask`.
+    /// `exitAnswerMode()` already clears `pendingAnswer` / `isInAnswerMode` / the answer bucket.
     func _testReset() {
         if isInAnswerMode { exitAnswerMode() }
         title = ""
@@ -417,8 +502,10 @@ final class QuickCaptureFormState {
         selectedTeamID = nil
         attachments = []
         clippedTexts = []
+        answerText = ""
         answerAttachments = []
         answerClippedTexts = []
+        answerFieldsOwnerTaskID = nil
         answerDrafts.removeAll()
         queuedChatMessages.removeAll()
     }

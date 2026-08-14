@@ -53,11 +53,11 @@ nonisolated enum BashJudgeService {
         // Trim with the SAME predicate `parse` uses (Character.isWhitespace), so the
         // production stream-cleaning here can't strip an invisible char (e.g. a
         // trailing zero-width space) that `parse` is contractually required to reject.
-        let cleanedContent = JudgeVerdictParser.whitespaceTrimmed(ModelTokenCleaner.clean(content))
         // Reasoning models sometimes emit the verdict only in the thinking channel.
-        let source = cleanedContent.isEmpty
-            ? JudgeVerdictParser.whitespaceTrimmed(ModelTokenCleaner.clean(thinking))
-            : cleanedContent
+        let source = ModelReplyChannels.answer(
+            content: content,
+            reasoning: thinking,
+            prepare: { JudgeVerdictParser.whitespaceTrimmed(ModelTokenCleaner.clean($0)) })
         return parse(source)
     }
 

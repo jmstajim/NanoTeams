@@ -139,10 +139,21 @@ struct SidebarView: View {
                 }
             }
             .onAppear { refreshRecentProjects() }
-            .onChange(of: store.workFolderURL) { _, newValue in
+            // The URL flips at the START of an open, so it says which folder was ASKED for,
+            // not which one loaded. Cancelling a generation is right on that signal — it
+            // belongs to the folder being left either way.
+            .onChange(of: store.workFolderURL) { _, _ in
                 store.cancelWorkFolderContextGeneration()
-                guard let url = newValue, store.hasRealWorkFolder else { return }
-                store.configuration.lastOpenedWorkFolderPath = url.path
+            }
+            // Recents, by contrast, must only ever record a folder that actually opened. The
+            // snapshot's folder id changes on `apply` (success) and goes nil on the failure
+            // path's `discardWorkFolderState`, so it is the outcome signal the URL is not.
+            // Keyed here rather than in the orchestrator because `NSDocumentController` is
+            // AppKit; the paired `lastOpenedWorkFolderPath` write moved into `openWorkFolder`,
+            // which is the only place that knows the open succeeded.
+            .onChange(of: store.snapshot?.projection.id) { _, newValue in
+                guard newValue != nil, let url = store.workFolderURL, store.hasRealWorkFolder
+                else { return }
                 NSDocumentController.shared.noteNewRecentDocumentURL(url)
                 refreshRecentProjects()
             }

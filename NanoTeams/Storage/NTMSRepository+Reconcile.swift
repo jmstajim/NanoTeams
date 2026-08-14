@@ -141,7 +141,7 @@ nonisolated extension NTMSRepository {
         /// Teams the reconcile could actually act on — the only ones worth
         /// deferring or reporting.
         func isReconcilable(_ team: Team) -> Bool {
-            guard let tid = team.templateID, tid != "generated" else { return false }
+            guard !team.isGeneratedPlaceholder, let tid = team.templateID else { return false }
             return bundledByTemplateID[tid] != nil || SystemTemplates.templateConfigs[tid] != nil
         }
 
@@ -173,7 +173,7 @@ nonisolated extension NTMSRepository {
         }
 
         for i in teams.indices {
-            guard let tid = teams[i].templateID, tid != "generated" else { continue }
+            guard !teams[i].isGeneratedPlaceholder, let tid = teams[i].templateID else { continue }
             guard scope.includes(teams[i]) else { continue }
 
             if let evidence = evidenceByTeam[teams[i].id] {
@@ -560,5 +560,109 @@ nonisolated extension NTMSRepository {
         }
 
         return .clean(running)
+    }
+
+    // MARK: - Generated-placeholder chat mode
+
+    /// Self-healing migration for the Generated Team placeholder's vacuous chat mode.
+    ///
+    /// Until `Team.seedChatModeForNewTask` existed, `createTask` seeded
+    /// `NTMSTask.storedIsChatMode` from `team.isChatMode`, which is trivially `true` for
+    /// the roleless placeholder. `storedIsChatMode` has no failure-path writer, so any
+    /// generated task whose generation failed, was cancelled, or never ran carries that
+    /// lie forever — reporting `chat_mode: true` to the Autovisor (whose role prompt
+    /// answers that with `control_task close`), masking `.needsSupervisorAcceptance`
+    /// behind `.running`, and routing `manage_role accept` to `.finishChatRole` on a real
+    /// build role.
+    ///
+    /// Heals BOTH surfaces in one pass — `task.json` (what every later load reads) and the
+    /// `tasks_index.json` entry (what `list_tasks` reads for tasks nobody opens). The
+    /// stale-status sweep is NOT a usable seam for this: it only visits `.running` /
+    /// `.needsSupervisorInput` entries, and a failed generation derives `.failed` while a
+    /// cancelled one derives `.paused`. Writing only the index would be worse than nothing
+    /// — `updateTaskOnly` recomputes the row from `toSummary()`, so the first later
+    /// `mutateTask` would restore the lie.
+    ///
+    /// NARROW by construction: it only ever turns `true` into `false`, and only when the
+    /// task's effective team IS the placeholder. It deliberately does NOT re-sync
+    /// `storedIsChatMode` against the team in general — chat mode is snapshotted at
+    /// creation and re-synced only by `adoptGeneratedTeam` and `switchTeam`, and
+    /// broadening it here would flip acceptance semantics under a task whose team was
+    /// merely edited.
+    ///
+    /// Team identity comes from `TeamResolution.resolveTeamID` — the same order the
+    /// engine, the LLM services and the deletion guard use. Its first rung short-circuits
+    /// on `generatedTeam`, so an adopted task can never be touched.
+    ///
+    /// Fail-open per task, matching `scanRunningTeamRoles`: an undecodable or unwritable
+    /// `task.json` is skipped WITHOUT marking its index entry healed, so the two never
+    /// diverge and the next open retries.
+    ///
+    /// Idempotent — after one healing open, the candidate filter matches nothing.
+    ///
+    /// - Returns: `true` iff `tasksIndex` was mutated, so the caller knows to write it.
+    func normalizeGeneratedPlaceholderChatMode(
+        tasksIndex: inout TasksIndex,
+        teams: [Team],
+        activeTeamID: NTMSID?,
+        paths: NTMSPaths
+    ) -> Bool {
+        let placeholderIDs = Set(teams.filter(\.isGeneratedPlaceholder).map(\.id))
+        let teamsByID = Dictionary(teams.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        // Mirror `WorkFolderProjection.activeTeam` exactly as `scanRunningTeamRoles` does:
+        // a stored id that no longer resolves falls back to the first team, so resolving
+        // against the raw stored id would disagree with what the app actually runs.
+        let effectiveActiveTeam = activeTeamID.flatMap { teamsByID[$0] } ?? teams.first
+
+        // Snapshot the indices first so the loop never mutates the array it iterates.
+        let candidates = tasksIndex.tasks.indices.filter {
+            tasksIndex.tasks[$0].mayCarryPlaceholderChatMode(placeholderTeamIDs: placeholderIDs)
+        }
+        guard !candidates.isEmpty else { return false }
+
+        var changed = false
+        for i in candidates {
+            let entry = tasksIndex.tasks[i]
+            let ancestors = tasksIndex.ancestorIDs(of: entry.id)
+            let taskURL = paths.taskJSON(taskID: entry.id, ancestors: ancestors)
+            guard fileManager.fileExists(atPath: taskURL.path) else { continue }
+
+            let task: NTMSTask
+            do {
+                task = try store.read(NTMSTask.self, from: taskURL)
+            } catch {
+                // Fail OPEN, for BOTH decode and I/O failures — unlike the reconcile scan
+                // there is nothing to protect by failing closed. Skipping leaves the entry
+                // untouched, so the next open retries it.
+                print("[NTMSRepository] WARNING: task \(entry.id) task.json unreadable — "
+                    + "skipping the generated-placeholder chat-mode heal: \(error)")
+                continue
+            }
+
+            guard task.isChatMode,
+                  let resolved = TeamResolution.resolveTeamID(
+                      task: task,
+                      teamProvider: { teamsByID[$0] },
+                      activeTeam: effectiveActiveTeam
+                  ),
+                  placeholderIDs.contains(resolved)
+            else { continue }
+
+            var healed = task
+            healed.setStoredChatMode(false)
+            do {
+                try store.write(healed, to: taskURL)
+            } catch {
+                // Do NOT touch the index when the blob write failed — the two must never
+                // disagree about which surface has been healed.
+                print("[NTMSRepository] WARNING: could not rewrite task \(entry.id) task.json "
+                    + "for the generated-placeholder chat-mode heal: \(error)")
+                continue
+            }
+            // The same expression `updateTaskOnly` uses, so the two can't drift.
+            tasksIndex.tasks[i] = healed.toSummary()
+            changed = true
+        }
+        return changed
     }
 }

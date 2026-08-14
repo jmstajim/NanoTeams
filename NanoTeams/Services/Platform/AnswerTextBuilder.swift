@@ -62,13 +62,20 @@ enum AnswerTextBuilder {
     /// `nonisolated` so the `nonisolated NTMSTask` extension can call it.
     nonisolated static func clipSections(from clips: [String]) -> [String] {
         var skillSections: [String] = []
-        var textClips: [String] = []
-        // The `SkillClip` / `SourceContext` sentinel is a zero-width space, and
-        // `.whitespacesAndNewlines` trimming REMOVES it — so skills MUST be
-        // detected on the RAW clip, before any trim. Plain / SourceContext clips
-        // keep today's trim-then-parse behavior (the trimmed sentinel makes
-        // `SourceContext.parse` return nil, so the source line renders as raw
-        // body text under a plain `## Clipped Text` header).
+        /// `source == nil` is a plain clip. One list, not two, because the `N of M`
+        /// numbering spans both kinds and must stay in capture order.
+        var textClips: [(source: String?, body: String)] = []
+        // BOTH sentinels are a zero-width space, and `.whitespacesAndNewlines` REMOVES
+        // U+200B on macOS 26 (swift-foundation classifies ZWSP as whitespace — measured,
+        // CLAUDE.md Грабли 2026-07-11). So every sentinel-bearing clip has to be parsed
+        // on the RAW string, before any trim; only the BODY is trimmed afterwards.
+        //
+        // Until this was fixed the skill branch did that and the `SourceContext` branch
+        // did not: it trimmed first, so `parse` returned nil for every enriched clip and
+        // the sourced-header arms below were dead in production. The effect was not merely
+        // a plainer header — the stripped `// Source: path:start-end` line stayed at the
+        // top of the BODY, where the model reads it as the first line of the snippet it
+        // was asked to work on.
         for raw in clips {
             if let skill = SkillClip.parse(raw) {
                 let body = skill.body.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -76,26 +83,30 @@ enum AnswerTextBuilder {
                 skillSections.append("\(SkillConstants.promptHeader(name: skill.name))\n\(body)")
                 continue
             }
+            if let parsed = SourceContext.parse(raw) {
+                let body = parsed.body.trimmingCharacters(in: .whitespacesAndNewlines)
+                if body.isEmpty { continue }
+                textClips.append((parsed.source, body))
+                continue
+            }
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty { continue }
-            textClips.append(trimmed)
+            textClips.append((nil, trimmed))
         }
         guard !skillSections.isEmpty || !textClips.isEmpty else { return [] }
 
         let clipTextSections: [String] = textClips.enumerated().map { index, clip in
-            let parsed = SourceContext.parse(clip)
             let header: String
-            if let parsed {
+            if let source = clip.source {
                 header = textClips.count == 1
-                    ? "## Clipped Text — \(parsed.source)"
-                    : "## Clipped Text — \(index + 1) of \(textClips.count), \(parsed.source)"
+                    ? "## Clipped Text — \(source)"
+                    : "## Clipped Text — \(index + 1) of \(textClips.count), \(source)"
             } else {
                 header = textClips.count == 1
                     ? "## Clipped Text"
                     : "## Clipped Text — \(index + 1) of \(textClips.count)"
             }
-            let body = parsed?.body ?? clip
-            return "\(header)\n\(body)"
+            return "\(header)\n\(clip.body)"
         }
 
         return skillSections + clipTextSections

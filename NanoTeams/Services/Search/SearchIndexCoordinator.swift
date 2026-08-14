@@ -26,7 +26,29 @@ final class SearchIndexCoordinator {
     private(set) var tokenCount: Int? = nil
     private(set) var fileCount: Int? = nil
     private(set) var lastBuiltAt: Date? = nil
-    private(set) var lastError: String? = nil
+
+    /// Diagnostics about the index **as it stands on disk right now** — a persist or load
+    /// failure, non-fatal walk warnings, or a failed clear. Correctly cleared by the next
+    /// successful build, because a fresh successful build makes all three obsolete.
+    private(set) var buildError: String? = nil
+
+    /// Set when the FS watcher refuses to subscribe, cleared only by `stop()`.
+    ///
+    /// Kept in its own slot because the two conditions have different lifetimes and the
+    /// build's success arm writes `nil`. Until 2026-08-09 both shared `lastError`, so the
+    /// watcher-death message `start()` wrote was erased milliseconds later by the initial
+    /// `ensureFresh()` it goes on to schedule — the message existed, was documented as
+    /// "user-visible", and never reached a render. That is the worst version of this bug:
+    /// auto-refresh is off, the index quietly serves stale results, and the one signal saying
+    /// so is destroyed by the very build that proves the index still works.
+    private(set) var watcherError: String? = nil
+
+    /// What the Advanced settings card shows. Derived rather than stored so neither condition
+    /// can clobber the other: they are independent, and whichever wrote last would otherwise win.
+    var lastError: String? {
+        let parts = [buildError, watcherError].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
     /// Snapshot of the vector index service's state — mirrors `VocabVectorIndexState`.
     /// UI reads this directly; we don't proxy every variant to a separate field.
     private(set) var vectorIndexState: VocabVectorIndexState = .missing
@@ -41,7 +63,11 @@ final class SearchIndexCoordinator {
     @ObservationIgnored let internalDir: URL
     @ObservationIgnored let service: SearchIndexService
     @ObservationIgnored let vectorIndex: VocabVectorIndexService
-    @ObservationIgnored private var watcher: FileSystemWatcher?
+    @ObservationIgnored private var watcher: (any FileSystemWatching)?
+    /// Builds the watcher `start()` installs. See `FileSystemWatcherFactory` for why this
+    /// has no default: production hands in `FileSystemWatcher.live`, tests hand in an inert
+    /// or scripted double, and neither is reachable by forgetting an argument.
+    @ObservationIgnored private let makeWatcher: FileSystemWatcherFactory
     /// FSEvents debounce window. Production default 2.0s coalesces bursty
     /// writes (e.g. `git checkout`, IDE save-all) into a single rebuild.
     /// Tests override to ~0.05s so they don't pay multi-second waits per
@@ -66,13 +92,26 @@ final class SearchIndexCoordinator {
     /// it via one follow-up build. Many FS events during a long embed →
     /// at most one extra build queued.
     @ObservationIgnored private var pendingVectorRefresh: Bool = false
-    /// Set by `stop()` to refuse new vector tasks; cleared by `start()`.
+    /// Set by `stop()` to refuse new work of ANY kind; cleared by `start()`.
     /// See `stop()`'s doc for the cancellation-tail race it closes.
+    ///
+    /// Until 2026-08-10 this read "refuse new **vector** tasks", and that was the literal truth:
+    /// of the four sites that install a `Task`, only `startVectorBuild` consulted it. The other
+    /// three ran full folder walks and embedding batches against a folder the coordinator had
+    /// been torn down for, installed in slots `stop()`'s drain had already passed — so nothing
+    /// could cancel or await them for the rest of the process. Every site now gates, and re-gates
+    /// after any suspension, because `stop()` can run to completion inside one.
     @ObservationIgnored private var isStopped: Bool = false
     /// Snapshotted every time a vector build kicks off. `@MainActor` closure —
     /// safe to call from the coordinator's own isolation and captures any
     /// MainActor-resident `StoreConfiguration`.
     @ObservationIgnored private let embeddingConfigProvider: @MainActor () -> EmbeddingConfig
+
+    /// Named so the test that proves the message survives the initial build compares against
+    /// the same string production emits, rather than re-typing a substring that would keep
+    /// passing after a reword.
+    static let watcherUnavailableMessage =
+        "File-system watcher unavailable — index won't auto-refresh. Use Rebuild to refresh manually."
 
     // MARK: - Init
 
@@ -82,11 +121,13 @@ final class SearchIndexCoordinator {
         embeddingConfigProvider: @escaping @MainActor () -> EmbeddingConfig = { .defaultNomicLMStudio },
         embeddingClient: any EmbeddingClient = LMStudioEmbeddingClient(),
         fileManager: FileManager = .default,
+        makeWatcher: @escaping FileSystemWatcherFactory,
         watcherDebounce: TimeInterval = AppDefaults.searchIndexWatcherDebounceSeconds
     ) {
         self.workFolderRoot = workFolderRoot
         self.internalDir = internalDir
         self.embeddingConfigProvider = embeddingConfigProvider
+        self.makeWatcher = makeWatcher
         self.watcherDebounce = watcherDebounce
         // FileManager isn't `Sendable`, and a `sending` parameter is consumed on
         // the first hand-off. Construct fresh `.default` references for each
@@ -118,16 +159,16 @@ final class SearchIndexCoordinator {
     func start() async {
         isStopped = false
         if watcher == nil {
-            let w = FileSystemWatcher(
-                paths: [workFolderRoot],
+            let w = makeWatcher(
+                [workFolderRoot],
                 // Skip events from `.nanoteams/internal/` — every tool call
                 // during an active run appends to `tool_calls.jsonl` /
                 // `network_log.json` there, and those paths are already
                 // excluded from the index walk, so each one would trigger
                 // a wasted signature probe.
-                excludedPrefixes: [internalDir],
-                debounce: watcherDebounce,
-                onChange: { [weak self] in
+                [internalDir],
+                watcherDebounce,
+                { [weak self] in
                     Task { @MainActor [weak self] in
                         self?.scheduleEnsureFresh()
                     }
@@ -135,14 +176,15 @@ final class SearchIndexCoordinator {
             )
             let started = w.start()
             watcher = w
-            if !started {
-                // Watcher death is rare (empty paths or kernel-level
-                // FSEventStreamCreate failure) but user-visible: the index
-                // will still be built once, but won't auto-refresh. Surface
-                // so the user knows to hit the Rebuild button manually.
-                lastError = "File-system watcher unavailable — index won't auto-refresh. "
-                    + "Use Rebuild to refresh manually."
-            }
+            // Watcher death is rare (empty paths or kernel-level
+            // FSEventStreamCreate failure) but user-visible: the index
+            // will still be built once, but won't auto-refresh. Surface
+            // so the user knows to hit the Rebuild button manually.
+            //
+            // Written to `watcherError`, NOT `lastError` — the initial
+            // `scheduleEnsureFresh()` below ends in `buildError = nil` on
+            // success, which used to erase this before anything could render it.
+            watcherError = started ? nil : Self.watcherUnavailableMessage
         }
         // Seed the vector-index state from disk before the first build so the
         // UI card immediately reflects "ready" vs "missing" without waiting
@@ -163,8 +205,10 @@ final class SearchIndexCoordinator {
     /// Lifecycle ordering matters here. `isStopped = true` and
     /// `pendingVectorRefresh = false` are set BEFORE any cancel/await so that:
     /// (a) any stale FS-event-driven `Task { @MainActor }` already queued by
-    ///     the watcher hits `startVectorBuild`'s `isStopped` gate and no-ops
-    ///     instead of spawning a successor;
+    ///     the watcher hits `scheduleEnsureFresh`'s `isStopped` gate and no-ops
+    ///     instead of walking the folder and spawning a successor. That clause
+    ///     used to name `startVectorBuild` — the LAST step of the path — while
+    ///     its first step, the token walk, ran ungated;
     /// (b) the in-flight vector task's tail respawn check
     ///     (`if pendingVectorRefresh, !isStopped`) sees both flags false.
     /// The vector await is a drain LOOP rather than a single `if let` as
@@ -179,6 +223,9 @@ final class SearchIndexCoordinator {
         pendingVectorRefresh = false
         watcher?.stop()
         watcher = nil
+        // The watcher is gone by intent now, so the "unavailable" warning no longer
+        // describes anything the user can act on. `start()` re-decides it.
+        watcherError = nil
 
         currentTokenBuildTask?.cancel()
         if let task = currentTokenBuildTask {
@@ -238,11 +285,11 @@ final class SearchIndexCoordinator {
         let tokenClearError = await service.lastClearError
         let vectorClearError = await vectorIndex.lastClearError
         if let tokenClearError {
-            lastError = "Failed to clear search index: \(tokenClearError)"
+            buildError = "Failed to clear search index: \(tokenClearError)"
         } else if let vectorClearError {
-            lastError = "Failed to clear vector index: \(vectorClearError)"
+            buildError = "Failed to clear vector index: \(vectorClearError)"
         } else {
-            lastError = nil
+            buildError = nil
         }
         vectorIndexState = .missing
         vectorIndexProgress = nil
@@ -271,6 +318,11 @@ final class SearchIndexCoordinator {
     /// `requestVectorRefresh` for the coalescing path that follows token
     /// completion.
     private func scheduleEnsureFresh() {
+        // The watcher is torn down by `stop()`, but a callback it already fired hops through
+        // `Task { @MainActor in … }` and can land here afterwards. Without this the queued event
+        // walks and re-persists a folder the coordinator has been told to leave — and installs
+        // that walk in a slot `stop()`'s drain has already passed.
+        guard !isStopped else { return }
         currentTokenBuildTask?.cancel()
         let task = Task { [weak self] in
             guard let self else { return }
@@ -289,11 +341,16 @@ final class SearchIndexCoordinator {
     /// `ensureFresh`). Awaits both the token build AND the vector build so
     /// callers that asked for a full refresh actually get one.
     private func runBuild(force: Bool) async {
+        // Both callers are buttons whose `Task { await coordinator.rebuild() }` holds this
+        // instance strongly, so a folder close between the tap and the resumption arrives here.
+        guard !isStopped else { return }
         // Token phase: wait for any in-flight FS-event-driven walk, then
         // run our own. A user-initiated rebuild deserves the freshest walk.
         if let task = currentTokenBuildTask, !task.isCancelled {
             _ = await task.value
         }
+        // Re-check: that await is a suspension `stop()` can run to completion inside.
+        guard !isStopped else { return }
         let tokenTask = Task { [weak self] in
             guard let self else { return }
             await self.performTokenBuild(force: force)
@@ -325,14 +382,14 @@ final class SearchIndexCoordinator {
         let loadError = await service.lastLoadError
         let warnings = await service.lastIndexWarnings
         if let persistError {
-            lastError = persistError
+            buildError = persistError
         } else if let loadError {
-            lastError = loadError
+            buildError = loadError
         } else if !warnings.isEmpty {
-            lastError = "Index built with \(warnings.count) walk warning(s). "
+            buildError = "Index built with \(warnings.count) walk warning(s). "
                 + "Some files may be missing from the index."
         } else {
-            lastError = nil
+            buildError = nil
         }
         isBuilding = false
     }
@@ -392,9 +449,15 @@ final class SearchIndexCoordinator {
     /// `isBuildingVectorIndex` and the progress handler installation on the
     /// actor.
     private func runSerializedVectorBuild(searchIndex: SearchIndex, force: Bool) async {
+        // Same gate as `startVectorBuild`, for the same reason and at the more expensive door:
+        // every batch here is a paid `/v1/embeddings` round trip, and the task is unstructured,
+        // so one armed after `stop()`'s drain runs to completion with nothing able to stop it.
+        guard !isStopped else { return }
         if let task = currentVectorBuildTask, !task.isCancelled {
             _ = await task.value
         }
+        // Re-check: that await is a suspension `stop()` can run to completion inside.
+        guard !isStopped else { return }
         let task = Task { [weak self] in
             guard let self else { return }
             await self.performVectorBuild(searchIndex: searchIndex, force: force)
@@ -454,6 +517,19 @@ final class SearchIndexCoordinator {
     /// after `stop()` already returned. Used by `testStop_blocksLateRefreshRequest`.
     func _testRequestVectorRefresh() {
         requestVectorRefresh()
+    }
+
+    /// Test-only accessor: the HEAD of the very race the accessor above describes.
+    /// `_testRequestVectorRefresh` simulates that queued task's *tail*; this one
+    /// simulates the queued task itself finally running. Used by
+    /// `SearchIndexCoordinatorStopGateTests`.
+    func _testScheduleEnsureFresh() {
+        scheduleEnsureFresh()
+    }
+
+    /// Test-only accessor: token-side companion to `_testCurrentVectorBuildTaskIsNil`.
+    var _testCurrentTokenBuildTaskIsNil: Bool {
+        currentTokenBuildTask == nil
     }
     #endif
 }

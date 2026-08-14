@@ -181,7 +181,21 @@ final class FilenameMatcherTests: XCTestCase {
         XCTAssertEqual(matches.count, 2)
     }
 
+    /// What this discriminates, precisely: a glob the compiler REFUSES must not widen to
+    /// match-all. It cannot discriminate "the guard threw" from "the glob compiled and
+    /// matched nothing" — both end in an empty result — so the sentinel's job is only to
+    /// force `PreparedQuery.init` down the `try?` arm at all.
+    ///
+    /// Until the sentinel carried a `*` it did not even do that: `PreparedQuery.init`
+    /// compiles a glob only when the term `contains("*")`, so this test traversed the
+    /// substring-needle path and passed because a NUL-bearing needle matches nothing.
+    ///
+    /// RED: change `glob = query.contains("*") ? try? CompiledGlob(…) : nil` to fall back
+    /// to a match-everything glob on failure → both candidates match and this reds.
     func testGlob_uncompilablePattern_failsClosed() {
+        XCTAssertTrue(CompiledGlob._testUncompilableGlobSentinel.contains("*"),
+            "the sentinel must contain a wildcard or FilenameMatcher never compiles it, "
+            + "and this test silently degrades to exercising the substring path")
         let matches = FilenameMatcher.match(
             candidates: ["foo.swift", "bar.swift"],
             queries: [CompiledGlob._testUncompilableGlobSentinel],

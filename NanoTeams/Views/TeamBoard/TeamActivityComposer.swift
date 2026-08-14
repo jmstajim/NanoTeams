@@ -735,6 +735,17 @@ private struct BashApprovalCard: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(RoundedRectangle.squircle(CornerRadius.micro).fill(Colors.surfaceOverlay))
 
+            // The cwd changes the meaning of every relative path in the command, and the
+            // Auto judge already receives it — the human decider must see it too.
+            if let cwd = request.displayWorkingDirectory {
+                Text("cwd: \(cwd)")
+                    .font(Typography.monoCaption)
+                    .foregroundStyle(Colors.textSecondary)
+                    .textSelection(.enabled)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
             // Action row: Allow / Deny (+ Always allow) on the left, the read-only
             // "Ask AI" second opinion pushed to the right. Verdicts render below,
             // sized to their content.

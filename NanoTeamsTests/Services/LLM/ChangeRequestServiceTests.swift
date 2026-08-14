@@ -32,16 +32,18 @@ final class ChangeRequestServiceTests: XCTestCase {
         XCTAssertEqual(ChangeRequestService.tallyVotes(meetingMessages: messages), .tied)
     }
 
-    func testTallyVotes_noVotes_returnsTied() {
+    /// RED: restore `return .tied` for the 0-0 case → this and the caller-level
+    /// `testNoVotes_isRejected_andAmendsNothing` both fail.
+    func testTallyVotes_noVotes_returnsNoVotes() {
         let messages = [
             makeMessage(.techLead, "Let me think about it..."),
             makeMessage(.softwareEngineer, "I'm not sure either"),
         ]
-        XCTAssertEqual(ChangeRequestService.tallyVotes(meetingMessages: messages), .tied)
+        XCTAssertEqual(ChangeRequestService.tallyVotes(meetingMessages: messages), .noVotes)
     }
 
-    func testTallyVotes_emptyMessages_returnsTied() {
-        XCTAssertEqual(ChangeRequestService.tallyVotes(meetingMessages: []), .tied)
+    func testTallyVotes_emptyMessages_returnsNoVotes() {
+        XCTAssertEqual(ChangeRequestService.tallyVotes(meetingMessages: []), .noVotes)
     }
 
     func testTallyVotes_voteWithoutSpace_counted() {

@@ -62,14 +62,41 @@ nonisolated enum LoopScanner {
     /// history. Returns the first (strongest) signal. `cutoffDate` excludes entries
     /// `createdAt <= cutoffDate`: the watcher passes its per-task `lastTrigger`
     /// (revision-retained-history guard); the evaluator passes `now - recencyWindow`.
+    ///
+    /// `informationBoundary` is the timestamp of the last turn that brought the model
+    /// outside information (`ConversationInformationBoundary.lastArrival`). It bounds the
+    /// TOOL-CALL scan only, folded into that filter's cutoff — repeating a call after
+    /// learning something is a workflow (the manager re-checks the task it was just told
+    /// about), repeating it with nothing between is a loop. It is NOT immunity: the count
+    /// restarts, so three identical calls AFTER the boundary still fire.
+    ///
+    /// Deliberately not applied to the two text detectors below. Those ask whether the
+    /// model's OWN words are repeating verbatim, and news arriving is no excuse for
+    /// emitting the same paragraph again — if anything it makes the repetition worse
+    /// evidence. Bounding them would buy nothing and mask the reasoning-model thinking
+    /// loop, which is the mode the text detectors exist for.
+    ///
+    /// **`informationBoundary` has no default; `cutoffDate` beside it does, and the
+    /// asymmetry is the point.** A default may express a POLICY the caller owns —
+    /// `.distantPast` means "don't filter", which is exactly what the watcher wants
+    /// before its first fire. It must not assert a FACT about data only the caller
+    /// holds: `nil` here claims "this conversation contains no unsolicited arrival",
+    /// and a caller who simply forgot the argument silently restores the pre-fix false
+    /// positive — the detector telling a model "the state isn't changing" one turn
+    /// after it was told the state changed. This type takes flattened tuples precisely
+    /// so more paths can feed it (`scanStreaming` already has three), so the next
+    /// caller is the one at risk; the compiler asks it the question instead. Same rule,
+    /// same wording, as the in-step half's `TrackedCall.informationEpoch`.
     static func scanCommitted(
         recentAssistant: [(thinking: String?, content: String, createdAt: Date)],
         toolCalls: [(name: String, argsJSON: String, createdAt: Date)],
         cutoffDate: Date = .distantPast,
+        informationBoundary: Date?,
         scope: Scope
     ) -> LoopSignal? {
         // 1. Tool-call sequence — deterministic, strongest, cheapest.
-        let freshTools = toolCalls.filter { $0.createdAt > cutoffDate }
+        let toolCutoff = max(cutoffDate, informationBoundary ?? .distantPast)
+        let freshTools = toolCalls.filter { $0.createdAt > toolCutoff }
         if let match = MessageRepetitionDetector.detectIdenticalToolCallSequence(
             freshTools.map { (name: $0.name, argsJSON: $0.argsJSON) },
             minRepeats: DelegationConstants.repetitionMinIdenticalToolCalls

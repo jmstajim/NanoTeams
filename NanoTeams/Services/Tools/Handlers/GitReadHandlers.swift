@@ -44,7 +44,14 @@ nonisolated struct GitStatusTool: ToolHandler {
             for line in lines {
                 let str = String(line)
                 if str.hasPrefix("##") {
-                    let branchPart = str.dropFirst(3)
+                    // Porcelain v1 announces an unborn HEAD as `## No commits yet on main`.
+                    // Without stripping the prose the whole sentence became the branch name —
+                    // and that is the state EVERY freshly `git init`-ed work folder is in.
+                    var branchPart = str.dropFirst(3)
+                    let unbornPrefix = "No commits yet on "
+                    if branchPart.hasPrefix(unbornPrefix) {
+                        branchPart = branchPart.dropFirst(unbornPrefix.count)
+                    }
                     if let dotRange = branchPart.range(of: "...") {
                         branch = String(branchPart[..<dotRange.lowerBound])
                     } else {
@@ -67,7 +74,17 @@ nonisolated struct GitStatusTool: ToolHandler {
                     }
 
                     if !path.isEmpty {
-                        files.append(GitPathStatus(path: path, status: status))
+                        // `R  old.txt -> new.txt` — split so `path` stays usable verbatim
+                        // as a `read_file` / `git_add` argument, like every other tool's.
+                        if let arrow = path.range(of: " -> ") {
+                            files.append(GitPathStatus(
+                                path: String(path[arrow.upperBound...]),
+                                status: status,
+                                old_path: String(path[..<arrow.lowerBound])
+                            ))
+                        } else {
+                            files.append(GitPathStatus(path: path, status: status))
+                        }
                     }
                 }
             }
@@ -132,12 +149,27 @@ nonisolated struct GitBranchListTool: ToolHandler {
 
             var branches: [BranchInfo] = []
             var currentBranch = ""
+            var detached = false
 
             for line in result.stdout.split(separator: "\n") {
                 let str = String(line)
                 let isCurrent = str.hasPrefix("*")
                 var branchLine = isCurrent ? String(str.dropFirst(2)) : String(str.dropFirst(2))
                 branchLine = branchLine.trimmingCharacters(in: .whitespaces)
+
+                // `* (HEAD detached at 076e07c) 076e07c first` — splitting on the first
+                // space yielded a "branch" literally named `(HEAD`, and reported it as
+                // current, so the model was told to be on something no git_checkout accepts.
+                if branchLine.hasPrefix("("), let close = branchLine.firstIndex(of: ")") {
+                    let descriptor = String(branchLine[branchLine.index(after: branchLine.startIndex)..<close])
+                    if isCurrent {
+                        detached = true
+                        currentBranch = ""   // there IS no current branch while detached
+                    }
+                    branches.append(BranchInfo(
+                        name: descriptor, current: isCurrent, upstream: nil, is_remote: false))
+                    continue
+                }
 
                 let parts = branchLine.split(separator: " ", maxSplits: 1)
                 guard let name = parts.first else { continue }
@@ -163,11 +195,16 @@ nonisolated struct GitBranchListTool: ToolHandler {
             struct BranchListData: Codable {
                 var branches: [BranchInfo]
                 var current: String
+                /// Present only while HEAD is detached, so the normal shape is unchanged.
+                /// `current` is deliberately empty in that state — naming a non-branch
+                /// there is what sent the model into an impossible `git_checkout`.
+                var detached: Bool?
             }
 
             return makeSuccessResult(
                 toolName: Self.name, args: args,
-                data: BranchListData(branches: branches, current: currentBranch)
+                data: BranchListData(
+                    branches: branches, current: currentBranch, detached: detached ? true : nil)
             )
         }
     }
@@ -209,7 +246,10 @@ nonisolated struct GitLogTool: ToolHandler {
             if oneline {
                 gitArgs.append("--oneline")
             } else {
-                gitArgs.append("--format=%H|%s|%an|%ai")
+                // %x1f (ASCII Unit Separator) cannot appear in a commit subject; `|` can, and
+                // `feat: a | b` scrambled three fields — the message truncated at the pipe,
+                // the author became a message fragment, the date swallowed the author.
+                gitArgs.append("--format=%H%x1f%s%x1f%an%x1f%ai")
             }
 
             if let paths = paths, !paths.isEmpty {
@@ -242,7 +282,7 @@ nonisolated struct GitLogTool: ToolHandler {
                             Commit(hash: hash, message: message, author: nil, date: nil))
                     }
                 } else {
-                    let parts = str.split(separator: "|", maxSplits: 3)
+                    let parts = str.split(separator: "\u{1F}", maxSplits: 3)
                     if parts.count >= 2 {
                         commits.append(
                             Commit(

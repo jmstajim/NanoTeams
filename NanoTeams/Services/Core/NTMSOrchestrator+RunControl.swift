@@ -44,17 +44,9 @@ extension NTMSOrchestrator {
         // inside the detached Task after generation succeeds — preserving the
         // invariant that the engine never starts before `task.generatedTeam` is set.
         if needsTeamGeneration(taskID: taskID) {
-            guard beginTeamGeneration(taskID: taskID) else { return }
-            let genTask = Task { @MainActor [weak self] in
-                guard let self else { return }
-                defer { self.endTeamGeneration(taskID: taskID) }
-                let generated = await self.runTeamGeneration(taskID: taskID)
-                // Skip engine start if pauseRun cancelled us mid-generation.
-                guard !Task.isCancelled else { return }
-                guard generated else { return } // failure envelope + lastErrorMessage already set
-                self.engineForTask(taskID).start()
-            }
-            registerTeamGenerationTask(taskID: taskID, task: genTask)
+            // `clearingPriorSteps: false` — `createNewRun` above just replaced the run,
+            // so there is nothing left over to clean up.
+            spawnTeamGeneration(taskID: taskID, clearingPriorSteps: false)
             return
         }
 
@@ -181,6 +173,24 @@ extension NTMSOrchestrator {
         // (See pauseRun for the symmetric case.)
         for childID in childTaskIDs(of: taskID) {
             await resumeRun(taskID: childID, visited: nextVisited)
+        }
+
+        // Team generation never completed, so this run is still pinned to the "Generated
+        // Team" placeholder (roleIDs: []). Everything below would eventually hand its
+        // synthetic `team_generation_*` step — which belongs to no roster — to `runStep`,
+        // and `engine.start()` at the bottom would find `Run.activeWorkRoleIDs` trivially
+        // empty and retire the run `.done` with no team ever generated and no toolbar
+        // control left. Re-enter generation instead: the same operation the graph pane's
+        // Retry performs, so `[ resume ]` and Retry now mean the same thing.
+        //
+        // Spawned rather than awaited: `answerSupervisorQuestion` and `correctRole` await
+        // `resumeRun` and would freeze the composer mid-submit for the length of an LLM
+        // call. `spawnTeamGeneration` reserves synchronously, so a second resume in the
+        // same tick is refused; on refusal we still return, because the generation already
+        // in flight owns the engine start.
+        if needsTeamGeneration(taskID: taskID) {
+            spawnTeamGeneration(taskID: taskID, clearingPriorSteps: true)
+            return
         }
 
         // Revive failed steps (transient LLM/stall failure) so sending a message RETRIES

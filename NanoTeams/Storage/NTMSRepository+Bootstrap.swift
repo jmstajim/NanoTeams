@@ -131,10 +131,11 @@ nonisolated extension NTMSRepository {
     func migrateIfNeeded(
         teamsFile: inout TeamsFile,
         state: inout WorkFolderState,
-        tasksIndex: TasksIndex,
+        tasksIndex: inout TasksIndex,
         paths: NTMSPaths
     ) throws -> BundledUpdateReport {
         var teamsNeedsWrite = false
+        var tasksIndexNeedsWrite = false
         var report = BundledUpdateReport()
 
         // 1. Append bundled templates the user hasn't tombstoned.
@@ -176,6 +177,22 @@ nonisolated extension NTMSRepository {
         // load so the invariant is self-healing. Idempotent.
         if normalizeDelegationToolset(teams: &teamsFile.teams) {
             teamsNeedsWrite = true
+        }
+
+        // 2c. Structural invariant for chat mode: a task whose effective team is the
+        // Generated Team placeholder is NEVER a chat task — the placeholder's
+        // `isChatMode` is vacuous (no roles ⇒ no Supervisor deliverables). Enforced at
+        // creation by `Team.seedChatModeForNewTask`; task files written before that
+        // predicate existed still carry `isChatMode: true`, and nothing on the
+        // generation-failure path ever rewrites it. Self-healing on every load,
+        // idempotent, and index-filtered so a healthy folder does zero task reads.
+        if normalizeGeneratedPlaceholderChatMode(
+            tasksIndex: &tasksIndex,
+            teams: teamsFile.teams,
+            activeTeamID: state.activeTeamID,
+            paths: paths
+        ) {
+            tasksIndexNeedsWrite = true
         }
 
         // 3. Version-bump reconcile — overwrites scalar role fields, prompt
@@ -232,6 +249,9 @@ nonisolated extension NTMSRepository {
         }
         if stateNeedsWrite {
             try store.write(state, to: paths.workFolderJSON)
+        }
+        if tasksIndexNeedsWrite {
+            try store.write(tasksIndex, to: paths.tasksIndexJSON)
         }
 
         return report

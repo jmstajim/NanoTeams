@@ -96,4 +96,44 @@ final class MutateTaskBackgroundIndexTests: NTMSOrchestratorTestBase {
         XCTAssertEqual(summary?.status, loaded.toSummary().status, "index summary status must track the loaded task after createNewRun")
         XCTAssertEqual(summary?.updatedAt, loaded.updatedAt, "index summary must be the loaded task's summary, not a stale copy")
     }
+
+    // MARK: - createNewRun's persist failure
+
+    /// A failed persist must SURFACE. `createNewRun` builds the run in memory, writes it, and
+    /// catches a write failure into `lastErrorMessage`; without that the user would press
+    /// Start, watch a run appear, and find it gone on the next open with no explanation.
+    ///
+    /// Induced through the repository's own contract rather than permission games:
+    /// `updateTaskOnly` throws `taskNotFound` when the task's `task.json` is absent, so
+    /// deleting it while the task is still loaded in memory models exactly the "the store
+    /// moved under us" condition the `catch` exists for.
+    ///
+    /// This arm was previously covered only BY ACCIDENT — some unrelated test happened to
+    /// make a write fail — so it appeared and disappeared between coverage runs. Same
+    /// treatment as `SearchIndexFailureCoverageTests`' persist arm: a number that oscillates
+    /// is a number nobody trusts, and this one carries a real contract.
+    ///
+    /// RED: drop the `self.lastErrorMessage = …` from the catch → the failure is silent.
+    func testCreateNewRun_persistFailure_isReportedAndDoesNotFabricateARun() async throws {
+        await sut.openWorkFolder(tempDir)
+        let created = await sut.createTask(title: "A", supervisorTask: "x")
+        let taskID = try XCTUnwrap(created)
+        let runsBefore = sut.loadedTask(taskID)?.runs.count ?? 0
+
+        // Remove the on-disk task the write targets. The in-memory copy stays, so
+        // `createNewRun` gets all the way to `updateTaskOnly` before failing.
+        let paths = NTMSPaths(workFolderRoot: tempDir)
+        try FileManager.default.removeItem(at: paths.taskJSON(taskID: taskID))
+        sut.lastErrorMessage = nil
+
+        await sut.createNewRun(taskID: taskID)
+
+        XCTAssertNotNil(
+            sut.lastErrorMessage,
+            "a run that could not be written must be reported, not silently dropped")
+        XCTAssertEqual(
+            sut.loadedTask(taskID)?.runs.count, runsBefore,
+            "the in-memory commit happens only on the success branch, so a failed write must "
+                + "not leave a run the store has never heard of")
+    }
 }

@@ -13,6 +13,23 @@ nonisolated struct StepToolCall: Codable, Identifiable, Hashable {
     /// Whether the tool execution resulted in an error.
     var isError: Bool?
 
+    /// Set when the parser had to REPAIR this call's argument structure — today, when the
+    /// model closed its `arguments` object (or the whole call object) before it had
+    /// finished writing the members, so parameters were recovered from outside the
+    /// wrapper. Nil for every call the model emitted correctly.
+    ///
+    /// Exists because the repair is otherwise invisible to the one party that can stop
+    /// re-emitting the defect. `gemma-4-26b-a4b-qat` sent the shape twice eight seconds
+    /// apart in the same step (`network_log.json`, 2026-08-13), and a silent fix would
+    /// have let it keep doing so for the rest of the run. The note rides the tool RESULT
+    /// (spliced in `+ToolResultDispatching`), not a separate conversation turn: a turn
+    /// would grow the prompt prefix on every occurrence, and the result is already going
+    /// to the model anyway.
+    ///
+    /// Optional so the synthesized decoder reads pre-existing `task.json` files that have
+    /// no such key.
+    var argumentRepairNote: String?
+
     init(
         id: UUID = UUID(),
         createdAt: Date = MonotonicClock.shared.now(),
@@ -20,7 +37,8 @@ nonisolated struct StepToolCall: Codable, Identifiable, Hashable {
         name: String,
         argumentsJSON: String,
         resultJSON: String? = nil,
-        isError: Bool? = nil
+        isError: Bool? = nil,
+        argumentRepairNote: String? = nil
     ) {
         self.id = id
         self.createdAt = createdAt
@@ -29,6 +47,31 @@ nonisolated struct StepToolCall: Codable, Identifiable, Hashable {
         self.argumentsJSON = argumentsJSON
         self.resultJSON = resultJSON
         self.isError = isError
+        self.argumentRepairNote = argumentRepairNote
+    }
+
+    /// The `message` out of this call's `{"ok":false,"error":{"code":…,"message":…}}` result.
+    ///
+    /// Information Expert: the call owns its result, so every surface that asks "why did
+    /// that tool call fail" reads it here instead of re-spelling the three-step dictionary
+    /// walk. Two did — the Autovisor's `task_status.last_error` and the generated-team graph
+    /// panel — and they had already drifted, one rejecting a whitespace-only message where
+    /// the other rendered it as a blank error pane.
+    ///
+    /// Whitespace-only is treated as ABSENT: a message that renders as nothing is not a
+    /// diagnosis, and every caller has a better generic fallback for that case.
+    ///
+    /// Lives here rather than on `ToolError` (which owns the envelope's error SHAPE) so the
+    /// Domain layer keeps reading downwards only — `AutovisorStatus` is Domain and would
+    /// otherwise be the first Domain type to reference one from `Services/Tools`.
+    var errorMessage: String? {
+        guard let resultJSON,
+              let dict = JSONUtilities.parseJSONDictionary(resultJSON),
+              let error = dict["error"] as? [String: Any],
+              let message = error["message"] as? String,
+              !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        return message
     }
 
     /// True while a vision analysis is in progress (interim placeholder result).

@@ -27,9 +27,8 @@ nonisolated struct ArtifactDependencyResolver {
     // MARK: - Cached State
 
     private let roles: [TeamRoleDefinition]
-    /// Artifact name → producing role ID.
-    private let producerOf: [String: String]
     /// Role ID → set of role IDs it depends on (via artifacts).
+    /// (producer-of is an init-local intermediate — a stored copy had zero readers, wave 32.)
     private let roleDependsOn: [String: Set<String>]
     /// Artifact name → set of role IDs that require it.
     private let consumersOf: [String: Set<String>]
@@ -59,7 +58,6 @@ nonisolated struct ArtifactDependencyResolver {
             roleDependsOn[role.id] = deps
         }
 
-        self.producerOf = producerOf
         self.roleDependsOn = roleDependsOn
         self.consumersOf = consumersOf
     }

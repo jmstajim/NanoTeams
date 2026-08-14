@@ -287,6 +287,76 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase {
                       "re-enabling must persist too")
     }
 
+    // MARK: - Per-team block list (Settings → Autovisor → Teams)
+
+    /// The checkbox writes through the INVERSE of what it shows: the view speaks "allowed",
+    /// the store keeps a block list. Both directions must persist.
+    func testSetAutovisorTeamAllowed_invertsIntoTheStoredBlockList() async {
+        _ = await pinManager()
+        let teamID = sut.snapshot?.workFolder.teams.first?.id ?? "t"
+        XCTAssertEqual(sut.snapshot?.workFolder.settings.autovisorBlockedTeamIDs, [],
+                       "precondition: nothing blocked by default")
+
+        await sut.setAutovisorTeamAllowed(teamID, allowed: false)
+        XCTAssertEqual(sut.snapshot?.workFolder.settings.autovisorBlockedTeamIDs, [teamID],
+                       "unchecking must ADD to the block list")
+
+        await sut.setAutovisorTeamAllowed(teamID, allowed: true)
+        XCTAssertEqual(sut.snapshot?.workFolder.settings.autovisorBlockedTeamIDs, [],
+                       "re-checking must REMOVE it")
+    }
+
+    /// Blocking the same team twice must not duplicate it, and unblocking one of two must
+    /// leave the other — the read-modify-write happens inside `mutateWorkFolder`, so it
+    /// composes rather than clobbering.
+    func testSetAutovisorTeamAllowed_isIdempotentAndComposes() async {
+        _ = await pinManager()
+        let teams = sut.snapshot?.workFolder.teams.prefix(2).map(\.id) ?? []
+        guard teams.count == 2 else { return XCTFail("need two teams; got \(teams)") }
+
+        await sut.setAutovisorTeamAllowed(teams[0], allowed: false)
+        await sut.setAutovisorTeamAllowed(teams[0], allowed: false)
+        XCTAssertEqual(sut.snapshot?.workFolder.settings.autovisorBlockedTeamIDs, [teams[0]],
+                       "blocking twice must not duplicate")
+
+        await sut.setAutovisorTeamAllowed(teams[1], allowed: false)
+        XCTAssertEqual(sut.snapshot?.workFolder.settings.autovisorBlockedTeamIDs,
+                       [teams[0], teams[1]].sorted(),
+                       "the second block must not clobber the first")
+
+        await sut.setAutovisorTeamAllowed(teams[0], allowed: true)
+        XCTAssertEqual(sut.snapshot?.workFolder.settings.autovisorBlockedTeamIDs, [teams[1]],
+                       "unblocking one must leave the other")
+    }
+
+    /// The bulk setter (used to clear orphan rows) normalizes, so a caller can't persist an
+    /// unsorted or duplicated list that would then dirty the settings diff on every write.
+    func testSetAutovisorBlockedTeamIDs_normalizes() async {
+        _ = await pinManager()
+        await sut.setAutovisorBlockedTeamIDs(["beta", " alpha ", "beta", ""])
+        XCTAssertEqual(sut.snapshot?.workFolder.settings.autovisorBlockedTeamIDs, ["alpha", "beta"])
+
+        await sut.setAutovisorBlockedTeamIDs([])
+        XCTAssertEqual(sut.snapshot?.workFolder.settings.autovisorBlockedTeamIDs, [],
+                       "clearing must be representable — that is how an orphan row is forgotten")
+    }
+
+    /// End to end: what the setter persists is what the tool schema stops advertising.
+    func testBlockingATeam_removesItFromTheCreateManagedTaskCatalog() async {
+        _ = await pinManager()
+        guard let target = sut.snapshot?.workFolder.teams.first(where: { !$0.isHiddenFromPickers })
+        else { return XCTFail("need a selectable team") }
+
+        await sut.setAutovisorTeamAllowed(target.id, allowed: false)
+
+        let settings = try! XCTUnwrap(sut.snapshot?.workFolder.settings)
+        let schema = CreateManagedTaskTool.buildSchema(
+            allTeams: sut.snapshot?.workFolder.teams ?? [],
+            policy: AutovisorTeamPolicy(settings: settings))
+        XCTAssertFalse(schema.description.contains("`\(target.id)`"),
+                       "a blocked team must not be advertised to the manager")
+    }
+
     /// A model emitting the sentinel with surrounding whitespace (`"  generated  "`)
     /// is trimmed before classification, so the disable gate must still catch it.
     func testCreateManagedTask_generationDisabled_rejectsPaddedSentinel() async {
@@ -578,6 +648,103 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase {
                        "a rejected accept must leave the role status untouched")
     }
 
+    /// The 2026-08-11 incident: accept on a `.done` role while the task derives Review.
+    /// The pinned fact ("Role already completed") must survive as the message PREFIX and
+    /// the appended remedy must name the actual way out — `control_task close`.
+    func testManageRoleAccept_onDoneRoleInReview_appendsCloseRemedy() async {
+        _ = await pinManager()
+        guard let taskID = await makeReviewStartupTask() else { return }
+        await sut.mutateTask(taskID: taskID) { task in
+            task.runs[task.runs.count - 1].roleStatuses["r"] = .done
+        }
+        let r = await sut.performAutovisorAction(.manageRole(taskID: taskID, roleID: "r", verb: .accept))
+        XCTAssertFalse(r.ok)
+        XCTAssertTrue(r.message.hasPrefix("Role already completed"),
+                      "the original reject reason must be preserved, never replaced; got: \(r.message)")
+        XCTAssertTrue(r.message.contains("control_task close"),
+                      "a Review task's dead-end accept must steer the manager to close; got: \(r.message)")
+        XCTAssertEqual(sut.loadedTask(taskID)?.runs.last?.roleStatuses["r"], .done,
+                       "advice must not change the no-mutation contract of a rejected accept")
+    }
+
+    /// `.accepted` is `isComplete`, so the task still derives Review — same close remedy.
+    func testManageRoleAccept_onAcceptedRoleInReview_appendsCloseRemedy() async {
+        _ = await pinManager()
+        guard let taskID = await makeReviewStartupTask() else { return }
+        await sut.mutateTask(taskID: taskID) { task in
+            task.runs[task.runs.count - 1].roleStatuses["r"] = .accepted
+        }
+        let r = await sut.performAutovisorAction(.manageRole(taskID: taskID, roleID: "r", verb: .accept))
+        XCTAssertFalse(r.ok)
+        XCTAssertTrue(r.message.contains("already accepted"), "pinned fact preserved")
+        XCTAssertTrue(r.message.contains("control_task close"),
+                      "an all-complete task in Review is finalized by close; got: \(r.message)")
+    }
+
+    /// A `.done` role beside a WORKING sibling: the task derives `.running`, not Review —
+    /// telling the manager to close would truncate the sibling's work. Neutral advice only.
+    func testManageRoleAccept_onDoneRoleBesideWorkingSibling_noCloseAdvice() async {
+        _ = await pinManager()
+        guard let taskID = await makeReviewStartupTask() else { return }
+        await sut.mutateTask(taskID: taskID) { task in
+            task.runs = [Run(id: 0, steps: [
+                StepExecution(id: "r", role: .softwareEngineer, title: "Engineer", status: .done),
+                StepExecution(id: "s", role: .custom(id: "s"), title: "Sibling", status: .running),
+            ], roleStatuses: ["r": .done, "s": .working])]
+        }
+        let r = await sut.performAutovisorAction(.manageRole(taskID: taskID, roleID: "r", verb: .accept))
+        XCTAssertFalse(r.ok)
+        XCTAssertTrue(r.message.hasPrefix("Role already completed"), "reason preserved; got: \(r.message)")
+        XCTAssertFalse(r.message.contains("control_task close"),
+                       "close advice while a sibling works would invite truncating the run; got: \(r.message)")
+        XCTAssertTrue(r.message.contains("task_status"),
+                      "the neutral remedy points back at the per-role view; got: \(r.message)")
+    }
+
+    /// The trap the review caught before it shipped: a `.done` role beside a sibling at
+    /// a LIVE `.needsAcceptance` gate. The task still derives Review
+    /// (`onlyAcceptanceOrComplete` arm), so a bare derived-status gate would advise
+    /// close — and close force-accepts the gated sibling's output unreviewed
+    /// (`finalizeRoleStatusesForClose` rewrites `.needsAcceptance` → `.done`). The
+    /// advice must stay neutral, exactly as the `task_status` hint stays silent in this
+    /// same state — the two surfaces share `isReadyForFinalAcceptance` so they cannot
+    /// disagree.
+    func testManageRoleAccept_onDoneRoleBesideNeedsAcceptanceSibling_noCloseAdvice() async {
+        _ = await pinManager()
+        guard let taskID = await makeReviewStartupTask() else { return }
+        await sut.mutateTask(taskID: taskID) { task in
+            task.runs = [Run(id: 0, steps: [
+                StepExecution(id: "r", role: .softwareEngineer, title: "Engineer", status: .done),
+                StepExecution(id: "p", role: .custom(id: "p"), title: "Gated", status: .done),
+            ], roleStatuses: ["r": .done, "p": .needsAcceptance])]
+        }
+        XCTAssertEqual(sut.loadedTask(taskID)?.derivedStatusFromActiveRun(), .needsSupervisorAcceptance,
+                       "precondition: this shape DOES derive Review — that is the trap")
+        let r = await sut.performAutovisorAction(.manageRole(taskID: taskID, roleID: "r", verb: .accept))
+        XCTAssertFalse(r.ok)
+        XCTAssertTrue(r.message.hasPrefix("Role already completed"), "reason preserved; got: \(r.message)")
+        XCTAssertFalse(r.message.contains("control_task close"),
+                       "advising close would sweep p's gated output past the Supervisor; got: \(r.message)")
+        XCTAssertEqual(sut.loadedTask(taskID)?.runs.last?.roleStatuses["p"], .needsAcceptance,
+                       "the sibling's live gate must be untouched")
+    }
+
+    /// A `.failed` role's accept-rejection steers to restart (the only remedy that
+    /// preserves the failure semantics), never to a forced accept or a close.
+    func testManageRoleAccept_onFailedRole_advisesRestart() async {
+        _ = await pinManager()
+        guard let taskID = await makeReviewStartupTask() else { return }
+        await sut.mutateTask(taskID: taskID) { task in
+            task.runs[task.runs.count - 1].roleStatuses["r"] = .failed
+        }
+        let r = await sut.performAutovisorAction(.manageRole(taskID: taskID, roleID: "r", verb: .accept))
+        XCTAssertFalse(r.ok)
+        XCTAssertTrue(r.message.contains("manage_role restart"),
+                      "a failed role's remedy is restart; got: \(r.message)")
+        XCTAssertEqual(sut.loadedTask(taskID)?.runs.last?.roleStatuses["r"], .failed,
+                       "the failure must be preserved (finalizeRoleStatusesForClose contract)")
+    }
+
     /// Corner: accepting an already-`.accepted` role fails with the SPECIFIC reason surfaced
     /// (not the generic "Could not accept" fallback) — confirms the arm relays `acceptRole`'s
     /// `lastErrorMessage` rather than masking it.
@@ -762,6 +929,30 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase {
         await sut.wakeAutovisorForEvents()
         XCTAssertNotEqual(sut.autovisorLastWakeAt, priorPass,
                           "a fresh condition wakes immediately regardless of a recent prior pass")
+        sut.stopEngineForTask(mgrID)
+    }
+
+    /// D-4 form B, localized (DEBTS.md §5): `openWorkFolder` arms the live automation
+    /// poll, whose tick body runs this same wake as the level-triggered backstop. A
+    /// wall-clock minute boundary landing inside a wake test's window let that
+    /// backstop deliver the staged condition FIRST; the test's own wake then
+    /// correctly declined re-delivery (deliver-once), and
+    /// `testWake_freshCondition_wakesWithNoThrottle`'s assert read the un-moved
+    /// stamp — the flake, reproduced deterministically by this interleaving. The
+    /// factory now neuters the tick (`TestOrchestrator.automationTickNever`); this
+    /// test keeps the interleaving pinned as CORRECT deliver-once behavior — a
+    /// condition the backstop already delivered is not delivered twice.
+    func testWake_afterPollBackstopAlreadyDelivered_declinesRedelivery() async {
+        let mgrID = await enabledManager()
+        guard await makeReviewStartupTask() != nil else { return }
+        await sut.wakeAutovisorForEvents(includeStuck: true)  // the poll tick's body
+        XCTAssertNotNil(sut.autovisorLastWakeAt,
+                        "anti-vacuity: the backstop must have delivered the condition and started a pass")
+        let priorPass = Date(timeIntervalSince1970: 1_000_000)
+        sut.autovisorLastWakeAt = priorPass
+        await sut.wakeAutovisorForEvents()
+        XCTAssertEqual(sut.autovisorLastWakeAt, priorPass,
+                       "an explicit wake for the SAME condition must decline re-delivery (deliver-once)")
         sut.stopEngineForTask(mgrID)
     }
 

@@ -109,11 +109,8 @@ extension LLMExecutionService {
 
         // Build meeting context (still needed for tool loop fallback + turn completion)
         let meetingContext = TeamMeetingService.MeetingContext(
-            topic: topic,
             initiatedBy: initiatingRole,
             participants: participants,
-            additionalContext: context,
-            task: task,
             availableArtifacts: availableArtifacts,
             artifactReader: { [weak self] artifact in
                 guard let workFolderRoot = self?.delegate?.workFolderURL else { return nil }

@@ -50,7 +50,7 @@ final class StreamingPreviewManagerActivityTests: XCTestCase {
         manager.markStreamActivity(stepID: "step1", taskID: 0)
         XCTAssertTrue(manager.hasReceivedStreamActivity(stepID: "step1", taskID: 0))
 
-        _ = manager.commit(stepID: "step1", taskID: 0)
+        manager.commit(stepID: "step1", taskID: 0)
 
         XCTAssertFalse(manager.hasReceivedStreamActivity(stepID: "step1", taskID: 0),
                        "commit must clear hasStreamActivity along with previews/thinking/progress — next stream on this step starts clean")
@@ -140,7 +140,7 @@ final class StreamingPreviewManagerActivityTests: XCTestCase {
         manager.markStreamingToolCall(stepID: "step1", taskID: 0)
         XCTAssertTrue(manager.isStreamingToolCall(stepID: "step1", taskID: 0))
 
-        _ = manager.commit(stepID: "step1", taskID: 0)
+        manager.commit(stepID: "step1", taskID: 0)
 
         XCTAssertFalse(manager.isStreamingToolCall(stepID: "step1", taskID: 0),
                        "commit must clear streamingToolCall — the next iteration's stream starts clean")
@@ -192,9 +192,8 @@ final class StreamingPreviewManagerActivityTests: XCTestCase {
         manager.markStreamActivity(stepID: "step1", taskID: 0)
         manager.updateProcessingProgress(stepID: "step1", taskID: 0, progress: 0.5)
 
-        let committed = manager.commit(stepID: "step1", taskID: 0)
+        manager.commit(stepID: "step1", taskID: 0)
 
-        XCTAssertNil(committed, "No preview → nothing to commit")
         XCTAssertFalse(manager.isStreamingToolCall(stepID: "step1", taskID: 0),
                        "commit must clear streamingToolCall even without a preview")
         XCTAssertFalse(manager.hasReceivedStreamActivity(stepID: "step1", taskID: 0),
@@ -213,7 +212,7 @@ final class StreamingPreviewManagerActivityTests: XCTestCase {
         let manager = StreamingPreviewManager()
         manager.appendThinking(stepID: "step1", taskID: 0, content: "<|call|>{\"partial\":")
 
-        _ = manager.commit(stepID: "step1", taskID: 0)
+        manager.commit(stepID: "step1", taskID: 0)
 
         XCTAssertNil(manager.streamingThinking(stepID: "step1", taskID: 0),
                      "commit must clear thinkingPreviews even without a preview")
@@ -312,7 +311,7 @@ final class StreamingPreviewManagerActivityTests: XCTestCase {
         manager.markStreamActivity(stepID: "step1", taskID: 0)
         let before = manager.structuralVersion
 
-        _ = manager.commit(stepID: "step1", taskID: 0)
+        manager.commit(stepID: "step1", taskID: 0)
 
         XCTAssertEqual(manager.structuralVersion, before,
                        "No preview existed → nothing structural changed → no rebuild signal")
@@ -354,7 +353,7 @@ final class StreamingPreviewManagerActivityTests: XCTestCase {
         manager.append(stepID: "step1", taskID: 0, messageID: messageID, role: .softwareEngineer, content: "hi")
         manager.markStreamActivity(stepID: "step1", taskID: 0)
         XCTAssertNotNil(manager.lastStreamActivity(stepID: "step1", taskID: 0))
-        _ = manager.commit(stepID: "step1", taskID: 0)
+        manager.commit(stepID: "step1", taskID: 0)
         XCTAssertNil(manager.lastStreamActivity(stepID: "step1", taskID: 0),
                      "commit must clear lastStreamActivityAt alongside hasStreamActivity")
     }

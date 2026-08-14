@@ -32,9 +32,20 @@ nonisolated extension SecureTokenStorage {
     }
 }
 
-enum KeychainError: Error, Equatable {
+enum KeychainError: Error, LocalizedError, Equatable {
     case unhandled(OSStatus)
     case invalidUTF8
+
+    /// `LocalizedError` conformance is load-bearing, not decoration. A bare
+    /// `var localizedDescription` on an `Error` type is reached by STATIC
+    /// dispatch only; every consumer here catches the error as `any Error`
+    /// (`LLMTokenField.onLoadError` is typed `((Error) -> Void)?`, and six
+    /// settings views spell `"…: \(error.localizedDescription)"`). Through
+    /// the existential Swift falls back to `NSError` bridging and renders
+    /// "The operation couldn't be completed. (NanoTeams.KeychainError error 0.)"
+    /// — losing both the OSStatus and the remedy. Routing through
+    /// `errorDescription` is what makes the message survive the box.
+    var errorDescription: String? { localizedDescription }
 
     /// User-facing description for banner surfacing. Stable wording so tests
     /// can pin it.
@@ -92,71 +103,57 @@ nonisolated struct KeychainSecureTokenStorage: SecureTokenStorage {
             throw KeychainError.invalidUTF8
         }
 
-        let baseQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: key,
-            kSecAttrSynchronizable as String: kCFBooleanFalse as Any
-        ]
-        var addQuery = baseQuery
-        addQuery[kSecValueData as String] = data
-        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-
-        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
-        switch addStatus {
-        case errSecSuccess:
+        let addQuery = KeychainQuery.add(service: service, account: key, data: data)
+        switch KeychainStatus.write(SecItemAdd(addQuery as CFDictionary, nil)) {
+        case .stored:
             return
-        case errSecDuplicateItem:
-            let attrs: [String: Any] = [
-                kSecValueData as String: data,
-                kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            ]
-            let updateStatus = SecItemUpdate(baseQuery as CFDictionary, attrs as CFDictionary)
-            guard updateStatus == errSecSuccess else {
-                throw KeychainError.unhandled(updateStatus)
+        case .needsUpdate:
+            let match = KeychainQuery.identity(service: service, account: key)
+            let attrs = KeychainQuery.updateAttributes(data: data)
+            let status = SecItemUpdate(match as CFDictionary, attrs as CFDictionary)
+            if case .failed(let code) = KeychainStatus.update(status) {
+                throw KeychainError.unhandled(code)
             }
-        default:
-            throw KeychainError.unhandled(addStatus)
+        case .failed(let code):
+            throw KeychainError.unhandled(code)
         }
     }
 
     func loadToken(forKey key: String) throws -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: key,
-            kSecAttrSynchronizable as String: kCFBooleanFalse as Any,
-            kSecReturnData as String: kCFBooleanTrue as Any,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
+        let query = KeychainQuery.load(service: service, account: key)
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
-        switch status {
-        case errSecSuccess:
-            guard let data = item as? Data else {
-                throw KeychainError.unhandled(status)
-            }
-            guard let string = String(data: data, encoding: .utf8) else {
-                throw KeychainError.invalidUTF8
-            }
-            return string
-        case errSecItemNotFound:
+        switch KeychainStatus.read(status) {
+        case .found:
+            return try Self.decodeToken(item, status: status)
+        case .absent:
             return nil
-        default:
-            throw KeychainError.unhandled(status)
+        case .failed(let code):
+            throw KeychainError.unhandled(code)
         }
     }
 
-    private func delete(key: String) throws {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: key,
-            kSecAttrSynchronizable as String: kCFBooleanFalse as Any
-        ]
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
+    /// Turns a successful `SecItemCopyMatching` payload into the token.
+    ///
+    /// Split out and `static` so both failure arms are reachable without a Keychain: a
+    /// non-`Data` payload (a `kSecMatchLimitOne` regression would hand back a CFArray)
+    /// and bytes that are not UTF-8 map to DIFFERENT errors, and only the second tells
+    /// the user the actionable thing — re-enter the token to overwrite the bad entry.
+    static func decodeToken(_ item: CFTypeRef?, status: OSStatus) throws -> String {
+        guard let data = item as? Data else {
             throw KeychainError.unhandled(status)
+        }
+        guard let string = String(data: data, encoding: .utf8) else {
+            throw KeychainError.invalidUTF8
+        }
+        return string
+    }
+
+    private func delete(key: String) throws {
+        let query = KeychainQuery.delete(service: service, account: key)
+        let outcome = KeychainStatus.delete(SecItemDelete(query as CFDictionary))
+        if case .failed(let code) = outcome {
+            throw KeychainError.unhandled(code)
         }
     }
 }

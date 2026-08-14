@@ -2,6 +2,11 @@ import SwiftUI
 
 struct ExploratorySearchIndexStatusCard: View {
     var coordinator: SearchIndexCoordinator?
+    /// Why the index files survived the last disable. Rendered in the disabled branch
+    /// because that is where the user who flipped the toggle is standing — the app's only
+    /// error banner lives on the main window, not on Settings. See
+    /// `NTMSOrchestrator.searchIndexClearFailure`.
+    var clearFailure: String?
     var onRebuild: () -> Void
 
     var body: some View {
@@ -53,6 +58,11 @@ struct ExploratorySearchIndexStatusCard: View {
                 Text("Exploratory Search is disabled. Enable it above to build an index.")
                     .font(Typography.caption)
                     .foregroundStyle(Colors.textTertiary)
+                if let clearFailure {
+                    Text("\(clearFailure) The index files are still on disk.")
+                        .font(Typography.caption)
+                        .foregroundStyle(Colors.error)
+                }
             }
         }
     }

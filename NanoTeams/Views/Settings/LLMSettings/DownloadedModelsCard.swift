@@ -49,8 +49,12 @@ struct DownloadedModelsCard: View {
 
     /// Only (provider, server) — NOT the selected model. This card is about
     /// what is on disk, which doesn't change when the user picks a model.
+    ///
+    /// The server half is the endpoint COMMIT generation, not the live URL: the
+    /// Settings URL field writes `llmBaseURLString` on every keystroke, and this
+    /// card's fetch is two round-trips (`/api/tags` + `/api/ps`, 5 s each).
     private var fetchKey: String {
-        "\(config.llmProvider.rawValue)|\(config.llmBaseURLString.normalizedBaseURL)"
+        "\(config.llmProvider.rawValue)|\(config.llmEndpointGeneration)"
     }
 
     private var models: [DownloadedModel] { listing?.models ?? [] }

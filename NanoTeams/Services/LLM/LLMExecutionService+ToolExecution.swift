@@ -147,20 +147,19 @@ extension LLMExecutionService {
             }
             return runtime.executeAll(context: context, toolCalls: toolsToExecute)
         }
-        // Two failure modes guarded against:
-        // (a) state entry removed BETWEEN write and check — concurrent cancel
-        //     beat us; we orphan-cancel so the detached batch doesn't outlive
-        //     the cancel signal. We only treat this as a fault when state
-        //     existed at start, because tests legitimately call this without
-        //     a seeded state entry and shouldn't auto-cancel.
-        // (b) a new step installed its own task during our await — clearing
-        //     unconditionally would clobber the successor's pointer.
+        // The handoff itself needs no guard: this method is actor-isolated, so the write below and
+        // any read of it are adjacent statements with no suspension point between them. A guard
+        // here used to claim it covered "state entry removed BETWEEN write and check"; that cannot
+        // happen, and its predicate reduced to `hadStateAtStart && !hadStateAtStart` — dead. Worse
+        // than dead: it told the next reader the orphan window was handled, so nobody checked
+        // whether the PAUSE path cancels this batch. It did not (now fixed in
+        // `cancelStepExecution`).
+        //
+        // The real window is the `await` below, and the guard AFTER it is what covers it: a new
+        // step may install its own batch while we suspend, so the pointer is cleared only when it
+        // still points at OUR task.
         let stepKey = TaskStepKey(taskID: task.id, stepID: roleID)
-        let hadStateAtStart = executionStates[stepKey] != nil
         executionStates[stepKey]?.currentToolBatchTask = batchTask
-        if hadStateAtStart && executionStates[stepKey]?.currentToolBatchTask != batchTask {
-            batchTask.cancel()
-        }
         let freshResults = await batchTask.value
         if executionStates[stepKey]?.currentToolBatchTask == batchTask {
             executionStates[stepKey]?.currentToolBatchTask = nil
@@ -187,7 +186,11 @@ extension LLMExecutionService {
     /// cases distinguish work-folder preconditions that filter tools at
     /// schema-build time, so the rejection envelope can name the actual
     /// blocker instead of falsely blaming role config.
-    enum ToolUnavailabilityReason {
+    /// `nonisolated` + `CaseIterable` so `PromptFormatConventionsTests` can sweep every
+    /// rejection message. Bare, the enum would inherit the app target's `@MainActor`
+    /// default isolation and its synthesized `allCases` would be unreachable from a
+    /// nonisolated `XCTestCase` (same trap as `AcceptanceService.AcceptRoute`).
+    nonisolated enum ToolUnavailabilityReason: CaseIterable {
         case notInRoleConfig
         case workFolderClosed       // default-storage mode, no real project folder
         case gitRepoMissing         // work folder has no `.git` directory
@@ -281,13 +284,13 @@ extension LLMExecutionService {
             msg = "Tool '\(call.name)' requires a git repository. The work folder has no .git directory — skip git operations or ask the supervisor whether to initialize one."
         case .visionNotConfigured:
             errorCode = "precondition_failed"
-            msg = "Tool '\(call.name)' requires a configured vision model. Vision is not enabled in Settings → LLM → Vision."
+            msg = "Tool '\(call.name)' requires a configured vision model. None is configured for this work folder — ask the supervisor to configure one, or proceed without image analysis."
         case .xcodeSchemeNotSelected:
             errorCode = "precondition_failed"
             msg = "Tool '\(call.name)' requires a selected Xcode scheme. No scheme is configured for this work folder."
         case .computerUseDisabled:
             errorCode = "precondition_failed"
-            msg = "Tool '\(call.name)' requires Computer Use, which is turned off in this app's settings. Continue without screen control, or ask the supervisor to enable Computer Use."
+            msg = "Tool '\(call.name)' requires Computer Use, which is turned off for this session. Continue without screen control, or ask the supervisor to enable Computer Use."
         case .withheldUntilPlanRecorded:
             // Distinct code so `buildToolErrorGuidance` can steer toward the
             // retry. `precondition_failed` would tell the model the blocker is

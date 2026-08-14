@@ -74,7 +74,7 @@ final class RoleToolBadgePolicyTests: XCTestCase {
             selectedScheme: selectedScheme,
             isVisionConfigured: isVisionConfigured,
             isComputerUseEnabled: isComputerUseEnabled,
-            autovisorAllowTeamGeneration: true
+            autovisorTeamPolicy: .unrestricted
         )
     }
 

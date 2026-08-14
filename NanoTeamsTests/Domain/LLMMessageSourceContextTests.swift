@@ -516,4 +516,103 @@ final class LLMMessageSourceContextTests: XCTestCase {
         XCTAssertNil(decoded.sourceContext, "Unknown sourceContext raw must decode to nil, not throw")
         XCTAssertEqual(decoded.content, "x")
     }
+
+    // MARK: - carriesUnsolicitedInformation (loop-detector information boundary)
+
+    /// Exactly one context is unsolicited: a queued Supervisor turn (human steering, the
+    /// Autovisor's mid-review notice, `message_task`) or a parent's `forward_to_team`
+    /// injected into a child. Nobody in the conversation asked for it.
+    ///
+    /// RED: add a second case to the `true` arm → `testSolicitedAnswers_areNotABoundary`
+    /// fails and names it.
+    func testCarriesUnsolicitedInformation_supervisorMessage_isTheOnlyBoundary() {
+        XCTAssertTrue(MessageSourceContext.supervisorMessage.carriesUnsolicitedInformation)
+    }
+
+    /// The self-immunizing set. Each of these is appended as the ANSWER to a tool call the
+    /// model made, stamped strictly after that call in the same step's conversation
+    /// (`commitCollaborationOutcome`, `recordAutoSupervisorAnswer`). If any of them opened a
+    /// boundary, a model spinning on that very tool would refresh its own cutoff with every
+    /// repeat, the committed scan would drop everything before the newest call, and the
+    /// trailing run would be pinned at 1 — the detector could never fire again for
+    /// `ask_teammate`, `request_team_meeting`, `request_changes`, or an auto-answered
+    /// `ask_supervisor`.
+    ///
+    /// RED: flip any one of these to `true` → this fails naming it, and in production that
+    /// tool becomes permanently un-detectable.
+    func testSolicitedAnswers_areNotABoundary() {
+        for context: MessageSourceContext in [
+            .consultation, .meeting, .changeRequest, .supervisorAnswer,
+        ] {
+            XCTAssertFalse(
+                context.carriesUnsolicitedInformation,
+                "\(context.rawValue) is the answer to the model's OWN tool call and is stamped "
+                    + "after it — counting it would let a spin on that tool immunize itself"
+            )
+        }
+    }
+
+    /// Stamped into the PARENT's conversation by a delegated CHILD, at a cadence the parent
+    /// does not control. Counting them would let a child's chatter mask a parent looping on
+    /// `delegate_to_team`.
+    func testDelegationQuestions_areNotABoundary() {
+        XCTAssertFalse(MessageSourceContext.delegatedQuestion.carriesUnsolicitedInformation)
+        XCTAssertFalse(MessageSourceContext.delegationEscalation.carriesUnsolicitedInformation)
+    }
+
+    /// `.retryNudge` is load-bearing rather than merely correct: `checkAndInjectLoopWarning`
+    /// persists its warning with exactly this context, so treating it as unsolicited
+    /// information would make the detector cancel itself with its own output — it would fire
+    /// once per step and then stay silent for as long as the model kept looping, which is
+    /// worse than the false positive this whole mechanism was built to remove.
+    ///
+    /// RED: flip `.retryNudge` to `true` → this fails, and the repetition warning starts
+    /// resetting the count it was emitted about.
+    func testAppAuthoredTurns_areNotABoundary() {
+        for context: MessageSourceContext in [.serverError, .loopCorrection, .retryNudge] {
+            XCTAssertFalse(
+                context.carriesUnsolicitedInformation,
+                "\(context.rawValue) is the app talking to the model — nothing arrived"
+            )
+        }
+    }
+
+    /// Why the tables above are hand-written lists and not a sweep over `allCases`.
+    ///
+    /// A sweep asserts that a new case falls on some default side, and here there IS no safe
+    /// default: a missed boundary blames the model for reacting to news, and a spurious one
+    /// on a context the model itself produces disables the detector for that tool forever.
+    /// So exhaustiveness is enforced by the COMPILER instead — twice. Once in production
+    /// (`carriesUnsolicitedInformation` is a `switch` with no `default`), and once here: this
+    /// helper must bucket every case, so a context added later cannot compile without its
+    /// author reading this file and deciding which table it belongs in.
+    ///
+    /// RED: add a `default:` arm here → a new case stops breaking this file, and the tables
+    /// silently stop covering the enum.
+    private enum Bucket { case boundary, solicitedAnswer, delegationChatter, appAuthored }
+
+    private func bucket(_ context: MessageSourceContext) -> Bucket {
+        switch context {
+        case .supervisorMessage: return .boundary
+        case .consultation, .meeting, .changeRequest, .supervisorAnswer: return .solicitedAnswer
+        case .delegatedQuestion, .delegationEscalation: return .delegationChatter
+        case .serverError, .loopCorrection, .retryNudge: return .appAuthored
+        }
+    }
+
+    /// The buckets and the predicate must agree: exactly `.boundary` is a boundary.
+    func testBucketing_agreesWithThePredicate() {
+        for context: MessageSourceContext in [
+            .supervisorMessage,
+            .consultation, .meeting, .changeRequest, .supervisorAnswer,
+            .delegatedQuestion, .delegationEscalation,
+            .serverError, .loopCorrection, .retryNudge,
+        ] {
+            XCTAssertEqual(
+                context.carriesUnsolicitedInformation,
+                bucket(context) == .boundary,
+                "\(context.rawValue): the truth table and the predicate disagree"
+            )
+        }
+    }
 }

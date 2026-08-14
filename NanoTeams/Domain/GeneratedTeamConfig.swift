@@ -55,10 +55,70 @@ nonisolated struct GeneratedTeamConfig: Codable, Hashable {
         // `GeneratedTeamBuilder`, which classifies it by completion type.
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
-            self.name = try c.decode(String.self, forKey: .name)
-            self.prompt = try c.decode(String.self, forKey: .prompt)
-            self.producesArtifacts = try c.decodeIfPresent([String].self, forKey: .producesArtifacts) ?? []
-            self.requiresArtifacts = try c.decodeIfPresent([String].self, forKey: .requiresArtifacts) ?? []
+            // `decode` enforces the KEY, not the value: `{"prompt": ""}` decoded
+            // clean, and since the fallback below reads the prompt for a name, the
+            // team installed a role literally called "Role" whose `{roleGuidance}`
+            // was empty — it then RAN, unguided, with no signal to the Supervisor
+            // that anything was wrong. That is strictly worse than the loud failure
+            // the comment below always claimed this field produced, and since the
+            // corrective retry went live the model is handed
+            // `describeDecodingError`'s `Data corrupted at roles.Index N.prompt`
+            // and gets one chance to fix it.
+            let declaredPrompt = try c.decode(String.self, forKey: .prompt)
+            guard !declaredPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: c.codingPath + [CodingKeys.prompt],
+                        debugDescription:
+                            "`prompt` must not be empty — every role needs guidance to act on."
+                    )
+                )
+            }
+            self.prompt = declaredPrompt
+            // `name` used to be the DTO's only unforgiving field besides `prompt`, and it
+            // is the one the system prompt never names as a role field — the schema can't
+            // express it (3-level `JSONSchema` cap) and the prose enumerates `prompt`,
+            // tools, artifacts and both enums but not this. Meanwhile the identical
+            // concept one level up has `synthesizedTeamName`, and `tools` /
+            // `produces_artifacts` / `requires_artifacts` all default to `[]`.
+            //
+            // Cost of the asymmetry, measured: `gemma-4-e4b` omitted it once and the
+            // whole M2 milestone died on `keyNotFound` at `roles.Index 0` — one absent
+            // key, no retry, and the roadmap behind it deadlocked
+            // (`MeditationApp/.nanoteams`, 2026-08-07).
+            //
+            // Synthesize from `prompt` the same way an artifact stub does, so the
+            // fallback borrows the role's own language. `prompt` stays hard-required:
+            // a role with no prompt has nothing to act on.
+            if let declared = try c.decodeIfPresent(String.self, forKey: .name),
+               !declared.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            {
+                self.name = declared
+            } else {
+                self.name = GeneratedTeamConfig.synthesizedRoleName(fromPrompt: self.prompt)
+            }
+            // Blank entries dropped HERE, where they enter, rather than at each
+            // consumer. `producesArtifacts` alone would not be worth it —
+            // `GeneratedTeamBuilder` re-filters produced names through
+            // `isValidArtifactName`, which already rejects "". `requiresArtifacts`
+            // is the half nothing covers: it is passed straight into
+            // `RoleDependencies.requiredArtifacts`, and role readiness is "every
+            // required artifact has been produced". Nothing ever produces "", so a
+            // `["Spec", ""]` leaves that role permanently un-ready and the engine
+            // stalls on "No roles ready to execute" — silent, and fatal to the run.
+            //
+            // Filtering rather than throwing is the same call the `name` fallback
+            // above makes: a blank list entry is a model typo, and failing the whole
+            // generation over one costs a milestone. Measured: filtering at the
+            // auto-stub loop instead turns it into "Unknown artifact reference(s):
+            // .", which rejects the entire team for a stray comma.
+            func nonBlank(_ list: [String]) -> [String] {
+                list.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            }
+            self.producesArtifacts = nonBlank(
+                try c.decodeIfPresent([String].self, forKey: .producesArtifacts) ?? [])
+            self.requiresArtifacts = nonBlank(
+                try c.decodeIfPresent([String].self, forKey: .requiresArtifacts) ?? [])
             self.tools = try c.decodeIfPresent([String].self, forKey: .tools) ?? []
             self.usePlanningPhase = try c.decodeIfPresent(Bool.self, forKey: .usePlanningPhase)
             self.icon = try c.decodeIfPresent(String.self, forKey: .icon)
@@ -259,15 +319,64 @@ nonisolated struct GeneratedTeamConfig: Codable, Hashable {
     /// paragraph-long name. Language-preserving: borrows whatever language the
     /// description is written in.
     static func synthesizedTeamName(from description: String) -> String? {
-        let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        firstSentence(of: description, clipTo: 60)
+    }
+
+    /// First sentence of `text`, clipped to a label. `nil` when there is nothing to name.
+    ///
+    /// Sole owner of the sentence rule for the two label synthesizers — a change to it
+    /// (handling `。` for the CJK prompts this codebase explicitly cares about, say) has to
+    /// land in one place or a generated team's name and its roles' names would disagree
+    /// about where a sentence ends. `derivedDescription(producedBy:)` deliberately does NOT
+    /// route through here: it is writing a description, not a label, and its rules genuinely
+    /// differ (200-char head, a 20-char minimum before it trusts the sentence, a restored
+    /// period, an ellipsized fallback).
+    ///
+    /// `headLimit` is fixed rather than a parameter because both callers clip well below
+    /// it, which is what makes the two former implementations' different no-terminator
+    /// fallbacks (`trimmed.prefix(n)` vs `head.prefix(n)`) equivalent.
+    ///
+    /// The first sentence is trusted only when it can stand as a label — long enough to be
+    /// one, or all there is. Accepting ANY non-empty first sentence turns a prompt that
+    /// opens with a numbered step into the label `"1"`, and — the reason this is a floor
+    /// rather than a nicety — turns `"Supervisor. Coordinate the milestones."` into the
+    /// name `"Supervisor"`, which `GeneratedTeamBuilder.isSupervisorName` matches EXACTLY,
+    /// so the role is filtered out and the generated team ships with no worker roles at
+    /// all. The threshold is the sibling `derivedDescription`'s, which has always carried
+    /// it; sharing it removes the divergence rather than adding a second rule.
+    private static let minLabelSentenceLength = 20
+
+    private static func firstSentence(of text: String, clipTo limit: Int) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         let head = String(trimmed.prefix(120))
+        let candidate: Substring
         if let cut = head.firstIndex(where: { ".!?\n".contains($0) }) {
             let sentence = head[..<cut].trimmingCharacters(in: .whitespacesAndNewlines)
-            if !sentence.isEmpty { return String(sentence.prefix(60)) }
+            let rest = head[head.index(after: cut)...]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let standsAlone = sentence.count >= minLabelSentenceLength || rest.isEmpty
+            candidate = (sentence.isEmpty || !standsAlone)
+                ? Substring(head) : Substring(sentence)
+        } else {
+            candidate = Substring(head)
         }
-        let clipped = String(trimmed.prefix(60)).trimmingCharacters(in: .whitespacesAndNewlines)
+        let clipped = String(candidate.prefix(limit))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         return clipped.isEmpty ? nil : clipped
+    }
+
+    /// Fallback role name when the LLM omitted `name`. Same shape as
+    /// `derivedDescription(producedBy:)` — the first sentence of the prompt, language
+    /// preserved — but clipped to a label rather than a description, and never empty
+    /// (`prompt` is hard-required, so there is always something to name it after).
+    ///
+    /// Deliberately NOT `synthesizedTeamName`: that one is written for a team
+    /// *description* and would be the wrong source here. Collisions between two
+    /// similar prompts are harmless — `GeneratedTeamBuilder` assigns role ids from
+    /// `UUID().uuidString`, not from the name.
+    static func synthesizedRoleName(fromPrompt prompt: String) -> String {
+        firstSentence(of: prompt, clipTo: 48) ?? "Role"
     }
 
     /// First sentence (or first 80 chars) of a producing role's prompt — used as

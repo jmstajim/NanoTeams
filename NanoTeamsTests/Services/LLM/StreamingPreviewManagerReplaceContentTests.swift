@@ -231,10 +231,12 @@ final class StreamingPreviewManagerReplaceContentTests: XCTestCase {
 
     // MARK: - Interaction with commit
 
-    /// After a Harmony rewind to empty content, the subsequent commit should
-    /// return nil because the committed preview has no visible text (whitespace-
-    /// only commit contract — CLAUDE.md §StreamingPreviewManager).
-    func testReplaceContent_toEmpty_thenCommit_returnsNil() {
+    /// A Harmony rewind to empty content erases the marker prefix from the live
+    /// PREVIEW — the value the UI renders for the rest of the stream. (The former
+    /// "commit returns nil" half of this pin died with the commit return in wave
+    /// 33; the no-orphan-bubble suppression is owned by `ActivityFeedBuilder` and
+    /// the StepMessage guard on the orchestrator path.)
+    func testReplaceContent_toEmpty_leavesAnEmptyPreview() {
         let stepID = "pm"
         let messageID = UUID()
         manager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .productManager)
@@ -244,14 +246,13 @@ final class StreamingPreviewManagerReplaceContentTests: XCTestCase {
         manager.replaceContent(stepID: stepID, taskID: 0, messageID: messageID,
                                role: .productManager, content: "")
 
-        let committed = manager.commit(stepID: stepID, taskID: 0)
-        XCTAssertNil(committed,
-                     "An empty preview (post-rewind) must not materialize a bubble on commit")
+        XCTAssertEqual(manager.streamingContent(stepID: stepID, taskID: 0), "",
+                       "The rewind must erase the marker prefix from the live preview")
     }
 
-    /// Rewind to non-empty content: commit returns the rewound value, not
-    /// the pre-rewind content that included the marker prefix.
-    func testReplaceContent_toNonEmpty_thenCommit_returnsRewoundValue() {
+    /// Rewind to non-empty content: the live preview carries the rewound value,
+    /// not the pre-rewind content that included the marker prefix.
+    func testReplaceContent_toNonEmpty_previewCarriesRewoundValue() {
         let stepID = "pm"
         let messageID = UUID()
         manager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .productManager)
@@ -261,8 +262,7 @@ final class StreamingPreviewManagerReplaceContentTests: XCTestCase {
         manager.replaceContent(stepID: stepID, taskID: 0, messageID: messageID,
                                role: .productManager, content: "Answer: 42. ")
 
-        let committed = manager.commit(stepID: stepID, taskID: 0)
-        XCTAssertEqual(committed?.content, "Answer: 42. ",
-                       "Commit must reflect the post-rewind content, not the marker-polluted prefix")
+        XCTAssertEqual(manager.streamingContent(stepID: stepID, taskID: 0), "Answer: 42. ",
+                       "The preview must reflect the post-rewind content, not the marker-polluted prefix")
     }
 }

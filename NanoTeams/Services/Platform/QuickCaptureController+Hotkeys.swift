@@ -21,7 +21,7 @@ extension QuickCaptureController {
 
         // Ctrl+Opt+Cmd+0 — open overlay (no clip)
         // Key code 29 = '0', modifiers: cmdKey | optionKey | controlKey
-        hotkeyManager.register(
+        let openRegistered = hotkeyManager.register(
             id: Self.openHotkeyID,
             keyCode: 29,
             modifiers: UInt32(cmdKey | optionKey | controlKey),
@@ -32,7 +32,7 @@ extension QuickCaptureController {
 
         // Ctrl+Opt+Cmd+K — capture selection (files → attachments, text → clips) + open overlay
         // Key code 40 = 'k'
-        hotkeyManager.register(
+        let clipRegistered = hotkeyManager.register(
             id: Self.clipHotkeyID,
             keyCode: 40,
             modifiers: UInt32(cmdKey | optionKey | controlKey),
@@ -42,5 +42,27 @@ extension QuickCaptureController {
                 }
             }
         )
+
+        // A combo another app already owns cannot be claimed, and Carbon only says so through
+        // this status. Left unreported, the shortcut the Settings sheet advertises just never
+        // fires — indistinguishable from the feature being broken. Both failing is reported as
+        // one message: `lastErrorMessage` is a single coalescing slot (CLAUDE.md §45), so two
+        // writes would show only the second.
+        if let message = Self.unclaimedHotkeyMessage(openRegistered: openRegistered,
+                                                     clipRegistered: clipRegistered) {
+            store.lastErrorMessage = message
+        }
+    }
+
+    /// Pure: which advertised shortcuts could not be claimed → the one message to surface.
+    /// `nil` when both registered. Split out so it is testable without Carbon.
+    nonisolated static func unclaimedHotkeyMessage(openRegistered: Bool, clipRegistered: Bool) -> String? {
+        var combos: [String] = []
+        if !openRegistered { combos.append("⌃⌥⌘0 (Quick Capture)") }
+        if !clipRegistered { combos.append("⌃⌥⌘K (Context Capture)") }
+        guard !combos.isEmpty else { return nil }
+        let list = combos.joined(separator: " and ")
+        return "Couldn't register \(list) — another app is already using "
+            + (combos.count > 1 ? "those shortcuts." : "that shortcut.")
     }
 }

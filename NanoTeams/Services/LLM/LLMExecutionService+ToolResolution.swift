@@ -89,8 +89,10 @@ extension LLMExecutionService {
                 // 401/403: keep the override and let the LLM call surface the
                 // auth failure. Falling back to global would hide the misconfig.
                 if LLMAuthErrorClassifier.authFailureKind(status: http.statusCode) != nil {
+                    // Model-facing renderer: this lands in the conversation, not in a
+                    // settings card, so it must not name a pane the model cannot open.
                     await appendSystemMessage(
-                        LLMAuthErrorClassifier.message(forStatus: http.statusCode, body: nil)
+                        LLMAuthErrorClassifier.modelFacingMessage(forStatus: http.statusCode)
                     )
                     return effectiveConfig
                 }
@@ -105,9 +107,12 @@ extension LLMExecutionService {
             // validation error so the user fixes the URL instead of
             // wondering why their override silently runs on the global.
             if case .invalidBaseURL = error {
+                // `appendSystemMessage` is model-read (it lands in `step.llmConversation`
+                // as a `.system` turn with a nil `sourceContext`, which the degraded
+                // replay path keeps), so it states the condition rather than a Settings path.
                 await appendSystemMessage(
                     "LLM override URL is invalid: \(effectiveConfig.baseURLString). "
-                        + "Fix the URL in Settings → LLM or per-role override."
+                        + "This role is running against a misconfigured endpoint; only the supervisor can correct it."
                 )
                 return effectiveConfig
             }
@@ -139,7 +144,7 @@ extension LLMExecutionService {
             selectedScheme: env.selectedScheme,
             isVisionConfigured: env.isVisionConfigured,
             isComputerUseEnabled: env.isComputerUseEnabled,
-            autovisorAllowTeamGeneration: env.autovisorAllowTeamGeneration
+            autovisorTeamPolicy: env.autovisorTeamPolicy
         )
     }
 
@@ -157,7 +162,7 @@ extension LLMExecutionService {
             selectedScheme: env.selectedScheme,
             isVisionConfigured: env.isVisionConfigured,
             isComputerUseEnabled: env.isComputerUseEnabled,
-            autovisorAllowTeamGeneration: env.autovisorAllowTeamGeneration
+            autovisorTeamPolicy: env.autovisorTeamPolicy
         )
     }
 
@@ -168,7 +173,7 @@ extension LLMExecutionService {
         selectedScheme: String?,
         isVisionConfigured: Bool,
         isComputerUseEnabled: Bool,
-        autovisorAllowTeamGeneration: Bool
+        autovisorTeamPolicy: AutovisorTeamPolicy
     )? {
         guard let delegate else { return nil }
         return (
@@ -176,7 +181,7 @@ extension LLMExecutionService {
             selectedScheme: delegate.snapshot?.workFolder.settings.selectedScheme,
             isVisionConfigured: delegate.visionLLMConfig != nil,
             isComputerUseEnabled: delegate.computerUsePolicy.isEnabled,
-            autovisorAllowTeamGeneration: delegate.snapshot?.workFolder.settings.autovisorAllowTeamGeneration ?? true
+            autovisorTeamPolicy: delegate.snapshot.map { AutovisorTeamPolicy(settings: $0.workFolder.settings) } ?? .unrestricted
         )
     }
 
@@ -199,7 +204,7 @@ extension LLMExecutionService {
         selectedScheme: String? = nil,
         isVisionConfigured: Bool = false,
         isComputerUseEnabled: Bool = false,
-        autovisorAllowTeamGeneration: Bool = true
+        autovisorTeamPolicy: AutovisorTeamPolicy = .unrestricted
     ) -> [ToolSchema] {
         // 1. Find role definition — findRole handles id, systemRoleID, and name (custom roles
         // created via Role.fromDefinition carry the role's name, not its id, in `.custom(id:)`).
@@ -214,7 +219,7 @@ extension LLMExecutionService {
                 selectedScheme: selectedScheme,
                 isVisionConfigured: isVisionConfigured,
                 isComputerUseEnabled: isComputerUseEnabled,
-                autovisorAllowTeamGeneration: autovisorAllowTeamGeneration
+                autovisorTeamPolicy: autovisorTeamPolicy
             )
         }
 
@@ -234,7 +239,7 @@ extension LLMExecutionService {
             selectedScheme: selectedScheme,
             isVisionConfigured: isVisionConfigured,
             isComputerUseEnabled: isComputerUseEnabled,
-            autovisorAllowTeamGeneration: autovisorAllowTeamGeneration
+            autovisorTeamPolicy: autovisorTeamPolicy
         )
     }
 
@@ -255,7 +260,7 @@ extension LLMExecutionService {
         selectedScheme: String? = nil,
         isVisionConfigured: Bool = false,
         isComputerUseEnabled: Bool = false,
-        autovisorAllowTeamGeneration: Bool = true
+        autovisorTeamPolicy: AutovisorTeamPolicy = .unrestricted
     ) -> [ToolSchema] {
         resolveToolSchemasCore(
             allowedIDs: Set(roleDefinition.toolIDs),
@@ -271,7 +276,7 @@ extension LLMExecutionService {
             selectedScheme: selectedScheme,
             isVisionConfigured: isVisionConfigured,
             isComputerUseEnabled: isComputerUseEnabled,
-            autovisorAllowTeamGeneration: autovisorAllowTeamGeneration
+            autovisorTeamPolicy: autovisorTeamPolicy
         )
     }
 
@@ -287,7 +292,7 @@ extension LLMExecutionService {
         selectedScheme: String?,
         isVisionConfigured: Bool,
         isComputerUseEnabled: Bool,
-        autovisorAllowTeamGeneration: Bool
+        autovisorTeamPolicy: AutovisorTeamPolicy
     ) -> [ToolSchema] {
 
         // 3. Build the candidate set from the LIVE handler registry — the
@@ -357,7 +362,7 @@ extension LLMExecutionService {
         // valid team_ids. Only the hidden Manager role carries create_managed_task.
         if let idx = allowedTools.firstIndex(where: { $0.name == tn.createManagedTask }) {
             allowedTools[idx] = CreateManagedTaskTool.buildSchema(
-                allTeams: allTeams, allowGenerated: autovisorAllowTeamGeneration)
+                allTeams: allTeams, policy: autovisorTeamPolicy)
         }
 
         // 4. Auto-inject ask_supervisor for non-producing, non-observer roles —

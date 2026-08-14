@@ -301,11 +301,8 @@ final class MeetingCoordinatorTests: XCTestCase {
             team.templateID = tid
         }
         let context = TeamMeetingService.MeetingContext(
-            topic: topic,
             initiatedBy: .productManager,
             participants: [.productManager, .techLead, .softwareEngineer],
-            additionalContext: nil,
-            task: NTMSTask(id: 0, title: "Test", supervisorTask: "Test goal"),
             availableArtifacts: [],
             artifactReader: { _ in nil },
             team: team,

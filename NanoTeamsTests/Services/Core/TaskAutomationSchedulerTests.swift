@@ -709,6 +709,41 @@ final class TaskAutomationSchedulerTests: NTMSOrchestratorTestBase {
         XCTAssertNil(sut.automationPollTask)
     }
 
+    /// The loop itself, end to end, on an injected sub-second cadence: a due
+    /// recurrence staged AFTER the scheduler starts is fired by the background
+    /// tick — no direct `evaluateDueRecurrences` call. Untestable before
+    /// `automationTickInterval` existed (the production cadence is a wall-clock
+    /// minute boundary), and the positive control for the factory's tick
+    /// suppression: the seam changes the CADENCE, not whether the loop runs.
+    func testAutomationLoop_onInjectedCadence_firesADueRecurrence() async {
+        sut = TestOrchestrator.make(
+            embeddingClient: embeddingClient,
+            chatLifecycleClient: chatLifecycleClient,
+            automationTickInterval: 0.05
+        )
+        await sut.openWorkFolder(tempDir)
+        let taskID = await sut.createTask(title: "T", supervisorTask: "x")!
+        let runsBefore = sut.loadedTask(taskID)?.runs.count ?? 0
+        // Staged AFTER open, so the open-time `reconcileMissedRecurrences`
+        // cannot skip-advance the slot before the loop ever sees it.
+        await sut.mutateTask(taskID: taskID) {
+            $0.recurrence = TaskRecurrence(
+                rule: .interval(seconds: 3_600), isEnabled: true,
+                nextFireAt: Date().addingTimeInterval(-100))
+        }
+
+        // Positive assertion → wait for the condition with a deadline (waitUntil
+        // convention), never a fixed sleep.
+        let deadline = Date().addingTimeInterval(10)
+        while (sut.loadedTask(taskID)?.runs.count ?? 0) <= runsBefore, Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertGreaterThan(sut.loadedTask(taskID)?.runs.count ?? 0, runsBefore,
+                             "the background tick must fire the due recurrence on its own")
+        await sut.pauseRun(taskID: taskID)
+        sut.stopAutomationScheduler()
+    }
+
     // MARK: - Timeout actually pauses (review gap #4)
 
     /// The watchdog must not merely stamp `timedOutAt` — it must PAUSE the run.

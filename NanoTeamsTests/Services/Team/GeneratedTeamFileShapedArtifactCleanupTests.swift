@@ -280,4 +280,99 @@ final class GeneratedTeamFileShapedArtifactCleanupTests: XCTestCase {
         XCTAssertTrue(names.contains("Frontend Developer Summary"))
         XCTAssertTrue(names.contains("Backend Developer Summary"))
     }
+
+    // MARK: - Totality: a stripped name never loses its downstream edge
+
+    /// The two tests above are the two EXAMPLES; this is the PROPERTY behind them, and
+    /// it is what licences the absence of a drop path.
+    ///
+    /// `stripFileShapedArtifactNames` picks a redirect target as `fallback ?? kept.first`.
+    /// `fallback` is non-nil exactly when `kept` is empty — it is computed from that same
+    /// condition, and neither list is mutated in between — so `kept.first` covers the
+    /// complement and the pair is TOTAL for any role carrying a stripped name. Wave 12
+    /// deleted the third arm and the `droppedNames` set it fed: both were unreachable, and
+    /// the set was the costlier half, because it stayed permanently empty while two
+    /// consumers still read it and advertised a "reference gets dropped" outcome this
+    /// function cannot produce.
+    ///
+    /// Stated as a property over the whole 2×N space rather than as a third example: the
+    /// deletion is safe only if EVERY shape redirects, and two examples cannot say that.
+    /// A downstream role losing its edge is silent and expensive — it becomes `.ready`
+    /// immediately and runs out of dependency order, which is the regression the redirect
+    /// was introduced for in the first place.
+    ///
+    /// RED: restore the drop path (`else { droppedNames.insert(s) }` plus `rewriteList`'s
+    /// `droppedNames.contains(name) → nil` arm) and make it fire by picking the target as
+    /// `fallback` alone → the mixed-produces rows lose their requires entry and the
+    /// non-empty assertion fails for each of them.
+    func testEveryStrippedName_redirectsSomewhere_soNoDownstreamEdgeIsEverDropped() {
+        // The full shape space of a producing role that has at least one stripped name:
+        // it either kept nothing (→ Summary fallback) or kept something (→ first kept).
+        let shapes: [(label: String, produces: [String], expected: String)] = [
+            ("all stripped", ["a.html"], "Producer Summary"),
+            ("all stripped, several", ["a.html", "b.css", "c.js"], "Producer Summary"),
+            ("mixed, kept first", ["Design Spec", "a.html"], "Design Spec"),
+            ("mixed, stripped first", ["a.html", "Design Spec"], "Design Spec"),
+            ("mixed, several kept", ["Design Spec", "Test Plan", "a.html"], "Design Spec"),
+        ]
+
+        for shape in shapes {
+            let producer = makeRole(name: "Producer", produces: shape.produces)
+            // One consumer per stripped name, so a drop shows up as an empty requires
+            // list rather than being masked by a sibling entry that survived.
+            let strippedNames = shape.produces.filter { !ArtifactConstants.isValidArtifactName($0) }
+            XCTAssertFalse(strippedNames.isEmpty, "fixture must strip something: \(shape.label)")
+
+            let consumers = strippedNames.enumerated().map { index, name in
+                makeRole(name: "Consumer\(index)", produces: ["Report \(index)"], requires: [name])
+            }
+            let config = makeConfig(
+                roles: [producer] + consumers,
+                artifacts: shape.produces.map { artifact($0) },
+                supervisorRequires: [strippedNames[0]]
+            )
+
+            let result = GeneratedTeamBuilder.build(from: config)
+
+            for index in consumers.indices {
+                let consumer = result.team.roles.first { $0.name == "Consumer\(index)" }
+                XCTAssertEqual(
+                    consumer?.dependencies.requiredArtifacts, [shape.expected],
+                    "\(shape.label): Consumer\(index) must still depend on the producer")
+            }
+            let supervisor = result.team.roles.first { $0.isSupervisor }
+            XCTAssertEqual(
+                supervisor?.dependencies.requiredArtifacts, [shape.expected],
+                "\(shape.label): supervisor_requires must redirect too")
+        }
+    }
+
+    /// The redirect target is also what the WARNING names, and the two are now read from
+    /// one expression rather than re-derived in a second if/else — so this pins that they
+    /// cannot disagree. Without it, the wave-12 edit could have kept the dependency edge
+    /// correct while telling the user the name was "dropped".
+    ///
+    /// RED: change the warning's action back to a separate `if let fb … else … else
+    /// "dropped"` chain and invert its first two arms → the mixed-produces assertion
+    /// reads "replaced with 'Design Spec'" and fails.
+    func testWarningNamesTheSameTargetTheEdgeWasRedirectedTo() {
+        let allStripped = GeneratedTeamBuilder.build(from: makeConfig(
+            roles: [makeRole(name: "Producer", produces: ["a.html"])],
+            artifacts: [artifact("a.html")],
+            supervisorRequires: ["a.html"]))
+        XCTAssertTrue(
+            allStripped.warnings.contains { $0.contains("replaced with 'Producer Summary'") },
+            "warnings: \(allStripped.warnings)")
+
+        let mixed = GeneratedTeamBuilder.build(from: makeConfig(
+            roles: [makeRole(name: "Producer", produces: ["Design Spec", "a.html"])],
+            artifacts: [artifact("Design Spec"), artifact("a.html")],
+            supervisorRequires: ["a.html"]))
+        XCTAssertTrue(
+            mixed.warnings.contains { $0.contains("redirected to 'Design Spec'") },
+            "warnings: \(mixed.warnings)")
+        XCTAssertFalse(
+            mixed.warnings.contains { $0.contains("dropped") },
+            "there is no drop outcome any more; warnings: \(mixed.warnings)")
+    }
 }

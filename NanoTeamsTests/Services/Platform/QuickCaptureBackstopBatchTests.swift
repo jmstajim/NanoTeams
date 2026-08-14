@@ -73,13 +73,25 @@ final class QuickCaptureBackstopBatchTests: NTMSOrchestratorTestBase {
     /// `flushQueuedChatMessage` is dispatched via `Task { ... }` so the work
     /// runs after `tryFlushQueuedMessages` returns. We yield to let the queued
     /// Task run; for guarded async paths this is more reliable than a fixed sleep.
+    /// Fails on timeout rather than returning silently. A silent timeout turns "the thing never
+    /// happened" into "assert the stale value", which is how the CI failure of
+    /// `testBackstopDrain_reportsFilesItCouldNotEmbed` came to read as a product bug
+    /// (`"nil" is not equal to "Optional(true)"`) instead of "timed out waiting for the drain".
+    /// House practice already does this — `LLMStatusMonitorTests.waitUntil` carries the same
+    /// rationale — and this file was the outlier.
     private func waitFor(
         timeout: TimeInterval = 1.0,
+        file: StaticString = #filePath,
+        line: UInt = #line,
         condition: () -> Bool
     ) async {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline && !condition() {
             try? await Task.sleep(for: .milliseconds(5))
+        }
+        if !condition() {
+            XCTFail("waitFor timed out after \(timeout)s — the awaited condition never held",
+                    file: file, line: line)
         }
     }
 
@@ -337,8 +349,10 @@ final class QuickCaptureBackstopBatchTests: NTMSOrchestratorTestBase {
         // First flush attempt: B isn't in the waiting set yet, so the message
         // is collected as "skipped — target not waiting" and stays queued.
         controller.tryFlushQueuedMessages()
-        // Brief yield so any dispatched Task can run and confirm it no-ops.
-        await waitFor(timeout: 0.2) { false }
+        // Join whatever was dispatched and confirm it no-ops. This was `waitFor(timeout: 0.2)
+        // { false }` — a fixed sleep in a waiting helper's costume, which is exactly what made
+        // the helper unable to fail on timeout.
+        await controller._testAwaitPendingFlushes()
 
         XCTAssertEqual(controller.formState.queuedMessages(for: taskID).count, 1,
                        "Message targeted at B stays queued while B isn't waiting")
@@ -412,9 +426,12 @@ final class QuickCaptureBackstopBatchTests: NTMSOrchestratorTestBase {
         controller.tryFlushQueuedMessages()
         controller.tryFlushQueuedMessages()
 
-        await waitFor {
-            sut.loadedTask(taskID)?.runs.last?.steps.first?.supervisorAnswer != nil
-        }
+        // Joined, not polled, and the distinction is what makes this test able to fail. It
+        // asserts an ABSENCE (no double-append) while `supervisorAnswer` is assigned with `=`
+        // — so a wait keyed on that value becoming non-nil can return between the first write
+        // and a second one overwriting it, and the test pinning the atomicity contract would
+        // read the correct first value and miss its own regression.
+        await controller._testAwaitPendingFlushes()
 
         let answer = sut.loadedTask(taskID)?.runs.last?.steps.first?.supervisorAnswer
         XCTAssertEqual(answer, "m1\nm2\nm3",
@@ -475,7 +492,7 @@ final class QuickCaptureBackstopBatchTests: NTMSOrchestratorTestBase {
 
         let controller = QuickCaptureController(formState: QuickCaptureFormState())
         controller.store = sut
-        controller.formState.supervisorTask = "do the thing"
+        controller.formState.answerText = "do the thing"
 
         controller.submitQueuedMessageFromForm()
 
@@ -484,7 +501,7 @@ final class QuickCaptureBackstopBatchTests: NTMSOrchestratorTestBase {
         XCTAssertEqual(queue.first?.targetRoleID, roleID,
                        "Submit must auto-target the first running step's role, not leave Team-queue (nil)")
         XCTAssertEqual(queue.first?.text, "do the thing")
-        XCTAssertTrue(controller.formState.supervisorTask.isEmpty,
+        XCTAssertTrue(controller.formState.answerText.isEmpty,
                       "Composer cleared on successful submit")
     }
 
@@ -514,7 +531,7 @@ final class QuickCaptureBackstopBatchTests: NTMSOrchestratorTestBase {
 
         let controller = QuickCaptureController(formState: QuickCaptureFormState())
         controller.store = sut
-        controller.formState.supervisorTask = "talk to loremaster"
+        controller.formState.answerText = "talk to loremaster"
 
         controller.submitQueuedMessageFromForm()
 
@@ -528,12 +545,101 @@ final class QuickCaptureBackstopBatchTests: NTMSOrchestratorTestBase {
         // instead of silently dropping the draft.
         let controller = QuickCaptureController(formState: QuickCaptureFormState())
         controller.store = sut
-        controller.formState.supervisorTask = "stranded"
+        controller.formState.answerText = "stranded"
 
         controller.submitQueuedMessageFromForm()
 
         XCTAssertEqual(sut.lastErrorMessage, "No active task — open or create a task first.")
-        XCTAssertEqual(controller.formState.supervisorTask, "stranded",
+        XCTAssertEqual(controller.formState.answerText, "stranded",
                        "Draft preserved on error so user can retry after picking a task")
+    }
+
+    // MARK: - What the drain reports (wave 24)
+
+    /// The drain builds each message through `AnswerTextBuilder` exactly like `createTask` and
+    /// `submitAnswer` do, and then dropped the one thing those two report: `failedFiles`. With
+    /// "embed files in prompt" on, a file that cannot be read as text is simply absent from the
+    /// delivered message — the role answers without it, and the user is never told which file
+    /// went missing or that one did.
+    ///
+    /// RED: drop the `failedFiles` report from `flushQueuedChatMessage` → nothing names
+    /// `payload.bin` and this fails.
+    func testBackstopDrain_reportsFilesItCouldNotEmbed() async throws {
+        let roleID = "coding-assistant"
+        let taskID = await setUpTaskWaitingForSupervisor(
+            roleIDs: [roleID], waitingRoleIDs: [roleID]
+        )
+        sut.configuration.embedFilesInPrompt = true
+
+        let outside = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qc-embed-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: outside) }
+        let source = outside.appendingPathComponent("payload.bin")
+        try Data([0xFF, 0xFE, 0x00, 0x80]).write(to: source)
+        guard let staged = sut.stageAttachment(url: source, draftID: UUID()) else {
+            throw XCTSkip("staging unavailable")
+        }
+
+        let controller = QuickCaptureController(formState: QuickCaptureFormState())
+        controller.store = sut
+        let message = QuickCaptureFormState.QueuedChatMessage(
+            text: "have a look", attachments: [staged], clippedTexts: [], targetRoleID: roleID
+        )!
+        controller.formState.appendQueuedMessage(message, for: taskID)
+
+        // Sampled BEFORE the flush: `errorSurfaced(since:)` is the only correct way to ask
+        // "did what I just awaited fail" — `lastErrorMessage` is a single-shot slot any render
+        // can consume, and reading it across a suspension gets the answer wrong both ways.
+        let errorsBefore = sut.errorSurfaceCount
+
+        controller.tryFlushQueuedMessages()
+        // JOIN, do not poll. Every pollable signal is produced on the near side of the drain's
+        // suspension while the banner lands on the far side — see `_testPendingFlushTasks`.
+        await controller._testAwaitPendingFlushes()
+
+        XCTAssertFalse(controller.formState.hasQueuedMessage(for: taskID),
+                       "precondition: the batch was popped")
+        XCTAssertNotNil(sut.loadedTask(taskID)?.runs.last?.steps.first?.supervisorAnswer,
+                        "precondition: the batch was actually delivered — an empty queue alone "
+                        + "proves only the pop, which happens even when delivery then fails")
+        XCTAssertEqual(sut.errorSurfaced(since: errorsBefore)?.contains("payload.bin"), true,
+                       "the sibling submit paths name the file; a drain that silently drops it "
+                       + "leaves the role answering about something it never received")
+    }
+
+    /// Counter-test: a clean drain says nothing. Without this the report could be unconditional
+    /// and every delivered message would raise a banner.
+    ///
+    /// This one is why the drain must be JOINED rather than polled: it asserts an ABSENCE, and
+    /// an absence cannot be waited for. While the wait exited early (at the pop, before the
+    /// banner would have been written) the test passed by observing nothing at all — its own
+    /// RED marker below was false on the runner that matters, since an unconditional banner
+    /// still writes after the suspension.
+    ///
+    /// RED: report unconditionally → this fails.
+    func testBackstopDrain_saysNothingWhenEveryFileEmbedded() async {
+        let roleID = "coding-assistant"
+        let taskID = await setUpTaskWaitingForSupervisor(
+            roleIDs: [roleID], waitingRoleIDs: [roleID]
+        )
+        sut.configuration.embedFilesInPrompt = true
+        sut.lastErrorMessage = nil
+
+        let controller = QuickCaptureController(formState: QuickCaptureFormState())
+        controller.store = sut
+        controller.formState.appendQueuedMessage(msg("plain text", target: roleID), for: taskID)
+
+        let errorsBefore = sut.errorSurfaceCount
+        controller.tryFlushQueuedMessages()
+        await controller._testAwaitPendingFlushes()
+
+        XCTAssertNotNil(sut.loadedTask(taskID)?.runs.last?.steps.first?.supervisorAnswer,
+                        "precondition: the batch was delivered — otherwise the absence below is "
+                        + "the absence of a drain, not the absence of a banner")
+        XCTAssertEqual(sut.errorSurfaceCount, errorsBefore,
+                       "an all-embedded drain must not banner. Counted rather than read off "
+                       + "`lastErrorMessage`, which also reads nil for an error that WAS "
+                       + "surfaced and then consumed by a render")
     }
 }

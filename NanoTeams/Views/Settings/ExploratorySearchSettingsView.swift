@@ -21,6 +21,7 @@ struct ExploratorySearchSettingsView: View {
 
                 ExploratorySearchIndexStatusCard(
                     coordinator: store.searchIndexCoordinator,
+                    clearFailure: store.searchIndexClearFailure,
                     onRebuild: {
                         Task { await store.searchIndexCoordinator?.rebuild() }
                     }

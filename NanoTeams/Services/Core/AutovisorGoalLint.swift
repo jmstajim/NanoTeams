@@ -3,8 +3,9 @@ import Foundation
 /// Capability lint for Autovisor goal text.
 ///
 /// The manager's toolset is `AutovisorConstants.managerDefaultToolIDs` — read
-/// files, read git, inspect images, and delegate. No shell, no writes, no
-/// build. A goal that tells it to do any of those instructs an impossible call,
+/// files, read git, inspect images, run the Xcode build/test runners, and
+/// delegate. No shell and no writes. A goal that tells it to do either of those
+/// instructs an impossible call,
 /// and the failure is silent-then-terminal: the runtime answers
 /// `tool_not_authorized`, the manager has NO `ask_supervisor` (gated off for
 /// the manager team), so a small model retries the invented tool until the pass
@@ -73,9 +74,18 @@ nonisolated enum AutovisorGoalLint {
     ]
 
     /// Build/run verbs for the phrase rule.
+    ///
+    /// `xcodebuild` is deliberately ABSENT since 1.8.4: the manager holds a tool by
+    /// that very name, so warning about it would be the rule reporting a capability
+    /// as a gap. The generic verbs stay because they remain ambiguous rather than
+    /// impossible, and the delegation-line suppression below is what keeps them from
+    /// firing on the build-then-delegate workflow the runners exist for. The
+    /// shell-run toolchains stay unconditionally correct: the manager has no `bash`,
+    /// so npm / yarn / make / gradle / cargo / pytest are still unreachable — which
+    /// is the ORIGINAL incident this rule was written for.
     private static let buildVerbs: Set<String> = [
         "build", "builds", "building", "rebuild", "rebuilds", "compile", "compiles",
-        "compiling", "xcodebuild", "npm", "yarn", "make", "gradle", "cargo", "pytest",
+        "compiling", "npm", "yarn", "make", "gradle", "cargo", "pytest",
     ]
 
     /// Second-person directives that turn a build verb into an instruction to
@@ -145,9 +155,18 @@ nonisolated enum AutovisorGoalLint {
     /// silent; "never fix anything yourself" (in every preset) has no build
     /// verb and stays silent; "run the project's build command yourself" has
     /// both.
+    ///
+    /// Delegation-suppressed since 1.8.4, in parity with `identifierFindings`. The
+    /// asymmetry was harmless while the manager could build NOTHING — every such
+    /// sentence was a true positive, so suppression only cost recall. Once it gained
+    /// the Xcode runners the canonical goal became "build it yourself, and open a
+    /// task for whatever fails", which names a task and is exactly the workflow the
+    /// runners were admitted for: without suppression the rule warns about the one
+    /// thing the feature exists to enable, on an icon that cannot be dismissed.
     private static func selfDirectedBuildFindings(in goal: String) -> [Finding] {
         var findings: [Finding] = []
         for (index, line) in goal.components(separatedBy: "\n").enumerated() {
+            if mentionsDelegation(line) { continue }
             for sentence in line.components(separatedBy: CharacterSet(charactersIn: ".!?;")) {
                 let lowered = sentence.lowercased()
                 guard selfDirectives.contains(where: lowered.contains) else { continue }

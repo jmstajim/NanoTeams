@@ -52,74 +52,21 @@ nonisolated enum DictationModelCatalog {
     }
 
     /// Reasons `install(locale:)` may throw beyond Apple's own errors.
-    enum InstallError: Error, LocalizedError {
-        /// Apple returned nil from `assetInstallationRequest(supporting:)` but
-        /// the locale is still `.supported` post-call — nothing was actually
-        /// installed. Distinguishes "already-installed" (documented nil) from
-        /// "nothing-installable" (undocumented but observed).
-        case nothingInstallable
-
-        var errorDescription: String? {
-            switch self {
-            case .nothingInstallable:
-                return "No dictation model is available for download for this language."
-            }
-        }
-    }
-
-    /// Kicks off the user-visible model download. Throws if the request can't
-    /// be constructed (e.g. locale is `.unsupported`), the install fails,
-    /// the owning `Task` was cancelled, or a nil installation request doesn't
-    /// actually correspond to a completed install (`InstallError.nothingInstallable`).
     ///
-    /// Cancellation semantics:
-    /// - On `Task.cancel()`, the underlying `Progress` is cancelled to signal
-    ///   the installer to abort.
-    /// - Because Apple's `downloadAndInstall()` may not honor progress
-    ///   cancellation reliably, we also call
-    ///   `AssetInventory.release(reservedLocale:)` after the fact — that
-    ///   uninstalls the model if the download managed to finish despite our
-    ///   cancel signal, restoring the `.supported` state the user expects.
-    /// - The function then throws `CancellationError` so the caller's
-    ///   `try await` unblocks promptly.
+    /// The cases live on `DictationModelInstaller`, which carries no Speech types and is
+    /// therefore reachable without the `@available(macOS 26, *)` gate this enum sits
+    /// under. Aliased here so the settings UI and the existing pins keep spelling it
+    /// `DictationModelCatalog.InstallError`.
+    typealias InstallError = DictationModelInstaller.InstallError
+
+    /// Kicks off the user-visible model download.
+    ///
+    /// The state machine — undocumented-nil verification and both cancellation rollbacks —
+    /// lives in `DictationModelInstaller`, which is Speech-free and therefore testable.
+    /// Everything left here is the Speech-framework adapter.
     static func install(locale: Locale) async throws {
-        let transcriber = DictationTranscriber(locale: locale, preset: .progressiveLongDictation)
-        guard let request = try await AssetInventory.assetInstallationRequest(
-            supporting: [transcriber]
-        ) else {
-            // Apple's docs say nil = already installed. Verify — if the locale
-            // is still `.supported` post-call, the request was silently refused
-            // (observed for locales with no available model on the device's
-            // region) and the user needs to know.
-            if await status(for: locale) != .installed {
-                throw InstallError.nothingInstallable
-            }
-            return
-        }
-
-        do {
-            try await withTaskCancellationHandler {
-                try await request.downloadAndInstall()
-            } onCancel: {
-                request.progress.cancel()
-            }
-        } catch {
-            // If our Task was cancelled, roll back: drop the locale reservation
-            // so any partial/completed install is undone, then surface a
-            // standard CancellationError to callers.
-            if Task.isCancelled {
-                _ = await AssetInventory.release(reservedLocale: locale)
-                throw CancellationError()
-            }
-            throw error
-        }
-
-        // Success path — but the cancel signal may have raced in after the
-        // download finished. Honor the cancel by releasing and throwing.
-        if Task.isCancelled {
-            _ = await AssetInventory.release(reservedLocale: locale)
-            throw CancellationError()
-        }
+        try await DictationModelInstaller.install(
+            locale: locale, inventory: SystemDictationAssetInventory())
     }
 
     /// Removes the on-device model for the given locale. Returns `true` if
@@ -132,5 +79,41 @@ nonisolated enum DictationModelCatalog {
     @discardableResult
     static func uninstall(locale: Locale) async -> Bool {
         await AssetInventory.release(reservedLocale: locale)
+    }
+}
+
+/// Speech-framework conformance of the install seam — the only part of the install path
+/// that touches `AssetInventory`, and the only part that cannot be driven from a test.
+@available(macOS 26, iOS 26, visionOS 26, *)
+nonisolated struct SystemDictationAssetInventory: DictationAssetInventory {
+
+    func installationRequest(for locale: Locale) async throws -> (any DictationInstallRequest)? {
+        let transcriber = DictationTranscriber(locale: locale, preset: .progressiveLongDictation)
+        guard let request = try await AssetInventory.assetInstallationRequest(
+            supporting: [transcriber]
+        ) else { return nil }
+        return SystemDictationInstallRequest(request: request)
+    }
+
+    func isInstalled(locale: Locale) async -> Bool {
+        await DictationModelCatalog.status(for: locale) == .installed
+    }
+
+    @discardableResult
+    func release(reservedLocale: Locale) async -> Bool {
+        await AssetInventory.release(reservedLocale: reservedLocale)
+    }
+}
+
+@available(macOS 26, iOS 26, visionOS 26, *)
+nonisolated struct SystemDictationInstallRequest: DictationInstallRequest {
+    let request: AssetInstallationRequest
+
+    func downloadAndInstall() async throws {
+        try await request.downloadAndInstall()
+    }
+
+    func cancelProgress() {
+        request.progress.cancel()
     }
 }

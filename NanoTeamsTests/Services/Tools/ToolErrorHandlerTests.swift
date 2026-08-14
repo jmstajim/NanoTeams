@@ -71,16 +71,6 @@ final class ToolErrorHandlerTests: XCTestCase {
         XCTAssertTrue(result.outputJSON.contains("permissionDenied") || result.outputJSON.contains("PERMISSION_DENIED"))
     }
 
-    func testExecuteHandlesEmptyPathError() {
-        let args: [String: Any] = ["path": ""]
-
-        let result = ToolErrorHandler.execute(toolName: "read_file", args: args) {
-            throw SandboxPathError.emptyPath
-        }
-
-        XCTAssertTrue(result.outputJSON.contains("error"))
-    }
-
     // MARK: - Generic Error Tests
 
     func testExecuteCatchesGenericError() {

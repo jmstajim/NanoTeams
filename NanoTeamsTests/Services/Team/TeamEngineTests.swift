@@ -1527,6 +1527,63 @@ final class TeamEngineTests: XCTestCase {
     // MARK: - Role↔Step Reconciliation (restart-review bug)
 
     /// Seeds a single-worker team whose step id matches the role id.
+    // MARK: - Run-loop bail-outs
+
+    /// A team that vanishes while a run is live must FAIL the engine, loudly.
+    ///
+    /// This is the invariant behind `TaskEngineStoreAdapter`'s run-pinned resolution: a run is
+    /// pinned to `run.teamID`, and a team deleted mid-run resolves to nil rather than silently
+    /// falling through to the folder's active team — which would commingle a second roster into
+    /// a live run (the "two Tech Lead" bug). Documented in CLAUDE.md and pinned in the adapter;
+    /// the ENGINE's half of it — what happens when resolution actually returns nil — had no test.
+    ///
+    /// RED: replace `transition(to: .failed)` with `continue` → the loop spins at 250 ms
+    /// forever against a task whose roster no longer exists, and this times out.
+    func testRunLoop_teamDisappearsMidRun_failsTheEngine() async {
+        seedSingleWorker(roleStatus: .working, stepStatus: .running)
+        mockStore.activeTeam = nil
+
+        let failed = expectation(description: "engine reports .failed")
+        sut.onStateChanged = { state in if state == .failed { failed.fulfill() } }
+        sut.start()
+        await fulfillment(of: [failed], timeout: 3)
+
+        XCTAssertEqual(sut.state, .failed)
+        XCTAssertTrue(mockStore.runStepCalls.isEmpty,
+                      "no role may be started against a roster the engine cannot read")
+    }
+
+    /// Same shape one level down: the task itself is gone (removed, or its work folder
+    /// switched) while the loop is between iterations. Failing is the only honest answer —
+    /// there is no run to advance and no roster to advance it against.
+    func testRunLoop_taskDisappearsMidRun_failsTheEngine() async {
+        seedSingleWorker(roleStatus: .working, stepStatus: .running)
+        mockStore.activeTask = nil
+
+        let failed = expectation(description: "engine reports .failed")
+        sut.onStateChanged = { state in if state == .failed { failed.fulfill() } }
+        sut.start()
+        await fulfillment(of: [failed], timeout: 3)
+
+        XCTAssertEqual(sut.state, .failed)
+    }
+
+    /// Nothing ready, nothing working, one role sitting at a Supervisor gate: the engine must
+    /// PARK at `.needsAcceptance` rather than treat "no ready roles" as completion. Reporting
+    /// `.done` here would close a task whose deliverable was never accepted.
+    func testRunLoop_noReadyRolesButOneAwaitsAcceptance_parksAtNeedsAcceptance() async {
+        seedSingleWorker(roleStatus: .needsAcceptance, stepStatus: .done, acceptanceMode: .afterEachRole)
+
+        let parked = expectation(description: "engine reports .needsAcceptance")
+        sut.onStateChanged = { state in if state == .needsAcceptance { parked.fulfill() } }
+        sut.start()
+        await fulfillment(of: [parked], timeout: 3)
+
+        XCTAssertEqual(sut.state, .needsAcceptance)
+        XCTAssertNotEqual(sut.state, .done,
+                          "an unaccepted deliverable must not read as a finished run")
+    }
+
     private func seedSingleWorker(
         roleStatus: RoleExecutionStatus,
         stepStatus: StepStatus,
@@ -1687,5 +1744,54 @@ final class TeamEngineTests: XCTestCase {
         await sut.reconcileAfterPause()
 
         XCTAssertTrue(mockStore.updateRoleStatusCalls.filter { $0.roleID == "a" }.isEmpty)
+    }
+
+    // MARK: - autoIterationLimit: 0 means unbounded
+
+    /// Regression: a stored `autoIterationLimit` of 0 made `1 >= 0` true on the FIRST
+    /// pass, so the run paused instantly with "iteration limit (0) reached. Press
+    /// Resume" — and Resume resets `iterationCount` and re-enters the identical state.
+    /// An unbreakable loop whose own message names the thing that cannot work.
+    ///
+    /// Reachable without any UI: `TeamLimits.autoIterationLimit` has no editor, and an
+    /// imported team carries whatever its JSON says. `0` now means UNBOUNDED, matching
+    /// the sibling convention on `LLMConstants.maxToolIterations`.
+    func testRunLoop_zeroIterationLimit_isUnboundedRatherThanInstantlyPaused() async {
+        let supervisorRole = makeSupervisorRole()
+        let workerRole = makeWorkerRole(id: "a", name: "A", producesArtifacts: ["Art A"])
+
+        var settings = TeamSettings.default
+        settings.limits.autoIterationLimit = 0
+        mockStore.teamSettings = settings
+        mockStore.activeTeam = Team(
+            name: "Test", roles: [supervisorRole, workerRole],
+            artifacts: [], settings: settings, graphLayout: TeamGraphLayout())
+
+        // A step already parked for the Supervisor, so the loop reaches a terminal
+        // transition on its first pass instead of spinning.
+        let step = StepExecution(
+            id: "a", role: .softwareEngineer, title: "A",
+            status: .needsSupervisorInput,
+            needsSupervisorInput: true, supervisorQuestion: "What next?")
+        mockStore.activeTask = NTMSTask(
+            id: 0, title: "Test", supervisorTask: "Goal",
+            runs: [Run(id: 0, steps: [step], roleStatuses: ["a": .working])])
+        mockStore.stepStatusResults["a"] = .needsSupervisorInput
+
+        let reached = expectation(description: "engine leaves .running")
+        sut.onStateChanged = { state in
+            if state != .running { reached.fulfill() }
+        }
+        sut.start()
+        await fulfillment(of: [reached], timeout: 5.0)
+
+        XCTAssertFalse(
+            mockStore.setLastErrorMessageCalls.contains { $0.contains("iteration limit") },
+            """
+            0 must mean unbounded. Pausing on pass 1 is unrecoverable: Resume resets \
+            iterationCount and lands in the same place. got: \(mockStore.setLastErrorMessageCalls)
+            """)
+        XCTAssertEqual(sut.state, .needsSupervisorInput,
+                       "the loop must reach its real terminal, not the limit guard")
     }
 }

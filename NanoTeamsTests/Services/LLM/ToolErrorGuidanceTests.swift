@@ -189,13 +189,15 @@ final class ToolErrorGuidanceTests: XCTestCase {
 
     // MARK: - anchor_not_found
 
-    /// ANCHOR_NOT_FOUND means `old_text` doesn't match current content — almost
-    /// always a transcription error (a wrong character, lost whitespace, or `/`↔`\`
-    /// slash confusion), NOT a file mutation. The guidance must name the path, steer
-    /// toward an exact character-for-character match, and must NOT falsely claim the
-    /// content changed nor hard-demand a re-read (that deadlocks against the read
-    /// dedup's "Do NOT re-read"). It also must not append the generic retry-with-args
-    /// suffix.
+    /// ANCHOR_NOT_FOUND means `old_text` doesn't match current content — a
+    /// transcription error (a wrong character, lost whitespace, `/`↔`\` slash
+    /// confusion) or an anchor copied from a PRE-EDIT read. The guidance must
+    /// name the path, steer toward an exact character-for-character match, and
+    /// RECOMMEND a re-read for the stale-copy case — a re-read now always
+    /// returns the file's current content in full (the tag store performs no
+    /// dedup since 2026-08-11), so it is the reliable remedy. It must not
+    /// falsely claim the content changed on the transcription case, nor append
+    /// the generic retry-with-args suffix.
     func testGuidance_anchorNotFound_describesExactMatch_withoutClaimingChange() {
         let envelope = ToolExecutionResult(
             toolName: "edit_file",
@@ -217,6 +219,11 @@ final class ToolErrorGuidanceTests: XCTestCase {
         XCTAssertFalse(
             guidance.lowercased().contains("content changed"),
             "Must not falsely claim the file content changed, got: \(guidance)"
+        )
+        XCTAssertTrue(
+            guidance.contains("re-read the region"),
+            "The stale-copy case must be steered to a re-read — with dedup gone it always "
+                + "returns current content, got: \(guidance)"
         )
         XCTAssertFalse(
             guidance.contains("Retry the tool call with the correct arguments"),

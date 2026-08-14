@@ -248,18 +248,27 @@ final class StreamingPreviewManager {
 
     // MARK: - Commit / Clear
 
-    /// Commits the streaming preview for a step and returns it.
-    /// This removes the preview, streaming mapping, thinking, and processing state.
-    /// - Returns: The committed preview message, or nil if no preview exists.
-    @discardableResult
-    func commit(stepID: String, taskID: Int) -> StepMessage? {
+    /// Commits the streaming preview for a step: removes the preview, streaming
+    /// mapping, thinking, and per-step transient indicator state.
+    ///
+    /// Returns nothing — deliberately. An earlier shape returned the committed
+    /// `StepMessage?` (nil for whitespace-only content), but that value was
+    /// structurally unconsumable: the one caller (`NTMSOrchestrator.commitStreaming`)
+    /// persists the SERVICE's cleaned content (`ModelTokenCleaner` output on
+    /// `assistantCollected`), never the raw UI buffer this manager accumulates — so
+    /// the returned message was the wrong value for the only place that could read
+    /// it, and no production consumer ever existed. The empty-turn suppression the
+    /// return advertised is owned by `ActivityFeedBuilder` (the content-less,
+    /// thinking-less, not-streaming `continue`), pinned by
+    /// `ActivityFeedBuilderTests` — "no orphan bubble".
+    func commit(stepID: String, taskID: Int) {
         let key = TaskStepKey(taskID: taskID, stepID: stepID)
-        // Capture first, clear unconditionally: per-step transient state
+        // Record existence first, clear unconditionally: per-step transient state
         // (flags, progress, clock) must not survive a commit even when no
         // preview exists — the pre-fix early `guard let preview` return
         // skipped ALL removals, so flags set after an out-of-band clear
         // would leak into the next stream as a stale "Generating".
-        let preview = previews[key]
+        let hadPreview = previews[key] != nil
         if let msgID = streamingMessageIDs[key] { activeMessageIDs.remove(msgID) }
         previews[key] = nil
         streamingMessageIDs[key] = nil
@@ -269,15 +278,7 @@ final class StreamingPreviewManager {
         streamingToolCall[key] = nil
         lastStreamActivityAt[key] = nil
         // Structural change (preview removal) only happened if one existed.
-        if preview != nil { structuralVersion &+= 1 }
-
-        // Return nil if there was no preview, or its content is empty after trimming
-        guard let preview,
-              !preview.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return nil
-        }
-
-        return preview
+        if hadPreview { structuralVersion &+= 1 }
     }
 
     /// Clears the streaming preview for a step without committing.

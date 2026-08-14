@@ -347,3 +347,121 @@ final class NativeLMStudioModelLifecycleTests: XCTestCase {
         }
     }
 }
+
+// MARK: - Transport guards
+
+/// The `guard let http = response as? HTTPURLResponse` and `URL(string:)` arms that every
+/// REST method on this client carries a private copy of.
+///
+/// They are not decoration. A `URLResponse` that is not an `HTTPURLResponse` is what a
+/// non-HTTP scheme produces — and the base URL is a free-text field the user types, so
+/// `ftp://` or `file://` reaches here as a typo, not as an attack. Falling through to the
+/// decoder instead would surface "The data couldn't be read" for a wrong scheme, which names
+/// neither the setting at fault nor the fix.
+///
+/// RED: drop any one `guard let http = ... else { throw .missingResponse }` → the matching
+/// test below stops throwing and reports a decode failure instead.
+final class NativeLMStudioTransportGuardTests: XCTestCase {
+
+    /// Answers with a bare `URLResponse` — exactly what a `file://` or `ftp://` base URL yields.
+    private final class NonHTTPSession: NetworkSession, @unchecked Sendable {
+        var body = Data()
+        func sessionData(for request: URLRequest) async throws -> (Data, URLResponse) {
+            (body, URLResponse(url: request.url!, mimeType: nil,
+                               expectedContentLength: 0, textEncodingName: nil))
+        }
+        func sessionBytes(for _: URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse) {
+            fatalError("Not used")
+        }
+    }
+
+    private final class StatusSession: NetworkSession, @unchecked Sendable {
+        var statusCode = 500
+        var body = Data("upstream exploded".utf8)
+        func sessionData(for request: URLRequest) async throws -> (Data, URLResponse) {
+            (body, HTTPURLResponse(url: request.url!, statusCode: statusCode,
+                                   httpVersion: nil, headerFields: nil)!)
+        }
+        func sessionBytes(for _: URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse) {
+            fatalError("Not used")
+        }
+    }
+
+    private let base = "http://127.0.0.1:1234"
+
+    func testFetchModels_nonHTTPResponse_throwsMissingResponse() async {
+        let client = NativeLMStudioClient(session: NonHTTPSession())
+        await assertThrows(LLMClientError.missingResponse) {
+            _ = try await client.fetchModels(config: LLMConfig(baseURLString: base), visionOnly: false)
+        }
+    }
+
+    /// The status body is carried onto the error so the banner can say WHAT the server
+    /// objected to; an empty `badHTTPStatus(500, nil)` is a dead end for the user.
+    func testFetchModels_serverError_carriesTheBodyOntoTheError() async {
+        let client = NativeLMStudioClient(session: StatusSession())
+        do {
+            _ = try await client.fetchModels(config: LLMConfig(baseURLString: base), visionOnly: false)
+            XCTFail("a 500 must not decode as a model list")
+        } catch let LLMClientError.badHTTPStatus(code, body) {
+            XCTAssertEqual(code, 500)
+            XCTAssertEqual(body, "upstream exploded",
+                           "the server's own words are the only actionable part of a 500")
+        } catch {
+            XCTFail("expected .badHTTPStatus, got \(error)")
+        }
+    }
+
+    func testLoadModel_nonHTTPResponse_throwsMissingResponse() async {
+        let client = NativeLMStudioClient(session: NonHTTPSession())
+        await assertThrows(LLMClientError.missingResponse) {
+            _ = try await client.loadModel(modelName: "m", baseURLString: base)
+        }
+    }
+
+    /// Unload has an idempotent-404 rule and two "already unloaded" sentinels, so it swallows
+    /// more than its siblings — this pins that a transport-level failure is NOT among them.
+    func testUnloadModel_nonHTTPResponse_throwsMissingResponse() async {
+        let client = NativeLMStudioClient(session: NonHTTPSession())
+        await assertThrows(LLMClientError.missingResponse) {
+            try await client.unloadModel(instanceID: "i", baseURLString: base)
+        }
+    }
+
+    func testListLoadedInstances_nonHTTPResponse_throwsMissingResponse() async {
+        let client = NativeLMStudioClient(session: NonHTTPSession())
+        await assertThrows(LLMClientError.missingResponse) {
+            _ = try await client.listLoadedInstances(baseURLString: base)
+        }
+    }
+
+    /// `listLoadedInstances` degrades to `[]` on a 404 and on decode failures, but a base URL
+    /// that is not a URL at all is a settings error, not "no info" — it must name itself.
+    func testListLoadedInstances_unparseableBaseURL_throwsInvalidBaseURL() async {
+        let client = NativeLMStudioClient(session: NonHTTPSession())
+        do {
+            _ = try await client.listLoadedInstances(baseURLString: "")
+            XCTFail("an empty base URL must not read as a reachable server")
+        } catch let LLMClientError.invalidBaseURL(value) {
+            XCTAssertEqual(value, "", "the offending value must ride along for the banner")
+        } catch {
+            XCTFail("expected .invalidBaseURL, got \(error)")
+        }
+    }
+
+    private func assertThrows(
+        _ expected: LLMClientError,
+        file: StaticString = #filePath, line: UInt = #line,
+        _ body: () async throws -> Void
+    ) async {
+        do {
+            try await body()
+            XCTFail("expected \(expected)", file: file, line: line)
+        } catch let error as LLMClientError {
+            XCTAssertEqual(String(describing: error), String(describing: expected),
+                           file: file, line: line)
+        } catch {
+            XCTFail("expected \(expected), got \(error)", file: file, line: line)
+        }
+    }
+}

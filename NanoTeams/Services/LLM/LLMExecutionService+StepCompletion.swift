@@ -67,8 +67,13 @@ extension LLMExecutionService {
            let run = task.runs.last,
            let step = run.steps.first(where: { $0.id == stepID }),
            let projectContext = delegate.snapshot,
-           let activeTeam = projectContext.workFolder.activeTeam,
-           let roleDefinition = activeTeam.findRole(byIdentifier: step.effectiveRoleID),
+           // The TASK's team, not the folder's active one. A delegation child, a run
+           // pinned to `run.teamID`, or a task-owned generated team all resolve to a
+           // different roster — and this decides whether Build Diagnostics is persisted
+           // for the role at all. `TeamResolution` is the documented single source of
+           // truth for that order.
+           let resolvedTeam = resolveTeam(task: task),
+           let roleDefinition = resolvedTeam.findRole(byIdentifier: step.effectiveRoleID),
            roleDefinition.dependencies.producesArtifacts.contains(ArtifactConstants.buildDiagnosticsName) {
             let ancestors = projectContext.tasksIndex.ancestorIDs(of: task.id)
             diagPath = artifactService.buildDiagnosticsRelativePath(

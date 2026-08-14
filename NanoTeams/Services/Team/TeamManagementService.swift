@@ -261,10 +261,12 @@ nonisolated enum TeamManagementService {
 
 // MARK: - Validation Errors
 
+/// No `duplicateName` case, on purpose (wave 32): duplicate team names are structurally
+/// prevented at the single add door — `WorkFolderProjection.addTeam` renames on id
+/// collision (ids derive from names), so a rejection route could never fire.
 nonisolated enum TeamValidationError: Error, Equatable {
     case noRoles
     case emptyName
-    case duplicateName
 
     var localizedDescription: String {
         switch self {
@@ -272,8 +274,6 @@ nonisolated enum TeamValidationError: Error, Equatable {
             return "Team must have at least one role"
         case .emptyName:
             return "Team name cannot be empty"
-        case .duplicateName:
-            return "A team with this name already exists"
         }
     }
 }

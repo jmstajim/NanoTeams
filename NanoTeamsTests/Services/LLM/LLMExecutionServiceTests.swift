@@ -489,51 +489,31 @@ final class LLMExecutionServiceTests: XCTestCase {
         XCTAssertTrue(mockDelegate.clearStreamingPreviewCalls.contains(stepID))
     }
 
-    func testCancelStepExecutionClearsPlanMessageIndex() async {
+    func testCancelStepExecutionClearsPerStepState() async {
         let stepID = "test_step"
 
-        // Set up a plan message index
-        service._testSetPlanMessageIndex(stepID: stepID, taskID: 0, index: 10)
-        XCTAssertEqual(service._testGetPlanMessageIndex(stepID: stepID, taskID: 0), 10)
+        // Seed a per-step state entry through a live field (`activeModelKey`).
+        service._testSetActiveModel(stepID: stepID, taskID: 0, base: "http://x", model: "m")
+        XCTAssertFalse(service.activeModelKeys().isEmpty)
 
-        // Cancel step execution should clear the plan message index
+        // Cancel step execution should drop the per-step state entry.
         await service.cancelStepExecution(stepID: stepID, taskID: 0)
 
-        XCTAssertNil(service._testGetPlanMessageIndex(stepID: stepID, taskID: 0))
+        XCTAssertTrue(service.activeModelKeys().isEmpty)
     }
 
-    func testCancelStepExecutionClearsMemoriesMessageIndex() async {
-        let stepID = "test_step"
+    func testCancelAllExecutionsClearsAllPerStepState() {
+        // Seed state entries for multiple steps through a live field.
+        service._testSetActiveModel(stepID: "step1", taskID: 0, base: "http://x", model: "m1")
+        service._testSetActiveModel(stepID: "step2", taskID: 0, base: "http://x", model: "m2")
+        service._testSetActiveModel(stepID: "step3", taskID: 0, base: "http://x", model: "m3")
 
-        // Set up a memories message index
-        service._testSetMemoriesMessageIndex(stepID: stepID, taskID: 0, index: 7)
-        XCTAssertEqual(service._testGetMemoriesMessageIndex(stepID: stepID, taskID: 0), 7)
+        XCTAssertEqual(service.activeModelKeys().count, 3)
 
-        // Cancel step execution should clear the memories message index
-        await service.cancelStepExecution(stepID: stepID, taskID: 0)
-
-        XCTAssertNil(service._testGetMemoriesMessageIndex(stepID: stepID, taskID: 0))
-    }
-
-    func testCancelAllExecutionsClearsAllMessageIndices() {
-        let step1 = "step1"
-        let step2 = "step2"
-        let step3 = "step3"
-
-        // Set up indices for multiple steps
-        service._testSetPlanMessageIndex(stepID: step1, taskID: 0, index: 1)
-        service._testSetPlanMessageIndex(stepID: step2, taskID: 0, index: 2)
-        service._testSetMemoriesMessageIndex(stepID: step2, taskID: 0, index: 3)
-        service._testSetMemoriesMessageIndex(stepID: step3, taskID: 0, index: 4)
-
-        XCTAssertEqual(service._testPlanMessageIndexCount, 2)
-        XCTAssertEqual(service._testMemoriesMessageIndexCount, 2)
-
-        // Cancel all executions should clear all indices
+        // Cancel all executions should drop every per-step state entry.
         service.cancelAllExecutions()
 
-        XCTAssertEqual(service._testPlanMessageIndexCount, 0)
-        XCTAssertEqual(service._testMemoriesMessageIndexCount, 0)
+        XCTAssertTrue(service.activeModelKeys().isEmpty)
     }
 
     // MARK: - Original System Prompt Restoration Tests
@@ -1789,30 +1769,17 @@ final class LLMExecutionServiceStepCompletionTests: XCTestCase {
         XCTAssertFalse(service.isStepRunning(stepID: stepID, taskID: 0))
     }
 
-    func testClearRunningTaskClearsPlanMessageIndex() {
+    func testClearRunningTaskClearsPerStepState() {
         let stepID = "test_step"
 
-        // Set up a plan message index
-        service._testSetPlanMessageIndex(stepID: stepID, taskID: 0, index: 5)
-        XCTAssertEqual(service._testGetPlanMessageIndex(stepID: stepID, taskID: 0), 5)
+        // Seed a per-step state entry through a live field (`activeModelKey`).
+        service._testSetActiveModel(stepID: stepID, taskID: 0, base: "http://x", model: "m")
+        XCTAssertFalse(service.activeModelKeys().isEmpty)
 
-        // Clear running task should also clear the plan message index
+        // Clear running task should also drop the per-step state entry.
         service.clearRunningTask(stepID: stepID, taskID: 0)
 
-        XCTAssertNil(service._testGetPlanMessageIndex(stepID: stepID, taskID: 0))
-    }
-
-    func testClearRunningTaskClearsMemoriesMessageIndex() {
-        let stepID = "test_step"
-
-        // Set up a memories message index
-        service._testSetMemoriesMessageIndex(stepID: stepID, taskID: 0, index: 3)
-        XCTAssertEqual(service._testGetMemoriesMessageIndex(stepID: stepID, taskID: 0), 3)
-
-        // Clear running task should also clear the memories message index
-        service.clearRunningTask(stepID: stepID, taskID: 0)
-
-        XCTAssertNil(service._testGetMemoriesMessageIndex(stepID: stepID, taskID: 0))
+        XCTAssertTrue(service.activeModelKeys().isEmpty)
     }
 
     // MARK: - Team Member Validation Tests

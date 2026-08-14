@@ -1,9 +1,11 @@
 import AppKit
 import Foundation
 
+/// No `fileName`, on purpose (wave 32): finalization consumes only the path + the
+/// project-reference flag, and the display name lives on the panel-side
+/// `StagedAttachment` — the copy here had zero readers.
 struct TaskCreationStagedAttachment: Hashable {
     let projectRelativePath: String
-    let fileName: String
     let isProjectReference: Bool
 }
 
@@ -157,7 +159,6 @@ extension NTMSOrchestrator {
             stagedAttachments: attachments.map {
                 TaskCreationStagedAttachment(
                     projectRelativePath: $0.stagedRelativePath,
-                    fileName: $0.fileName,
                     isProjectReference: $0.isProjectReference
                 )
             }

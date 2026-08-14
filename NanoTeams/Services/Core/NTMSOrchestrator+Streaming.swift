@@ -145,10 +145,16 @@ extension NTMSOrchestrator {
             let recentCalls = step.toolCalls
                 .suffix(DelegationConstants.repetitionMinIdenticalToolCalls + 5)
                 .map { (name: $0.name, argsJSON: $0.argumentsJSON, createdAt: $0.createdAt) }
+            // Read off the UNFILTERED conversation: the boundary is a `.user` turn, so
+            // the `.assistant` slice above cannot see it, and the watcher only ever
+            // receives tuples. Bounds the tool-call scan so a child that was handed
+            // guidance mid-delegation (`forward_to_team`) isn't reported as looping for
+            // acting on it.
             delegationLoopWatcher.considerCommitted(
                 taskID: taskID,
                 recentAssistant: Array(recentAssistant),
-                toolCalls: Array(recentCalls)
+                toolCalls: Array(recentCalls),
+                informationBoundary: ConversationInformationBoundary.lastArrival(in: step.llmConversation)
             )
         }
 

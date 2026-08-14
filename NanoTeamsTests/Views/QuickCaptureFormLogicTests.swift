@@ -68,6 +68,19 @@ final class QuickCaptureFormLogicTests: XCTestCase {
         XCTAssertEqual(QuickCaptureFormLogic.taskFieldPlaceholder(for: nil), "Describe your task...")
     }
 
+    /// The placeholder prompts for a TASK, matching `teamModeLabel` right beside it.
+    /// This read bare `isChatMode`, which is vacuously true for the roleless
+    /// placeholder, so the field said "Send a message…" while the label ten lines
+    /// below said "task" — one form, two contradictory framings.
+    func testTaskFieldPlaceholder_generatedPlaceholder_returnsDescribeTask() {
+        let placeholder = makeTeam(
+            templateID: DelegationConstants.generatedTeamSentinel, isChatMode: true)
+        XCTAssertTrue(placeholder.isChatMode, "precondition: vacuously chat-mode")
+        XCTAssertEqual(
+            QuickCaptureFormLogic.taskFieldPlaceholder(for: placeholder),
+            "Describe your task...")
+    }
+
     // MARK: - teamModeLabel
 
     func testTeamModeLabel_chatModeTeam_returnsChat() {

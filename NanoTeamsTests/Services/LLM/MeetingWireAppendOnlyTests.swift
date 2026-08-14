@@ -18,11 +18,8 @@ final class MeetingWireAppendOnlyTests: XCTestCase {
         team: Team, participants: [Role] = [.productManager, .softwareEngineer]
     ) -> TeamMeetingService.MeetingContext {
         TeamMeetingService.MeetingContext(
-            topic: "API design",
             initiatedBy: .productManager,
             participants: participants,
-            additionalContext: nil,
-            task: NTMSTask(id: 1, title: "T", supervisorTask: "S", runs: [Run(id: 0)]),
             availableArtifacts: [],
             artifactReader: { _ in nil },
             team: team,

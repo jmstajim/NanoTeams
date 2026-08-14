@@ -7,6 +7,12 @@ struct SupervisorTaskItemView: View {
     let clippedTexts: [String]
     let attachmentPaths: [String]
     let workFolderURL: URL?
+    /// The team roster's Supervisor definition — drives the avatar icon,
+    /// name, and tint so this card matches the Supervisor's message
+    /// bubbles (`MessageBubbleView`) instead of the generic
+    /// `ActivityFeedRoleAvatar` "person" fallback. `nil` (roster lookup
+    /// missed) keeps the fallback.
+    let roleDefinition: TeamRoleDefinition?
     var onAvatarTap: (() -> Void)? = nil
 
     private var hasAttachments: Bool {
@@ -21,14 +27,14 @@ struct SupervisorTaskItemView: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: ActivityCardTokens.cardPadding) {
-            ActivityFeedRoleAvatar(role: .supervisor, roleDefinition: nil, onTap: onAvatarTap)
+            ActivityFeedRoleAvatar(role: .supervisor, roleDefinition: roleDefinition, onTap: onAvatarTap)
 
             VStack(alignment: .leading, spacing: Spacing.xs) {
                 HStack(spacing: Spacing.s) {
                     PromptMarker()
-                    Text("Supervisor")
+                    Text(roleDefinition?.name ?? Role.supervisor.displayName)
                         .font(Typography.captionSemibold)
-                        .foregroundStyle(Role.supervisor.tintColor)
+                        .foregroundStyle(roleDefinition?.resolvedTintColor ?? Role.supervisor.tintColor)
                     Spacer()
                     Text(createdAt.formatted(date: .omitted, time: .shortened))
                         .font(Typography.term2xs)
@@ -65,6 +71,9 @@ struct SupervisorTaskItemView: View {
 
 /// See `MessageBubbleView`'s Equatable extension for full rationale.
 /// `onAvatarTap` excluded (closure; captures stable orchestrator state).
+/// `roleDefinition` compared by `id` only — same identity-not-structure
+/// choice as `MessageBubbleView.==` (content edits to the role regenerate
+/// the view via parent state updates).
 extension SupervisorTaskItemView: Equatable {
     static func == (lhs: SupervisorTaskItemView, rhs: SupervisorTaskItemView) -> Bool {
         lhs.createdAt == rhs.createdAt
@@ -72,6 +81,7 @@ extension SupervisorTaskItemView: Equatable {
             && lhs.clippedTexts == rhs.clippedTexts
             && lhs.attachmentPaths == rhs.attachmentPaths
             && lhs.workFolderURL == rhs.workFolderURL
+            && lhs.roleDefinition?.id == rhs.roleDefinition?.id
     }
 }
 
@@ -81,7 +91,8 @@ extension SupervisorTaskItemView: Equatable {
         supervisorTask: "Create a sorting algorithm that handles edge cases for empty arrays and duplicate values.",
         clippedTexts: ["Some clipped text from the clipboard"],
         attachmentPaths: [],
-        workFolderURL: nil
+        workFolderURL: nil,
+        roleDefinition: nil
     )
     .padding()
     .frame(width: 500)

@@ -76,7 +76,25 @@ extension LLMExecutionService {
     nonisolated struct ToolResultsOutcome {
         var shouldStopForSupervisor: Bool = false
         var supervisorQuestion: String?
-        var supervisorToolCallProviderID: String?
+        /// EVERY `ask_supervisor` call in the batch, in emit order — not just the first.
+        ///
+        /// The questions are merged into one `supervisorQuestion`, and one answer resolves all of
+        /// them, but each call appended its own `{"status":"pending"}` tool result. Recording a
+        /// single provider id meant the answer replaced one of them and left the rest pending on
+        /// the wire for the remainder of the step, resent every iteration — a value reporting
+        /// INTENT while the model waits for something that already arrived, which invites it to
+        /// re-ask a question the merged answer already covered.
+        var supervisorToolCallProviderIDs: [String] = []
+        /// The batch with every DEFERRED signal's placeholder replaced by what it actually
+        /// resolved to.
+        ///
+        /// Deferred handlers return `{"status":"pending"}` with `isError: false` synchronously and
+        /// finish minutes later, so the array the caller holds describes intent, not outcome.
+        /// `ToolTurnProductivity.classify` reads exactly that flag and is the sole writer that
+        /// resets the no-tool ceiling — so an all-failed Autovisor turn used to count as
+        /// productive. The merge belongs here, next to the finalizers that know the outcomes,
+        /// rather than being re-derived by the caller.
+        var effectiveResults: [ToolExecutionResult] = []
     }
 
     /// Processes all tool results: updates persisted state, handles teammate/meeting/scratchpad,
@@ -94,11 +112,11 @@ extension LLMExecutionService {
         config: LLMConfig,
         tracker: ToolCallTracker,
         memoryStore: MemoryTagStore,
-        iterationNumber: Int,
         conversationMessages: inout [ChatMessage],
         networkLogger: NetworkLogger? = nil
     ) async -> ToolResultsOutcome {
         var outcome = ToolResultsOutcome()
+        var effectiveResults = results
 
         // Update tool calls with their results.
         // Vision signals write an interim "analyzing" placeholder here;
@@ -133,7 +151,7 @@ extension LLMExecutionService {
             // predicate so a new signal can't silently fall through to the
             // regular path (see `isCollaborationDeferredSignal`).
             if Self.isCollaborationDeferredSignal(result.signal) {
-                await appendCollaborationResult(
+                effectiveResults[idx].isError = await appendCollaborationResult(
                     result: result,
                     toolCallID: resolvedToolCalls[idx].id,
                     roleForMessage: roleForMessage,
@@ -194,26 +212,27 @@ extension LLMExecutionService {
                 // `runTeamGeneration`).
                 await processRegularToolResult(
                     result: result,
+                    argumentRepairNote: resolvedToolCalls[idx].argumentRepairNote,
                     stepID: stepID,
                     taskID: task.id,
                     memoryStore: memoryStore,
-                    iterationNumber: iterationNumber,
                     conversationMessages: &conversationMessages,
                     outcome: &outcome
                 )
             default:
                 await processRegularToolResult(
                     result: result,
+                    argumentRepairNote: resolvedToolCalls[idx].argumentRepairNote,
                     stepID: stepID,
                     taskID: task.id,
                     memoryStore: memoryStore,
-                    iterationNumber: iterationNumber,
                     conversationMessages: &conversationMessages,
                     outcome: &outcome
                 )
             }
         }
 
+        outcome.effectiveResults = effectiveResults
         return outcome
     }
 

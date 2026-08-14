@@ -20,6 +20,7 @@ extension NTMSOrchestrator {
     func bootstrapDefaultStorageIfNeeded() async {
         guard workFolderURL == nil else { return }
         // Try to restore last-opened folder first
+        var unreachableRestoreTarget: String?
         if let path = configuration.lastOpenedWorkFolderPath {
             let url = URL(fileURLWithPath: path)
             var isDir: ObjCBool = false
@@ -28,12 +29,22 @@ extension NTMSOrchestrator {
                 try? repository.cleanupAllStagedDrafts(at: url)
                 return
             }
+            // Only a folder that ACTUALLY opened is ever recorded here (see `openWorkFolder`),
+            // so a stored path that no longer resolves is a real signal, not a stale guess:
+            // an unmounted volume, an evicted iCloud folder, a project moved between launches.
+            // Silently booting into Application Support instead made that indistinguishable
+            // from data loss, and invited the user to start creating tasks in the wrong place.
+            unreachableRestoreTarget = url.lastPathComponent
         }
         // Fall back to default storage
         let defaultURL = Self.defaultStorageURL
         try? fileManager.createDirectory(at: defaultURL, withIntermediateDirectories: true)
         await openWorkFolder(defaultURL)
         try? repository.cleanupAllStagedDrafts(at: defaultURL)
+        if let unreachableRestoreTarget {
+            lastInfoMessage = "Couldn't reopen “\(unreachableRestoreTarget)” — it isn't where it "
+                + "was. Using internal storage; reopen the folder once it's available."
+        }
     }
 
     // MARK: - Open / Close
@@ -73,7 +84,28 @@ extension NTMSOrchestrator {
                 let teamSettings = TeamResolution.teamSettings(for: activeTask, in: snapshot.projection)
                 if StatusRecoveryService.recoverStaleStatuses(in: &activeTask, teamSettings: teamSettings) {
                     snapshot.activeTask = activeTask
-                    try repository.updateTaskOnly(at: url, task: activeTask)
+                    // NON-FATAL, and the `try` that used to be here was the whole defect: this
+                    // persists a COSMETIC repair (a step left `.running` by a kill becomes
+                    // `.paused`), and sharing the open's do/catch meant one failed write aborted
+                    // the ENTIRE open — no `apply(snapshot)`, no scheduler, no Autovisor, an empty
+                    // app over intact data. Both sibling implementations of this same recovery
+                    // already treat the identical write as non-fatal: the sweep below collects
+                    // into `failedIDs` and keeps going, and `ensureTaskLoaded` banners "may
+                    // diverge from disk" and returns false.
+                    //
+                    // The banner is written inline rather than aggregated with the sweep's: a
+                    // later, more specific failure overwriting it is acceptable (they all mean
+                    // "this volume is refusing writes"), whereas holding it back to the end would
+                    // clobber the sweep's own aggregate. In-memory recovery still stands, so the
+                    // UI is honest; disk re-converges on the next `mutateTask` or the next open,
+                    // both of which redo the identical idempotent repair.
+                    do {
+                        try repository.updateTaskOnly(at: url, task: activeTask)
+                    } catch {
+                        lastErrorMessage = "Couldn't save the recovered status for task "
+                            + "#\(activeTask.id): \(error.localizedDescription). In-memory state "
+                            + "may diverge from disk."
+                    }
                     // Refresh in-memory index so sidebar shows recovered status
                     let refreshed = activeTask.toSummary()
                     if let idx = snapshot.tasksIndex.tasks.firstIndex(where: { $0.id == activeTask.id }) {
@@ -157,15 +189,30 @@ extension NTMSOrchestrator {
 
             // Spin up the search index coordinator if exploratory search is enabled.
             await setUpSearchIndexCoordinatorIfEnabled()
+
+            // Only a folder that actually opened becomes the launch-time restore target.
+            // This used to live in `SidebarView`'s `.onChange(of: store.workFolderURL)`,
+            // which fires at the assignment above — i.e. BEFORE the outcome is known — so a
+            // folder that failed to open replaced the working one as the thing the next
+            // launch reopens, and re-failed every launch. The outcome is only knowable here.
+            if hasRealWorkFolder {
+                configuration.lastOpenedWorkFolderPath = url.path
+            }
         } catch {
             self.lastErrorMessage = error.localizedDescription
+            // The URL above is already committed and stays committed (`closeProject` /
+            // `resetAllData` read it as their "no project open" signal). Drop everything that
+            // describes the PREVIOUS folder's contents so the process describes exactly one
+            // folder — this one, with nothing loaded — instead of pairing a new URL with an old
+            // snapshot, which is how `mutateWorkFolder` came to write folder A's teams into
+            // folder B's `teams.json`. See `discardWorkFolderState()`.
+            discardWorkFolderState()
         }
-        // Keep the instructions snapshot honest on BOTH paths: if the open threw
-        // above, `workFolderURL` already points at the new folder while the
-        // in-memory snapshot still belongs to the previous one — rescan (or
-        // clear, for default storage) so Settings/previews can't render the old
-        // folder's files against the new URL. On the happy path the TTL memo
-        // makes this a no-op.
+        // Keep the instructions/skills snapshots honest on BOTH paths. After a failed open
+        // the snapshot is empty and the URL is the new folder, so this rescans that folder
+        // from scratch (or clears, for default storage) rather than leaving the previous
+        // folder's files rendered against the new URL in Settings and the prompt previews.
+        // On the happy path the TTL memo makes it a no-op.
         await refreshAgentInstructions()
         await refreshAgentSkills()
         // Sync the LM Studio embed-model state to whatever the coordinator
@@ -311,6 +358,7 @@ extension NTMSOrchestrator {
             },
             embeddingClient: searchEmbeddingClient,
             fileManager: fileManager,
+            makeWatcher: FileSystemWatcher.live,
             watcherDebounce: configuration.searchIndexWatcherDebounceSeconds
         )
         // `start()` awaits — a concurrent caller could install a coordinator
@@ -319,8 +367,19 @@ extension NTMSOrchestrator {
         // watcher".
         await coordinator.start()
 
-        if searchIndexCoordinator != nil {
-            // Lost the race — tear down the one we built before returning.
+        // Two ways to lose the race, and only the first used to be checked.
+        //
+        // (1) A concurrent caller installed one — tear ours down.
+        // (2) The FOLDER moved. `start()` suspends into the vector-index actor, and a Close
+        //     Project / Open Recent inside that window has already run its own
+        //     `tearDownSearchIndexCoordinator` against a still-nil slot, so publishing here
+        //     installs a coordinator bound to a folder that is no longer open and nothing
+        //     will ever tear it down. Its FSEventStream, index walks and `search_index.json`
+        //     writes keep running against the previous project; default storage — which this
+        //     method's own doc says must never be indexed — ends up with an index; and
+        //     `exploratory_search` resolves postings from the old folder while executing
+        //     against the new root.
+        guard searchIndexCoordinator == nil, workFolderURL == url else {
             await coordinator.stop()
             return
         }
@@ -365,6 +424,7 @@ extension NTMSOrchestrator {
 
     private func applyExploratorySearchSettingChange() async {
         if configuration.exploratorySearchEnabled {
+            searchIndexClearFailure = nil       // re-enabling supersedes any leftover warning
             if searchIndexCoordinator == nil {
                 await setUpSearchIndexCoordinatorIfEnabled()
                 if searchIndexCoordinator == nil, !hasRealWorkFolder {
@@ -374,6 +434,12 @@ extension NTMSOrchestrator {
         } else {
             if let coordinator = searchIndexCoordinator {
                 await coordinator.clear()
+                // Read the outcome BEFORE dropping the coordinator — it is the only object
+                // that knows whether the on-disk index was actually deleted, and the next
+                // line is the last moment it exists. `clear()` calls `stop()` first (which
+                // nils `watcherError`) and then assigns `buildError` in all three of its
+                // arms, so `lastError` here is the clear's own verdict and nothing else.
+                searchIndexClearFailure = coordinator.lastError
                 searchIndexCoordinator = nil
             }
         }
@@ -483,9 +549,27 @@ extension NTMSOrchestrator {
 
         let defaultURL = Self.defaultStorageURL
         let nanoteamsDir = defaultURL.appendingPathComponent(".nanoteams", isDirectory: true)
-        try? fileManager.removeItem(at: nanoteamsDir)
+        // Reported, not swallowed. `try?` here meant a refused delete produced NO signal while
+        // `openWorkFolder` below re-read the intact tree and `apply`d it — so every task and
+        // team the user asked to destroy came back, silently, under a dialog that promised to
+        // "restore the application to its initial state". A PARTIAL delete is worse: the
+        // recovery wrappers regenerate whatever went missing, so the app boots on a mix of
+        // surviving and freshly-defaulted data with nothing to indicate it.
+        var deleteFailure: String?
+        do {
+            if fileManager.fileExists(atPath: nanoteamsDir.path) {
+                try fileManager.removeItem(at: nanoteamsDir)
+            }
+        } catch {
+            deleteFailure = error.localizedDescription
+        }
         try? fileManager.createDirectory(at: defaultURL, withIntermediateDirectories: true)
         await openWorkFolder(defaultURL)
+        // After the re-open, so the open's own banner can't displace it.
+        if let deleteFailure {
+            lastErrorMessage = "Reset incomplete — couldn't delete the existing data: "
+                + "\(deleteFailure). Some tasks or teams may still be present."
+        }
     }
 
     // MARK: - Agent Instruction Files
@@ -503,12 +587,19 @@ extension NTMSOrchestrator {
     /// Work Folder settings tab appear, before prompt-preview renders, and after
     /// instruction add/remove/restore. In default storage / no folder there is
     /// nothing to scan → snapshot cleared to `nil`.
-    func refreshAgentInstructions() async {
+    ///
+    /// Returns whether the published snapshot is AUTHORITATIVE for the inputs this call read —
+    /// `false` only when a newer refresh superseded this one mid-walk. Callers that merely want
+    /// the snapshot fresh ignore it; the one caller that draws a CONCLUSION from the absence of
+    /// a path (`setAgentInstructionInjected`) must not treat a superseded scan as evidence, or
+    /// it rolls back a setting that was persisted correctly and blames a file that is fine.
+    @discardableResult
+    func refreshAgentInstructions() async -> Bool {
         guard hasRealWorkFolder, let root = workFolderURL else {
             agentInstructionsScanGeneration += 1  // drop in-flight old-folder scans
             agentInstructionsLastScanKey = nil
             if agentInstructions != nil { agentInstructions = nil }
-            return
+            return true
         }
         let extras = workFolder?.settings.agentInstructionExtraPaths ?? []
         let excluded = workFolder?.settings.agentInstructionExcludedPaths ?? []
@@ -518,7 +609,7 @@ extension NTMSOrchestrator {
         if key == agentInstructionsLastScanKey,
            let lastScanAt = agentInstructionsLastScanAt,
            Date().timeIntervalSince(lastScanAt) < Self.agentInstructionsScanTTL {
-            return
+            return true   // memo hit: the snapshot already reflects THESE inputs
         }
 
         agentInstructionsScanGeneration += 1
@@ -530,13 +621,14 @@ extension NTMSOrchestrator {
         }.value
         // CLAUDE.md #38: a newer refresh started during the await (or the folder
         // switched/closed, which also bumps the generation) supersedes this scan.
-        guard agentInstructionsScanGeneration == expected else { return }
+        guard agentInstructionsScanGeneration == expected else { return false }
         agentInstructionsLastScanKey = key
         agentInstructionsLastScanAt = Date()
         // Equality guard: @Observable fires on every write regardless of value;
         // skipping no-op writes keeps open preview sheets / Settings from
         // re-rendering on every run start (CLAUDE.md View Conventions #9/#11).
         if agentInstructions != scanned { agentInstructions = scanned }
+        return true
     }
 
     // MARK: - Agent Skills
@@ -672,6 +764,7 @@ extension NTMSOrchestrator {
                 accepted.append(rel)
             }
         }
+        var persistFailed = false
         if !accepted.isEmpty {
             await mutateWorkFolder { projection in
                 var extras = projection.settings.agentInstructionExtraPaths
@@ -680,9 +773,16 @@ extension NTMSOrchestrator {
                 // Re-attaching a previously excluded file means "inject it again".
                 projection.settings.agentInstructionExcludedPaths.removeAll { accepted.contains($0) }
             }
-            await refreshAgentInstructions()
+            // Same shape as `setAgentInstructionInjected`: `mutateWorkFolder` returns Void and
+            // reverts memory from disk on a failed settings write, so "accepted" only means
+            // "passed validation". Without this the rejection notice below overwrites the
+            // write-failure banner in the single-shot slot and tells the user the OTHER files
+            // were attached — which is exactly what did not happen.
+            let stored = workFolder?.settings.agentInstructionExtraPaths ?? []
+            persistFailed = !accepted.allSatisfy(stored.contains)
+            if !persistFailed { await refreshAgentInstructions() }
         }
-        if !rejected.isEmpty {
+        if !rejected.isEmpty, !persistFailed {
             lastErrorMessage =
                 "Only files inside the work folder can be attached — skipped: \(rejected.joined(separator: ", "))"
         }
@@ -724,15 +824,40 @@ extension NTMSOrchestrator {
                 }
             }
         }
-        await refreshAgentInstructions()
-        if injected,
+        // Did the override actually land? `mutateWorkFolder` returns Void and, when the
+        // settings.json write fails, RE-READS the folder from disk and applies that — so the
+        // override is silently gone and the scan below would find the file un-injected for a
+        // reason that has nothing to do with the file. Reporting that as "isn't readable text"
+        // was a false diagnosis over a real disk failure, and its `lastInfoMessage` write
+        // displaced the write-failure banner in the single banner slot.
+        //
+        // The durable state is checked rather than `errorSurfaceCount`: it is exact, needs no
+        // baseline, and cannot be tripped by an unrelated error surfacing during the scan's
+        // await (CLAUDE.md ranks a durable signal above the counter for this reason).
+        let persisted = workFolder?.settings.agentInstructionInjectedPaths.contains(relativePath) ?? false
+        guard !injected || persisted else { return }
+
+        // …and is the scan we are about to read OURS? A concurrent refresh — a second grid tick,
+        // or any `startRun` while the Settings window is open — bumps the generation and this
+        // walk's result is discarded, leaving a snapshot that predates the write. Concluding
+        // "no text to inject" from it would roll back a setting that persisted correctly and
+        // blame a perfectly readable file. Superseded ⇒ conclude nothing; the superseding scan
+        // reads the same settings and produces the right answer.
+        let authoritative = await refreshAgentInstructions()
+        if injected, authoritative,
            !(agentInstructions?.injectedFiles.contains { $0.relativePath == relativePath } ?? false) {
-            // The file didn't read as text — drop the dangling override and
-            // tell the user why nothing visibly changed.
+            // Drop the dangling override and say what happened — WITHOUT naming a cause the
+            // scan cannot distinguish. The write succeeded, so the file itself did not yield
+            // injectable text, and the reachable reasons are several: it is binary, it is
+            // EMPTY or whitespace-only (a placeholder `AGENTS.md` is the commonest of all, and
+            // "isn't readable text" is simply wrong about it), or it vanished / became
+            // unreadable between the grid render and the click. The old wording asserted one
+            // of them.
             await mutateWorkFolder { projection in
                 projection.settings.agentInstructionInjectedPaths.removeAll { $0 == relativePath }
             }
-            lastInfoMessage = "\(relativePath) isn't readable text — it stays listed for on-demand reading."
+            lastInfoMessage = "\(relativePath) yielded no text to inject — it may be empty, "
+                + "binary, or unreadable. It stays listed for on-demand reading."
         }
     }
 
@@ -963,13 +1088,25 @@ extension NTMSOrchestrator {
             proj.setActiveTeam(teamID)
         }
 
-        guard let taskID = activeTaskID else { return }
+        guard let taskID = activeTaskID, let folderURL = workFolderURL else { return }
 
         // If engine is running, pause it first to cancel in-flight LLM and role tasks
         if let state = taskEngineStates[taskID],
            state == .running || state == .needsAcceptance || state == .needsSupervisorInput {
             await pauseRun(taskID: taskID)
         }
+
+        // `pauseRun` is a LONG suspension — it awaits the running step's cancellation handler
+        // (up to `LLMConstants.cancelHandlerTimeoutSeconds`), a recursive child-pause cascade
+        // and a disk write. One click on Open Recent inside that window switches folders, and
+        // `mutateTask` below would then bind the NEW folder's URL while `teamID`/`taskID` came
+        // from the old one. Task ids are per-folder sequential ints, so the collision is the
+        // norm (see `apply(_:)`): folder A's team id gets pinned onto folder B's task, and
+        // `TeamSwitchPlanner.filteredSteps` deletes every step whose role isn't in A's roster
+        // — an unrelated task's run history, on disk. Same guard, same reasoning as
+        // `recoverStaleStatusesAcrossIndex`; checked synchronously, with no suspension point
+        // before `mutateTask` binds the URL.
+        guard workFolderURL == folderURL else { return }
 
         await mutateTask(taskID: taskID) { task in
             // Update task's preferred team so engine resolves correctly

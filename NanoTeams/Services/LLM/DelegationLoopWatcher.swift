@@ -12,7 +12,7 @@ import Foundation
 ///    whether the in-stream scanner should advance its throttle baseline (the
 ///    relocated I4 invariant — see the method doc). Critical for reasoning
 ///    models that loop in `thinking` and never commit a finalized message.
-///  - `considerCommitted(taskID:recentAssistant:toolCalls:)` — post-commit. One
+///  - `considerCommitted(taskID:recentAssistant:toolCalls:informationBoundary:)` — post-commit. One
 ///    `LoopScanner.scanCommitted` pass over the finalized conversation +
 ///    tool-call history (tool-call sequence → within-message → across-messages,
 ///    first signal wins; the per-task `lastTrigger` is the `createdAt` cutoff that
@@ -92,10 +92,24 @@ final class DelegationLoopWatcher {
     /// cooldown expires (often shorter than a revision round). Before any fire the
     /// cutoff is `.distantPast` → nothing filtered (identical to the legacy
     /// pre-fire behavior).
+    ///
+    /// **`informationBoundary`** is passed IN rather than derived here: the watcher sees
+    /// flattened tuples, never the conversation, and the caller
+    /// (`NTMSOrchestrator.commitStreaming`) already holds `step.llmConversation`
+    /// unfiltered. `scanCommitted` folds it with the cutoff above via `max`, so the
+    /// "cutoff belongs to the watcher" rule is unchanged — this only ever moves the
+    /// tool-call scan's floor forward. For a child that is the `forward_to_team` case:
+    /// the parent role forwards guidance mid-delegation, the child acts on it, and the
+    /// repeat that follows is a reaction, not a spin.
+    ///
+    /// No default, for the reason spelled out on `LoopScanner.scanCommitted`: `nil` is
+    /// an assertion about the caller's conversation, not a policy this type can pick,
+    /// and getting it wrong silently reverts the fix rather than failing.
     func considerCommitted(
         taskID: Int,
         recentAssistant: [(thinking: String?, content: String, createdAt: Date)],
-        toolCalls: [(name: String, argsJSON: String, createdAt: Date)]
+        toolCalls: [(name: String, argsJSON: String, createdAt: Date)],
+        informationBoundary: Date?
     ) {
         guard let orchestrator else { return }
         guard isChildTask(taskID, in: orchestrator) else { return }
@@ -106,6 +120,7 @@ final class DelegationLoopWatcher {
             recentAssistant: recentAssistant,
             toolCalls: toolCalls,
             cutoffDate: cutoff,
+            informationBoundary: informationBoundary,
             scope: .thinkingAndContent
         ) else { return }
         fireInterrupt(

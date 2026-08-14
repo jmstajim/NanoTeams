@@ -426,6 +426,159 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
         }
     }
 
+    // MARK: - Empty content
+
+    /// `content` is declared `required` in the schema. It was not enforced anywhere: the
+    /// handler resolved it with `?? ""` and carried on, so `{"name": "Release Notes"}` alone
+    /// returned `ok:true`, wrote a zero-byte artifact, and `checkArtifactCompleteness`
+    /// counted that as the role's deliverable and auto-completed the step.
+    ///
+    /// The damage is downstream and silent: the next role's required artifact is injected
+    /// into its prompt EMPTY, and nothing in the pipeline distinguishes "produced nothing"
+    /// from "produced this". The role that receives it typically invents the missing content.
+    ///
+    /// RED: restore `let content = resolveContentString(...) ?? ""` without the guard →
+    /// `isError` is false and the artifact is persisted.
+    func testCreateArtifact_contentOmitted_isRejectedRatherThanSilentlyEmpty() throws {
+        let ctx = ToolExecutionContext(
+            workFolderRoot: tempDir, taskID: 0, runID: 0, roleID: "test_role",
+            expectedArtifacts: ["Release Notes"]
+        )
+        let call = StepToolCall(
+            name: "create_artifact",
+            argumentsJSON: "{\"name\":\"Release Notes\"}"
+        )
+
+        let results = runtime.executeAll(context: ctx, toolCalls: [call])
+
+        XCTAssertTrue(results[0].isError, "got: \(results[0].outputJSON)")
+        let out = results[0].outputJSON
+        XCTAssertTrue(out.contains("no content"), "the message must name the problem: \(out)")
+        // NOT `out.contains("content")` — that is implied by the line above and pins
+        // nothing. The parameter has to be named as a parameter the model can copy.
+        XCTAssertTrue(out.contains("`content`"),
+                      "the message must name the parameter to pass: \(out)")
+        XCTAssertTrue(out.contains("Release Notes"),
+                      "and the artifact it was asked for: \(out)")
+    }
+
+    /// The guard above is fed by `resolveContentString(args, excludeKeys:)`, whose step 3
+    /// adopts "the single remaining String value" as the body. `format` was not excluded,
+    /// so the most likely omission shape of all — the one the worked example in every
+    /// producing role's system prompt suggests, `{"name": …, "content": "...", "format":
+    /// "markdown"}` with the placeholder dropped — resolved the body to the word
+    /// `markdown`, returned ok:true, wrote an eight-byte artifact and auto-completed the
+    /// step. The guard never saw an empty string; the defect was upstream of it.
+    ///
+    /// RED: `excludeKeys: ["name", "format"]` → `["name"]` → every case here returns
+    /// ok:true with the format string as the deliverable.
+    func testCreateArtifact_formatWithoutContent_isStillRejected() throws {
+        for format in ["markdown", "pdf", "docx"] {
+            let ctx = ToolExecutionContext(
+                workFolderRoot: tempDir, taskID: 0, runID: 0, roleID: "test_role",
+                expectedArtifacts: ["Release Notes"]
+            )
+            let call = StepToolCall(
+                name: "create_artifact",
+                argumentsJSON: "{\"name\":\"Release Notes\",\"format\":\"\(format)\"}"
+            )
+
+            let results = runtime.executeAll(context: ctx, toolCalls: [call])
+
+            XCTAssertTrue(
+                results[0].isError,
+                "format=\(format) must not become the deliverable: \(results[0].outputJSON)")
+            XCTAssertTrue(results[0].outputJSON.contains("no content"),
+                          "format=\(format): \(results[0].outputJSON)")
+        }
+    }
+
+    /// The same exclusion rescues a REAL body sent under an alias beside a format. Step 3
+    /// used to see two surviving strings, call it ambiguous, and return nil — so a genuine
+    /// deliverable was rejected as empty.
+    ///
+    /// RED: revert the `format` exclusion → two candidates survive, content resolves to
+    /// nil, and this real body is rejected with "no content".
+    func testCreateArtifact_aliasedBodyBesideAFormat_isAccepted() throws {
+        let ctx = ToolExecutionContext(
+            workFolderRoot: tempDir, taskID: 0, runID: 0, roleID: "test_role",
+            expectedArtifacts: ["Release Notes"]
+        )
+        let call = StepToolCall(
+            name: "create_artifact",
+            argumentsJSON:
+                "{\"name\":\"Release Notes\",\"markdown\":\"# Real body\",\"format\":\"markdown\"}"
+        )
+
+        let results = runtime.executeAll(context: ctx, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError, "got: \(results[0].outputJSON)")
+    }
+
+    /// A non-String `content` (null, or an array of lines) is skipped by step 3's
+    /// `value is String` test, so `format` used to become the single survivor even when
+    /// the model DID send the key. Same guard, same root.
+    ///
+    /// RED: revert the `format` exclusion → both return ok:true with the format as body.
+    func testCreateArtifact_nonStringContentBesideAFormat_isRejected() throws {
+        for body in ["null", "[\"a\",\"b\"]"] {
+            let ctx = ToolExecutionContext(
+                workFolderRoot: tempDir, taskID: 0, runID: 0, roleID: "test_role",
+                expectedArtifacts: ["Release Notes"]
+            )
+            let call = StepToolCall(
+                name: "create_artifact",
+                argumentsJSON:
+                    "{\"name\":\"Release Notes\",\"content\":\(body),\"format\":\"pdf\"}"
+            )
+
+            let results = runtime.executeAll(context: ctx, toolCalls: [call])
+
+            XCTAssertTrue(results[0].isError,
+                          "content=\(body): \(results[0].outputJSON)")
+        }
+    }
+
+    /// Whitespace-only is the same hole behind a different byte. A model that answers the
+    /// "you must pass content" nudge with `"\n"` would otherwise walk straight back through.
+    ///
+    /// RED: change the guard to `content.isEmpty` → this passes the empty check and succeeds.
+    func testCreateArtifact_whitespaceOnlyContent_isRejectedToo() throws {
+        let ctx = ToolExecutionContext(
+            workFolderRoot: tempDir, taskID: 0, runID: 0, roleID: "test_role",
+            expectedArtifacts: ["Release Notes"]
+        )
+        let call = StepToolCall(
+            name: "create_artifact",
+            argumentsJSON: "{\"name\":\"Release Notes\",\"content\":\"  \\n\\t \"}"
+        )
+
+        let results = runtime.executeAll(context: ctx, toolCalls: [call])
+
+        XCTAssertTrue(results[0].isError, "got: \(results[0].outputJSON)")
+    }
+
+    /// Anti-vacuity for both cases above: the guard must not have made the tool reject
+    /// ordinary submissions. A one-character body is a legitimate deliverable as far as this
+    /// handler is concerned — judging SUFFICIENCY is the Supervisor's job, not the tool's.
+    ///
+    /// RED: same mutation as the two above, inverted — a guard that rejects non-empty content
+    /// fails here.
+    func testCreateArtifact_minimalNonEmptyContent_stillSucceeds() throws {
+        let ctx = ToolExecutionContext(
+            workFolderRoot: tempDir, taskID: 0, runID: 0, roleID: "test_role",
+            expectedArtifacts: ["Release Notes"]
+        )
+        let call = StepToolCall(
+            name: "create_artifact",
+            argumentsJSON: "{\"name\":\"Release Notes\",\"content\":\"x\"}"
+        )
+
+        let results = runtime.executeAll(context: ctx, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError, "got: \(results[0].outputJSON)")
+    }
+
     private func makeRoleFixture(producesArtifacts: [String]) -> TeamRoleDefinition {
         TeamRoleDefinition(
             id: "test_role_\(UUID().uuidString.prefix(8))",

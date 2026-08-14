@@ -53,11 +53,8 @@ final class MeetingPromptSurfaceTests: XCTestCase {
         artifactReader: @escaping (Artifact) -> String? = { _ in nil }
     ) -> TeamMeetingService.MeetingContext {
         TeamMeetingService.MeetingContext(
-            topic: "API design",
             initiatedBy: .productManager,
             participants: [.productManager, .softwareEngineer],
-            additionalContext: nil,
-            task: NTMSTask(id: 1, title: "T", supervisorTask: "S", runs: [Run(id: 0)]),
             availableArtifacts: artifacts,
             artifactReader: artifactReader,
             team: team,

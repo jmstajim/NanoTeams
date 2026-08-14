@@ -63,7 +63,16 @@ nonisolated struct AtomicJSONStore {
         do {
             _ = try fileManager.replaceItemAt(url, withItemAt: tempURL, backupItemName: nil, options: [.usingNewMetadataOnly])
         } catch {
-            // If target doesn't exist yet, move temp into place.
+            // Fall back to remove-then-move.
+            //
+            // NOT "the target doesn't exist yet", which is what this comment used to claim:
+            // measured on APFS/macOS 26, `replaceItemAt` succeeds against a MISSING target, and
+            // even against a target that is a non-empty directory. What it actually refuses is a
+            // target it cannot write — a read-only file, a read-only parent directory, or a
+            // dangling symlink (all NSCocoaErrorDomain 513 / 4). Of those, only the read-only
+            // FILE is rescuable here: the directory is still writable, so the old file can be
+            // removed and the temp moved into its place. The other two fail again below and
+            // surface as `atomicReplaceFailed`, which is correct — the volume really is refusing.
             do {
                 if fileManager.fileExists(atPath: url.path) {
                     try fileManager.removeItem(at: url)

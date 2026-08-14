@@ -24,9 +24,11 @@ extension QuickCaptureController {
         } else {
             team = store.snapshot?.workFolder.activeTeam
         }
-        // Generated Team template is a placeholder — treat as non-chat so Quick Capture
-        // dismisses and navigates to the task after submission.
-        let isChatMode = (team?.templateID == "generated") ? false : (team?.isChatMode ?? false)
+        // `seedChatModeForNewTask`, not bare `isChatMode`: the Generated Team placeholder is
+        // vacuously chat-mode, and this decides whether Quick Capture stays open (chat) or
+        // dismisses and navigates to the task. Same predicate `createTask` persists, so the
+        // panel's behaviour and the task's stored flag cannot disagree.
+        let isChatMode = team?.seedChatModeForNewTask ?? false
 
         // Build the supervisor task text with optional file embedding
         let built = AnswerTextBuilder.build(
@@ -56,7 +58,6 @@ extension QuickCaptureController {
                 forceNewTaskMode = false
                 isTaskSelected = true
                 pendingWorkingMode = true
-                currentVisualMode = .working
                 updatePanelContent()
             } else {
                 dismissPanel()
@@ -69,7 +70,7 @@ extension QuickCaptureController {
     /// Submits the supervisor answer. In chat mode with `keepOpenInChat`, stays open and shows loader.
     func submitAnswer() async {
         guard let payload = formState.pendingAnswer, let store else { return }
-        let answer = formState.supervisorTask.trimmingCharacters(in: .whitespacesAndNewlines)
+        let answer = formState.answerText.trimmingCharacters(in: .whitespacesAndNewlines)
         let hasClips = !formState.answerClippedTexts.isEmpty
         guard !answer.isEmpty || !formState.answerAttachments.isEmpty || hasClips else { return }
 
@@ -96,13 +97,12 @@ extension QuickCaptureController {
 
         // Discard the per-task draft on successful submit
         formState.discardAnswerDraft(taskID: payload.taskID)
-        formState.supervisorTask = ""
+        formState.answerText = ""
         formState.answerAttachments = []
         formState.answerClippedTexts = []
 
         if keepOpenInChat && isChatMode {
             formState.exitAnswerMode()
-            currentVisualMode = .working
             updatePanelContent()
         } else {
             formState.exitAnswerMode()
@@ -114,10 +114,21 @@ extension QuickCaptureController {
 
     func cancelDraft() {
         if let payload = formState.pendingAnswer {
-            // Answer mode: discard staged directory and per-task draft
-            store?.discardStagedDraft(draftID: formState.draftID)
+            // Answer mode: discard THIS answer's own staged copies, never the directory.
+            // `formState.draftID` names one `.nanoteams/staged/<id>/` that the task draft and
+            // every saved answer draft also write into, and none of their `StagedAttachment`
+            // values — nor the chips rendered from them — are touched by a cancel here. Deleting
+            // the directory therefore left the panel showing files that were no longer on disk,
+            // and the first thing to notice was `finalizeAttachments`, minutes later, with
+            // nothing connecting the failure to the Escape key.
+            //
+            // `removeStagedAttachment` and not a direct delete: an in-project attachment is a
+            // reference to the user's own file, and refusing to delete those is its job.
+            for attachment in formState.answerAttachments {
+                store?.removeStagedAttachment(attachment)
+            }
             formState.discardAnswerDraft(taskID: payload.taskID)
-            formState.supervisorTask = ""
+            formState.answerText = ""
             formState.answerAttachments = []
             formState.answerClippedTexts = []
             formState.exitAnswerMode()

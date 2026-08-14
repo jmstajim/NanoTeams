@@ -230,10 +230,13 @@ extension NTMSOrchestrator {
     /// disabling stops its engine and disables its recurrence so the scheduler
     /// stops firing it.
     /// Returns whether the requested state took effect: `false` only when an
-    /// ENABLE is refused for want of a real work folder (the sole no-op path), so
-    /// callers like `AutovisorSetupView.enable` can tell a real enable from a
-    /// folder-closed-mid-flight refusal instead of silently assuming success.
-    /// Disable always succeeds.
+    /// ENABLE is refused for want of a real work folder (the sole no-op path).
+    /// UI callers deliberately DISCARD the Bool — the refusal arm posts its own
+    /// `lastInfoMessage` and the setup pane recovers by state-derivation
+    /// (`autovisorShowsSetupPane` stays true, the button re-arms), so there is
+    /// nothing left for a view to gate on it. It exists for tests
+    /// (`OrchestratorFailureArmTests` pins the refusal arm). Disable always
+    /// succeeds.
     @discardableResult
     func setAutovisorEnabled(_ enabled: Bool) async -> Bool {
         // Enabling needs a real work folder — `ensureAutovisorTask` /
@@ -327,7 +330,7 @@ extension NTMSOrchestrator {
         // Sampled BEFORE the disable — every wake guard reads the enabled flag, so
         // afterwards this can only report "nothing pending".
         let hadPendingWork = autovisorHasUnresolvedAttention()
-        let errorBaseline = lastErrorMessage
+        let errorBaseline = errorSurfaceCount
         await setAutovisorEnabled(false)
         // Verify semantic success before announcing (CLAUDE.md §7 — persisted ≠
         // intended; same honest-error pattern as `deleteAutovisor`). The disable
@@ -336,11 +339,16 @@ extension NTMSOrchestrator {
         // • settings flag failed → feature still enabled (the flag check), and the
         //   disable path's rearm re-armed a fresh countdown — an automatic retry
         //   in one full duration;
-        // • recurrence persist failed → flag is off but `lastErrorMessage` moved
-        //   off the baseline (the on-disk orphan is self-healed by
-        //   `fireRecurrence`'s zombie guard).
+        // • recurrence persist failed → flag is off but an error surfaced past the
+        //   baseline (the on-disk orphan is self-healed by `fireRecurrence`'s
+        //   zombie guard).
+        //
+        // Counted, not slot-compared: the disable suspends twice more before we get
+        // here, so a render can consume the slot and make a failed recurrence write
+        // read as clean — announcing "turned off" over the error that explains why the
+        // folder is now half-off.
         guard snapshot?.workFolder.settings.autovisorEnabled == false,
-              lastErrorMessage == errorBaseline else { return }
+              errorSurfaced(since: errorBaseline) == nil else { return }
         // Turning off is the LAST thing that can wake this folder — every wake guard
         // reads the enabled flag, so after this nothing runs, including the recurrence
         // that is the final recovery path for a manager parked by a reasoning loop.
@@ -491,13 +499,38 @@ extension NTMSOrchestrator {
 
     /// Toggles whether the Autovisor may assemble a new team on the fly
     /// (`create_managed_task team_id: "generated"`). Gated at both the schema
-    /// (`CreateManagedTaskTool.buildSchema`) and runtime (`classifyManagedTeamID`)
+    /// (`CreateManagedTaskTool.buildSchema`) and runtime (`AutovisorTeamPolicy.classify`)
     /// layers. Per-folder, no engine restart: the manager's next review pass
     /// rebuilds its tool schema from the fresh setting (schemas are built once per
     /// step in `runStep`), and the runtime gate enforces the change immediately for
     /// a pass already in flight.
     func setAutovisorAllowTeamGeneration(_ allow: Bool) async {
         await mutateWorkFolder { $0.settings.autovisorAllowTeamGeneration = allow }
+    }
+
+    /// Allows or blocks ONE team for Autovisor task creation — the Settings checkbox.
+    ///
+    /// The view speaks only "allowed"; the inversion into the stored BLOCK list lives here.
+    /// The read-modify-write runs INSIDE `mutateWorkFolder`, never against a value captured
+    /// at render time: two quick clicks would otherwise both start from the same stale array
+    /// and the second would drop the first.
+    ///
+    /// Same delivery properties as the toggle above — no engine restart needed.
+    func setAutovisorTeamAllowed(_ teamID: NTMSID, allowed: Bool) async {
+        await mutateWorkFolder { projection in
+            var blocked = Set(projection.settings.autovisorBlockedTeamIDs)
+            if allowed { blocked.remove(teamID) } else { blocked.insert(teamID) }
+            projection.settings.autovisorBlockedTeamIDs =
+                AutovisorTeamPolicy.normalizedBlockList(Array(blocked))
+        }
+    }
+
+    /// Bulk write — used to clear orphan entries (blocked ids whose team is gone) from the
+    /// Settings card. Normalizes so a caller can't persist an unsorted or duplicated list.
+    func setAutovisorBlockedTeamIDs(_ ids: [NTMSID]) async {
+        await mutateWorkFolder {
+            $0.settings.autovisorBlockedTeamIDs = AutovisorTeamPolicy.normalizedBlockList(ids)
+        }
     }
 
     /// The single seam that projects the persisted goal (+ clips + attachments)
@@ -559,14 +592,20 @@ extension NTMSOrchestrator {
     private func createAutovisorTask() async -> Int? {
         // 1. Ensure the Autovisor team exists in teams.json (team must exist
         //    before createTask resolves `preferredTeamID` off disk).
+        //
+        // The suppression below asks "did the seed report its own, more specific
+        // failure?" — which is an `errorSurfaceCount` question, not a slot question.
+        // `ensureAutovisorTeam` has a SILENT exit (no work folder / no snapshot), so a
+        // foreign message parked in the slot used to suppress this diagnostic entirely
+        // and leave the folder `autovisorEnabled == true` with no manager: auto-answer
+        // stays suppressed for every top-level task while nothing ever wakes to answer
+        // them, and the only thing on screen belongs to an unrelated operation.
+        let seedErrorsBefore = errorSurfaceCount
         await ensureAutovisorTeam()
         guard let teamID = snapshot?.workFolder.teams
             .first(where: { $0.templateID == AutovisorConstants.teamTemplateID })?.id
         else {
-            // ensureAutovisorTeam should always leave the team present; if it didn't
-            // (persist failure / work-folder closed mid-flight) don't fail silently —
-            // surface it unless mutateWorkFolder already set a more specific message.
-            if lastErrorMessage == nil {
+            if errorSurfaced(since: seedErrorsBefore) == nil {
                 lastErrorMessage = "Autovisor could not start — its team is missing. Try reopening the work folder."
             }
             return nil
@@ -577,6 +616,7 @@ extension NTMSOrchestrator {
         //    lock-step with `settings.autovisorGoal` by `ensureAutovisorTask`
         //    and `updateAutovisorGoal`. Must be non-empty so `hasInitialInput`
         //    marks the "Supervisor Task" artifact produced and the manager is ready.
+        let createErrorsBefore = errorSurfaceCount
         guard let taskID = await createTask(
             title: "Autovisor",
             supervisorTask: AutovisorConstants.defaultGoal,
@@ -588,8 +628,10 @@ extension NTMSOrchestrator {
             // task — auto-answer stays suppressed for every top-level task
             // while `wakeAutovisorForEvents` bails on the nil `autovisorTaskID`
             // guard, so questions pile up that "Autovisor should have answered"
-            // with zero signal about why.
-            if lastErrorMessage == nil {
+            // with zero signal about why. `createTask`'s no-work-folder exit returns
+            // nil WITHOUT surfacing, so this diagnostic is the only one there is —
+            // counted, so a foreign banner can't suppress it.
+            if errorSurfaced(since: createErrorsBefore) == nil {
                 lastErrorMessage = "Autovisor could not start — its task could not be created. Try toggling Autovisor off and on, or reopening the work folder."
             }
             return nil

@@ -39,6 +39,18 @@ nonisolated struct GitAddTool: ToolHandler {
                 display: "paths (or files / path / file)"
             )
 
+            // `{"paths": []}` reaches here intact (coerceStringArray keeps an explicitly
+            // empty list), and a bare `git add` exits 0 — so the model asked to stage
+            // files, staged none, and read ok:true. Same success-envelope-for-a-no-op
+            // shape as the git_pull regression fixed 2026-08-07.
+            guard !paths.isEmpty else {
+                return makeErrorResult(
+                    toolName: Self.name, args: args,
+                    code: .invalidArgs,
+                    message: "paths is empty — name at least one file, or \".\" to stage everything."
+                )
+            }
+
             // Tolerate absolute + redundant-work-folder-name path forms (globs/pathspec
             // magic pass through untouched) so git_add behaves like the file tools.
             let normalizedPaths = paths.map { resolver.relativizePathspec($0) }
@@ -112,10 +124,24 @@ nonisolated struct GitCommitTool: ToolHandler {
                 if GitErrorClassifier.isNotARepository(stderr: errorMsg) {
                     return GitErrorClassifier.notARepositoryError(toolName: Self.name, args: args)
                 }
-                if errorMsg.contains("nothing to commit") {
+                // Git spells the same situation two ways: "nothing to commit" normally,
+                // and "nothing added to commit but untracked files present" when the tree
+                // holds only untracked files. Matching one left the other as COMMAND_FAILED
+                // — two error codes for one failure class, which `buildToolErrorGuidance`
+                // then routes differently.
+                if errorMsg.contains("nothing to commit")
+                    || errorMsg.contains("nothing added to commit") {
+                    // Keep git's actionable half. Collapsing both spellings to a bare
+                    // "Nothing to commit" would fix the error CODE and lose the only
+                    // sentence that tells the model what to do next.
+                    let untrackedOnly = errorMsg.contains("untracked files present")
+                        || errorMsg.contains("nothing added to commit")
                     return makeErrorResult(
                         toolName: Self.name, args: args,
-                        code: .conflict, message: "Nothing to commit"
+                        code: .conflict,
+                        message: untrackedOnly
+                            ? "Nothing to commit — only untracked files are present. Stage them with git_add first."
+                            : "Nothing to commit — the working tree is clean."
                     )
                 }
                 return makeErrorResult(
@@ -185,7 +211,6 @@ nonisolated struct GitPullTool: ToolHandler {
             let result = try ProcessRunner.runGit(gitArgs, in: workFolderRoot)
 
             let output = result.stdout + result.stderr
-            let hasConflicts = output.contains("CONFLICT") || output.contains("Merge conflict")
 
             struct PullData: Codable {
                 var success: Bool
@@ -193,24 +218,69 @@ nonisolated struct GitPullTool: ToolHandler {
                 var output: String
             }
 
-            if hasConflicts {
-                let conflictFiles =
-                    output
-                    .components(separatedBy: .newlines)
-                    .filter { $0.contains("CONFLICT") }
-                    .compactMap { line -> String? in
-                        if let range = line.range(of: "in ") {
-                            return String(line[range.upperBound...]).trimmingCharacters(
-                                in: .whitespaces)
-                        }
-                        return nil
-                    }
+            // A pull can fail for reasons that are not conflicts — no such remote,
+            // no upstream, refusing to merge unrelated histories. Those used to
+            // fall through to the success envelope below carrying
+            // `success: false`, and the model reads `ok`, not `data.success`, so
+            // an unreachable remote looked like a completed pull. Mirrors the
+            // guard `git_checkout` / `git_branch` / `git_merge` use.
+            //
+            // The EXIT STATUS decides, and it is consulted FIRST — the same ordering
+            // `git_merge` adopted on 2026-08-08, and for the same reason, which
+            // applies here with a wider blast radius. `git pull` merges internally
+            // and exits non-zero on a conflict, so a pull that SUCCEEDED cannot be
+            // one; but it also prints a DIFFSTAT, i.e. the name of every file the
+            // fast-forward touched. Probing that text first meant a clean pull of a
+            // commit adding `docs/CONFLICT.md` reported `CONFLICT` and sent the model
+            // to resolve conflicts in an already-merged tree. Branch names reach the
+            // same text ("Merge branch 'fix-CONFLICT-handling'"), so `git_merge`'s
+            // reproducer is reachable here too.
+            guard result.success else {
+                if output.contains("CONFLICT") || output.contains("Merge conflict") {
+                    // The only place the model learns WHICH file to fix — the envelope is
+                    // an `ErrorEnvelope` (`data: nil`) and the guidance builder surfaces
+                    // only `message`. `GitConflictParser` because `range(of: "in ")` parsed
+                    // two of git's five conflict shapes and handed back a branch name, a
+                    // SHA, or English prose for the other three.
+                    let conflictFiles = GitConflictParser.conflictedPaths(in: output)
 
+                    return makeErrorResult(
+                        toolName: Self.name, args: args,
+                        code: .conflict,
+                        message: "Merge conflicts detected",
+                        details: ["conflicts": conflictFiles.joined(separator: ", ")]
+                    )
+                }
+                if let classified = GitErrorClassifier.classify(
+                    stderr: result.stderr, toolName: Self.name, args: args,
+                    subject: "Remote '\(remote)'"
+                ) {
+                    return classified
+                }
+                return makeErrorResult(
+                    toolName: Self.name, args: args,
+                    code: .commandFailed,
+                    message: result.stderr.isEmpty ? output : result.stderr
+                )
+            }
+
+            // Exit 0 is NOT proof of a merged tree. With `merge.autoStash` /
+            // `rebase.autoStash` set, git completes the merge, then conflicts applying the
+            // stash, and exits **0** anyway — measured: `Applying autostash resulted in
+            // conflicts.`, exit 0, `UU f.txt`, conflict markers written to disk. Reporting
+            // `ok: true, conflicts: []` there sends the model to build or edit a file full
+            // of markers, and the compiler errors that follow have no explanation in the
+            // tool log. The index is the authoritative answer and costs one cheap call;
+            // a text probe is not, which is the whole reason the exit status is consulted
+            // first above.
+            let unmerged = (try? ProcessRunner.runGit(["ls-files", "-u"], in: workFolderRoot))
+                .map { GitConflictParser.unmergedPaths(inLsFilesOutput: $0.stdout) } ?? []
+            if !unmerged.isEmpty {
                 return makeErrorResult(
                     toolName: Self.name, args: args,
                     code: .conflict,
                     message: "Merge conflicts detected",
-                    details: ["conflicts": conflictFiles.joined(separator: ", ")]
+                    details: ["conflicts": unmerged.joined(separator: ", ")]
                 )
             }
 

@@ -67,7 +67,7 @@ struct GraphPanelView: View {
         guard let preferredID = task.preferredTeamID,
               let template = workFolder?.teams.first(where: { $0.id == preferredID })
         else { return false }
-        return template.templateID == "generated"
+        return template.isGeneratedPlaceholder
     }
 
     /// The most recent create_team tool call across the latest run's steps, if any.
@@ -81,8 +81,28 @@ struct GraphPanelView: View {
         return nil
     }
 
+    /// Whether a generation attempt is actually in flight, derived from a LIVENESS
+    /// signal rather than from the absence of an error marker.
+    ///
+    /// `runTeamGeneration` injects a synthetic `team_generation_*` step and drives it
+    /// `.running` → `.done` / `.failed`, so the step's own status is the honest source.
+    /// A missing step means generation has not started (or its record was destroyed).
+    private var generationStep: StepExecution? {
+        task.runs.last?.steps.last {
+            $0.isTeamGenerationStep
+        }
+    }
+
+    /// Failure is anything pending but NOT live — see `GeneratedTeamPanelState.failed`,
+    /// which owns the rule and its regression history.
     private var generationFailed: Bool {
-        isGenerationPending && (generationToolCall?.isError == true)
+        GeneratedTeamPanelState.failed(
+            isPending: isGenerationPending,
+            toolCallIsError: generationToolCall?.isError == true,
+            stepStatus: generationStep?.status,
+            hasRun: task.runs.last != nil,
+            isGenerationInFlight: store.isGeneratingTeam(taskID: task.id)
+        )
     }
 
     private var isGeneratingTeam: Bool {
@@ -90,13 +110,11 @@ struct GraphPanelView: View {
     }
 
     private var generationErrorMessage: String? {
-        guard generationFailed,
-              let json = generationToolCall?.resultJSON,
-              let dict = JSONUtilities.parseJSONDictionary(json),
-              let error = dict["error"] as? [String: Any],
-              let message = error["message"] as? String
-        else { return nil }
-        return message
+        guard generationFailed else { return nil }
+        return GeneratedTeamPanelState.failureMessage(
+            recorded: generationToolCall?.errorMessage,
+            stepStatus: generationStep?.status
+        )
     }
 
     private var activeTeamMembers: Set<String> {
@@ -116,12 +134,11 @@ struct GraphPanelView: View {
     /// keeps the message history) but the graph stays focused on the live
     /// in-flight chain so it doesn't accumulate clutter on long-lived
     /// parents that delegate many times.
+    // parentRoleID / childTask / childRun deliberately not stored (wave 32): the layer
+    // renders from the resolved team + statuses; the walk-local values had zero readers.
     private struct DelegationLayer: Identifiable {
         let id: Int                        // child task ID
-        let parentRoleID: String           // delegating role in the layer above
         let parentRoleName: String
-        let childTask: NTMSTask
-        let childRun: Run
         let childTeam: Team
         let childStatuses: [String: RoleExecutionStatus]
         let producedArtifacts: Set<String>
@@ -152,10 +169,7 @@ struct GraphPanelView: View {
 
             layers.append(DelegationLayer(
                 id: childID,
-                parentRoleID: step.id,
                 parentRoleName: parentRoleName,
-                childTask: childTask,
-                childRun: childRun,
                 childTeam: childTeam,
                 childStatuses: childRun.roleStatuses,
                 producedArtifacts: Set(childRun.producedArtifactsByName().keys),
@@ -339,7 +353,7 @@ struct GraphPanelView: View {
             Image(systemName: "exclamationmark.triangle")
                 .font(Typography.term3xl)
                 .foregroundStyle(Colors.error)
-            Text("Team generation failed")
+            Text(GeneratedTeamPanelState.failureTitle(stepStatus: generationStep?.status))
                 .font(Typography.subheadlineSemibold)
                 .foregroundStyle(Colors.textPrimary)
             if let message = generationErrorMessage {

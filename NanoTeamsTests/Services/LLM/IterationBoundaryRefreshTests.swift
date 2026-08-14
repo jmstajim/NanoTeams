@@ -133,7 +133,6 @@ final class IterationBoundaryRefreshTests: XCTestCase {
             tools: fullTools,
             step: refreshedStep,
             team: nil,
-            memoryStore: MemoryTagStore(workFolderRoot: URL(fileURLWithPath: "/tmp")),
             conversationMessages: &conversation,
             roleDefinition: role
         )

@@ -58,6 +58,17 @@ final class ModelCatalog {
         fetchingKeys.contains(key(url, provider, visionOnly))
     }
 
+    /// `true` once a fetch for this key has RETURNED a list — including an empty
+    /// one. `models(for:)` collapses "never fetched" and "fetched, server offered
+    /// none" into `[]`, and those two want opposite things said about them: the
+    /// second is a fact about the server, the first is a fact about us. Without
+    /// this discriminator an empty result gets narrated from the reachability pill,
+    /// which can be up to a poll interval stale — and then reads "Server is
+    /// offline" about a server that just answered 2xx.
+    func hasLoaded(_ url: String, provider: LLMProvider, visionOnly: Bool = false) -> Bool {
+        modelsByKey[key(url, provider, visionOnly)] != nil
+    }
+
     /// Fetches the model list once. If the key is already cached or
     /// currently fetching, this is a no-op. Used by view `.task(id:)` so
     /// opening multiple cards on the same server doesn't re-fetch.
@@ -76,16 +87,28 @@ final class ModelCatalog {
         await fetch(url: url, provider: provider, visionOnly: visionOnly)
     }
 
-    /// Force re-fetch — wired to the Refresh button. Bypasses the cache
-    /// hit but still coalesces with any in-flight fetch for the same key.
-    func refresh(url: String, provider: LLMProvider, visionOnly: Bool = false) async {
+    /// Force re-fetch — wired to the Refresh button and to the status-bar picker's
+    /// open gesture. Bypasses the cache hit but still coalesces with any in-flight
+    /// fetch for the same key.
+    ///
+    /// Returns `true` only when THIS call completed a fetch that returned a list.
+    /// That is positive proof the server is reachable: `reachabilityProbePath` and
+    /// the model-list endpoint are the same path on both providers, so a returned
+    /// list is a 2xx from the path the status pill probes. A `false` claims nothing
+    /// — the fetch may have failed (401 = reachable but unauthorized; a decode error
+    /// = reachable but mismatched) or coalesced onto someone else's in-flight fetch,
+    /// whose outcome this call did not observe. Callers may only use `true` to turn
+    /// reachability ON, never OFF.
+    @discardableResult
+    func refresh(url: String, provider: LLMProvider, visionOnly: Bool = false) async -> Bool {
         let k = key(url, provider, visionOnly)
-        guard !k.url.isEmpty else { return }
-        if fetchingKeys.contains(k) { return }
-        await fetch(url: url, provider: provider, visionOnly: visionOnly)
+        guard !k.url.isEmpty else { return false }
+        if fetchingKeys.contains(k) { return false }
+        return await fetch(url: url, provider: provider, visionOnly: visionOnly)
     }
 
-    private func fetch(url: String, provider: LLMProvider, visionOnly: Bool) async {
+    @discardableResult
+    private func fetch(url: String, provider: LLMProvider, visionOnly: Bool) async -> Bool {
         let k = key(url, provider, visionOnly)
         fetchingKeys.insert(k)
         errorByKey[k] = nil
@@ -96,8 +119,10 @@ final class ModelCatalog {
             let list = try await clientFactory()
                 .fetchModels(config: config, visionOnly: visionOnly)
             modelsByKey[k] = list
+            return true
         } catch {
             errorByKey[k] = error.localizedDescription
+            return false
         }
     }
 

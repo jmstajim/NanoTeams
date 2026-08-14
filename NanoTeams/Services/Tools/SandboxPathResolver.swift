@@ -1,7 +1,10 @@
 import Foundation
 
+/// No `emptyPath` case, on purpose (wave 32): an empty/whitespace path deliberately
+/// RESOLVES to the work-folder root (`resolveFileURL`'s first line — pinned behavior,
+/// see `BashHandlersTests.testWorkingDirectory_whitespaceOnly_runsInWorkFolderRoot`),
+/// so a "path is empty" error route could never fire.
 nonisolated enum SandboxPathError: LocalizedError {
-    case emptyPath
     case absolutePathNotAllowed(String)
     case parentTraversalNotAllowed(String)
     case outsideSandbox(String)
@@ -9,8 +12,6 @@ nonisolated enum SandboxPathError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .emptyPath:
-            "Path is empty."
         case .absolutePathNotAllowed(let path):
             "Absolute paths are not allowed: \(path). Paths are relative to the work-folder root; use \".\" for the root."
         case .parentTraversalNotAllowed(let path):

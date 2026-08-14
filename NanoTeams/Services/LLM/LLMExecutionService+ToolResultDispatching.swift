@@ -22,10 +22,25 @@ extension LLMExecutionService {
     ///     on failure. The answer ALSO renders as a role-attributed feed bubble,
     ///     but that bubble can be missed (or dropped when empty), so the card
     ///     must be a self-contained record.
-    ///   • Delegation reflects only on FAILURE (success renders in the stacked
-    ///     graph delegation layers; there is no single role's voice to attribute).
+    ///   • Delegation reflects ALWAYS. It used to reflect only on FAILURE, on the
+    ///     grounds that success "renders in the stacked graph delegation layers" —
+    ///     false at exactly the moment it matters: every terminal arm calls
+    ///     `clearDelegationFields` BEFORE returning its envelope, and
+    ///     `GraphPanelView.resolveDelegationLayers()` gates on
+    ///     `activeDelegationChildID != nil`, so those layers disappear the instant the
+    ///     delegation resolves. The real envelope then survived only as a `.tool`
+    ///     message, which `ActivityFeedBuilder` filters out — while that same builder
+    ///     deliberately suppresses the child's own supervisor brief BECAUSE this card is
+    ///     supposed to stand in for it. Net: a finished delegation left no durable
+    ///     human-visible record, and the one card claiming to be that record still read
+    ///     `"status":"pending"`, green, forever.
     ///   • Autovisor reflects ALWAYS (the manager's feed is its only surface).
     /// The LLM tool message is the same single envelope (no double-wrapping).
+    ///
+    /// Returns the RESOLVED `isError`. The synchronous placeholder every deferred handler
+    /// emits is green, so a caller that keeps the placeholder's flag believes a turn whose
+    /// every call failed was productive — which re-arms `maxNonProductiveTurns`, the only
+    /// shape-independent unbounded-loop guard the Autovisor has.
     ///
     /// Durability: the card reflect, the persisted tool message, and the
     /// attribution bubble are committed in ONE atomic `mutateTask`
@@ -44,7 +59,7 @@ extension LLMExecutionService {
         config: LLMConfig,
         networkLogger: NetworkLogger?,
         conversationMessages: inout [ChatMessage]
-    ) async {
+    ) async -> Bool {
         // The single `{"ok":…}` envelope shown to the LLM and (when reflected)
         // the card. `cardJSON == nil` leaves the `pending` placeholder untouched
         // (delegation success → graph layers). Attribution-bearing tools also
@@ -75,14 +90,8 @@ extension LLMExecutionService {
         // surface); delegation reflects only on failure (success → graph layers).
         func reflectEnvelope(_ env: String) {
             llmEnvelope = env
-            let isFailure = envelopeStatus(env) == .failure
-            if Self.isAutovisorSignal(result.signal) {
-                cardJSON = env
-                cardIsError = isFailure
-            } else if isFailure {
-                cardJSON = env
-                cardIsError = true
-            }
+            cardJSON = env
+            cardIsError = envelopeStatus(env) == .failure
         }
 
         switch result.signal {
@@ -237,6 +246,7 @@ extension LLMExecutionService {
             attributionContext: attributionContext,
             bubbleText: bubbleText
         )
+        return cardIsError
     }
 
     /// Commits a collaboration outcome's three feed surfaces — the reflected card
@@ -303,30 +313,61 @@ extension LLMExecutionService {
     // MARK: - Regular Tool Result Dispatch
 
     /// Handles a regular (non-collaboration) tool result.
+    /// Splices the parser's argument-repair note onto the tool result the model reads.
+    ///
+    /// Rides the RESULT rather than a separate `.user` turn on purpose: a turn would grow
+    /// the prompt prefix every time the defect recurs, and the result is already on its
+    /// way to the model. Placed AFTER the tagging switch so it survives both the tagged
+    /// and passthrough paths — `MemoryTagStore` rebuilds some envelopes from scratch, so
+    /// anything spliced before it would be discarded.
+    ///
+    /// Emitted as a JSON member when the result is a JSON object (the normal case) so it
+    /// reads as part of the envelope rather than as loose prose the model might echo back.
+    nonisolated static func appendingRepairNote(_ note: String?, to content: String) -> String {
+        guard let note, !note.isEmpty else { return content }
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("{"), trimmed.hasSuffix("}"),
+              let escaped = ToolCallParsingHelpers.stableJSONString(from: ["format_note": note]),
+              let openingBrace = escaped.firstIndex(of: "{")
+        else {
+            return content + "\nformat_note: " + note
+        }
+        // `{"format_note":"…"}` → `,"format_note":"…"` spliced before the closing brace,
+        // so Foundation owns the escaping of a note that will contain backticks and
+        // whatever key names the model invented.
+        let member = escaped[
+            escaped.index(after: openingBrace)..<escaped.index(before: escaped.endIndex)]
+        let body = trimmed.dropFirst().dropLast()
+        // An empty envelope takes no separator, or the result is `{,"format_note":…}`.
+        let separator = body.allSatisfy(\.isWhitespace) ? "" : ","
+        return "{" + body + separator + member + "}"
+    }
+
     /// Supervisor questions are recorded in `outcome` but do not interrupt processing.
     @discardableResult
     func processRegularToolResult(
         result: ToolExecutionResult,
+        argumentRepairNote: String? = nil,
         stepID: String,
         taskID: Int,
         memoryStore: MemoryTagStore,
-        iterationNumber: Int,
         conversationMessages: inout [ChatMessage],
         outcome: inout ToolResultsOutcome
     ) async -> Bool {
-        let tagResult = memoryStore.processToolResult(result, iteration: iterationNumber)
+        let tagResult = memoryStore.processToolResult(result)
         let contentForConversation: String
         switch tagResult {
         case .passthrough:
             contentForConversation = result.outputJSON
         case .tagged(let content, _):
             contentForConversation = content
-        case .reference(let content):
-            contentForConversation = content
         }
 
         conversationMessages.append(
-            ChatMessage(role: .tool, content: contentForConversation, toolCallID: result.providerID)
+            ChatMessage(
+                role: .tool,
+                content: Self.appendingRepairNote(argumentRepairNote, to: contentForConversation),
+                toolCallID: result.providerID)
         )
         let toolCallContent = """
             [CALL] \(result.toolName)
@@ -343,7 +384,6 @@ extension LLMExecutionService {
             result: result,
             stepID: stepID,
             taskID: taskID,
-            memoryStore: memoryStore,
             conversationMessages: &conversationMessages
         )
         await processCreateArtifactResult(result: result, stepID: stepID, taskID: taskID)
@@ -355,17 +395,31 @@ extension LLMExecutionService {
         }
 
         if case .supervisorQuestion(let q) = result.signal {
-            let trimmed = q.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                if let existing = outcome.supervisorQuestion {
-                    outcome.supervisorQuestion = existing + "\n\n" + trimmed
-                } else {
-                    outcome.supervisorQuestion = trimmed
-                    outcome.supervisorToolCallProviderID = result.providerID
-                }
-                outcome.shouldStopForSupervisor = true
-            }
+            Self.accumulateSupervisorQuestion(q, providerID: result.providerID, into: &outcome)
         }
         return false
+    }
+
+    /// Folds one `ask_supervisor` call into the batch's pending question.
+    ///
+    /// Extracted because it was previously inline here and RE-IMPLEMENTED in
+    /// `SupervisorQuestionMergeTests` — so the suite that guards the merge was exercising a copy,
+    /// and could not have caught the provider-id defect this fix closes.
+    ///
+    /// Empty and whitespace-only questions are dropped rather than merged: the dispatcher would
+    /// otherwise park the step on a blank question that `activeSupervisorQuestions` then has to
+    /// invent a placeholder for.
+    nonisolated static func accumulateSupervisorQuestion(
+        _ question: String, providerID: String?, into outcome: inout ToolResultsOutcome
+    ) {
+        let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if let existing = outcome.supervisorQuestion {
+            outcome.supervisorQuestion = existing + "\n\n" + trimmed
+        } else {
+            outcome.supervisorQuestion = trimmed
+        }
+        if let providerID { outcome.supervisorToolCallProviderIDs.append(providerID) }
+        outcome.shouldStopForSupervisor = true
     }
 }

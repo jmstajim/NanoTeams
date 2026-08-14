@@ -219,7 +219,7 @@ final class ResolveToolSchemasStaleRegistryTests: XCTestCase {
         let managerName = team.nonSupervisorRoles.first?.name ?? "Manager"
         return LLMExecutionService.resolveToolSchemas(
             for: .custom(id: managerName), team: team, allTeams: allTeams,
-            autovisorAllowTeamGeneration: allowGenerated
+            autovisorTeamPolicy: AutovisorTeamPolicy(allowGeneration: allowGenerated)
         )
     }
 
@@ -260,7 +260,7 @@ final class ResolveToolSchemasStaleRegistryTests: XCTestCase {
         for allow in [true, false] {
             let schemas = LLMExecutionService.resolveToolSchemas(
                 for: .custom(id: pm.name), team: faang,
-                autovisorAllowTeamGeneration: allow
+                autovisorTeamPolicy: AutovisorTeamPolicy(allowGeneration: allow)
             )
             XCTAssertFalse(schemas.contains { $0.name == ToolNames.createManagedTask },
                            "a non-Autovisor role never gets create_managed_task (allow=\(allow))")

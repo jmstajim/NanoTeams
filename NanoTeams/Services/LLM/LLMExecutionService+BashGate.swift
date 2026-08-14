@@ -13,15 +13,11 @@ nonisolated enum BashApprovalDecision: Hashable {
 /// advisor (`requestBashJudgeAdvice`) can judge the exact held command under the
 /// cwd the run would use.
 nonisolated struct PendingBashApproval: Hashable {
-    /// `BashPermissionService.decisionKey(for:)` for each held command.
-    let commandKeys: [String]
-    /// The raw commands, in the same order.
+    /// The raw commands, in gate order.
     let commands: [String]
     /// Per-command working directory (parallel to `commands`), captured from the
     /// tool-call args at gate time — the same value the Auto judge would see.
     let workingDirectories: [String?]
-    /// The held command text (advisory display).
-    let question: String
     /// The effective LLM config the gate would judge with (global + role override),
     /// snapshotted so the advisor hits the same judge endpoint/model as the real gate.
     let judgeConfig: LLMConfig
@@ -126,11 +122,14 @@ extension LLMExecutionService {
                     }
                 } else {
                     // Manual mode with no human (autonomous team / Autovisor / headless)
-                    // → deny. Set the bash mode to Auto to let the judge decide unattended.
+                    // → deny. The recourse named here must be one the MODEL can act on:
+                    // it cannot open a Settings pane, so name what the supervisor would
+                    // change, never where they would click. `buildToolErrorGuidance`'s
+                    // `bash_denied` arm appends the don't-retry half, so this stays terse.
                     synthetic[idx] = makeBashDeniedResult(
                         call: call,
-                        reason: "This command needs human approval (\(reason)), but no human is available. "
-                            + "Set the bash mode to Auto in Settings → Bash to let the judge decide unattended.")
+                        reason: "This command needs human approval (\(reason)), but no human is available to review it. "
+                            + "Ask the supervisor to allow unattended command approval, or use a command that needs no review.")
                 }
             }
         }

@@ -69,10 +69,7 @@ final class StreamingPreviewManagerCrossTaskIsolationTests: XCTestCase, @uncheck
         seedLiveStream(taskID: taskA, messageID: msgA, content: "A", thinking: "A thinks")
         seedLiveStream(taskID: taskB, messageID: msgB, content: "B", thinking: "B thinks")
 
-        let committed = sut.commit(stepID: stepID, taskID: taskA)
-
-        // Commit returned task A's preview — not task B's.
-        XCTAssertEqual(committed?.content, "A")
+        sut.commit(stepID: stepID, taskID: taskA)
 
         // Task A's per-step state is gone.
         XCTAssertNil(sut.streamingContent(stepID: stepID, taskID: taskA))

@@ -71,16 +71,40 @@ final class PlaceholderAttachmentEqualityTests: XCTestCase {
         }
     }
 
-    /// `NSCache` hit-path pin: two attachments with the same `(label,
-    /// category)` must share the same underlying `NSImage` instance — that's
-    /// the perf contract that keeps NSTextView's attachment-rendering cost
-    /// down across SwiftUI re-renders. `key` deliberately differs to lock in
-    /// the cache key as `(label, category)` only (NOT `key`-sensitive).
-    func testImageCache_sameLabelCategory_reusesNSImageInstance() {
+    /// The chip cache's key is `(label, category)` and nothing else — two slots naming the same
+    /// placeholder render identical pixels, so `key` must not split them into two cache entries.
+    ///
+    /// This replaces an assertion that two attachments built with the same `(label, category)`
+    /// share one `NSImage` INSTANCE. That asked `NSCache` for a guarantee it does not make:
+    /// eviction is legal at any moment and under a coverage-instrumented parallel run it happens,
+    /// so the test failed intermittently — twice at the cost of a five-minute measurement, and
+    /// never reproducibly in isolation. Instance identity is the cache's business; the key is
+    /// ours, it is the part a refactor can actually break, and it cannot flake.
+    ///
+    /// RED: fold `key` into `imageCacheKey` → the first assertion fails. Drop `category` from it
+    /// → the second does.
+    func testImageCacheKey_isLabelAndCategoryOnly() {
+        XCTAssertEqual(
+            PlaceholderAttachment.imageCacheKey(label: "Same Label", category: "role"),
+            PlaceholderAttachment.imageCacheKey(label: "Same Label", category: "role"),
+            "the key must not depend on the slot's `key` — these two are the same chip")
+        XCTAssertNotEqual(
+            PlaceholderAttachment.imageCacheKey(label: "Same Label", category: "role"),
+            PlaceholderAttachment.imageCacheKey(label: "Same Label", category: "context"),
+            "category picks the chip colour, so it has to split the entry")
+        XCTAssertNotEqual(
+            PlaceholderAttachment.imageCacheKey(label: "A", category: "role"),
+            PlaceholderAttachment.imageCacheKey(label: "B", category: "role"))
+    }
+
+    /// And the key is what `init` actually consults, so the pin above is not about a function
+    /// nobody calls: an attachment's rendered size is a pure function of `(label, category)`.
+    /// Size rather than instance identity — same reason as above.
+    func testAttachmentsSharingLabelAndCategory_renderTheSameChip() {
         let a = PlaceholderAttachment(key: "k1", label: "Same Label", category: "role")
         let b = PlaceholderAttachment(key: "k2", label: "Same Label", category: "role")
-        XCTAssertTrue(a.image === b.image,
-            "Cache hit on (label, category) must reuse the NSImage instance regardless of `key`")
+        XCTAssertEqual(a.image?.size, b.image?.size)
+        XCTAssertEqual(a.bounds, b.bounds)
     }
 
     /// End-to-end regression: re-resolving the same template twice must

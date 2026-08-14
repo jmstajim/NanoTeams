@@ -31,10 +31,18 @@ final class CollaborationToolCallErrorRenderingTests: XCTestCase {
         super.tearDown()
     }
 
-    // MARK: - Happy-path: success envelope leaves placeholder green
+    // MARK: - Happy-path: success envelope stays green AND replaces the placeholder
 
-    /// Sanity: when the handler returns `{"ok": true, ...}`, the placeholder
-    /// `StepToolCall.isError = false` is preserved — no re-update fires.
+    /// When the handler returns `{"ok": true, ...}` the card stays green — and now also carries
+    /// the real envelope instead of the synchronous `{"status":"pending"}` placeholder.
+    ///
+    /// This test previously asserted the opposite for the resultJSON, on the stated grounds that
+    /// "a non-Autovisor (rich-UI) success must leave the placeholder untouched — its real output
+    /// renders in a dedicated UI surface". That surface is `GraphPanelView.resolveDelegationLayers()`,
+    /// which gates on `step.activeDelegationChildID != nil`; every delegation arm that resolves —
+    /// including this cancellation — calls `clearDelegationFields` BEFORE returning its envelope.
+    /// The layers are therefore gone by the time the card is written, and the assertion was
+    /// pinning a card that reported a finished delegation as pending, green, permanently.
     func testAppendCollaborationResult_successEnvelope_leavesIsErrorFalse() async {
         let toolCallID = UUID()
         let stepID = "coding_agent"
@@ -73,8 +81,10 @@ final class CollaborationToolCallErrorRenderingTests: XCTestCase {
         let updatedCall = mockDelegate.taskToMutate?.runs[0].steps[0].toolCalls.first { $0.id == toolCallID }
         XCTAssertEqual(updatedCall?.isError, false,
             "Success envelope must leave the placeholder isError=false untouched.")
-        XCTAssertEqual(updatedCall?.resultJSON, #"{"ok":true,"data":{"status":"pending"}}"#,
-            "A non-Autovisor (rich-UI) success must leave the placeholder resultJSON untouched — its real output renders in a dedicated UI surface. Reflecting here would clobber that card. Guards the isAutovisorSignal scoping of the success-reflect path.")
+        XCTAssertFalse(updatedCall?.resultJSON?.contains("\"status\":\"pending\"") ?? true,
+            "The card is the only durable record of a resolved delegation — the graph layers are torn down by the same path — so it must carry the real envelope, not the placeholder. Got: \(updatedCall?.resultJSON ?? "nil")")
+        XCTAssertEqual(updatedCall?.resultJSON, conversation.first?.content,
+            "the model and the card must see the SAME envelope — no double-wrapping")
     }
 
     // MARK: - Failure-path: ok:false envelope flips isError + outputJSON

@@ -173,6 +173,14 @@ extension LLMExecutionService {
             if let content = readArtifactContent(artifact) {
                 let truncated = String(content.prefix(1500))
                 context += "\n```\n\(truncated)\(content.count > 1500 ? "\n... (truncated)" : "")\n```"
+            } else {
+                // Without this the artifact renders as a bare `[Name]:` followed
+                // immediately by the next one, which the model cannot tell apart
+                // from an artifact that was genuinely submitted empty — so it
+                // reasons about content that does exist but could not be read.
+                // `buildOwnArtifactsContext` has always said so; these two
+                // siblings silently did not.
+                context += " (content not available)"
             }
         }
         return context
@@ -185,6 +193,8 @@ extension LLMExecutionService {
             if let content = readArtifactContent(artifact) {
                 let truncated = String(content.prefix(1500))
                 msg += "\n```\n\(truncated)\(content.count > 1500 ? "\n... (truncated)" : "")\n```"
+            } else {
+                msg += " (content not available)"
             }
         }
         return msg

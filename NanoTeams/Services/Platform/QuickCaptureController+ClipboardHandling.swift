@@ -3,55 +3,60 @@ import SwiftUI
 // MARK: - Clipboard Capture & Attachment Staging
 //
 // Captures the frontmost app's selection (files → attachments, text → clips)
-// via `ClipboardCaptureService` and stages it onto the active draft. Routed to
-// answer-mode vs task-mode fields by the caller (`showPanel(withClip:)`).
+// via `ClipboardCaptureService` and stages it into whichever bucket pair the composer
+// for the resolved mode is bound to (`QuickCaptureMode.composerBindsAnswerBuckets`).
 
 extension QuickCaptureController {
 
-    func captureClipboardContent(mode: QuickCaptureMode, needsAnswerMode: Bool) async {
-        ClipboardCaptureService.requestAccessibilityIfNeeded()
+    /// Captures the frontmost selection and files it into whichever bucket pair the
+    /// composer for `mode` is bound to.
+    ///
+    /// The mode is the only input: both call sites used to derive a `needsAnswerMode` flag
+    /// from it and pass both, so the pair could never disagree in production — while the
+    /// disagreeing pair was the only case a test could construct, which is how the wrong
+    /// routing for chat-mode `.taskWorking` came to be pinned as correct.
+    func captureClipboardContent(mode: QuickCaptureMode) async {
+        selectionCapturer.requestAccessibilityIfNeeded()
         let workFolderRoot = store?.hasRealWorkFolder == true ? store?.workFolderURL : nil
-        let captured = await ClipboardCaptureService.captureSelection(workFolderRoot: workFolderRoot)
+        let captured = await selectionCapturer.captureSelection(workFolderRoot: workFolderRoot)
 
-        if needsAnswerMode, case .supervisorAnswer = mode {
-            stageCapturedContent(captured, to: formState.draftID, answerMode: true)
-        } else {
-            stageCapturedContent(captured, to: formState.draftID, answerMode: false)
+        // Reported BEFORE staging so a staging failure (the more actionable message) can overwrite
+        // it in the single `lastErrorMessage` slot rather than be overwritten by it.
+        if captured.restoreFailed {
+            store?.lastErrorMessage = "Your previous clipboard contents could not be restored "
+                + "after the capture. Re-copy them if you still need them."
         }
+
+        stageCapturedContent(
+            captured,
+            to: formState.draftID,
+            answerMode: mode.composerBindsAnswerBuckets)
     }
 
-    private func stageCapturedContent(
+    /// Files the routed capture into the answer-mode or task-mode bucket.
+    ///
+    /// `internal`, not `private`, so tests can call it: the only production route in is
+    /// `captureClipboardContent`, which simulates a real ⌘C via CGEvent and rewrites the
+    /// pasteboard. Which bucket a capture lands in is silent when wrong — the card appears
+    /// either way, just attached to something the user never meant.
+    func stageCapturedContent(
         _ captured: ClipboardCaptureResult,
         to draftID: UUID,
         answerMode: Bool
     ) {
-        if !captured.fileURLs.isEmpty, let store {
-            var stagedCount = 0
-            for url in captured.fileURLs {
-                if let staged = store.stageAttachment(url: url, draftID: draftID) {
-                    if answerMode {
-                        if !formState.answerAttachments.contains(staged) {
-                            formState.answerAttachments.append(staged)
-                            stagedCount += 1
-                        }
-                    } else {
-                        if !formState.attachments.contains(staged) {
-                            formState.attachments.append(staged)
-                            stagedCount += 1
-                        }
-                    }
-                }
-            }
-            if stagedCount < captured.fileURLs.count {
-                let skipped = captured.fileURLs.count - stagedCount
-                store.lastErrorMessage = "\(skipped) of \(captured.fileURLs.count) files could not be attached."
-            }
-        } else if let text = captured.text, !text.isEmpty {
-            if answerMode {
-                formState.answerClippedTexts.append(text)
-            } else {
-                formState.clippedTexts.append(text)
-            }
+        let outcome = ClipboardStagingPolicy.plan(
+            fileURLs: captured.fileURLs,
+            text: captured.text,
+            existing: answerMode ? formState.answerAttachments : formState.attachments,
+            stage: store.map { store in { store.stageAttachment(url: $0, draftID: draftID) } })
+
+        if answerMode {
+            formState.answerAttachments.append(contentsOf: outcome.staged)
+            if let clip = outcome.clip { formState.answerClippedTexts.append(clip) }
+        } else {
+            formState.attachments.append(contentsOf: outcome.staged)
+            if let clip = outcome.clip { formState.clippedTexts.append(clip) }
         }
+        if let failure = outcome.failureMessage { store?.lastErrorMessage = failure }
     }
 }

@@ -22,6 +22,17 @@ nonisolated struct BashApprovalRequest: Identifiable, Hashable, Sendable {
     let createdAt: Date
 
     var id: String { "\(taskID):\(stepID):\(commandKey)" }
+
+    /// The cwd line the approval card shows — the HUMAN decider must see the same facts as
+    /// the Auto judge (which receives `workingDirectory` in its context). nil and
+    /// whitespace-only both resolve to the work-folder root (`SandboxPathResolver` trims,
+    /// then maps empty → root), so the line is hidden exactly when the directory does not
+    /// change the command's meaning.
+    var displayWorkingDirectory: String? {
+        guard let trimmed = workingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else { return nil }
+        return trimmed
+    }
 }
 
 /// One-shot approval bridge for `bash` — the generic `ApprovalWaiter` specialized to a
@@ -60,10 +71,8 @@ extension LLMExecutionService {
         // Carry the held command so the "Ask AI" advisor (requestBashJudgeAdvice)
         // can judge it under the exact cwd while the human decides.
         pendingBashApprovals[key] = PendingBashApproval(
-            commandKeys: [commandKey],
             commands: [command],
             workingDirectories: [workingDirectory],
-            question: command,
             judgeConfig: judgeConfig,
             createdAt: createdAt)
 

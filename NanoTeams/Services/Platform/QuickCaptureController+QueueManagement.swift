@@ -35,16 +35,23 @@ extension QuickCaptureController {
         }
         let targetRoleID = store.loadedTask(taskID).flatMap(Self.firstRunningStepRoleID(in:))
         let queued = queueChatMessage(
-            text: formState.supervisorTask,
+            text: formState.answerText,
             attachments: formState.answerAttachments,
             clippedTexts: formState.answerClippedTexts,
             taskID: taskID,
             targetRoleID: targetRoleID
         )
         guard queued else { return }
-        formState.supervisorTask = ""
+        formState.answerText = ""
         formState.answerAttachments = []
         formState.answerClippedTexts = []
+        // The queued message now names files under `.nanoteams/staged/<draftID>/`, and it
+        // outlives this composer. Rotate, exactly as `clearTaskDraft()` does on the task
+        // path, so the batch owns that directory and the live composer starts a fresh one
+        // — otherwise the next `cancelDraft` (or a task creation from the same panel)
+        // deletes a directory whose files a pending delivery still depends on, and the
+        // failure surfaces minutes later at finalize time with nothing linking the two.
+        formState.draftID = UUID()
     }
 
     /// The role ID of the first running step in `task`'s latest run, if any.
@@ -103,12 +110,23 @@ extension QuickCaptureController {
         // pause the child engine and surface the message text inside a
         // `paused_by_supervisor` success envelope on the parent role's next
         // iteration. This is the "team is looping, stop it" feedback loop.
+        //
+        // The channel is a single `String` that reaches the role inside a JSON envelope,
+        // and the entry is DESTROYED right after a successful wake — so whatever the
+        // channel cannot carry is lost while the call still reports success. Clips are
+        // text: they ride, composed through the same `AnswerTextBuilder` every other
+        // submission path uses, so the role reads them in the shape its prompt describes.
+        // Files cannot, and finalizing them here would open a second lifecycle over the
+        // same staged files the queue's own drain finalizes — so a message carrying
+        // attachments declines the fast path entirely and stays queued, delivered whole by
+        // the ordinary path. Late, but complete.
         if let role = targetRoleID,
            let store,
+           message.attachments.isEmpty,
            store.notifyDelegationInterrupt(
                parentTaskID: taskID,
                parentRoleID: role,
-               text: text
+               text: AnswerTextBuilder.build(text: text, clips: clippedTexts).answer
            )
         {
             // The interrupt embedded `text` in the paused envelope returned
@@ -185,10 +203,24 @@ extension QuickCaptureController {
                 formState.hasQueuedMessage(for: $0.key)
             }
         }
+        // Every arm below can WAKE a run (`resumeRun` / `startRun`) keyed by a bare
+        // per-folder task id, which is what made the folder-scope leak escalate from "a
+        // message reaches the wrong task" to "opening a folder starts runs nobody asked
+        // for". A second guard here — discard ids the current folder's index does not
+        // contain — was written and then removed: `apply(_:)` already drops the queue on
+        // the folder edge and `removeTask` already drops it on delete, so the guard's only
+        // marginal input is one production callers cannot construct, while it made thirty
+        // routing tests fail on their synthetic ids. The cause is fixed at the edge; a
+        // weaker duplicate downstream is not defence, it is noise.
         for taskID in formState.taskIDsWithQueuedMessages {
             switch store.taskEngineStates[taskID] {
             case .needsSupervisorInput:
-                Task { @MainActor [weak self] in await self?.flushQueuedChatMessage(taskID: taskID) }
+                // Retained in DEBUG ONLY so tests can join the drain rather than poll for a
+                // side effect — see `_testPendingFlushTasks`. Every signal a poll could watch
+                // is produced before the suspension the asserted value is written after.
+                retainFlushTaskForTests(Task { @MainActor [weak self] in
+                    await self?.flushQueuedChatMessage(taskID: taskID)
+                })
             case .done:
                 if Self.isChatModeTask(taskID, store: store) {
                     // Chat-mode `.done` is an ended turn, not a finished pipeline —
@@ -204,8 +236,14 @@ extension QuickCaptureController {
                         chatStartAttemptedMessageIDs[taskID] = nil
                         store.lastInfoMessage = "\(queuedIDs.count) queued message(s) discarded — the chat couldn't be restarted."
                     } else {
+                        // Only the ids NOT already carrying an attempt are being spent by this
+                        // dispatch; `performStartWake` needs to know which, because its
+                        // load-failure arm has to give exactly them back and nothing else.
+                        let newlyStamped = queuedIDs.subtracting(attempted)
                         chatStartAttemptedMessageIDs[taskID] = attempted.union(queuedIDs)
-                        wakeRunForQueuedMessages(taskID: taskID, store: store, mode: .start)
+                        wakeRunForQueuedMessages(
+                            taskID: taskID, store: store, mode: .start,
+                            newlyStampedIDs: newlyStamped)
                     }
                 } else {
                     // A completed non-chat task is reopened via `restartRole`, not by
@@ -283,7 +321,8 @@ extension QuickCaptureController {
     /// 3. **Test seam** — `resumeRunForTesting`/`startRunForTesting` short-circuit
     ///    the `Task` dispatch so unit tests can assert call sequencing synchronously.
     private func wakeRunForQueuedMessages(
-        taskID: Int, store: NTMSOrchestrator, mode: QueueWakeMode = .resume
+        taskID: Int, store: NTMSOrchestrator, mode: QueueWakeMode = .resume,
+        newlyStampedIDs: Set<UUID> = []
     ) {
         if store.loadedTask(taskID)?.closedAt != nil {
             discardQueueForClosedTask(taskID: taskID, store: store)
@@ -313,7 +352,7 @@ extension QuickCaptureController {
             }
             Task { @MainActor [weak self] in
                 defer { self?.pendingResumeForQueueFlush.remove(taskID) }
-                await self?.performStartWake(taskID: taskID)
+                await self?.performStartWake(taskID: taskID, newlyStampedIDs: newlyStampedIDs)
             }
         }
     }
@@ -328,7 +367,17 @@ extension QuickCaptureController {
     /// `loadedTask(taskID)?.closedAt == nil` vacuously true and start a run
     /// against a phantom task; instead surface the error and keep the queue for
     /// a later tick.
-    func performStartWake(taskID: Int) async {
+    ///
+    /// `newlyStampedIDs` is what the dispatching arm spent on THIS attempt. The load-failure arm
+    /// gives back exactly those and nothing else: the stamp map is cumulative
+    /// (`attempted.union(queuedIDs)`), so clearing the whole entry also refunded attempts that
+    /// really did reach `startRun` on an earlier tick — and those attempts are the only thing
+    /// stopping an unconsumable queue from waking a fresh LLM pass on every tick.
+    ///
+    /// No default: a caller that omitted it would silently pick one of the two wrong answers —
+    /// refund everything (the bug) or refund nothing (a message that never got its one attempt
+    /// is discarded as if it had). The set is cheap to state at every site.
+    func performStartWake(taskID: Int, newlyStampedIDs: Set<UUID>) async {
         guard let store else { return }
         await store.ensureTaskLoaded(taskID)
         guard let task = store.loadedTask(taskID) else {
@@ -337,7 +386,10 @@ extension QuickCaptureController {
             // Un-stamp so the next tick genuinely retries; leaving the stamp
             // would discard the queue with a misattributed "chat couldn't be
             // restarted" banner right after promising "kept in queue".
-            chatStartAttemptedMessageIDs[taskID] = nil
+            if let stamped = chatStartAttemptedMessageIDs[taskID] {
+                let kept = stamped.subtracting(newlyStampedIDs)
+                chatStartAttemptedMessageIDs[taskID] = kept.isEmpty ? nil : kept
+            }
             store.lastErrorMessage =
                 "Couldn't load task #\(taskID) to deliver queued message(s) — kept in queue."
             return
@@ -472,6 +524,7 @@ extension QuickCaptureController {
         // tool-result path; LLM attribution is intrinsic.
         var bodies: [String] = []
         var combinedAttachments: [StagedAttachment] = []
+        var failedFiles: [String] = []
         for msg in popped {
             let built = AnswerTextBuilder.build(
                 text: msg.text,
@@ -481,6 +534,7 @@ extension QuickCaptureController {
             )
             bodies.append(built.answer)
             combinedAttachments.append(contentsOf: msg.attachments)
+            failedFiles.append(contentsOf: built.failedFiles)
         }
         let combinedAnswer = bodies.joined(separator: "\n")
 
@@ -490,6 +544,7 @@ extension QuickCaptureController {
         let allAutomated = popped.allSatisfy(\.isFromAutomatedSupervisor)
 
         // answerSupervisorQuestion auto-resumes the run — do NOT call resumeRun separately.
+        let errorsBefore = store.errorSurfaceCount
         let delivered = await store.answerSupervisorQuestion(
             stepID: step.id,
             taskID: taskID,
@@ -497,11 +552,29 @@ extension QuickCaptureController {
             attachments: combinedAttachments,
             isAutoAnswer: allAutomated
         )
+        if delivered, !failedFiles.isEmpty {
+            // Same report the two sibling submit paths (`createTask`, `submitAnswer`) make from
+            // the same builder result. Dropping it meant a file that could not be read as text
+            // was simply absent from the delivered message: the role answers without it, and
+            // nothing on screen says which file went missing — or that one did.
+            //
+            // Only on a delivered batch: a failed delivery re-queues the messages and owns the
+            // single `lastErrorMessage` slot with the more actionable reason, and the embed
+            // failure recurs on the retry anyway.
+            store.lastErrorMessage = "Could not embed \(failedFiles.count) file(s) as text: "
+                + "\(failedFiles.joined(separator: ", ")). They may be binary files."
+        }
         if !delivered {
             // Re-insert at HEAD (not append) so FIFO holds even if new messages
             // were queued during the await.
             formState.prependQueuedMessages(popped, for: taskID)
-            store.lastErrorMessage = (store.lastErrorMessage ?? "Message delivery failed.")
+            // The specific reason comes from THIS call or not at all. Reading the
+            // `lastErrorMessage` slot took whatever an unrelated operation had parked
+            // there and presented it — suffixed with our own "queued message(s) kept"
+            // — as the reason delivery failed; and once a render had consumed the slot,
+            // a real, specific failure degraded to the generic string.
+            let reason = store.errorSurfaced(since: errorsBefore) ?? "Message delivery failed."
+            store.lastErrorMessage = reason
                 + " — \(popped.count) queued message(s) kept; retry after resolving the issue."
         }
     }

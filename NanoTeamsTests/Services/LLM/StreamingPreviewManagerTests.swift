@@ -96,84 +96,47 @@ final class StreamingPreviewManagerTests: XCTestCase {
 
     // MARK: - Commit Tests
 
-    func testCommitReturnsPreview() {
-        let stepID = "test_step"
-        let messageID = UUID()
-
-        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "Test")
-        let committed = manager.commit(stepID: stepID, taskID: 0)
-
-        XCTAssertNotNil(committed)
-        XCTAssertEqual(committed?.content, "Test")
-    }
+    // `commit` returns Void (wave 33): its former `StepMessage?` return had zero
+    // production consumers, and the one candidate (`NTMSOrchestrator.commitStreaming`)
+    // persists the SERVICE's cleaned content, never this manager's raw UI buffer —
+    // so the value was wrong for the only place that could read it. The whitespace-
+    // only "no orphan bubble" suppression the return advertised is owned and pinned
+    // at `ActivityFeedBuilderTests` (content-less, thinking-less turn → suppressed).
+    // What remains observable here is STATE: the preview is gone, per-step transient
+    // flags are gone, and `structuralVersion` bumps only when a preview existed.
 
     func testCommitRemovesPreview() {
         let stepID = "test_step"
         let messageID = UUID()
 
         manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "Test")
-        _ = manager.commit(stepID: stepID, taskID: 0)
+        manager.commit(stepID: stepID, taskID: 0)
 
         XCTAssertNil(manager.preview(stepID: stepID, taskID: 0))
     }
 
-    func testCommitReturnsNilForNonexistentStep() {
-        let committed = manager.commit(stepID: "test_step", taskID: 0)
+    /// A commit with no preview is a safe no-op for the feed's rebuild trigger:
+    /// no structural change happened, so `structuralVersion` must not move —
+    /// a phantom bump would re-fingerprint the timeline on every out-of-band
+    /// commit (cancellation paths call commit unconditionally).
+    func testCommit_nonexistentStep_doesNotBumpStructuralVersion() {
+        let before = manager.structuralVersion
 
-        XCTAssertNil(committed)
+        manager.commit(stepID: "test_step", taskID: 0)
+
+        XCTAssertEqual(manager.structuralVersion, before)
     }
 
-    func testCommitReturnsNilForEmptyContent() {
+    /// The inverse: committing a LIVE preview is a structural change (a row
+    /// leaves the timeline), so the version must advance exactly once.
+    func testCommit_livePreview_bumpsStructuralVersionOnce() {
         let stepID = "test_step"
-        let messageID = UUID()
+        manager.append(stepID: stepID, taskID: 0, messageID: UUID(), role: .softwareEngineer, content: "Test")
+        let before = manager.structuralVersion
 
-        // Append and then append only whitespace
-        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "   ")
-        // The initial append of whitespace-only should still create a preview
-        // but commit should return nil for whitespace-only content
+        manager.commit(stepID: stepID, taskID: 0)
 
-        // First, let's create a valid preview then clear it and try again
-        manager.clear(stepID: stepID, taskID: 0)
-
-        // Try to commit a non-existent preview
-        let committed = manager.commit(stepID: stepID, taskID: 0)
-        XCTAssertNil(committed)
-    }
-
-    func testCommitReturnsNilForWhitespaceOnlyContent() {
-        let stepID = "test_step"
-        let messageID = UUID()
-
-        // Manually create a preview with whitespace content
-        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "a")
-        // Clear and recreate with whitespace
-        manager.clear(stepID: stepID, taskID: 0)
-        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "   \n\t  ")
-
-        let committed = manager.commit(stepID: stepID, taskID: 0)
-
-        // Should return nil because content is only whitespace
-        XCTAssertNil(committed)
-    }
-
-    func testCommitPreservesRole() {
-        let stepID = "test_step"
-        let messageID = UUID()
-
-        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .uxDesigner, content: "Design")
-        let committed = manager.commit(stepID: stepID, taskID: 0)
-
-        XCTAssertEqual(committed?.role, .uxDesigner)
-    }
-
-    func testCommitPreservesMessageID() {
-        let stepID = "test_step"
-        let messageID = UUID()
-
-        manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "Test")
-        let committed = manager.commit(stepID: stepID, taskID: 0)
-
-        XCTAssertEqual(committed?.id, messageID)
+        XCTAssertEqual(manager.structuralVersion, before + 1)
     }
 
     // MARK: - Clear Tests
@@ -281,7 +244,7 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let messageID = UUID()
 
         manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "Test")
-        _ = manager.commit(stepID: stepID, taskID: 0)
+        manager.commit(stepID: stepID, taskID: 0)
 
         XCTAssertFalse(manager.hasPreview(stepID: stepID, taskID: 0))
     }
@@ -837,10 +800,8 @@ final class StreamingPreviewManagerTests: XCTestCase {
         manager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "the implementation.")
         XCTAssertEqual(manager.streamingContent(stepID: stepID, taskID: 0), "Here is the implementation.")
 
-        // Phase 5: Commit (streaming ends)
-        let committed = manager.commit(stepID: stepID, taskID: 0)
-        XCTAssertNotNil(committed)
-        XCTAssertEqual(committed?.content, "Here is the implementation.")
+        // Phase 5: Commit (streaming ends) — everything transient is gone
+        manager.commit(stepID: stepID, taskID: 0)
         XCTAssertFalse(manager.isStreaming(messageID: messageID))
         XCTAssertNil(manager.streamingContent(stepID: stepID, taskID: 0))
         XCTAssertNil(manager.streamingThinking(stepID: stepID, taskID: 0))

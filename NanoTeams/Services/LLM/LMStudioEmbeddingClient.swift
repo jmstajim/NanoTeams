@@ -129,7 +129,16 @@ nonisolated struct LMStudioEmbeddingClient: EmbeddingClient {
     // MARK: - Encoding
 
     /// Builds the endpoint URL for a given base (e.g. `http://127.0.0.1:1234`)
-    /// by appending `v1/embeddings`. Falls back to `throw` on a malformed base.
+    /// by appending `v1/embeddings`.
+    ///
+    /// The `guard` below is defence in depth and is **currently unreachable**: every door into
+    /// `EmbeddingConfig` already proves the base parses — the memberwise init via
+    /// `precondition(URL(string:) != nil)`, and `init?(validating:)`, which is the one untrusted
+    /// input (settings fields, persisted overrides) actually comes through, by returning nil.
+    /// So this is NOT where a user's malformed URL is handled; that is `init?(validating:)`, and
+    /// a reader chasing a bad-endpoint report should start there. Kept because it costs one
+    /// branch and is the right shape should a third init ever land without the precondition.
+    /// Pinned by `ClientSeamTailCoverageTests`.
     private func makeEndpointURL(config: EmbeddingConfig) throws -> URL {
         guard let base = URL(string: config.baseURLString) else {
             throw EmbeddingClientError.transportError(

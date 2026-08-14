@@ -53,6 +53,20 @@ nonisolated enum StatusRecoveryService {
         for runIndex in task.runs.indices {
             var runChanged = false
 
+            // Phantom role entries for the synthetic generation step. `restartRole` writes
+            // `roleStatuses["team_generation_<uuid>"]` for an id that no roster contains,
+            // so removing them is unconditionally correct — and REQUIRED before the role
+            // pass below, which would otherwise reconcile the phantom against the step and
+            // settle it, after which `resumeRun`'s failed-step revival would call
+            // `runStep` on a step belonging to no team.
+            let phantomRoleIDs = task.runs[runIndex].roleStatuses.keys.filter {
+                $0.hasPrefix(StepExecution.teamGenerationIDPrefix)
+            }
+            for roleID in phantomRoleIDs {
+                task.runs[runIndex].roleStatuses.removeValue(forKey: roleID)
+                runChanged = true
+            }
+
             // Recover stale step statuses. Runs FIRST so the role pass below reads the
             // rewritten values — a step just parked to `.paused` is non-terminal, which
             // is what keeps its `.working` role on the demote path.
@@ -63,6 +77,39 @@ nonisolated enum StatusRecoveryService {
                     task.runs[runIndex].steps[stepIndex].updatedAt = MonotonicClock.shared.now()
                     runChanged = true
                     parked = true
+                    continue
+                }
+                // A DESTROYED team-generation record. `runTeamGeneration` drives its
+                // synthetic step `.running` → `.done` / `.failed` / `.paused`, and
+                // `retryTeamGeneration` deletes rather than resets — so `.pending` there
+                // has exactly one writer, `StepExecution.reset()` via `restartRole`. It
+                // means the record was destroyed and nothing will ever advance it, while
+                // `Run.derivedTaskStatus()` reads it as work still to come and pins the
+                // task at `.running` forever: invisible to the Autovisor's triage, which
+                // has no `running` bullet.
+                //
+                // Park it like any other interrupted work rather than failing it.
+                // `resumeRun` re-enters generation for a task that still needs one, so
+                // `.paused` is TRUE here and both remedies the manager is told about
+                // (`control_task resume`, the pane's Retry) do the same thing. `.failed`
+                // would instead hide the toolbar control entirely
+                // (`TeamBoardRunControl.select` returns nil for it), split this shape from
+                // the cancelled/parked one that is already `.paused`, and steer the
+                // manager to a bullet that offers `control_task delete`. A retry that
+                // fails again writes `.failed` on its own.
+                //
+                // With a team already adopted there is nothing left to generate, so the
+                // record settles `.done` — otherwise `allDone` can never be true and the
+                // task never reaches Review.
+                if status == .pending, task.runs[runIndex].steps[stepIndex].isTeamGenerationStep {
+                    task.runs[runIndex].steps[stepIndex].status =
+                        task.generatedTeam == nil ? .paused : .done
+                    task.runs[runIndex].steps[stepIndex].completedAt = MonotonicClock.shared.now()
+                    task.runs[runIndex].steps[stepIndex].updatedAt = MonotonicClock.shared.now()
+                    runChanged = true
+                    // Deliberately NOT `parked`: the latch means "a launch found work
+                    // mid-flight", and nothing was interrupted here. The step's own
+                    // `.paused` already drives the derived status.
                 }
             }
 

@@ -1,8 +1,10 @@
 import Foundation
 
+/// No `missingSecurityAccess` case, on purpose (wave 32): security-scoped folder access is
+/// owned by `FolderAccessManager`, which surfaces its own failures — the repository never
+/// had a path that could throw it.
 enum NTMSRepositoryError: LocalizedError {
     case invalidProjectFolder(URL)
-    case missingSecurityAccess(URL)
     case taskNotFound(Int)
     case unableToEncodeReport
     case unableToWriteReport(URL, underlying: Error)
@@ -11,8 +13,6 @@ enum NTMSRepositoryError: LocalizedError {
         switch self {
         case .invalidProjectFolder(let url):
             "Selected folder is not accessible: \(url.path)"
-        case .missingSecurityAccess(let url):
-            "No permission to access the selected folder: \(url.path)"
         case .taskNotFound(let id):
             "Task not found: \(id)"
         case .unableToEncodeReport:
@@ -51,8 +51,12 @@ nonisolated struct NTMSRepository: WorkFolderRepository, TaskRepository, ToolRep
             default: TasksIndex()
         )
 
+        // `inout`: step 2c heals the vacuous chat mode a Generated-Team task inherited
+        // from the placeholder, in `task.json` AND in its index row. The active task is
+        // read BELOW this line, so it lands in memory already healed and the
+        // `toSummary()` reconciliation a few lines down no-ops.
         let bundledUpdate = try migrateIfNeeded(
-            teamsFile: &teamsFile, state: &state, tasksIndex: tasksIndex, paths: paths
+            teamsFile: &teamsFile, state: &state, tasksIndex: &tasksIndex, paths: paths
         )
 
         let toolDefinitions = try loadToolDefinitions(paths: paths)

@@ -85,10 +85,12 @@ extension LLMExecutionService {
                             call: call, reason: "You declined to approve this action.")
                     }
                 } else {
+                    // Twin of the `bash` gate's no-human arm — same rule: name a recourse
+                    // the MODEL can act on, never a Settings pane it cannot open.
                     synthetic[idx] = makeComputerUseDeniedResult(
                         call: call,
-                        reason: "This action needs human approval (\(reason)), but no human is available. "
-                            + "Set Computer Use to Auto in Settings to let the judge decide unattended.")
+                        reason: "This action needs human approval (\(reason)), but no human is available to review it. "
+                            + "Ask the supervisor to allow unattended computer-use approval.")
                 }
             }
         }
@@ -234,6 +236,19 @@ extension LLMExecutionService {
 
     // MARK: - Parsing
 
+    /// String-valued computer-use arguments that describe WHERE an action goes,
+    /// never WHAT is typed.
+    ///
+    /// `resolveContentString` exists for the file tools and ends in a "the one
+    /// remaining String argument must be the content" fallback; its
+    /// `nonContentKeys` list therefore knows about `path`/`query`/`patch` and
+    /// nothing about this feature. Passing these in keeps that fallback from
+    /// mistaking a routing argument for text to type. Numeric keys (`x`, `y`,
+    /// `dx`, `dy`) need no entry — the fallback only considers `String` values.
+    nonisolated static let computerUseStructuralKeys: Set<String> = [
+        "target", "window_title", "keys", "key", "button", "double",
+    ]
+
     func parseComputerUseAction(name: String, argsJSON: String) -> ComputerUseAction? {
         let canonical = ToolRegistry.resolveToolName(name)
         let dict: [String: Any] = {
@@ -247,6 +262,15 @@ extension LLMExecutionService {
             ComputerUseAction.normalizedTargetSpec(optionalString(d, "target"))
         }
 
+        /// `optionalString` is a bare `as? String`, so an EMPTY value is non-nil
+        /// and short-circuits `??` — a present-but-blank `keys` would swallow a
+        /// perfectly good `key`. The `screen_capture` arm below already guards
+        /// this way; these helpers just stop the two spellings from diverging.
+        func nonEmpty(_ s: String?) -> String? {
+            guard let s, !s.isEmpty else { return nil }
+            return s
+        }
+
         switch canonical {
         case ToolNames.screenCapture:
             let t = optionalString(dict, "target").flatMap { $0.isEmpty ? nil : $0 } ?? "screen"
@@ -256,11 +280,22 @@ extension LLMExecutionService {
             let button = ComputerUseAction.normalizedButton(optionalString(dict, "button"))
             return .click(x: x, y: y, button: button, double: optionalBool(dict, "double"), target: target(dict))
         case ToolNames.uiType:
-            let text = optionalString(dict, "text") ?? resolveContentString(dict) ?? ""
+            // `resolveContentString`'s last resort is "the single remaining
+            // String argument", and `nonContentKeys` — written for the file
+            // tools — does not list the computer-use keys. So `ui_type` with a
+            // target and no text resolved its text to the TARGET and typed the
+            // app's own name into it. Excluding the structural keys makes that
+            // call return nil (rejected) instead of silently typing something
+            // the model never asked for.
+            let text = nonEmpty(optionalString(dict, "text"))
+                ?? resolveContentString(dict, excludeKeys: Self.computerUseStructuralKeys)
+                ?? ""
             guard !text.isEmpty else { return nil }
             return .typeText(text: text, target: target(dict))
         case ToolNames.uiKey:
-            let keys = optionalString(dict, "keys") ?? optionalString(dict, "key") ?? ""
+            let keys = nonEmpty(optionalString(dict, "keys"))
+                ?? nonEmpty(optionalString(dict, "key"))
+                ?? ""
             guard !keys.isEmpty else { return nil }
             return .pressKey(keys: keys, target: target(dict))
         case ToolNames.uiScroll:

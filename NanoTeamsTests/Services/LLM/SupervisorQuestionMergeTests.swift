@@ -8,23 +8,16 @@ final class SupervisorQuestionMergeTests: XCTestCase {
 
     // MARK: - Helpers
 
-    /// Simulates the merge logic from processRegularToolResult by applying
-    /// a sequence of ToolSignal.supervisorQuestion signals to a ToolResultsOutcome.
+    /// Drives the REAL merge. This helper used to re-implement it line for line, which meant this
+    /// suite guarded a copy: the production rule could change — and did, wrongly — without a single
+    /// assertion here moving. The rule now lives in one place and both callers use it.
     private func applySignals(
         _ signals: [(question: String, providerID: String)]
     ) -> LLMExecutionService.ToolResultsOutcome {
         var outcome = LLMExecutionService.ToolResultsOutcome()
         for signal in signals {
-            let trimmed = signal.question.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                if let existing = outcome.supervisorQuestion {
-                    outcome.supervisorQuestion = existing + "\n\n" + trimmed
-                } else {
-                    outcome.supervisorQuestion = trimmed
-                    outcome.supervisorToolCallProviderID = signal.providerID
-                }
-                outcome.shouldStopForSupervisor = true
-            }
+            LLMExecutionService.accumulateSupervisorQuestion(
+                signal.question, providerID: signal.providerID, into: &outcome)
         }
         return outcome
     }
@@ -35,7 +28,7 @@ final class SupervisorQuestionMergeTests: XCTestCase {
         let outcome = applySignals([("What color?", "tc-1")])
 
         XCTAssertEqual(outcome.supervisorQuestion, "What color?")
-        XCTAssertEqual(outcome.supervisorToolCallProviderID, "tc-1")
+        XCTAssertEqual(outcome.supervisorToolCallProviderIDs.first, "tc-1")
         XCTAssertTrue(outcome.shouldStopForSupervisor)
     }
 
@@ -70,7 +63,7 @@ final class SupervisorQuestionMergeTests: XCTestCase {
         ])
 
         XCTAssertEqual(
-            outcome.supervisorToolCallProviderID, "tc-first",
+            outcome.supervisorToolCallProviderIDs.first, "tc-first",
             "Provider ID should track the first valid question, not the last")
     }
 
@@ -81,7 +74,7 @@ final class SupervisorQuestionMergeTests: XCTestCase {
         ])
 
         XCTAssertEqual(
-            outcome.supervisorToolCallProviderID, "tc-real",
+            outcome.supervisorToolCallProviderIDs.first, "tc-real",
             "Provider ID should skip empty questions and track the first valid one")
     }
 
@@ -92,7 +85,7 @@ final class SupervisorQuestionMergeTests: XCTestCase {
 
         XCTAssertNil(outcome.supervisorQuestion)
         XCTAssertFalse(outcome.shouldStopForSupervisor)
-        XCTAssertNil(outcome.supervisorToolCallProviderID)
+        XCTAssertTrue(outcome.supervisorToolCallProviderIDs.isEmpty)
     }
 
     func testWhitespaceOnlyQuestion_notStored() {
@@ -112,7 +105,7 @@ final class SupervisorQuestionMergeTests: XCTestCase {
         XCTAssertNil(outcome.supervisorQuestion)
         XCTAssertFalse(outcome.shouldStopForSupervisor,
                        "shouldStopForSupervisor must NOT be set when all questions are empty")
-        XCTAssertNil(outcome.supervisorToolCallProviderID)
+        XCTAssertTrue(outcome.supervisorToolCallProviderIDs.isEmpty)
     }
 
     func testMixedEmptyAndValid_onlyValidMerged() {
@@ -125,7 +118,7 @@ final class SupervisorQuestionMergeTests: XCTestCase {
 
         XCTAssertEqual(outcome.supervisorQuestion, "Real question\n\nAnother question")
         XCTAssertTrue(outcome.shouldStopForSupervisor)
-        XCTAssertEqual(outcome.supervisorToolCallProviderID, "tc-real")
+        XCTAssertEqual(outcome.supervisorToolCallProviderIDs.first, "tc-real")
     }
 
     // MARK: - Whitespace trimming
@@ -158,8 +151,42 @@ final class SupervisorQuestionMergeTests: XCTestCase {
 
         XCTAssertTrue(outcome.supervisorQuestion!.contains("directory"))
         XCTAssertTrue(outcome.supervisorQuestion!.contains("assistant"))
-        XCTAssertEqual(outcome.supervisorToolCallProviderID, "tc-1",
+        XCTAssertEqual(outcome.supervisorToolCallProviderIDs.first, "tc-1",
                        "Provider ID should be from the first question")
+    }
+
+    // MARK: - Every call is recorded, not just the first
+
+    /// One answer resolves the merged question, but each call appended its own
+    /// `{"status":"pending"}` tool result, and `handleSupervisorAutoAnswer` can only rewrite the
+    /// ids it was given. Recording just the first left every other call pending on the wire for
+    /// the rest of the step — resent each iteration, inviting the model to re-ask.
+    ///
+    /// RED: keep a single `String?` and assign it only when `supervisorQuestion` was nil (the
+    /// pre-fix merge) → only `tc-1` is recorded and `tc-2`'s result is never resolved.
+    func testEveryValidQuestionsProviderID_isRecordedInOrder() {
+        let outcome = applySignals([
+            ("What color?", "tc-1"),
+            ("What size?", "tc-2"),
+            ("", "tc-empty"),
+            ("What shape?", "tc-3"),
+        ])
+
+        XCTAssertEqual(outcome.supervisorToolCallProviderIDs, ["tc-1", "tc-2", "tc-3"],
+                       "every call whose question survived the merge must be resolvable")
+    }
+
+    /// A Harmony-parsed call can carry no provider id at all; it must not put an empty string into
+    /// the list, which would match nothing and mask a real id's absence.
+    ///
+    /// RED: append `providerID ?? ""` → the list gains a phantom entry that never resolves.
+    func testMissingProviderID_isNotRecorded() {
+        var outcome = LLMExecutionService.ToolResultsOutcome()
+        LLMExecutionService.accumulateSupervisorQuestion("Q", providerID: nil, into: &outcome)
+
+        XCTAssertEqual(outcome.supervisorQuestion, "Q", "the question still counts")
+        XCTAssertTrue(outcome.supervisorToolCallProviderIDs.isEmpty)
+        XCTAssertTrue(outcome.shouldStopForSupervisor)
     }
 
     // MARK: - Default outcome state
@@ -168,7 +195,7 @@ final class SupervisorQuestionMergeTests: XCTestCase {
         let outcome = LLMExecutionService.ToolResultsOutcome()
 
         XCTAssertNil(outcome.supervisorQuestion)
-        XCTAssertNil(outcome.supervisorToolCallProviderID)
+        XCTAssertTrue(outcome.supervisorToolCallProviderIDs.isEmpty)
         XCTAssertFalse(outcome.shouldStopForSupervisor)
     }
 }

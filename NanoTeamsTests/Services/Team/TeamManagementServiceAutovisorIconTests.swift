@@ -65,6 +65,29 @@ final class TeamManagementServiceAutovisorIconTests: XCTestCase {
                       "the Autovisor role's default toolset includes analyze_image")
     }
 
+    /// A FRESH manager gets the runners from the factory, and the open-time strip —
+    /// which is what used to remove them — must now leave them alone. Both halves in
+    /// one test, because either one alone passes with the feature half-wired.
+    func testFactory_managerToolset_includesXcodeRunners_andSyncKeepsThem() {
+        var teams = [TeamTemplateFactory.autovisor()]
+        let runners = [ToolNames.runXcodebuild, ToolNames.runXcodetests]
+
+        let seeded = Set(teams[0].roles
+            .first { $0.systemRoleID == AutovisorConstants.managerRoleSystemID }?.toolIDs ?? [])
+        for tool in runners {
+            XCTAssertTrue(seeded.contains(tool), "factory must seed \(tool)")
+        }
+
+        _ = TeamManagementService.syncAutovisorTeamToTemplate(teams: &teams)
+
+        let afterSync = Set(teams[0].roles
+            .first { $0.systemRoleID == AutovisorConstants.managerRoleSystemID }?.toolIDs ?? [])
+        for tool in runners {
+            XCTAssertTrue(afterSync.contains(tool),
+                          "\(tool) is allowed-optional now — the out-of-set strip must not take it")
+        }
+    }
+
     func testSync_unionEnforcesMissingMandatoryTool() {
         var team = TeamTemplateFactory.autovisor()
         // Simulate a team persisted by an older build missing a mandatory management tool.
@@ -172,11 +195,18 @@ final class TeamManagementServiceAutovisorIconTests: XCTestCase {
     }
 
     /// The strip is GENERAL — it removes any tool outside the allowed set, not only file/git
-    /// write. delegate_to_team and run_xcodebuild don't apply to the manager (it IS the top
-    /// Supervisor and has no build step), so a manager that somehow carried them must be pruned.
-    func testSync_stripsDisallowedNonWriteTools_delegationAndXcode() {
+    /// write. delegate_to_team and create_team don't apply to the manager (it IS the top
+    /// Supervisor, and it commissions work through `create_managed_task`), so a manager that
+    /// somehow carried them must be pruned.
+    ///
+    /// Previously this planted `run_xcodebuild`, on the rationale that the manager "has no
+    /// build step". That rationale is retired: the runners are now allowed-optional, because
+    /// verifying whether the repo compiles is triage, not implementation. A tool that is
+    /// genuinely out-of-set had to take its place, or the test would have asserted the strip
+    /// removes something the strip is now required to keep.
+    func testSync_stripsDisallowedNonWriteTools_delegationAndTeamCreation() {
         var team = TeamTemplateFactory.autovisor()
-        let disallowed = [ToolNames.delegateToTeam, ToolNames.runXcodebuild]
+        let disallowed = [ToolNames.delegateToTeam, ToolNames.createTeam]
         if let idx = team.roles.firstIndex(where: { $0.systemRoleID == AutovisorConstants.managerRoleSystemID }) {
             team.roles[idx].toolIDs.append(contentsOf: disallowed)
         }

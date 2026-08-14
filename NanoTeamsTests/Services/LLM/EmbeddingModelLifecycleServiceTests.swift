@@ -551,7 +551,26 @@ final class RecordingLLMClient: LLMClient, @unchecked Sendable {
         case listLoadedInstances(baseURL: String)
     }
 
-    var calls: [Call] = []
+    /// Every mutable field below is guarded by one lock, and every accessor keeps its original
+    /// name and type so no call site changes.
+    ///
+    /// The double is `@unchecked Sendable`, and one test — the ensurer's park-on-a-pending-unload
+    /// case — drives it from TWO concurrent tasks by construction: a frozen `reclaim` inside
+    /// `unloadHold`, and an `ensureLoaded` that lists and then loads while the first is held. Two
+    /// unsynchronised `calls.append`s on a Swift `Array` is memory corruption, and it presented
+    /// exactly as it should have: an intermittent failure with NO assertion message and no
+    /// diagnostic file (the test's own failure paths never ran), only under coverage
+    /// instrumentation, never reproducible in isolation — 2 of 3 measured runs, one per wave.
+    ///
+    /// `unloadHold` is awaited OUTSIDE the lock: awaiting under `NSLock` is what Swift 6 forbids
+    /// in async contexts, and holding it across the freeze would serialize the very interleaving
+    /// the test exists to produce.
+    private let lock = NSLock()
+    private var _calls: [Call] = []
+    var calls: [Call] {
+        get { lock.withLock { _calls } }
+        set { lock.withLock { _calls = newValue } }
+    }
 
     /// Filtered view of `calls` excluding `.listLoadedInstances`. Useful for
     /// orchestrator-scenario tests that only care about the user-visible
@@ -567,7 +586,11 @@ final class RecordingLLMClient: LLMClient, @unchecked Sendable {
 
     /// FIFO queue of instance_ids to return from `loadModel`. If empty, returns
     /// a synthetic id derived from the model name.
-    var loadResults: [String] = []
+    private var _loadResults: [String] = []
+    var loadResults: [String] {
+        get { lock.withLock { _loadResults } }
+        set { lock.withLock { _loadResults = newValue } }
+    }
     var loadError: Error?
     var unloadError: Error?
 
@@ -582,7 +605,11 @@ final class RecordingLLMClient: LLMClient, @unchecked Sendable {
 
     /// Server-side loaded instances visible to `listLoadedInstances`. Default
     /// empty so existing tests get the "fresh server" behavior.
-    var listLoadedInstancesResults: [LoadedModelInstance] = []
+    private var _listLoadedInstancesResults: [LoadedModelInstance] = []
+    var listLoadedInstancesResults: [LoadedModelInstance] {
+        get { lock.withLock { _listLoadedInstancesResults } }
+        set { lock.withLock { _listLoadedInstancesResults = newValue } }
+    }
     var listLoadedInstancesError: Error?
 
     // Unused chat surface — protocol requirements with default-noop bodies.
@@ -600,27 +627,31 @@ final class RecordingLLMClient: LLMClient, @unchecked Sendable {
     func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
 
     func loadModel(modelName: String, baseURLString: String) async throws -> String {
-        calls.append(.load(model: modelName, baseURL: baseURLString))
+        lock.withLock { _calls.append(.load(model: modelName, baseURL: baseURLString)) }
         if let loadDelay { try? await Task.sleep(for: loadDelay) }
         if let loadError { throw loadError }
-        if !loadResults.isEmpty { return loadResults.removeFirst() }
+        // Test-and-pop is ONE critical section: two concurrent loads either take distinct queued
+        // ids or fall through to the synthetic one, never both pop the same element.
+        if let queued = lock.withLock({ _loadResults.isEmpty ? nil : _loadResults.removeFirst() }) {
+            return queued
+        }
         return "instance-for-\(modelName)"
     }
 
     func unloadModel(instanceID: String, baseURLString: String) async throws {
-        calls.append(.unload(instanceID: instanceID, baseURL: baseURLString))
-        if let unloadHold { await unloadHold() }
+        lock.withLock { _calls.append(.unload(instanceID: instanceID, baseURL: baseURLString)) }
+        if let unloadHold { await unloadHold() }   // outside the lock, deliberately
         if let unloadError { throw unloadError }
         // Model the server: a successful unload removes the instance from the
         // listing. Without this the fake keeps reporting it forever, so
         // `ChatModelEnsurer.reclaim`'s post-unload settle burns its whole
         // budget on every reclaim (153s across one suite).
-        listLoadedInstancesResults.removeAll { $0.instanceID == instanceID }
+        lock.withLock { _listLoadedInstancesResults.removeAll { $0.instanceID == instanceID } }
     }
 
     func listLoadedInstances(baseURLString: String) async throws -> [LoadedModelInstance] {
-        calls.append(.listLoadedInstances(baseURL: baseURLString))
+        lock.withLock { _calls.append(.listLoadedInstances(baseURL: baseURLString)) }
         if let listLoadedInstancesError { throw listLoadedInstancesError }
-        return listLoadedInstancesResults
+        return lock.withLock { _listLoadedInstancesResults }
     }
 }

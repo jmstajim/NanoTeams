@@ -81,12 +81,18 @@ final class StepLifecyclePersistPairingTests: XCTestCase {
     /// Guards the pin itself: if `runStep` is refactored so these calls move behind a helper,
     /// both loops above would scan zero lines and pass vacuously. Asserting a floor makes
     /// that refactor fail here, where the invariant is documented, rather than silently.
+    ///
+    /// The floor moved 9 → 8 when the `.needsAcceptance` arm was deleted. That arm was verified
+    /// dead — `LLMStepStop.needsAcceptance` had zero producers in production and in tests, and the
+    /// behaviour it named is served by `finishStepGraceful`'s direct call to
+    /// `completeStepNeedsAcceptance`. Lowering this number is therefore a claim that an arm went
+    /// away legitimately; make that claim in the diff, with the grep that supports it.
     func testThePinIsNotVacuous() throws {
         let lines = try lifecycleSource()
         let transcripts = lines.filter { $0.contains("persistWireTranscript(") }.count
         XCTAssertGreaterThanOrEqual(
-            transcripts, 9,
-            "runStep is expected to have at least 9 terminal/suspend arms, each persisting "
+            transcripts, 8,
+            "runStep is expected to have at least 8 terminal/suspend arms, each persisting "
                 + "the transcript. Far fewer means the calls moved behind a helper and this "
                 + "pin no longer sees them — re-point it at the new seam rather than deleting it.")
     }

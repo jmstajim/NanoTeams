@@ -46,6 +46,7 @@ final class SearchIndexCoordinatorTests: XCTestCase {
             internalDir: internalDir,
             embeddingClient: RecordingEmbedClient(),
             fileManager: fm,
+            makeWatcher: FakeWatcherFactory.inert,
             watcherDebounce: 0.05
         )
     }
@@ -251,6 +252,7 @@ final class SearchIndexCoordinatorTests: XCTestCase {
             },
             embeddingClient: client,
             fileManager: fm,
+            makeWatcher: FakeWatcherFactory.inert,
             watcherDebounce: 0.05
         )
     }
@@ -387,6 +389,40 @@ final class SearchIndexCoordinatorTests: XCTestCase {
             "Concurrent rebuilds must not double-embed — serializer + smart-diff")
         XCTAssertFalse(c.isBuildingVectorIndex,
             "Both builds must have finished cleanly")
+        await c.stop()
+    }
+
+    /// `rebuildVectorIndexFull` is the overflow-menu "re-embed everything" action, and the
+    /// ONLY thing separating it from the button next to it is `force: true`. Its whole reason
+    /// to exist is the case the smart diff cannot see — the vocabulary is unchanged but the
+    /// EMBEDDINGS are stale (the user switched embedding models, or suspects drift). A
+    /// forgotten `force` makes it a silent no-op that looks like it worked.
+    ///
+    /// RED: change `runVectorBuild(force: true)` to `force: false` → the second build makes
+    /// zero embed calls and this fails, while the sibling test above still passes.
+    func testRebuildVectorIndexFull_reEmbedsEvenWhenTheVocabIsUnchanged() async throws {
+        try write("A.swift", content: "class ScrollView {}")
+        let client = RecordingEmbedClient()
+        let c = makeCoordinatorWithMockEmbedder(client)
+        await c.start()
+        await waitUntilVectorReady(c)
+        let warmCalls = client.callCount
+        XCTAssertGreaterThan(warmCalls, 0, "premise: the first build must have embedded something")
+
+        // Premise: the smart-diff path is a genuine no-op here, so any embedding the FULL
+        // rebuild does is attributable to `force` and not to a changed vocabulary.
+        await c.rebuildVectorIndex()
+        XCTAssertEqual(client.callCount, warmCalls,
+                       "premise: an unchanged vocab must make the incremental rebuild a no-op")
+
+        await c.rebuildVectorIndexFull()
+
+        XCTAssertGreaterThan(client.callCount, warmCalls,
+                             "a full rebuild must discard the existing embeddings and re-embed")
+        guard case .ready = c.vectorIndexState else {
+            return XCTFail("a full rebuild must end ready, got \(c.vectorIndexState)")
+        }
+        XCTAssertFalse(c.isBuildingVectorIndex)
         await c.stop()
     }
 

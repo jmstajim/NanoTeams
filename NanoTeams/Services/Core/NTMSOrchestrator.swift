@@ -10,8 +10,46 @@ final class NTMSOrchestrator {
     private(set) var activeTaskID: Int?
     var activeTask: NTMSTask?
     var selectedRunID: Int?
-    var lastErrorMessage: String?
+    var lastErrorMessage: String? {
+        didSet {
+            guard let lastErrorMessage else { return }
+            errorSurfaceCount &+= 1
+            lastSurfacedError = lastErrorMessage
+        }
+    }
     var lastInfoMessage: String?
+
+    /// Monotonic count of errors SURFACED, bumped on every non-nil assignment to
+    /// `lastErrorMessage`, and the message that came with the latest one.
+    ///
+    /// `lastErrorMessage` is a single-shot slot that the error banner CONSUMES (writes nil)
+    /// on any render, so "did that operation fail?" cannot be answered by comparing the slot
+    /// across an `await`: a real failure reads back as nil the moment SwiftUI renders during
+    /// the suspension, and a REPEATED identical error never differs from the snapshot even
+    /// when nothing consumed it. Both failure modes report success for a failed operation.
+    /// This pair is never cleared and never compared for equality, so it survives both.
+    ///
+    /// `@ObservationIgnored` deliberately — it is bookkeeping for callers that need an
+    /// outcome, not state any view renders; the banner still observes `lastErrorMessage`.
+    @ObservationIgnored private(set) var errorSurfaceCount: Int = 0
+    @ObservationIgnored private(set) var lastSurfacedError: String?
+
+    /// The error surfaced since `baseline` (a `errorSurfaceCount` sample taken before
+    /// the `await`), or `nil` when the operation surfaced none.
+    ///
+    /// This is the ONLY correct way to ask "did what I just awaited fail, and why?".
+    /// Reading `lastErrorMessage` after an `await` answers a different question — "what
+    /// should the user see right now" — and gets both directions wrong: the banner nils
+    /// the slot on any render during the suspension, so a real failure reads back as
+    /// nil; and a FOREIGN message parked there by an unrelated operation reads back as
+    /// this one's reason, which is how a failed close came to be reported to the
+    /// Autovisor with an unrelated disk error as its diagnosis.
+    ///
+    /// Callers that only need the Bool ("did it fail?") compare the count themselves;
+    /// this returns the message so a failure can be reported with its own reason.
+    func errorSurfaced(since baseline: Int) -> String? {
+        errorSurfaceCount != baseline ? lastSurfacedError : nil
+    }
     /// Latched copy of the open-time bundled-update report.
     ///
     /// `WorkFolderContext.bundledUpdate` is populated only by
@@ -56,6 +94,19 @@ final class NTMSOrchestrator {
     /// don't issue live HTTP from `openWorkFolder` (CLAUDE.md #49) — `nil`
     /// means "build a real `LLMClientRouter` on demand", the production path.
     @ObservationIgnored let chatLifecycleClient: (any LLMClient)?
+
+    /// Client used by `runTeamGeneration`'s `create_team` call. Same shape and same
+    /// reason as `chatLifecycleClient`: `nil` means "build a real `LLMClientRouter`
+    /// on demand".
+    ///
+    /// It exists because `TeamGenerationService.generate` carried
+    /// `client: any LLMClient = LLMClientRouter()` and the call site never passed
+    /// one — so in a test process every generation threw a transport error, and
+    /// `runTeamGeneration`'s ENTIRE success arm (adopt the team, re-pin `run.teamID`,
+    /// seed role statuses, start the engine) had never once executed. That made it
+    /// the largest untested happy path in the app, and the untestable half of the
+    /// `applyGeneratedTeamSuccess` invariants its own doc comment describes.
+    @ObservationIgnored let teamGenerationClient: (any LLMClient)?
 
     /// Ownership ledger for chat models. Defaults to the process-global
     /// singleton; tests inject a fresh actor so ownership can't leak between
@@ -181,6 +232,20 @@ final class NTMSOrchestrator {
     /// `@ObservationIgnored` would freeze the cards at their initial nil
     /// snapshot so enabling the toggle would not refresh them.
     var searchIndexCoordinator: SearchIndexCoordinator?
+
+    /// Why the index files are still on disk after the user turned Exploratory Search OFF.
+    ///
+    /// Needed because the coordinator is the ONLY thing that knows a delete failed
+    /// (`SearchIndexCoordinator.clear()` records it) and the disable path drops the
+    /// coordinator on the next line — so the diagnosis died with the object that held it.
+    /// A banner is the wrong slot twice over: `reconcileEmbeddingLifecycle()` runs
+    /// immediately after and writes `lastInfoMessage` on its own failure, and `.errorBanner()`
+    /// is applied only to `MainLayoutView` while the user who flipped the toggle is looking at
+    /// the Settings *window*. So it is rendered where the toggle is, in the status card's
+    /// disabled branch, and cleared by the next successful clear or re-enable.
+    ///
+    /// `nil` means "nothing left behind" — the state after every successful disable.
+    var searchIndexClearFailure: String?
 
     /// Serial pipeline for exploratory-search toggle events. Each enqueued task
     /// awaits the prior one so three rapid detached-Task clicks from
@@ -322,6 +387,19 @@ final class NTMSOrchestrator {
     /// timeouts. Owned here (extensions can't add stored properties); started on
     /// `openWorkFolder`, cancelled on the next open. See `NTMSOrchestrator+Scheduling`.
     @ObservationIgnored var automationPollTask: Task<Void, Never>?
+    /// Fixed delay between automation poll ticks, or `nil` for the production
+    /// cadence (phase-aligned wall-clock minute boundaries). Injectable because the
+    /// production cadence makes the loop a NONDETERMINISM source under test: every
+    /// `openWorkFolder` arms it, and a minute boundary landing inside a test's
+    /// window runs the full tick body — recurrence fires, timeout sweeps, and the
+    /// Autovisor backstop wake — against whatever conditions the test just staged.
+    /// That is exactly how `testWake_freshCondition_wakesWithNoThrottle` flaked
+    /// (DEBTS.md §5, D-4 form B): the backstop delivered the staged Review
+    /// condition first, the test's own wake correctly declined re-delivery
+    /// (deliver-once), and the assert read the un-moved stamp.
+    /// `TestOrchestratorFactory` passes a delay no test process lives to see; a
+    /// scheduler test passes a sub-second value to watch real ticks.
+    @ObservationIgnored let automationTickInterval: TimeInterval?
     /// Notification side-channel for synchronous delegation: `handleDelegateToTeam`
     /// awaits this when it spawns a child task. Wired in `engineForTask` — the
     /// engine's `onStateChanged` callback delivers terminal / `.needsSupervisorInput`
@@ -474,14 +552,22 @@ final class NTMSOrchestrator {
         embeddingLifecycle: EmbeddingModelLifecycleService? = nil,
         searchEmbeddingClient: (any EmbeddingClient)? = nil,
         chatLifecycleClient: (any LLMClient)? = nil,
+        teamGenerationClient: (any LLMClient)? = nil,
         chatModelEnsurer: ChatModelEnsurer = .shared,
-        downloadedModelStore: (any DownloadedModelStore)? = nil
+        downloadedModelStore: (any DownloadedModelStore)? = nil,
+        automationTickInterval: TimeInterval? = nil
     ) {
+        self.automationTickInterval = automationTickInterval
         self.chatLifecycleClient = chatLifecycleClient
+        self.teamGenerationClient = teamGenerationClient
         self.chatModelEnsurer = chatModelEnsurer
         self.downloadedModelStore = downloadedModelStore ?? DownloadedModelStoreRouter()
         self.repository = repository
-        self.llmExecutionService = llmExecutionService ?? LLMExecutionService(repository: repository)
+        // `computerUse: .system` is named HERE and nowhere else: the seam defaults to `.inert` so a
+        // test that omits it cannot synthesize input, which makes this the one line that hands the
+        // finalizer the real screenshot / AX / CGEvent adapters.
+        self.llmExecutionService = llmExecutionService
+            ?? LLMExecutionService(repository: repository, computerUse: .system)
         self.settingsService = settingsService ?? SettingsService(repository: repository)
         self.taskService = taskService ?? TaskService(repository: repository)
         self.workFolderManagementService = workFolderManagementService ?? WorkFolderManagementService(repository: repository)
@@ -655,6 +741,14 @@ final class NTMSOrchestrator {
         let sameFolder = previousFolderID == newSnapshot.projection.id
         if sameFolder, let oldLoaded = self.snapshot?.loadedTasks {
             newSnapshot.loadedTasks = oldLoaded
+        } else if !sameFolder {
+            // Same argument, one layer up: the QuickCapture queue and the per-task answer
+            // drafts are keyed by the same folder-local task id, but live in a
+            // process-global singleton that no folder-lifecycle path was clearing. Left
+            // behind, a Supervisor message typed for folder A's task #3 is delivered to
+            // folder B's unrelated task #3 — and `tryFlushQueuedMessages` iterates the
+            // surviving keys, so merely OPENING a folder woke runs on tasks nobody touched.
+            quickCaptureFormState?.discardFolderScopedState()
         }
 
         // When the active task changes (within the same folder), preserve the
@@ -690,6 +784,41 @@ final class NTMSOrchestrator {
             previousActiveRunID: previousActiveRunID,
             previousSelectedRunID: previousSelectedRunID
         )
+    }
+
+    /// The inverse of `apply(_:)`: drop every field that describes a work folder's CONTENTS,
+    /// leaving the process holding a `workFolderURL` and nothing loaded.
+    ///
+    /// Exists for one caller — `openWorkFolder`'s catch. `workFolderURL` is committed before
+    /// the open can fail (deliberately: `closeProject` / `resetAllData` rely on it flipping to
+    /// default storage as their "no project open" signal), so a failed open used to leave the
+    /// process describing TWO folders at once — the new URL beside the previous folder's
+    /// snapshot, active task and loaded tasks. Every writer binds those separately:
+    /// `mutateWorkFolder` takes `url` from one and `projection` from the other and writes folder
+    /// A's teams/settings/state wholesale into folder B's files; `mutateTask` writes folder A's
+    /// task into `B/tasks/<same sequential id>/task.json`. That is precisely the collision
+    /// `apply(_:)` guards against above — through a hole `apply` cannot cover, because on this
+    /// path it never runs.
+    ///
+    /// Clearing rather than reverting is the honest half: lines 42-56 of `openWorkFolder` have
+    /// already stopped the previous folder's engines, scheduler and search index, so "the old
+    /// folder is still open" would be a claim about a folder nothing is running against. With
+    /// the fields nil, both `mutateWorkFolder` and `mutateTask` short-circuit on their own
+    /// guards and no write can be misdirected.
+    ///
+    /// Lives here, not in the extension, because `activeTaskID` is `private(set)` — its setter
+    /// is file-scoped, so the inverse of `apply` has to sit beside `apply`.
+    func discardWorkFolderState() {
+        snapshot = nil
+        activeTaskID = nil
+        activeTask = nil
+        selectedRunID = nil
+        toolDefinitions = []
+        ToolDefinitionRegistry.shared.update([])
+        // Same reason as `apply`'s `!sameFolder` branch, and the same hole: the
+        // folder-local task ids the QuickCapture queue and answer drafts are keyed by
+        // belong to a folder that is no longer described by anything here.
+        quickCaptureFormState?.discardFolderScopedState()
     }
 
     /// Update the in-memory snapshot with a modified active task without rebuilding from disk.

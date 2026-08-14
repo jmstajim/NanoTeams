@@ -198,6 +198,12 @@ struct LLMElevatedTextField: View {
             if text != defaultValue {
                 Button {
                     text = defaultValue
+                    // A reset IS an endpoint change, and it is the one that never
+                    // passes through `onSubmit` / focus-loss — the X can be clicked
+                    // without the field ever being focused. Endpoint-keyed views
+                    // (`.task(id: llmEndpointGeneration)`) would otherwise keep
+                    // serving the previous server's rows under the new address.
+                    onCommit?()
                 } label: {
                     Image(systemName: "xmark.circle")
                         .foregroundStyle(Colors.textTertiary)

@@ -247,16 +247,40 @@ nonisolated enum PlanningPhasePolicy {
         }
     }
 
-    /// Read-only tools plus vision, plus the phase's exit channel.
+    /// Everything that can neither SUSPEND the step nor MUTATE work-folder source,
+    /// plus the phase's exit channel: read-only file+git, vision, the Xcode runners.
+    ///
+    /// Those two properties — not the enumeration — are what make the boundary safe
+    /// by construction. A suspend path would append a turn AFTER the brief that
+    /// `implementationWire`'s slice then eats; a mutation would make the discarded
+    /// exploration transcript load-bearing. `bash` fails both (it can write anything,
+    /// and its approval gate parks the step on a human) and `ask_supervisor` fails
+    /// the first, so neither is here. The Xcode runners fail neither: `ToolHandler.handle`
+    /// is synchronous BY SIGNATURE so there is no suspension point to hang an approval
+    /// on, they carry no `ToolSignal` and so no deferred finalizer, and they write
+    /// nothing under the work folder at tool time (`build_diagnostics.json` is written
+    /// at step COMPLETION). Whether the project currently compiles is exactly the kind
+    /// of fact a plan should rest on, and withholding it until after the plan is
+    /// recorded got that backwards.
+    ///
+    /// A failed build does append one engine-authored `.user` turn
+    /// (`buildToolErrorGuidance`) — same shape as a failed `read_file`, which this set
+    /// already admits. The turns the slice must not eat are HUMAN ones; that is what
+    /// `discardedSupervisorMessages` exists for.
     ///
     /// Intersected with the tools actually PASSED IN — which arrive already
     /// filtered by work-folder preconditions — so `withheldByPhase` means
     /// exactly "the phase withheld it" and never "a precondition stripped it".
     /// That is what lets the rejection envelope be honest without ordering hacks,
     /// and it keeps the brief from advertising `git_log` in a folder with no git.
+    /// It is also why a folder with no selected Xcode scheme still answers
+    /// `.xcodeSchemeNotSelected` rather than `plan_required`: step 3.1 of
+    /// `resolveToolSchemasCore` already removed the runners, so they reach neither
+    /// `allowed` nor `withheldByPhase`.
     static func planningToolNames(in tools: [ToolSchema]) -> Set<String> {
         let planningTools = ToolHandlerRegistry.readOnlyTools
             .union(ToolHandlerRegistry.visionTools)
+            .union(ToolHandlerRegistry.xcodeTools)
             .union([ToolNames.updateScratchpad])
         return Set(tools.map(\.name)).intersection(planningTools)
     }

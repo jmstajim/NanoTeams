@@ -290,4 +290,56 @@ final class TeamQueriesTests: XCTestCase {
         XCTAssertFalse(t.delegationEnabled(for: unconfiguredPeer), "peer but no target configured")
         XCTAssertFalse(t.delegationEnabled(for: configuredChild), "configured but not peer-level")
     }
+
+    // MARK: - isGeneratedPlaceholder / seedChatModeForNewTask
+
+    func testIsGeneratedPlaceholder_trueOnlyForTheSentinelTemplateID() {
+        XCTAssertTrue(
+            makeTeam(roles: [], templateID: DelegationConstants.generatedTeamSentinel)
+                .isGeneratedPlaceholder)
+        for tid: String? in [nil, "faang", "startup", "custom", AutovisorConstants.teamTemplateID] {
+            XCTAssertFalse(
+                makeTeam(roles: [], templateID: tid).isGeneratedPlaceholder,
+                "templateID=\(String(describing: tid))")
+        }
+    }
+
+    /// The asymmetry the whole fix rests on, asserted in ONE test so it cannot rot
+    /// into "the placeholder just isn't chat-mode": its `isChatMode` really IS true
+    /// (vacuously — a Supervisor with no required artifacts because there is no
+    /// roster), and that is exactly why a separate seeding predicate exists.
+    func testSeedChatModeForNewTask_generatedPlaceholder_isFalseDespiteVacuousChatMode() {
+        let placeholder = TeamTemplateFactory.generatedTeam()
+        XCTAssertTrue(
+            placeholder.isChatMode,
+            "precondition: the placeholder is vacuously chat-mode — that is the trap")
+        XCTAssertFalse(
+            placeholder.seedChatModeForNewTask,
+            "a task on the placeholder must not inherit the vacuous value")
+    }
+
+    /// The placeholder is the ONLY team where the two predicates differ — including
+    /// the genuinely chat-mode bundled teams and the Autovisor's own.
+    func testSeedChatModeForNewTask_equalsIsChatMode_forEveryNonPlaceholderTeam() {
+        let teams = Team.defaultTeams + [TeamTemplateFactory.autovisor()]
+        XCTAssertFalse(teams.isEmpty)
+        for team in teams {
+            XCTAssertFalse(team.isGeneratedPlaceholder, "fixture sanity: \(team.name)")
+            XCTAssertEqual(
+                team.seedChatModeForNewTask, team.isChatMode,
+                "\(team.name) must seed exactly its own chat mode")
+        }
+    }
+
+    /// Guards the tempting one-line "simplification" of folding
+    /// `isGeneratedPlaceholder` into `isChatMode`. `isValidDelegationTarget` is
+    /// `!isChatMode`, and `RoleEditorDelegationPolicy.delegatableTeams` filters on
+    /// that ALONE without checking `isHiddenFromPickers` — so the placeholder's
+    /// vacuous `isChatMode` is the only thing keeping "Generated Team" out of a
+    /// user-facing delegation whitelist, and out of
+    /// `LLMExecutionService+DelegateToTeam`'s chat rejection for an LLM that passes
+    /// the placeholder's UUID as `team_id`.
+    func testIsValidDelegationTarget_generatedPlaceholder_staysFalse() {
+        XCTAssertFalse(TeamTemplateFactory.generatedTeam().isValidDelegationTarget)
+    }
 }

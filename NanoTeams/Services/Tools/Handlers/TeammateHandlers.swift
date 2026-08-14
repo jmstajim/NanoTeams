@@ -125,8 +125,19 @@ nonisolated struct AskTeammateTool: ToolHandler {
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
+            // `teammate` stays on `requiredString` — it is an IDENTIFIER, and the
+            // exclusion rule applies: `+TeammateConsultation` answers an empty one
+            // with "Unknown teammate role: . Available teammates: …", enumerating
+            // the legal values. Rejecting it here as "must not be empty" would
+            // replace the only actionable half of that message with less.
+            //
+            // `question` is different: nothing downstream inspects it.
+            // `+TeammateConsultation` builds `"<Role> asks: "` and spends a full LLM
+            // round-trip on the consulted role's own model, then files the blank in
+            // `step.consultations` against `TeamLimits.maxConsultationsPerStep` —
+            // per STEP, not per run.
             let teammate = try requiredString(args, "teammate")
-            let question = try requiredString(args, "question")
+            let question = try requiredNonEmptyString(args, "question")
             let ctx = optionalString(args, "context")
             return makeTeammateQuestionResult(
                 toolName: Self.name,
@@ -165,7 +176,13 @@ nonisolated struct RequestTeamMeetingTool: ToolHandler {
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            let topic = try requiredString(args, "topic")
+            // The topic is the meeting's whole framing — it heads every
+            // participant's turn message. Empty, it convenes N roles for M turns
+            // apiece against the per-run meeting limit with nothing to discuss,
+            // which is the most expensive no-op any tool in this file can buy.
+            // The participants list already refuses to be empty a few lines down;
+            // this is the same rule for the other half of the same call.
+            let topic = try requiredNonEmptyString(args, "topic")
             let participants = try requiredStringArray(args, aliases: ["participants", "members"])
             let ctx = optionalString(args, "context")
 
@@ -215,6 +232,23 @@ nonisolated struct ConcludeMeetingTool: ToolHandler {
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
+            // Deliberately `requiredString`. An earlier version of this sweep
+            // guarded emptiness here on the stated grounds that the decision "is
+            // recorded on the meeting and re-enters the initiating role's
+            // conversation" — which is false, and checkable: this handler returns
+            // a plain success envelope with NO `ToolSignal`, there is no
+            // `conclude_meeting` arm in `processToolSignal`, and the sole writer of
+            // `meeting.addDecision` is `TeamMeetingService.concludeMeeting`, called
+            // from the auto-conclude block using `meeting.messages.last`. The tool
+            // is also `excludedInMeetings`, and `request_team_meeting` blocks until
+            // the meeting has already concluded. So an empty decision buys neither
+            // a state-mutating success nor a round-trip — it is the one argument in
+            // the sweep whose premise does not apply, and rejecting it would spend a
+            // correction turn on a call that changes nothing either way.
+            //
+            // The larger finding stands separately: this tool is an ECHO whose
+            // payload no consumer reads. Wiring it to `concludeMeeting` or retiring
+            // it is its own change, not this one.
             let decision = try requiredString(args, "decision")
             let rationale = optionalString(args, "rationale")
             let nextSteps = optionalString(args, "next_steps")
@@ -266,9 +300,21 @@ nonisolated struct RequestChangesTool: ToolHandler {
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
         ToolErrorHandler.execute(toolName: Self.name, args: args) {
+            // `target_role` stays on `requiredString`, same reason as
+            // `ask_teammate`'s `teammate`: `ChangeRequestService.validateChangeRequest`
+            // rejects an unresolvable id — `""` included — BEFORE any meeting is
+            // convened, and its message enumerates ("Target role '' not found in the
+            // team. Available roles: …").
+            //
+            // `changes` and `reasoning` have no such reader.
+            // `ChangeRequestService.buildVotingContext` renders them verbatim into
+            // the meeting CONTEXT as `"Changes requested: …\nReasoning: …"`, and a
+            // vote carried on a blank request has `executeAmendment` reset the target
+            // role and every started downstream role for a revision with nothing to
+            // revise.
             let targetRole = try requiredString(args, "target_role")
-            let changes = try requiredString(args, "changes")
-            let reasoning = try requiredString(args, "reasoning")
+            let changes = try requiredNonEmptyString(args, "changes")
+            let reasoning = try requiredNonEmptyString(args, "reasoning")
             return makeChangeRequestResult(
                 toolName: Self.name,
                 args: args,

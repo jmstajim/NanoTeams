@@ -1,0 +1,4 @@
+Building for macOS...
+/Users/me/Proj/Sources/App/Legacy.swift:18:9: warning: 'oldAPI()' is deprecated: use newAPI() instead
+/Users/me/Proj/Sources/App/Legacy.swift:24:1: note: 'oldAPI()' has been explicitly marked deprecated here
+** BUILD SUCCEEDED **

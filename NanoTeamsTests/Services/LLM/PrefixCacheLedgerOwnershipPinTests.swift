@@ -187,7 +187,7 @@ final class PrefixCacheLedgerOwnershipPinTests: XCTestCase {
                 + "trip), where the key it would target is no longer the key that gets recorded")
     }
 
-    // MARK: - 3. The retry path never rewrites the conversation
+    // MARK: - 4. The retry path never rewrites the conversation
 
     /// `collapseRedundantAssistantTextRuns` rebuilt the whole array on every retryable LLM error,
     /// so its divergence index was unbounded — a full re-prefill paid on top of an already-failed
@@ -213,32 +213,6 @@ final class PrefixCacheLedgerOwnershipPinTests: XCTestCase {
         XCTAssertFalse(
             repair.contains("func " + Self.collapseNeedle),
             "re-adding this helper re-arms an unbounded-index conversation rewrite")
-    }
-
-    // MARK: - 4. Re-enabling the Memories injection requires its exemption
-
-    /// `injectMemories` rewrites the block at `memoriesMessageIndex` IN PLACE — early in the array
-    /// — and its version counter guarantees the bytes differ every iteration. Re-enabled as-is it
-    /// would report a total miss on every tool-using turn: correct, useless, and loud enough to
-    /// make the whole always-on surface untrustworthy.
-    ///
-    /// A fail-on-flip tripwire, not a behavioural test: the flag is off, so there is no behaviour
-    /// to assert. It stays quiet until someone flips it, and then insists the exemption lands in
-    /// the same change.
-    func testReEnablingMemoriesRequiresItsPrefixExemption() throws {
-        let loopState = try codeLines(
-            of: "NanoTeams/Services/LLM/LLMExecutionService+ToolLoopState.swift")
-            .map(\.text).joined(separator: "\n")
-        let enabledNeedle = "isMemoriesInjectionEnabled" + " = true"
-        guard loopState.contains(enabledNeedle) else { return }  // still off — nothing to check
-
-        let iteration = try codeLines(
-            of: "NanoTeams/Services/LLM/LLMExecutionService+ToolIteration.swift")
-            .map(\.text).joined(separator: "\n")
-        XCTAssertTrue(
-            iteration.contains("memoriesMessageIndex") || iteration.contains("memoriesRewrite"),
-            "the Memories injection is enabled but `reportPrefixCacheMissIfAny` has no exemption "
-                + "for it — every tool-using turn will now report a total prefix miss")
     }
 
     // MARK: - 5. keep-alive stays a single-provider setting, or it must become per-provider

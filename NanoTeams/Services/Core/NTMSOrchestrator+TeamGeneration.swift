@@ -15,7 +15,7 @@ extension NTMSOrchestrator {
         guard task.generatedTeam == nil else { return false }
         guard let preferredID = task.preferredTeamID,
               let team = workFolder?.team(withID: preferredID) else { return false }
-        return team.templateID == "generated"
+        return team.isGeneratedPlaceholder
     }
 
     /// Runs the team generation flow for a task. Creates a Supervisor step with a
@@ -37,7 +37,7 @@ extension NTMSOrchestrator {
         }
 
         // 1. Create a Supervisor step with the placeholder tool call.
-        let stepID = "team_generation_\(UUID().uuidString)"
+        let stepID = "\(StepExecution.teamGenerationIDPrefix)\(UUID().uuidString)"
         let toolCallID = UUID()
         let placeholderArgs = TeamGenerationEnvelopes.makeGenerationArgsJSON(taskDescription: taskDescription)
         let placeholderResult = TeamGenerationEnvelopes.makeGeneratingEnvelope()
@@ -62,6 +62,23 @@ extension NTMSOrchestrator {
             guard let ri = task.runs.indices.last else { return }
             task.runs[ri].steps.append(step)
             task.runs[ri].updatedAt = MonotonicClock.shared.now()
+        }
+
+        // `mutateTask` returning true means "persisted", NOT "the closure did
+        // something" (CLAUDE.md §7), so the guard above can drop the step while
+        // reporting success. Verify it landed before spending a multi-second,
+        // billable LLM call whose result would have no card to land on, no
+        // spinner, and no Retry affordance — the user would see a task that
+        // simply did nothing. The logger thirty lines below already treats this
+        // same missing-run condition as an `assertionFailure`; this makes the
+        // more consequential half agree.
+        // Deliberately NOT an `assertionFailure` like the logger's twin below: a
+        // trap makes the branch unreachable from a test, and a guard that cannot
+        // be tested is how this one came to be silent in the first place.
+        guard loadedTask(taskID)?.runs.last?.steps.contains(where: { $0.id == stepID }) == true else {
+            lastErrorMessage =
+                "Cannot generate a team for task \(taskID): the task has no run to attach it to."
+            return false
         }
 
         // 2. Call TeamGenerationService in the background.
@@ -103,6 +120,7 @@ extension NTMSOrchestrator {
             let raw = try await TeamGenerationService.generate(
                 taskDescription: taskDescription,
                 config: effectiveConfig,
+                client: teamGenerationClient ?? LLMClientRouter(),
                 systemPrompt: configuration.teamGenSystemPromptOrNil,
                 logger: networkLogger,
                 stepID: stepID
@@ -146,7 +164,7 @@ extension NTMSOrchestrator {
             // from genuine failures. On cancellation: mark the step `.paused` so a
             // subsequent resume/retry can continue, and skip `lastErrorMessage` so
             // the user isn't shown an error banner for an action they took themselves.
-            let isCancellation = Self.isCancellationError(error)
+            let isCancellation = TeamGenerationService.isCancellation(error)
             let message = isCancellation
                 ? "Team generation was cancelled"
                 : (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
@@ -235,9 +253,129 @@ extension NTMSOrchestrator {
         return applied
     }
 
+    /// `retryTeamGeneration` for a caller that needs to know whether anything happened.
+    ///
+    /// Wrapping the plain call in `reportingError` would report SUCCESS for a no-op —
+    /// exactly the silent-`ok:true` class this codebase has been clearing out — because
+    /// both of its silent exits are `lastInfoMessage`, not `lastErrorMessage`.
+    ///
+    /// The precondition is checked HERE rather than deferred to `retryTeamGeneration`,
+    /// which deletes every `team_generation_*` step BEFORE it re-checks
+    /// `needsTeamGeneration`. On a task whose team already generated successfully that
+    /// call is not a harmless no-op: it destroys the `create_team` card that is the only
+    /// record of how the team was produced, and then there is nothing left for a
+    /// "did anything change?" test to see.
+    func retryTeamGenerationReportingResult(taskID: Int) async -> AutovisorActionResult {
+        guard needsTeamGeneration(taskID: taskID) else {
+            return .failure(
+                "Task #\(taskID) has no pending team generation — its team is already in place. "
+                    + "Use manage_role on a role_id from task_status, or control_task delete "
+                    + "to drop the task.")
+        }
+        await retryTeamGeneration(taskID: taskID)
+
+        // Read the outcome off DURABLE task state, never off `lastErrorMessage`: that slot
+        // is single-shot and the error banner nils it on any render, and this method awaits
+        // an LLM call — so a real failure would read back as nil and be reported as
+        // "did not restart", i.e. the opposite of what happened.
+        guard let task = loadedTask(taskID) else {
+            return .failure("Task #\(taskID) is no longer loaded.")
+        }
+        if task.generatedTeam != nil {
+            return .success("Re-ran team generation for task #\(taskID).")
+        }
+        // "Did it start?" is asked BEFORE "did it fail?". `retryTeamGeneration`'s
+        // re-entrancy guard returns before the cleanup mutation, so on that path the
+        // surviving `.failed` step is the PRIOR attempt's — reading it here would report
+        // "failed again" for a retry that never ran. Our own run has already cleared the
+        // in-flight marker via its `defer` by the time we get here, so this cannot mask a
+        // genuine second failure.
+        if isGeneratingTeam(taskID: taskID) {
+            return .failure(
+                "Team generation for task #\(taskID) is already in progress — "
+                    + "wait and re-check task_status.")
+        }
+        if let failed = task.runs.last?.steps.last(where: {
+            $0.isTeamGenerationStep && $0.status == .failed
+        }) {
+            let reason = failed.toolCalls
+                .compactMap(\.errorMessage)
+                .last
+            return .failure(
+                reason.map { "Team generation for task #\(taskID) failed again: \($0)" }
+                    ?? "Team generation for task #\(taskID) failed again.")
+        }
+        return .failure("Team generation for task #\(taskID) did not restart.")
+    }
+
+    /// Removes every synthetic `team_generation_*` step from the task's latest run.
+    ///
+    /// Narrow PREFIX match, never a `create_team` NAME match: matching by
+    /// `toolCalls.contains { name == createTeam }` would also delete delegating-role steps
+    /// that carry a synthetic `create_team` placeholder from `handleDelegateToTeam`'s
+    /// generated branch — an entire role's step (llmConversation / messages / scratchpad /
+    /// artifacts / delegationChildIDs) would vanish. The prefix is the literal format
+    /// `runTeamGeneration` uses; no other code path produces step IDs with this shape.
+    func clearPriorTeamGenerationSteps(taskID: Int) async {
+        await mutateTask(taskID: taskID) { task in
+            guard let ri = task.runs.indices.last else { return }
+            task.runs[ri].steps.removeAll { $0.isTeamGenerationStep }
+            task.runs[ri].updatedAt = MonotonicClock.shared.now()
+        }
+    }
+
+    /// Reserves the generation slot, spawns the detached generation Task (registered so
+    /// `pauseRun`'s `cancelTeamGeneration` can reach it), and starts the engine on success.
+    ///
+    /// The ONE place the "detached generation" shape lives — `startRun` and `resumeRun`
+    /// differ only in `clearingPriorSteps`.
+    ///
+    /// **Synchronous by design.** The reserve is taken before this returns, so
+    /// `isGeneratingTeam(taskID:)` is already true for the caller's next statement. An
+    /// `async` helper that reserved only after its first suspension would leave a window in
+    /// which `GeneratedTeamPanelState`'s liveness term reads "not in flight" and the pane
+    /// flashes a failure, and in which `applyControlTask(.start)`'s outcome check reports a
+    /// start that did happen as one that didn't.
+    ///
+    /// - Parameter clearingPriorSteps: delete every `team_generation_*` step in the latest
+    ///   run first. `false` for `startRun` (`createNewRun` just replaced the run). `true`
+    ///   for `resumeRun`, whose run may still carry a cancelled `.paused` attempt, a
+    ///   `.failed` one, or a `.pending` record `restartRole` destroyed — leaving it stacks
+    ///   two `create_team` cards, which is what makes `retryTeamGenerationReportingResult`
+    ///   blame the wrong attempt. Nothing a user can miss is lost: those steps hold only
+    ///   the placeholder card and its envelope — generation never goes through
+    ///   `startStepExecution`, so there is no transcript, no artifacts, no `wireTranscript`.
+    /// - Returns: `false` when the slot was already taken. Callers must NOT fall through to
+    ///   their own `engine.start()` on `false` — a generation is in flight and will start it.
+    @discardableResult
+    func spawnTeamGeneration(taskID: Int, clearingPriorSteps: Bool) -> Bool {
+        guard beginTeamGeneration(taskID: taskID) else { return false }
+        let genTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.endTeamGeneration(taskID: taskID) }
+            if clearingPriorSteps {
+                await self.clearPriorTeamGenerationSteps(taskID: taskID)
+            }
+            // Re-check after the cleanup, exactly as `retryTeamGeneration` does: a team
+            // adopted concurrently means there is nothing left to generate.
+            guard self.needsTeamGeneration(taskID: taskID) else { return }
+            let generated = await self.runTeamGeneration(taskID: taskID)
+            // Skip engine start if pauseRun cancelled us mid-generation.
+            guard !Task.isCancelled else { return }
+            guard generated else { return } // failure envelope + lastErrorMessage already set
+            self.engineForTask(taskID).start()
+        }
+        registerTeamGenerationTask(taskID: taskID, task: genTask)
+        return true
+    }
+
     /// Retries team generation after a previous attempt failed. Removes any prior
     /// generation step from the latest run, then re-runs the generation flow and starts
     /// the engine on success. No-ops when the task isn't using the Generated Team template.
+    ///
+    /// Keeps the AWAITING shape (rather than delegating to `spawnTeamGeneration`): the
+    /// Retry button and `retryTeamGenerationReportingResult`'s durable-outcome read both
+    /// depend on the generation having finished by the time this returns.
     func retryTeamGeneration(taskID: Int) async {
         // Guard against double-retry (rapid button clicks) and against retry racing
         // a still-in-flight detached generation from `startRun`. Surface a banner
@@ -248,22 +386,7 @@ extension NTMSOrchestrator {
         }
         defer { endTeamGeneration(taskID: taskID) }
 
-        await mutateTask(taskID: taskID) { task in
-            guard let ri = task.runs.indices.last else { return }
-            // Narrow match: only synthetic team-generation steps
-            // (`team_generation_<UUID>` from `runTeamGeneration`). Matching by
-            // `toolCalls.contains { name == createTeam }` would also delete
-            // delegating-role steps that carry a synthetic `create_team`
-            // placeholder from `handleDelegateToTeam`'s generated branch — an
-            // entire role's step (llmConversation / messages / scratchpad /
-            // artifacts / delegationChildIDs) would vanish. The prefix is the
-            // literal format `runTeamGeneration` uses; no other code path
-            // produces step IDs with this shape.
-            task.runs[ri].steps.removeAll { step in
-                step.id.hasPrefix("team_generation_")
-            }
-            task.runs[ri].updatedAt = MonotonicClock.shared.now()
-        }
+        await clearPriorTeamGenerationSteps(taskID: taskID)
 
         // After cleanup, `needsTeamGeneration` is true again iff the template is
         // "generated" and no team has been adopted — same gate as `startRun`.
@@ -291,16 +414,6 @@ extension NTMSOrchestrator {
         }
 
         lastInfoMessage = "Team '\(team.name)' saved"
-    }
-
-    // MARK: - Cancellation detection
-
-    /// True for `CancellationError` and for `URLError.cancelled` (which
-    /// `URLSession` emits when its streaming task is cancelled mid-request).
-    private static func isCancellationError(_ error: Error) -> Bool {
-        if error is CancellationError { return true }
-        let nsError = error as NSError
-        return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
     }
 
     // MARK: - Envelopes (test accessors)

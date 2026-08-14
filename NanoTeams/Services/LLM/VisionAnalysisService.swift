@@ -34,6 +34,7 @@ nonisolated enum VisionAnalysisService {
         ]
 
         var result = ""
+        var reasoning = ""
         // prefix-cache-owner: registered by the caller — `LLMExecutionService+Vision` and
         // `+ComputerUse` note `.oneShot("vision")`. The most consequential interleaver on a
         // default setup: a blank vision slot inherits the GLOBAL chat model.
@@ -46,8 +47,26 @@ nonisolated enum VisionAnalysisService {
         )
         for try await event in stream {
             result += event.contentDelta
+            reasoning += event.thinkingDelta
         }
 
-        return ModelTokenCleaner.clean(result.trimmingCharacters(in: .whitespacesAndNewlines))
+        // A vision model asked to describe a screenshot is a prime candidate for
+        // reasoning-only output, and the caller turns `""` into a SUCCESS envelope the
+        // model is expected to act on. Returning `""` is still possible (both channels
+        // silent) — `+Vision` classifies that as the failure it is.
+        // `cleanHarmonyTokens` rather than the bare `ModelTokenCleaner.clean` it used to
+        // call: that one strips `<|channel|>` and leaves the glued keyword, so a Harmony
+        // reply was delivered to the model as "finalA red button." — and the analysis is
+        // read back as prose by the very model that asked. The four patterns it adds remove
+        // only enumerated protocol keywords immediately following their own token; they
+        // cannot eat arbitrary text. Residual cost, accepted: a reply whose FIRST word is
+        // literally "final" loses that word when the model also emitted the header.
+        return ModelReplyChannels.answer(
+            content: result,
+            reasoning: reasoning,
+            prepare: {
+                ConversationRepairService.cleanHarmonyTokens(
+                    $0.trimmingCharacters(in: .whitespacesAndNewlines))
+            })
     }
 }

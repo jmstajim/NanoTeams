@@ -5,13 +5,16 @@ import Foundation
 /// Streaming and message construction are in MeetingStreamingService.
 nonisolated struct TeamMeetingService {
 
-    /// Context required for a team meeting
+    /// Context required for a team meeting.
+    ///
+    /// No `topic` / `additionalContext` / `task` fields, on purpose (wave 32): every
+    /// consumer that needs those receives them as its OWN parameters (`createMeeting(topic:)`,
+    /// `MeetingCoordinator.buildTurnMessage`) — the stored copies here had zero readers, and
+    /// a "context" carrying facts nothing consults misleads the next reader about what a
+    /// meeting turn actually depends on.
     struct MeetingContext {
-        let topic: String
         let initiatedBy: Role
         let participants: [Role]
-        let additionalContext: String?
-        let task: NTMSTask
         let availableArtifacts: [Artifact]
         let artifactReader: (Artifact) -> String?
         let team: Team?
@@ -28,11 +31,8 @@ nonisolated struct TeamMeetingService {
         let globalContext: String
 
         init(
-            topic: String,
             initiatedBy: Role,
             participants: [Role],
-            additionalContext: String?,
-            task: NTMSTask,
             availableArtifacts: [Artifact],
             artifactReader: @escaping (Artifact) -> String?,
             team: Team?,
@@ -40,11 +40,8 @@ nonisolated struct TeamMeetingService {
             limits: TeamLimits,
             globalContext: String = ""
         ) {
-            self.topic = topic
             self.initiatedBy = initiatedBy
             self.participants = participants
-            self.additionalContext = additionalContext
-            self.task = task
             self.availableArtifacts = availableArtifacts
             self.artifactReader = artifactReader
             self.team = team
@@ -59,14 +56,6 @@ nonisolated struct TeamMeetingService {
         var content: String
         var thinking: String
         var resolvedToolCalls: [StepToolCall]
-    }
-
-    /// Extended result from a meeting turn (before tool execution).
-    struct MeetingTurnResult {
-        var meeting: TeamMeeting
-        var shouldContinue: Bool
-        var speaker: Role
-        var streamResult: MeetingStreamResult
     }
 
     // MARK: - Meeting Lifecycle
@@ -112,12 +101,23 @@ nonisolated struct TeamMeetingService {
         toolSummaries: [MeetingToolSummary]?,
         context: MeetingContext
     ) -> Bool {
+        // A reasoning model can put its whole contribution in the reasoning channel and
+        // leave content empty. `MeetingStreamingService` has always COLLECTED that channel
+        // and this was the one place that decides what the speaker said — so the turn was
+        // added as an empty `TeamMessage`, and every later speaker read a blank line under
+        // "Discussion so far" for the rest of the meeting.
         let cleanedContent = ModelTokenCleaner.clean(content)
+        let spoken = ModelReplyChannels.answer(
+            content: content,
+            reasoning: thinking ?? "",
+            prepare: { ModelTokenCleaner.clean($0) })
+        // Promoted reasoning IS the contribution now; leaving it in the disclosure as well
+        // would render the same text twice in the feed.
         let message = TeamMessage(
             role: speaker,
-            content: cleanedContent,
-            messageType: TeamMessageType.determine(from: cleanedContent),
-            thinking: thinking,
+            content: spoken,
+            messageType: TeamMessageType.determine(from: spoken),
+            thinking: cleanedContent.isEmpty ? nil : thinking,
             toolSummaries: toolSummaries
         )
         meeting.addMessage(message)

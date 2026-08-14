@@ -43,11 +43,10 @@ nonisolated struct RoleEditorState {
     /// `nil` = inherit the global provider. Set when the override URL points
     /// at a different provider's server (mirrors `LLMOverride.provider`).
     var llmProviderOverride: LLMProvider? = nil
-    var availableModels: [String] = []
-    /// Populated when the override-model fetch fails. Cleared on every fetch
-    /// attempt; rendered in the LLM tab so the user knows why the picker is
-    /// stale instead of seeing nothing change.
-    var llmModelFetchError: String?
+    // No availableModels / fetch-error fields, on purpose (wave 32): the LLM tab renders
+    // models, spinner AND fetch errors straight from the shared `ModelCatalog`
+    // (`EndpointStatus.resolve(fetchError:isFetching:)`) — parallel copies here were
+    // never written past their defaults and never read.
     var roleIconColor: String = "#FFFFFF"
     var roleIconBackground: String = "#007AFF"
     var activeSection: RoleSection = .general

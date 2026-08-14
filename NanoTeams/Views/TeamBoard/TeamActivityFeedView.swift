@@ -712,6 +712,7 @@ struct TeamActivityFeedView: View {
                 clippedTexts: clips,
                 attachmentPaths: paths,
                 workFolderURL: folderURL,
+                roleDefinition: findRoleDefinition(for: .supervisor, originTaskID: originTaskID),
                 onAvatarTap: avatarTap(for: .supervisor, originTaskID: originTaskID)
             )
             .equatable()

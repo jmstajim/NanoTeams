@@ -9,9 +9,15 @@ import Foundation
 /// over-budget runs. Cadence is a fixed once-a-minute tick, matching the
 /// 1-minute minimum schedule granularity.
 ///
-/// Scheduling comparisons use real wall-clock `Date()` (NOT `MonotonicClock`,
-/// which only guarantees strict ordering of model timestamps). The evaluation
-/// entry points take an injectable `now:` so tests stay deterministic.
+/// **Two comparisons, two clocks, and the difference is which operand the value
+/// is compared AGAINST.** Recurrence uses real wall-clock `Date()`: its other
+/// operand is `TaskRecurrence.nextFireAt`, computed by `RecurrenceRule` from a
+/// wall-clock date, so both sides are wall time. The run-timeout watchdog does
+/// NOT: its other operand is `Run.createdAt`, a `MonotonicClock` model stamp, so
+/// it measures on the stamping clock — see `evaluateRunTimeouts`. Taking the
+/// single-sentence rule ("scheduling uses `Date()`") on both halves is what put
+/// this file on the wrong side of CLAUDE.md's 2026-07-18 clock-mixing class.
+/// The evaluation entry points take an injectable `now:` so tests stay deterministic.
 extension NTMSOrchestrator {
 
     /// Seconds from `reference` until the next wall-clock minute boundary (`:00`).
@@ -52,12 +58,18 @@ extension NTMSOrchestrator {
     func startAutomationScheduler() async {
         stopAutomationScheduler()
         await reconcileMissedRecurrences()
+        // Captured OUTSIDE the loop task: the tick delay must not require `self`
+        // (which the loop only holds weakly, and only after the sleep).
+        let tickInterval = automationTickInterval
         automationPollTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 // Sleep until the next minute boundary so wakes are aligned to
                 // the wall clock (the trigger fires on the boundary regardless of
                 // when scheduling started), not drifting from the start time.
-                try? await Task.sleep(for: .seconds(NTMSOrchestrator.secondsUntilNextMinuteBoundary()))
+                // An injected `automationTickInterval` replaces the boundary
+                // cadence wholesale — see its doc on `NTMSOrchestrator`.
+                try? await Task.sleep(for: .seconds(
+                    tickInterval ?? NTMSOrchestrator.secondsUntilNextMinuteBoundary()))
                 // Honor cancellation that fired while we slept (work-folder
                 // switch / close) before touching any state.
                 guard !Task.isCancelled, let self else { return }
@@ -230,14 +242,37 @@ extension NTMSOrchestrator {
     // MARK: - Run timeout watchdog
 
     /// Pauses any active run that has exceeded its task's `runTimeoutSeconds`,
-    /// measured as wall-clock from `run.createdAt` (all waits/pauses counted).
+    /// measured from `run.createdAt` (all waits/pauses counted).
     /// Fires once per run via `Run.timedOutAt`, then notifies the Supervisor.
-    func evaluateRunTimeouts(now: Date = Date()) async {
+    ///
+    /// **`now` MUST be a `MonotonicClock` stamp**, unlike the recurrence evaluators in
+    /// this file. The budget is measured against `Run.createdAt`, which
+    /// `RunService.createTeamRun` stamps with `MonotonicClock.shared.now()`; that clock is
+    /// `max(Date(), last + 1ms)` and therefore only ever runs AHEAD of the wall clock. A
+    /// wall-clock `now` understates the run's age by exactly the drift accumulated when it
+    /// was stamped, so the budget fires late — or never, once the drift exceeds it — and
+    /// `timedOutAt` records a moment that can precede the `createdAt` it is measured from.
+    /// Defaulted so callers cannot get it wrong, exactly as
+    /// `AutovisorStatus.idleSeconds` / `.roleElapsedSeconds` / `.taskElapsedSeconds` are;
+    /// pinned by `RunTimeoutClockCoverageTests`.
+    func evaluateRunTimeouts(now: Date = MonotonicClock.shared.now()) async {
+        // Folder identity captured at entry and re-checked after every suspension, for the
+        // same reason `fireRecurrence` and `reconcileMissedRecurrences` do it: scheduler
+        // cancellation is cooperative, so a pass suspended in `mutateTask` / `pauseRun`
+        // resumes after a work-folder switch. `activeIDs` was sampled from the OLD folder's
+        // engines and task ids are per-folder sequential ints, so from the second iteration
+        // on, `loadedTask(taskID)` resolves against the NEW folder — and any task there
+        // with a timeout configured and a run older than it (an ordinary steady state for
+        // anything finished yesterday) would be stamped `timedOutAt` and paused. That mark
+        // is durable: it shows as "(timed out)" in the run-history picker forever and is
+        // reported to the Autovisor as fact.
+        guard let folderURL = workFolderURL else { return }
         let activeIDs = taskEngineStates
             .filter { $0.value == .running || $0.value == .needsSupervisorInput }
             .map(\.key)
         var timedOutTitles: [String] = []
         for taskID in activeIDs {
+            guard workFolderURL == folderURL else { return }
             guard let task = loadedTask(taskID),
                   let timeout = task.runTimeoutSeconds,
                   let run = task.runs.last,
@@ -250,6 +285,7 @@ extension NTMSOrchestrator {
                 task.runs[i].timedOutAt = now
                 task.runs[i].updatedAt = MonotonicClock.shared.now()
             }
+            guard workFolderURL == folderURL else { return }
             await pauseRun(taskID: taskID)
             timedOutTitles.append(task.title)
         }

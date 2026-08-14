@@ -62,7 +62,7 @@ final class EndToEndAnswerDraftPersistenceTests: XCTestCase {
 
         // In answer mode, supervisorTask is repurposed as the answer field
         // (and the "was typing a new task" is saved for restore on exit).
-        XCTAssertEqual(formState.supervisorTask, "",
+        XCTAssertEqual(formState.answerText, "",
                        "Fresh task answer draft starts empty")
         XCTAssertTrue(formState.answerAttachments.isEmpty)
         XCTAssertTrue(formState.answerClippedTexts.isEmpty)
@@ -73,18 +73,18 @@ final class EndToEndAnswerDraftPersistenceTests: XCTestCase {
     func testSwitchAnswerTask_preservesTaskADraft_startsTaskBFresh() {
         // Task A: type an answer
         formState.enterAnswerMode(payload: payload(taskID: 1))
-        formState.supervisorTask = "Answer for task A — half done"
+        formState.answerText = "Answer for task A — half done"
 
         // Switch to Task B
         formState.switchAnswerTask(from: 1, to: payload(taskID: 2))
 
-        XCTAssertEqual(formState.supervisorTask, "",
+        XCTAssertEqual(formState.answerText, "",
                        "Task B starts with a fresh draft")
 
         // Switch back to Task A
         formState.switchAnswerTask(from: 2, to: payload(taskID: 1))
 
-        XCTAssertEqual(formState.supervisorTask, "Answer for task A — half done",
+        XCTAssertEqual(formState.answerText, "Answer for task A — half done",
                        "Task A's draft is restored bit-for-bit after return")
     }
 
@@ -92,15 +92,15 @@ final class EndToEndAnswerDraftPersistenceTests: XCTestCase {
 
     func testSwitchAnswerTask_roundTrip_bothDraftsPreserved() {
         formState.enterAnswerMode(payload: payload(taskID: 1))
-        formState.supervisorTask = "A draft"
+        formState.answerText = "A draft"
         formState.switchAnswerTask(from: 1, to: payload(taskID: 2))
-        formState.supervisorTask = "B draft"
+        formState.answerText = "B draft"
         formState.switchAnswerTask(from: 2, to: payload(taskID: 1))
 
-        XCTAssertEqual(formState.supervisorTask, "A draft")
+        XCTAssertEqual(formState.answerText, "A draft")
 
         formState.switchAnswerTask(from: 1, to: payload(taskID: 2))
-        XCTAssertEqual(formState.supervisorTask, "B draft",
+        XCTAssertEqual(formState.answerText, "B draft",
                        "Task B draft preserved across A-B-A cycle")
     }
 
@@ -108,14 +108,14 @@ final class EndToEndAnswerDraftPersistenceTests: XCTestCase {
 
     func testExitAnswerMode_draftPersists_forNextEntry() {
         formState.enterAnswerMode(payload: payload(taskID: 42))
-        formState.supervisorTask = "In-progress answer"
+        formState.answerText = "In-progress answer"
 
         formState.exitAnswerMode()
 
         // Re-enter later for same task
         formState.enterAnswerMode(payload: payload(taskID: 42))
 
-        XCTAssertEqual(formState.supervisorTask, "In-progress answer",
+        XCTAssertEqual(formState.answerText, "In-progress answer",
                        "Exit+re-enter must restore the saved draft")
     }
 
@@ -123,14 +123,14 @@ final class EndToEndAnswerDraftPersistenceTests: XCTestCase {
 
     func testDiscardAnswerDraft_removesDraft_nextEntryIsFresh() {
         formState.enterAnswerMode(payload: payload(taskID: 7))
-        formState.supervisorTask = "Final answer"
+        formState.answerText = "Final answer"
         formState.exitAnswerMode()
 
         // Simulate successful submit
         formState.discardAnswerDraft(taskID: 7)
 
         formState.enterAnswerMode(payload: payload(taskID: 7))
-        XCTAssertEqual(formState.supervisorTask, "",
+        XCTAssertEqual(formState.answerText, "",
                        "After discard, re-entry is a fresh draft")
     }
 
@@ -143,7 +143,7 @@ final class EndToEndAnswerDraftPersistenceTests: XCTestCase {
         formState.supervisorTask = "Draft of a new task"
 
         formState.enterAnswerMode(payload: payload(taskID: 3))
-        formState.supervisorTask = "Typed an answer instead"
+        formState.answerText = "Typed an answer instead"
 
         formState.exitAnswerMode()
 
@@ -159,12 +159,12 @@ final class EndToEndAnswerDraftPersistenceTests: XCTestCase {
     /// overwritten.
     func testEnterAnswerMode_sameTaskTwice_preservesInProgressAnswer() {
         formState.enterAnswerMode(payload: payload(taskID: 10, question: "First question"))
-        formState.supervisorTask = "Partial answer"
+        formState.answerText = "Partial answer"
 
         // Re-enter for the SAME task but with a different question (payload updated)
         formState.enterAnswerMode(payload: payload(taskID: 10, question: "Updated question"))
 
-        XCTAssertEqual(formState.supervisorTask, "Partial answer",
+        XCTAssertEqual(formState.answerText, "Partial answer",
                        "Re-entry for same task must preserve in-progress answer text")
     }
 
@@ -176,16 +176,16 @@ final class EndToEndAnswerDraftPersistenceTests: XCTestCase {
     /// `switchAnswerTask` — A's draft saved, B loaded.
     func testEnterAnswerMode_differentTaskID_triggersSwitch_draftsIsolated() {
         formState.enterAnswerMode(payload: payload(taskID: 1))
-        formState.supervisorTask = "Draft for 1"
+        formState.answerText = "Draft for 1"
 
         // Second enter with different taskID — state machine delegates to switchAnswerTask
         formState.enterAnswerMode(payload: payload(taskID: 2))
 
-        XCTAssertEqual(formState.supervisorTask, "",
+        XCTAssertEqual(formState.answerText, "",
                        "Task 2 starts fresh")
 
         formState.switchAnswerTask(from: 2, to: payload(taskID: 1))
-        XCTAssertEqual(formState.supervisorTask, "Draft for 1",
+        XCTAssertEqual(formState.answerText, "Draft for 1",
                        "Task 1's draft was preserved during the implicit switch")
     }
 
@@ -220,39 +220,43 @@ final class EndToEndAnswerDraftPersistenceTests: XCTestCase {
         try "data".write(to: url, atomically: true, encoding: .utf8)
         let attachment = try StagedAttachment(url: url, stagedRelativePath: "draft/attachment.txt")
 
-        formState.supervisorTask = "queued composition"
+        formState.answerText = "queued composition"
         formState.answerAttachments = [attachment]
         formState.answerClippedTexts = ["clip-1", "clip-2"]
 
         formState.captureLiveComposerAsAnswerDraft(taskID: 77)
 
         // Simulate the post-`exitAnswerMode` cleared state
-        formState.supervisorTask = ""
+        formState.answerText = ""
         formState.answerAttachments = []
         formState.answerClippedTexts = []
 
         formState.restoreAnswerDraftToLiveFields(taskID: 77)
 
-        XCTAssertEqual(formState.supervisorTask, "queued composition")
+        XCTAssertEqual(formState.answerText, "queued composition")
         XCTAssertEqual(formState.answerAttachments, [attachment])
         XCTAssertEqual(formState.answerClippedTexts, ["clip-1", "clip-2"])
     }
 
-    // MARK: - Scenario 10: clearAnswerSession saves draft (not a destructive clear)
+    // MARK: - Scenario 10: a dismissed answer comes back on re-entry
 
-    func testClearAnswerSession_savesDraft_fieldsCleared() {
+    /// Was written against `clearAnswerSession`, which `dismissPanel` only ever reached
+    /// with `pendingAnswer == nil` — so the save it asserted could not fire in production
+    /// and the method has been deleted. The round trip it describes is real; it belongs to
+    /// the fork that actually runs on an answer-mode dismiss.
+    func testDismissedAnswer_comesBackOnReEntry() {
         formState.enterAnswerMode(payload: payload(taskID: 99))
-        formState.supervisorTask = "Panel-dismiss draft"
+        formState.answerText = "Panel-dismiss draft"
         formState.answerClippedTexts = ["keep me"]
 
-        formState.clearAnswerSession()
+        formState.exitAnswerMode()
 
         XCTAssertTrue(formState.answerClippedTexts.isEmpty,
-                      "Session fields cleared")
+                      "Live fields cleared")
 
         // Re-enter: draft must come back
         formState.enterAnswerMode(payload: payload(taskID: 99))
-        XCTAssertEqual(formState.supervisorTask, "Panel-dismiss draft",
+        XCTAssertEqual(formState.answerText, "Panel-dismiss draft",
                        "Draft was saved before clear — restored on re-entry")
         XCTAssertEqual(formState.answerClippedTexts, ["keep me"],
                        "Clips restored along with text")

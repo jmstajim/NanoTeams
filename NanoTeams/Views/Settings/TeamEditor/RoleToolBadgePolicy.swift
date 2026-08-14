@@ -156,7 +156,7 @@ nonisolated enum RoleToolBadgePolicy {
         selectedScheme: String?,
         isVisionConfigured: Bool,
         isComputerUseEnabled: Bool,
-        autovisorAllowTeamGeneration: Bool,
+        autovisorTeamPolicy: AutovisorTeamPolicy,
         fileManager: FileManager = .default
     ) -> Model {
         let shipped = EffectiveToolset.resolve(
@@ -167,7 +167,7 @@ nonisolated enum RoleToolBadgePolicy {
             selectedScheme: selectedScheme,
             isVisionConfigured: isVisionConfigured,
             isComputerUseEnabled: isComputerUseEnabled,
-            autovisorAllowTeamGeneration: autovisorAllowTeamGeneration,
+            autovisorTeamPolicy: autovisorTeamPolicy,
             fileManager: fileManager
         )
         let effectiveNames = Set(shipped.map(\.name))

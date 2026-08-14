@@ -378,6 +378,13 @@ nonisolated enum TeamConfigParser {
            let parsed = JSONUtilities.parseJSONDictionary(injected) {
             return parsed
         }
+        // No trailing-comma repair here on purpose. `JSONSerialization` accepts trailing
+        // commas (pinned by `TeamConfigParserTests.testJSONSerialization_toleratesTrailingCommas`)
+        // and `decodeFromConfigDict` re-serialises the dictionary before the strict
+        // `JSONDecoder` sees anything, so such a repair could never fire — it would only add
+        // two full-string passes to a path that has already failed six repairs for some
+        // OTHER reason. When that pin goes red, add the repair back, composed with the
+        // structural repairs above rather than only with `s`/`repaired`.
         return nil
     }
 

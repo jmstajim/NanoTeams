@@ -51,12 +51,12 @@ final class ChangeRequestVotingTests: XCTestCase {
         ]
 
         let result = ChangeRequestService.tallyVotes(meetingMessages: messages)
-        XCTAssertEqual(result, .tied) // 0 == 0 → tied
+        XCTAssertEqual(result, .noVotes,
+                       "a meeting that ran and decided nothing is not a deadlock")
     }
 
     func testTallyVotes_emptyMessages() {
-        let result = ChangeRequestService.tallyVotes(meetingMessages: [])
-        XCTAssertEqual(result, .tied)
+        XCTAssertEqual(ChangeRequestService.tallyVotes(meetingMessages: []), .noVotes)
     }
 
     func testTallyVotes_caseInsensitive() {

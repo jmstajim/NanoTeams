@@ -350,4 +350,119 @@ final class TeamConfigParserTests: XCTestCase {
         let already = #"{"a":"x \" y"}"#
         XCTAssertEqual(TeamConfigParser.repairUnescapedInteriorQuotes(already), already)
     }
+
+    // MARK: - Why there is no trailing-comma repair
+
+    /// A trailing comma is the single most common LLM JSON defect, and this parser has NO
+    /// repair for it — deliberately. `JSONSerialization` accepts them, and
+    /// `decodeFromConfigDict` re-serialises the dictionary before the strict `JSONDecoder`
+    /// ever sees the model's bytes, so such a repair could not fire; it would only add two
+    /// full-string passes to a path that has already failed six repairs for some OTHER
+    /// reason. That immunity is undocumented and incidental, which is exactly why it is
+    /// pinned rather than assumed.
+    ///
+    /// When this goes red, Foundation has tightened and the repair becomes load-bearing.
+    /// Add it back composed with the STRUCTURAL repairs (`repairMissingArrayClose`,
+    /// `repairStructuralCloserDrop`), not only with `s`/`repaired` — a payload carrying a
+    /// dropped closer AND a trailing comma is a shape gemma-4-e4b actually emits.
+    func testJSONSerialization_toleratesTrailingCommas() throws {
+        for text in [#"{"a":1,}"#, #"[1,2,]"#, #"{"a":[1,],"b":2,}"#, #"{"a":1,   }"#] {
+            let data = try XCTUnwrap(text.data(using: .utf8))
+            XCTAssertNoThrow(try JSONSerialization.jsonObject(with: data), text)
+        }
+    }
+
+    /// End-to-end form of the same assumption, through the parser's own entry point.
+    func testParse_trailingCommaConfig_decodesWithoutAnyRepair() throws {
+        let config = """
+            {"name":"T","description":"d","roles":[{"name":"Eng","prompt":"p",\
+            "produces_artifacts":["Code"],"requires_artifacts":["Supervisor Task"],"tools":[],}],\
+            "artifacts":[{"name":"Code","description":"c"},],"supervisor_requires":["Code"],}
+            """
+        let build = try TeamConfigParser.decodeTeamConfig(from: config)
+        XCTAssertEqual(build.team.name, "T")
+    }
+
+    // MARK: - Empty role prompt, end to end
+
+    /// The DTO's non-empty `prompt` guard is only worth having if the message
+    /// REACHES the model, and the hop that decides it is not the one the unit
+    /// test exercises: `decodeFromConfigDict` calls `describeDecodingError` at
+    /// the throw site and stuffs the result into
+    /// `GenerationError.invalidResponse`, and the corrective retry in
+    /// `TeamGenerationService.generate` then calls `describeDecodingError` AGAIN
+    /// on that wrapper — where it falls through to `localizedDescription`. So the
+    /// coding path survives only because the FIRST describe ran. Pin the string
+    /// the model actually receives, not the intermediate.
+    ///
+    /// RED: remove the DTO guard → no error at all; `decodeTeamConfig` returns a
+    /// team whose second role ships with empty `{roleGuidance}`. (It is still named
+    /// "Beta" — this fixture declares the name. The literal "Role" fallback needs
+    /// the name ABSENT too, which is the incident shape pinned separately by
+    /// `testDecodeTeamConfig_emptyPromptAndNoName_isTheReportedIncidentShape`.)
+    /// RED: throw a bare `dataCorrupted` with an empty `codingPath` → the field
+    /// assertion still passes (the debugDescription itself begins "`prompt`"), and
+    /// the INDEX assertion is the one that reds — which is the half the retry
+    /// cannot reconstruct.
+    func testDecodeTeamConfig_emptyRolePrompt_reportsTheFieldAndIndexToTheModel() {
+        let payload = """
+            {"team_config":{"name":"T","description":"d",
+            "roles":[
+              {"name":"Alpha","prompt":"ok","produces_artifacts":["X"],"requires_artifacts":["Supervisor Task"]},
+              {"name":"Beta","prompt":"","produces_artifacts":["Y"],"requires_artifacts":["X"]}
+            ],
+            "artifacts":[{"name":"X","description":"x"},{"name":"Y","description":"y"}],
+            "supervisor_requires":["Y"]}}
+            """
+        XCTAssertThrowsError(try TeamConfigParser.decodeTeamConfig(from: payload)) { error in
+            // This is the string the retry hands back: `describeDecodingError` on
+            // the WRAPPER falls through to `localizedDescription`.
+            let asRetrySeesIt = TeamConfigParser.describeDecodingError(error)
+            XCTAssertTrue(asRetrySeesIt.contains("prompt"), "got \(asRetrySeesIt)")
+            XCTAssertTrue(asRetrySeesIt.contains("1"), "must name role index 1 — got \(asRetrySeesIt)")
+            XCTAssertTrue(
+                asRetrySeesIt.contains("must not be empty"),
+                "must carry the DTO's own debugDescription — got \(asRetrySeesIt)")
+        }
+    }
+
+    /// The reported incident shape: `name` ABSENT and `prompt` empty together.
+    /// The name fallback reads the prompt, so before the guard this decoded into a
+    /// role literally called "Role" carrying no guidance — which then ran. Nothing
+    /// in the change covered both halves at once until the review pointed out that
+    /// the fixture above declares its names.
+    ///
+    /// RED: remove the DTO guard → this decodes, and the assertion below shows the
+    /// team that used to ship.
+    func testDecodeTeamConfig_emptyPromptAndNoName_isTheReportedIncidentShape() {
+        let payload = """
+            {"team_config":{"name":"T","description":"d",
+            "roles":[{"prompt":"","produces_artifacts":["X"],"requires_artifacts":["Supervisor Task"]}],
+            "artifacts":[{"name":"X","description":"x"}],
+            "supervisor_requires":["X"]}}
+            """
+        XCTAssertThrowsError(try TeamConfigParser.decodeTeamConfig(from: payload)) { error in
+            let described = TeamConfigParser.describeDecodingError(error)
+            XCTAssertTrue(described.contains("prompt"), "got \(described)")
+            XCTAssertFalse(
+                described.contains("Role"),
+                "the failure must name the FIELD, not the synthesized placeholder name — got \(described)")
+        }
+    }
+
+    /// Control: the surrounding payload is well-formed, so the throw above is
+    /// attributable to the empty prompt and nothing else.
+    func testDecodeTeamConfig_sameShapeWithARealPrompt_decodes() throws {
+        let payload = """
+            {"team_config":{"name":"T","description":"d",
+            "roles":[
+              {"name":"Alpha","prompt":"ok","produces_artifacts":["X"],"requires_artifacts":["Supervisor Task"]},
+              {"name":"Beta","prompt":"also ok","produces_artifacts":["Y"],"requires_artifacts":["X"]}
+            ],
+            "artifacts":[{"name":"X","description":"x"},{"name":"Y","description":"y"}],
+            "supervisor_requires":["Y"]}}
+            """
+        let build = try TeamConfigParser.decodeTeamConfig(from: payload)
+        XCTAssertEqual(build.team.roles.count, 3, "Supervisor + Alpha + Beta")
+    }
 }

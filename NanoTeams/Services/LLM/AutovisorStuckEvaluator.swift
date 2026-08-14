@@ -101,10 +101,18 @@ nonisolated enum AutovisorStuckEvaluator {
         let recentCalls = step.toolCalls
             .suffix(DelegationConstants.repetitionMinIdenticalToolCalls + 5)
             .map { (name: $0.name, argsJSON: $0.argumentsJSON, createdAt: $0.createdAt) }
+        // Bound the tool-call scan at the last UNSOLICITED arrival. Both callers evaluate
+        // MANAGED tasks, never the manager itself (`autovisorWatchableTasks` excludes it,
+        // and `task_status` inspects another task), so the arrival here is the manager's
+        // own `message_task` steering or a human queued chat turn landing in that task's
+        // conversation. A role told "focus on the parser instead" and re-reading the file
+        // it was pointed at is reacting, not spinning — but the count only RESTARTS at the
+        // arrival, so a role that is told something and then really does spin still fires.
         if let signal = LoopScanner.scanCommitted(
             recentAssistant: Array(recentAssistant),
             toolCalls: Array(recentCalls),
             cutoffDate: cutoff,
+            informationBoundary: ConversationInformationBoundary.lastArrival(in: step.llmConversation),
             scope: .thinkingAndContent
         ) {
             return .loop(signal: signal)

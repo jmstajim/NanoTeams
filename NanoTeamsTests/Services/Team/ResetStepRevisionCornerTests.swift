@@ -133,7 +133,7 @@ final class ResetStepRevisionCornerTests: XCTestCase {
         manager.append(stepID: "swe", taskID: 7, messageID: messageID, role: .softwareEngineer, content: "result")
         XCTAssertTrue(manager.isStreaming(messageID: messageID))
 
-        _ = manager.commit(stepID: "swe", taskID: 7)
+        manager.commit(stepID: "swe", taskID: 7)
 
         XCTAssertFalse(manager.isStreaming(messageID: messageID),
                        "commit must remove the message from the active set")

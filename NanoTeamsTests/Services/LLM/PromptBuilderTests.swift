@@ -1006,7 +1006,7 @@ final class PromptBuilderTests: XCTestCase {
     // not in the chip's resolved value.
 
     func testBuildConversationMechanicsGuidance_withFileReadTools_includesResourceTracking() {
-        let guidance = PromptBuilder.buildConversationMechanicsGuidance(hasFileReadTools: true)
+        let guidance = PromptBuilder.buildConversationMechanicsGuidance(hasTagProducingTools: true)
 
         XCTAssertFalse(guidance.hasPrefix("## "),
                        "guidance must be bare body — the `## Conversation mechanics` header is in the template")
@@ -1014,26 +1014,30 @@ final class PromptBuilderTests: XCTestCase {
                       "file-read roles must get the tag legend")
         XCTAssertTrue(guidance.contains("instead of re-quoting"),
                       "the sentence must steer the model to reference a prior result via its tag instead of re-pasting its content (re-reading a changed resource stays allowed)")
-        // The unchanged-read envelope is intentionally NOT pre-explained in the
-        // prompt — its own `_hint` carries the dedup instruction at point of use,
-        // so the sentence must not restate the `{"status":"unchanged"}` shape, and
-        // must not name a "Memories" index (injection is gated off via
-        // `LLMExecutionService.isMemoriesInjectionEnabled`).
+        // No unchanged-read envelope exists any more (the dedup and its
+        // `_hint` were deleted 2026-08-11), so the prompt must not describe
+        // one; there is no Memories index either; and the legend must cover
+        // every LIVE tag type while advertising no dead one — it drifted once
+        // in each direction (dead `<§P1§>` advertised, live `<§S1§>` omitted).
         XCTAssertFalse(guidance.contains("\"status\":\"unchanged\""),
-                       "the cached system prompt must not duplicate the unchanged envelope — the per-result _hint covers it")
+                       "no unchanged envelope can be produced — the prompt must not describe one")
         XCTAssertFalse(guidance.contains("Memories"),
-                       "while Memories injection is disabled, the prompt must not point at an index that won't appear")
+                       "there is no Memories index — the prompt must not point at one")
+        XCTAssertFalse(guidance.contains("<§P1§>"),
+                       "the legend must not advertise a tag no tool result can carry")
+        XCTAssertTrue(guidance.contains("<§S1§> shell"),
+                      "bash results are S-tagged — the legend must teach the sigil")
     }
 
     func testBuildConversationMechanicsGuidance_withoutFileReadTools_omitsResourceTracking() {
-        let guidance = PromptBuilder.buildConversationMechanicsGuidance(hasFileReadTools: false)
+        let guidance = PromptBuilder.buildConversationMechanicsGuidance(hasTagProducingTools: false)
 
         XCTAssertFalse(guidance.hasPrefix("## "),
                        "guidance must be bare body — the `## Conversation mechanics` header is in the template")
         XCTAssertFalse(guidance.contains("<§R1§>"),
                        "non-file-reading roles must not see the tag legend")
         XCTAssertFalse(guidance.contains("Memories"),
-                       "non-file-reading roles must not be told about the Memories index — they never produce tags")
+                       "non-file-reading roles must not be told about a Memories index — none exists")
         XCTAssertFalse(guidance.isEmpty,
                        "the Supervisor-task-awareness sentence still runs for every role")
     }

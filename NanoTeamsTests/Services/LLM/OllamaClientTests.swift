@@ -273,7 +273,7 @@ final class OllamaClientTests: XCTestCase {
 
     func testModelLoadDetails_loadedModel_mergesShowAndPS() async {
         let show = #"{"details":{"parameter_size":"20.9B","quantization_level":"MXFP4","family":"gptoss","format":"gguf"},"capabilities":["completion","tools","thinking"],"model_info":{"gptoss.context_length":131072},"parameters":"num_ctx 8192"}"#
-        let ps = #"{"models":[{"name":"gpt-oss:20b","model":"gpt-oss:20b","size_vram":13600000000,"expires_at":"2026-07-23T14:00:00Z"}]}"#
+        let ps = #"{"models":[{"name":"gpt-oss:20b","model":"gpt-oss:20b","size_vram":13600000000,"expires_at":"2026-07-23T21:00:00Z"}]}"#
         let session = RoutingOllamaNetworkSession(routes: [
             "/api/show": .fixed(show),
             "/api/ps": .fixed(ps),
@@ -289,7 +289,7 @@ final class OllamaClientTests: XCTestCase {
             details?.fields.first { $0.label == label }?.value
         }
         XCTAssertEqual(value("VRAM"), "13.6 GB")
-        XCTAssertEqual(value("Keep-alive until"), "2026-07-23T14:00:00Z")
+        XCTAssertEqual(value("Keep-alive until"), "2026-07-23T21:00:00Z")
         XCTAssertEqual(value("Context length (num_ctx)"), "8192")
         XCTAssertEqual(value("Max context length"), "131072")
         XCTAssertEqual(value("Parameters"), "20.9B")
@@ -298,6 +298,37 @@ final class OllamaClientTests: XCTestCase {
         XCTAssertEqual(value("Format"), "gguf")
         XCTAssertEqual(value("Capabilities"), "completion, tools, thinking")
         XCTAssertEqual(value("Modelfile parameters"), "num_ctx 8192")
+    }
+
+    /// `ModelLoadDetails.Field` is `Identifiable` off its LABEL, and the Model Details card
+    /// renders the fields in a `ForEach` — so two fields sharing a label would be two rows
+    /// with one id, which is SwiftUI's documented undefined-results case (CLAUDE.md #22:
+    /// wrong removal animations, stale-index crashes).
+    ///
+    /// Asserted against the richest real payload rather than a hand-built pair, because the
+    /// property that matters is "the provider path cannot emit a duplicate", not "String
+    /// equality works".
+    ///
+    /// RED: change `id` to a constant, or merge two label cases in `modelLoadDetails` → the
+    /// uniqueness assertion fails.
+    func testModelLoadDetails_fieldIDsAreUniqueAndDerivedFromTheLabel() async {
+        let show = #"{"details":{"parameter_size":"20.9B","quantization_level":"MXFP4","family":"gptoss","format":"gguf"},"capabilities":["completion","tools","thinking"],"model_info":{"gptoss.context_length":131072},"parameters":"num_ctx 8192"}"#
+        let ps = #"{"models":[{"name":"gpt-oss:20b","model":"gpt-oss:20b","size_vram":13600000000,"expires_at":"2026-07-23T21:00:00Z"}]}"#
+        let client = OllamaClient(
+            session: RoutingOllamaNetworkSession(routes: [
+                "/api/show": .fixed(show), "/api/ps": .fixed(ps),
+            ]),
+            tokenResolver: StubLLMTokenResolver())
+
+        let fields = await client.modelLoadDetails(config: makeConfig())?.fields ?? []
+
+        XCTAssertGreaterThan(fields.count, 5, "arrange: the rich payload must yield many rows")
+        for field in fields {
+            XCTAssertEqual(field.id, field.label, "the id IS the label")
+        }
+        XCTAssertEqual(
+            Set(fields.map(\.id)).count, fields.count,
+            "duplicate ids in a ForEach are undefined results: \(fields.map(\.id))")
     }
 
     func testModelLoadDetails_notResident_showsNotLoaded() async {

@@ -47,6 +47,15 @@ final class ToolsXcodeTests: XCTestCase {
         try super.tearDownWithError()
     }
 
+    /// Writes `settings.json` with a configured scheme, so a test can get past scheme
+    /// resolution without going near auto-detection.
+    private func writeSelectedScheme(_ scheme: String) throws {
+        let paths = NTMSPaths(workFolderRoot: tempDir)
+        try fileManager.createDirectory(at: paths.internalDir, withIntermediateDirectories: true)
+        try #"{"selectedScheme":"\#(scheme)"}"#
+            .write(to: paths.settingsJSON, atomically: true, encoding: .utf8)
+    }
+
     // MARK: - run_xcodebuild Tests
 
     func testRunXcodebuild_noProjectFound() {
@@ -59,8 +68,17 @@ final class ToolsXcodeTests: XCTestCase {
         XCTAssertTrue(results[0].outputJSON.contains("xcodeproj") || results[0].outputJSON.contains("xcworkspace"))
     }
 
+    /// A workspace that references the project would report a SUBSET of the schemes the
+    /// user actually builds, so the workspace has to win.
+    ///
+    /// Asserted on the argv now. This test used to claim to verify the preference while
+    /// asserting only `isError` — which was true for either choice, and true for a dozen
+    /// unrelated reasons. It also reached a real `xcodebuild -list` through the registry,
+    /// so its outcome depended on what the installed Xcode printed for a fake `.xcodeproj`.
+    ///
+    /// RED: swap the two `first(where:)` clauses in `findProject` → the argv carries
+    /// `-project`.
     func testRunXcodebuild_prefersWorkspaceOverProject() throws {
-        // Create both workspace and project
         try fileManager.createDirectory(
             at: tempDir.appendingPathComponent("App.xcworkspace"),
             withIntermediateDirectories: true
@@ -69,30 +87,40 @@ final class ToolsXcodeTests: XCTestCase {
             at: tempDir.appendingPathComponent("App.xcodeproj"),
             withIntermediateDirectories: true
         )
+        try writeSelectedScheme("App")
+        let runner = RecordingXcodebuildRunner(responses: [.ok("** BUILD SUCCEEDED **")])
 
-        // The tool should prefer workspace, but will fail because no scheme is configured
-        let call = StepToolCall(name: "run_xcodebuild", argumentsJSON: "{}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        _ = RunXcodebuildTool(workFolderRoot: tempDir, runner: runner)
+            .handle(context: context, args: [:])
 
-        XCTAssertEqual(results.count, 1)
-        // It will fail because no schemes configured, but we can verify it tried
-        XCTAssertTrue(results[0].isError)
+        let argv = try XCTUnwrap(runner.calls.first?.arguments)
+        XCTAssertEqual(Array(argv.prefix(2)), ["-workspace", "App.xcworkspace"])
+        XCTAssertFalse(argv.contains("-project"))
     }
 
+    /// No scheme configured AND none detectable is an ERROR with actionable text, not a
+    /// build that silently does nothing.
+    ///
+    /// The assertion used to be `isError || output.contains("scheme")` — a disjunction that
+    /// holds in both worlds, so it could not distinguish "reported the problem" from
+    /// "auto-detected something and built it". Which one happened depended on a real
+    /// subprocess.
     func testRunXcodebuild_noSchemesConfigured() throws {
         try fileManager.createDirectory(
             at: tempDir.appendingPathComponent("App.xcodeproj"),
             withIntermediateDirectories: true
         )
+        let runner = RecordingXcodebuildRunner(responses: [.failed(66)])
 
-        let call = StepToolCall(name: "run_xcodebuild", argumentsJSON: "{}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let result = RunXcodebuildTool(workFolderRoot: tempDir, runner: runner)
+            .handle(context: context, args: [:])
 
-        XCTAssertEqual(results.count, 1)
-        // Should fail without configured schemes (unless auto-detect works)
-        // The error message should mention schemes or targets
-        let output = results[0].outputJSON
-        XCTAssertTrue(results[0].isError || output.contains("scheme"))
+        XCTAssertTrue(result.isError, result.outputJSON)
+        XCTAssertTrue(
+            result.outputJSON.contains("No scheme configured in project settings."),
+            result.outputJSON)
+        XCTAssertEqual(runner.callCount, 1, "only the -list probe; nothing was built")
+        XCTAssertTrue(try XCTUnwrap(runner.calls.first?.arguments).contains("-list"))
     }
 
     // MARK: - run_xcodetests Tests
@@ -106,19 +134,23 @@ final class ToolsXcodeTests: XCTestCase {
         XCTAssertTrue(results[0].outputJSON.contains("FILE_NOT_FOUND"))
     }
 
+    /// Same as the build side, with the tool-specific phrasing that tells the user which
+    /// action they were trying to run. Also previously a pass-either-way disjunction over a
+    /// real subprocess.
     func testRunTests_noTestTargetsConfigured() throws {
         try fileManager.createDirectory(
             at: tempDir.appendingPathComponent("App.xcodeproj"),
             withIntermediateDirectories: true
         )
+        let runner = RecordingXcodebuildRunner(responses: [.failed(66)])
 
-        let call = StepToolCall(name: "run_xcodetests", argumentsJSON: "{}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let result = RunXcodetestsTool(workFolderRoot: tempDir, runner: runner)
+            .handle(context: context, args: [:])
 
-        XCTAssertEqual(results.count, 1)
-        // Should fail without configured test targets (unless auto-detect works)
-        let output = results[0].outputJSON
-        XCTAssertTrue(results[0].isError || output.contains("test"))
+        XCTAssertTrue(result.isError, result.outputJSON)
+        XCTAssertTrue(
+            result.outputJSON.contains("before running tests"),
+            "the message must name the action the user was attempting: " + result.outputJSON)
     }
 
     // MARK: - XcodeIssue Structure Tests
@@ -198,141 +230,92 @@ final class ToolsXcodeTests: XCTestCase {
     }
 
     // MARK: - Output Parsing Tests
+    //
+    // These five used to re-implement the production regexes INLINE and assert against
+    // their own copies, so they held whatever production did — including when production
+    // was wrong. `testParseXcodeOutput_testCaseFormat` was the expensive case: it pinned
+    // `#"Test Case .+ passed"#` with no `.caseInsensitive`, which is exactly the pattern
+    // that reported `passed: 0, failed: 0` for every run on Xcode 26's lowercase
+    // `Test case` output. A test whose fixture and expectation are both derived from the
+    // defect cannot see the defect. They now call the production parsers.
 
-    func testParseXcodeOutput_errorFormat() {
-        // Test the error pattern parsing via the tool's internal behavior
-        // This simulates what the tool parses from xcodebuild output
-        let sampleOutput = """
-        /Users/dev/Project/Sources/File.swift:42:10: error: cannot find 'foo' in scope
-        /Users/dev/Project/Sources/Other.swift:15:5: warning: unused variable 'bar'
-        """
+    func testParseIssues_errorAndWarningFormat() {
+        let issues = XcodeBuildRunner.parseIssues(
+            from: """
+                /Users/dev/Project/Sources/File.swift:42:10: error: cannot find 'foo' in scope
+                /Users/dev/Project/Sources/Other.swift:15:5: warning: unused variable 'bar'
+                """,
+            workFolderRoot: URL(fileURLWithPath: "/Users/dev/Project"))
 
-        // Parse using regex pattern from Tools+Xcode.swift
-        let pattern = #"^(.+?):(\d+):(\d+):\s*(error|warning|note):\s*(.+)$"#
-        let regex = try! NSRegularExpression(pattern: pattern, options: .anchorsMatchLines)
+        XCTAssertEqual(issues.count, 2)
+        XCTAssertEqual(issues[0].file, "Sources/File.swift")
+        XCTAssertEqual(issues[0].line, 42)
+        XCTAssertEqual(issues[0].column, 10)
+        XCTAssertEqual(issues[0].severity, "error")
+        XCTAssertTrue(issues[0].message.contains("foo"))
 
-        let range = NSRange(sampleOutput.startIndex..., in: sampleOutput)
-        var matches: [(file: String, line: Int, message: String)] = []
-
-        regex.enumerateMatches(in: sampleOutput, options: [], range: range) { match, _, _ in
-            guard let match = match else { return }
-
-            let file = match.range(at: 1).location != NSNotFound
-                ? String(sampleOutput[Range(match.range(at: 1), in: sampleOutput)!])
-                : ""
-
-            let line = match.range(at: 2).location != NSNotFound
-                ? Int(sampleOutput[Range(match.range(at: 2), in: sampleOutput)!]) ?? 0
-                : 0
-
-            let message = match.range(at: 5).location != NSNotFound
-                ? String(sampleOutput[Range(match.range(at: 5), in: sampleOutput)!])
-                : ""
-
-            matches.append((file: file, line: line, message: message))
-        }
-
-        XCTAssertEqual(matches.count, 2)
-        XCTAssertTrue(matches[0].file.contains("File.swift"))
-        XCTAssertEqual(matches[0].line, 42)
-        XCTAssertTrue(matches[0].message.contains("foo"))
-
-        XCTAssertTrue(matches[1].file.contains("Other.swift"))
-        XCTAssertEqual(matches[1].line, 15)
-        XCTAssertTrue(matches[1].message.contains("bar"))
+        XCTAssertEqual(issues[1].file, "Sources/Other.swift")
+        XCTAssertEqual(issues[1].severity, "warning")
     }
 
-    func testParseXcodeOutput_testCaseFormat() {
-        let sampleOutput = """
-        Test Case '-[MyAppTests.SomeTests testExample]' started.
-        Test Case '-[MyAppTests.SomeTests testExample]' passed (0.001 seconds).
-        Test Case '-[MyAppTests.OtherTests testFailure]' started.
-        Test Case '-[MyAppTests.OtherTests testFailure]' failed (0.002 seconds).
-        """
+    /// BOTH result-line spellings must count. Xcode 26 prints `Test case '…' passed on
+    /// '…'`; the older shape is `Test Case '-[…]' passed`. Production matches
+    /// case-insensitively for exactly this reason, and the modern spelling is the one the
+    /// old inline copy of the pattern could not see.
+    ///
+    /// RED: drop `.caseInsensitive` from `parseTestOutcome` → the lowercase half stops
+    /// counting and `passed` falls to 1.
+    func testParseTestOutcome_countsBothResultLineSpellings() {
+        let outcome = XcodeBuildRunner.parseTestOutcome(
+            output: """
+                Test Case '-[MyAppTests.SomeTests testLegacy]' started.
+                Test Case '-[MyAppTests.SomeTests testLegacy]' passed (0.001 seconds).
+                Test case 'SomeTests.testModern()' passed on 'My Mac - NanoTeams (123)'
+                Test case 'OtherTests.testFailure()' failed on 'My Mac - NanoTeams (123)'
+                """,
+            scheme: "App",
+            workFolderRoot: URL(fileURLWithPath: "/Users/dev/Project"))
 
-        let passedPattern = #"Test Case .+ passed"#
-        let failedPattern = #"Test Case .+ failed"#
-
-        let passedRegex = try! NSRegularExpression(pattern: passedPattern)
-        let failedRegex = try! NSRegularExpression(pattern: failedPattern)
-
-        let range = NSRange(sampleOutput.startIndex..., in: sampleOutput)
-        let passedCount = passedRegex.numberOfMatches(in: sampleOutput, range: range)
-        let failedCount = failedRegex.numberOfMatches(in: sampleOutput, range: range)
-
-        XCTAssertEqual(passedCount, 1)
-        XCTAssertEqual(failedCount, 1)
+        XCTAssertEqual(outcome.passed, 2, "one legacy spelling and one modern")
+        XCTAssertEqual(outcome.failed, 1)
     }
 
-    func testParseXcodeOutput_testFailureDetails() {
-        let sampleOutput = """
-        /Users/dev/Project/Tests/SomeTests.swift:25: error: -[MyAppTests.SomeTests testExample] : XCTAssertEqual failed: ("1") is not equal to ("2")
-        """
+    func testParseTestOutcome_failureDetailsCarryFileLineAndMessage() {
+        let outcome = XcodeBuildRunner.parseTestOutcome(
+            output: """
+                /Users/dev/Project/Tests/SomeTests.swift:25: error: -[MyAppTests.SomeTests testExample] : XCTAssertEqual failed: ("1") is not equal to ("2")
+                """,
+            scheme: "App",
+            workFolderRoot: URL(fileURLWithPath: "/Users/dev/Project"))
 
-        let failurePattern = #"(.+?):(\d+):\s*error:\s*(.+)"#
-        let regex = try! NSRegularExpression(pattern: failurePattern)
-
-        let range = NSRange(sampleOutput.startIndex..., in: sampleOutput)
-        let matches = regex.matches(in: sampleOutput, range: range)
-
-        XCTAssertEqual(matches.count, 1)
-        if let match = matches.first {
-            let file = String(sampleOutput[Range(match.range(at: 1), in: sampleOutput)!])
-            let line = Int(sampleOutput[Range(match.range(at: 2), in: sampleOutput)!])
-            let message = String(sampleOutput[Range(match.range(at: 3), in: sampleOutput)!])
-
-            XCTAssertTrue(file.contains("SomeTests.swift"))
-            XCTAssertEqual(line, 25)
-            XCTAssertTrue(message.contains("XCTAssertEqual"))
-        }
+        XCTAssertEqual(outcome.failures.count, 1)
+        XCTAssertEqual(outcome.failures[0]["file"], "Tests/SomeTests.swift")
+        XCTAssertEqual(outcome.failures[0]["line"], "25")
+        XCTAssertEqual(outcome.failures[0]["scheme"], "App")
+        XCTAssertTrue(outcome.failures[0]["message"]?.contains("XCTAssertEqual") == true)
     }
 
     // MARK: - Edge Cases
 
-    func testXcodeOutput_multilineError() {
-        let sampleOutput = """
-        /path/to/file.swift:10:5: error: cannot convert value of type 'Int' to expected argument type 'String'
-        /path/to/file.swift:20:10: error: missing return in a function expected to return 'Bool'
-        /path/to/file.swift:30:3: warning: result of call to 'print' is unused
-        """
+    func testParseIssues_countsSeveritiesAcrossManyLines() {
+        let issues = XcodeBuildRunner.parseIssues(
+            from: """
+                /path/to/file.swift:10:5: error: cannot convert value of type 'Int' to expected argument type 'String'
+                /path/to/file.swift:20:10: error: missing return in a function expected to return 'Bool'
+                /path/to/file.swift:30:3: warning: result of call to 'print' is unused
+                """,
+            workFolderRoot: tempDir)
 
-        let pattern = #"^(.+?):(\d+):(\d+):\s*(error|warning|note):\s*(.+)$"#
-        let regex = try! NSRegularExpression(pattern: pattern, options: .anchorsMatchLines)
-
-        let range = NSRange(sampleOutput.startIndex..., in: sampleOutput)
-        var issueCount = 0
-        var errorCount = 0
-        var warningCount = 0
-
-        regex.enumerateMatches(in: sampleOutput, options: [], range: range) { match, _, _ in
-            guard let match = match else { return }
-            issueCount += 1
-
-            let severity = match.range(at: 4).location != NSNotFound
-                ? String(sampleOutput[Range(match.range(at: 4), in: sampleOutput)!])
-                : ""
-
-            if severity == "error" { errorCount += 1 }
-            if severity == "warning" { warningCount += 1 }
-        }
-
-        XCTAssertEqual(issueCount, 3)
-        XCTAssertEqual(errorCount, 2)
-        XCTAssertEqual(warningCount, 1)
+        XCTAssertEqual(issues.count, 3)
+        XCTAssertEqual(issues.filter { $0.severity == "error" }.count, 2)
+        XCTAssertEqual(issues.filter { $0.severity == "warning" }.count, 1)
     }
 
-    func testXcodeOutput_noIssues() {
-        let sampleOutput = """
-        Build succeeded.
-        ** BUILD SUCCEEDED **
-        """
-
-        let pattern = #"^(.+?):(\d+):(\d+):\s*(error|warning|note):\s*(.+)$"#
-        let regex = try! NSRegularExpression(pattern: pattern, options: .anchorsMatchLines)
-
-        let range = NSRange(sampleOutput.startIndex..., in: sampleOutput)
-        let matches = regex.matches(in: sampleOutput, range: range)
-
-        XCTAssertEqual(matches.count, 0)
+    func testParseIssues_cleanBuildOutput_reportsNoIssues() {
+        XCTAssertTrue(
+            XcodeBuildRunner.parseIssues(
+                from: "Build succeeded.\n** BUILD SUCCEEDED **",
+                workFolderRoot: tempDir
+            ).isEmpty)
     }
 }

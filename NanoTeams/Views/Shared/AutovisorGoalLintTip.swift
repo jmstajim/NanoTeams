@@ -80,10 +80,17 @@ nonisolated enum AutovisorGoalLintCopy {
     /// half actually happens — a capability sentence on its own states a limit
     /// and leaves the reader nowhere to go, and delegation IS the mechanism
     /// (`create_managed_task` → a team whose workers do have write and shell).
+    /// Keep this in step with `AutovisorConstants.managerOptionalToolIDs`. It is a
+    /// hand-written sentence, so nothing corrects it automatically — unlike its
+    /// sibling `AutovisorGoalLint.unavailableToolNames`, which is DERIVED from the
+    /// manager's toolset and self-corrected when the Xcode runners were admitted in
+    /// 1.8.4. That asymmetry is exactly how this line came to contradict the
+    /// manager's own prompt; `AutovisorGoalLintCopyTests` now pins it against the
+    /// toolset rather than against itself.
     static let capability =
-        "The Autovisor's manager can read files, read git and delegate — "
-        + "it has no shell, write or build tools. Anything that has to be "
-        + "written, built or run goes to a team it delegates to."
+        "The Autovisor's manager can read files, read git, and build or test to see "
+        + "where the repo stands — it has no shell or write tools. Anything that has "
+        + "to be CHANGED goes to a team it delegates to."
 
     /// The goal-specific half, or `nil` when the goal is clean.
     static func detail(for findings: [AutovisorGoalLint.Finding]) -> String? {

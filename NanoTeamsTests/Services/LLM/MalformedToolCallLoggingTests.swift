@@ -98,14 +98,29 @@ final class MalformedToolCallLoggingTests: XCTestCase {
     }
 
     /// Both appends fire from a `Task.detached`, so poll briefly.
-    private func waitForNetworkRecords(timeout: TimeInterval = 2.0) async -> [NetworkLogRecord] {
+    ///
+    /// Fails on timeout instead of returning `[]`. Every call site immediately subscripts
+    /// `[0]`, so a silent empty return is not a failed assertion — it is `Index out of range`,
+    /// which aborts the whole XCTest worker and gets attributed to whatever unrelated test was
+    /// in flight (CLAUDE.md Грабли 2026-07-07). A timing helper that can turn a slow producer
+    /// into someone else's crash report is the worst shape available.
+    private func waitForNetworkRecords(
+        timeout: TimeInterval = 2.0,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async -> [NetworkLogRecord] {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             let recs = networkToolCallRecords()
             if !recs.isEmpty { return recs }
             try? await Task.sleep(for: .milliseconds(25))
         }
-        return networkToolCallRecords()
+        let final = networkToolCallRecords()
+        if final.isEmpty {
+            XCTFail("no network records after \(timeout)s — the detached append never landed",
+                    file: file, line: line)
+        }
+        return final
     }
 
     // MARK: - Tests
@@ -123,7 +138,11 @@ final class MalformedToolCallLoggingTests: XCTestCase {
         )
 
         let netRecords = await waitForNetworkRecords()
-        XCTAssertEqual(netRecords.count, 1)
+        // `guard` rather than a bare count assertion: XCTFail does not stop the test, so an
+        // empty result would fall through to `[0]` and abort the worker process.
+        guard netRecords.count == 1 else {
+            return XCTFail("expected exactly 1 network record, got \(netRecords.count)")
+        }
         XCTAssertTrue(netRecords[0].body?.contains("malformed_tool_call") == true)
         XCTAssertTrue(netRecords[0].body?.contains("MALFORMED_TOOL_CALL") == true)
         XCTAssertEqual(netRecords[0].stepID, stepID)
@@ -147,7 +166,9 @@ final class MalformedToolCallLoggingTests: XCTestCase {
         )
 
         let netRecords = await waitForNetworkRecords()
-        XCTAssertEqual(netRecords.count, 1)
+        guard netRecords.count == 1 else {
+            return XCTFail("expected exactly 1 network record, got \(netRecords.count)")
+        }
         XCTAssertTrue(netRecords[0].body?.contains("MISSING_TOOL_NAME") == true)
 
         let lines = jsonlLines()

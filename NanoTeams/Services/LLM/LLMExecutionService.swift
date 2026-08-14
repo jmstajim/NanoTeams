@@ -27,7 +27,7 @@ nonisolated final class OnceResolver: @unchecked Sendable {
 /// - `+ToolResultProcessing.swift` — Tool result orchestration (iterates, dispatches)
 /// - `+ToolResultDispatching.swift` — Collaboration signal routing + regular tool dispatch
 /// - `+ToolResultSideEffects.swift` — Scratchpad, artifact persistence, event recording
-/// - `+ToolLoopState.swift` — Memories injection, loop detection, Supervisor auto-answer
+/// - `+ToolLoopState.swift` — Queued Supervisor messages, loop detection, Supervisor auto-answer
 /// - `+StepCompletion.swift` — Step completion and artifact completeness check
 /// - `+ConversationManagement.swift` — Message building and persistence
 /// - `+TaskStateMutations.swift` — Tool call recording, scratchpad, Supervisor auto-answer
@@ -119,6 +119,26 @@ final class LLMExecutionService {
     /// (server unreachable, no capability metadata) is NOT cached so a
     /// transient failure can't pin a wrong verdict for the service lifetime.
     var mainModelVisionCache: [String: Bool] = [:]
+
+    /// The OS surfaces the computer-use finalizer drives — screenshots, AX enumeration, and the
+    /// synthesis of real clicks and keystrokes.
+    ///
+    /// Injected, and the init seam resolves INWARD to `.inert` (CLAUDE.md Swift Style #49). Unlike
+    /// every other seam in this class, a default resolving OUTWARD would not merely make a test
+    /// slow or machine-dependent: `SystemInputControl` posts CGEvents at whatever is under the
+    /// developer's cursor, so a suite that drove a click would operate their machine. Production
+    /// names `.system` once, in `NTMSOrchestrator.init`.
+    let computerUse: ComputerUseEnvironment
+
+    /// How long `awaitDelegationCompletion` waits for a child task to reach a terminal state
+    /// before declaring it wedged.
+    ///
+    /// A tuning value, not a resource seam, so it defaults to the production constant rather
+    /// than "inward" — same shape as `SearchIndexCoordinator(watcherDebounce:)`, whose tests
+    /// pass 0.05 against a 10 s production default. It exists because the timeout arm is the one
+    /// exit from that loop with real consequences (it stops the child engine, clears the parent's
+    /// delegation fields and raises a banner), and 1800 seconds is not a wait any test can take.
+    let delegationTimeoutSeconds: TimeInterval
 
     /// Tears a step's bash-approval state down: resumes any pending waiter with
     /// `.deny` (fail safe) and drops the pending record. Called from every teardown
@@ -272,13 +292,17 @@ final class LLMExecutionService {
         artifactService: ArtifactService? = nil,
         clientFactory: @escaping @Sendable () -> any LLMClient = { LLMClientRouter() },
         harmonyParser: HarmonyToolCallParser = HarmonyToolCallParser(),
-        prefixLedger: PromptPrefixLedger? = nil
+        prefixLedger: PromptPrefixLedger? = nil,
+        computerUse: ComputerUseEnvironment? = nil,
+        delegationTimeoutSeconds: TimeInterval = DelegationConstants.delegationTimeoutSeconds
     ) {
         self.repository = repository
-        self.artifactService = artifactService ?? ArtifactService(repository: repository)
+        self.artifactService = artifactService ?? ArtifactService()
         self.clientFactory = clientFactory
         self.harmonyParser = harmonyParser
         self.prefixLedger = prefixLedger ?? PromptPrefixLedger()
+        self.computerUse = computerUse ?? .inert
+        self.delegationTimeoutSeconds = delegationTimeoutSeconds
     }
 
     func attach(delegate: LLMExecutionDelegate) {
@@ -301,6 +325,11 @@ final class LLMExecutionService {
     func cancelStepExecution(stepID: String, taskID: Int) async {
         let key = TaskStepKey(taskID: taskID, stepID: stepID)
         let runningTask = executionStates[key]?.runningTask
+        // The DETACHED tool batch too, and before the state entry is cleared below — that entry
+        // holds the only handle to it. This is the Pause path, i.e. exactly when a long
+        // `run_xcodebuild` / `bash` must stop; the three sibling teardowns (`cleanup()`,
+        // `cancelAllExecutions`, the meeting-turn path) already did this and this one did not.
+        executionStates[key]?.currentToolBatchTask?.cancel()
         runningTask?.cancel()
         if let runningTask {
             let finished = await Self.awaitTaskWithTimeout(

@@ -12,12 +12,11 @@ extension LLMExecutionService {
     /// This method orchestrates a single LLM iteration by delegating to focused methods:
     /// - `applyPlanningPhase` — authorizes the iteration's toolset for the planning phase
     /// - `performStreamingCall` — executes the LLM streaming call and collects tokens
-    /// - `processStreamingResult` — appends messages and detects completion signals
+    /// - `processStreamingResult` — appends the assistant turn to the wire and the log
     /// - `handleNoToolCalls` — handles missing tool calls (learning + retry)
     /// - `executeToolCalls` — executes tools through `ToolRuntime`
     /// - `processToolResults` — processes results (teammate, meeting, scratchpad, errors)
     /// - `handleSupervisorAutoAnswer` — auto-answers Supervisor questions in autonomous mode
-    /// - `injectMemories` — keeps the LLM oriented with tag index and plan context
     /// - `checkAndInjectLoopWarning` — detects and warns about looping patterns
     func runOneLLMToolIteration(
         stepID: String,
@@ -33,7 +32,6 @@ extension LLMExecutionService {
         conversationMessages: inout [ChatMessage],
         tracker: ToolCallTracker,
         memoryStore: MemoryTagStore,
-        iterationNumber: Int,
         cumulativeUsage: inout TokenUsage,
         networkLogger: NetworkLogger? = nil,
         toolObserver: (([StepToolCall], [ToolExecutionResult]) -> Void)? = nil
@@ -58,7 +56,6 @@ extension LLMExecutionService {
             tools: tools,
             step: step,
             team: resolvedTeam,
-            memoryStore: memoryStore,
             conversationMessages: &conversationMessages,
             roleDefinition: roleDefinition
         )
@@ -76,12 +73,17 @@ extension LLMExecutionService {
         // it outright). Cost of this ordering: the model sees such a message twice — once during
         // the exploration it was meant to steer, once in the implementation phase.
         if isExecutionLive(stepID: stepID, taskID: task.id) {
-            await injectQueuedSupervisorMessage(
+            let deliveredExternalInformation = await injectQueuedSupervisorMessage(
                 stepID: stepID,
                 taskID: task.id,
                 roleID: step.effectiveRoleID,
                 conversationMessages: &conversationMessages
             )
+            // Opens a new information epoch for the repetition detector: the model is
+            // about to decide knowing something no tool call of its own produced, so a
+            // repeat that straddles this point is a REACTION, not a loop. The marker
+            // rides the next recorded call — see `ToolCallTracker`.
+            if deliveredExternalInformation { tracker.noteExternalInformationArrived() }
         }
 
         // 2b. Stream LLM response. Every call sends the FULL conversation — the
@@ -177,13 +179,10 @@ extension LLMExecutionService {
         }
         resetThinkingLoopBreakCount(stepID: stepID, taskID: task.id)
 
-        // 3. Process streaming result (append messages, check completion signals)
-        if let completionStop = await processStreamingResult(
+        // 3. Append the assistant turn (and any tool calls) to the wire and the log.
+        await processStreamingResult(
             streamResult, stepID: stepID, taskID: task.id,
             conversationMessages: &conversationMessages)
-        {
-            return completionStop
-        }
 
         // 4. If no tool calls, handle accordingly
         if streamResult.resolvedToolCalls.isEmpty {
@@ -309,7 +308,6 @@ extension LLMExecutionService {
             config: config,
             tracker: tracker,
             memoryStore: memoryStore,
-            iterationNumber: iterationNumber,
             conversationMessages: &conversationMessages,
             networkLogger: networkLogger
         )
@@ -321,8 +319,13 @@ extension LLMExecutionService {
         // Runs AFTER `processToolResults` so the `.tool` turns are already appended —
         // a terminal taken here leaves a well-formed conversation for the next replay,
         // instead of an assistant turn whose tool calls have no results.
+        //
+        // Reads `outcome.effectiveResults`, NOT `toolResults`: every deferred signal's entry in
+        // the latter still carries the synchronous `{"status":"pending"}` placeholder's
+        // `isError: false`, so a turn whose every call actually failed re-armed the ceiling this
+        // switch exists to enforce.
         switch ToolTurnProductivity.classify(
-            isAskSupervisorOnly: isAskSupervisorOnly, toolResults: toolResults)
+            isAskSupervisorOnly: isAskSupervisorOnly, toolResults: outcome.effectiveResults)
         {
         case .productive:
             executionStates[TaskStepKey(taskID: task.id, stepID: stepID)]?
@@ -363,15 +366,7 @@ extension LLMExecutionService {
             return artifactStop
         }
 
-        // 8. Inject Memories (tag index + plan summary)
-        await injectMemories(
-            stepID: stepID,
-            taskID: task.id,
-            memoryStore: memoryStore,
-            conversationMessages: &conversationMessages
-        )
-
-        // 9. Check for looping patterns
+        // 8. Check for looping patterns
         await checkAndInjectLoopWarning(
             stepID: stepID,
             taskID: task.id,
@@ -428,6 +423,12 @@ extension LLMExecutionService {
             contextLength = await client.modelContextLength(config: config)
             if contextLength != nil { probedContextLengths[cacheKey] = contextLength }
         }
+
+        // No window → the verdict below can only ever be `.unknown`. Bail before
+        // the estimate: it walks the WHOLE conversation scalar-by-scalar, and on
+        // a provider that never reports a window it would be recomputed and
+        // discarded on every iteration for the life of the step.
+        guard let contextLength else { return }
 
         let estimate = ContextBudgetPolicy.estimateTokens(
             messages: messages, toolSchemaText: toolSchemaText)

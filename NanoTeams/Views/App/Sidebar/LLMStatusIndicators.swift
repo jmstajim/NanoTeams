@@ -84,7 +84,24 @@ struct LLMStatusIndicator: View {
             .contentShape(RoundedRectangle.squircle(CornerRadius.small))
         }
         .buttonStyle(.plain)
-        .help(isReachable ? "LLM is online" : "LLM is offline — click to configure")
+        .help(Self.tooltip(isReachable: isReachable, lastCheckedAt: monitor.lastCheckedAt))
         .accessibilityLabel("LLM status: \(isReachable ? "Online" : "Offline")")
+    }
+
+    /// Carries `lastCheckedAt`, which had no reader at all. Without it a re-probe
+    /// that finds the server still down changes nothing on screen, so the user
+    /// cannot tell the check ran — which is exactly the case they are staring at.
+    ///
+    /// ABSOLUTE time, not "N seconds ago", and that is forced rather than chosen.
+    /// `.help(...)` takes a `String` computed during `body`, and this view's only
+    /// observation dependencies are the two monitor properties `publish()` writes
+    /// together — so a self-driven render always sees ~0 elapsed. A relative clause
+    /// would therefore be baked as "just now" and keep saying it minutes later,
+    /// i.e. state something false about the world. A wall-clock stamp stays true no
+    /// matter when the body last ran, and still moves visibly when a probe lands.
+    nonisolated static func tooltip(isReachable: Bool, lastCheckedAt: Date?) -> String {
+        let base = isReachable ? "LLM is online" : "LLM is offline — click to configure"
+        guard let lastCheckedAt else { return base }
+        return "\(base) — checked \(lastCheckedAt.formatted(date: .omitted, time: .standard))"
     }
 }

@@ -3,6 +3,41 @@ import Foundation
 import CoreServices
 #endif
 
+/// The two things `SearchIndexCoordinator` needs from a file-system watcher.
+///
+/// Narrow on purpose (ISP): the coordinator never reads a path back, never asks
+/// whether the stream is running, and never re-arms one — it starts a watcher at
+/// `start()` and drops it at `stop()`.
+protocol FileSystemWatching: AnyObject, Sendable {
+    /// `false` when the stream could not be created. The coordinator turns that into a
+    /// user-visible `lastError`, because a dead watcher means the index silently stops
+    /// auto-refreshing and only the Rebuild button will move it again.
+    func start() -> Bool
+    func stop()
+}
+
+/// Builds the watcher `SearchIndexCoordinator.start()` installs.
+///
+/// **Deliberately has no default at any call site**, which is the one design decision here
+/// worth arguing. Both defaults are wrong in the way CLAUDE.md #49 describes, just in
+/// opposite directions:
+///
+/// - Defaulting OUTWARD (to the real watcher) is what this seam replaced: ~20 coordinator
+///   tests each opened a real `FSEventStream` on a temp directory, paying a kernel resource
+///   and a 1-second subscription warmup for a stream not one of them asserts on. Every one of
+///   those call sites got there by omitting an argument, never by choosing.
+/// - Defaulting INWARD (to an inert watcher) is worse: one forgotten argument in production
+///   and the search index stops auto-refreshing, with nothing logged and nothing failing —
+///   the app would just quietly serve stale results.
+///
+/// With no default the compiler asks the question, and there are only five places to answer it.
+typealias FileSystemWatcherFactory = @Sendable (
+    _ paths: [URL],
+    _ excludedPrefixes: [URL],
+    _ debounce: TimeInterval,
+    _ onChange: @escaping FileSystemWatcher.Handler
+) -> any FileSystemWatching
+
 /// Thin wrapper over `FSEventStream` for watching a set of paths.
 /// Coalesces bursts via a debounce layer on top of the FSEvents latency.
 ///
@@ -224,5 +259,24 @@ nonisolated final class FileSystemWatcher: @unchecked Sendable {
             self.pendingWorkItem = work
             self.queue.asyncAfter(deadline: .now() + self.debounce, execute: work)
         }
+    }
+}
+
+extension FileSystemWatcher: FileSystemWatching {}
+
+extension FileSystemWatcher {
+    /// The production factory — the only one that opens a real FSEvents stream.
+    ///
+    /// Named rather than written inline at the call site so the orchestrator's
+    /// `SearchIndexCoordinator(...)` reads as a choice ("live watcher") instead of as a
+    /// closure literal a reader has to decode, and so a test can assert that production's
+    /// factory really is the live one.
+    static let live: FileSystemWatcherFactory = { paths, excludedPrefixes, debounce, onChange in
+        FileSystemWatcher(
+            paths: paths,
+            excludedPrefixes: excludedPrefixes,
+            debounce: debounce,
+            onChange: onChange
+        )
     }
 }

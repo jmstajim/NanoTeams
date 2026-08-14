@@ -245,7 +245,14 @@ extension LLMExecutionService {
                 let defect = ToolCallParsingHelpers.malformedJSONDiagnostic(in: envelopeSource)
                     .map { "parser error: \($0)" }
                     ?? "e.g. a missing closing brace `}`, an unescaped quote inside a string, or a trailing comma"
-                retryMessage = "Your previous tool call had malformed JSON and could not be parsed (\(defect)). Retry with valid JSON, e.g. `<|call|>{\"name\":\"TOOL_NAME\",\"arguments\":{\"param\":\"value\"}}<|end|>` — note the two closing braces before `<|end|>`."
+                // Name a tool the role actually holds, exactly as the `.missingToolName`
+                // and `.noCallEnvelope` arms already do. This arm was the only one still
+                // shipping the literal `TOOL_NAME`, so the model was asked to fix a call
+                // without being shown a single valid id — and, before the anchor now
+                // carries the raw buffer, without being shown its own attempt either.
+                let example = Self.toolNameExample(allowedToolNames: allowedToolNames)
+                    ?? "TOOL_NAME"
+                retryMessage = "Your previous tool call had malformed JSON and could not be parsed (\(defect)). Your attempt is quoted verbatim in your previous turn — compare it against this shape: `<|call|>{\"name\":\"\(example)\",\"arguments\":{\"param\":\"value\"}}<|end|>` — note the two closing braces before `<|end|>`."
             case .noCallEnvelope:
                 // Framing without a call: a `<|channel|>` / `<|start|>` envelope whose
                 // recipient is missing or reserved, or whose body is prose. Deliberately
@@ -313,6 +320,25 @@ extension LLMExecutionService {
         // boundary that will never fire and — before the close became terminal — trigger one
         // that sliced away the revision turn the close was protecting.
         if PlanningPhasePolicy.isMidPlanning(conversationMessages) {
+            // A failed tool call is not a plan. The only content test used to be
+            // `isEmpty`, so a call the parser dropped was recorded as the step's durable
+            // plan — and `implementationWire` keeps exactly that one turn across the
+            // boundary, making it the sole memory of the exploration phase. Nudge with
+            // the defect instead and let the model retry the call it meant to make;
+            // leaving `scratchpad` nil keeps the phase open for a real plan.
+            if BareToolCallSalvage.looksLikeToolCallAttempt(cleanedContent) {
+                let nudge = """
+                    That looked like a tool call, but it did not parse as one, so nothing ran \
+                    and nothing was recorded. Emit it as a single envelope on its own line:
+                    `<|call|>{"name":"TOOL_NAME","arguments":{"param":"value"}}<|end|>`
+                    Nothing before the `<|call|>` and nothing after the `<|end|>`.
+                    """
+                conversationMessages.append(ChatMessage(role: .user, content: nudge))
+                await appendLLMMessage(
+                    stepID: stepID, taskID: task.id, role: .user, content: nudge,
+                    sourceContext: .retryNudge)
+                return .continueLoop
+            }
             let plan = cleanedContent.isEmpty ? "(no plan provided)" : cleanedContent
             if let delegate, isExecutionLive(stepID: stepID, taskID: task.id) {
                 _ = await delegate.mutateTask(taskID: task.id) { task in
@@ -496,12 +522,11 @@ extension LLMExecutionService {
         )
         switch decision {
         case .retryWithNudge(let nudge):
-            // Appended, never spliced or rewritten in place. Two independent reasons:
-            // `planMessageIndex` / `memoriesMessageIndex` are ABSOLUTE offsets into this
-            // array, so removing an earlier nudge would silently shift them; and rewriting
-            // one would change an EARLY byte, invalidating the server's KV prefix from that
-            // point — a full re-prefill to save ~115 tokens, in the one subsystem built to
-            // keep that prefix intact. An append is the only prefix-preserving mutation.
+            // Appended, never spliced or rewritten in place: removing or rewriting an
+            // earlier nudge would change an EARLY byte, invalidating the server's KV
+            // prefix from that point — a full re-prefill to save ~115 tokens, in the one
+            // subsystem built to keep that prefix intact. An append is the only
+            // prefix-preserving mutation.
             //
             // `maxThinkingLoopBreaks` bounds nudges within ONE episode only:
             // `consecutiveThinkingLoopBreaks` resets on every clean stream
@@ -602,16 +627,19 @@ extension LLMExecutionService {
     /// resolve after restart/revision) and `mutateTask` still returns true.
     /// We use a captured `didApply` flag to detect that and refuse to
     /// announce completion when the mutation didn't actually run.
-    /// The park question for a manager that hit the non-productive-turn cap. Human
-    /// facing: it renders as the pending question in the activity-feed composer and
-    /// QuickCapture answer mode, so it names the observable fact and the two things
-    /// the human can actually do. Deliberately NOT `AutovisorConstants.idleParkQuestion`
-    /// — see the call site.
+    /// The park question for a manager that hit the non-productive-turn cap.
+    ///
+    /// DUAL-MASTER: it renders as the pending question in the activity-feed composer and
+    /// QuickCapture answer mode (human), AND it reaches the model — `PromptBuilder` emits an
+    /// unanswered `step.supervisorQuestion` as a `.user` turn, and `+PipelineContext` repeats
+    /// it for every downstream role. So it names the observable fact and the capability to
+    /// change, never the Settings pane: truthful for the human, actionable-shaped for the
+    /// model. Deliberately NOT `AutovisorConstants.idleParkQuestion` — see the call site.
     nonisolated static func noToolParkQuestion(turns: Int) -> String {
         """
         The Autovisor produced \(turns) consecutive turns without calling any tool, so this review pass \
         could not end normally (it never reached wait_for_events). Send a message to steer it, or switch \
-        its model in Settings → Autovisor if this keeps happening.
+        the model it runs on if this keeps happening.
         """
     }
 

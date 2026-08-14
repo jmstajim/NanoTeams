@@ -590,9 +590,14 @@ nonisolated extension NTMSTask {
 
     /// Clears the recovery pause latch.
     ///
-    /// `status` is a one-bit LATCH, not a live status. It has exactly two writers:
-    /// seeded at `createTask`, and armed (`.paused`) by `StatusRecoveryService` when a
-    /// launch found work parked mid-flight. Everything user-facing reads the DERIVED
+    /// `status` is a one-bit LATCH, not a live status. Three writers, and this function
+    /// is the third: seeded at `createTask`, ARMED (`.paused`) by `StatusRecoveryService`
+    /// when a launch found work parked mid-flight, and RETIRED here — from `createNewRun`,
+    /// `resumeRun` and `restartRole` (named again at the end of this comment; count them
+    /// from the call sites, not from a sentence). This paragraph said "exactly two
+    /// writers" until 2026-08-10, inside the doc of the writer it left out, which reads
+    /// as "nothing clears it" — precisely the pre-fix state the paragraph below
+    /// describes. Everything user-facing reads the DERIVED
     /// status instead (`derivedStatusFromActiveRun`, `toSummary`), and the only thing
     /// that consults the stored value is the `.running where status == .paused` guard
     /// above — which exists so a recovered run with all-`.pending` steps reads "Paused".

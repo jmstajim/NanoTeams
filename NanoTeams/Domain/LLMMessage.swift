@@ -3,7 +3,14 @@ import Foundation
 // MARK: - Message Source Context
 
 /// Context indicating how an injected message was produced.
-nonisolated enum MessageSourceContext: String, Codable {
+///
+/// `CaseIterable` is load-bearing for presentation policies that classify a
+/// SUBSET of contexts (today: `SystemNoticePresentation`, which collapses the
+/// system-authored ones into a one-line feed row). Their truth-table tests
+/// iterate `allCases`, so a context added later is automatically asserted to
+/// fall on the default side rather than being silently missed by a
+/// hand-maintained list.
+nonisolated enum MessageSourceContext: String, Codable, CaseIterable {
     case consultation
     case meeting
     case changeRequest
@@ -53,6 +60,59 @@ nonisolated enum MessageSourceContext: String, Codable {
     /// Deliberately NOT `.loopCorrection`: that one means "the stream looped and was
     /// discarded", and labelling a tokens-only retry with it would be a new lie.
     case retryNudge
+
+    /// Did this turn PUSH information at the model that no tool call of its own asked for?
+    ///
+    /// The loop detectors treat such a turn as an INFORMATION BOUNDARY: a repeat the model
+    /// returns to after being told something is a reaction, a repeat with nothing between is
+    /// a loop. The in-step half marks it on the next tracked call
+    /// (`ToolCallTracker.TrackedCall.informationEpoch`); the committed half folds its
+    /// timestamp into the tool-call scan's cutoff (`LoopScanner.scanCommitted`). Without it,
+    /// the prescribed reaction to being told a task changed — re-checking it — read as
+    /// "identical arguments N times and the state isn't changing" one turn after the model
+    /// was told the state changed.
+    ///
+    /// **The discriminator is UNSOLICITED, not "the world moved".** Only `.supervisorMessage`
+    /// qualifies: a queued Supervisor turn (human steering, the Autovisor's mid-review event
+    /// notice, `message_task`) or a parent role's `forward_to_team` injected into a child.
+    /// Nobody in the conversation asked for it.
+    ///
+    /// Every other content-bearing context is the ANSWER TO A TOOL CALL THE MODEL MADE, and
+    /// `commitCollaborationOutcome` / `recordAutoSupervisorAnswer` append it to the same
+    /// step's conversation stamped strictly AFTER that call. Counting those would be
+    /// self-immunizing: a model spinning on `ask_teammate` with identical arguments produces
+    /// a fresh `.consultation` boundary with every repeat, the committed scan then drops
+    /// every call before the newest one, and the trailing run is pinned at 1 — i.e. the
+    /// detector could never fire again for `ask_teammate`, `request_team_meeting`,
+    /// `request_changes` or an auto-answered `ask_supervisor`. Their own tool call already
+    /// sits in the sequence; when the repeat is some OTHER tool it breaks the run there, and
+    /// when the repeat IS that tool there is nothing to excuse.
+    ///
+    /// `.delegatedQuestion` / `.delegationEscalation` are excluded for the same reason from
+    /// the other side: they are stamped into the PARENT's conversation by a delegated CHILD,
+    /// at a cadence the parent does not control, and would mask a parent looping on
+    /// `delegate_to_team`.
+    ///
+    /// **`.retryNudge` on the `false` side is load-bearing**: the repetition warning is
+    /// persisted with exactly that context, so calling it unsolicited information would let
+    /// the detector reset itself with its own warning — it would fire once and then never
+    /// again for as long as the model kept looping.
+    ///
+    /// Exhaustive on purpose — no `default`. A context added later must be classified by
+    /// whoever adds it; the compiler asks, because either answer is silently wrong for the
+    /// other kind (a missed boundary blames the model for reacting to news; a spurious one
+    /// lets a real spin run forever — and if it is spurious on a context the model itself
+    /// produces, it disables the detector for that tool permanently).
+    var carriesUnsolicitedInformation: Bool {
+        switch self {
+        case .supervisorMessage:
+            return true
+        case .consultation, .meeting, .changeRequest, .supervisorAnswer,
+             .delegatedQuestion, .delegationEscalation,
+             .serverError, .loopCorrection, .retryNudge:
+            return false
+        }
+    }
 
     private static let displayLabelMap: [MessageSourceContext: String] = [
         .consultation: "consultation",

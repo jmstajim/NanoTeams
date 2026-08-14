@@ -68,16 +68,14 @@ nonisolated enum ToolCallShapeRecognizer {
         }
 
         if let name = ToolCallParsingHelpers.stringValue(dict["name"]).flatMap(acceptingName) {
-            let args = dict["arguments"] ?? dict["args"] ?? dict["parameters"] ?? dict["params"]
-                ?? synthesizeArgumentsFromTopLevel(dict)
+            let args = mergingSpilledSiblings(dict) ?? synthesizeArgumentsFromTopLevel(dict)
             return (name: name, arguments: args)
         }
 
         if let toolName = (ToolCallParsingHelpers.stringValue(dict["tool_name"])
             ?? ToolCallParsingHelpers.stringValue(dict["tool"])
             ?? ToolCallParsingHelpers.stringValue(dict["function_name"])).flatMap(acceptingName) {
-            let args = dict["arguments"] ?? dict["args"] ?? dict["parameters"] ?? dict["params"]
-                ?? synthesizeArgumentsFromTopLevel(dict)
+            let args = mergingSpilledSiblings(dict) ?? synthesizeArgumentsFromTopLevel(dict)
             return (name: toolName, arguments: args)
         }
 
@@ -121,22 +119,60 @@ nonisolated enum ToolCallShapeRecognizer {
     /// the literal string `"nil"` as `argumentsJSON`. Keeping the return `Any?` avoids
     /// that subtle double-wrap.
     static func synthesizeArgumentsFromTopLevel(_ dict: [String: Any]) -> Any? {
-        // Keys that identify or wrap the call envelope itself — never promote them.
-        // The four args-keys (`arguments`/`args`/`parameters`/`params`) are listed
-        // for completeness even though synthesis only fires when they're absent.
-        // Harmony framing fields (`type`/`channel`/`recipient`/`constrain`) and
-        // OpenAI tool-call envelope fields (`type:"function"`) are also reserved
-        // — promoting them would inject `{"type":"function", ...}` into a
-        // tool's args dict and cause `INVALID_ARGS` rejections or, worse, silent
-        // acceptance of garbage.
-        let reserved: Set<String> = [
-            "name", "tool_name", "tool", "function_name",
-            "id", "call_id", "function",
-            "arguments", "args", "parameters", "params",
-            "type", "channel", "recipient", "constrain",
-        ]
-        let promoted = dict.filter { !reserved.contains($0.key) }
+        let promoted = dict.filter { !reservedEnvelopeKeys.contains($0.key) }
         return promoted.isEmpty ? nil : promoted
+    }
+
+    /// Keys that identify or wrap the call envelope itself — never promote them into a
+    /// tool's arguments. The four args-keys (`arguments`/`args`/`parameters`/`params`)
+    /// are listed for completeness even though top-level synthesis only fires when
+    /// they're absent. Harmony framing fields (`type`/`channel`/`recipient`/`constrain`)
+    /// and OpenAI tool-call envelope fields (`type:"function"`) are also reserved —
+    /// promoting them would inject `{"type":"function", …}` into a tool's args dict and
+    /// cause `INVALID_ARGS` rejections or, worse, silent acceptance of garbage.
+    static let reservedEnvelopeKeys: Set<String> = [
+        "name", "tool_name", "tool", "function_name",
+        "id", "call_id", "function",
+        "arguments", "args", "parameters", "params",
+        "type", "channel", "recipient", "constrain",
+    ]
+
+    /// Tool parameters the model wrote as SIBLINGS of `arguments` rather than inside it,
+    /// in declaration-stable order.
+    ///
+    /// The shape comes from a model closing its `arguments` object one brace early —
+    /// `{"name":"edit_file","arguments":{"new_text":…},"old_text":…,"path":…}` — which is
+    /// perfectly valid JSON, so nothing upstream flags it, and the `??` chain in
+    /// `resolve` used to short-circuit on the non-empty wrapper and drop the rest. That
+    /// cost `gemma-4-26b-a4b-qat` two identical `INVALID_ARGS` round-trips in one step
+    /// while it was sending every argument the tool required
+    /// (`network_log.json`, 2026-08-13).
+    ///
+    /// A key already present INSIDE the wrapper is not reported and not merged: the
+    /// model put a value where values belong, and a stray outer copy must not overwrite
+    /// it. Callers use the returned list to tell the model what it mis-emitted; an empty
+    /// list means nothing was recovered, so nothing is said.
+    static func spilledSiblingKeys(from dict: [String: Any]) -> [String] {
+        guard let wrapper = dict["arguments"] ?? dict["args"] ?? dict["parameters"]
+            ?? dict["params"],
+            let inner = wrapper as? [String: Any]
+        else { return [] }
+        return dict.keys
+            .filter { !reservedEnvelopeKeys.contains($0) && inner[$0] == nil }
+            .sorted()
+    }
+
+    /// The `arguments` wrapper with any spilled siblings folded in, or nil when the dict
+    /// carries no wrapper at all (so `resolve` falls through to top-level synthesis).
+    /// A non-dictionary wrapper — a model that serialised its arguments as a string — is
+    /// returned untouched, because there is nothing to fold into.
+    private static func mergingSpilledSiblings(_ dict: [String: Any]) -> Any? {
+        guard let wrapper = dict["arguments"] ?? dict["args"] ?? dict["parameters"]
+            ?? dict["params"]
+        else { return nil }
+        guard var inner = wrapper as? [String: Any] else { return wrapper }
+        for key in spilledSiblingKeys(from: dict) { inner[key] = dict[key] }
+        return inner
     }
 
     /// Fallback tool-name inference when no top-level identifier is present.

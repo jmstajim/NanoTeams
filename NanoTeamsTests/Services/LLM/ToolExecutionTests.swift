@@ -3,7 +3,7 @@ import XCTest
 @testable import NanoTeams
 
 /// Tests for LLMExecutionService+ToolExecution — tool execution pipeline,
-/// authorization, identical-write rejection, result processing, memories injection,
+/// authorization, identical-write rejection, result processing,
 /// loop detection, and Supervisor auto-answer handling.
 @MainActor
 final class ToolExecutionTests: XCTestCase {
@@ -718,175 +718,6 @@ final class ToolExecutionTests: XCTestCase {
         XCTAssertNotNil(resolved)
     }
 
-    // MARK: - injectMemories
-
-    // TODO(memories-disabled, 2026-05-19): Every test below whose body begins
-    // with `try XCTSkipIf(true, Self.memoriesDisabledSkipReason)` covers the
-    // positive injection path and is SKIPPED while `injectMemories` is gated
-    // by `LLMExecutionService.isMemoriesInjectionEnabled = false`. Re-enable
-    // ordering matches the paired TODO in
-    // `Services/LLM/LLMExecutionService+ToolLoopState.swift`:
-    //   1. Flip `isMemoriesInjectionEnabled` to `true` there.
-    //   2. Restore the second sentence in
-    //      `PromptBuilder.buildConversationMechanicsGuidance` (paired TODO).
-    //   3. Remove the `XCTSkipIf` skip guard from each test below.
-    //   4. Delete `testInjectMemories_disabledFlag_skipsSeededStore` — its
-    //      assertion fails-on-flip and is the tripwire forcing this step.
-    // The empty-store test (`testInjectMemories_emptyStore_doesNotInject`) is
-    // left active because its assertion (0 messages) holds in both states —
-    // under the disable for the trivial reason, and under the enable for the
-    // generateMemories-returns-nil short-circuit it was originally written for.
-
-    private static let memoriesDisabledSkipReason =
-        "Memories injection currently disabled via " +
-        "LLMExecutionService.isMemoriesInjectionEnabled — see TODO(memories-disabled)."
-
-    /// Seed one plan tag so `generateMemories` returns non-nil content;
-    /// otherwise the injection short-circuits (as of the empty-store optimization).
-    private func seededMemoryStore() -> MemoryTagStore {
-        let store = MemoryTagStore()
-        store.registerPlanUpdate(content: "1. Draft plan", iteration: 1)
-        return store
-    }
-
-    func testInjectMemories_appendsMessage() async throws {
-        try XCTSkipIf(true, Self.memoriesDisabledSkipReason)
-
-        let stepID = "test_step"
-        let memoryStore = seededMemoryStore()
-        var messages: [ChatMessage] = []
-
-        service._testRegisterStepTask(stepID: stepID, taskID: Int())
-        setupDelegateWithTask(stepID: stepID)
-
-        await service.injectMemories(
-            stepID: stepID,
-            taskID: 0,
-            memoryStore: memoryStore,
-            conversationMessages: &messages
-        )
-
-        XCTAssertEqual(messages.count, 1)
-        XCTAssertEqual(messages[0].role, .user)
-        XCTAssertTrue(messages[0].content?.contains("Memories") ?? false)
-    }
-
-    /// Two successive injections replace the block IN PLACE, so the conversation
-    /// never accumulates stale copies — the whole conversation is the request.
-    func testInjectMemories_repeatedInjection_replacesInPlace() async throws {
-        try XCTSkipIf(true, Self.memoriesDisabledSkipReason)
-
-        let stepID = "test_step"
-        let memoryStore = seededMemoryStore()
-        var messages: [ChatMessage] = []
-
-        service._testRegisterStepTask(stepID: stepID, taskID: Int())
-        setupDelegateWithTask(stepID: stepID)
-
-        await service.injectMemories(
-            stepID: stepID, taskID: 0, memoryStore: memoryStore,
-            conversationMessages: &messages
-        )
-        await service.injectMemories(
-            stepID: stepID, taskID: 0, memoryStore: memoryStore,
-            conversationMessages: &messages
-        )
-
-        XCTAssertEqual(messages.count, 1,
-                       "The MEMORIES block must be rebuilt in place, never appended twice")
-    }
-
-    func testInjectMemories_emptyStore_doesNotInject() async {
-        let stepID = "test_step"
-        let memoryStore = MemoryTagStore()   // empty — no tags
-        var messages: [ChatMessage] = []
-
-        service._testRegisterStepTask(stepID: stepID, taskID: Int())
-        setupDelegateWithTask(stepID: stepID)
-
-        await service.injectMemories(
-            stepID: stepID, taskID: 0, memoryStore: memoryStore,
-            conversationMessages: &messages
-        )
-
-        XCTAssertEqual(messages.count, 0,
-                       "Empty MemoryTagStore must not inject a bare header/footer block")
-    }
-
-    /// Sole behavioral guardrail on `isMemoriesInjectionEnabled = false`.
-    /// Uses a SEEDED store (so the empty-store short-circuit cannot explain a
-    /// 0-message outcome) and asserts that `injectMemories` still appends
-    /// nothing — the only path to that result with a non-empty store is the
-    /// guard firing. When `isMemoriesInjectionEnabled` flips back to `true`,
-    /// THIS TEST will start failing — that is the intended re-enable tripwire:
-    /// delete this test together with the `try XCTSkipIf(true, ...)` lines in
-    /// the four positive-injection tests above.
-    func testInjectMemories_disabledFlag_skipsSeededStore() async {
-        let stepID = "test_step"
-        let memoryStore = seededMemoryStore()
-        var messages: [ChatMessage] = []
-
-        service._testRegisterStepTask(stepID: stepID, taskID: Int())
-        setupDelegateWithTask(stepID: stepID)
-
-        await service.injectMemories(
-            stepID: stepID, taskID: 0, memoryStore: memoryStore,
-            conversationMessages: &messages
-        )
-
-        XCTAssertEqual(messages.count, 0,
-                       "Guard must short-circuit seeded-store injection while flag is false")
-    }
-
-    func testInjectMemories_withTrackedIndex_replacesInPlace() async throws {
-        try XCTSkipIf(true, Self.memoriesDisabledSkipReason)
-
-        let stepID = "test_step"
-        let memoryStore = seededMemoryStore()
-        var messages: [ChatMessage] = [
-            ChatMessage(role: .user, content: "Old memories placeholder")
-        ]
-
-        service._testRegisterStepTask(stepID: stepID, taskID: Int())
-        service._testSetMemoriesMessageIndex(stepID: stepID, taskID: 0, index: 0)
-        setupDelegateWithTask(stepID: stepID)
-
-        await service.injectMemories(
-            stepID: stepID,
-            taskID: 0,
-            memoryStore: memoryStore,
-            conversationMessages: &messages
-        )
-
-        // Should replace in-place, not append
-        XCTAssertEqual(messages.count, 1)
-        XCTAssertTrue(messages[0].content?.contains("Memories") ?? false)
-    }
-
-    func testInjectMemories_firstCall_appendsAndTracksIndex() async throws {
-        try XCTSkipIf(true, Self.memoriesDisabledSkipReason)
-
-        let stepID = "test_step"
-        let memoryStore = seededMemoryStore()
-        var messages: [ChatMessage] = [
-            ChatMessage(role: .system, content: "System prompt"),
-            ChatMessage(role: .user, content: "User message"),
-        ]
-
-        service._testRegisterStepTask(stepID: stepID, taskID: Int())
-        setupDelegateWithTask(stepID: stepID)
-
-        await service.injectMemories(
-            stepID: stepID,
-            taskID: 0,
-            memoryStore: memoryStore,
-            conversationMessages: &messages
-        )
-
-        XCTAssertEqual(messages.count, 3)
-        XCTAssertEqual(service._testGetMemoriesMessageIndex(stepID: stepID, taskID: 0), 2)
-    }
-
     // MARK: - checkAndInjectLoopWarning
 
     func testCheckAndInjectLoopWarning_noLoop_noWarning() async {
@@ -935,11 +766,13 @@ final class ToolExecutionTests: XCTestCase {
             conversationMessages: &messages
         )
 
-        // If loop was detected, a warning message should have been appended
-        if !messages.isEmpty {
-            XCTAssertTrue(messages[0].content?.contains("Loop detected") ?? false)
-        }
-        // Note: detectLoopPattern may require more iterations — test verifies the pipeline works
+        // Deterministic since the all-reads category arm was removed: an all-read window
+        // now reaches the identity branch, so 10 identical reads ARE `.repetitiveTool`.
+        // (Before that, this window hit `.readOnlyLoop` first and the asserts here were
+        // conditional — green for the wrong reason.)
+        XCTAssertEqual(messages.count, 1, "10 identical reads must fire the loop warning")
+        XCTAssertTrue(messages[0].content?.contains("Loop detected") ?? false)
+        XCTAssertTrue(messages[0].content?.contains("identical arguments") ?? false)
     }
 
     // MARK: - loopWarningMessage (pure, tool-aware)
@@ -950,7 +783,7 @@ final class ToolExecutionTests: XCTestCase {
     /// tool_not_authorized ping-pong.
     func testLoopWarningMessage_scratchpadLoop_writerRole_namesEditFile() {
         let msg = LLMExecutionService.loopWarningMessage(
-            loopDetection: .repetitiveTool(tool: ToolNames.updateScratchpad, count: 4, message: "m"),
+            loopDetection: .repetitivePlanning(count: 4),
             allowedToolNames: [ToolNames.editFile, ToolNames.writeFile, ToolNames.askSupervisor]
         )
         XCTAssertTrue(msg.contains("edit_file"))
@@ -960,7 +793,7 @@ final class ToolExecutionTests: XCTestCase {
 
     func testLoopWarningMessage_scratchpadLoop_readOnlyRole_namesNoWriteTools() {
         let msg = LLMExecutionService.loopWarningMessage(
-            loopDetection: .repetitiveTool(tool: ToolNames.updateScratchpad, count: 4, message: "m"),
+            loopDetection: .repetitivePlanning(count: 4),
             allowedToolNames: [ToolNames.readFile, ToolNames.search]
         )
         XCTAssertFalse(msg.contains("edit_file"))
@@ -969,12 +802,19 @@ final class ToolExecutionTests: XCTestCase {
         XCTAssertFalse(msg.contains("ask_supervisor"), "not in schema → not suggested")
     }
 
-    func testLoopWarningMessage_genericLoop_carriesDetectorMessage_noShouting() {
+    /// The message states the observed FACT and then one directive. It used to interpolate
+    /// a string the DETECTOR had composed, which is how a read-only role came to be told to
+    /// "make a code change or commit"; the fact is now stated here, where the schema is
+    /// known. Tone assertions unchanged.
+    func testLoopWarningMessage_genericLoop_statesTheFact_noShouting() {
         let msg = LLMExecutionService.loopWarningMessage(
-            loopDetection: .readOnlyLoop(message: "You re-read the same file 5 times."),
+            loopDetection: .repetitiveTool(tool: ToolNames.readFile, count: 3),
             allowedToolNames: [ToolNames.askSupervisor]
         )
-        XCTAssertTrue(msg.contains("You re-read the same file 5 times."))
+        XCTAssertTrue(msg.contains("identical arguments"), msg)
+        XCTAssertTrue(
+            msg.contains("3 times in a row"),
+            "the claim must match the detector's consecutive-run semantics: \(msg)")
         XCTAssertFalse(msg.contains("⚠️"), "no emoji decoration")
         XCTAssertFalse(msg.contains("LOOP DETECTED"), "no caps-shouting")
     }
@@ -986,7 +826,7 @@ final class ToolExecutionTests: XCTestCase {
         let outcome = LLMExecutionService.ToolResultsOutcome(
             shouldStopForSupervisor: true,
             supervisorQuestion: "What framework?",
-            supervisorToolCallProviderID: "tc-1"
+            supervisorToolCallProviderIDs: ["tc-1"]
         )
         var messages: [ChatMessage] = []
         let task = makeTask()
@@ -1028,7 +868,7 @@ final class ToolExecutionTests: XCTestCase {
         let outcome = LLMExecutionService.ToolResultsOutcome(
             shouldStopForSupervisor: true,
             supervisorQuestion: "What framework?",
-            supervisorToolCallProviderID: "tc-1"
+            supervisorToolCallProviderIDs: ["tc-1"]
         )
         var messages: [ChatMessage] = []
         let task = makeTask()  // id 0, top-level — not the manager (99)
@@ -1054,7 +894,7 @@ final class ToolExecutionTests: XCTestCase {
         let outcome = LLMExecutionService.ToolResultsOutcome(
             shouldStopForSupervisor: false,
             supervisorQuestion: nil,
-            supervisorToolCallProviderID: nil
+            supervisorToolCallProviderIDs: []
         )
         var messages: [ChatMessage] = []
         let task = makeTask()
@@ -1076,41 +916,53 @@ final class ToolExecutionTests: XCTestCase {
 
     // MARK: - Cleanup Verification
 
-    func testClearRunningTask_cleansAllState() {
-        let stepID = "test_step"
+    /// Seeds a running Task that observes its own cancellation, so the assertion
+    /// proves `cleanup()` actually CANCELLED it — entry removal alone would leave
+    /// an in-flight `run_xcodebuild`/`bash` subprocess running unobserved.
+    private func makeCancellationLatch(stepID: String, taskID: Int) -> XCTestExpectation {
+        let cancelled = expectation(description: "running task cancelled for \(stepID)")
+        let task = Task<Void, Never> {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(5))
+            }
+            cancelled.fulfill()
+        }
+        service._testInjectRunningTask(stepID: stepID, taskID: taskID, runningTask: task)
+        return cancelled
+    }
 
-        service._testSetPlanMessageIndex(stepID: stepID, taskID: 0, index: 5)
-        service._testSetMemoriesMessageIndex(stepID: stepID, taskID: 0, index: 3)
+    func testClearRunningTask_cleansAllState_andCancelsTheRunningTask() async {
+        let stepID = "test_step"
+        let cancelled = makeCancellationLatch(stepID: stepID, taskID: 0)
+        service._testSetActiveModel(stepID: stepID, taskID: 0, base: "http://x", model: "m")
 
         service.clearRunningTask(stepID: stepID, taskID: 0)
 
-        XCTAssertNil(service._testGetPlanMessageIndex(stepID: stepID, taskID: 0))
-        XCTAssertNil(service._testGetMemoriesMessageIndex(stepID: stepID, taskID: 0))
+        await fulfillment(of: [cancelled], timeout: 3)
+        XCTAssertTrue(service.activeModelKeys().isEmpty)
     }
 
-    func testCancelStepExecution_cleansState() async {
+    func testCancelStepExecution_cleansState_andCancelsTheRunningTask() async {
         let stepID = "test_step"
-
-        service._testSetPlanMessageIndex(stepID: stepID, taskID: 0, index: 5)
-        service._testSetMemoriesMessageIndex(stepID: stepID, taskID: 0, index: 3)
+        let cancelled = makeCancellationLatch(stepID: stepID, taskID: 0)
+        service._testSetActiveModel(stepID: stepID, taskID: 0, base: "http://x", model: "m")
 
         await service.cancelStepExecution(stepID: stepID, taskID: 0)
 
-        XCTAssertNil(service._testGetPlanMessageIndex(stepID: stepID, taskID: 0))
-        XCTAssertNil(service._testGetMemoriesMessageIndex(stepID: stepID, taskID: 0))
+        await fulfillment(of: [cancelled], timeout: 3)
+        XCTAssertTrue(service.activeModelKeys().isEmpty)
     }
 
-    func testCancelAllExecutions_cleansAllState() {
-        let step1 = "step1"
-        let step2 = "step2"
-
-        service._testSetPlanMessageIndex(stepID: step1, taskID: 0, index: 1)
-        service._testSetPlanMessageIndex(stepID: step2, taskID: 0, index: 2)
+    func testCancelAllExecutions_cleansAllState_andCancelsEveryRunningTask() async {
+        let first = makeCancellationLatch(stepID: "step1", taskID: 0)
+        let second = makeCancellationLatch(stepID: "step2", taskID: 0)
+        service._testSetActiveModel(stepID: "step1", taskID: 0, base: "http://x", model: "m1")
+        service._testSetActiveModel(stepID: "step2", taskID: 0, base: "http://x", model: "m2")
 
         service.cancelAllExecutions()
 
-        XCTAssertEqual(service._testPlanMessageIndexCount, 0)
-        XCTAssertEqual(service._testMemoriesMessageIndexCount, 0)
+        await fulfillment(of: [first, second], timeout: 3)
+        XCTAssertTrue(service.activeModelKeys().isEmpty)
     }
 
     // MARK: - Private Helpers

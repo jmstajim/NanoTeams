@@ -566,7 +566,6 @@ final class NTMSOrchestratorTests: NTMSOrchestratorTestBase {
             stagedAttachments: [
                 TaskCreationStagedAttachment(
                     projectRelativePath: stagedAttachment.stagedRelativePath,
-                    fileName: stagedAttachment.fileName,
                     isProjectReference: false
                 )
             ]

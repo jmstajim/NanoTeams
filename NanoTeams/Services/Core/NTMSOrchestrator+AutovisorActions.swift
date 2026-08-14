@@ -46,25 +46,45 @@ extension NTMSOrchestrator {
             }
             // Resolve the team BEFORE creating anything: a provided-but-unresolvable
             // team_id must fail loudly, not silently fall back to the active team.
+            let allTeams = snapshot?.workFolder.teams ?? []
+            let activeTeam = snapshot?.workFolder.activeTeam
+            let teamPolicy = snapshot.map { AutovisorTeamPolicy(settings: $0.workFolder.settings) }
+                ?? .unrestricted
+            let resolution = teamPolicy.classify(
+                teamID: teamID, allTeams: allTeams, activeTeam: activeTeam)
+            // Same predicate the omit branch of `classify` uses — computing viability with a
+            // different question here would let the remedy contradict the refusal.
+            let omitPathIsViable = activeTeam.map {
+                !$0.isChatMode && !$0.isHiddenFromPickers && !teamPolicy.blocks(id: $0.id)
+            } ?? false
+            if let message = teamPolicy.failureMessage(
+                for: resolution, allTeams: allTeams, omitPathIsViable: omitPathIsViable) {
+                return .failure(message)
+            }
             let resolvedTeamID: NTMSID?
-            switch classifyManagedTeamID(teamID) {
-            case .useActiveTeam:
-                resolvedTeamID = nil
-            case .team(let id):
-                resolvedTeamID = id
+            switch resolution {
             case .generated:
                 resolvedTeamID = await ensureGeneratedTeamID()
-            case .generationDisabled:
-                return .failure("Team generation is disabled for the Autovisor in this folder. Pick an existing team from the catalog in create_managed_task's description, or omit team_id to use the active team.")
-            case .activeTeamIsChat(let name):
-                return .failure("The folder's active team \"\(name)\" is a chat team — a managed task on it never finishes on its own. Pass a pipeline team_id from the catalog in create_managed_task's description explicitly.")
-            case .unknown(let raw):
-                return .failure("Unknown team_id '\(raw)'. Pick one from the catalog in create_managed_task's description, omit it for the active team, or use 'generated'.")
+            case .team(let id):
+                resolvedTeamID = id
+            default:
+                // `.useActiveTeam` — every other case produced a message above and returned.
+                resolvedTeamID = nil
             }
+            // Keyed on `errorSurfaceCount`, NOT on the `lastErrorMessage` slot — see
+            // `reportingError` below for the full argument. Reading the slot directly
+            // attributed an UNRELATED banner to this creation: `createTask`'s
+            // no-work-folder exit returns nil WITHOUT setting anything, so whatever an
+            // earlier failure had left in the slot was reported as the reason creation
+            // failed. The mirror case is just as wrong — a banner consumed by a render
+            // during the `await` reads back nil and buries a real, specific error under
+            // the generic string. Only an error surfaced BY this call may be reported.
+            let creationErrorsBefore = errorSurfaceCount
             guard let id = await createTask(
                 title: title, supervisorTask: brief, preferredTeamID: resolvedTeamID, makeActive: false
             ) else {
-                return .failure(lastErrorMessage ?? "Failed to create task.")
+                return .failure(
+                    errorSurfaced(since: creationErrorsBefore) ?? "Failed to create task.")
             }
             autovisorCreationsThisReview += 1
             // Pre-mark the new task as seen so the manager's OWN creation can't trip the
@@ -88,12 +108,19 @@ extension NTMSOrchestrator {
             // On failure, `answerSupervisorQuestion` already set a specific
             // `lastErrorMessage` (race / attachment-finalize) — surface it to the
             // manager rather than a generic string so it learns WHY delivery failed.
+            // Keyed on `errorSurfaceCount`, NOT on a snapshot of the `lastErrorMessage`
+            // slot, for the reason `reportingError` below documents: that snapshot fails
+            // in BOTH directions and each failure silently discards the very detail this
+            // arm exists to deliver. A REPEATED identical failure — the manager retrying
+            // the same dead question, the commonest case here — never differs from the
+            // snapshot, and a banner consumed by a render across the `await` reads back
+            // nil. Both degrade to the generic string.
             // `isAutoAnswer: true` — the Autovisor (an LLM) is the one answering.
-            let before = lastErrorMessage
+            let before = errorSurfaceCount
             let ok = await answerSupervisorQuestion(
                 stepID: stepID, taskID: taskID, answer: answer, isAutoAnswer: true)
             if ok { return .success("Answered task #\(taskID).") }
-            let detail = (lastErrorMessage != before ? lastErrorMessage : nil)
+            let detail = errorSurfaced(since: before)
                 ?? "Failed to deliver answer to task #\(taskID)."
             return .failure(detail)
 
@@ -137,11 +164,19 @@ extension NTMSOrchestrator {
     /// Returns `false` if the underlying `settings.json` write failed, so the
     /// caller can surface a persistence failure to the manager (its memory is its
     /// only cross-run state — a silent failure means it silently forgets).
+    ///
+    /// Keyed on `errorSurfaceCount`, not on a snapshot of the `lastErrorMessage` slot:
+    /// that snapshot claimed success for a genuine failure in two ways. A REPEATED
+    /// identical error — the manager re-writing its memory each pass against a disk that
+    /// is still full, the commonest shape here — never differs from the snapshot; and a
+    /// banner consumed by a render across the `await` reads back as the `nil` it started
+    /// from. Both told the manager its memory landed when it had not, which is the one
+    /// thing this return value exists to prevent.
     // periphery:ignore - protocol conformance (LLMStateDelegate)
     func persistAutovisorMemory(_ text: String) async -> Bool {
-        let before = lastErrorMessage
+        let before = errorSurfaceCount
         await updateAutovisorMemory(text)
-        return lastErrorMessage == before
+        return errorSurfaced(since: before) == nil
     }
 
     /// Loads a task (background tasks aren't always in `loadedTasks`) for `task_status`.
@@ -180,14 +215,26 @@ extension NTMSOrchestrator {
                 return .failure("Task #\(taskID) is already running.")
             }
             let runsBefore = loadedTask(taskID)?.runs.count ?? 0
+            let errorsBefore = errorSurfaceCount
             await startRun(taskID: taskID)
             let started = (loadedTask(taskID)?.runs.count ?? 0) > runsBefore
                 || managerTaskEngineActive(taskID) || isGeneratingTeam(taskID: taskID)
             return started ? .success("Started task #\(taskID).")
-                           : .failure(lastErrorMessage ?? "Task #\(taskID) could not start.")
+                           : .failure(errorSurfaced(since: errorsBefore)
+                                        ?? "Task #\(taskID) could not start.")
         case .pause:
             return await reportingError("Paused task #\(taskID).") { await self.pauseRun(taskID: taskID) }
         case .resume:
+            // A task still waiting on team generation resumes BY REGENERATING (see
+            // `resumeRun`). Route it to the reporting wrapper rather than through
+            // `reportingError`: that wrapper reports `ok:true` whenever no *error*
+            // surfaces, and both of the retry path's silent exits set `lastInfoMessage`.
+            // It also checks the precondition BEFORE the cleanup deletes the `create_team`
+            // record — the same reason `manage_role restart` on a generation step is
+            // routed here instead of running as a role verb.
+            if needsTeamGeneration(taskID: taskID) {
+                return await retryTeamGenerationReportingResult(taskID: taskID)
+            }
             return await reportingError("Resumed task #\(taskID).") { await self.resumeRun(taskID: taskID) }
         case .stop:
             stopEngineForTask(taskID)
@@ -196,9 +243,15 @@ extension NTMSOrchestrator {
             // Recursive stop FIRST so in-flight delegation children aren't orphaned
             // (dive-deeper finding 12b — closeTask's own stopEngine is non-recursive).
             stopEngineForTask(taskID)
+            // `closeTask` has a SILENT `false` (its `loadedTask == nil` bail), so the
+            // slot routinely holds a foreign message at this point — reading it directly
+            // reported an unrelated failure as the reason the close failed, and the
+            // manager acts on that diagnosis.
+            let errorsBefore = errorSurfaceCount
             let ok = await closeTask(taskID: taskID)
             return ok ? .success("Closed task #\(taskID).")
-                      : .failure(lastErrorMessage ?? "Failed to close task #\(taskID).")
+                      : .failure(errorSurfaced(since: errorsBefore)
+                                   ?? "Failed to close task #\(taskID).")
         case .delete:
             return await reportingError("Deleted task #\(taskID).") { await self.removeTask(taskID) }
         case .rename(let title):
@@ -220,6 +273,27 @@ extension NTMSOrchestrator {
         guard resolveManagedRoleStep(taskID: taskID, roleID: roleID) != nil else {
             return .failure("Task #\(taskID) has no role '\(roleID)' — call task_status for valid role_ids.")
         }
+        // `resolveManagedRoleStep` checks that a STEP exists, not that it belongs to the
+        // team's roster — and `runTeamGeneration` injects a synthetic
+        // `team_generation_<UUID>` step that belongs to no roster and that the engine
+        // cannot execute at all. Letting a role verb through on it is not a no-op, it is
+        // destructive: `restartRole` → `StepExecution.reset()` erased the create_team
+        // error envelope (the only record of WHY generation failed) and then woke an
+        // engine that has no way to re-run generation, leaving the task `running` forever
+        // with zero activity. Observed 2026-08-07; under the manager's own
+        // "ONE TASK IN FLIGHT" rule that deadlocks every milestone behind it.
+        //
+        // `restart` is routed to the operation the manager actually wanted;
+        // `retryTeamGeneration` already owns this prefix as a namespace and clears the
+        // stale step itself, so it recovers even from the wedged state.
+        if roleID.hasPrefix(StepExecution.teamGenerationIDPrefix) {
+            guard case .restart = verb else {
+                return .failure(
+                    "'\(roleID)' is team generation, not a role — \(verb.autovisorVerbName) does not apply. "
+                        + "Use manage_role restart to re-run generation, or control_task delete to drop the task.")
+            }
+            return await retryTeamGenerationReportingResult(taskID: taskID)
+        }
         switch verb {
         case .restart(let comment):
             // `restartRole` → `StepExecution.reset` destroys the conversation, tool
@@ -232,6 +306,14 @@ extension NTMSOrchestrator {
             // manager cannot undo the wipe, so a warning is a receipt, not honesty.
             // Deliberate discard stays available via `control_task stop` first, which
             // drops the engine state and lifts this guard.
+            //
+            // The `.paused` precondition is deliberate and stays: restart IS the remedy
+            // for a stuck RUNNING role, and it must still proceed after `control_task
+            // stop` (both pinned by `AutovisorOrchestratorTests`). Widening this to every
+            // state was considered after the 2026-08-07 wedge — a step that failed before
+            // any engine existed has no engine state, so the guard could not see it — and
+            // rejected: that case is the SYNTHETIC generation step, which is now refused
+            // by roster-shape at the top of this method and never reaches here.
             if taskEngineStates[taskID] == .paused,
                let step = resolveManagedRoleStep(taskID: taskID, roleID: roleID),
                step.hasCommittedWork {
@@ -303,10 +385,33 @@ extension NTMSOrchestrator {
             roleIsProducing: roleIsProducing
         ) {
         case .accept:
+            // `acceptRole` returns false from several guards that surface nothing
+            // (status not `.needsAcceptance`, no active run), so a foreign banner would
+            // otherwise be handed back as the reason.
+            let errorsBefore = errorSurfaceCount
             let ok = await acceptRole(taskID: taskID, roleID: roleID)
             return ok ? .success("Accepted role \(roleID) on task #\(taskID).")
-                      : .failure(lastErrorMessage ?? "Could not accept role \(roleID).")
+                      : .failure(errorSurfaced(since: errorsBefore)
+                                   ?? "Could not accept role \(roleID).")
         case .reject(let reason):
+            // APPEND the manager-facing remedy, never replace: the table string is the
+            // pinned fact ("Role already completed"), the suffix is the way out — the
+            // manager has no other recovery channel (no guidance turn, no `next` hint
+            // on the Autovisor error envelope). `routeAccept` is pure and nothing
+            // suspends between the task load above and here, so the predicates are
+            // consistent with the statuses it just rejected on.
+            // `isReadyForFinalAcceptance`, NOT a bare derived-status test: a task with
+            // a sibling at a live `.needsAcceptance` gate ALSO derives Review, and
+            // close advice there would sweep the gated output past the Supervisor —
+            // the same reason `handleTaskStatus` gates its close hint on this exact
+            // predicate (the two surfaces must agree in every state).
+            if let advice = AutovisorStatus.acceptRejectionAdvice(
+                roleStatus: run.roleStatuses[roleID],
+                isChatModeTask: isChatModeTask,
+                taskReadyToClose: task.isReadyForFinalAcceptance
+            ) {
+                return .failure(reason + " — " + advice)
+            }
             return .failure(reason)
         case .finishChatRole:
             return await finishRoleAndMaybeClose(taskID: taskID, roleID: roleID)
@@ -339,59 +444,27 @@ extension NTMSOrchestrator {
         // mutateTask on @MainActor, so the race with the engine's own chat-done arm
         // (stopped just above) is benign.
         stopEngineForTask(taskID)
+        let errorsBefore = errorSurfaceCount
         let closed = await closeTask(taskID: taskID)
+        let reason = errorSurfaced(since: errorsBefore) ?? "unknown"
         return closed
             ? .success("Finished role \(roleID) and closed chat task #\(taskID) — no other roles were active.")
-            : .failure("Finished role \(roleID) on chat task #\(taskID), but closing it failed: \(lastErrorMessage ?? "unknown"). Retry with control_task close.")
+            : .failure("Finished role \(roleID) on chat task #\(taskID), but closing it failed: \(reason). Retry with control_task close.")
     }
 
-    /// Outcome of classifying a `create_managed_task` team_id.
-    private enum ManagedTeamResolution {
-        case useActiveTeam            // omitted/empty → the folder's active team
-        case team(NTMSID)             // an existing, non-hidden team
-        case generated                // the `"generated"` sentinel
-        case generationDisabled       // sentinel, but generation is off for this folder
-        case activeTeamIsChat(String) // omitted, but the active team is chat → fail loudly
-        case unknown(String)          // provided but unresolvable → must fail loudly
-    }
-
-    /// Classifies a team_id without side effects (testable). The `generated` case is
-    /// materialized separately by `ensureGeneratedTeamID` so this stays pure.
-    /// The `"generated"` sentinel resolves to `.generationDisabled` when the folder's
-    /// `autovisorAllowTeamGeneration` is off — a runtime backstop for a model that
-    /// emits the sentinel despite the schema (built via `buildSchema(allowGenerated:)`)
-    /// no longer advertising it.
-    private func classifyManagedTeamID(_ raw: String?) -> ManagedTeamResolution {
-        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
-            // Omitted team_id → the folder's active team. But omission means "use the
-            // default", not an intentional "I want an open-ended chat", and a chat active
-            // team would spawn a task that never terminates on its own (occupying a
-            // concurrency slot until a human closes it). Fail loudly so the manager picks
-            // a pipeline team explicitly. (An explicit chat team_id IS allowed — it's a
-            // marked, intentional choice, and the manager can `control_task close` it.)
-            if let active = snapshot?.workFolder.activeTeam, active.isChatMode {
-                return .activeTeamIsChat(active.name)
-            }
-            return .useActiveTeam
-        }
-        if raw == DelegationConstants.generatedTeamSentinel {
-            let allowed = snapshot?.workFolder.settings.autovisorAllowTeamGeneration ?? true
-            return allowed ? .generated : .generationDisabled
-        }
-        if let team = snapshot?.workFolder.teams.first(where: { $0.id == raw }), !team.isHiddenFromPickers {
-            return .team(team.id)
-        }
-        return .unknown(raw)
-    }
+    // `ManagedTeamResolution` + `classify` moved onto `AutovisorTeamPolicy` (Domain): the
+    // block list made the decision policy-shaped, and the failure strings are model-read, so
+    // both belong on a pure `nonisolated` type that unit tests and the prompt-convention
+    // sweep can reach without standing up an orchestrator.
 
     /// Returns the id of the (lazily-created) generated placeholder team.
     private func ensureGeneratedTeamID() async -> NTMSID {
-        if let existing = snapshot?.workFolder.teams.first(where: { $0.templateID == DelegationConstants.generatedTeamSentinel }) {
+        if let existing = snapshot?.workFolder.teams.first(where: { $0.isGeneratedPlaceholder }) {
             return existing.id
         }
         let team = TeamTemplateFactory.generatedTeam()
         await mutateWorkFolder { proj in
-            if !proj.teams.contains(where: { $0.templateID == DelegationConstants.generatedTeamSentinel }) {
+            if !proj.teams.contains(where: { $0.isGeneratedPlaceholder }) {
                 proj.teams.append(team)
             }
         }
@@ -420,10 +493,32 @@ extension NTMSOrchestrator {
     /// whose orchestrator methods report failure via `lastErrorMessage` (the
     /// silent-no-op cases that DON'T set an error — `start`, role validation,
     /// `correct`-not-paused — are pre-checked by the callers instead).
+    ///
+    /// Keys on `errorSurfaceCount`, NOT on the `lastErrorMessage` slot, which the error
+    /// banner writes back to nil on any render. Snapshot-and-compare over that slot fails
+    /// in both directions across the `await`: a failed `control_task delete` sets the error,
+    /// `removeTask` then suspends again in `reconcileChatModelResidency`, SwiftUI renders,
+    /// the banner consumes the slot, and the manager is told `ok:true` for a task still on
+    /// disk — which keeps occupying its "ONE TASK IN FLIGHT" slot and keeps firing its
+    /// recurrence. A REPEATED identical error was swallowed too, since it never differed
+    /// from the snapshot. Same class as the one `retryTeamGenerationReportingResult`
+    /// documents; that one reads durable task state instead, which is stronger where it
+    /// exists, but these verbs have no comparable durable signal.
     private func reportingError(_ successMessage: String, _ op: () async -> Void) async -> AutovisorActionResult {
-        let before = lastErrorMessage
+        let before = errorSurfaceCount
         await op()
-        if let err = lastErrorMessage, err != before { return .failure(err) }
+        if let err = errorSurfaced(since: before) { return .failure(err) }
         return .success(successMessage)
     }
+
+    #if DEBUG
+    /// Test seam. Both failure modes this guards against need an op that fails on demand,
+    /// and every verb routed through it (`pause` / `resume` / `delete` / `rename` /
+    /// `setTimeout`) fails only on real disk or engine conditions a test cannot stage.
+    func _testReportingError(
+        _ successMessage: String, _ op: () async -> Void
+    ) async -> AutovisorActionResult {
+        await reportingError(successMessage, op)
+    }
+    #endif
 }

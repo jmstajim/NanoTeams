@@ -26,6 +26,41 @@ final class AutovisorAskSupervisorGateTests: XCTestCase {
         )
     }
 
+    /// The seam between "in the manager's stored toolIDs" and "on the wire".
+    ///
+    /// Schema resolution runs several filtering steps, one of which (step 8) is
+    /// Autovisor-SPECIFIC — so a future manager-scoped strip could take the runners
+    /// with it and nothing else in the suite would notice: the toolset tests read
+    /// `toolIDs`, not the resolved schemas.
+    ///
+    /// Both sides of the scheme gate are pinned, because their downstream meanings
+    /// are opposite. Present ⇒ callable. Absent BECAUSE no scheme is selected ⇒
+    /// `classifyUnavailability` answers `.xcodeSchemeNotSelected` ("stop, configure
+    /// the folder"), which is only correct while the runners are genuinely out of
+    /// the resolved set.
+    func testManagerSchema_carriesTheXcodeRunners_andTheSchemeGateStillApplies() {
+        let team = TeamTemplateFactory.autovisor()
+        let managerName = team.nonSupervisorRoles.first?.name ?? "Manager"
+        let runners = [ToolNames.runXcodebuild, ToolNames.runXcodetests]
+
+        let withScheme = LLMExecutionService.resolveToolSchemas(
+            for: .custom(id: managerName), team: team, selectedScheme: "NanoTeams")
+        for tool in runners {
+            XCTAssertTrue(withScheme.contains { $0.name == tool },
+                          "\(tool) must survive schema resolution and reach the manager's wire")
+        }
+
+        let noScheme = LLMExecutionService.resolveToolSchemas(
+            for: .custom(id: managerName), team: team, selectedScheme: nil)
+        for tool in runners {
+            XCTAssertFalse(noScheme.contains { $0.name == tool },
+                           "\(tool) must be stripped without a scheme — the precondition, not "
+                               + "the manager policy, is what withholds it")
+        }
+        XCTAssertTrue(noScheme.contains { $0.name == ToolNames.listTasks },
+                      "sanity: the scheme gate takes ONLY the runners")
+    }
+
     // MARK: - Hole 1: ask_supervisor planted in stored toolIDs
 
     func testManagerTeam_plantedAskSupervisorToolID_isStripped() {
@@ -142,8 +177,7 @@ final class AutovisorAskSupervisorGateTests: XCTestCase {
             LLMExecutionService.repetitiveNonToolNudge(count: 3, allowedToolNames: allowed),
             LLMExecutionService.toolNameExamples(allowedToolNames: allowed) ?? "",
             LLMExecutionService.loopWarningMessage(
-                loopDetection: .repetitiveTool(
-                    tool: ToolNames.listTasks, count: 3, message: "repeated list_tasks"),
+                loopDetection: .repetitiveTool(tool: ToolNames.listTasks, count: 3),
                 allowedToolNames: allowed),
         ]
         for nudge in nudges {

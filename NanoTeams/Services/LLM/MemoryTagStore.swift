@@ -2,13 +2,27 @@ import Foundation
 
 // MARK: - MemoryTagStore
 
-/// Tracks tool result tags for the Memories system. Each tool result gets a unique tag
-/// (e.g., `<§R1§>`, `<§E3§>`, `<§B2§>`). Unchanged repeat reads return compact references
-/// instead of full content, saving tokens. Memories message provides a compact index of all tags.
+/// Stamps every supported tool result with a unique tag (e.g., `<§R1§>`, `<§E3§>`,
+/// `<§B2§>`). The tag is a compact reference handle for the MODEL: the system
+/// prompt's legend teaches it to reference a tag in its reasoning instead of
+/// re-quoting the result. Tags live ONLY on the wire (`conversationMessages`,
+/// and therefore `network_log.json`) — the persisted feed entry and
+/// `tool_calls.jsonl` both carry the raw untagged envelope, an asymmetry pinned
+/// by `RegularToolResultDispatchTests` ("tags must not leak into the persisted
+/// feed entry").
+///
+/// Deliberately STATELESS across actions (simplified 2026-08-11): every result is
+/// rendered in full with a fresh tag — there is no unchanged-detection, no
+/// baseline comparison, no OUTDATED/REPLACED bookkeeping, and nothing to reset at
+/// the planning boundary. The only cross-call state is the per-type counter that
+/// keeps tags unique within the conversation the model sees.
 ///
 /// Split across extension files:
-/// - `MemoryTagStore+FileProcessing.swift` — read/edit/write/delete file processing
-/// - `MemoryTagStore+BuildGitProcessing.swift` — build/test/git processing + summary extraction
+/// - `MemoryTagStore+FileProcessing.swift` — read/edit/write envelopes
+/// - `MemoryTagStore+BuildProcessing.swift` — build/test summary envelopes
+/// - `MemoryTagStore+GitProcessing.swift` — git status/diff envelopes
+/// - `MemoryTagStore+BashProcessing.swift` — bash output envelopes
+/// - `MemoryTagStore+SummaryExtraction.swift` — build/test summary extraction
 /// - `MemoryTagStore+JSONHelpers.swift` — JSON parsing utilities
 nonisolated final class MemoryTagStore {
 
@@ -17,44 +31,42 @@ nonisolated final class MemoryTagStore {
     enum TagType: String {
         case read = "R"      // read_file, read_lines
         case edit = "E"      // edit_file (successful only)
-        case write = "W"     // write_file (new baseline)
+        case write = "W"     // write_file
         case build = "B"     // run_xcodebuild, run_xcodetests
         case git = "G"       // git_status, git_diff
-        case plan = "P"      // update_scratchpad
         case shell = "S"     // bash
-    }
-
-    enum TagStatus {
-        case current
-        case outdated(reason: String)  // "<§E1§>" or "external change"
-        case replaced(by: String)      // "<§R3§>"
-    }
-
-    struct TagEntry {
-        let tag: String              // "<§R1§>"
-        let type: TagType
-        let resource: String         // file path, "build", "git_diff"
-        let iteration: Int
-        var status: TagStatus
-        var content: String          // full content (internal, NOT sent to LLM)
     }
 
     // MARK: - Processors (DIP)
 
     let processors: [ToolResultProcessor]
 
-    /// Work folder root used to canonicalize tool-arg paths into one repo-relative spelling
-    /// so the same file reached via `src/x`, `Foo/src/x`, `./src/x`, or an absolute path
-    /// shares a single tag / baseline / MEMORIES row. `nil` disables canonicalization (raw
-    /// path as-is) — for stores built without a work-folder context (path-agnostic memory
-    /// tests). The sole production constructor (LLMExecutionService+StepLifecycle) always
-    /// supplies a root, so canonicalization is effectively always-on in production.
+    /// Work folder root used to canonicalize tool-arg paths into one repo-relative
+    /// spelling, so the `path` rendered into a tagged envelope is stable across
+    /// the model's spelling variations (`src/x`, `Foo/src/x`, `./src/x`, or an
+    /// absolute path). `nil` disables canonicalization (raw path as-is) — for
+    /// stores built without a work-folder context. The sole production
+    /// constructor (LLMExecutionService+StepLifecycle) always supplies a root.
     let workFolderRoot: URL?
 
     nonisolated(unsafe) static let defaultProcessors: [any ToolResultProcessor] = [
         FileToolProcessor(),
         BuildGitToolProcessor(),
         BashToolProcessor(),
+    ]
+
+    /// The tools whose SUCCESS results actually get a tag — the prompt's tag
+    /// legend is gated and worded from this set, so a role that can produce a
+    /// tagged envelope always gets the legend explaining it. Narrower than the
+    /// processors' `supportedTools` union: `delete_file`/`list_files`/`search`
+    /// are CLAIMED but pass through untagged. Pinned by
+    /// `MemoryTagStoreTests.testTagProducingTools_matchesActualTaggingBehavior`.
+    static let tagProducingTools: Set<String> = [
+        ToolNames.readFile, ToolNames.readLines,
+        ToolNames.editFile, ToolNames.writeFile,
+        ToolNames.runXcodebuild, ToolNames.runXcodetests,
+        ToolNames.gitStatus, ToolNames.gitDiff,
+        ToolNames.bash,
     ]
 
     init(
@@ -67,48 +79,17 @@ nonisolated final class MemoryTagStore {
 
     nonisolated deinit {}
 
-    // MARK: - State
-
-    var entries: [String: TagEntry] = [:]   // tag -> entry
-    private var nextID: [TagType: Int] = [:]         // per-type counter
-    var currentIteration: Int = 0
-
-    /// Current tag for each resource (path or composite key -> tag string)
-    var currentReadTags: [String: String] = [:]
-    /// Whether file was edited since last read (path -> true)
-    var editedSinceLastRead: [String: Bool] = [:]
-    /// Line ranges read since the last edit (path -> indexed line numbers).
-    /// Used to clear `editedSinceLastRead` once paginated re-reads collectively
-    /// cover [1, totalLines] — the per-call cap means a single `read_lines`
-    /// can no longer satisfy the legacy `isFullRead` shortcut on large files.
-    var readRangesSinceEdit: [String: IndexSet] = [:]
-    /// Current plan tag (for update_scratchpad)
-    private var currentPlanTag: String?
-
-    /// Drops everything that describes what the model can currently SEE,
-    /// because the conversation those tags referred to was discarded.
-    ///
-    /// Called at the planning→implementation boundary, which rebuilds the wire
-    /// from scratch. Without it, a repeat `read_file` in the implementation
-    /// phase short-circuits to `{"status":"unchanged","ref":"<§R1§>","_hint":"Do NOT re-read"}`
-    /// — a pointer to content that is no longer anywhere in the model's context,
-    /// paired with an instruction not to fetch it. The model then has no route
-    /// to the file at all, and the usual outcome is an `edit_file` with
-    /// hallucinated `old_text` looping on `anchor_not_found`.
-    ///
-    /// `nextID` is deliberately NOT reset: tags stay monotonic across the
-    /// boundary, so a phase-2 `<§R5§>` can never collide with a phase-1
-    /// `<§R1§>` that is still visible in `llmConversation`, `tool_calls.jsonl`
-    /// and the activity feed.
-    func resetForFreshConversation() {
-        entries.removeAll()
-        currentReadTags.removeAll()
-        editedSinceLastRead.removeAll()
-        readRangesSinceEdit.removeAll()
-        currentPlanTag = nil
-    }
-
     // MARK: - Tag Generation
+
+    /// Per-type monotonic counter — the store's ONLY cross-call state.
+    ///
+    /// The counter alone guarantees uniqueness only WITHIN one store's life, and
+    /// the store is built per `runStep` ENTRY — but a resumed step replays
+    /// `step.wireTranscript`, which still carries the previous entry's tags. That
+    /// is why `runStep` calls `seedTagCounters(replaying:)` on the assembled
+    /// conversation before the loop starts: without it a fresh store would mint
+    /// `<§R1§>` again next to a replayed `<§R1§>` holding a different payload.
+    private var nextID: [TagType: Int] = [:]
 
     func nextTag(_ type: TagType) -> String {
         let id = (nextID[type] ?? 0) + 1
@@ -116,28 +97,30 @@ nonisolated final class MemoryTagStore {
         return "<§\(type.rawValue)\(id)§>"
     }
 
-    // MARK: - Entry Registration
-
-    /// Creates a new tag entry, marking the previous tag in `trackingMap[key]` as replaced.
-    /// Returns the newly created tag string.
-    @discardableResult
-    func registerEntry(
-        type: TagType,
-        resource: String,
-        iteration: Int,
-        content: String,
-        replacingIn trackingMap: inout [String: String],
-        key: String? = nil
-    ) -> String {
-        let tag = nextTag(type)
-        let trackingKey = key ?? resource
-        if let oldTag = trackingMap[trackingKey] {
-            entries[oldTag]?.status = .replaced(by: tag)
+    /// Advances the per-type counters past every tag already visible in
+    /// `messages`, so a store built for a step RE-ENTRY (which replays the
+    /// persisted wire transcript, tags included) can never re-mint a handle the
+    /// conversation already carries.
+    ///
+    /// SYSTEM messages are skipped, and that exclusion is load-bearing rather than
+    /// tidy. The system prompt carries the tag LEGEND — `<§R1§> read, <§E1§> edit,
+    /// …` (`PromptBuilder`) — which is an illustration, not a live handle. Scanning
+    /// it seeded every counter to 1 on EVERY step, so the first tag actually minted
+    /// for any type was `#2`: the prompt taught the model `<§R1§>` and the model
+    /// could never receive it. (This is why the 2026-08-13 gemma run's first
+    /// successful edit came back `<§E2§>`.) The old doc claimed "a fresh
+    /// conversation has no tags, so the scan is a cheap no-op there" — false on
+    /// every step, since the legend always ships.
+    func seedTagCounters(replaying messages: [ChatMessage]) {
+        let pattern = #/<§([A-Z])(\d+)§>/#
+        for message in messages where message.role != .system {
+            guard let content = message.content, content.contains("<§") else { continue }
+            for match in content.matches(of: pattern) {
+                guard let type = TagType(rawValue: String(match.output.1)),
+                      let number = Int(match.output.2) else { continue }
+                nextID[type] = max(nextID[type] ?? 0, number)
+            }
         }
-        entries[tag] = TagEntry(tag: tag, type: type, resource: resource,
-                                iteration: iteration, status: .current, content: content)
-        trackingMap[trackingKey] = tag
-        return tag
     }
 }
 
@@ -145,31 +128,37 @@ nonisolated final class MemoryTagStore {
 
 nonisolated enum TagProcessingResult {
     case passthrough                          // use original result as-is
-    case tagged(content: String, tag: String) // full content + tag
-    case reference(content: String)           // compact reference (unchanged)
+    // `tag` is the minted handle. Production's sole consumer reads only
+    // `content` (the tag is already rendered into it); the separate payload
+    // exists so tests can assert tag identity without re-parsing the envelope.
+    case tagged(content: String, tag: String)
 }
 
 // MARK: - Tool Result Processor Protocol (OCP)
 
-/// Implement to add a new tool category to the Memories system.
+/// Implement to add a new tool category to the tag system.
 nonisolated protocol ToolResultProcessor {
     var supportedTools: Set<String> { get }
-    func process(_ result: ToolExecutionResult, iteration: Int, store: MemoryTagStore) -> TagProcessingResult
+    func process(_ result: ToolExecutionResult, store: MemoryTagStore) -> TagProcessingResult
 }
 
-/// Processes file tools: read_file, read_lines, edit_file, write_file, delete_file.
+/// Processes file tools: read_file, read_lines, edit_file, write_file.
+/// `supportedTools` is `allFileTools`, so this processor CLAIMS `delete_file`,
+/// `list_files` and `search` too — all three deliberately fall to the `default:`
+/// passthrough (minimal envelopes, nothing references them afterwards). Claimed-
+/// but-untagged matters: `processToolResult`'s first-match loop means a later
+/// processor can never pick these tools up; a future listing tag has to be added
+/// HERE, not as a new processor.
 nonisolated struct FileToolProcessor: ToolResultProcessor {
     let supportedTools: Set<String> = ToolHandlerRegistry.allFileTools
 
     private typealias TN = ToolNames
 
-    func process(_ result: ToolExecutionResult, iteration: Int, store: MemoryTagStore) -> TagProcessingResult {
+    func process(_ result: ToolExecutionResult, store: MemoryTagStore) -> TagProcessingResult {
         switch result.toolName {
-        case TN.readFile: return store.processReadFile(result, iteration: iteration)
-        case TN.readLines: return store.processReadLines(result, iteration: iteration)
-        case TN.editFile: return store.processEdit(result, iteration: iteration)
-        case TN.writeFile: return store.processWrite(result, iteration: iteration)
-        case TN.deleteFile: return store.processDelete(result)
+        case TN.readFile, TN.readLines: return store.processRangedRead(result)
+        case TN.editFile: return store.processEdit(result)
+        case TN.writeFile: return store.processWrite(result)
         default: return .passthrough
         }
     }
@@ -181,138 +170,33 @@ nonisolated struct BuildGitToolProcessor: ToolResultProcessor {
 
     let supportedTools: Set<String> = ToolHandlerRegistry.xcodeTools.union([TN.gitStatus, TN.gitDiff])
 
-    func process(_ result: ToolExecutionResult, iteration: Int, store: MemoryTagStore) -> TagProcessingResult {
+    func process(_ result: ToolExecutionResult, store: MemoryTagStore) -> TagProcessingResult {
         switch result.toolName {
-        case TN.runXcodebuild: return store.processBuild(result, iteration: iteration)
-        case TN.runXcodetests: return store.processTests(result, iteration: iteration)
-        case TN.gitStatus: return store.processGitStatus(result, iteration: iteration)
-        case TN.gitDiff: return store.processGitDiff(result, iteration: iteration)
+        case TN.runXcodebuild: return store.processBuild(result)
+        case TN.runXcodetests: return store.processTests(result)
+        case TN.gitStatus, TN.gitDiff: return store.processGit(result)
         default: return .passthrough
         }
     }
 }
 
-/// Processes the `bash` tool. Repeat-identical command output collapses to a tag
-/// reference; `bash_output` (incremental background reads) is intentionally NOT
-/// tagged — its output changes every call.
+/// Processes the `bash` tool. `bash_output` (incremental background reads) is
+/// intentionally NOT tagged — its envelope is a rolling delta, not a result.
 nonisolated struct BashToolProcessor: ToolResultProcessor {
     let supportedTools: Set<String> = [ToolNames.bash]
 
-    func process(_ result: ToolExecutionResult, iteration: Int, store: MemoryTagStore) -> TagProcessingResult {
-        guard result.toolName == ToolNames.bash else { return .passthrough }
-        return store.processBash(result, iteration: iteration)
+    func process(_ result: ToolExecutionResult, store: MemoryTagStore) -> TagProcessingResult {
+        store.processBash(result)
     }
 }
 
 nonisolated extension MemoryTagStore {
 
-    /// Process tool result. Returns tagged/reference/passthrough.
-    func processToolResult(_ result: ToolExecutionResult, iteration: Int) -> TagProcessingResult {
-        currentIteration = iteration
-
-        for processor in processors {
-            if processor.supportedTools.contains(result.toolName) {
-                return processor.process(result, iteration: iteration, store: self)
-            }
+    /// Process tool result. Returns tagged/passthrough.
+    func processToolResult(_ result: ToolExecutionResult) -> TagProcessingResult {
+        for processor in processors where processor.supportedTools.contains(result.toolName) {
+            return processor.process(result, store: self)
         }
         return .passthrough
-    }
-}
-
-// MARK: - Plan Registration
-
-nonisolated extension MemoryTagStore {
-
-    /// Register a plan update from `update_scratchpad`. Creates a tagged entry so the plan
-    /// appears in MEMORIES like other resources (compact tag reference when unchanged).
-    func registerPlanUpdate(content: String, iteration: Int) {
-        // Use a temporary single-key map to leverage registerEntry for plan tags
-        var planMap: [String: String] = currentPlanTag.map { ["plan": $0] } ?? [:]
-        registerEntry(type: .plan, resource: "plan", iteration: iteration,
-                      content: content, replacingIn: &planMap)
-        currentPlanTag = planMap["plan"]
-    }
-}
-
-// MARK: - Memories Generation
-
-nonisolated extension MemoryTagStore {
-
-    /// Generate Memories index showing all tags and their current statuses.
-    /// Returns nil when there are no tracked entries — injecting a bare
-    /// header/footer every iteration is pure noise for roles that never
-    /// invoked a tag-producing tool.
-    func generateMemories(version: Int) -> String? {
-        guard !entries.isEmpty else { return nil }
-
-        var lines: [String] = ["## Memories v\(version)"]
-
-        let grouped = Dictionary(grouping: entries.values) { $0.resource }
-
-        for (resource, tags) in grouped.sorted(by: { $0.key < $1.key }) {
-            for tag in tags.sorted(by: { $0.iteration < $1.iteration }) {
-                let statusStr: String
-                switch tag.status {
-                case .current:
-                    statusStr = "CURRENT"
-                case .outdated(let reason):
-                    statusStr = "OUTDATED [\(reason)]"
-                case .replaced(let by):
-                    statusStr = "REPLACED -> \(by)"
-                }
-                lines.append("\(tag.tag) \(resource) (iter \(tag.iteration)) — \(statusStr)")
-            }
-        }
-
-        return lines.joined(separator: "\n")
-    }
-}
-
-// MARK: - Invalidation Helpers
-
-nonisolated extension MemoryTagStore {
-
-    func invalidateBuilds(reason: String) {
-        for (key, entry) in entries where entry.type == .build && isCurrentStatus(entry.status) {
-            entries[key]?.status = .outdated(reason: reason)
-        }
-    }
-
-    func invalidateGit(reason: String) {
-        for (key, entry) in entries where entry.type == .git && isCurrentStatus(entry.status) {
-            entries[key]?.status = .outdated(reason: reason)
-        }
-    }
-
-    func invalidateReadRanges(forPath path: String, reason: String) {
-        let rangeKeys = currentReadTags.keys.filter { $0.hasPrefix(path + ":") }
-        for key in rangeKeys {
-            if let tag = currentReadTags[key] {
-                entries[tag]?.status = .outdated(reason: reason)
-            }
-        }
-    }
-
-    func isCurrentStatus(_ status: TagStatus) -> Bool {
-        if case .current = status { return true }
-        return false
-    }
-
-    func currentBuildTag() -> String? {
-        entries.values
-            .filter { $0.type == .build && $0.resource == "build" && isCurrentStatus($0.status) }
-            .first?.tag
-    }
-
-    func currentTestTag() -> String? {
-        entries.values
-            .filter { $0.type == .build && $0.resource == "tests" && isCurrentStatus($0.status) }
-            .first?.tag
-    }
-
-    func currentGitTag(resource: String) -> String? {
-        entries.values
-            .filter { $0.type == .git && $0.resource == resource && isCurrentStatus($0.status) }
-            .first?.tag
     }
 }

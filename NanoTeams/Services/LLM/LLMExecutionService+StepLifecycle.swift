@@ -223,6 +223,13 @@ extension LLMExecutionService {
                     conversation = fullConversation
                 }
 
+                // A replayed transcript still carries the previous entry's tags,
+                // and this store's counters start at zero — seed them past every
+                // tag already on the wire so a resumed step can never mint a
+                // handle the conversation already uses for a different payload.
+                // (A fresh conversation has no tags; the scan is a no-op there.)
+                memoryStore.seedTagCounters(replaying: conversation)
+
                 // No per-role iteration ceiling: the global maxToolIterations is 0
                 // (unbounded) for every step, the Autovisor manager included.
                 let effectiveLimit = LLMConstants.maxToolIterations == 0
@@ -276,7 +283,6 @@ extension LLMExecutionService {
                             conversationMessages: &conversation,
                             tracker: tracker,
                             memoryStore: memoryStore,
-                            iterationNumber: safetyIterations,
                             cumulativeUsage: &cumulativeUsage,
                             networkLogger: networkLogger
                         )
@@ -343,11 +349,6 @@ extension LLMExecutionService {
                         return
                     case .continueLoop:
                         continue
-                    case .needsAcceptance:
-                        await self.persistWireTranscript(stepID: stepID, taskID: taskID, messages: conversation)
-                        await self.persistTokenUsage(stepID: stepID, taskID: taskID, usage: cumulativeUsage)
-                        await self.completeStepNeedsAcceptance(stepID: stepID, taskID: taskID)
-                        return
                     case .toolFailure(let message):
                         await self.persistWireTranscript(stepID: stepID, taskID: taskID, messages: conversation)
                         await self.persistTokenUsage(stepID: stepID, taskID: taskID, usage: cumulativeUsage)

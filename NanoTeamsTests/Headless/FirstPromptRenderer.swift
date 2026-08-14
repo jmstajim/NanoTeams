@@ -114,7 +114,7 @@ enum FirstPromptRenderer {
             // Read from the on-disk folder settings (the renderer scans the real
             // folder) so a create_managed_task render for the Autovisor Manager
             // reflects whether generation is enabled for this folder.
-            autovisorAllowTeamGeneration: snapshot.projection.settings.autovisorAllowTeamGeneration
+            autovisorTeamPolicy: AutovisorTeamPolicy(settings: snapshot.projection.settings)
         )
 
         // 5a. `URL ==` is the exact comparison `startStepExecution` uses;

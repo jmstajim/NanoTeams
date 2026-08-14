@@ -416,6 +416,20 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
     /// The role ID — same as `id` (kept for backward compatibility at call sites).
     var effectiveRoleID: String { id }
 
+    /// Namespace of the SYNTHETIC step `runTeamGeneration` injects. It belongs to no team
+    /// roster and the engine cannot execute it, so every surface that resolves a "role" by
+    /// step id must recognise and refuse it (`resolveManagedRoleStep`, `restartRole`).
+    ///
+    /// Lives on `StepExecution`, not on `NTMSOrchestrator`: the id namespace is a property
+    /// of the step, and `StatusRecoveryService` is a `nonisolated` type that must read it
+    /// without reaching into a `@MainActor` class (the app target compiles with
+    /// `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`).
+    static let teamGenerationIDPrefix = "team_generation_"
+
+    /// True for the synthetic step `runTeamGeneration` injects. Prefer this over a
+    /// hand-written `id.hasPrefix(...)` — same match, one place.
+    var isTeamGenerationStep: Bool { id.hasPrefix(Self.teamGenerationIDPrefix) }
+
     /// Whether this step holds work a `reset()` would destroy.
     ///
     /// `reset()` clears `toolCalls`, `llmConversation`, `artifacts`, `messages`,

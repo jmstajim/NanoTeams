@@ -40,49 +40,46 @@ final class QuickCaptureFormStateTests: XCTestCase {
 
     // MARK: - Answer Mode Transitions
 
-    func testEnterAnswerMode_savesGoalAndClearsAnswerField() {
+    /// The answer field starts empty, and the task draft is left exactly where it is. Both
+    /// halves used to be one operation: `savedSupervisorTask` stashed the task draft so the
+    /// SAME field could carry the answer. The stash is gone with the sharing — see
+    /// `QuickCaptureComposerFieldOwnershipCoverageTests` for the routes it never covered.
+    func testEnterAnswerMode_startsAFreshAnswerAndLeavesTheTaskDraftAlone() {
         sut.supervisorTask = "My task draft"
         sut.enterAnswerMode(payload: makePayload())
 
         XCTAssertTrue(sut.isInAnswerMode)
-        // Answer field starts empty so the user's task draft does not leak into
-        // the answer. The original text is preserved via `savedSupervisorTask`
-        // and restored on `exitAnswerMode`.
-        XCTAssertEqual(sut.supervisorTask, "")
-        XCTAssertEqual(sut._testSavedSupervisorTask, "My task draft")
+        XCTAssertEqual(sut.answerText, "")
+        XCTAssertEqual(sut.supervisorTask, "My task draft")
         XCTAssertNotNil(sut.pendingAnswer)
     }
 
-    func testExitAnswerMode_restoresSavedGoal() {
+    func testExitAnswerMode_clearsTheAnswerAndStillLeavesTheTaskDraftAlone() {
         sut.supervisorTask = "Original"
         sut.enterAnswerMode(payload: makePayload())
+        sut.answerText = "an answer"
         sut.exitAnswerMode()
 
         XCTAssertFalse(sut.isInAnswerMode)
+        XCTAssertEqual(sut.answerText, "")
         XCTAssertEqual(sut.supervisorTask, "Original")
-        XCTAssertNil(sut._testSavedSupervisorTask)
         XCTAssertNil(sut.pendingAnswer)
     }
 
-    /// Critical: calling `enterAnswerMode` while already in answer mode must NOT
-    /// overwrite `savedSupervisorTask` with the current (cleared) `supervisorTask`. Regression would
-    /// silently destroy the user's task draft on `exitAnswerMode`.
-    func testEnterAnswerMode_reentry_preservesSavedGoal() {
+    /// Re-entry for the same task is non-destructive: the in-progress answer stays, and the
+    /// task draft — which re-entry never had any reason to touch — stays too.
+    func testEnterAnswerMode_reentry_keepsBothDrafts() {
         sut.supervisorTask = "User's task draft"
         sut.enterAnswerMode(payload: makePayload(question: "First"))
-        XCTAssertEqual(sut._testSavedSupervisorTask, "User's task draft")
-        // Initial entry starts the answer field empty — task draft is stashed.
-        XCTAssertEqual(sut.supervisorTask, "")
+        XCTAssertEqual(sut.answerText, "")
 
         // User types an answer, then `enterAnswerMode` fires again for the same task
-        sut.supervisorTask = "typing an answer"
+        sut.answerText = "typing an answer"
         sut.enterAnswerMode(payload: makePayload(question: "Second"))
 
-        // Saved task must still be the original task draft, NOT the partial answer
-        XCTAssertEqual(sut._testSavedSupervisorTask, "User's task draft")
+        XCTAssertEqual(sut.supervisorTask, "User's task draft")
         XCTAssertEqual(sut.pendingAnswer?.question, "Second")
-        // The in-progress answer text stays as-is — re-entry is non-destructive.
-        XCTAssertEqual(sut.supervisorTask, "typing an answer")
+        XCTAssertEqual(sut.answerText, "typing an answer")
     }
 
     func testUpdateAnswerPayload_updatesPayloadOnly() {
@@ -94,21 +91,6 @@ final class QuickCaptureFormStateTests: XCTestCase {
     }
 
     // MARK: - Clear Methods
-
-    func testClearAnswerSession_clearsOnlyClipsAndAttachments() {
-        sut.supervisorTask = "base"
-        sut.enterAnswerMode(payload: makePayload())
-        sut.answerClippedTexts = ["clip"]
-        // Note: answerAttachments population requires store staging — just clippedTexts here
-
-        sut.clearAnswerSession()
-
-        XCTAssertTrue(sut.answerClippedTexts.isEmpty)
-        XCTAssertTrue(sut.answerAttachments.isEmpty)
-        // clearAnswerSession does NOT exit answer mode — pendingAnswer and isInAnswerMode persist
-        XCTAssertTrue(sut.isInAnswerMode)
-        XCTAssertNotNil(sut.pendingAnswer)
-    }
 
     func testClearTaskDraft_resetsAllTaskFields() {
         sut.title = "t"
@@ -142,10 +124,10 @@ final class QuickCaptureFormStateTests: XCTestCase {
 
         XCTAssertFalse(sut.canSubmit(mode: mode))
 
-        sut.supervisorTask = "Text answer"
+        sut.answerText = "Text answer"
         XCTAssertTrue(sut.canSubmit(mode: mode))
 
-        sut.supervisorTask = ""
+        sut.answerText = ""
         sut.answerClippedTexts = ["clipped snippet"]
         XCTAssertTrue(sut.canSubmit(mode: mode))
     }
@@ -172,7 +154,7 @@ final class QuickCaptureFormStateTests: XCTestCase {
     func testExitAnswerMode_savesDraft_reenterRestores() {
         let payload = makePayload(taskID: 1)
         sut.enterAnswerMode(payload: payload)
-        sut.supervisorTask = "my answer"
+        sut.answerText = "my answer"
         sut.answerClippedTexts = ["clip A"]
 
         sut.exitAnswerMode()
@@ -184,7 +166,7 @@ final class QuickCaptureFormStateTests: XCTestCase {
 
         // Re-enter same task — draft restored
         sut.enterAnswerMode(payload: payload)
-        XCTAssertEqual(sut.supervisorTask, "my answer")
+        XCTAssertEqual(sut.answerText, "my answer")
         XCTAssertEqual(sut.answerClippedTexts, ["clip A"])
     }
 
@@ -193,51 +175,55 @@ final class QuickCaptureFormStateTests: XCTestCase {
         let payloadB = makePayload(taskID: 20, question: "Q for B")
 
         sut.enterAnswerMode(payload: payloadA)
-        sut.supervisorTask = "answer A"
+        sut.answerText = "answer A"
         sut.answerClippedTexts = ["clip A"]
 
         // Switch to task B
         sut.switchAnswerTask(from: 10, to: payloadB)
-        XCTAssertEqual(sut.supervisorTask, "")
+        XCTAssertEqual(sut.answerText, "")
         XCTAssertTrue(sut.answerClippedTexts.isEmpty)
 
         // Type answer for task B
-        sut.supervisorTask = "answer B"
+        sut.answerText = "answer B"
         sut.answerClippedTexts = ["clip B"]
 
         // Switch back to task A
         sut.switchAnswerTask(from: 20, to: payloadA)
-        XCTAssertEqual(sut.supervisorTask, "answer A")
+        XCTAssertEqual(sut.answerText, "answer A")
         XCTAssertEqual(sut.answerClippedTexts, ["clip A"])
 
         // Switch back to B — still there
         sut.switchAnswerTask(from: 10, to: payloadB)
-        XCTAssertEqual(sut.supervisorTask, "answer B")
+        XCTAssertEqual(sut.answerText, "answer B")
         XCTAssertEqual(sut.answerClippedTexts, ["clip B"])
     }
 
-    func testClearAnswerSession_savesDraftBeforeClearing() {
+    /// `clearAnswerSession` is gone. Its comment claimed "Panel close calls
+    /// clearAnswerSession", and that was true of exactly one fork of `dismissPanel` — the
+    /// one reached only when `isInAnswerMode` is FALSE, where `pendingAnswer` is nil and
+    /// the save these tests exercised could never run. What did run was a bare clear of
+    /// the two buckets the chat-working composer renders. The behaviour worth keeping
+    /// (a dismissed answer survives per task) belongs to `exitAnswerMode`, pinned below
+    /// and by `QuickCaptureChatComposerBucketCoverageTests`.
+    ///
+    /// RED: drop the `saveCurrentAnswerDraft` call from `exitAnswerMode` → both
+    /// assertions fail.
+    func testDismissDraftPreservation_movedToExitAnswerMode() {
         let payload = makePayload(taskID: 5)
         sut.enterAnswerMode(payload: payload)
-        sut.supervisorTask = "draft text"
+        sut.answerText = "draft text"
         sut.answerClippedTexts = ["clip"]
 
-        // Panel close calls clearAnswerSession
-        sut.clearAnswerSession()
+        sut.exitAnswerMode()
 
-        // Active state cleared
-        XCTAssertTrue(sut.answerClippedTexts.isEmpty)
-
-        // But draft preserved
-        let drafts = sut._testAnswerDrafts
-        XCTAssertEqual(drafts[5]?.text, "draft text")
-        XCTAssertEqual(drafts[5]?.clippedTexts, ["clip"])
+        XCTAssertEqual(sut._testAnswerDrafts[5]?.text, "draft text")
+        XCTAssertEqual(sut._testAnswerDrafts[5]?.clippedTexts, ["clip"])
     }
 
     func testDiscardAnswerDraft_removesDraft() {
         let payload = makePayload(taskID: 7)
         sut.enterAnswerMode(payload: payload)
-        sut.supervisorTask = "will be discarded"
+        sut.answerText = "will be discarded"
         sut.exitAnswerMode()
 
         XCTAssertNotNil(sut._testAnswerDrafts[7])
@@ -258,7 +244,7 @@ final class QuickCaptureFormStateTests: XCTestCase {
     func testDismissAndReopen_preservesDraft() {
         let payload = makePayload(taskID: 42)
         sut.enterAnswerMode(payload: payload)
-        sut.supervisorTask = "important answer"
+        sut.answerText = "important answer"
         sut.answerClippedTexts = ["code snippet"]
 
         // Simulate panel dismiss
@@ -268,7 +254,7 @@ final class QuickCaptureFormStateTests: XCTestCase {
 
         // Simulate panel reopen on same task
         sut.enterAnswerMode(payload: payload)
-        XCTAssertEqual(sut.supervisorTask, "important answer")
+        XCTAssertEqual(sut.answerText, "important answer")
         XCTAssertEqual(sut.answerClippedTexts, ["code snippet"])
     }
 
@@ -277,12 +263,12 @@ final class QuickCaptureFormStateTests: XCTestCase {
         let payloadB = makePayload(taskID: 2, question: "Q2")
 
         sut.enterAnswerMode(payload: payloadA)
-        sut.supervisorTask = "answer for A"
+        sut.answerText = "answer for A"
 
         sut.switchAnswerTask(from: 1, to: payloadB)
 
         // New task has no draft — starts fresh
-        XCTAssertEqual(sut.supervisorTask, "")
+        XCTAssertEqual(sut.answerText, "")
         XCTAssertTrue(sut.answerAttachments.isEmpty)
         XCTAssertTrue(sut.answerClippedTexts.isEmpty)
         XCTAssertEqual(sut.pendingAnswer?.taskID, 2)
@@ -295,14 +281,14 @@ final class QuickCaptureFormStateTests: XCTestCase {
         let payloadB = makePayload(taskID: 20, question: "Q for B")
 
         sut.enterAnswerMode(payload: payloadA)
-        sut.supervisorTask = "answer A"
+        sut.answerText = "answer A"
         sut.answerClippedTexts = ["clip A"]
 
         // Re-enter with different taskID (without explicit switchAnswerTask)
         sut.enterAnswerMode(payload: payloadB)
 
         // Must NOT show stale data from task A
-        XCTAssertEqual(sut.supervisorTask, "")
+        XCTAssertEqual(sut.answerText, "")
         XCTAssertTrue(sut.answerClippedTexts.isEmpty)
         XCTAssertEqual(sut.pendingAnswer?.taskID, 20)
 
@@ -316,14 +302,14 @@ final class QuickCaptureFormStateTests: XCTestCase {
         let payload2 = makePayload(taskID: 5, question: "Q2")
 
         sut.enterAnswerMode(payload: payload1)
-        sut.supervisorTask = "my answer"
+        sut.answerText = "my answer"
         sut.answerClippedTexts = ["clip"]
 
         // Re-enter same taskID with updated question
         sut.enterAnswerMode(payload: payload2)
 
         // Answer text and clips stay as-is (same task, just payload update)
-        XCTAssertEqual(sut.supervisorTask, "my answer")
+        XCTAssertEqual(sut.answerText, "my answer")
         XCTAssertEqual(sut.answerClippedTexts, ["clip"])
         XCTAssertEqual(sut.pendingAnswer?.question, "Q2")
     }
@@ -333,19 +319,19 @@ final class QuickCaptureFormStateTests: XCTestCase {
     func testDiscardDraft_clearFields_exitAnswerMode_doesNotResaveDraft() {
         let payload = makePayload(taskID: 42)
         sut.enterAnswerMode(payload: payload)
-        sut.supervisorTask = "my answer"
+        sut.answerText = "my answer"
         sut.answerClippedTexts = ["clip"]
 
         // Simulate controller's post-submit cleanup
         sut.discardAnswerDraft(taskID: 42)
-        sut.supervisorTask = ""
+        sut.answerText = ""
         sut.answerAttachments = []
         sut.answerClippedTexts = []
         sut.exitAnswerMode()
 
         // Re-enter for the same task — must start clean
         sut.enterAnswerMode(payload: payload)
-        XCTAssertEqual(sut.supervisorTask, "", "Stale answer text should not reappear")
+        XCTAssertEqual(sut.answerText, "", "Stale answer text should not reappear")
         XCTAssertTrue(sut.answerAttachments.isEmpty, "Stale attachments should not reappear")
         XCTAssertTrue(sut.answerClippedTexts.isEmpty, "Stale clips should not reappear")
     }
@@ -354,19 +340,19 @@ final class QuickCaptureFormStateTests: XCTestCase {
     func testCancelDraft_clearFields_exitAnswerMode_doesNotResaveDraft() {
         let payload = makePayload(taskID: 7)
         sut.enterAnswerMode(payload: payload)
-        sut.supervisorTask = "partial answer"
+        sut.answerText = "partial answer"
         sut.answerClippedTexts = ["snippet"]
 
         // Simulate controller's cancelDraft cleanup
         sut.discardAnswerDraft(taskID: 7)
-        sut.supervisorTask = ""
+        sut.answerText = ""
         sut.answerAttachments = []
         sut.answerClippedTexts = []
         sut.exitAnswerMode()
 
         // Re-enter — must be clean
         sut.enterAnswerMode(payload: payload)
-        XCTAssertEqual(sut.supervisorTask, "")
+        XCTAssertEqual(sut.answerText, "")
         XCTAssertTrue(sut.answerAttachments.isEmpty)
         XCTAssertTrue(sut.answerClippedTexts.isEmpty)
     }
@@ -376,20 +362,20 @@ final class QuickCaptureFormStateTests: XCTestCase {
         let payloadB = makePayload(taskID: 20, question: "QB")
 
         sut.enterAnswerMode(payload: payloadA)
-        sut.supervisorTask = "answer A"
+        sut.answerText = "answer A"
 
         // Switch to B via re-entry
         sut.enterAnswerMode(payload: payloadB)
-        sut.supervisorTask = "answer B"
+        sut.answerText = "answer B"
 
         // Switch back to A via re-entry
         sut.enterAnswerMode(payload: payloadA)
-        XCTAssertEqual(sut.supervisorTask, "answer A")
+        XCTAssertEqual(sut.answerText, "answer A")
 
         // Switch back to B
         sut.enterAnswerMode(payload: payloadA)
         // Same task, no switch — stays on A
-        XCTAssertEqual(sut.supervisorTask, "answer A")
+        XCTAssertEqual(sut.answerText, "answer A")
     }
 
     // MARK: - Capture / Restore Across Chat-Working ↔ Answer Mode
@@ -405,7 +391,7 @@ final class QuickCaptureFormStateTests: XCTestCase {
 
     func testCaptureLiveComposerAsAnswerDraft_persistsTextAttachmentsAndClips() throws {
         let attachment = try makeStagedAttachment(name: "spec.txt")
-        sut.supervisorTask = "queued message"
+        sut.answerText = "queued message"
         sut.answerAttachments = [attachment]
         sut.answerClippedTexts = ["clip-1"]
 
@@ -420,13 +406,13 @@ final class QuickCaptureFormStateTests: XCTestCase {
     func testCaptureLiveComposerAsAnswerDraft_emptyContent_removesDraft() throws {
         let attachment = try makeStagedAttachment(name: "stale.txt")
         // Pre-seed a draft via the existing path
-        sut.supervisorTask = "stale"
+        sut.answerText = "stale"
         sut.answerAttachments = [attachment]
         sut.captureLiveComposerAsAnswerDraft(taskID: 99)
         XCTAssertNotNil(sut._testAnswerDrafts[99])
 
         // Clear live fields then capture again — empty content removes the entry
-        sut.supervisorTask = "   "
+        sut.answerText = "   "
         sut.answerAttachments = []
         sut.answerClippedTexts = []
         sut.captureLiveComposerAsAnswerDraft(taskID: 99)
@@ -436,31 +422,31 @@ final class QuickCaptureFormStateTests: XCTestCase {
 
     func testRestoreAnswerDraftToLiveFields_loadsSavedDraft() throws {
         let attachment = try makeStagedAttachment(name: "doc.txt")
-        sut.supervisorTask = "msg"
+        sut.answerText = "msg"
         sut.answerAttachments = [attachment]
         sut.answerClippedTexts = ["c1", "c2"]
         sut.captureLiveComposerAsAnswerDraft(taskID: 7)
 
         // Simulate the post-`exitAnswerMode` cleared state
-        sut.supervisorTask = ""
+        sut.answerText = ""
         sut.answerAttachments = []
         sut.answerClippedTexts = []
 
         sut.restoreAnswerDraftToLiveFields(taskID: 7)
 
-        XCTAssertEqual(sut.supervisorTask, "msg")
+        XCTAssertEqual(sut.answerText, "msg")
         XCTAssertEqual(sut.answerAttachments, [attachment])
         XCTAssertEqual(sut.answerClippedTexts, ["c1", "c2"])
     }
 
     func testRestoreAnswerDraftToLiveFields_noDraft_isNoOp() {
-        sut.supervisorTask = "live"
+        sut.answerText = "live"
         sut.answerClippedTexts = ["c"]
 
         sut.restoreAnswerDraftToLiveFields(taskID: 1234)
 
         // Live fields untouched — no draft existed for that taskID
-        XCTAssertEqual(sut.supervisorTask, "live")
+        XCTAssertEqual(sut.answerText, "live")
         XCTAssertEqual(sut.answerClippedTexts, ["c"])
     }
 

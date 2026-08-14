@@ -2,6 +2,50 @@ import AppKit
 import CoreGraphics
 import Foundation
 
+// MARK: - Environment
+
+/// Everything the computer-use finalizer touches outside its own decisions: the four OS surfaces,
+/// this process's identity, and the settle delay.
+///
+/// Bundled rather than threaded as five parameters because the call graph passes them through six
+/// functions, and because `.system` is then the single place the live adapters are named — the same
+/// discipline `ClipboardCaptureEnvironment` applies one layer down.
+///
+/// **The default is `.inert`, not `.system`.** Seam defaults resolve INWARD, and nowhere in this
+/// codebase does that matter more: the live adapter clicks, scrolls and types at whatever is under
+/// the developer's cursor, so a test that constructed the service without naming an environment and
+/// then drove a click would operate the developer's machine. Production names `.system` exactly
+/// once, at `NTMSOrchestrator.init`.
+nonisolated struct ComputerUseEnvironment: Sendable {
+    let input: any InputControlling
+    let screen: any ScreenCapturing
+    let ax: any AXElementCollecting
+    let frontmost: any FrontmostApplicationProviding
+    /// This process's bundle id, so "don't capture / enumerate ourselves" is a decision rather than
+    /// a hidden `Bundle.main` read.
+    let ownBundleIdentifier: String?
+    /// How long to wait for window ordering to settle after raising the target app. Zero in tests:
+    /// the wait is real wall-clock time, and what the tests assert is the cancellation check on
+    /// either side of it, not its duration.
+    let activationSettleMilliseconds: Int
+
+    static let system = ComputerUseEnvironment(
+        input: SystemInputControl(),
+        screen: SystemScreenCapture(),
+        ax: SystemAXElementCollector(),
+        frontmost: SystemFrontmostApplicationProvider(),
+        ownBundleIdentifier: Bundle.main.bundleIdentifier,
+        activationSettleMilliseconds: ComputerUseConstants.activationSettleMilliseconds)
+
+    static let inert = ComputerUseEnvironment(
+        input: InertInputControl(),
+        screen: InertScreenCapture(),
+        ax: InertAXElementCollector(),
+        frontmost: NoFrontmostApplicationProvider(),
+        ownBundleIdentifier: nil,
+        activationSettleMilliseconds: 0)
+}
+
 // MARK: - Computer-use finalizer
 
 /// Deferred finalizer for `.computerUse` signals. The handler only validated args + emitted
@@ -9,6 +53,23 @@ import Foundation
 /// back to `LLMExecutionService` and thus can't reach the per-step last-capture metadata it
 /// needs to convert image-pixels → global points. Mirrors the `.visionAnalysis` pattern.
 extension LLMExecutionService {
+
+    /// The one place the Accessibility denial is worded (wave 32 — the former
+    /// `InputControlError.accessibilityDenied` copy was a dead duplicate that no code path
+    /// could throw).
+    ///
+    /// Its ONE consumer is `makeErrorEnvelope(code: .computerUseDenied)` below, so this is
+    /// MODEL-read text: it names the missing capability and a recourse the model can act on,
+    /// never a Settings pane it cannot open. The human is served separately and better — the
+    /// call site invokes `requestAccessibilityIfNeeded()`, which raises the OS's own prompt.
+    /// Accessibility is a DIFFERENT grant from Screen Recording, and conflating them would
+    /// send the model down the wrong path — pinned by
+    /// `ScreenInputHotkeyTests.testAccessibilityDenied_namesTheAccessibilityPane`.
+    nonisolated static let accessibilityDeniedMessage =
+        "NanoTeams does not have macOS Accessibility permission, so mouse and keyboard actions "
+        + "are silently dropped by the OS. Only the supervisor can grant it, and they have been "
+        + "prompted. Do not retry input actions in this step; screen_capture uses a different "
+        + "permission and is unaffected."
 
     func appendComputerUseResult(
         result: ToolExecutionResult,
@@ -29,13 +90,11 @@ extension LLMExecutionService {
         // Without this guard the finalizer returned a success envelope for a no-op, so the model
         // saw "done", re-captured, saw nothing changed, and looped. `screen_capture` uses Screen
         // Recording (checked in ScreenCaptureService) — not this permission.
-        if requiresAccessibility(action), !InputControlService.hasAccessibility() {
-            InputControlService.requestAccessibilityIfNeeded()   // opens System Settings prompt (once)
+        if requiresAccessibility(action), !computerUse.input.hasAccessibility() {
+            computerUse.input.requestAccessibilityIfNeeded()   // opens System Settings prompt (once)
             await finalizeToolResult(
                 envelope: makeErrorEnvelope(code: .computerUseDenied,
-                    message: "Accessibility permission is required to control the mouse and keyboard. "
-                        + "Grant NanoTeams access in System Settings → Privacy & Security → Accessibility, "
-                        + "then try again."),
+                    message: Self.accessibilityDeniedMessage),
                 isError: true, result: result, toolCallID: toolCallID,
                 stepID: stepID, taskID: taskID, conversationMessages: &conversationMessages, tracker: tracker)
             return
@@ -54,8 +113,8 @@ extension LLMExecutionService {
             // is a legitimate dead-space click.
             await runPointerAction(
                 x: x, y: y, target: target, key: key, warnOnMiss: button != "right",
-                perform: { point in
-                    InputControlService.click(globalPoint: point, button: button == "right" ? .right : .left, double: double)
+                perform: { [computerUse] point in
+                    computerUse.input.click(globalPoint: point, button: button == "right" ? .right : .left, double: double)
                     return "Clicked at image (\(x), \(y))."
                 },
                 result: result, toolCallID: toolCallID, stepID: stepID, taskID: taskID,
@@ -66,16 +125,19 @@ extension LLMExecutionService {
             // areas outside every advertised element (scroll containers aren't actionable).
             await runPointerAction(
                 x: x, y: y, target: target, key: key, warnOnMiss: false,
-                perform: { point in
-                    InputControlService.scroll(globalPoint: point, dx: dx, dy: dy)
+                perform: { [computerUse] point in
+                    computerUse.input.scroll(globalPoint: point, dx: dx, dy: dy)
                     return "Scrolled (\(dx), \(dy)) at image (\(x), \(y))."
                 },
                 result: result, toolCallID: toolCallID, stepID: stepID, taskID: taskID,
                 conversationMessages: &conversationMessages, tracker: tracker)
 
         case .typeText(let text, let target):
-            await activateTargetAndSettle(target: target)
-            InputControlService.typeText(text)
+            // Cancelled mid-settle ⇒ type nothing and append nothing. Silent return matches the
+            // capture path's `catch is CancellationError { return }`: the step is being torn
+            // down, so finalizing would write a tool result into a conversation nobody will send.
+            guard await activateTargetAndSettle(target: target) else { return }
+            computerUse.input.typeText(text)
             executionStates[key]?.computerUseActionsSinceCapture += 1
             await finalizeToolResult(
                 envelope: makeSuccessEnvelope(data: ["status": "ok", "action": "type"]),
@@ -83,9 +145,9 @@ extension LLMExecutionService {
                 stepID: stepID, taskID: taskID, conversationMessages: &conversationMessages, tracker: tracker)
 
         case .pressKey(let keys, let target):
-            await activateTargetAndSettle(target: target)
+            guard await activateTargetAndSettle(target: target) else { return }
             do {
-                try InputControlService.pressKeys(keys)
+                try computerUse.input.pressKeys(keys)
                 executionStates[key]?.computerUseActionsSinceCapture += 1
                 await finalizeToolResult(
                     envelope: makeSuccessEnvelope(data: ["status": "ok", "action": "key", "keys": keys]),
@@ -112,9 +174,32 @@ extension LLMExecutionService {
     /// Settings toggle. Undeterminable probes resolve to `false` — the safe
     /// direction is the vision-model fallback (a described screenshot) rather
     /// than feeding an image to a model that may not parse it.
-    func mainModelSeesImages(config: LLMConfig, client: any LLMClient) async -> Bool {
-        let key = config.baseURLString + "|" + config.modelName
+    ///
+    /// A definitive verdict is memoized for the service's lifetime; an undeterminable one
+    /// is NOT (a transport blip must not pin "no vision" forever) but is latched per step,
+    /// because this is consulted once per `screen_capture` and once per `analyze_image` and
+    /// the probe carries a 5s timeout. Against an endpoint that reports no capability
+    /// metadata the answer is `nil` by construction, so without the latch every screenshot
+    /// of an agent loop pays that timeout. Exactly the split `warnIfContextBudgetExceeded`
+    /// arrived at for `modelContextLength`, whose first cut cached the failure for the
+    /// lifetime and left the net permanently unarmed.
+    ///
+    /// `stepKey` has no default: both production call sites have one, and a caller that
+    /// omits it silently loses the bound — the shape wave 28 found in `taskElapsedSeconds`.
+    /// Tests with no step pass `nil` explicitly, which is the honest answer for them.
+    func mainModelSeesImages(
+        config: LLMConfig, client: any LLMClient, stepKey: TaskStepKey?
+    ) async -> Bool {
+        // `.normalizedBaseURL` rather than the raw string: it is the house SSOT for this
+        // exact question (Keychain account, model-list cache, ensurer census all delegate
+        // to it), and a trailing slash or a capitalized host would otherwise mint a second
+        // cache entry and a second probe for one server.
+        let key = "\(config.baseURLString.normalizedBaseURL)|\(config.modelName)"
         if let cached = mainModelVisionCache[key] { return cached }
+        if let stepKey, executionStates[stepKey]?.probedVisionKeys.contains(key) == true {
+            return false
+        }
+        if let stepKey { executionStates[stepKey]?.probedVisionKeys.insert(key) }
         guard let verdict = await client.modelSupportsVision(config: config) else { return false }
         mainModelVisionCache[key] = verdict
         return verdict
@@ -138,10 +223,11 @@ extension LLMExecutionService {
         result: ToolExecutionResult, toolCallID: UUID, stepID: String, taskID: Int,
         conversationMessages: inout [ChatMessage], tracker: ToolCallTracker?
     ) async {
-        let ownBundle = Bundle.main.bundleIdentifier ?? ""
+        let ownBundle = computerUse.ownBundleIdentifier ?? ""
         let captured: CapturedScreen
         do {
-            captured = try await ScreenCaptureService.capture(targetSpec: target, windowTitle: windowTitle, ownBundleID: ownBundle)
+            captured = try await computerUse.screen.capture(
+                targetSpec: target, windowTitle: windowTitle, ownBundleID: ownBundle)
         } catch is CancellationError {
             return
         } catch {
@@ -158,6 +244,31 @@ extension LLMExecutionService {
         computerUseCaptureCountByTask[key.taskID, default: 0] += 1
 
         let collection = await axElements(for: captured, ownBundle: ownBundle)
+        await deliverCapture(
+            captured: captured, collection: collection, target: target, key: key,
+            client: client, config: config, networkLogger: networkLogger,
+            result: result, toolCallID: toolCallID, stepID: stepID, taskID: taskID,
+            conversationMessages: &conversationMessages, tracker: tracker)
+    }
+
+    /// Everything that happens to a screenshot AFTER the OS has produced it: compose the
+    /// envelope, decide which channel carries the pixels, and commit the click-coordinate state.
+    ///
+    /// Split from `runCapture` because those are two different jobs with two different
+    /// dependencies — the half above needs Screen Recording and a live accessibility tree, this
+    /// half needs only the values they returned. It is also where every decision that can be
+    /// *wrong* lives: which warnings the model is told about, whether it gets an image or a
+    /// description, and whether clicks start resolving against this capture or keep resolving
+    /// against the last one the model actually saw.
+    ///
+    /// `internal`, not `private`: driven directly by `ComputerUseCaptureDeliveryTests`, since
+    /// producing a real `CapturedScreen` means taking a real screenshot.
+    func deliverCapture(
+        captured: CapturedScreen, collection: AXCollectionResult, target: String, key: TaskStepKey,
+        client: any LLMClient, config: LLMConfig, networkLogger: NetworkLogger?,
+        result: ToolExecutionResult, toolCallID: UUID, stepID: String, taskID: Int,
+        conversationMessages: inout [ChatMessage], tracker: ToolCallTracker?
+    ) async {
         let elements = collection.elements
         // Commit the click-coordinate state (capture geometry + its element list + reset
         // staleness) ATOMICALLY, guarded by liveness, and ONLY on the paths that actually
@@ -177,7 +288,7 @@ extension LLMExecutionService {
         // isn't left with a silently blank element list (→ blind typing / loops).
         var warnings = collection.warnings
         if let note = AccessibilityInspector.emptyElementsNote(
-            hasAccessibility: InputControlService.hasAccessibility(), elementCount: elements.count) {
+            hasAccessibility: computerUse.input.hasAccessibility(), elementCount: elements.count) {
             warnings.append(note)
         }
         // Window resolution now falls back to a window-TITLE match (so `target:"LinkedIn"` finds
@@ -196,7 +307,7 @@ extension LLMExecutionService {
         // configured Vision model describes it (same engine as `analyze_image`)
         // and the description goes in as text. Clicks aim with `ax_elements`
         // either way, so the description path stays fully operable.
-        if await mainModelSeesImages(config: config, client: client) {
+        if await mainModelSeesImages(config: config, client: client, stepKey: key) {
             commitCaptureState()
             await appendImageToMainChat(
                 envelope: envelope,
@@ -211,9 +322,10 @@ extension LLMExecutionService {
         guard let visionConfig = delegate?.visionLLMConfig else {
             await finalizeToolResult(
                 envelope: makeErrorEnvelope(code: .computerUseDenied,
-                    message: "The main model cannot see images and no Vision model is configured. "
-                        + "Enable Vision in Settings → Vision (or use a vision-capable main model) "
-                        + "so screenshots can be described."),
+                    message: "The main model cannot see images and no Vision model is configured, "
+                        + "so this screenshot cannot be delivered. Do not re-capture — the result "
+                        + "will be identical. Work from the ax_elements list, or ask the supervisor "
+                        + "to configure a Vision model."),
                 isError: true, result: result, toolCallID: toolCallID,
                 stepID: stepID, taskID: taskID, conversationMessages: &conversationMessages, tracker: tracker)
             return
@@ -258,15 +370,15 @@ extension LLMExecutionService {
     /// whole-screen captures fall back to the frontmost non-NanoTeams app. The collection
     /// (synchronous AX IPC + web-content settle/retry) runs off the main actor — see
     /// `AccessibilityInspector.collectElements`.
-    private func axElements(for captured: CapturedScreen, ownBundle: String) async -> AXCollectionResult {
+    func axElements(for captured: CapturedScreen, ownBundle: String) async -> AXCollectionResult {
         var pid = captured.pid
         if pid == nil {
-            if let front = NSWorkspace.shared.frontmostApplication, front.bundleIdentifier != ownBundle {
+            if let front = computerUse.frontmost.frontmostApplication(), front.bundleIdentifier != ownBundle {
                 pid = front.processIdentifier
             }
         }
         guard let pid else { return .empty }
-        return await AccessibilityInspector.collectElements(AXCollectionRequest(
+        return await computerUse.ax.collectElements(AXCollectionRequest(
             pid: pid,
             regionOriginX: captured.originX, regionOriginY: captured.originY,
             regionWidthPt: captured.regionWidthPt, regionHeightPt: captured.regionHeightPt,
@@ -276,7 +388,9 @@ extension LLMExecutionService {
 
     // MARK: - Pointer actions (click / scroll)
 
-    private func runPointerAction(
+    // `internal`, not `private`: the `#if DEBUG` seam that drives this with an injected
+    // `perform` lives in `+TestHelpers.swift`, and Swift's `private` is file-scoped.
+    func runPointerAction(
         x: Int, y: Int, target: String?, key: TaskStepKey, warnOnMiss: Bool,
         perform: (CGPoint) -> String,
         result: ToolExecutionResult, toolCallID: UUID, stepID: String, taskID: Int,
@@ -303,7 +417,8 @@ extension LLMExecutionService {
                 stepID: stepID, taskID: taskID, conversationMessages: &conversationMessages, tracker: tracker)
             return
         }
-        await activateTargetAndSettle(target: target ?? captured.bundleID ?? captured.appName)
+        guard await activateTargetAndSettle(target: target ?? captured.bundleID ?? captured.appName)
+        else { return }
         // Echo which ADVERTISED element the point falls in — pure containment against the
         // exact ax_elements list shipped with this capture (no live AX IPC on the click path:
         // a hit-test can block the main actor for seconds and contradicts the advertised list
@@ -342,13 +457,27 @@ extension LLMExecutionService {
     /// asks), then WAITS for window ordering to settle before returning. Without the settle
     /// wait, the click/type event can race ahead of the async raise and land on whatever window
     /// was previously frontmost. No-op (no wait) when there's no resolvable target to raise.
-    private func activateTargetAndSettle(target: String?) async {
-        guard delegate?.computerUsePolicy.raiseTargetWindowBeforeClick ?? true else { return }
+    ///
+    /// Returns `false` when the step was cancelled — Pause, supersede, a work-folder switch —
+    /// at any point up to and including the settle wait. **The caller must then synthesize no
+    /// input.** `Task.sleep`'s `CancellationError` is swallowed by `try?`, so without this the
+    /// 150 ms settle was a window in which Pause was observed and ignored: the cancelled sleep
+    /// returned immediately and the click / keystroke still landed on the user's machine — on
+    /// the app we had just raised to the front. The capture path already honours cancellation
+    /// (`catch is CancellationError { return }` on both of its throwing awaits); the input paths
+    /// could not, because nothing on them throws — which is exactly why the gap was silent.
+    ///
+    /// Checked on BOTH sides of the wait: cancellation that arrived before this action began
+    /// (the tool-result loop processes a batch and checks nothing between results) must not
+    /// raise a window either.
+    func activateTargetAndSettle(target: String?) async -> Bool {
+        if Task.isCancelled { return false }
+        guard delegate?.computerUsePolicy.raiseTargetWindowBeforeClick ?? true else { return true }
         guard let spec = target?.trimmingCharacters(in: .whitespacesAndNewlines), !spec.isEmpty,
               spec.caseInsensitiveCompare("screen") != .orderedSame,
-              let app = InputControlService.runningApp(matching: spec) else { return }
-        InputControlService.activate(app)
-        try? await Task.sleep(for: .milliseconds(ComputerUseConstants.activationSettleMilliseconds))
+              computerUse.input.activateApp(matching: spec) else { return true }
+        try? await Task.sleep(for: .milliseconds(computerUse.activationSettleMilliseconds))
+        return !Task.isCancelled
     }
 
     // MARK: - Shared finalize helpers

@@ -22,7 +22,6 @@ final class PlanningPhaseBoundaryContractTests: XCTestCase {
     private var delegate: MockLLMExecutionDelegate!
     private var task: NTMSTask!
     private var stepID: String!
-    private var memoryStore: MemoryTagStore!
 
     private let systemPrompt = "You are Software Engineer."
     private let tools: [ToolSchema] = [
@@ -36,7 +35,6 @@ final class PlanningPhaseBoundaryContractTests: XCTestCase {
         service = LLMExecutionService(repository: NTMSRepository())
         delegate = MockLLMExecutionDelegate()
         service.attach(delegate: delegate)
-        memoryStore = MemoryTagStore(workFolderRoot: URL(fileURLWithPath: "/tmp"))
         let step = StepExecution(id: "test_step", role: .softwareEngineer, title: "N", status: .running)
         stepID = step.id
         task = NTMSTask(id: 0, title: "T", supervisorTask: "goal", runs: [Run(id: 0, steps: [step])])
@@ -45,7 +43,7 @@ final class PlanningPhaseBoundaryContractTests: XCTestCase {
     }
 
     override func tearDown() {
-        service = nil; delegate = nil; task = nil; stepID = nil; memoryStore = nil
+        service = nil; delegate = nil; task = nil; stepID = nil
         super.tearDown()
     }
 
@@ -86,7 +84,7 @@ final class PlanningPhaseBoundaryContractTests: XCTestCase {
     ) async -> PlanningPhasePolicy.Authorization {
         await service.applyPlanningPhase(
             stepID: stepID, taskID: task.id, tools: tools, step: step, team: nil,
-            memoryStore: memoryStore, conversationMessages: &conversation,
+            conversationMessages: &conversation,
             roleDefinition: role())
     }
 

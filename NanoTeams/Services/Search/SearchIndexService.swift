@@ -63,6 +63,23 @@ actor SearchIndexService {
     /// prior cache if any, otherwise an empty index without writing it.
     func loadOrBuild(force: Bool = false) -> SearchIndex {
         if !force, let cached, matchesFolder(signature: cached.signature) {
+            // A cache that still matches the folder proves there is no
+            // outstanding load problem, so retire any earlier one.
+            //
+            // Without this the fast path is where a load error becomes
+            // IMMORTAL. `loadFromDisk` is the only other writer, and once a
+            // rebuild has populated `cached` every later `loadOrBuild(force:
+            // false)` returns here without re-attempting a load — so a
+            // "search_index.json corrupt" set once, on the build that
+            // regenerated it, was re-read by `SearchIndexCoordinator.
+            // performTokenBuild` on every subsequent build and shown in the
+            // Advanced-settings card for the rest of the session, against an
+            // index that had been healthy on disk since the first rebuild.
+            //
+            // Clearing HERE rather than at the end of the rebuild is what keeps
+            // the message useful: the rebuild that fixed the index still
+            // reports why it happened, and the next build retires it.
+            lastLoadError = nil
             return cached
         }
         if !force,
@@ -100,8 +117,13 @@ actor SearchIndexService {
     /// (malformed JSON, version drift, or a validating-init invariant
     /// violation from `SearchIndex.init(from:)`). Distinct from "file not
     /// present on first launch" — nil means the last load was either
-    /// successful or the file genuinely didn't exist. Cleared on a clean
-    /// load or a successful rebuild.
+    /// successful or the file genuinely didn't exist.
+    ///
+    /// Lifetime: set by `loadFromDisk`, and retired by the next `loadOrBuild`
+    /// that either loads cleanly or serves a cache still matching the folder.
+    /// It therefore SURVIVES the rebuild it triggered — that is deliberate, and
+    /// is what lets the settings card say the index was regenerated *because*
+    /// the previous copy was bad — but only for that one build.
     private(set) var lastLoadError: String?
 
     /// Populated when `clear()` failed to remove the on-disk index file

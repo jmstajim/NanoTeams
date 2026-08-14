@@ -17,7 +17,10 @@ enum LLMStepStop {
     /// - Parameter message: The error message describing the failure.
     case toolFailure(message: String)
 
-    /// An open-ended role (no output artifacts) finished without tool calls.
-    /// The step transitions to `.needsApproval` for Supervisor review.
-    case needsAcceptance
+    // There is deliberately no `needsAcceptance` case. One existed and had ZERO producers in
+    // production or in tests, so its arm in `+StepLifecycle` was unreachable. The behaviour it
+    // described is not missing: `finishStepGraceful` calls `completeStepNeedsAcceptance` directly
+    // (`+StepFlowControl`), which is the live path. A case nothing constructs is not an
+    // extension point — it is a claim that a route exists, and the next reader tracing "how does a
+    // step reach Supervisor review" would have followed it to a dead end.
 }

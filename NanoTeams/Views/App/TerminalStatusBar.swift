@@ -10,13 +10,11 @@ import SwiftUI
 struct TerminalStatusBar: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(StoreConfiguration.self) private var config
-    @Environment(ModelCatalog.self) private var modelCatalog
 
     // Read straight from this leaf's own `config` environment rather than as
     // parameters from `MainLayoutView`. Passing them down made `MainLayoutView.body`
     // an observer of these two properties, so every model/URL change re-evaluated
     // the whole layout (sidebar + detail), not just this status strip.
-    private var modelName: String { config.llmModelName }
     private var baseURL: String { config.llmBaseURLString }
 
     private var hostAndPort: String {
@@ -28,28 +26,12 @@ struct TerminalStatusBar: View {
         return host
     }
 
-    private var displayModel: String {
-        let trimmed = modelName.trimmingCharacters(in: .whitespaces)
-        return trimmed.isEmpty ? "—" : trimmed.uppercased()
-    }
-
-    private var availableModels: [String] {
-        modelCatalog.models(for: baseURL, provider: config.llmProvider)
-    }
-
-    private var isFetchingModels: Bool {
-        modelCatalog.isFetching(baseURL, provider: config.llmProvider)
-    }
-
     var body: some View {
         VStack(spacing: 0) {
             TerminalDivider()
             statusRow
         }
         .background(Colors.surfaceBackground)
-        .task(id: baseURL) {
-            await modelCatalog.loadIfNeeded(url: baseURL, provider: config.llmProvider)
-        }
     }
 
     private var statusRow: some View {
@@ -59,7 +41,7 @@ struct TerminalStatusBar: View {
             separator
             statusLabel(hostAndPort)
             separator
-            modelPicker
+            ModelQuickPicker()
 
             Spacer(minLength: Spacing.s)
 
@@ -83,58 +65,6 @@ struct TerminalStatusBar: View {
         .keyboardShortcut(",", modifiers: .command)
         .help("Settings (⌘,)")
         .accessibilityLabel("Settings")
-    }
-
-    /// Quick model switcher. Tapping the model label opens a menu listing the
-    /// LM Studio server's loaded chat models; picking one writes through to
-    /// `StoreConfiguration.llmModelName`. The fetched list is shared via
-    /// `ModelCatalog` so settings cards stay in lockstep.
-    private var modelPicker: some View {
-        Menu {
-            if availableModels.isEmpty {
-                Text(isFetchingModels ? "Loading models…" : "No models available")
-                    .foregroundStyle(Colors.textTertiary)
-            } else {
-                ForEach(availableModels, id: \.self) { model in
-                    Button {
-                        config.llmModelName = model
-                    } label: {
-                        if model == modelName {
-                            Label(model, systemImage: "checkmark")
-                        } else {
-                            Text(model)
-                        }
-                    }
-                }
-            }
-
-            Divider()
-
-            Button {
-                Task { await modelCatalog.refresh(url: baseURL, provider: config.llmProvider) }
-            } label: {
-                Label("Refresh", systemImage: "arrow.clockwise")
-            }
-            .disabled(isFetchingModels)
-        } label: {
-            HStack(spacing: Spacing.xxs) {
-                Text(displayModel)
-                    .font(Typography.term2xs)
-                    .tracking(Typography.labelTracking)
-                    .foregroundStyle(Colors.textSecondary)
-                    .lineLimit(1)
-                    .truncationMode(.head)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(Colors.textQuaternary)
-            }
-            .contentShape(Rectangle())
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize(horizontal: false, vertical: true)
-        .help(modelName.isEmpty ? "Switch model" : modelName)
-        .accessibilityLabel("Model: \(displayModel)")
     }
 
     private func statusLabel(_ text: String) -> some View {

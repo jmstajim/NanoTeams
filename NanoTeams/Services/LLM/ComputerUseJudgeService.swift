@@ -64,10 +64,10 @@ nonisolated enum ComputerUseJudgeService {
         // Trim with the SAME `Character.isWhitespace` predicate the strict parser uses (not
         // `.whitespacesAndNewlines`, which also strips U+200B) so invisible padding can't slip
         // the verdict past the sole-object check.
-        let cleaned = JudgeVerdictParser.whitespaceTrimmed(ModelTokenCleaner.clean(content))
-        let source = cleaned.isEmpty
-            ? JudgeVerdictParser.whitespaceTrimmed(ModelTokenCleaner.clean(thinking))
-            : cleaned
+        let source = ModelReplyChannels.answer(
+            content: content,
+            reasoning: thinking,
+            prepare: { JudgeVerdictParser.whitespaceTrimmed(ModelTokenCleaner.clean($0)) })
         return parse(source)
     }
 

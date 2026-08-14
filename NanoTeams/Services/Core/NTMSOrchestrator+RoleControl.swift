@@ -7,6 +7,24 @@ extension NTMSOrchestrator {
 
     /// Restarts a role and cascades the reset to all downstream dependents.
     func restartRole(taskID: Int, roleID: String, comment: String?) async {
+        // The synthetic `team_generation_*` step is not a role: it belongs to no roster and
+        // the engine cannot execute it. Restarting it is not a no-op but destructive —
+        // `StepExecution.reset()` erases the `create_team` error envelope (the only record
+        // of WHY generation failed), writes a phantom `roleStatuses` entry for an id no
+        // roster contains, clears the recovery latch, and this method's own post-mutation
+        // verification PASSES on the result, so it reports success. Observed in production
+        // 2026-08-07; the task then derived `.running` forever with a dead engine.
+        //
+        // The Autovisor layer routes `manage_role restart` on this prefix to
+        // `retryTeamGenerationReportingResult` before it ever reaches here, and the UI
+        // resolves `selectedRoleID` from roster ids — so this is the structural backstop
+        // that makes the primitive total for callers that don't exist yet.
+        guard !roleID.hasPrefix(StepExecution.teamGenerationIDPrefix) else {
+            lastErrorMessage = "Team generation isn't a role — restart doesn't apply. "
+                + "Use Retry in the team panel to re-run generation."
+            return
+        }
+
         await ensureTaskLoaded(taskID)
 
         // A restart with no active run can't reset anything. Surface it instead of

@@ -14,19 +14,24 @@ enum QuickCaptureFormLogic {
     /// mode. Chat-mode teams (no Supervisor deliverables) prompt the user to
     /// send a message; task-mode teams prompt for a task description. Nil
     /// (no team resolved yet) defaults to task framing.
+    ///
+    /// Reads `seedChatModeForNewTask`, not bare `isChatMode`: this field is the
+    /// pre-creation prompt, so it must describe the task the user is about to
+    /// create. Against the generated placeholder, bare `isChatMode` is vacuously
+    /// true and this prompted "Send a message…" while `teamModeLabel` — ten lines
+    /// below, in the same view — rendered "task".
     static func taskFieldPlaceholder(for team: Team?) -> String {
-        if team?.isChatMode == true { return "Send a message..." }
+        if team?.seedChatModeForNewTask == true { return "Send a message..." }
         return "Describe your task..."
     }
 
     /// Mode label rendered next to the team picker ("chat" or "task"). The
-    /// generated-team placeholder always shows "task" regardless of its
-    /// `isChatMode` flag — the actual generated team determines real mode, and
-    /// every generated team produces artifacts, so showing "chat" for the
-    /// placeholder would mis-signal the post-generation behavior.
+    /// generated-team placeholder always shows "task": its `isChatMode` is
+    /// vacuously true (no roles ⇒ no Supervisor deliverables) and says nothing
+    /// about the team that will actually run — which is exactly what
+    /// `seedChatModeForNewTask` encodes.
     static func teamModeLabel(for team: Team?) -> String {
-        if team?.templateID == DelegationConstants.generatedTeamSentinel { return "task" }
-        return team?.isChatMode == true ? "chat" : "task"
+        team?.seedChatModeForNewTask == true ? "chat" : "task"
     }
 
     /// Teams offered in the in-picker list. Delegates to `[Team].selectableInPicker`.
@@ -90,7 +95,7 @@ enum QuickCaptureFormLogic {
         guard
             let current,
             let team = availableTeams.first(where: { $0.id == current }),
-            team.templateID == DelegationConstants.generatedTeamSentinel
+            team.isGeneratedPlaceholder
         else { return nil }
         return current
     }

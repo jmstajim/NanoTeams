@@ -86,6 +86,11 @@ actor ChatModelEnsurer {
     /// unloaded right now. See `reclaim`.
     private var unloading: [String: Task<Void, Error>] = [:]
 
+    #if DEBUG
+    /// Test seam: how many `ensureLoaded` calls have parked on an in-flight unload.
+    private(set) var _testEnsuresParkedOnPendingUnload = 0
+    #endif
+
     init() {}
 
     // MARK: - Ensure
@@ -105,6 +110,13 @@ actor ChatModelEnsurer {
         // loaded" and issue the request against a corpse. Wait it out, then
         // list again and load properly.
         if let pendingUnload = unloading[key] {
+            #if DEBUG
+            // Bumped BEFORE the suspension: the only moment at which "an ensure is
+            // parked on a dying instance" is observable. A test cannot produce this
+            // interleaving with a sleep — it has to wait for it (see
+            // `LLMSupportTailCoverageTests.testEnsureLoaded_whileAReclaimOfTheSameModelIsInFlight_waitsThenLoads`).
+            _testEnsuresParkedOnPendingUnload += 1
+            #endif
             _ = try? await pendingUnload.value
         }
         if let existing = inFlight[key] {

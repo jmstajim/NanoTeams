@@ -74,7 +74,7 @@ extension LLMExecutionService {
         stepIndex: Int,
         client: any LLMClient,
         config: LLMConfig
-    ) async -> String {
+    ) async -> String? {
         guard delegate != nil else { return "Approved." }
         await noteInterleavingCall(label: "supervisor auto-answer", config: config)
         return await SupervisorAutoAnswerService.generateAnswer(

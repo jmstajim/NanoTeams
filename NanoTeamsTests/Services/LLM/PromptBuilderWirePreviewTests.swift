@@ -996,5 +996,110 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
                        + "attributed preview when `team.description` is empty. "
                        + "Got:\n\(attributed.string)")
     }
+    // MARK: - Attributed-vs-plain parity on the branches that make them diverge
 
+    /// The chip-less fallback. `Team.duplicate` clears `templateID`, so EVERY team the New
+    /// Team sheet produces is "custom" and never receives a chip added to the bundled
+    /// templates later — the auto-append is the only way global guidance reaches such a role,
+    /// and the preview has its own copy of it. If the two copies disagree the Settings preview
+    /// stops describing the request that will actually be sent.
+    ///
+    /// RED: delete the auto-append in `buildWirePromptPreviewAttributed` → the attributed
+    /// preview loses the section the plain path still emits, and the parity assertion fails.
+    func testAttributed_templateWithoutTheGlobalChip_appendsGuidanceLikeThePlainPath() throws {
+        var team = TeamTemplateFactory.faang()
+        team.systemPromptTemplate = "You are {roleName}.\n\n## Guidance\n{roleGuidance}\n"
+        let role = try XCTUnwrap(team.roles.first { $0.systemRoleID != "supervisor" })
+        let inputs = makeInputs(role: role, team: team, globalContext: "Never batch tool calls.")
+
+        let plain = try PromptBuilder.buildWirePromptPreview(kind: .stepExecution, inputs: inputs)
+        let attributed = try PromptBuilder.buildWirePromptPreviewAttributed(
+            kind: .stepExecution, inputs: inputs)
+
+        XCTAssertTrue(plain.contains("## Global guidance"),
+                      "premise: the chip-less template must take the auto-append path")
+        XCTAssertTrue(attributed.string.contains("## Global guidance\n\nNever batch tool calls."),
+                      "the attributed preview must append the same section: \(attributed.string)")
+        XCTAssertEqual(attributed.string, plain,
+                       "the preview a user reads and the bytes the model receives are one string")
+    }
+
+    /// …and the same template with an EMPTY global context must not grow a bodyless header:
+    /// `## Global guidance` with nothing under it is a section that promises content the model
+    /// never gets, and it would differ from the plain render.
+    func testAttributed_templateWithoutTheGlobalChip_emptyGuidance_appendsNothing() throws {
+        var team = TeamTemplateFactory.faang()
+        team.systemPromptTemplate = "You are {roleName}.\n\n## Guidance\n{roleGuidance}\n"
+        let role = try XCTUnwrap(team.roles.first { $0.systemRoleID != "supervisor" })
+        let inputs = makeInputs(role: role, team: team, globalContext: "   ")
+
+        let plain = try PromptBuilder.buildWirePromptPreview(kind: .stepExecution, inputs: inputs)
+        let attributed = try PromptBuilder.buildWirePromptPreviewAttributed(
+            kind: .stepExecution, inputs: inputs)
+
+        XCTAssertFalse(attributed.string.contains("## Global guidance"))
+        XCTAssertEqual(attributed.string, plain)
+    }
+
+    /// Leading/trailing whitespace: the attributed renderer trims in place with an
+    /// NSString scan while the plain one calls `trimmingCharacters`. They agree only if the
+    /// character SET matches — and `.whitespacesAndNewlines` on this platform contains U+200B,
+    /// which is the sentinel the clip pipeline relies on (CLAUDE.md, 2026-07-11). Pinning the
+    /// equality rather than the implementation keeps that coupling honest.
+    func testAttributed_templatePaddedWithBlankLines_trimsExactlyLikeThePlainPath() throws {
+        var team = TeamTemplateFactory.faang()
+        team.systemPromptTemplate = "\n\n\n   You are {roleName}.   \n\n\n"
+        let role = try XCTUnwrap(team.roles.first { $0.systemRoleID != "supervisor" })
+        let inputs = makeInputs(role: role, team: team, globalContext: "")
+
+        let plain = try PromptBuilder.buildWirePromptPreview(kind: .stepExecution, inputs: inputs)
+        let attributed = try PromptBuilder.buildWirePromptPreviewAttributed(
+            kind: .stepExecution, inputs: inputs)
+
+        // The trailing newline the whole prompt ends with belongs to the appended Harmony
+        // block, not to the template's padding — so the pin is on the BODY's edges.
+        XCTAssertTrue(attributed.string.hasPrefix("You are "),
+                      "leading padding must be gone: \(attributed.string.debugDescription.prefix(60))")
+        XCTAssertFalse(attributed.string.contains("You are Product Manager.   \n"),
+                       "trailing padding on the body line must be gone too")
+        XCTAssertEqual(attributed.string, plain)
+    }
+
+    /// A template ending in a header with no body — the trailing-orphan case, which the main
+    /// fixed-point pass cannot see because it looks for a FOLLOWING `##`.
+    func testAttributed_trailingHeaderWithNoBody_isStripped() throws {
+        var team = TeamTemplateFactory.faang()
+        team.systemPromptTemplate = "You are {roleName}.\n\n## Skills\n{roleSkills}\n"
+        let role = try XCTUnwrap(team.roles.first { $0.systemRoleID != "supervisor" })
+        let inputs = makeInputs(role: role, team: team, globalContext: "")
+
+        let plain = try PromptBuilder.buildWirePromptPreview(kind: .stepExecution, inputs: inputs)
+        let attributed = try PromptBuilder.buildWirePromptPreviewAttributed(
+            kind: .stepExecution, inputs: inputs)
+
+        XCTAssertFalse(attributed.string.contains("## Skills"),
+                       "a header whose only body was an empty chip must go: \(attributed.string)")
+        XCTAssertEqual(attributed.string, plain)
+    }
+
+    /// Consultation/meeting guidance falls back to `SystemTemplates` ONLY for a role the team
+    /// does not contain — the shape a stale Settings selection produces after the role is
+    /// deleted. Falling back for an in-team role instead would silently show (and send) the
+    /// bundled prompt in place of the user's edited one.
+    func testCollaborationPreview_roleNotInTheTeam_fallsBackToTheBundledPrompt() throws {
+        let team = TeamTemplateFactory.faang()
+        let orphan = TeamRoleDefinition(
+            id: "not-in-this-team", name: "Software Engineer", prompt: "",
+            toolIDs: [], usePlanningPhase: false, dependencies: RoleDependencies(),
+            systemRoleID: Role.softwareEngineer.baseID)
+        XCTAssertNil(team.findRole(byIdentifier: orphan.id), "premise: the role must be absent")
+
+        let preview = try PromptBuilder.buildWirePromptPreview(
+            kind: .consultation, inputs: makeInputs(role: orphan, team: team))
+
+        let bundled = try XCTUnwrap(SystemTemplates.roles[Role.softwareEngineer.baseID]?.prompt)
+        let firstLine = try XCTUnwrap(bundled.split(separator: "\n").first.map(String.init))
+        XCTAssertTrue(preview.contains(firstLine),
+                      "an orphaned role must fall back to its bundled guidance: \(preview)")
+    }
 }

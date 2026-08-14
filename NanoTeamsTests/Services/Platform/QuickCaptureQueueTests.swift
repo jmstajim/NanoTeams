@@ -248,7 +248,16 @@ final class QuickCaptureQueueTests: XCTestCase {
 
     // MARK: - Controller contract
 
-    func testController_queueChatMessage_appendsInOrder() {
+    // `async` on every test that builds a `QuickCaptureController` in its BODY is
+    // load-bearing, not style: a sync test method in a `@MainActor` XCTestCase enters
+    // through a protocol-witness path that does not re-establish main-actor isolation, and
+    // the resulting dynamic check aborts the whole worker on the mirror's CI runner
+    // (Xcode 26.3) while passing here. This class carries the controlled comparison that
+    // proves it: `testTryFlush_*` below construct the SAME controller from the SAME `sut`
+    // and are green on CI — the only difference is that they were already `async`.
+    // See CLAUDE.md § Testing Conventions and the 2026-08-15 Грабли.
+
+    func testController_queueChatMessage_appendsInOrder() async {
         let controller = QuickCaptureController(formState: sut)
         XCTAssertTrue(controller.queueChatMessage(
             text: "one", attachments: [], clippedTexts: [], taskID: 1
@@ -261,7 +270,7 @@ final class QuickCaptureQueueTests: XCTestCase {
         XCTAssertEqual(sut.queuedMessages(for: 1)[1].targetRoleID, "pm")
     }
 
-    func testController_queueChatMessage_rejectsAllEmpty() {
+    func testController_queueChatMessage_rejectsAllEmpty() async {
         let controller = QuickCaptureController(formState: sut)
         XCTAssertFalse(controller.queueChatMessage(
             text: "   ", attachments: [], clippedTexts: [], taskID: 1
@@ -269,7 +278,7 @@ final class QuickCaptureQueueTests: XCTestCase {
         XCTAssertFalse(sut.hasQueuedMessage(for: 1))
     }
 
-    func testController_discardQueuedChatMessage_wipesEntireQueue() {
+    func testController_discardQueuedChatMessage_wipesEntireQueue() async {
         let controller = QuickCaptureController(formState: sut)
         sut.appendQueuedMessage(msg("a"), for: 42)
         sut.appendQueuedMessage(msg("b"), for: 42)
@@ -676,7 +685,7 @@ final class QuickCaptureQueueTests: XCTestCase {
         controller.store = store
         sut.appendQueuedMessage(msg("late"), for: taskID)
 
-        await controller.performStartWake(taskID: taskID)
+        await controller.performStartWake(taskID: taskID, newlyStampedIDs: Set(sut.queuedMessages(for: taskID).map(\.id)))
 
         XCTAssertEqual(store.loadedTask(taskID)?.runs.count ?? -1, runsBefore,
                        "No run may be created against a closed task")
@@ -700,7 +709,7 @@ final class QuickCaptureQueueTests: XCTestCase {
         let phantomID = 999
         sut.appendQueuedMessage(msg("hi"), for: phantomID)
 
-        await controller.performStartWake(taskID: phantomID)
+        await controller.performStartWake(taskID: phantomID, newlyStampedIDs: Set(sut.queuedMessages(for: phantomID).map(\.id)))
 
         XCTAssertTrue(sut.hasQueuedMessage(for: phantomID),
                       "Queue must survive a load failure (retried on a later tick)")
@@ -737,7 +746,7 @@ final class QuickCaptureQueueTests: XCTestCase {
         controller.tryFlushQueuedMessages()
         XCTAssertEqual(started, [taskID])
         // The dispatched body load-fails — run the production body directly.
-        await controller.performStartWake(taskID: taskID)
+        await controller.performStartWake(taskID: taskID, newlyStampedIDs: Set(sut.queuedMessages(for: taskID).map(\.id)))
         XCTAssertTrue(sut.hasQueuedMessage(for: taskID), "Queue kept on load failure")
         XCTAssertFalse(controller._testHasChatStartAttempted(taskID: taskID),
                        "An aborted-before-startRun wake must not count as an attempt")
@@ -748,6 +757,62 @@ final class QuickCaptureQueueTests: XCTestCase {
         XCTAssertEqual(started, [taskID, taskID],
                        "Load failure must not spend the message's one start attempt")
         XCTAssertTrue(sut.hasQueuedMessage(for: taskID))
+    }
+
+    /// The refund is per-message, not per-task. The stamp map is cumulative
+    /// (`attempted.union(queuedIDs)`), so clearing the whole entry on a load failure also gave
+    /// back attempts that really did reach `startRun` on an earlier tick — and those spent
+    /// attempts are the only thing that stops an unconsumable queue from waking a fresh LLM
+    /// pass every tick. A second message arriving after the first has been tried is enough to
+    /// reach it: the arm then dispatches again, and its failure refunded both.
+    ///
+    /// RED: refund the whole entry (`chatStartAttemptedMessageIDs[taskID] = nil`) → the
+    /// already-spent message is attempted again and the first assertion fails.
+    func testPerformStartWake_loadFailure_refundsOnlyTheAttemptItSpent() async throws {
+        let tmp = try makeTempWorkFolder()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let store = TestOrchestrator.make()
+        await store.openWorkFolder(tmp)
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+        let taskID = 42
+
+        let spent = msg("tried on an earlier tick")
+        let fresh = msg("queued since")
+        sut.appendQueuedMessage(spent, for: taskID)
+        sut.appendQueuedMessage(fresh, for: taskID)
+        // An earlier tick already spent `spent`'s one attempt.
+        controller.chatStartAttemptedMessageIDs[taskID] = [spent.id]
+
+        await controller.performStartWake(taskID: taskID, newlyStampedIDs: [fresh.id])
+
+        XCTAssertEqual(controller.chatStartAttemptedMessageIDs[taskID], [spent.id],
+                       "the failed dispatch spent only `fresh`; `spent`'s attempt still stands")
+        XCTAssertTrue(sut.hasQueuedMessage(for: taskID), "and nothing was discarded")
+    }
+
+    /// Counter-test: when the failed dispatch was the ONLY one, the entry goes away entirely
+    /// rather than lingering as an empty set — `_testHasChatStartAttempted` reads
+    /// `?.isEmpty == false`, so an empty set is already indistinguishable, and leaving one
+    /// behind would just be a growing map of nothing.
+    ///
+    /// RED: keep the emptied set instead of niling the entry → the nil assertion fails.
+    func testPerformStartWake_loadFailure_dropsTheEntryWhenNothingIsLeft() async throws {
+        let tmp = try makeTempWorkFolder()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let store = TestOrchestrator.make()
+        await store.openWorkFolder(tmp)
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+        let taskID = 43
+        let only = msg("the only one")
+        sut.appendQueuedMessage(only, for: taskID)
+        controller.chatStartAttemptedMessageIDs[taskID] = [only.id]
+
+        await controller.performStartWake(taskID: taskID, newlyStampedIDs: [only.id])
+
+        XCTAssertNil(controller.chatStartAttemptedMessageIDs[taskID])
+        XCTAssertFalse(controller._testHasChatStartAttempted(taskID: taskID))
     }
 
     /// Corner: the documented reopen scenario verbatim — an UNLOADED closed chat
@@ -775,7 +840,7 @@ final class QuickCaptureQueueTests: XCTestCase {
         controller.store = store
         sut.appendQueuedMessage(msg("late"), for: taskID)
 
-        await controller.performStartWake(taskID: taskID)
+        await controller.performStartWake(taskID: taskID, newlyStampedIDs: Set(sut.queuedMessages(for: taskID).map(\.id)))
 
         XCTAssertNotNil(store.loadedTask(taskID)?.closedAt,
                         "closedAt surviving the wake proves the task was never reopened")
@@ -1504,7 +1569,7 @@ final class QuickCaptureQueueTests: XCTestCase {
 
     // MARK: - MainLayoutView onChange handler wiring
 
-    func testHandleActiveTaskClosedAtChanged_dropsQueueWhenClosed() {
+    func testHandleActiveTaskClosedAtChanged_dropsQueueWhenClosed() async {
         let controller = QuickCaptureController(formState: sut)
         sut.appendQueuedMessage(msg("a"), for: 10)
 
@@ -1513,7 +1578,7 @@ final class QuickCaptureQueueTests: XCTestCase {
         XCTAssertFalse(sut.hasQueuedMessage(for: 10))
     }
 
-    func testHandleActiveTaskClosedAtChanged_ignoresNilTransition() {
+    func testHandleActiveTaskClosedAtChanged_ignoresNilTransition() async {
         let controller = QuickCaptureController(formState: sut)
         sut.appendQueuedMessage(msg("a"), for: 10)
 
@@ -1524,7 +1589,7 @@ final class QuickCaptureQueueTests: XCTestCase {
                       "Queue must survive a nil closedAt transition")
     }
 
-    func testHandleActiveTaskClosedAtChanged_ignoresNilTaskID() {
+    func testHandleActiveTaskClosedAtChanged_ignoresNilTaskID() async {
         let controller = QuickCaptureController(formState: sut)
         sut.appendQueuedMessage(msg("a"), for: 10)
 
