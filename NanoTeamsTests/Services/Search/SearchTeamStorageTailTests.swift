@@ -1083,8 +1083,8 @@ final class SearchTeamStorageCoordinatorTailTests: XCTestCase {
     var internalDir: URL!
     let fm = FileManager.default
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         tempDir = fm.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
             .standardizedFileURL
@@ -1093,7 +1093,7 @@ final class SearchTeamStorageCoordinatorTailTests: XCTestCase {
         try? fm.createDirectory(at: internalDir, withIntermediateDirectories: true)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let tempDir {
             chmod(tempDir.appendingPathComponent("blocked").path, 0o700)
             chmod(internalDir.path, 0o700)
@@ -1101,7 +1101,7 @@ final class SearchTeamStorageCoordinatorTailTests: XCTestCase {
         }
         tempDir = nil
         internalDir = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func write(_ relPath: String, content: String) throws {
@@ -1235,20 +1235,20 @@ final class SearchTeamStorageTeamTailTests: XCTestCase {
     var sut: TeamEngine!
     var mockStore: MockTeamEngineStore!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         mockStore = MockTeamEngineStore()
         sut = TeamEngine(store: mockStore)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         // Always cancel the run loop and any role task — a survivor keeps
         // mutating shared state into the next class on this worker.
         sut?.stop()
         sut = nil
         mockStore = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: Helpers

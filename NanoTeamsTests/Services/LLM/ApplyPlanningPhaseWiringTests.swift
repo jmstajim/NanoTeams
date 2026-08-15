@@ -29,8 +29,8 @@ final class ApplyPlanningPhaseWiringTests: XCTestCase {
     ]
     private let systemPrompt = "You are Software Engineer."
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
         service.attach(delegate: mockDelegate)
@@ -41,9 +41,9 @@ final class ApplyPlanningPhaseWiringTests: XCTestCase {
         service._testRegisterStepTask(stepID: stepID, taskID: task.id)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         mockDelegate = nil; service = nil; task = nil; stepID = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func role(usePlanning: Bool) -> TeamRoleDefinition {
@@ -93,6 +93,80 @@ final class ApplyPlanningPhaseWiringTests: XCTestCase {
                        "everything that can neither suspend the step nor mutate source, "
                            + "plus the exit channel")
         XCTAssertEqual(auth.withheldByPhase, [ToolNames.writeFile, ToolNames.createArtifact])
+    }
+
+    // MARK: - Bash admission
+
+    /// A separate array on purpose: `fullTools` has no `bash`, and adding one there would make
+    /// every other assertion in this suite depend on the bash policy.
+    private var toolsWithBash: [ToolSchema] {
+        fullTools + [ToolSchema(name: ToolNames.bash, description: "Shell",
+                                parameters: .object(properties: [:]))]
+    }
+
+    /// The admission table, end to end through the @MainActor half. Both terms are read from
+    /// the LIVE policy each iteration, so this is also what pins that a user who turns either
+    /// one off mid-phase gets `bash` withheld on the very next iteration.
+    ///
+    /// RED: hardcode `bashAdmitted: true` → the four withheld rows fire.
+    /// RED: drop the `allowsUnattendedCommands` term → the `.manual` and `.off` rows fire.
+    /// RED: drop the `sandboxEnabled` term → the sandbox-off row fires.
+    func testBashAdmission_requiresBothTheSandboxAndAnUnattendedMode() async {
+        let table: [(mode: BashExecutionMode, sandbox: Bool, admitted: Bool)] = [
+            (.auto, true, true),
+            (.semiAutomatic, true, true),
+            (.manual, true, false),
+            (.off, true, false),
+            (.auto, false, false),
+            (.semiAutomatic, false, false),
+        ]
+        for row in table {
+            mockDelegate.bashPolicy = BashPolicy(mode: row.mode, sandboxEnabled: row.sandbox)
+            var conversation = baseConversation()
+            let auth = await apply(step: freshStep(), role: role(usePlanning: true),
+                                   into: &conversation, tools: toolsWithBash)
+            let ctx = "mode=\(row.mode) sandbox=\(row.sandbox)"
+
+            XCTAssertEqual(auth.allowed.contains(ToolNames.bash), row.admitted, ctx)
+            // Never merely absent: a withheld tool must be ATTRIBUTED to the phase, which is
+            // what turns the rejection into `plan_required` instead of "not in your role".
+            XCTAssertEqual(auth.withheldByPhase.contains(ToolNames.bash), !row.admitted, ctx)
+            // And the brief must agree with the authorization — advertising a tool the same
+            // iteration refuses is the failure mode this whole seam exists to avoid.
+            let brief = conversation.last?.content ?? ""
+            XCTAssertEqual(brief.contains(ToolNames.bash), row.admitted, ctx)
+        }
+    }
+
+    /// No delegate ⇒ no policy ⇒ no enforcement ⇒ do not advertise.
+    ///
+    /// RED: change the `?? false` coalescing at the call site to `?? true` → `bash` lands in
+    /// `allowed` and both assertions fail.
+    func testBashAdmission_withNoDelegate_isWithheld() async {
+        service.delegate = nil
+        var conversation = baseConversation()
+        let auth = await apply(step: freshStep(), role: role(usePlanning: true),
+                               into: &conversation, tools: toolsWithBash)
+
+        XCTAssertFalse(auth.allowed.contains(ToolNames.bash))
+        XCTAssertTrue(auth.withheldByPhase.contains(ToolNames.bash))
+    }
+
+    /// `isPlanningPhase` must reach the authorization the tool layer reads — it is what makes
+    /// `BashTool` narrow its sandbox and what tells the gate which confinement to describe.
+    func testAuthorization_carriesThePhaseFlagAcrossTheBoundary() async {
+        mockDelegate.bashPolicy = BashPolicy(mode: .auto, sandboxEnabled: true)
+        var conversation = baseConversation()
+        let entering = await apply(step: freshStep(), role: role(usePlanning: true),
+                                   into: &conversation, tools: toolsWithBash)
+        XCTAssertTrue(entering.isPlanningPhase)
+
+        var planned = freshStep()
+        planned.scratchpad = "1. do the thing"
+        let crossing = await apply(step: planned, role: role(usePlanning: true),
+                                   into: &conversation, tools: toolsWithBash)
+        XCTAssertFalse(crossing.isPlanningPhase,
+                       "the boundary hands back the full toolset — and an unnarrowed sandbox")
     }
 
     /// The brief must name what actually runs. With the system prompt untouched

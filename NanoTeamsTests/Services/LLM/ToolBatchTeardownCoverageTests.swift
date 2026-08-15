@@ -19,15 +19,15 @@ final class ToolBatchTeardownCoverageTests: XCTestCase {
     private let stepID = "engineer"
     private let taskID = 7
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         service = LLMExecutionService(repository: NTMSRepository())
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// A batch that never finishes on its own, so `isCancelled` is the only way it can end.

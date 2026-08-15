@@ -8,14 +8,14 @@ final class SidebarRecurringFilterTests: XCTestCase {
 
     var state: TaskManagementState!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         state = TaskManagementState()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         state = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func item(_ id: Int, recurring: Bool, status: TaskStatus = .running) -> SidebarTaskItem {

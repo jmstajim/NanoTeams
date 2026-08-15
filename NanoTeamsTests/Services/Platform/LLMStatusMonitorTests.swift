@@ -10,15 +10,15 @@ final class LLMStatusMonitorTests: XCTestCase {
 
     var sut: LLMStatusMonitor!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         sut = LLMStatusMonitor()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut.stopMonitoring()
         sut = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     func testInitialState() {
@@ -192,11 +192,11 @@ final class LLMStatusMonitorTests: XCTestCase {
         let session = CountingSession()
         session.statusCode = 200
         let monitor = LLMStatusMonitor(session: session)
-        var host = "http://127.0.0.1:1234"
-        monitor.startMonitoring(endpointProvider: { (host, .lmStudio) }, interval: 3600)
+        let host = HostBox("http://127.0.0.1:1234")
+        monitor.startMonitoring(endpointProvider: { (host.value, .lmStudio) }, interval: 3600)
         await waitUntil({ monitor.lastCheckedAt != nil }, timeoutSeconds: 5)
 
-        host = "http://127.0.0.1:4321"
+        host.value = "http://127.0.0.1:4321"
         await monitor.checkNow()
 
         XCTAssertEqual(session.lastRequestedURL?.absoluteString,
@@ -236,12 +236,12 @@ final class LLMStatusMonitorTests: XCTestCase {
         session.statusCode = 200
         session.delay = .milliseconds(400)
         let monitor = LLMStatusMonitor(session: session)
-        var host = "http://127.0.0.1:1234"
-        monitor.startMonitoring(endpointProvider: { (host, .lmStudio) }, interval: 3600)
+        let host = HostBox("http://127.0.0.1:1234")
+        monitor.startMonitoring(endpointProvider: { (host.value, .lmStudio) }, interval: 3600)
         await waitUntil({ session.requestCount == 1 }, timeoutSeconds: 5, "probe A to start")
 
         // The endpoint moves while A is still in flight.
-        host = "http://127.0.0.1:4321"
+        host.value = "http://127.0.0.1:4321"
         await monitor.checkNow()
 
         XCTAssertEqual(session.requestCount, 2, "the new endpoint must be probed on its own")
@@ -476,4 +476,20 @@ final class LLMStatusMonitorTests: XCTestCase {
         }
         XCTFail("timed out after \(timeoutSeconds)s waiting for \(what)", file: file, line: line)
     }
+}
+
+// MARK: - Test fixtures
+
+/// A reference cell for the endpoint these tests move mid-flight.
+///
+/// `startMonitoring`'s `endpointProvider` is `@escaping @MainActor () -> …`, and a
+/// global-actor-isolated function type is implicitly `@Sendable`, so capturing a
+/// local `var` and reassigning it afterwards warned on every build. More to the
+/// point, both tests DEPEND on the closure observing the new value — SE-0302
+/// specifies `@Sendable` closures capture by value, so relying on today's
+/// box-capture behaviour would leave the assertion resting on an implementation
+/// detail. A box makes the live read explicit and can't drift.
+private final class HostBox: @unchecked Sendable {
+    var value: String
+    init(_ value: String) { self.value = value }
 }

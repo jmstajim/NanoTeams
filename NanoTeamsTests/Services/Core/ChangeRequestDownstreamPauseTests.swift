@@ -8,7 +8,7 @@ import XCTest
 /// — NOT task-cancelled and NOT step-forced — so its tool-result write commits and its
 /// step completes naturally (then re-runs, gated behind the target).
 @MainActor
-final class ChangeRequestDownstreamPauseTests: NTMSOrchestratorTestBase {
+final class ChangeRequestDownstreamPauseTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private func seedRun(_ tid: Int) async {
         _ = await sut.mutateTask(taskID: tid) { task in

@@ -11,7 +11,7 @@ import XCTest
 /// regression where `Team.==` identity shortcut re-introduces silent data loss
 /// (CLAUDE.md pitfall #45).
 @MainActor
-final class MutateWorkFolderDiffTests: NTMSOrchestratorTestBase {
+final class MutateWorkFolderDiffTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private var paths: NTMSPaths { NTMSPaths(workFolderRoot: tempDir) }
 

@@ -6,7 +6,7 @@ import XCTest
 /// Two branches: waiting-for-input (routes via answerSupervisorQuestion) and mid-stream
 /// (appends feedback + sets revisionComment + auto-resumes).
 @MainActor
-final class CorrectRoleTests: NTMSOrchestratorTestBase {
+final class CorrectRoleTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Helpers
 

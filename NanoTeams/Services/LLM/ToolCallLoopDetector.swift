@@ -43,6 +43,28 @@ nonisolated enum LoopDetection: Equatable {
     /// advice built from it stays in `loopWarningMessage`, which is the only layer that
     /// knows the role's schema.
     case repetitiveFailure(tool: String, count: Int, errorCode: String?)
+
+    /// N consecutive failures of one tool with the SAME error code and DIFFERENT
+    /// arguments — the model is changing something, and it is not the thing that is
+    /// wrong.
+    ///
+    /// A sibling of `.repetitiveFailure` rather than a widening of it, on the same
+    /// grounds that separated that case from `.repetitiveTool`: the advice inverts.
+    /// "Repeating it cannot succeed — change the arguments" is precisely wrong here,
+    /// because changing the arguments is what the model has already done N times.
+    ///
+    /// The gap this closes is measured. MeditationApp task 28: `edit_file` failed four
+    /// times on one anchor, three of them holding `old_text` and `path` byte-identical
+    /// while perturbing the indentation of `new_text` (18 → 19 → 20 spaces). Identity
+    /// is `(tool, argumentsIdentity)` for every other arm here, so each trailing run
+    /// measured 1 and nothing fired; the model burned 30% of the run and escaped on its
+    /// own. Keying on the error code instead sees it, because the code is what stayed
+    /// constant.
+    ///
+    /// `errorCode` is non-optional: with no code there is nothing tying the failures
+    /// together, and a tool failing three times for three unrelated reasons is not this
+    /// pattern.
+    case persistentToolError(tool: String, count: Int, errorCode: String)
 }
 
 /// Stateless loop detection for tool call sequences.
@@ -84,6 +106,23 @@ nonisolated enum ToolCallLoopDetector {
         // calls are identical failures, that is the LIVE condition, whereas the trailing
         // run over `visibleCalls` can only describe successes that already stopped.
         if let failure = detectRepetitiveFailure(in: recentCalls) { return failure }
+        // Same placement, same reason, and second BY CORRECTNESS — the order is load-bearing.
+        //
+        // An earlier comment here claimed the two arms were disjoint and the order inert.
+        // That is false, and the RED sweep that "confirmed" it used a fixture of three
+        // identical calls, where `sawDifferingArguments` alone decides and the ordering
+        // cannot express itself. The overlapping tail is `X(fail,E), Y(fail,E) x3` — one
+        // tool, same error code, X's arguments differing: the sibling breaks at X and
+        // reports a run of 3, while this arm treats X's difference as a FLAG rather than a
+        // break and reports a run of 4. Both match; the sibling's description is the more
+        // precise one (the three tail calls really were identical), so it must be asked
+        // first. Swapped, the accurate `failing:` signature is replaced by `persistent:`
+        // and the warn-once gate swallows the second, correct nudge.
+        //
+        // `sawDifferingArguments` still carries the disjointness for a tail with NO
+        // differing call, and is pinned by a DIRECT call to this function — reaching it
+        // through here cannot exercise it, because the sibling returns first.
+        if let persistent = detectPersistentToolError(in: recentCalls) { return persistent }
 
         guard recentCalls.count >= windowSize else { return nil }
 
@@ -177,11 +216,19 @@ nonisolated enum ToolCallLoopDetector {
     /// appended a second identical nudge about a run made entirely BEFORE the news. This
     /// value moves only once the run itself does.
     static func epochOfTrailingRun(in recentCalls: [ToolCallTracker.TrackedCall]) -> Int {
-        // When the failure arm is the one that fires, the gate has to key on ITS run.
+        // When a FAILURE arm is the one that fires, the gate has to key on ITS run.
         // `visibleCalls` cannot see failures, so for a pure-failure window it answers 0 —
         // a frozen signature that could never re-arm after an event arrived mid-run,
         // which is the exact defect the epoch scoping exists to prevent.
-        if detectRepetitiveFailure(in: recentCalls) != nil, let last = recentCalls.last {
+        //
+        // BOTH failure arms, not just the first. `.persistentToolError` was added without
+        // being listed here, and because the two arms cannot both be the reported one, the
+        // branch was dead for it BY CONSTRUCTION rather than merely usually-skipped: its
+        // signature froze at epoch 0 for every pure-failure tail. The asymmetry between a
+        // sibling with a branch here and one without is the tell.
+        if detectRepetitiveFailure(in: recentCalls) != nil
+            || detectPersistentToolError(in: recentCalls) != nil,
+           let last = recentCalls.last {
             return last.informationEpoch
         }
         return visibleCalls(in: recentCalls).last?.informationEpoch ?? 0
@@ -218,6 +265,40 @@ nonisolated enum ToolCallLoopDetector {
 
         return .repetitiveFailure(
             tool: last.toolName, count: trailingRun, errorCode: Self.errorCode(in: last))
+    }
+
+    /// An unbroken TRAILING run of one tool failing the same WAY, whatever it sent.
+    ///
+    /// Mirrors `detectRepetitiveFailure` in every respect except identity: tail-anchored,
+    /// consecutive, bounded by the information epoch, same threshold, failures visible.
+    /// Identity is `(tool, errorCode)`, and at least one call in the run must have sent
+    /// different arguments — otherwise the run is the sibling's, and reporting it here
+    /// would replace a precise message with a vaguer one.
+    ///
+    /// A SUCCESS breaks the run, as everywhere else. That is what keeps the two
+    /// `read_lines` calls the model interleaved in task 28 from being counted through:
+    /// the run measured there is the last three calls, not all four failures.
+    static func detectPersistentToolError(
+        in recentCalls: [ToolCallTracker.TrackedCall]
+    ) -> LoopDetection? {
+        guard let last = recentCalls.last, !last.wasSuccessful,
+              let code = Self.errorCode(in: last)
+        else { return nil }
+
+        var trailingRun = 0
+        var sawDifferingArguments = false
+        for call in recentCalls.reversed() {
+            guard !call.wasSuccessful else { break }
+            guard call.toolName == last.toolName else { break }
+            guard Self.errorCode(in: call) == code else { break }
+            guard call.informationEpoch == last.informationEpoch else { break }
+            if call.argumentsIdentity != last.argumentsIdentity { sawDifferingArguments = true }
+            trailingRun += 1
+        }
+        guard trailingRun >= DelegationConstants.repetitionMinIdenticalToolCalls else { return nil }
+        guard sawDifferingArguments else { return nil }
+
+        return .persistentToolError(tool: last.toolName, count: trailingRun, errorCode: code)
     }
 
     /// The typed `error.code` out of a tracked call's result envelope, when it carries one.

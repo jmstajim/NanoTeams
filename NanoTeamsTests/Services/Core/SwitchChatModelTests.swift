@@ -17,7 +17,7 @@ import XCTest
 /// transition failed to free stayed resident forever. That is how two chat
 /// models (a 35B at 262144 context and a second vlm) plus the embedding model
 /// ended up co-resident until a 26B refused to load for want of memory.
-final class SwitchChatModelTests: NTMSOrchestratorTestBase {
+final class SwitchChatModelTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private let baseURL = "http://127.0.0.1:1234"
 

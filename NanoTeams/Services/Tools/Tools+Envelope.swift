@@ -92,11 +92,11 @@ nonisolated func makeErrorResult(
 /// shouldn't be (e.g. `create_artifact` for a role with no declared deliverables).
 ///
 /// Why this shape (not `makeErrorResult(code: .commandFailed, …)`):
-/// `LLMExecutionService.buildToolErrorGuidance` switches on the top-level
+/// `ToolErrorNotePolicy` switches on the top-level
 /// `error` literal and routes `tool_not_authorized` into the bespoke "don't
 /// retry" branch. The handler-shape envelope (`{"error":{"code":"COMMAND_FAILED",
-/// …}}`) lands in the default branch, which appends "Retry the tool call with
-/// the correct arguments" — a loop trap when args aren't the cause.
+/// …}}`) lands in the default branch, which tells the model to fix its arguments
+/// and retry — a loop trap when args aren't the cause.
 nonisolated func makeToolNotAuthorizedConfigResult(
     toolName: String,
     args: [String: Any],
@@ -111,6 +111,51 @@ nonisolated func makeToolNotAuthorizedConfigResult(
         guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
               let str = String(data: data, encoding: .utf8) else {
             return #"{"error":"tool_not_authorized","tool":"\#(toolName)","message":"\#(message)"}"#
+        }
+        return str
+    }()
+    return ToolExecutionResult(
+        toolName: toolName,
+        argumentsJSON: encodeArgsToJSON(args),
+        outputJSON: outputJSON,
+        isError: true
+    )
+}
+
+// MARK: - Plan-required (argument flavour)
+
+/// Emits the executor-compatible `plan_required` envelope from a HANDLER — for the case where
+/// the TOOL is authorized this iteration but one ARGUMENT is not, which the name-keyed
+/// authorization layer in `+ToolExecution` structurally cannot express.
+///
+/// Sole caller today: `bash` with `run_in_background: true` during a role's planning phase.
+///
+/// Same shape and same reason as `makeToolNotAuthorizedConfigResult` above:
+/// `ToolErrorNotePolicy` switches on the TOP-LEVEL `error` literal, and only this shape
+/// reaches its `plan_required` arm — the one arm that appends NOTHING, precisely because
+/// this envelope's own message already says "record your plan, then call it again". That
+/// silence is the point: the message is the only place in the codebase telling a model to
+/// repeat an identical call, and anything appended after it competes with it. A
+/// `makeErrorResult(code:)` envelope is
+/// `{"error":{"code":…}}` and lands in the default branch, which tells the model to correct
+/// arguments that are in fact correct — a loop trap.
+///
+/// No new `ToolErrorCode` case: `plan_required` is an executor-level literal (it has no
+/// `ToolErrorCode` today either), and minting one would create two spellings of one condition.
+nonisolated func makePlanRequiredResult(
+    toolName: String,
+    args: [String: Any],
+    message: String
+) -> ToolExecutionResult {
+    let payload: [String: String] = [
+        "error": "plan_required",
+        "tool": toolName,
+        "message": message,
+    ]
+    let outputJSON: String = {
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+              let str = String(data: data, encoding: .utf8) else {
+            return #"{"error":"plan_required","tool":"\#(toolName)","message":"\#(message)"}"#
         }
         return str
     }()

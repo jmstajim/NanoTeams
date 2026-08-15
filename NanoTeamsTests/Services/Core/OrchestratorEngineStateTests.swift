@@ -7,14 +7,14 @@ final class OrchestratorEngineStateTests: XCTestCase {
     var sut: OrchestratorEngineState!
     let taskID = 0
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         sut = OrchestratorEngineState()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - isEngineActive

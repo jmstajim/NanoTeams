@@ -23,20 +23,20 @@ final class NTMSOrchestratorDelegationRestoreTests: XCTestCase {
 
     private var workFolderRoot: URL!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         workFolderRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("NanoTeams-delegation-restore-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: workFolderRoot, withIntermediateDirectories: true)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let workFolderRoot {
             try? FileManager.default.removeItem(at: workFolderRoot)
         }
         workFolderRoot = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func makeOrchestrator() -> NTMSOrchestrator {

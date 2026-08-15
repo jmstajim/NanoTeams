@@ -55,9 +55,65 @@ nonisolated enum ToolCallParsingHelpers {
     /// (call object → `arguments` → one nested value), so imbalance beyond
     /// this bound signals truly garbled input rather than a missing trailing
     /// brace some models emit consistently.
+    ///
+    /// Shared, deliberately, by every repair in this file that pads or removes closers:
+    /// BOTH salvage arms of `extractJSONBracedValue` (not-in-string and mid-string) and
+    /// `repairPrematureObjectClose`. Widening this widens all three at once.
+    /// `TeamConfigParser.maxSalvageDepth` mirrors the value on a different code path
+    /// (team-config generation) and is kept in sync by nothing but this note — the
+    /// divergence is deliberate: no defect of this class has been observed there.
     static let maxSalvageDepth = 3
 
-    static func extractJSONBracedValue(in s: Substring, from index: String.Index) -> (
+    /// Extracts the balanced `{…}` / `[…]` span starting at `index`.
+    ///
+    /// On an unbalanced EOF this SALVAGES: truncate at the last close observed (any
+    /// depth) and pad with synthetic `}`. **Two arms, deliberately asymmetric.**
+    ///
+    /// **Not in a string** — the original arm, unchanged. A dropped trailing `}` is a
+    /// shape several models emit consistently; salvage unconditionally within the depth
+    /// budget.
+    ///
+    /// **Mid-string at EOF** — salvage only when NO structural (outside-string) `:`
+    /// appeared after the anchor. Verbatim from Ollama + `qwen3.8:27b-mlx`: the model
+    /// closed `arguments`, then emitted `,"` and stopped —
+    ///
+    ///     <|call|>{"name":"edit_file","arguments":{…,"new_text":"…\n}"},"<|end|>
+    ///
+    /// The stray `"` leaves the walker in-string for the whole remaining buffer, so a
+    /// blanket `!inString` refusal dropped a call whose three arguments were COMPLETE and
+    /// whose tail (`,"` then `<|end|>`) is exactly the junk the truncation above exists to
+    /// discard. All three other conditions held: `depth == 1`, `depth <= maxSalvageDepth`,
+    /// and `lastCloseEnd` pointing at precisely the right byte.
+    ///
+    /// The colon is what separates that from `{"a":{"b":1},"c":"oops`, where the
+    /// unterminated string is the VALUE of a begun key: truncating THAT silently drops an
+    /// argument the model did send — the `ToolCallArgumentSpill` failure class this
+    /// codebase refuses. Ask not "is there a value" but "is it COMPLETE". A member needs
+    /// `key : value`, so "no structural colon after the anchor" means at most a partial
+    /// KEY NAME is discarded. STRUCTURAL is load-bearing: `,"note: see below` carries a
+    /// colon inside the unterminated key and must stay salvageable, which is why the flag
+    /// is set only in the outside-string branch — a byte-level `contains(":")` over the
+    /// tail would refuse it.
+    ///
+    /// `salvageEndMarker` bounds the mid-string arm's ANCHOR — never the walk. The walk
+    /// must stay unbounded: a healthy envelope may legitimately carry `<|end|>` inside a
+    /// string value (`{"content":"write <|end|> to stop"}` parses today), and cutting the
+    /// walk there drops a call that works. But a stray quote inverts quote parity for the
+    /// rest of the buffer, so a brace inside a LATER envelope's string value can be
+    /// counted as structure and march `lastCloseEnd` into that envelope; refusing an
+    /// anchor past the first end marker keeps this salvage inside the same bound
+    /// `extractCallObject`'s premature-close repair already respects. Recovering the first
+    /// call in that case needs a walker-state SNAPSHOT at the boundary (the pad count is
+    /// EOF-`depth`, so a clamped anchor alone is not enough) — deliberately not done.
+    ///
+    /// Note the missing-key-quote family (`,path":`, `HarmonyJSONDefectRepairTests`) is
+    /// safe here for a DIFFERENT reason, not the colon: parity inversion means no `}` is
+    /// ever processed outside a string, so `lastCloseEnd` stays nil and the raw-body
+    /// fallback still owns those payloads. Do not read those tests as evidence about the
+    /// colon discriminator.
+    static func extractJSONBracedValue(
+        in s: Substring, from index: String.Index, salvageEndMarker: String? = nil
+    ) -> (
         String, String.Index
     )? {
         let i = index
@@ -74,6 +130,12 @@ nonisolated enum ToolCallParsingHelpers {
         // pad with synthetic closers — anything after the last close is junk (e.g.
         // trailing `<|end|>`).
         var lastCloseEnd: String.Index?
+        // Whether a member BEGAN after the salvage anchor: set on a structural
+        // (outside-string) `:`, cleared every time `lastCloseEnd` moves. The mid-string
+        // salvage arm below is gated on this, and only this is what makes it safe — a
+        // member is `key : value`, so no structural colon after the anchor means the
+        // truncation discards at most a partial key name, never a value the model sent.
+        var memberBeganAfterLastClose = false
 
         var end = i
         while end < s.endIndex {
@@ -107,11 +169,14 @@ nonisolated enum ToolCallParsingHelpers {
                 } else if ch == "}" || ch == "]" {
                     depth -= 1
                     lastCloseEnd = s.index(after: end)
+                    memberBeganAfterLastClose = false
                     if depth == 0 {
                         let jsonText = String(s[i...end])
                         let next = s.index(after: end)
                         return (jsonText, next)
                     }
+                } else if ch == ":" {
+                    memberBeganAfterLastClose = true
                 }
             }
 
@@ -123,13 +188,21 @@ nonisolated enum ToolCallParsingHelpers {
         // Salvage by truncating at the last `}`/`]` we saw (any depth) and padding
         // with synthetic closers. `maxSalvageDepth` guards against truly garbled
         // input; `lastCloseEnd != nil` guards against input with no observed
-        // structure.
-        if !inString, depth > 0, depth <= Self.maxSalvageDepth, let truncate = lastCloseEnd {
-            let salvaged = String(s[i..<truncate]) + String(repeating: "}", count: depth)
-            return (salvaged, truncate)
+        // structure. The two arms are asymmetric on purpose — see the doc comment.
+        guard depth > 0, depth <= Self.maxSalvageDepth, let truncate = lastCloseEnd else {
+            return nil
         }
-
-        return nil
+        if inString {
+            guard !memberBeganAfterLastClose else { return nil }
+            if let marker = salvageEndMarker,
+                let boundary = s.range(of: marker, range: i..<s.endIndex)?.lowerBound,
+                truncate > boundary
+            {
+                return nil
+            }
+        }
+        let salvaged = String(s[i..<truncate]) + String(repeating: "}", count: depth)
+        return (salvaged, truncate)
     }
 
     /// Whether the text at `index` continues an object's member list — optional
@@ -179,7 +252,10 @@ nonisolated enum ToolCallParsingHelpers {
     static func extractCallObject(
         in s: Substring, from index: String.Index, endMarker: String
     ) -> (json: String, next: String.Index)? {
-        guard let (json, next) = extractJSONBracedValue(in: s, from: index) else { return nil }
+        guard
+            let (json, next) = extractJSONBracedValue(
+                in: s, from: index, salvageEndMarker: endMarker)
+        else { return nil }
 
         let bodyEnd = s.range(of: endMarker, range: next..<s.endIndex)?.lowerBound ?? s.endIndex
         guard next < bodyEnd, continuesMemberList(s, from: next, limit: bodyEnd) else {
@@ -816,7 +892,12 @@ nonisolated enum ToolCallParsingHelpers {
         guard jsonStart < tail.endIndex, tail[jsonStart] == "{" else {
             return .noObject
         }
-        guard let (jsonText, _) = extractJSONBracedValue(in: tail, from: jsonStart) else {
+        // Same `salvageEndMarker` the dispatch walk uses, so the classifier and the retry
+        // diagnostic describe the same bytes that `extractCallObject` would have accepted.
+        guard
+            let (jsonText, _) = extractJSONBracedValue(
+                in: tail, from: jsonStart, salvageEndMarker: CallMarkerStrategy.endMarker)
+        else {
             return .unbalanced
         }
         return .extracted(jsonText)

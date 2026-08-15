@@ -12,7 +12,7 @@ import XCTest
 /// are namespaced by origin (`…|project|…` vs `…|global|…`) so those can never
 /// collide with a fixture.
 @MainActor
-final class AgentSkillsOrchestratorTests: NTMSOrchestratorTestBase {
+final class AgentSkillsOrchestratorTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     /// Writes a project skill and returns the id the scanner actually assigns.
     ///

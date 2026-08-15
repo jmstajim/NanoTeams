@@ -13,8 +13,8 @@ final class StreamLoopRecoveryDispatchTests: XCTestCase {
     private var task: NTMSTask!
     private var stepID: String!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
         service.attach(delegate: mockDelegate)
@@ -35,9 +35,9 @@ final class StreamLoopRecoveryDispatchTests: XCTestCase {
         ]
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         mockDelegate = nil; service = nil; task = nil; stepID = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private let signal = LoopSignal.withinMessage(diagnostic: "looped")
@@ -308,7 +308,7 @@ final class StreamLoopRecoveryDispatchTests: XCTestCase {
     /// calls on every no-loop stream — drop it and `break → recover → break` wrongly
     /// accumulates to the terminal.
     func testCleanCompletion_resetsConsecutiveBreakCounter() {
-        var messages = seedConversation()
+        _ = seedConversation()
         service._testSetThinkingLoopBreakCount(stepID: stepID, taskID: task.id, count: 1)
         service._testResetThinkingLoopBreakCount(stepID: stepID, taskID: task.id)
         XCTAssertEqual(service._testThinkingLoopBreakCount(stepID: stepID, taskID: task.id), 0,

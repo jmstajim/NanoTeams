@@ -17,14 +17,14 @@ final class TeamGraphLayoutCacheTests: XCTestCase {
 
     private var cache: TeamGraphLayoutCache!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         cache = TeamGraphLayoutCache()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         cache = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures

@@ -390,8 +390,8 @@ final class LLMExecutionServiceTests: XCTestCase {
     private var service: LLMExecutionService!
     private var mockDelegate: MockLLMExecutionDelegate!
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
         tempDir = fileManager.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try fileManager.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -402,13 +402,13 @@ final class LLMExecutionServiceTests: XCTestCase {
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         if let tempDir {
             try? fileManager.removeItem(at: tempDir)
         }
 //        service = nil
         mockDelegate = nil
-        try super.tearDownWithError()
+        try await super.tearDown()
     }
 
     // MARK: - Initialization Tests
@@ -1607,8 +1607,8 @@ final class LLMExecutionServiceStepCompletionTests: XCTestCase {
     private var service: LLMExecutionService!
     private var mockDelegate: MockLLMExecutionDelegate!
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
         tempDir = fileManager.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try fileManager.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -1623,13 +1623,13 @@ final class LLMExecutionServiceStepCompletionTests: XCTestCase {
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         if let tempDir {
             try? fileManager.removeItem(at: tempDir)
         }
 //        service = nil
         mockDelegate = nil
-        try super.tearDownWithError()
+        try await super.tearDown()
     }
 
     // MARK: - completeStepSuccess Tests
@@ -2006,8 +2006,8 @@ final class ToolAuthorizationTests: XCTestCase {
     private var toolRuntime: ToolRuntime!
     private var toolTracker: ToolCallTracker!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try! FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -2039,7 +2039,7 @@ final class ToolAuthorizationTests: XCTestCase {
         toolTracker = ToolCallTracker()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let tempDir {
             try? FileManager.default.removeItem(at: tempDir)
         }
@@ -2047,7 +2047,7 @@ final class ToolAuthorizationTests: XCTestCase {
         mockDelegate = nil
         toolRuntime = nil
         toolTracker = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     func testUnauthorizedToolCallReturnsError() async {
@@ -2173,8 +2173,8 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
     private let stepID = "test_step"
     private let taskID = 0
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         mockClient = MockStreamClient()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
@@ -2184,11 +2184,11 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
             LLMExecutionService.StepExecutionState()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service = nil
         mockDelegate = nil
         mockClient = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Tests
@@ -2715,8 +2715,8 @@ final class SetNeedsSupervisorInputBackstopTests: XCTestCase {
     private var service: LLMExecutionService!
     private var mockDelegate: MockLLMExecutionDelegate!
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
         tempDir = fileManager.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try fileManager.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -2727,12 +2727,12 @@ final class SetNeedsSupervisorInputBackstopTests: XCTestCase {
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         if let tempDir {
             try? fileManager.removeItem(at: tempDir)
         }
         mockDelegate = nil
-        try super.tearDownWithError()
+        try await super.tearDown()
     }
 
     /// Happy path: step exists in the task, mutateTask persists, closure applies the

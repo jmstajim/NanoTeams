@@ -127,7 +127,7 @@ nonisolated struct GitCommitTool: ToolHandler {
                 // Git spells the same situation two ways: "nothing to commit" normally,
                 // and "nothing added to commit but untracked files present" when the tree
                 // holds only untracked files. Matching one left the other as COMMAND_FAILED
-                // — two error codes for one failure class, which `buildToolErrorGuidance`
+                // — two error codes for one failure class, which `ToolErrorNotePolicy.direction`
                 // then routes differently.
                 if errorMsg.contains("nothing to commit")
                     || errorMsg.contains("nothing added to commit") {

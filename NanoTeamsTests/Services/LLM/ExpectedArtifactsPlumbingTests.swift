@@ -18,8 +18,8 @@ final class ExpectedArtifactsPlumbingTests: XCTestCase {
     private var mockDelegate: MockLLMExecutionDelegate!
     private var runtime: ToolRuntime!
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
             .standardizedFileURL
@@ -37,13 +37,13 @@ final class ExpectedArtifactsPlumbingTests: XCTestCase {
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         try? FileManager.default.removeItem(at: tempDir)
         runtime = nil
         service = nil
         mockDelegate = nil
         tempDir = nil
-        try super.tearDownWithError()
+        try await super.tearDown()
     }
 
     /// Regression: a refactor that drops `expectedArtifacts` from the

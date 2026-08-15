@@ -20,19 +20,19 @@ final class QuickCaptureTeamPinSeedTests: NTMSOrchestratorTestBase, @unchecked S
 
     private var controller: QuickCaptureController { QuickCaptureController.shared }
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         controller._testReset()
         controller.isTaskSelected = false
         controller._testForceNewTaskMode = false
         controller._testIsPanelVisible = false
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         controller.store = nil
         controller._testIsPanelVisible = false
         controller._testReset()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     func testPresentPanelSync_seedsPinFromActiveTeam() async {

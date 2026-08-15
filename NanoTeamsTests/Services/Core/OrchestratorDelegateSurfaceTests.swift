@@ -15,7 +15,7 @@ import XCTest
 /// Everything runs against a temp directory created in `setUp`; nothing touches
 /// the network or the developer's real work folder.
 @MainActor
-final class OrchestratorDelegateSurfaceTests: NTMSOrchestratorTestBase {
+final class OrchestratorDelegateSurfaceTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Banner forwarders (`+StepExecution`)
 

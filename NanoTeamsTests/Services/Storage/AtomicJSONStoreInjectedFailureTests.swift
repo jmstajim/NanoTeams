@@ -50,7 +50,7 @@ final class AtomicJSONStoreInjectedFailureTests: XCTestCase, @unchecked Sendable
     /// behaves normally, so the temp file is genuinely written and the cleanup assertions are
     /// about real files on disk. `replaceItemAt` is absent on purpose — it is unoverridable, and
     /// the tests trigger it through the filesystem instead.
-    private final class FailingFileManager: FileManager, @unchecked Sendable {
+    private final class FailingFileManager: FileManager {
         var failCreateDirectory = false
         var failMoveItem = false
         /// Fail `removeItem` only for paths with this suffix, so a test can let the fallback's

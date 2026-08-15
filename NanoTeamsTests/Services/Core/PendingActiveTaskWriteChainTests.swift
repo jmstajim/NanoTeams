@@ -16,7 +16,7 @@ import XCTest
 ///  - `closeProject` / `resetAllData` cancel any pending chain Task so it
 ///    doesn't fire against a torn-down workfolder (I2).
 @MainActor
-final class PendingActiveTaskWriteChainTests: NTMSOrchestratorTestBase {
+final class PendingActiveTaskWriteChainTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - C5 / I2 building block: flush awaits pending Task
 

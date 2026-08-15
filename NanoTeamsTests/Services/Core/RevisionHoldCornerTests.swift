@@ -11,7 +11,7 @@ import XCTest
 ///   - `requesterRoleID` not present in `runningRoleIDs` — every entry is treated as a peer.
 ///   - the hold does NOT set `revisionComment` (that is propagate's job).
 @MainActor
-final class RevisionHoldCornerTests: NTMSOrchestratorTestBase {
+final class RevisionHoldCornerTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Helpers
 

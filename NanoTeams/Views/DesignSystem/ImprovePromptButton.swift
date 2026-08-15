@@ -3,7 +3,7 @@ import SwiftUI
 /// "Improve this prompt" affordance. Streams the LLM rewrite live into the
 /// bound `text` field (Apple Writing Tools style) — no popover, nothing to
 /// keep open. While streaming the button is a stop control; after completion
-/// a "Revert" chip restores the original.
+/// a Revert button restores the original.
 ///
 /// All lifecycle lives in `PromptImprovementSession` (a testable state
 /// machine); this view is a thin control over it. Config is read from the
@@ -37,7 +37,7 @@ struct ImprovePromptButton: View {
     var body: some View {
         HStack(spacing: Spacing.xxs) {
             if session.canRevert {
-                revertChip
+                revertButton
             }
             mainButton
         }
@@ -101,28 +101,20 @@ struct ImprovePromptButton: View {
         }
     }
 
-    // MARK: - Revert chip
+    // MARK: - Revert button
 
-    private var revertChip: some View {
+    /// Mirrors `mainButton`'s metrics (same font, same 28×24 frame, same
+    /// `.plain` style) so the affordance row reads as one set of icons rather
+    /// than a bordered chip wedged between bare glyphs. The label is carried by
+    /// `.help` + `.accessibilityLabel`, which say more than the word did.
+    /// Tint stays `textSecondary`: revert is subordinate to the accent-tinted
+    /// improve action beside it.
+    private var revertButton: some View {
         Button { session.revert() } label: {
-            HStack(spacing: Spacing.xxs) {
-                Image(systemName: "arrow.uturn.backward")
-                Text("Revert")
-                    .lineLimit(1)
-            }
-            .font(Typography.captionSemibold)
-            .foregroundStyle(Colors.textSecondary)
-            .padding(.horizontal, Spacing.xs)
-            .padding(.vertical, Spacing.xxs)
-            .background(
-                RoundedRectangle.squircle(CornerRadius.small)
-                    .fill(Colors.surfaceElevated)
-                    .overlay(
-                        RoundedRectangle.squircle(CornerRadius.small)
-                            .strokeBorder(Colors.borderSubtle, lineWidth: 1)
-                    )
-            )
-            .fixedSize(horizontal: true, vertical: false)
+            Image(systemName: "arrow.uturn.backward")
+                .font(Typography.termBase.weight(.medium))
+                .foregroundStyle(Colors.textSecondary)
+                .frame(width: 28, height: 24)
         }
         .buttonStyle(.plain)
         .help("Restore the original prompt")

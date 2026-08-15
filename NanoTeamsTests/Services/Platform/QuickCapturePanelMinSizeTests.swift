@@ -21,14 +21,14 @@ final class QuickCapturePanelMinSizeTests: XCTestCase {
     private var floorW: CGFloat { QuickCapturePanel.panelMinSize.width }
     private var floorH: CGFloat { QuickCapturePanel.panelMinSize.height }
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         sut = QuickCapturePanel()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - clampSize

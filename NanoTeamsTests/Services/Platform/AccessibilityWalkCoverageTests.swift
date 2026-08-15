@@ -548,7 +548,11 @@ final class AccessibilityWalkCoverageTests: XCTestCase {
     /// production means "this app has no accessibility tree", i.e. the chrome-only incident,
     /// silently.
     func testProductionEntryPoint_usesTheLiveReader() {
-        XCTAssertTrue(SystemAXNodeReader() is any AXNodeReading)
+        // The conformance itself is NOT asserted here: `SystemAXNodeReader` is
+        // declared `: AXNodeReading`, so an `is any AXNodeReading` check is
+        // decided by the type checker and reduces to `XCTAssertTrue(true)` — it
+        // proves only that this file compiles, which the build already proves.
+        // The source scan below carries the whole intent.
         let source = try? String(
             contentsOf: Self.repoRoot
                 .appendingPathComponent("NanoTeams/Services/Platform/AccessibilityInspector.swift"),

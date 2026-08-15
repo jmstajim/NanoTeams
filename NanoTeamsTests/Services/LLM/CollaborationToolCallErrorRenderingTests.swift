@@ -17,18 +17,18 @@ final class CollaborationToolCallErrorRenderingTests: XCTestCase {
     private var service: LLMExecutionService!
     private var mockDelegate: MockLLMExecutionDelegate!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         mockDelegate = nil
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Happy-path: success envelope stays green AND replaces the placeholder
@@ -64,7 +64,7 @@ final class CollaborationToolCallErrorRenderingTests: XCTestCase {
             signal: .cancelDelegation(childTaskID: childID, reason: nil)
         )
         var conversation: [ChatMessage] = []
-        await service.appendCollaborationResult(
+        _ = await service.appendCollaborationResult(
             result: result,
             toolCallID: toolCallID,
             roleForMessage: .codingAgent,
@@ -113,7 +113,7 @@ final class CollaborationToolCallErrorRenderingTests: XCTestCase {
             signal: .cancelDelegation(childTaskID: badChildID, reason: nil)
         )
         var conversation: [ChatMessage] = []
-        await service.appendCollaborationResult(
+        _ = await service.appendCollaborationResult(
             result: result,
             toolCallID: toolCallID,
             roleForMessage: .codingAgent,
@@ -163,7 +163,7 @@ final class CollaborationToolCallErrorRenderingTests: XCTestCase {
             signal: .waitForEvents
         )
         var conversation: [ChatMessage] = []
-        await service.appendCollaborationResult(
+        _ = await service.appendCollaborationResult(
             result: result,
             toolCallID: toolCallID,
             roleForMessage: .codingAgent,

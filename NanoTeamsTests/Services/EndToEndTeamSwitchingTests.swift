@@ -17,7 +17,7 @@ import XCTest
 ///    the active team pointer must never dangle.
 /// 7. Switching to a custom (non-template) team persists normally.
 @MainActor
-final class EndToEndTeamSwitchingTests: NTMSOrchestratorTestBase {
+final class EndToEndTeamSwitchingTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Scenario 1: Switch active team updates activeTeamID
 

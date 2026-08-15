@@ -16,7 +16,7 @@ import XCTest
 /// - `switchTeam` (its `clearGeneratedTeam()` flows through `mutateTask`,
 ///   invisible to the `teamsChanged` trigger),
 /// - `evictIfReclaimable` (scheduler eviction de-references the same way).
-final class ResidencyTriggerTests: NTMSOrchestratorTestBase {
+final class ResidencyTriggerTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private let baseURL = "http://127.0.0.1:1234"
 

@@ -161,7 +161,7 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
     }
 
     /// Pinned envelope shape: emit `tool_not_authorized` (top-level error
-    /// literal) so `buildToolErrorGuidance` lands in the bespoke
+    /// literal) so `ToolErrorNotePolicy.direction` lands in the bespoke
     /// "don't retry" branch rather than the generic default. A `commandFailed`
     /// envelope here would route to "Retry the tool call with the correct
     /// arguments" — actively misleading because args aren't the cause.

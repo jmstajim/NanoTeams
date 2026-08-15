@@ -12,6 +12,40 @@ import XCTest
 @MainActor
 final class PrefixCacheStatusIndicatorLogicTests: XCTestCase {
 
+    // MARK: - causeRowLabel
+
+    /// The eviction row was structurally unable to name anyone: `PrefixCacheReporter` aggregates
+    /// by `CauseClass`, which erases `Cause.serverDroppedCache`'s payload. A bare "Server dropped
+    /// the cached prefix" is true and unactionable — the whole point of a suspect is to say WHICH
+    /// other caller to move off this model.
+    /// RED: return `cause.label` unconditionally → the row loses the lead again.
+    func testCauseRowLabel_appendsTheLeadWhenThereIsOne() {
+        XCTAssertEqual(
+            PrefixCacheStatusIndicator.causeRowLabel(
+                .serverDroppedCache, suspect: "startup_software_engineer"),
+            "Server dropped the cached prefix — likely startup_software_engineer")
+    }
+
+    /// "likely", not "by": interleaving is never a proven cause here, only the last other caller
+    /// seen on the same (server, model).
+    /// RED: assert the label wording claims certainty → the popover states as fact what the
+    /// policy explicitly refuses to make a standalone verdict.
+    func testCauseRowLabel_hedgesRatherThanAccusing() {
+        let label = PrefixCacheStatusIndicator.causeRowLabel(.serverDroppedCache, suspect: "x")
+        XCTAssertTrue(label.contains("likely"))
+    }
+
+    /// RED: drop the `isEmpty` half of the guard → an empty suspect renders a dangling
+    /// "— likely " with nothing after it.
+    func testCauseRowLabel_isTheBareLabelWithoutALead() {
+        XCTAssertEqual(
+            PrefixCacheStatusIndicator.causeRowLabel(.serverDroppedCache, suspect: nil),
+            PrefixCachePolicy.CauseClass.serverDroppedCache.label)
+        XCTAssertEqual(
+            PrefixCacheStatusIndicator.causeRowLabel(.modelReloaded, suspect: ""),
+            PrefixCachePolicy.CauseClass.modelReloaded.label)
+    }
+
     // MARK: - sortedCauses
 
     func testSortedCauses_ordersByCountDescending() {

@@ -218,7 +218,7 @@ final class PrefixCacheOwnerCoverageTests: XCTestCase {
     // MARK: - Anti-vacuity
 
     func testThePinIsNotVacuous() throws {
-        let (sites, filesWalked, lines) = try callSites()
+        let (sites, filesWalked, _) = try callSites()
 
         XCTAssertGreaterThan(
             filesWalked, 400, "the source walk found almost nothing — every scan above is vacuous")

@@ -22,17 +22,17 @@ final class ComputerUsePointerActionTests: XCTestCase, @unchecked Sendable {
 
     private var sut: LLMExecutionService!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         // No delegate is wired, so the persistence half of `finalizeToolResult` is inert and only
         // `conversationMessages` records the append. Repository injection is required outright
         // (CLAUDE.md §Strict DIP), and `NTMSRepository()` is the house double for these suites.
         sut = LLMExecutionService(repository: NTMSRepository())
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures

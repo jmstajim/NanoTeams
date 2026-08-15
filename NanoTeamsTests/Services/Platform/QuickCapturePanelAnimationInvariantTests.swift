@@ -14,14 +14,14 @@ final class QuickCapturePanelAnimationInvariantTests: XCTestCase {
 
     var sut: QuickCapturePanel!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         sut = QuickCapturePanel()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     func testPanel_animationBehavior_isNoneAtInit() {

@@ -23,8 +23,8 @@ enum ArtifactContentDecoder {
     /// type accepts any mimeType from any caller — defensive routing keeps
     /// the viewer honest if a future code path emits a non-text artifact.
     /// `nonisolated` so it can run inside `Task.detached` without hopping back
-     /// to the main actor — the loader off-loads disk reads precisely to keep
-     /// decoding off the UI thread.
+    /// to the main actor — the loader off-loads disk reads precisely to keep
+    /// decoding off the UI thread.
     nonisolated static func decide(
         data: Data,
         mimeType: String,

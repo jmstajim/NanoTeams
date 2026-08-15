@@ -45,8 +45,73 @@ final class StepToolCallErrorMessageTests: XCTestCase {
         XCTAssertNil(call(result: "not json at all").errorMessage)
     }
 
-    func testErrorIsNotAnObject_isNil() {
+    /// `error` as a bare string with NO top-level `message` beside it carries no diagnosis.
+    /// Renamed from `testErrorIsNotAnObject_isNil`, which described a rule the property no
+    /// longer follows: a top-level `error` string IS read now, when a message accompanies it.
+    func testErrorIsAStringWithNoTopLevelMessage_isNil() {
         XCTAssertNil(call(result: #"{"ok":false,"error":"boom"}"#).errorMessage)
+    }
+
+    /// A success envelope that happens to carry a top-level `message` is not a failure.
+    /// The top-level branch is gated on `error` being a STRING, which is what keeps it out.
+    ///
+    /// RED: gate the branch on `dict["error"] != nil` (or drop the gate) → this returns
+    /// "all good" and every consumer reports a success as the task's last error.
+    func testSuccessEnvelopeWithATopLevelMessage_isNil() {
+        XCTAssertNil(call(result: #"{"ok":true,"message":"all good"}"#).errorMessage)
+    }
+
+    // MARK: - The executor's shape
+
+    /// The EXECUTOR writes the code as a top-level string beside a top-level message —
+    /// every rejection it makes itself. Reading only the nested shape returned `nil` for all
+    /// four, so the Autovisor was handed `Role 'X' failed.` for a step whose last error named
+    /// a missing `.git` or an unselected Xcode scheme, both of which it can act on.
+    ///
+    /// Driven through the real emitter, so a change to the envelope shape breaks this rather
+    /// than silently orphaning the branch.
+    ///
+    /// RED: drop the top-level branch from `errorMessage` → every row is nil.
+    func testExecutorEmittedRejections_areReadable() throws {
+        let toolCall = StepToolCall(name: "git_add", argumentsJSON: #"{"paths":["a"]}"#)
+        for reason in LLMExecutionService.ToolUnavailabilityReason.allCases {
+            let envelope = LLMExecutionService.makeUnavailableToolResult(
+                call: toolCall, canonicalName: "git_add", scope: "for this role", reason: reason)
+            let message = try XCTUnwrap(
+                call(result: envelope.outputJSON).errorMessage,
+                "\(reason) must be readable — the manager has no other channel for it")
+            XCTAssertTrue(message.contains("git_add"), "\(reason): \(message)")
+        }
+    }
+
+    func testIdenticalWriteLoopEnvelope_isReadable() throws {
+        let envelope = LLMExecutionService.makeIdenticalWriteLoopResult(
+            call: StepToolCall(name: "write_file", argumentsJSON: #"{"path":"a.swift","content":"x"}"#))
+        let message = try XCTUnwrap(call(result: envelope.outputJSON).errorMessage)
+        XCTAssertTrue(message.contains("a.swift"), message)
+    }
+
+    /// The consumer the widening was for. A step whose last errored call is an executor
+    /// rejection now reports THAT instead of the role-name tautology.
+    ///
+    /// This is a deliberate behaviour change to an LLM-facing surface, not a side effect:
+    /// `precondition_failed` names a blocker the manager can act on (`set_work_folder_context`,
+    /// or telling the human), while `Role 'X' failed.` names nothing. If it ever proves
+    /// harmful the filter belongs in `lastError`, never in `errorMessage` — a second reader
+    /// of one question is the drift this property exists to prevent.
+    func testAutovisorLastError_readsExecutorRejections_notJustHandlerEnvelopes() {
+        let envelope = LLMExecutionService.makeUnavailableToolResult(
+            call: StepToolCall(name: "git_add", argumentsJSON: "{}"),
+            canonicalName: "git_add", scope: "for this role", reason: .gitRepoMissing)
+        let step = StepExecution(
+            id: "eng", role: .softwareEngineer, title: "Eng", status: .failed,
+            toolCalls: [call(result: envelope.outputJSON)])
+        var task = NTMSTask(id: 1, title: "T", supervisorTask: "do")
+        task.runs = [Run(id: 0, steps: [step], roleStatuses: [:])]
+
+        let reported = AutovisorStatus.lastError(for: task) ?? ""
+        XCTAssertTrue(reported.contains("git repository"), reported)
+        XCTAssertFalse(reported.contains("Role 'eng' failed."), reported)
     }
 
     func testMessageMissing_isNil() {

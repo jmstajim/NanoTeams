@@ -27,8 +27,8 @@ final class CollaborationDispatchMeetingAttributionTests: XCTestCase {
     private let initiatorRole: Role = .softwareEngineer
     private let designatedCoordRole: Role = .productManager
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
@@ -38,12 +38,12 @@ final class CollaborationDispatchMeetingAttributionTests: XCTestCase {
         mockDelegate.workFolderURL = tempDir
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         try? FileManager.default.removeItem(at: tempDir)
         tempDir = nil
         mockDelegate = nil
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Auto mode: attribution lands on the initiator
@@ -110,7 +110,7 @@ final class CollaborationDispatchMeetingAttributionTests: XCTestCase {
             signal: .changeRequest(targetRole: "ghost_role", changes: "", reasoning: "…")
         )
         var conversation: [ChatMessage] = []
-        await service.appendCollaborationResult(
+        _ = await service.appendCollaborationResult(
             result: result,
             toolCallID: toolCallID,
             roleForMessage: initiatorRole,
@@ -173,7 +173,7 @@ final class CollaborationDispatchMeetingAttributionTests: XCTestCase {
             signal: .teamMeeting(topic: "x", participants: [], context: nil)
         )
         var conversation: [ChatMessage] = []
-        await service.appendCollaborationResult(
+        _ = await service.appendCollaborationResult(
             result: result,
             toolCallID: toolCallID,
             roleForMessage: initiatorRole,

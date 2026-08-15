@@ -13,14 +13,14 @@ final class NTMSRepositoryDelegationToolsetMigrationTests: XCTestCase {
 
     private var repository: NTMSRepository!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         repository = NTMSRepository()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         repository = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func makeRole(toolIDs: [String]) -> TeamRoleDefinition {

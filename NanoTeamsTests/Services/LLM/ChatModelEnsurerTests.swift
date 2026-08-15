@@ -153,7 +153,7 @@ final class ChatModelEnsurerTests: XCTestCase, @unchecked Sendable {
         await withTaskGroup(of: Void.self) { group in
             for _ in 0..<5 {
                 group.addTask { [baseURL] in
-                    try? await sut.ensureLoaded(
+                    _ = try? await sut.ensureLoaded(
                         modelName: "qwen", baseURLString: baseURL, client: client)
                 }
             }
@@ -193,7 +193,7 @@ final class ChatModelEnsurerTests: XCTestCase, @unchecked Sendable {
         await withTaskGroup(of: Void.self) { group in
             for spelling in spellings {
                 group.addTask {
-                    try? await sut.ensureLoaded(
+                    _ = try? await sut.ensureLoaded(
                         modelName: "qwen", baseURLString: spelling, client: client)
                 }
             }

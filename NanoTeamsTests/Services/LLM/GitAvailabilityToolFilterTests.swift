@@ -11,16 +11,16 @@ final class GitAvailabilityToolFilterTests: XCTestCase {
     private var tempRoot: URL!
     private let fm = FileManager.default
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         tempRoot = fm.temporaryDirectory.appendingPathComponent("git-avail-\(UUID().uuidString)")
         try? fm.createDirectory(at: tempRoot, withIntermediateDirectories: true)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         try? fm.removeItem(at: tempRoot)
         tempRoot = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func makeTools() -> [ToolSchema] {

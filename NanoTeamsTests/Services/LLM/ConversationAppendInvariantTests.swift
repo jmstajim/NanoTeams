@@ -24,8 +24,8 @@ final class ConversationAppendInvariantTests: XCTestCase, @unchecked Sendable {
     private var task: NTMSTask!
     private var stepID: String!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         service = LLMExecutionService(repository: NTMSRepository())
         delegate = MockLLMExecutionDelegate()
         service.attach(delegate: delegate)
@@ -39,12 +39,12 @@ final class ConversationAppendInvariantTests: XCTestCase, @unchecked Sendable {
         service._testRegisterStepTask(stepID: stepID, taskID: task.id)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service = nil
         delegate = nil
         task = nil
         stepID = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Behavioural: no `.continueLoop` leaves the conversation without a reply turn

@@ -12,8 +12,8 @@ final class StepCompletionExtendedTests: XCTestCase {
     private var service: LLMExecutionService!
     private var mockDelegate: MockLLMExecutionDelegate!
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
         tempDir = fileManager.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
             .standardizedFileURL
@@ -29,12 +29,12 @@ final class StepCompletionExtendedTests: XCTestCase {
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         if let tempDir {
             try? fileManager.removeItem(at: tempDir)
         }
         mockDelegate = nil
-        try super.tearDownWithError()
+        try await super.tearDown()
     }
 
     // MARK: - completeStepSuccess Status + CompletedAt Tests

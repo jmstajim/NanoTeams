@@ -90,7 +90,12 @@ extension NTMSOrchestrator {
         return await BashAdviceService.advise(
             commands: pending.commands,
             workingDirectories: pending.workingDirectories,
-            policy: bashPolicy,
+            // The SNAPSHOTTED policy, not the live one: while a planning-phase hold is active
+            // the real confinement is the write-disabled profile `BashTool` will apply, and
+            // `sandboxConfinementDescription` renders whatever it gets straight into the
+            // advisor's prompt. Reading `bashPolicy` here would show the human an "Ask AI"
+            // verdict reasoned about a sandbox that is not in force.
+            policy: pending.judgePolicy,
             config: pending.judgeConfig,
             client: client ?? llmExecutionService.clientFactory(),
             logger: nil)

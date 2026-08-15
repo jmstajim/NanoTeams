@@ -33,6 +33,14 @@ nonisolated enum PrefixCachePolicy {
     ///
     /// A DISPLAY estimate only — never a gate. Hardware and model size move it by an order of
     /// magnitude, so no decision may depend on it.
+    ///
+    /// It is also the FALLBACK, not the primary: both `bench_baseline` figures come from one
+    /// model (`qwen3_5_moe` 35.1B, nvfp4 / 4-bit mlx), and a live `qwen3.8:27b-mlx` run measured
+    /// 2.78 ms/token cold — 6.2× this — so the constant understated that popover by the same
+    /// factor. `measuredExtraSeconds` below replaces it whenever the server reported enough to
+    /// price the miss for real; this value survives for the callers that have no measurement
+    /// (a structural miss decided before the send, and every test that builds a `Diagnosis`
+    /// directly).
     static let estimatedColdPrefillMsPerToken = 0.45
 
     /// Turn a token count into the number the reader actually noticed.
@@ -43,6 +51,30 @@ nonisolated enum PrefixCachePolicy {
     /// surface and miss the other.
     static func estimatedSeconds(forTokens tokens: Int) -> Double {
         Double(tokens) * estimatedColdPrefillMsPerToken / 1000
+    }
+
+    /// What the miss actually cost, from the server's own numbers — no estimate anywhere.
+    ///
+    /// On a miss the server re-prefilled the prompt, so `prefillNsPerToken × promptTokens` is the
+    /// measured price of this request, and `warmFloorNsPerToken × promptTokens` is what the same
+    /// request would have cost had the prefix held. The difference is the extra work, and both
+    /// terms are already in hand at the reporting site.
+    ///
+    /// Strictly better than `estimatedSeconds(forTokens:)` here because that one multiplies two
+    /// estimates: a hardware-independent rate by `discardedTokens`, which is itself
+    /// `ContextBudgetPolicy.estimateTokens` (measured 0.78–2.26× off depending on the corpus).
+    ///
+    /// `nil` — fall back — when any term is missing, or when the request came in at or below the
+    /// warm floor. A non-positive difference means the numbers do not support a cost claim; it is
+    /// not an occasion to invent one.
+    static func measuredExtraSeconds(
+        prefillNsPerToken: Double?, warmFloorNsPerToken: Double?, promptTokens: Int?
+    ) -> Double? {
+        guard let prefillNsPerToken, let warmFloorNsPerToken, let promptTokens, promptTokens > 0
+        else { return nil }
+        let extraNs = (prefillNsPerToken - warmFloorNsPerToken) * Double(promptTokens)
+        guard extraNs > 0 else { return nil }
+        return extraNs / 1_000_000_000
     }
 
     // MARK: - Cause
@@ -132,8 +164,29 @@ nonisolated enum PrefixCachePolicy {
         /// Estimated tokens that must be re-processed.
         var discardedTokens: Int
 
+        /// The server-measured cost of this miss, when the reporting site could price it (see
+        /// `PrefixCachePolicy.measuredExtraSeconds`). Last member with a default so every existing
+        /// construction — production and test — stays source-compatible and keeps the estimate.
+        var measuredExtraSeconds: Double?
+
+        /// Measured when we have it, estimated when we do not. Never both: a mixture would be
+        /// neither, and the caller cannot tell which it got.
         var estimatedSeconds: Double {
-            PrefixCachePolicy.estimatedSeconds(forTokens: discardedTokens)
+            measuredExtraSeconds ?? PrefixCachePolicy.estimatedSeconds(forTokens: discardedTokens)
+        }
+
+        init(
+            cause: Cause,
+            commonSegments: Int,
+            previousSegments: Int,
+            discardedTokens: Int,
+            measuredExtraSeconds: Double? = nil
+        ) {
+            self.cause = cause
+            self.commonSegments = commonSegments
+            self.previousSegments = previousSegments
+            self.discardedTokens = discardedTokens
+            self.measuredExtraSeconds = measuredExtraSeconds
         }
     }
 

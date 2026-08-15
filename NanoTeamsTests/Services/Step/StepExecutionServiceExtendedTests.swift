@@ -189,7 +189,7 @@ final class StepExecutionServiceExtendedTests: XCTestCase {
         var step3 = makeStep(id: step3ID, role: .softwareEngineer, status: .running)
         step3.scratchpad = "Working on implementation"
 
-        var step4 = makeStep(id: step4ID, role: .codeReviewer, status: .pending)
+        let step4 = makeStep(id: step4ID, role: .codeReviewer, status: .pending)
 
         var task = makeTask(withSteps: [step1, step2, step3, step4])
 

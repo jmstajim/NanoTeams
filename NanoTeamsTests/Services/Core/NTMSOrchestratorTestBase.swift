@@ -27,8 +27,8 @@ class NTMSOrchestratorTestBase: XCTestCase, @unchecked Sendable {
     /// exists so the other ~700 `openWorkFolder` sites do no network I/O.
     var chatLifecycleClient: RecordingLLMClient!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         embeddingClient = RecordingLLMClient()
         chatLifecycleClient = RecordingLLMClient()
@@ -44,7 +44,12 @@ class NTMSOrchestratorTestBase: XCTestCase, @unchecked Sendable {
         try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
+        // The role-control primitives now perform a TOTAL wake (create + start the engine), so a
+        // test that exercises one leaves a real run loop alive — `TestOrchestrator.make` injects
+        // a real `TeamEngine`. Left running, it would keep mutating shared state into the next
+        // test on this worker and turn green into timing-dependent.
+        sut?.stopAllEngines()
         sut = nil
         embeddingClient = nil
         chatLifecycleClient = nil
@@ -52,7 +57,7 @@ class NTMSOrchestratorTestBase: XCTestCase, @unchecked Sendable {
             try? FileManager.default.removeItem(at: tempDir)
         }
         tempDir = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 }
 

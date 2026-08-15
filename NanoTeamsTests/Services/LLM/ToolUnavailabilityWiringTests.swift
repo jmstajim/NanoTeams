@@ -17,8 +17,8 @@ final class ToolUnavailabilityWiringTests: XCTestCase {
     private var mockDelegate: MockLLMExecutionDelegate!
     private var runtime: ToolRuntime!
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
             .standardizedFileURL
@@ -35,13 +35,13 @@ final class ToolUnavailabilityWiringTests: XCTestCase {
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         try? FileManager.default.removeItem(at: tempDir)
         runtime = nil
         service = nil
         mockDelegate = nil
         tempDir = nil
-        try super.tearDownWithError()
+        try await super.tearDown()
     }
 
     // MARK: - Helpers
@@ -58,12 +58,16 @@ final class ToolUnavailabilityWiringTests: XCTestCase {
         return NTMSTask(id: 1, title: "T", supervisorTask: "x", runs: [r])
     }
 
-    private func runRejection(toolName: String, argumentsJSON: String = "{}") async -> ToolExecutionResult {
+    private func runRejection(
+        toolName: String, argumentsJSON: String = "{}",
+        phaseWithheldToolNames: Set<String> = []
+    ) async -> ToolExecutionResult {
         let task = makeStep()
         let batch = await service.executeToolCalls(
             resolvedToolCalls: [StepToolCall(name: toolName, argumentsJSON: argumentsJSON)],
             // Empty allowedToolNames forces every call into the rejection path.
             allowedToolNames: [],
+            phaseWithheldToolNames: phaseWithheldToolNames,
             runtime: runtime,
             tracker: ToolCallTracker(),
             task: task,
@@ -72,6 +76,49 @@ final class ToolUnavailabilityWiringTests: XCTestCase {
         )
         XCTAssertEqual(batch.count, 1)
         return batch[0]
+    }
+
+    // MARK: - Bash: phase-withheld vs policy-disabled
+
+    /// The phase withholds `bash` for a reason the BOUNDARY resolves — after recording its plan
+    /// the model should repeat the identical call — so the retry contract is the honest answer.
+    ///
+    /// RED: remove the `phaseWithheldToolNames` check from `classifyUnavailability` → falls
+    /// through to `notInRoleConfig` and the model is told to stop.
+    func testWiring_bashWithheldByThePhase_answersPlanRequired() async {
+        mockDelegate.bashPolicy = BashPolicy(mode: .semiAutomatic)
+        let result = await runRejection(
+            toolName: ToolNames.bash, phaseWithheldToolNames: [ToolNames.bash])
+
+        XCTAssertTrue(result.outputJSON.contains("\"error\":\"plan_required\""), result.outputJSON)
+        XCTAssertTrue(result.outputJSON.contains("\"tool\":\"bash\""), result.outputJSON)
+    }
+
+    /// With the tool disabled by policy the retry contract would be a LIE: recording a plan does
+    /// not re-enable it, so the invited retry is doomed and ends in `bash_denied` one turn later.
+    /// The durable blocker outranks the temporal one.
+    ///
+    /// This is also why `mode == .off` is deliberately NOT part of the phase's admission test —
+    /// only a condition the boundary itself resolves may produce `plan_required`.
+    ///
+    /// RED: delete the `shellTools && !isBashEnabled` arm (or move it below the phase check) →
+    /// the answer becomes `plan_required`.
+    func testWiring_bashDisabledByPolicy_outranksThePhaseAndDoesNotPromiseARetry() async {
+        mockDelegate.bashPolicy = BashPolicy(mode: .off)
+        let result = await runRejection(
+            toolName: ToolNames.bash, phaseWithheldToolNames: [ToolNames.bash])
+
+        XCTAssertFalse(result.outputJSON.contains("plan_required"),
+                       "a disabled tool must not invite a retry: \(result.outputJSON)")
+        XCTAssertTrue(result.outputJSON.contains("\"error\":\"precondition_failed\""), result.outputJSON)
+        XCTAssertTrue(result.outputJSON.contains("disabled by policy"), result.outputJSON)
+    }
+
+    /// `bash_output` is never admitted to the phase, so it takes the same two routes.
+    func testWiring_bashOutputDisabledByPolicy_alsoNamesTheDurableBlocker() async {
+        mockDelegate.bashPolicy = BashPolicy(mode: .off)
+        let result = await runRejection(toolName: ToolNames.bashOutput)
+        XCTAssertTrue(result.outputJSON.contains("disabled by policy"), result.outputJSON)
     }
 
     // MARK: - workFolderClosed wiring (default storage)

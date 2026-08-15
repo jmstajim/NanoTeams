@@ -22,8 +22,8 @@ final class ChangeRequestVotingFailureTests: XCTestCase {
     private let requestingStepID = "team_software_engineer"
     private let targetStepID = "team_pm"
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
@@ -32,10 +32,10 @@ final class ChangeRequestVotingFailureTests: XCTestCase {
         // no-work-folder guard so we exercise the failed-meeting -> empty-tally path.
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         mockDelegate = nil
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     func testChangeRequest_votingMeetingFails_doesNotAutoApprove() async {

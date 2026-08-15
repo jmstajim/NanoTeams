@@ -27,7 +27,7 @@ import XCTest
 /// (and `createTask`) bail before their closure runs — the same "the write did not
 /// land" shape the §7 verifies elsewhere in the orchestrator exist to catch.
 @MainActor
-final class BOrchAutovisorActionFailureDetailTests: NTMSOrchestratorTestBase {
+final class BOrchAutovisorActionFailureDetailTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     /// A distinctive fragment of the text `answerSupervisorQuestion` sets when the
     /// answer could not be applied to a real pending step — never a substring the
@@ -214,7 +214,7 @@ final class BOrchAutovisorActionFailureDetailTests: NTMSOrchestratorTestBase {
 /// before its closure, which is the real "the write did not land" condition these
 /// verifies are written against.
 @MainActor
-final class BOrchRoleControlVerifyArmTests: NTMSOrchestratorTestBase {
+final class BOrchRoleControlVerifyArmTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private func openWithRun(_ steps: [StepExecution],
                              statuses: [String: RoleExecutionStatus]) async -> Int? {
@@ -338,7 +338,7 @@ final class BOrchRoleControlVerifyArmTests: NTMSOrchestratorTestBase {
 /// `NTMSOrchestrator+Scheduling` — the recurrence fire's honest-outcome arm and the
 /// eviction guard that keeps a delegation descendant of the active task in memory.
 @MainActor
-final class BOrchSchedulingTailTests: NTMSOrchestratorTestBase {
+final class BOrchSchedulingTailTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     /// `startRun` is fire-and-forget with several silent early-returns, so a
     /// recurrence fire must NOT stamp `lastFiredAt` unless a run really appeared —
@@ -462,7 +462,7 @@ final class BOrchSchedulingTailTests: NTMSOrchestratorTestBase {
 /// parent (and the Autovisor's `task_status`) is told about a child's failure, the
 /// other is how a delegation handler starts the child it just created.
 @MainActor
-final class BOrchDelegationHookTests: NTMSOrchestratorTestBase {
+final class BOrchDelegationHookTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     /// The whole point of this hook is that it is TASK-SCOPED. The global banner can
     /// belong to any other task in the folder, and handing it to a delegating parent
@@ -559,7 +559,7 @@ final class BOrchDelegationHookTests: NTMSOrchestratorTestBase {
 /// `NTMSOrchestrator+EngineManagement` — the awaiter side-channel installed in
 /// `engineForTask`, and the fast-path's fall-through.
 @MainActor
-final class BOrchEngineManagementTests: NTMSOrchestratorTestBase {
+final class BOrchEngineManagementTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     /// Captures an awaited value out of a spawned `@MainActor` Task without an
     /// `inout` capture. Nested types do NOT inherit the enclosing type's global
@@ -669,12 +669,12 @@ final class BOrchEngineManagementTests: NTMSOrchestratorTestBase {
 /// mid-fetch otherwise retargets a visible row at another host), and these hops are
 /// where that config would be lost.
 @MainActor
-final class BOrchDownloadedModelReadTests: NTMSOrchestratorTestBase {
+final class BOrchDownloadedModelReadTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private var store: BOrchProbeDownloadedModelStore!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         store = BOrchProbeDownloadedModelStore()
         sut = TestOrchestrator.make(
             embeddingClient: embeddingClient,
@@ -683,9 +683,9 @@ final class BOrchDownloadedModelReadTests: NTMSOrchestratorTestBase {
         )
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         store = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func config(_ provider: LLMProvider, _ url: String) -> LLMConfig {

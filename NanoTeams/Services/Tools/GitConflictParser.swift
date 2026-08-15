@@ -3,9 +3,15 @@ import Foundation
 /// Extracts the conflicted paths from git's `CONFLICT (<kind>): …` lines.
 ///
 /// This is the ONLY channel by which a role learns WHICH file to open after a failed
-/// merge or pull: the conflict envelope is an `ErrorEnvelope`, whose `data` is `nil`, and
-/// `buildToolErrorGuidance`'s default arm surfaces only `error.message` ("Merge conflicts
-/// detected"). Whatever this returns is the whole answer.
+/// merge or pull: the conflict envelope is an `ErrorEnvelope` whose `data` is `nil`, so the
+/// paths exist nowhere but inside `error.message`. Whatever this returns is the whole
+/// answer.
+///
+/// The message reaches the model as the tool turn itself, and reaches the Supervisor on the
+/// tool card (`StepToolCall.errorMessage`). It used to be repeated a third time by the
+/// runtime's follow-up turn; that turn now carries direction only
+/// (`ToolErrorNotePolicy`), which changes nothing here — the paths were always the
+/// message's, never the direction's.
 ///
 /// It used to be `line.range(of: "in ")` — the first ` in ` anywhere in the line. That
 /// parses the two `Merge conflict in <path>` shapes and mis-parses the other three,

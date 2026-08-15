@@ -727,8 +727,8 @@ final class StreamingPostStreamArmsTests: XCTestCase {
     private let stepID = "engineer"
     private let taskID = 7
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         client = ScriptedStreamClient()
         service = LLMExecutionService(repository: NTMSRepository())
@@ -737,12 +737,12 @@ final class StreamingPostStreamArmsTests: XCTestCase {
         service._testRegisterStepTask(stepID: stepID, taskID: taskID)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service = nil
         delegate = nil
         client = nil
         MonotonicClock.shared.reset()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func run(

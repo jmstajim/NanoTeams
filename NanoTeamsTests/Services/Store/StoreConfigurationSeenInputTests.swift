@@ -28,16 +28,16 @@ final class StoreConfigurationSeenInputTests: XCTestCase {
     let folderA = UUID(uuidString: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")!
     let folderB = UUID(uuidString: "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB")!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         storage = InMemoryStorage()
         config = StoreConfiguration(storage: storage)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         config = nil
         storage = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Round-trip mutators

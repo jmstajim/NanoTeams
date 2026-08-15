@@ -32,19 +32,19 @@ final class TaskManagementStatePersistenceTests: XCTestCase {
     let folderA = UUID(uuidString: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")!
     let folderB = UUID(uuidString: "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB")!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         storage = InMemoryStorage()
         config = StoreConfiguration(storage: storage)
         sut = TaskManagementState()
         sut.bind(config: config)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut = nil
         config = nil
         storage = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Bind + load

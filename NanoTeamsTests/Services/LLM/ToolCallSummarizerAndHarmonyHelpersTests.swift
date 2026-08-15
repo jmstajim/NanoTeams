@@ -501,10 +501,19 @@ final class ToolCallSummarizerAndHarmonyHelpersTests: XCTestCase {
         XCTAssertNil(ToolCallParsingHelpers.extractJSONBracedValue(in: s, from: s.startIndex))
     }
 
+    /// The colon discriminator's negative half. `"c"` is a BEGUN key — a structural `:`
+    /// follows the last observed close — so the unterminated string is a VALUE the model
+    /// started writing. Truncating at the anchor would silently drop it, which is the
+    /// `ToolCallArgumentSpill` failure class. Isolated here from the depth/anchor guards:
+    /// both WOULD pass for this input (depth 1, a prior `}` observed).
+    ///
+    /// Contrast the production `,"` tail (`StrayCommaQuoteTailSalvageTests`), where NO
+    /// structural colon follows the anchor, so nothing complete exists past it to lose and
+    /// the salvage is safe. Mid-string at EOF is therefore not by itself a refusal.
+    ///
+    /// RED: drop the `!memberBeganAfterLastClose` condition from the mid-string arm → this
+    /// salvages to `{"a":{"b":1}}` and `"c"` is discarded from a dispatched call.
     func testSalvage_refusedWhenTheWalkerIsMidStringAtEOF() {
-        // `!inString`: with an unterminated string we cannot know where it should close, so a
-        // synthetic `}` would be pure invention. Isolated here from the depth/anchor guards —
-        // both of those WOULD pass for this input (depth 1, a prior `}` observed).
         let s: Substring = #"{"a":{"b":1},"c":"oops"#
         XCTAssertNil(ToolCallParsingHelpers.extractJSONBracedValue(in: s, from: s.startIndex))
     }

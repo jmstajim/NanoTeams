@@ -47,7 +47,7 @@ final class DelegateToTeamHandlerTests: XCTestCase {
     private func assertDefaultedToSentinel(
         _ result: ToolExecutionResult,
         expectedBrief: String,
-        file: StaticString = #file,
+        file: StaticString = #filePath,
         line: UInt = #line
     ) {
         XCTAssertFalse(result.isError, "Should not error: \(result.outputJSON)", file: file, line: line)

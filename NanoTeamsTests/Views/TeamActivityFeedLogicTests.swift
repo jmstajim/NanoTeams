@@ -11,15 +11,15 @@ final class TeamActivityFeedLogicTests: XCTestCase {
 
     var streamingManager: StreamingPreviewManager!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         streamingManager = StreamingPreviewManager()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         streamingManager = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Helper: Build a step with conversation

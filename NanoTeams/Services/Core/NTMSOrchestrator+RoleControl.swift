@@ -235,8 +235,13 @@ extension NTMSOrchestrator {
             task.runs[task.runs.count - 1] = run
         }
 
-        // 3. Wake engine to check completion / start dependents
-        taskEngines[taskID]?.notifyExternalEvent()
+        // 3. Wake engine to check completion / start dependents. Total (creates the engine after
+        // a restart, starts a `.pending` one) — the raw `taskEngines[taskID]?` this replaced was
+        // a silent no-op exactly when no engine existed, which is the post-restart shape this
+        // method is reachable in from the graph node menu on a `.ready` advisory role.
+        // `wakeEngine`'s `runs.last` guard is load-bearing HERE specifically: this method has no
+        // run guard of its own (pinned by `FinishAdvisoryRoleTests.testFinishAdvisoryRole_noRuns_doesNotCrash`).
+        wakeEngine(taskID: taskID)
 
         // Verify the step actually reached .done (mutateTask returning true means
         // "persisted", not "did something" — CLAUDE.md §7).
@@ -268,7 +273,11 @@ extension NTMSOrchestrator {
             task.runs[task.runs.count - 1] = run
         }
         guard success else { return false }
-        notifyEngineExternalEvent(taskID: taskID)
+        // Total wake. Worse than the revision case if it no-ops: `.accepted` is
+        // `isComplete: true`, so the role leaves every attention surface (the Watchtower banner
+        // self-dismisses, the acceptance card vanishes) while the released mid-pipeline gate
+        // lands in a dead engine — nothing left on screen says the pipeline stalled.
+        wakeEngine(taskID: taskID)
         return true
     }
 
@@ -371,6 +380,28 @@ extension NTMSOrchestrator {
             return
         }
 
+        // The synthetic `team_generation_*` step is not a role — same structural backstop
+        // `restartRole` carries. It belongs to no roster, so flipping it `.revisionRequested`
+        // writes a phantom `roleStatuses` entry the engine can never execute.
+        guard !roleID.hasPrefix(StepExecution.teamGenerationIDPrefix) else {
+            lastErrorMessage = "Team generation isn't a role — request changes doesn't apply. "
+                + "Use Retry in the team panel to re-run generation."
+            return
+        }
+
+        // A closed task is terminal here. `closeTask` finalizes every non-terminal role to
+        // `.done` — which SATISFIES the step gate below — so without this the Autovisor's
+        // `request_changes` (whose arm, unlike `accept` / `finish_advisory`, carries no
+        // closed-task pre-check) would flip a role on a finished task. Reviving it is not the
+        // remedy: close also finalized every DOWNSTREAM role `.done`, and `findReadyRoles`
+        // excludes `.done`, so the revised artifact would have no consumer and nothing would
+        // re-close the task. `restartRole` is the primitive that both reopens and cascades.
+        guard loadedTask(taskID)?.closedAt == nil else {
+            lastErrorMessage = "Task #\(taskID) is closed — use restart to reopen the task and "
+                + "re-run the role (it also resets the roles downstream of it)."
+            return
+        }
+
         guard let step = loadedTask(taskID)?.runs.last?.steps
             .first(where: { $0.effectiveRoleID == roleID }),
             step.status == .done || step.status == .failed
@@ -413,6 +444,13 @@ extension NTMSOrchestrator {
                 "Could not request changes from '\(roleID)' — step state changed."
             return
         }
-        notifyEngineExternalEvent(taskID: taskID)
+        // Report a refused wake instead of trading an invisible stall for a different one: the
+        // flag is on disk, so silence here is exactly the bug this method was fixed for. Must
+        // stay the last statement with no `await` after it — the Autovisor's `reportingError`
+        // reads `errorSurfaceCount` immediately on return.
+        if !wakeEngine(taskID: taskID) {
+            lastErrorMessage = "Changes were requested from '\(roleID)', but the run couldn't be "
+                + "resumed right now — press Resume on the task."
+        }
     }
 }

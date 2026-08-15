@@ -20,7 +20,7 @@ import XCTest
 /// 8. Round-trip through JSON is lossless for prompts + tool IDs.
 /// 9. Unsupported version throws an error.
 @MainActor
-final class EndToEndTeamImportExportWorkflowTests: NTMSOrchestratorTestBase {
+final class EndToEndTeamImportExportWorkflowTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private func anyCustomTeam() -> Team {
         Team(

@@ -32,8 +32,8 @@ final class SupervisorAnswerDeliveryOnceTests: XCTestCase {
 
     private let answerText = "Approved — run `swift build` and report the final status line."
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -52,7 +52,7 @@ final class SupervisorAnswerDeliveryOnceTests: XCTestCase {
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let tempDir {
             try? FileManager.default.removeItem(at: tempDir)
         }
@@ -60,7 +60,7 @@ final class SupervisorAnswerDeliveryOnceTests: XCTestCase {
         stubClient = nil
         mockDelegate = nil
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - The reported bug

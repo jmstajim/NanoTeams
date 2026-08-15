@@ -12,7 +12,7 @@ import XCTest
 /// covered by `WorkFolderManagementServiceTests`. We cancel each in-flight task
 /// synchronously after asserting the flip so no real network call resolves.
 @MainActor
-final class WorkFolderContextGenerationTests: NTMSOrchestratorTestBase {
+final class WorkFolderContextGenerationTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Start path
 

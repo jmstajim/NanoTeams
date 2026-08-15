@@ -23,7 +23,7 @@ import XCTest
 /// 6. Switching to the currently active team is idempotent.
 /// 7. If engine was running, switchTeam pauses it first (cancels in-flight).
 @MainActor
-final class EndToEndSwitchTeamOnRunningTaskTests: NTMSOrchestratorTestBase {
+final class EndToEndSwitchTeamOnRunningTaskTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Scenario 1: Updates both work-folder and task pointers
 

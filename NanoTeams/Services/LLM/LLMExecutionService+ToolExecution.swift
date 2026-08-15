@@ -34,6 +34,7 @@ extension LLMExecutionService {
         resolvedToolCalls: [StepToolCall],
         allowedToolNames: Set<String>,
         phaseWithheldToolNames: Set<String> = [],
+        isPlanningPhase: Bool = false,
         runtime: ToolRuntime,
         tracker: ToolCallTracker,
         task: NTMSTask,
@@ -49,7 +50,8 @@ extension LLMExecutionService {
             taskID: task.id,
             runID: task.runs[runIndex].id,
             roleID: roleID,
-            expectedArtifacts: expectedArtifacts
+            expectedArtifacts: expectedArtifacts,
+            isPlanningPhase: isPlanningPhase
         )
 
         var results: [ToolExecutionResult] = []
@@ -96,6 +98,7 @@ extension LLMExecutionService {
                     selectedScheme: scheme,
                     xcodeSchemeKnown: snapshot != nil,
                     isComputerUseEnabled: delegate.computerUsePolicy.isEnabled,
+                    isBashEnabled: delegate.bashPolicy.mode != .off,
                     phaseWithheldToolNames: phaseWithheldToolNames
                 )
                 let rejected = Self.makeUnavailableToolResult(
@@ -197,6 +200,7 @@ extension LLMExecutionService {
         case visionNotConfigured    // analyze_image without a vision LLM config
         case xcodeSchemeNotSelected // run_xcodebuild/run_xcodetests without a scheme
         case computerUseDisabled    // screen_capture/ui_* with ComputerUsePolicy.mode == .off
+        case bashDisabled           // bash/bash_output with BashPolicy.mode == .off
         /// The role HAS this tool and every work-folder precondition is met —
         /// this ITERATION withheld it because the step is still in its planning
         /// phase. The only reason with a "retry later" contract: every other one
@@ -225,14 +229,22 @@ extension LLMExecutionService {
         selectedScheme: String?,
         xcodeSchemeKnown: Bool = true,
         isComputerUseEnabled: Bool = true,
+        isBashEnabled: Bool = true,
         phaseWithheldToolNames: Set<String> = [],
         fileManager: FileManager = .default
     ) -> ToolUnavailabilityReason {
-        // Checked FIRST, and without an ordering hazard: this set is derived
+        let registry = ToolHandlerRegistry.self
+        // ABOVE the phase check, and the exception proves that check's rule. Everything else in
+        // `phaseWithheldToolNames` is withheld by a condition the BOUNDARY resolves, which is
+        // what makes `plan_required`'s "call it again after recording your plan" true. A bash
+        // mode of `.off` is not such a condition: recording a plan does not re-enable a disabled
+        // tool, so the retry it invites is doomed and ends in `bash_denied` one turn later.
+        // Name the durable blocker instead.
+        if registry.shellTools.contains(toolName) && !isBashEnabled { return .bashDisabled }
+        // Checked FIRST among the rest, and without an ordering hazard: this set is derived
         // from the already-precondition-filtered tool array, so membership
         // proves every other reason is inapplicable.
         if phaseWithheldToolNames.contains(toolName) { return .withheldUntilPlanRecorded }
-        let registry = ToolHandlerRegistry.self
         if isDefaultStorage && registry.defaultStorageBlocked.contains(toolName) {
             return .workFolderClosed
         }
@@ -291,8 +303,13 @@ extension LLMExecutionService {
         case .computerUseDisabled:
             errorCode = "precondition_failed"
             msg = "Tool '\(call.name)' requires Computer Use, which is turned off for this session. Continue without screen control, or ask the supervisor to enable Computer Use."
+        case .bashDisabled:
+            errorCode = "precondition_failed"
+            // Names the POLICY, not the Settings pane: the model cannot open one. Mirrors the
+            // wording rule `BashPermissionService`'s own mode-off denial follows.
+            msg = "Tool '\(call.name)' requires the bash tool, which is disabled by policy (execution mode: Off). No command can run in this session — continue without a shell, or ask the supervisor to enable it."
         case .withheldUntilPlanRecorded:
-            // Distinct code so `buildToolErrorGuidance` can steer toward the
+            // Distinct code so `ToolErrorNotePolicy.direction` can steer toward the
             // retry. `precondition_failed` would tell the model the blocker is
             // the work folder — false, and non-retryable.
             errorCode = "plan_required"
@@ -347,8 +364,14 @@ extension LLMExecutionService {
     /// `(path, content)` already attempted in this step. The model sees this in its tool-call
     /// history; recovery guidance lives in the role prompt and the `write_file` schema, not here.
     nonisolated static func makeIdenticalWriteLoopResult(call: StepToolCall) -> ToolExecutionResult {
-        let path = ToolCallDataUtils.parseJSON(call.argumentsJSON)?["path"] as? String ?? "?"
-        let msg = "Identical write to '\(path)' already executed in this step."
+        let parsed = (ToolCallDataUtils.parseJSON(call.argumentsJSON)?["path"] as? String)
+            .flatMap { $0.isEmpty ? nil : $0 }
+        // `"?"` stays the STRUCTURED field's sentinel (its shape is pinned), but it must not
+        // reach the MESSAGE: the model reads that as a literal path. `ToolErrorNotePolicy`
+        // used to collapse it while restating this sentence, and no longer restates anything.
+        let path = parsed ?? "?"
+        let target = parsed.map { "'\($0)'" } ?? "the file"
+        let msg = "Identical write to \(target) already executed in this step."
         return ToolExecutionResult(
             providerID: call.providerID ?? UUID().uuidString,
             toolName: call.name,

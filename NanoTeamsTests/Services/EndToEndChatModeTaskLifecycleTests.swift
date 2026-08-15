@@ -24,7 +24,7 @@ import XCTest
 ///    synced with the generated team (so the fallback survives save).
 /// 9. Chat tasks survive reopen with isChatMode intact.
 @MainActor
-final class EndToEndChatModeTaskLifecycleTests: NTMSOrchestratorTestBase {
+final class EndToEndChatModeTaskLifecycleTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Helpers
 

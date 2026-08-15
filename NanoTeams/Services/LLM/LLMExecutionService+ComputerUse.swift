@@ -363,7 +363,11 @@ extension LLMExecutionService {
         let descriptionTurn = "[Screenshot description via vision model — coordinates come from ax_elements, "
             + "not this text] \(description)"
         conversationMessages.append(ChatMessage(role: .user, content: descriptionTurn))
-        await appendLLMMessage(stepID: stepID, taskID: taskID, role: .user, content: descriptionTurn)
+        // `.screenDescription` rather than a system-notice context: this is the only record of
+        // what the model was actually shown, so it renders as a full bubble. Attributed at all
+        // because the feed drops `.user` turns carrying neither a source role nor a context.
+        await appendLLMMessage(stepID: stepID, taskID: taskID, role: .user, content: descriptionTurn,
+                               sourceContext: .screenDescription)
     }
 
     /// AX element list for the captured target. Window captures use the window's app;
@@ -506,6 +510,10 @@ extension LLMExecutionService {
         conversationMessages.append(ChatMessage(
             role: .user, content: userCaption,
             imageContent: [ImageContent(base64Data: imageBase64, mimeType: imageMime)]))
+        // feed-invisible-by-design: a redacted stand-in for the image turn, not content. The
+        // capture is already on screen as its own `screen_capture` tool card, so a row reading
+        // "[screenshot 1920×1080]" would add a second, less informative entry for one event.
+        // Persisted only so the transcript records that an image turn was sent — never the base64.
         await appendLLMMessage(stepID: stepID, taskID: taskID, role: .user,
                                content: "[screenshot \(pixelWidth)×\(pixelHeight)]")
     }

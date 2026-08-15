@@ -19,12 +19,12 @@ import XCTest
 /// forced defaults are applied BEFORE adoption, and that a failure to apply is reported as
 /// a failure rather than swallowed.
 @MainActor
-final class RunTeamGenerationSuccessTests: NTMSOrchestratorTestBase {
+final class RunTeamGenerationSuccessTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private var teamGenClient: ScriptedTeamGenerationClient!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         teamGenClient = ScriptedTeamGenerationClient()
         // Rebuild `sut` with the team-generation seam scripted, keeping the base's other
         // stubs so `openWorkFolder` still does no network I/O.
@@ -35,9 +35,9 @@ final class RunTeamGenerationSuccessTests: NTMSOrchestratorTestBase {
         )
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         teamGenClient = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures

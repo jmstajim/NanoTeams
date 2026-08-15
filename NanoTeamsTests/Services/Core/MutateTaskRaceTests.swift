@@ -14,7 +14,7 @@ import XCTest
 /// suspend at the disk-write await, and on resume call `applyTaskUpdate`
 /// last-writer-wins — earlier mutations were silently dropped.
 @MainActor
-final class MutateTaskRaceTests: NTMSOrchestratorTestBase {
+final class MutateTaskRaceTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     /// N concurrent `mutateTask` calls each append a distinct `Run` to the
     /// same task. After all calls complete, every Run must be present.
@@ -36,10 +36,12 @@ final class MutateTaskRaceTests: NTMSOrchestratorTestBase {
                         task.runs.append(
                             Run(id: i, steps: [], roleStatuses: [:])
                         )
-                    } ?? false
+                    }
                 }
             }
-            for await _ in group {}
+            for await ok in group {
+                XCTAssertTrue(ok, "every concurrent mutateTask must report a successful persist")
+            }
         }
 
         let runIDs = Set((sut.activeTask?.runs ?? []).map { $0.id })
@@ -68,10 +70,12 @@ final class MutateTaskRaceTests: NTMSOrchestratorTestBase {
                         task.runs.append(
                             Run(id: i, steps: [], roleStatuses: [:])
                         )
-                    } ?? false
+                    }
                 }
             }
-            for await _ in group {}
+            for await ok in group {
+                XCTAssertTrue(ok, "every concurrent mutateTask must report a successful persist")
+            }
         }
 
         // Settling mutation: a single non-concurrent mutateTask flushes the
@@ -113,16 +117,20 @@ final class MutateTaskRaceTests: NTMSOrchestratorTestBase {
             }
         }
         mutator.cancel()
-        let result = await mutator.value
+        _ = await mutator.value
 
-        // The result is allowed to be true (work raced past cancellation)
-        // OR false (cancellation observed). Both are correct outcomes;
-        // the only invariant is the banner stays nil when cancelled.
-        if result == false {
-            XCTAssertNil(
-                sut.lastErrorMessage,
-                "CancellationError must not surface as a save-failure banner"
-            )
-        }
+        // The result is allowed to be true (work raced past cancellation) OR
+        // false (cancellation observed). Both are correct outcomes, so the
+        // assertion must NOT be gated on which one happened — it used to sit
+        // inside `if result == false`, and that branch never runs: `mutateTask`
+        // awaits a `Task.detached` write, a detached task does not inherit
+        // cancellation, and `Task.value` rethrows only the child's own error.
+        // So `result` is always true and the whole test asserted nothing.
+        // The banner staying nil is the invariant either way — which is exactly
+        // what this test's name claims.
+        XCTAssertNil(
+            sut.lastErrorMessage,
+            "CancellationError must not surface as a save-failure banner"
+        )
     }
 }

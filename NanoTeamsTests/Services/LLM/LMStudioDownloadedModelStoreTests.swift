@@ -240,7 +240,7 @@ final class LMStudioDownloadedModelStoreTests: XCTestCase {
 /// Records `trashItem` targets instead of populating the developer's Trash
 /// during a test run, and can be told to fail so the no-permanent-fallback
 /// guarantee is observable.
-private final class RecordingFileManager: FileManager, @unchecked Sendable {
+private final class RecordingFileManager: FileManager {
     var trashed: [URL] = []
     var trashError: Error?
 

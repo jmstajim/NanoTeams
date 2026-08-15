@@ -9,8 +9,8 @@ final class TaskServiceTests: XCTestCase {
     private var repository: NTMSRepository!
     private var service: TaskService!
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
         // Use standardizedFileURL to resolve symlinks (/var -> /private/var on macOS)
         tempDir = fileManager.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -20,11 +20,11 @@ final class TaskServiceTests: XCTestCase {
         service = TaskService(repository: repository)
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         if let tempDir {
             try? fileManager.removeItem(at: tempDir)
         }
-        try super.tearDownWithError()
+        try await super.tearDown()
     }
 
     private func initializeProject() throws -> WorkFolderContext {
@@ -161,7 +161,7 @@ final class TaskServiceTests: XCTestCase {
     // MARK: - Task Summaries Filtering Tests
 
     func testTaskSummariesFilterAll() throws {
-        let initialContext = try initializeProject()
+        _ = try initializeProject()
 
         // Create tasks with different statuses by manipulating the task directly
         _ = try service.createTask(at: tempDir, title: "Running Task", supervisorTask: "Goal")

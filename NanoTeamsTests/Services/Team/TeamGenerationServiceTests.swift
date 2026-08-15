@@ -1,10 +1,11 @@
 import XCTest
 @testable import NanoTeams
 
+@MainActor
 final class TeamGenerationServiceTests: XCTestCase {
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         // Process-global counter — every test starts from zero so counter
         // assertions are order-independent. Pinned by
         // `testEntryCounter_isZero_acrossTests_viaSetUp`.

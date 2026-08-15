@@ -73,8 +73,14 @@ final class MonotonicClockTests: XCTestCase {
         let expectation = expectation(description: "Concurrent access")
         expectation.expectedFulfillmentCount = 10
 
-        let lock = NSLock()
-        var allTimestamps: [Date] = []
+        // A collector object rather than a captured `var` + external lock: the
+        // synchronization was already correct, but the region checker cannot see
+        // through an `NSLock` guarding a captured variable, so it warned on every
+        // build. Moving the lock INSIDE a `@unchecked Sendable` final class is the
+        // house form for exactly this (CLAUDE.md §"When to use `@unchecked
+        // Sendable`" — final classes with internal synchronization) and makes the
+        // guarantee structural instead of a convention the compiler can't check.
+        let collector = TimestampCollector()
 
         for _ in 0..<10 {
             DispatchQueue.global().async {
@@ -83,9 +89,7 @@ final class MonotonicClockTests: XCTestCase {
                     localTimestamps.append(MonotonicClock.shared.now())
                 }
 
-                lock.lock()
-                allTimestamps.append(contentsOf: localTimestamps)
-                lock.unlock()
+                collector.append(contentsOf: localTimestamps)
 
                 expectation.fulfill()
             }
@@ -94,7 +98,7 @@ final class MonotonicClockTests: XCTestCase {
         wait(for: [expectation], timeout: 5.0)
 
         // Sort and verify all timestamps are unique
-        let sortedTimestamps = allTimestamps.sorted()
+        let sortedTimestamps = collector.snapshot().sorted()
         var uniqueTimestamps = Set<Date>()
         for timestamp in sortedTimestamps {
             XCTAssertFalse(uniqueTimestamps.contains(timestamp), "All timestamps should be unique even with concurrent access")
@@ -122,5 +126,24 @@ final class MonotonicClockTests: XCTestCase {
         // The timestamp after reset should be very close to system time (within 100ms)
         let diff = abs(afterReset.timeIntervalSince(systemNow))
         XCTAssertLessThan(diff, 0.1, "After reset, clock should be close to system time")
+    }
+}
+
+// MARK: - Test fixtures
+
+/// Thread-safe sink for the concurrency test. The lock lives INSIDE the type, so
+/// `@unchecked Sendable` is a claim the class itself upholds rather than one the
+/// call site has to remember — the distinction that turns an unprovable captured
+/// `var` into a checkable one.
+private final class TimestampCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var timestamps: [Date] = []
+
+    func append(contentsOf newTimestamps: [Date]) {
+        lock.withLock { timestamps.append(contentsOf: newTimestamps) }
+    }
+
+    func snapshot() -> [Date] {
+        lock.withLock { timestamps }
     }
 }

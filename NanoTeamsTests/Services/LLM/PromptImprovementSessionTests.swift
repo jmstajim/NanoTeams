@@ -110,18 +110,18 @@ final class PromptImprovementSessionTests: XCTestCase {
                        "a second start mid-run must not invalidate the live pump")
     }
 
-    func testStart_clearsPriorErrorAndChip() async {
+    func testStart_clearsPriorErrorAndRevertOffer() async {
         let box = StreamBox()
         let session = makeSession(box: box)
         let field = Field("original")
 
-        // Arm a chip via a full successful run.
+        // Arm a revert offer via a full successful run.
         start(session, field: field)
         session.ingest(delta: "Improved.", generation: session.generation)
         session.finishStream(generation: session.generation)
         XCTAssertTrue(session.canRevert)
 
-        // Second run: chip and (hypothetical) error must clear immediately.
+        // Second run: revert offer and (hypothetical) error must clear immediately.
         start(session, field: field)
         XCTAssertFalse(session.canRevert)
         XCTAssertNil(session.errorMessage)
@@ -321,7 +321,7 @@ final class PromptImprovementSessionTests: XCTestCase {
         XCTAssertNil(session.task)
     }
 
-    func testStop_whileStreaming_restoresOriginal_noChip() async {
+    func testStop_whileStreaming_restoresOriginal_noRevertOffer() async {
         let box = StreamBox()
         let session = makeSession(box: box)
         let field = Field("original")
@@ -358,7 +358,7 @@ final class PromptImprovementSessionTests: XCTestCase {
 
         session.handleDisappear()
 
-        XCTAssertTrue(session.canRevert, "disappear after completion must not retire the chip")
+        XCTAssertTrue(session.canRevert, "disappear after completion must not retire the revert offer")
         XCTAssertEqual(field.text, "Improved.")
     }
 
@@ -457,9 +457,9 @@ final class PromptImprovementSessionTests: XCTestCase {
         XCTAssertEqual(session.phase, .streaming)
     }
 
-    // MARK: - Revert chip lifecycle
+    // MARK: - Revert offer lifecycle
 
-    func testRevert_restoresOriginal_clearsChip() async {
+    func testRevert_restoresOriginal_clearsRevertOffer() async {
         let box = StreamBox()
         let session = makeSession(box: box)
         let field = Field("my rough prompt")
@@ -473,7 +473,7 @@ final class PromptImprovementSessionTests: XCTestCase {
         XCTAssertFalse(session.canRevert)
     }
 
-    func testCompletionEcho_keepsChip() async {
+    func testCompletionEcho_keepsRevertOffer() async {
         let box = StreamBox()
         let session = makeSession(box: box)
         let field = Field("original")
@@ -486,7 +486,7 @@ final class PromptImprovementSessionTests: XCTestCase {
         XCTAssertTrue(session.canRevert)
     }
 
-    func testUserEditAfterCompletion_dismissesChip() async {
+    func testUserEditAfterCompletion_dismissesRevertOffer() async {
         let box = StreamBox()
         let session = makeSession(box: box)
         let field = Field("original")
@@ -500,7 +500,7 @@ final class PromptImprovementSessionTests: XCTestCase {
         XCTAssertFalse(session.canRevert)
     }
 
-    func testSubmitClear_dismissesChip() async {
+    func testSubmitClear_dismissesRevertOffer() async {
         let box = StreamBox()
         let session = makeSession(box: box)
         let field = Field("original")
@@ -515,7 +515,7 @@ final class PromptImprovementSessionTests: XCTestCase {
         XCTAssertFalse(session.canRevert)
     }
 
-    func testRevert_afterFieldHijack_retiresChipWithoutWrite() async {
+    func testRevert_afterFieldHijack_retiresRevertOfferWithoutWrite() async {
         let box = StreamBox()
         let session = makeSession(box: box)
         let field = Field("original")
@@ -655,7 +655,7 @@ final class PromptImprovementSessionTests: XCTestCase {
         XCTAssertEqual(field.text, "half rewrite")
     }
 
-    func testRevert_whenNoChip_isNoOp() async {
+    func testRevert_whenNoRevertOffer_isNoOp() async {
         let box = StreamBox()
         let session = makeSession(box: box)
         let field = Field("original")
@@ -699,8 +699,8 @@ final class PromptImprovementSessionTests: XCTestCase {
         XCTAssertEqual(field.text, "v0")
     }
 
-    func testNoteFieldTextChanged_idleNoChip_isInert() async {
-        // With no active run and no chip, field edits must not touch session state.
+    func testNoteFieldTextChanged_idleNoRevertOffer_isInert() async {
+        // With no active run and no revert offer, field edits must not touch session state.
         let box = StreamBox()
         let session = makeSession(box: box)
         let field = Field("original")

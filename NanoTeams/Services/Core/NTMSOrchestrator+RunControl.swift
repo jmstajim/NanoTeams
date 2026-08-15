@@ -252,7 +252,19 @@ extension NTMSOrchestrator {
         // `runStep` restart loop here — that would spawn a SECOND runStep for
         // the same step on top of the already-suspended one.
         if stepHasActiveDelegation(taskID: taskID) {
-            taskEngines[taskID]?.resume()
+            // Same total shape as the tail of this method, NOT `wakeEngine` — that would be
+            // correct about the engine and wrong about the step, and this branch exists
+            // precisely to keep a second `runStep` off an already-suspended one.
+            //
+            // The raw `taskEngines[taskID]?.resume()` this replaced was the worst member of the
+            // silent-wake class, because it has a BUTTON: `StatusRecoveryService` never clears
+            // `step.delegation.activeChildID`, so after a crash mid-delegation the predicate
+            // above is still true while `taskEngines` is empty — Resume on the parent did
+            // nothing at all, and the early `return` skipped the total `engineForTask` at the
+            // end of this method. (The parent's suspended `awaitTaskTerminalState` continuation
+            // does not survive a process restart; this restores the loop, not that await.)
+            let engine = engineForTask(taskID)
+            if engine.state == .pending { engine.start() } else { engine.resume() }
             return
         }
 

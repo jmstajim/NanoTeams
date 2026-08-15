@@ -19,7 +19,7 @@ import XCTest
 /// from roster ids. This suite pins the structural backstop UNDER both, which is what
 /// makes the primitive total for callers that don't exist yet.
 @MainActor
-final class RoleControlTeamGenerationGuardTests: NTMSOrchestratorTestBase {
+final class RoleControlTeamGenerationGuardTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private let generationStepID = "\(StepExecution.teamGenerationIDPrefix)ABC"
 

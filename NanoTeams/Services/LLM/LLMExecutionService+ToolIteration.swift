@@ -241,6 +241,7 @@ extension LLMExecutionService {
         var gateResults = await gateBashCalls(
             resolvedToolCalls: streamResult.resolvedToolCalls,
             allowedToolNames: allowedToolNames,
+            isPlanningPhase: authorization.isPlanningPhase,
             stepID: stepID,
             taskID: task.id,
             supervisorMode: supervisorMode,
@@ -272,6 +273,7 @@ extension LLMExecutionService {
             resolvedToolCalls: callsToExecute,
             allowedToolNames: allowedToolNames,
             phaseWithheldToolNames: authorization.withheldByPhase,
+            isPlanningPhase: authorization.isPlanningPhase,
             runtime: runtime,
             tracker: tracker,
             task: task,
@@ -607,10 +609,19 @@ extension LLMExecutionService {
                 discardedTokens: observation.totalPromptTokens))
         }
 
-        guard let diagnosis = verdict.diagnosis else { return }
+        guard var diagnosis = verdict.diagnosis else { return }
 
         // Exemption 6: below this the re-prefill costs well under a second.
         guard diagnosis.discardedTokens >= PrefixCachePolicy.materialTokenThreshold else { return }
+
+        // Price the miss from the server's own numbers where they support it. Stamped here, the
+        // one frame holding BOTH the verdict and `serverPrefill`, so every cause is priced the
+        // same way — including the structural ones, whose diagnosis was decided by `compare`
+        // before the send and therefore could not carry a measurement of its own.
+        diagnosis.measuredExtraSeconds = PrefixCachePolicy.measuredExtraSeconds(
+            prefillNsPerToken: server.prefillNsPerToken,
+            warmFloorNsPerToken: observation.warmFloorNsPerToken,
+            promptTokens: server.promptTokens)
 
         delegate?.reportPrefixCacheMiss(PrefixCacheMiss(
             owner: .step(taskID: taskID, stepID: stepID),

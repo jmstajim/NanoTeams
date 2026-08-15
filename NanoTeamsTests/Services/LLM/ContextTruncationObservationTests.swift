@@ -29,8 +29,8 @@ final class ContextTruncationObservationTests: XCTestCase {
     private var config = LLMConfig(
         provider: .ollama, baseURLString: "http://127.0.0.1:11434", modelName: "llama3.1")
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         sut = LLMExecutionService(repository: NTMSRepository())
         delegate = MockLLMExecutionDelegate()
         sut.attach(delegate: delegate)
@@ -38,9 +38,9 @@ final class ContextTruncationObservationTests: XCTestCase {
         sut._testSetPrefixCacheState(stepID: stepID, taskID: taskID)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut = nil; delegate = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// One request. The detector is a delta, so a test that wants a verdict has to drive at least

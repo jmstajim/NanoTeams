@@ -31,8 +31,8 @@ final class ConsultationChatArtifactContextTests: XCTestCase {
     private let ownRoleID = "team_pm"
     private let upstreamRoleID = "team_software_engineer"
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         service = LLMExecutionService(repository: NTMSRepository())
         detachedService = LLMExecutionService(repository: NTMSRepository())
@@ -44,13 +44,13 @@ final class ConsultationChatArtifactContextTests: XCTestCase {
         mockDelegate.workFolderURL = tempDir
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         try? FileManager.default.removeItem(at: tempDir)
         tempDir = nil
         mockDelegate = nil
         detachedService = nil
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - readArtifactContent: success + the byte cap

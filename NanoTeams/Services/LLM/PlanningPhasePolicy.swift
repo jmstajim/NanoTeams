@@ -241,32 +241,82 @@ nonisolated enum PlanningPhasePolicy {
         /// Tools the role has, that this iteration refuses. Empty outside the
         /// planning phase.
         let withheldByPhase: Set<String>
+        /// Whether this iteration IS the planning phase. Threaded down to the tool layer
+        /// (`ToolExecutionContext.isPlanningPhase`) so `BashTool` can narrow its sandbox per
+        /// call, and to the bash gate so the judge is told the confinement actually in force.
+        ///
+        /// Carried EXPLICITLY, never inferred from `withheldByPhase.isEmpty`. A role whose whole
+        /// toolset already sits inside the planning set — file+git reads, the Xcode runners,
+        /// `bash`, `update_scratchpad`, i.e. an ordinary "investigator" configuration — withholds
+        /// nothing, so that inference reads "not planning" and hands exactly that role an
+        /// UNNARROWED bash for the entire phase. It fails precisely where the guarantee matters.
+        /// `allowed.isEmpty` fails the same way from the other side.
+        let isPlanningPhase: Bool
 
         static func unrestricted(_ tools: [ToolSchema]) -> Authorization {
-            Authorization(allowed: Set(tools.map(\.name)), withheldByPhase: [])
+            Authorization(
+                allowed: Set(tools.map(\.name)), withheldByPhase: [], isPlanningPhase: false)
         }
     }
 
-    /// Everything that can neither SUSPEND the step nor MUTATE work-folder source,
-    /// plus the phase's exit channel: read-only file+git, vision, the Xcode runners.
+    /// Everything whose worst case the boundary can absorb, plus the phase's exit channel:
+    /// read-only file+git, vision, the Xcode runners, and — when `bashAdmitted` — `bash`.
     ///
-    /// Those two properties — not the enumeration — are what make the boundary safe
-    /// by construction. A suspend path would append a turn AFTER the brief that
-    /// `implementationWire`'s slice then eats; a mutation would make the discarded
-    /// exploration transcript load-bearing. `bash` fails both (it can write anything,
-    /// and its approval gate parks the step on a human) and `ask_supervisor` fails
-    /// the first, so neither is here. The Xcode runners fail neither: `ToolHandler.handle`
-    /// is synchronous BY SIGNATURE so there is no suspension point to hang an approval
-    /// on, they carry no `ToolSignal` and so no deferred finalizer, and they write
-    /// nothing under the work folder at tool time (`build_diagnostics.json` is written
-    /// at step COMPLETION). Whether the project currently compiles is exactly the kind
-    /// of fact a plan should rest on, and withholding it until after the plan is
-    /// recorded got that backwards.
+    /// **The criterion, as two properties.** A tool belongs iff
     ///
-    /// A failed build does append one engine-authored `.user` turn
-    /// (`buildToolErrorGuidance`) — same shape as a failed `read_file`, which this set
-    /// already admits. The turns the slice must not eat are HUMAN ones; that is what
+    ///  1. **it cannot put a turn on the wire that the boundary destroys unrecoverably**, and
+    ///  2. **it cannot mutate work-folder source** — either because it structurally does not
+    ///     write, or because the KERNEL is stopping it for the duration of the phase.
+    ///
+    /// Those properties, not the enumeration, are what make the boundary safe by construction.
+    /// Judge a new candidate by them, never by category name.
+    ///
+    /// **Property 1 used to read "cannot SUSPEND the step". That was a proxy, and the wrong
+    /// one** — what breaks the boundary is a STATE TRANSITION, not a suspension.
+    /// `ask_supervisor` is the specimen: it parks the step at `.needsSupervisorInput`, the answer
+    /// returns as a HUMAN turn after the brief, and `isEligible`'s `supervisorAnswerIsNil` guard
+    /// then makes the step ineligible — so the next `decide` returns `.closeWithoutRebuild` and
+    /// the exploration transcript this phase exists to discard is KEPT instead. `bash`'s human
+    /// approval hold (`awaitBashApproval`) blocks just as long and does none of that: it appends
+    /// nothing to `conversationMessages`, parks nothing, writes no step field, and a Pause
+    /// resolves it `.deny`, which lands as an ordinary tool-error envelope in the same batch.
+    /// Every input `decide` reads is byte-identical across the hold, so re-entry is
+    /// `.continuePlanning` either way — the hold is a wall-clock cost, not a phase event.
+    /// Engine-authored turns are fine for the reason that admitted the Xcode runners: a failed
+    /// build appends one `ToolErrorNotePolicy.direction` `.user` turn, the same shape as a failed
+    /// `read_file`. The turns the slice must not eat are HUMAN ones — that is what
     /// `discardedSupervisorMessages` exists for.
+    ///
+    /// **Property 2 is why `bash` is here, and why it is CONDITIONAL.** `bash` cannot be argued
+    /// safe by inspecting the command: `BashConstants.readOnlyPrograms` is a 60-name allowlist
+    /// that omits `find`, `git` and `python` while admitting `command` (so `command rm -rf x`
+    /// reads as read-only) and `yq` (which has an in-place `-i`). Fine as a basis for skipping a
+    /// review prompt; hopeless as a boundary invariant. The enforcement is the SANDBOX: while
+    /// the phase is live `BashTool` rebuilds its Seatbelt profile from the user's own
+    /// `BashSandboxPermissions` with every write scope forced off (`withWritesDisabled()`), so
+    /// the write clause carries only dev-node literals and `(deny default)` refuses every real
+    /// filesystem write. Reads are untouched — the phase exists to read. A kernel guarantee, not
+    /// a guess about a program's name.
+    ///
+    /// **`bashAdmitted` is the caller's two-term test, and both terms are about the phase.**
+    /// (a) `BashPolicy.sandboxEnabled` — no sandbox, no property 2, so nothing to advertise.
+    /// (b) `BashExecutionMode.allowsUnattendedCommands` — under `.manual` every command routes
+    /// to a human above the read-only bypass, turning a fast fact-gathering stretch into a
+    /// per-command approval queue (and, with no human present, into a wall of denials).
+    /// Both leave `plan_required` TRUE: after the boundary the same command runs under the
+    /// user's own settings. That is the admission test for anything folded in here — **only a
+    /// condition the BOUNDARY ITSELF resolves may narrow this set**, because `plan_required`
+    /// promises exactly that. `BashPolicy.mode == .off` fails that test (recording a plan does
+    /// not re-enable a disabled tool), which is why it is NOT expressed here as a withholding
+    /// but by `ToolUnavailabilityReason.bashDisabled`, whose contract is "stop", not "retry".
+    ///
+    /// **`bash_output` is deliberately absent.** Its only producer is `bash` with
+    /// `run_in_background: true`, which the handler refuses during the phase — a detached
+    /// process keeps the profile it was launched with forever, so one started here would carry
+    /// the write-blocked sandbox across the boundary and past it, unfixable. What would be left
+    /// for `bash_output` to address are ids from other steps of the same task (the registry is
+    /// task-scoped), where `action: "stop"` is an irreversible side effect whose only record
+    /// dies at the boundary — property 1's spirit and property 2's letter.
     ///
     /// Intersected with the tools actually PASSED IN — which arrive already
     /// filtered by work-folder preconditions — so `withheldByPhase` means
@@ -277,20 +327,24 @@ nonisolated enum PlanningPhasePolicy {
     /// `.xcodeSchemeNotSelected` rather than `plan_required`: step 3.1 of
     /// `resolveToolSchemasCore` already removed the runners, so they reach neither
     /// `allowed` nor `withheldByPhase`.
-    static func planningToolNames(in tools: [ToolSchema]) -> Set<String> {
-        let planningTools = ToolHandlerRegistry.readOnlyTools
+    static func planningToolNames(in tools: [ToolSchema], bashAdmitted: Bool) -> Set<String> {
+        var planningTools = ToolHandlerRegistry.readOnlyTools
             .union(ToolHandlerRegistry.visionTools)
             .union(ToolHandlerRegistry.xcodeTools)
             .union([ToolNames.updateScratchpad])
+        if bashAdmitted { planningTools.insert(ToolNames.bash) }
         return Set(tools.map(\.name)).intersection(planningTools)
     }
 
-    static func authorization(for decision: Decision, tools: [ToolSchema]) -> Authorization {
+    static func authorization(
+        for decision: Decision, tools: [ToolSchema], bashAdmitted: Bool
+    ) -> Authorization {
         switch decision {
         case .enterPlanning, .continuePlanning:
             let all = Set(tools.map(\.name))
-            let allowed = planningToolNames(in: tools)
-            return Authorization(allowed: allowed, withheldByPhase: all.subtracting(allowed))
+            let allowed = planningToolNames(in: tools, bashAdmitted: bashAdmitted)
+            return Authorization(
+                allowed: allowed, withheldByPhase: all.subtracting(allowed), isPlanningPhase: true)
         case .crossBoundary, .closeWithoutRebuild, .execution:
             return .unrestricted(tools)
         }
@@ -343,6 +397,17 @@ nonisolated enum PlanningPhasePolicy {
         if !explore.isEmpty {
             block += "These tools run right now: \(explore.joined(separator: ", ")).\n"
         }
+        // Annotated on its OWN line rather than as a parenthetical inside the comma list. The
+        // list is sorted for byte determinism and reads to a 7–32B model as a set of NAMES; a
+        // parenthetical inside it is the shape those models copy into their arguments. Keyed on
+        // membership, so a role without `bash` gets a brief byte-identical to the one it got
+        // before this line existed. The claim holds under EVERY permission configuration
+        // because `withWritesDisabled()` clears the work-folder grant unconditionally; temp is
+        // deliberately not mentioned, which would both over-promise and invite scratch files.
+        if explore.contains(ToolNames.bash) {
+            block += "bash runs read-only in this phase: the sandbox blocks it from writing to "
+                + "the work folder until your plan is recorded. Use it to look, not to change.\n"
+        }
 
         block += "\nRecord what you find by calling update_scratchpad with two sections:\n"
         block += "1. Findings — the files, symbols and constraints your plan depends on, "
@@ -369,9 +434,16 @@ nonisolated enum PlanningPhasePolicy {
     static func implementationSeedTurn(notes: String, expectedArtifacts: [String]) -> String {
         var block = seedMarker + "\n"
         block += notes.trimmingCharacters(in: .whitespacesAndNewlines) + "\n\n"
-        block += "Implementation phase — your full toolset is available now. Execute step 1 of "
-        block += "your plan, then call update_scratchpad to mark that step complete with "
-        block += "~~strikethrough~~."
+        // SELF-RENEWING on purpose: it must still be actionable after the role marks a step
+        // complete, because nothing else speaks after a scratchpad write. "Execute step 1" was
+        // true exactly once — every later write left the newest instruction on the wire pointing
+        // at work already done, and the gap was covered by a per-write "Continue with the next
+        // step." turn appended to EVERY role's conversation. One durable sentence here replaces
+        // N of those.
+        block += "Implementation phase — your full toolset is available now. Work the plan one "
+        block += "step at a time: execute the first step that is not yet struck through, then "
+        block += "call update_scratchpad to mark it complete with ~~strikethrough~~. Repeat "
+        block += "until every step is struck through."
         if !expectedArtifacts.isEmpty {
             let quoted = expectedArtifacts.map { "\"\($0)\"" }.joined(separator: ", ")
             block += "\nSubmit via create_artifact when ready: \(quoted)."
@@ -388,16 +460,9 @@ nonisolated enum PlanningPhasePolicy {
         closedMarker + " — your full toolset is available now. "
         + "Act on the message above."
 
-    /// Acknowledgement for a successful `update_scratchpad`.
-    ///
-    /// The planning-phase wording is display-only in practice: the boundary
-    /// discards it before the next request. It exists so the activity feed reads
-    /// coherently, and so the transition is announced by the seed turn — the
-    /// only place that can say it truthfully.
-    static func scratchpadAck(isPlanningWire: Bool) -> String {
-        isPlanningWire
-            ? "Planning notes recorded. The implementation phase starts on your next turn, "
-                + "in a fresh conversation seeded with these notes."
-            : "Plan updated. Continue with the next step."
-    }
+    // The acknowledgement for a successful `update_scratchpad` used to live here,
+    // choosing between a planning wording and a generic one. It moved to
+    // `ScratchpadNotePolicy`: the phase is only one of three writers, and the
+    // wording is now display-only for ALL of them — a property that file makes
+    // structural rather than incidental.
 }

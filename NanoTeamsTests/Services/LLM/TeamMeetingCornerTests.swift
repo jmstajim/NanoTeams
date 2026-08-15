@@ -23,8 +23,8 @@ final class TeamMeetingCornerTests: XCTestCase {
     private let taskID = 52
     private let initiator: Role = .softwareEngineer
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
@@ -36,12 +36,12 @@ final class TeamMeetingCornerTests: XCTestCase {
         mockDelegate.workFolderURL = tempDir
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
         mockDelegate = nil
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Failure arms

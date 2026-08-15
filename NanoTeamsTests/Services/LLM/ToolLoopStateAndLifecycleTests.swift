@@ -107,8 +107,8 @@ final class ToolLoopStateSupervisorAutoAnswerCoverageTests: XCTestCase {
     private var task: NTMSTask!
     private let stepID = "swe"
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -124,13 +124,13 @@ final class ToolLoopStateSupervisorAutoAnswerCoverageTests: XCTestCase {
         service._testRegisterStepTask(stepID: stepID, taskID: task.id)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
         service = nil
         mockDelegate = nil
         task = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func outcome(providerID: String?) -> LLMExecutionService.ToolResultsOutcome {
@@ -488,8 +488,8 @@ final class ToolLoopStateLoopWarningCoverageTests: XCTestCase {
     private var task: NTMSTask!
     private let stepID = "swe"
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
         service.attach(delegate: mockDelegate)
@@ -501,12 +501,12 @@ final class ToolLoopStateLoopWarningCoverageTests: XCTestCase {
         service._testRegisterStepTask(stepID: stepID, taskID: task.id)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service = nil
         mockDelegate = nil
         tracker = nil
         task = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Six IDENTICAL reads is the deterministic loop trigger — `.repetitiveTool(read_file, 6)`
@@ -757,17 +757,17 @@ final class QueuedSupervisorInjectionGateCoverageTests: XCTestCase {
     private var service: LLMExecutionService!
     private var mockDelegate: MockLLMExecutionDelegate!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service = nil
         mockDelegate = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// The un-pinned guard arm: with no delegate there is nobody to pop the queue.
@@ -899,8 +899,8 @@ final class StepFlowControlCapFailureCoverageTests: XCTestCase {
     private static let refusal =
         "I'm sorry, but I don't have the ability to create files in this environment."
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
         service.attach(delegate: mockDelegate)
@@ -911,11 +911,11 @@ final class StepFlowControlCapFailureCoverageTests: XCTestCase {
         service._testRegisterStepTask(stepID: stepID, taskID: task.id)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service = nil
         mockDelegate = nil
         task = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Detaches persistence while leaving the step's execution state live.
@@ -1218,8 +1218,8 @@ final class StepLifecycleStartGuardCoverageTests: XCTestCase {
     private var tempDir: URL!
     private let stepID = "swe"
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -1232,13 +1232,13 @@ final class StepLifecycleStartGuardCoverageTests: XCTestCase {
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service?.cancelAllExecutions()
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
         service = nil
         mockDelegate = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func makeTask(status: StepStatus, wireTranscript: [ChatMessage] = [],

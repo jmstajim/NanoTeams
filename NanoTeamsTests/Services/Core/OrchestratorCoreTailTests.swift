@@ -67,7 +67,7 @@ private func step(_ store: NTMSOrchestrator, _ taskID: Int, _ stepID: String) ->
 // MARK: - Run lifecycle: start / pause / resume
 
 @MainActor
-final class OrchestratorCoreTailRunControlTests: NTMSOrchestratorTestBase {
+final class OrchestratorCoreTailRunControlTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private func openAndCreateTask(_ store: NTMSOrchestrator) async -> Int {
         await store.openWorkFolder(tempDir)
@@ -510,7 +510,7 @@ final class OrchestratorCoreTailRunControlTests: NTMSOrchestratorTestBase {
 // MARK: - Task / snapshot mutation + streaming
 
 @MainActor
-final class OrchestratorCoreTailStateMutationTests: NTMSOrchestratorTestBase {
+final class OrchestratorCoreTailStateMutationTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private func openAndCreateTask(title: String = "Original") async -> Int {
         await sut.openWorkFolder(tempDir)
@@ -844,7 +844,7 @@ final class OrchestratorCoreTailStateMutationTests: NTMSOrchestratorTestBase {
 // MARK: - Step execution, attachments, work-folder settings
 
 @MainActor
-final class OrchestratorCoreTailWorkFolderTests: NTMSOrchestratorTestBase {
+final class OrchestratorCoreTailWorkFolderTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private func openAndCreateTask() async -> Int {
         await sut.openWorkFolder(tempDir)

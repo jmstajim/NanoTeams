@@ -10,14 +10,14 @@ final class WatchtowerDismissLifecycleTests: XCTestCase {
 
     var config: StoreConfiguration!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         config = StoreConfiguration(storage: InMemoryStorage())
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         config = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Dismiss / Undismiss

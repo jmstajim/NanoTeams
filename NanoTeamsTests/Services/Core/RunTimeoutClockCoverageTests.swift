@@ -20,7 +20,7 @@ import XCTest
 /// `AutovisorStatus` helpers even carry the contract in their signatures — `now: Date =
 /// MonotonicClock.shared.now()` — and name their pin. This one was missed.
 @MainActor
-final class RunTimeoutClockCoverageTests: NTMSOrchestratorTestBase {
+final class RunTimeoutClockCoverageTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     /// Drift big enough to separate the two clocks, then undone — a test that moves the shared
     /// clock and does not reset it manufactures flakes in the next class on the same worker

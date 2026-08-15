@@ -13,7 +13,7 @@ import XCTest
 ///   2. appends exactly one `.tool` message carrying `result.providerID` (the
 ///      chain-protocol pairing with the assistant's tool_call);
 ///   3. fans out to the scratchpad / artifact side effects;
-///   4. appends `buildToolErrorGuidance` on an error, to BOTH the live
+///   4. appends `ToolErrorNotePolicy.direction` on an error, to BOTH the live
 ///      conversation and the persisted history;
 ///   5. merges `ask_supervisor` questions into `outcome` (first provider id wins,
 ///      later questions concatenate, blank questions are ignored).
@@ -41,8 +41,8 @@ final class RegularToolResultDispatchTests: XCTestCase {
     /// answers `false` for it (the post-teardown write barrier).
     private let deadStepID = "torn_down_step"
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
@@ -59,13 +59,13 @@ final class RegularToolResultDispatchTests: XCTestCase {
         service._testRegisterStepTask(stepID: stepID, taskID: taskID)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
         memoryStore = nil
         mockDelegate = nil
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Passthrough: a tool no processor claims
@@ -223,13 +223,18 @@ final class RegularToolResultDispatchTests: XCTestCase {
             "the full status payload ships every time, nested raw. got: \(second)")
     }
 
-    // MARK: - Error results: guidance in the conversation AND the feed
+    // MARK: - Error results: guidance on the wire, and durable but unattributed
 
     /// An error result must (a) bypass tag compaction entirely (`.passthrough` —
     /// every file processor guards on `!isError`), and (b) append a `.user`
-    /// guidance turn to BOTH the live conversation and the persisted history. The
-    /// persisted half is what lets the human see why the model changed course.
-    func testErrorResult_bypassesTagging_andAppendsGuidanceToBothSurfaces() async {
+    /// guidance turn to both the live conversation and the persisted history.
+    ///
+    /// The persisted half is for the two consumers that read the display record
+    /// instead of the wire (`ConversationReplay.rebuildFromDisplayRecord`,
+    /// `DelegatedSupervisorAnswerService.buildSeed`) — NOT for the human, who reads
+    /// the reason off the tool card. That it stays off screen is
+    /// `ProcessToolResultsTests`' assertion; this one pins that it is still recorded.
+    func testErrorResult_bypassesTagging_andIsDurableOnBothTheWireAndTheRecord() async {
         let output = #"{"ok":false,"error":{"code":"FILE_NOT_FOUND","message":"File not found: missing.swift"}}"#
         let result = ToolExecutionResult(
             providerID: "tc_err",
@@ -253,12 +258,19 @@ final class RegularToolResultDispatchTests: XCTestCase {
         let guidance = conversation[1].content ?? ""
         XCTAssertTrue(guidance.contains("[FILE_NOT_FOUND]"),
             "Guidance must surface the typed code so the model can pick a recovery. got: \(guidance)")
-        XCTAssertTrue(guidance.contains("File not found: missing.swift"), "got: \(guidance)")
+        // The handler's message is the ENVELOPE's, and `conversation[0]` above is it —
+        // the immediately preceding turn. Restating it in the guidance is the duplication
+        // `ToolErrorNotePolicy` removed, so the assertion belongs on the tool turn.
+        XCTAssertTrue(output.contains("File not found: missing.swift"), output)
+        XCTAssertFalse(guidance.contains("File not found: missing.swift"),
+            "the direction must not restate the turn before it. got: \(guidance)")
 
         let persisted = persistedConversation()
         XCTAssertEqual(persisted.last?.role, .user)
         XCTAssertEqual(persisted.last?.content, guidance,
-            "The guidance the model received must also be the guidance the human sees.")
+            "A replay rebuilt from the record must show the model the same steering the wire did.")
+        XCTAssertNil(persisted.last?.sourceContext,
+            "Unattributed on purpose — the feed's no-source filter is what keeps this off screen.")
         XCTAssertEqual(persisted.filter({ $0.role == .tool }).count, 1,
             "Exactly one [CALL]…[RESULT] entry for one call.")
     }
@@ -266,6 +278,10 @@ final class RegularToolResultDispatchTests: XCTestCase {
     /// The `tool_not_authorized` arm: the envelope carries the code as a TOP-LEVEL
     /// string (executor-emitted), not the nested handler shape, and the guidance
     /// must say "do not retry" rather than the generic fix-your-arguments advice.
+    ///
+    /// The scope ("for this role") reaches the model in the TOOL turn, which is why the
+    /// direction no longer repeats it — pinned as the pair, so a regression that drops the
+    /// scope from the envelope fails here even though the direction never carried it.
     func testErrorResult_toolNotAuthorized_guidanceSaysDoNotRetryThatTool() async {
         let result = ToolExecutionResult(
             providerID: "tc_denied",
@@ -279,11 +295,15 @@ final class RegularToolResultDispatchTests: XCTestCase {
         var outcome = LLMExecutionService.ToolResultsOutcome()
         await runRegular(result, into: &conversation, outcome: &outcome)
 
-        let guidance = conversation.last?.content ?? ""
-        XCTAssertTrue(guidance.contains("is not available for this role"),
-            "The executor's scope-specific message must survive into the guidance. got: \(guidance)")
+        XCTAssertEqual(conversation.count, 2, "tool turn + direction")
+        XCTAssertTrue((conversation[0].content ?? "").contains("is not available for this role"),
+            "The executor's scope-specific message reaches the model in the tool turn. got: \(conversation[0].content ?? "")")
+
+        let guidance = conversation[1].content ?? ""
         XCTAssertTrue(guidance.contains("do not retry 'git_commit'"),
             "An unauthorised tool is a schema fact, not an argument bug — the model must be told to stop. got: \(guidance)")
+        XCTAssertFalse(guidance.contains("is not available for this role"),
+            "the direction must not restate the turn before it. got: \(guidance)")
     }
 
     // MARK: - Supervisor question merging
@@ -359,8 +379,11 @@ final class RegularToolResultDispatchTests: XCTestCase {
 
     /// `update_scratchpad` is not tag-compacted by the regular dispatcher itself —
     /// it fans out to `processScratchpadResult`, which writes the step's scratchpad
-    /// and appends exactly ONE acknowledgement. Pins the fan-out wiring.
-    func testUpdateScratchpad_writesScratchpad_andAppendsSingleAck() async {
+    /// and, for an ordinary role, adds nothing to the wire. Pins the fan-out wiring.
+    ///
+    /// RED: restore the unconditional ack append (at either the policy or the
+    /// call site) → this fails.
+    func testUpdateScratchpad_writesScratchpad_andAddsNothingToTheWire() async {
         let result = ToolExecutionResult(
             providerID: "tc_plan",
             toolName: ToolNames.updateScratchpad,
@@ -377,12 +400,11 @@ final class RegularToolResultDispatchTests: XCTestCase {
                        "1. read 2. edit 3. build",
             "The plan must land on the step, not just in the transcript.")
 
-        XCTAssertEqual(conversation.count, 2,
-            "Tool result + exactly one acknowledgement — the plan itself is never echoed back.")
-        XCTAssertEqual(conversation[1].role, .user)
-        XCTAssertEqual(conversation[1].content,
-                       PlanningPhasePolicy.scratchpadAck(isPlanningWire: false),
-            "A non-planning wire gets the plain ack, not the phase-transition wording.")
+        XCTAssertEqual(conversation.count, 1,
+            "Tool result only. The plain acknowledgement left the wire: the tool's own envelope "
+            + "already confirms the write, so an app-authored `.user` turn on every scratchpad "
+            + "update bought nothing and cost a turn.")
+        XCTAssertEqual(conversation[0].role, .tool)
     }
 
     // MARK: - Post-teardown write barrier
@@ -620,7 +642,7 @@ final class RegularToolResultDispatchTests: XCTestCase {
             XCTFail("A task must be installed before dispatching a collaboration result")
             return
         }
-        await service.appendCollaborationResult(
+        _ = await service.appendCollaborationResult(
             result: result,
             toolCallID: toolCallID,
             roleForMessage: .softwareEngineer,

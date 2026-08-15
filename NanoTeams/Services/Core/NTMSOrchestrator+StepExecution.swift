@@ -46,11 +46,6 @@ extension NTMSOrchestrator {
             toolSchemaText: "")
     }
 
-    /// Notify the engine for a specific task that an external event occurred.
-    func notifyEngineExternalEvent(taskID: Int) {
-        taskEngines[taskID]?.notifyExternalEvent()
-    }
-
     func runStep(stepID: String, taskID: Int) async {
         guard let task = loadedTask(taskID) else { return }
         guard let runIndex = task.runs.indices.last else { return }

@@ -108,8 +108,8 @@ final class CExecPreflightAtStepStartTests: XCTestCase {
     private let globalURL = "http://127.0.0.1:9"
     private let unreachableOverrideURL = "http://127.0.0.1:10"
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -129,14 +129,14 @@ final class CExecPreflightAtStepStartTests: XCTestCase {
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service?.cancelAllExecutions()
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
         stub = nil
         mockDelegate = nil
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// RED: replace the `effectiveConfig.provider != globalConfig.provider || …baseURLString != …`
@@ -273,8 +273,8 @@ final class CExecUpstreamArtifactInjectionTests: XCTestCase {
     private let artifactBody = "REQ-1: the calculator must support square roots."
     private let artifactRelativePath = "cexec_artifact_product_requirements.md"
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -295,14 +295,14 @@ final class CExecUpstreamArtifactInjectionTests: XCTestCase {
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service?.cancelAllExecutions()
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
         stub = nil
         mockDelegate = nil
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// RED: make the `artifactReader` closure in `buildChatMessages` return nil unconditionally
@@ -413,19 +413,19 @@ final class CExecNoToolCallsProducingRoleTests: XCTestCase {
 
     private let stepID = "cexec_producer"
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service?.cancelAllExecutions()
         mockDelegate = nil
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// RED: make the producing branch skip `checkArtifactCompleteness` (delete the
@@ -583,8 +583,8 @@ final class CExecFreshTaskFallbackTests: XCTestCase {
     private let targetStepID = "cexec_pm"
     private let taskID = 9103
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
@@ -595,12 +595,12 @@ final class CExecFreshTaskFallbackTests: XCTestCase {
         // "validation passed" outcome cheap and distinguishable from "validation rejected".
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service?.cancelAllExecutions()
         silentClient = nil
         mockDelegate = nil
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// RED: delete the `if let freshTask = delegate.loadedTask(tid), runIndex < …` branch in
@@ -1006,15 +1006,15 @@ final class CExecInjectedRunningTaskHygieneTests: XCTestCase {
 
     private var service: LLMExecutionService!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         service = LLMExecutionService(repository: NTMSRepository())
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service?.cancelAllExecutions()
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// RED: remove the `existing.cancel()` from `_testInjectRunningTask` -> the first task never

@@ -861,7 +861,7 @@ final class NTMSRepositoryTests: XCTestCase {
 
     func testOpenOrCreateProject_doesNotAddRequiredArtifact_whenProducerMissing() throws {
         let root = try makeProjectRoot()
-        let initial = try sut.openOrCreateWorkFolder(at: root)
+        _ = try sut.openOrCreateWorkFolder(at: root)
 
         // Engineering team TL: template has ["Supervisor Task", "Product Requirements"]
         // but PM is absent in Engineering team — "Product Requirements" has no producer
@@ -900,7 +900,7 @@ final class NTMSRepositoryTests: XCTestCase {
 
     func testOpenOrCreateProject_skipsSupervisorDependencySync() throws {
         let root = try makeProjectRoot()
-        let initial = try sut.openOrCreateWorkFolder(at: root)
+        _ = try sut.openOrCreateWorkFolder(at: root)
 
         // FAANG Supervisor requires ["Release Notes"] (per-team, not from generic template)
         let reopened = try sut.openOrCreateWorkFolder(at: root)
@@ -912,7 +912,7 @@ final class NTMSRepositoryTests: XCTestCase {
 
     func testOpenOrCreateProject_startupSupervisorRequires_isEngineeringNotesOnly() throws {
         let root = try makeProjectRoot()
-        let initial = try sut.openOrCreateWorkFolder(at: root)
+        _ = try sut.openOrCreateWorkFolder(at: root)
 
         // Startup Supervisor requires ["Engineering Notes"] only — narrowest contract,
         // pinned to catch accidental re-broadening from generic template sync.
@@ -991,7 +991,7 @@ final class NTMSRepositoryTests: XCTestCase {
 
         let stagedURL = root.appendingPathComponent(relativePath, isDirectory: false)
         XCTAssertTrue(FileManager.default.fileExists(atPath: stagedURL.path))
-        XCTAssertEqual(try String(contentsOf: stagedURL), "captured")
+        XCTAssertEqual(try String(contentsOf: stagedURL, encoding: .utf8), "captured")
     }
 
     func testFinalizeAttachments_copiesIntoTaskAttachmentsDirAndReturnsProjectRelativePath() throws {
@@ -1020,7 +1020,7 @@ final class NTMSRepositoryTests: XCTestCase {
 
         let finalizedURL = root.appendingPathComponent(finalizedPaths[0], isDirectory: false)
         XCTAssertTrue(FileManager.default.fileExists(atPath: finalizedURL.path))
-        XCTAssertEqual(try String(contentsOf: finalizedURL), "# Context")
+        XCTAssertEqual(try String(contentsOf: finalizedURL, encoding: .utf8), "# Context")
     }
 
     func testFinalizeAttachments_projectReference_skipsAndReturnsOriginalPath() throws {
@@ -1048,7 +1048,7 @@ final class NTMSRepositoryTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: attachmentsDir.path))
 
         // Original file should still be present and unchanged
-        XCTAssertEqual(try String(contentsOf: projectFile), "import Foundation")
+        XCTAssertEqual(try String(contentsOf: projectFile, encoding: .utf8), "import Foundation")
     }
 
     func testFinalizeAttachments_mixedReferencesAndCopies() throws {
@@ -1110,7 +1110,7 @@ final class NTMSRepositoryTests: XCTestCase {
 
         let finalizedURL = root.appendingPathComponent(finalizedPaths[0], isDirectory: false)
         XCTAssertTrue(FileManager.default.fileExists(atPath: finalizedURL.path))
-        XCTAssertEqual(try String(contentsOf: finalizedURL), "draft spec")
+        XCTAssertEqual(try String(contentsOf: finalizedURL, encoding: .utf8), "draft spec")
     }
 
     func testCleanupQuickCaptureDraft_removesDraftDirectory() throws {
@@ -1280,8 +1280,8 @@ final class NTMSRepositoryTests: XCTestCase {
         // Verify both files exist with correct content
         let url1 = root.appendingPathComponent(path1, isDirectory: false)
         let url2 = root.appendingPathComponent(path2, isDirectory: false)
-        XCTAssertEqual(try String(contentsOf: url1), "v1")
-        XCTAssertEqual(try String(contentsOf: url2), "v2")
+        XCTAssertEqual(try String(contentsOf: url1, encoding: .utf8), "v1")
+        XCTAssertEqual(try String(contentsOf: url2, encoding: .utf8), "v2")
     }
 
     func testConcurrentDrafts_doNotInterfere() throws {

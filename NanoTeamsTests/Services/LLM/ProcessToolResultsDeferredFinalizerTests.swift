@@ -31,8 +31,8 @@ final class ProcessToolResultsDeferredFinalizerTests: XCTestCase {
     private let stepID = "worker"
     private let taskID = 64
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
@@ -46,14 +46,14 @@ final class ProcessToolResultsDeferredFinalizerTests: XCTestCase {
         mockDelegate.workFolderURL = tempDir
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
         memoryStore = nil
         tracker = nil
         mockDelegate = nil
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Vision

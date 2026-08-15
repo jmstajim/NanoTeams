@@ -6,7 +6,7 @@ import XCTest
 /// `awaitSearchIndex`, and `expandSearchQuery`. These are the hooks read on
 /// every `expand` call.
 @MainActor
-final class ExploratorySearchDelegateWiringTests: NTMSOrchestratorTestBase {
+final class ExploratorySearchDelegateWiringTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - exploratorySearchEnabled
 

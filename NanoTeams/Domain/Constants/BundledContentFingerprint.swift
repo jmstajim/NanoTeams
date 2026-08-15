@@ -69,9 +69,9 @@ nonisolated enum BundledContentFingerprint {
                 fold(role.toolIDs)
                 fold(role.dependencies.requiredArtifacts)
                 fold(role.dependencies.producesArtifacts)
-                fold(role.icon ?? "")
-                fold(role.iconColor ?? "")
-                fold(role.iconBackground ?? "")
+                fold(role.icon)
+                fold(role.iconColor)
+                fold(role.iconBackground)
                 fold(role.usePlanningPhase)
             }
             // Step 4 adds missing system artifacts — names are the identity.

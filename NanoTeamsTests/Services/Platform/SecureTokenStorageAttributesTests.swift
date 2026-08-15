@@ -104,7 +104,7 @@ final class SecureTokenStorageAttributesTests: XCTestCase {
         service: String,
         account: String,
         accessible: CFString,
-        file: StaticString = #file,
+        file: StaticString = #filePath,
         line: UInt = #line
     ) throws {
         let query: [String: Any] = [

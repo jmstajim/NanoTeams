@@ -50,13 +50,26 @@ nonisolated struct StepToolCall: Codable, Identifiable, Hashable {
         self.argumentRepairNote = argumentRepairNote
     }
 
-    /// The `message` out of this call's `{"ok":false,"error":{"code":…,"message":…}}` result.
+    /// The `message` out of this call's error result, in EITHER envelope shape.
     ///
     /// Information Expert: the call owns its result, so every surface that asks "why did
-    /// that tool call fail" reads it here instead of re-spelling the three-step dictionary
-    /// walk. Two did — the Autovisor's `task_status.last_error` and the generated-team graph
-    /// panel — and they had already drifted, one rejecting a whitespace-only message where
-    /// the other rendered it as a blank error pane.
+    /// that tool call fail" reads it here instead of re-spelling the dictionary walk. Two
+    /// did — the Autovisor's `task_status.last_error` and the generated-team graph panel —
+    /// and they had already drifted, one rejecting a whitespace-only message where the
+    /// other rendered it as a blank error pane.
+    ///
+    /// **Two shapes, because the app emits two.** `ToolErrorHandler` nests
+    /// (`{"ok":false,"error":{"code":…,"message":…}}`); the EXECUTOR writes the code as a
+    /// top-level string beside a top-level message
+    /// (`{"error":"tool_not_authorized","message":…}`) — that is every rejection it makes
+    /// itself: `tool_not_authorized`, `precondition_failed`, `plan_required`,
+    /// `identical_write_loop`. Reading only the nested shape returned `nil` for all four,
+    /// so the manager was handed `Role 'X' failed.` for a step whose last error named a
+    /// missing `.git` or an unselected Xcode scheme — both things it can act on.
+    ///
+    /// The top-level branch requires `error` to be a STRING, not merely present: that is
+    /// what keeps a success envelope carrying an unrelated `message` from being read as a
+    /// failure.
     ///
     /// Whitespace-only is treated as ABSENT: a message that renders as nothing is not a
     /// diagnosis, and every caller has a better generic fallback for that case.
@@ -66,12 +79,19 @@ nonisolated struct StepToolCall: Codable, Identifiable, Hashable {
     /// otherwise be the first Domain type to reference one from `Services/Tools`.
     var errorMessage: String? {
         guard let resultJSON,
-              let dict = JSONUtilities.parseJSONDictionary(resultJSON),
-              let error = dict["error"] as? [String: Any],
-              let message = error["message"] as? String,
-              !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+              let dict = JSONUtilities.parseJSONDictionary(resultJSON)
         else { return nil }
-        return message
+        let raw: String?
+        if let nested = dict["error"] as? [String: Any] {
+            raw = nested["message"] as? String
+        } else if dict["error"] is String {
+            raw = dict["message"] as? String
+        } else {
+            raw = nil
+        }
+        guard let raw, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        return raw
     }
 
     /// True while a vision analysis is in progress (interim placeholder result).

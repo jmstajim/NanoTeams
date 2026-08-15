@@ -43,8 +43,8 @@ final class PlanningScratchpadCardTests: XCTestCase {
     private let stepID = "faang_team_code_reviewer"
     private let taskID = 0
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         mockClient = MockStreamClient()
         service = LLMExecutionService(repository: NTMSRepository())
@@ -54,12 +54,12 @@ final class PlanningScratchpadCardTests: XCTestCase {
             LLMExecutionService.StepExecutionState()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service = nil
         mockDelegate = nil
         mockClient = nil
         MonotonicClock.shared.reset()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Verbatim shape of Code Reviewer response `8642D38FC`: content-channel

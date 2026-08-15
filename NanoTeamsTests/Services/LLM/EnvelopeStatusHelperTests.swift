@@ -10,14 +10,14 @@ final class EnvelopeStatusHelperTests: XCTestCase {
 
     private var service: LLMExecutionService!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         service = LLMExecutionService(repository: NTMSRepository())
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - .failure (the actionable signal)

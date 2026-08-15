@@ -30,21 +30,21 @@ import XCTest
 /// Every test method is `async` — a sync `@MainActor` test that constructs a
 /// `@MainActor` class `abort()`s on CI (CLAUDE.md §Testing Conventions).
 @MainActor
-final class AutovisorActionDispatchTests: NTMSOrchestratorTestBase {
+final class AutovisorActionDispatchTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     /// The orchestrator holds `quickCaptureFormState` weakly, so the test must own the
     /// strong reference for the whole method (`message_task` is unrepresentable without it).
     private var formState: QuickCaptureFormState!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         formState = QuickCaptureFormState()
         sut.quickCaptureFormState = formState
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         formState = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures

@@ -12,8 +12,8 @@ final class EndToEndStepLifecycleTests: XCTestCase {
     var mockDelegate: MockLLMExecutionDelegate!
     var tempDir: URL!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -25,7 +25,7 @@ final class EndToEndStepLifecycleTests: XCTestCase {
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let tempDir {
             try? FileManager.default.removeItem(at: tempDir)
         }
@@ -33,7 +33,7 @@ final class EndToEndStepLifecycleTests: XCTestCase {
         mockDelegate = nil
         service = nil
         MonotonicClock.shared.reset()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Test 1: Basic happy path pending → running → done
@@ -100,7 +100,7 @@ final class EndToEndStepLifecycleTests: XCTestCase {
     // MARK: - Test 3: Producing role retries when artifacts missing (handleNoToolCalls)
 
     func testStepLifecycle_producingRole_retriesWhenArtifactsMissing() async {
-        var task = makeTaskWithStep(
+        let task = makeTaskWithStep(
             role: .productManager,
             expectedArtifacts: ["Product Requirements"],
             status: .running
@@ -124,7 +124,7 @@ final class EndToEndStepLifecycleTests: XCTestCase {
 
     func testStepLifecycle_advisoryRole_neverAutoCompletes() {
         // Advisory role: has required artifacts but no produced artifacts
-        var task = makeTaskWithStep(
+        let task = makeTaskWithStep(
             role: .codeReviewer,
             expectedArtifacts: [], // Advisory — no expected artifacts
             status: .running
@@ -145,7 +145,7 @@ final class EndToEndStepLifecycleTests: XCTestCase {
     // MARK: - Test 5: Completion is idempotent
 
     func testStepLifecycle_completionIsIdempotent() async {
-        var task = makeTaskWithStep(
+        let task = makeTaskWithStep(
             role: .softwareEngineer,
             expectedArtifacts: ["Engineering Notes"],
             status: .running

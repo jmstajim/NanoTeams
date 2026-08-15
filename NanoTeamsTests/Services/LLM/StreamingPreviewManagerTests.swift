@@ -7,15 +7,15 @@ final class StreamingPreviewManagerTests: XCTestCase {
 
     var manager: StreamingPreviewManager!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         manager = StreamingPreviewManager()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         manager = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Initialization Tests

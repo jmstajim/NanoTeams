@@ -9,8 +9,8 @@ final class MessageComposerPasteHandlerTests: XCTestCase {
     var pasteboard: NSPasteboard!
     var stagedFiles: [URL] = []
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         let name = NSPasteboard.Name(rawValue: "ntms-paste-test-\(UUID().uuidString)")
         pasteboard = NSPasteboard(name: name)
         pasteboard.clearContents()
@@ -18,7 +18,7 @@ final class MessageComposerPasteHandlerTests: XCTestCase {
         PasteMonitorRegistry.shared._testReset()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         for url in stagedFiles {
             try? FileManager.default.removeItem(at: url)
         }
@@ -26,7 +26,7 @@ final class MessageComposerPasteHandlerTests: XCTestCase {
         pasteboard.releaseGlobally()
         pasteboard = nil
         PasteMonitorRegistry.shared._testReset()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - dispatch — classification

@@ -328,7 +328,7 @@ nonisolated enum AutovisorStatus {
     /// Manager-facing remedy appended (never substituted) to a `manage_role accept`
     /// rejection in `applyAcceptRole`'s `.reject` arm. The raw `acceptanceErrors`
     /// string names the fact ("Role already completed") but not the way out, and the
-    /// manager has no other recovery channel — `buildToolErrorGuidance` never runs for
+    /// manager has no other recovery channel — `ToolErrorNotePolicy.direction` never runs for
     /// collaboration-path tools, and the Autovisor error funnel passes no `next` hint
     /// (the envelope has the slot; `applyAutovisorAction` leaves it empty). Observed
     /// 2026-08-11: a manager facing a Review task tried `accept` on the `.done` role,

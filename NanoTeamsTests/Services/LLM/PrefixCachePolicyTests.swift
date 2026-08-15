@@ -676,4 +676,57 @@ final class PrefixCachePolicyTests: XCTestCase {
             discarded(messages, common: 2),
             ContextBudgetPolicy.estimateTokens(messages: [usr("two")]))
     }
+    // MARK: - measuredExtraSeconds
+
+    /// The honest price of a miss: what the server actually spent, minus what the same request
+    /// would have cost had the prefix held. No estimate on either side — unlike
+    /// `estimatedSeconds(forTokens:)`, which multiplies a hardware-independent constant by
+    /// `discardedTokens`, itself a `ContextBudgetPolicy` estimate measured 0.78–2.26× off.
+    /// RED: return the full prefill instead of the difference → the popover charges the user for
+    /// the warm cost they would have paid anyway.
+    func testMeasuredExtraSeconds_isTheDifferenceFromTheWarmFloor() {
+        // 2.78 ms/token measured cold, 0.055 ms/token warm floor, 7500-token prompt.
+        let seconds = PrefixCachePolicy.measuredExtraSeconds(
+            prefillNsPerToken: 2_780_000, warmFloorNsPerToken: 55_000, promptTokens: 7_500)
+        XCTAssertEqual(seconds ?? 0, 20.4, accuracy: 0.1)
+    }
+
+    /// RED: drop the `extraNs > 0` guard → a request at or below the warm floor reports a
+    /// negative cost, which renders as a negative number of seconds "lost".
+    func testMeasuredExtraSeconds_refusesWhenTheRequestWasNotSlowerThanWarm() {
+        XCTAssertNil(PrefixCachePolicy.measuredExtraSeconds(
+            prefillNsPerToken: 50_000, warmFloorNsPerToken: 55_000, promptTokens: 7_500))
+        XCTAssertNil(PrefixCachePolicy.measuredExtraSeconds(
+            prefillNsPerToken: 55_000, warmFloorNsPerToken: 55_000, promptTokens: 7_500))
+    }
+
+    /// Missing terms mean the miss cannot be priced, not that it was free.
+    /// RED: default a missing floor to zero → the whole prefill is charged as "extra", which is
+    /// the estimate's error in the other direction and just as wrong.
+    func testMeasuredExtraSeconds_refusesOnAnyMissingTerm() {
+        XCTAssertNil(PrefixCachePolicy.measuredExtraSeconds(
+            prefillNsPerToken: nil, warmFloorNsPerToken: 55_000, promptTokens: 7_500))
+        XCTAssertNil(PrefixCachePolicy.measuredExtraSeconds(
+            prefillNsPerToken: 2_780_000, warmFloorNsPerToken: nil, promptTokens: 7_500))
+        XCTAssertNil(PrefixCachePolicy.measuredExtraSeconds(
+            prefillNsPerToken: 2_780_000, warmFloorNsPerToken: 55_000, promptTokens: nil))
+        XCTAssertNil(PrefixCachePolicy.measuredExtraSeconds(
+            prefillNsPerToken: 2_780_000, warmFloorNsPerToken: 55_000, promptTokens: 0))
+    }
+
+    /// Measured when we have it, estimated when we do not — never a blend, which would be
+    /// neither and unreadable by the caller.
+    /// RED: sum the two instead of preferring the measurement → a priced miss is double-charged.
+    func testDiagnosisEstimatedSeconds_prefersTheMeasurementAndFallsBackWithoutIt() {
+        let measured = PrefixCachePolicy.Diagnosis(
+            cause: .modelReloaded, commonSegments: 0, previousSegments: 5,
+            discardedTokens: 12_927, measuredExtraSeconds: 20.8)
+        XCTAssertEqual(measured.estimatedSeconds, 20.8, accuracy: 0.001)
+
+        let unmeasured = PrefixCachePolicy.Diagnosis(
+            cause: .modelReloaded, commonSegments: 0, previousSegments: 5,
+            discardedTokens: 12_927)
+        XCTAssertEqual(unmeasured.estimatedSeconds, 5.81, accuracy: 0.3)
+    }
+
 }

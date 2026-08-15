@@ -179,8 +179,8 @@ final class TeammateConsultationHandlerTests: XCTestCase {
     private let taskID = 77
     private let requester: Role = .softwareEngineer
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
@@ -192,12 +192,12 @@ final class TeammateConsultationHandlerTests: XCTestCase {
         mockDelegate.workFolderURL = tempDir
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
         mockDelegate = nil
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: Availability guards
@@ -725,18 +725,18 @@ final class AutovisorHandlerEnvelopeTests: XCTestCase {
     private let stepID = "autovisor_manager"
     private let managerTaskID = 900
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         mockDelegate = nil
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: Writes — signal → AutovisorAction → single hook

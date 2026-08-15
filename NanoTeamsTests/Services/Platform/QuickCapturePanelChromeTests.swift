@@ -17,14 +17,14 @@ final class QuickCapturePanelChromeTests: XCTestCase {
 
     var sut: QuickCapturePanel!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         sut = QuickCapturePanel()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Clear window background — the rounded SwiftUI fill shows through; the

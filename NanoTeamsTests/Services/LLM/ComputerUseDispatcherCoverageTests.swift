@@ -27,16 +27,16 @@ final class ComputerUseDispatcherCoverageTests: XCTestCase, @unchecked Sendable 
     private var env: FakeComputerUseEnvironment!
     private var sut: LLMExecutionService!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         env = FakeComputerUseEnvironment()
         sut = LLMExecutionService(repository: NTMSRepository(), computerUse: env.environment)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut = nil
         env = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures

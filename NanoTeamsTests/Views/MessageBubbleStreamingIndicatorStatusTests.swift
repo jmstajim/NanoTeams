@@ -6,6 +6,7 @@ import XCTest
 /// — important for distinguishing "model is processing the prompt"
 /// (Processing X%), "tokens flowing into invisible buffers" (Generating),
 /// and "nothing happening yet" (Waiting).
+@MainActor
 final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
 
     // MARK: - Not streaming → no status

@@ -27,15 +27,15 @@ final class EndToEndAnswerDraftPersistenceTests: XCTestCase {
 
     private var formState: QuickCaptureFormState!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         formState = QuickCaptureFormState()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         formState = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Helpers

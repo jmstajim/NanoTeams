@@ -175,7 +175,7 @@ nonisolated enum FilenameMatcher {
         /// suffix is a well-formed scalar boundary.
         private func suffixBytes(of path: String, from byteOffset: Int) -> Substring {
             let idx = path.utf8.index(path.utf8.startIndex, offsetBy: byteOffset)
-            return Substring(path.utf8[idx...]) ?? ""
+            return Substring(path.utf8[idx...])
         }
     }
 }

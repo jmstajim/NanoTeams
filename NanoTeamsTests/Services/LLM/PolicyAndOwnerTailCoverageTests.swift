@@ -69,4 +69,37 @@ final class PolicyAndOwnerTailCoverageTests: XCTestCase {
                      "a meeting/consultation chain has no task — nil is what keeps it off the banner")
         XCTAssertNil(miss(.oneShot(label: "vision")).taskID)
     }
+    // MARK: - LLMCallOwner.displayName(forKey:)
+
+    /// The ledger's activity ring stores `owner.key` (format pinned by `PromptPrefixLedgerTests`),
+    /// so a suspect reaches the UI as a key while the rows beside it show `displayName`. This is
+    /// the bridge, and the round trip is what keeps the two projections from drifting apart.
+    /// RED: strip only one leading component for `.step` → the suspect renders as
+    /// `42:autovisor_autovisor` and no longer matches its own BY CALLER row.
+    func testDisplayNameForKey_roundTripsEveryOwnerCase() {
+        let owners: [LLMCallOwner] = [
+            .step(taskID: 42, stepID: "autovisor_autovisor"),
+            .chain(id: "meeting:1:2:abc"),
+            .oneShot(label: "bash judge"),
+        ]
+        for owner in owners {
+            XCTAssertEqual(
+                LLMCallOwner.displayName(forKey: owner.key), owner.displayName,
+                "key projection must invert back to the same label for \(owner)")
+        }
+    }
+
+    /// RED: split on the LAST `:` instead of dropping exactly the components `key` added → a
+    /// chain id containing colons (a meeting is `taskID:runID:meetingID`) is truncated.
+    func testDisplayNameForKey_preservesColonsInsideTheIdentifier() {
+        XCTAssertEqual(LLMCallOwner.displayName(forKey: "chain:meeting:1:2:abc"), "meeting:1:2:abc")
+    }
+
+    /// A string that is not one of our keys is not ours to reinterpret.
+    /// RED: fall through to a generic "drop everything before the first colon" → an unrecognised
+    /// value is silently mangled instead of shown as-is.
+    func testDisplayNameForKey_unrecognisedShapePassesThroughVerbatim() {
+        XCTAssertEqual(LLMCallOwner.displayName(forKey: "whatever:x"), "whatever:x")
+    }
+
 }

@@ -121,8 +121,8 @@ final class ToolRuntimeTests: XCTestCase, @unchecked Sendable {
         XCTAssertNil(records[0]["durationMS"], "nothing ran, so there is nothing to time")
     }
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
         workFolderRoot = try makeTempProjectRoot()
         let (runtime, logURL) = makeRegistryAndRuntime(workFolderRoot: workFolderRoot)
         self.runtime = runtime
@@ -130,11 +130,11 @@ final class ToolRuntimeTests: XCTestCase, @unchecked Sendable {
         context = makeContext(workFolderRoot: workFolderRoot)
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         if let workFolderRoot {
             try? fileManager.removeItem(at: workFolderRoot)
         }
-        try super.tearDownWithError()
+        try await super.tearDown()
     }
 
     func testToolExecutionIsLogged() throws {

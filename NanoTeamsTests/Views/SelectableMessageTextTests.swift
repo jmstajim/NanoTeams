@@ -20,8 +20,8 @@ final class SelectableMessageTextTests: XCTestCase {
     private var previousContent: String = ""
     private var attributes: [NSAttributedString.Key: Any]!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         // Static-state hygiene: the process-wide fallback width must not
         // leak between test cases (any setFrameSize ≥ 50 records it).
         SelfSizingTextView.resetFallbackWidthForTesting()
@@ -32,12 +32,12 @@ final class SelectableMessageTextTests: XCTestCase {
         previousContent = ""
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         SelfSizingTextView.resetFallbackWidthForTesting()
         textView = nil
         attributes = nil
         previousContent = ""
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Helpers
@@ -704,7 +704,12 @@ final class SelectableMessageTextTests: XCTestCase {
 
 // MARK: - Test fixtures
 
-private final class TextStorageEditRecorder {
+/// Main-thread-confined by construction: the observer is registered with
+/// `queue: nil`, so NotificationCenter delivers synchronously on the posting
+/// thread, and every post originates from `applyContent` on this @MainActor
+/// test class. `@unchecked Sendable` records that, since `Binding`-style
+/// `@Sendable` observer blocks would otherwise reject the capture.
+private final class TextStorageEditRecorder: @unchecked Sendable {
     var captures: [(mask: NSTextStorageEditActions, range: NSRange)] = []
 }
 

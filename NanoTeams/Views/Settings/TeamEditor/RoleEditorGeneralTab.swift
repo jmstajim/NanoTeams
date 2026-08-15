@@ -39,10 +39,16 @@ struct RoleEditorGeneralTab: View {
                     SettingsCard(
                         header: "Execution",
                         systemImage: "play.circle",
-                        footer: "When enabled, the role first explores the work folder with "
-                            + "read-only tools and records what it found with update_scratchpad. "
-                            + "Implementation then starts from those notes. Costs extra turns — "
-                            + "worth it for roles that write code."
+                        // Says what the stretch CANNOT do, not which tools it holds. "read-only
+                        // tools" understated it the moment `bash` joined the phase: a user
+                        // reading that would not expect a shell to run at all, and the honest
+                        // reassurance is the mechanism (the sandbox blocks its writes), not a
+                        // tool list that goes stale on the next admission.
+                        footer: "When enabled, the role first explores the work folder and records "
+                            + "what it found with update_scratchpad; implementation then starts "
+                            + "from those notes. Nothing in that stretch can change your files — "
+                            + "bash included, which runs there with sandbox writes blocked. Costs "
+                            + "extra turns — worth it for roles that write code."
                     ) {
                         Toggle("Planning phase", isOn: $editorState.usePlanningPhase)
                             .toggleStyle(.terminal)

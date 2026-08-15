@@ -117,6 +117,15 @@ final class TeamEngine {
     func resume() {
         guard state != .running else { return }
 
+        // Cancel any surviving loop before launching a replacement — `start()` (via `stop()`)
+        // and `pause()` both do this, and `resume()` was the one member of the trio that did
+        // not. A non-`.running` state does NOT prove the previous `runTask` is finished: only
+        // `stop()` / `pause()` cancel it, so any path that writes the state directly
+        // (`transition(to:)` from outside the loop) leaves a live loop behind, and
+        // `launchRunLoop()` would then reassign `runTask` — orphaning the old one to keep
+        // reconciling and starting roles against the same store.
+        runTask?.cancel()
+
         // Reset iteration count to allow another full set of iterations
         iterationCount = 0
         state = .running

@@ -12,14 +12,14 @@ import XCTest
 /// - `LLMMessage` persisted with the `.supervisorMessage` source context.
 /// - Partial embed failure surfaces as `lastInfoMessage` (degraded, not error).
 @MainActor
-final class ConsumeQueuedSupervisorMessageTests: NTMSOrchestratorTestBase {
+final class ConsumeQueuedSupervisorMessageTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Helpers
 
     private var formState: QuickCaptureFormState!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         // Resolve symlinks on tempDir (`/var/folders/...` → `/private/var/folders/...`)
         // so `SandboxPathResolver.isWithin` (which standardizes but does NOT resolve
         // symlinks) treats the finalized attachment URL as in-project; otherwise the
@@ -35,13 +35,13 @@ final class ConsumeQueuedSupervisorMessageTests: NTMSOrchestratorTestBase {
         sut.configuration.embedFilesInPrompt = false
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let externalSourceDir {
             try? FileManager.default.removeItem(at: externalSourceDir)
         }
         externalSourceDir = nil
         formState = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Creates a task with a single `.running` step for the given role. The step's

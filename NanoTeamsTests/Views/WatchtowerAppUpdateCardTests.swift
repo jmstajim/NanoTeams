@@ -5,6 +5,7 @@ import XCTest
 /// Watchtower update card. Silent UI rot in `trimmedBodyLines` would leave
 /// the card with a missing or garbled teaser; testing in isolation avoids
 /// needing SwiftUI snapshot infrastructure.
+@MainActor
 final class WatchtowerAppUpdateCardTests: XCTestCase {
 
     func testTrimmedBodyLines_emptyBody_returnsEmpty() {

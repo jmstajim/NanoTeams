@@ -232,16 +232,16 @@ final class DLLMEmbeddingLifecycleTailTests: XCTestCase {
     private let configA = EmbeddingConfig(baseURLString: "http://127.0.0.1:1234", modelName: "model-a")
     private let configB = EmbeddingConfig(baseURLString: "http://127.0.0.1:1234", modelName: "model-b")
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         client = RecordingLLMClient()
         sut = EmbeddingModelLifecycleService(client: client)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut = nil
         client = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Swap path with the server's listing DOWN. The prior model's siblings

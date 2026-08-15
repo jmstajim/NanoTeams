@@ -18,8 +18,8 @@ final class ConsultationResultRenderingTests: XCTestCase {
     private let stepID = "team_software_engineer"
     private let initiatorRole: Role = .softwareEngineer
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
@@ -30,12 +30,12 @@ final class ConsultationResultRenderingTests: XCTestCase {
         mockDelegate.workFolderURL = tempDir
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         try? FileManager.default.removeItem(at: tempDir)
         tempDir = nil
         mockDelegate = nil
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Success: answer reflects onto the card + attribution bubble
@@ -49,7 +49,7 @@ final class ConsultationResultRenderingTests: XCTestCase {
         service._testRegisterStepTask(stepID: stepID, taskID: task.id)
 
         var conversation: [ChatMessage] = []
-        await service.appendCollaborationResult(
+        _ = await service.appendCollaborationResult(
             result: consultationResult(),
             toolCallID: toolCallID,
             roleForMessage: initiatorRole,
@@ -90,7 +90,7 @@ final class ConsultationResultRenderingTests: XCTestCase {
         // recording any consultation, so the ONLY task mutation in the whole
         // dispatch is the atomic commit (card + tool message + bubble together).
         var conversation: [ChatMessage] = []
-        await service.appendCollaborationResult(
+        _ = await service.appendCollaborationResult(
             result: consultationResult(consultedRoleID: "ghost_role"),
             toolCallID: toolCallID,
             roleForMessage: initiatorRole,
@@ -144,7 +144,7 @@ final class ConsultationResultRenderingTests: XCTestCase {
             isError: false, signal: .teamMeeting(topic: "x", participants: [], context: nil)
         )
         var conversation: [ChatMessage] = []
-        await service.appendCollaborationResult(
+        _ = await service.appendCollaborationResult(
             result: result, toolCallID: toolCallID, roleForMessage: initiatorRole,
             stepID: stepID, task: task, runIndex: 0, stepIndex: 0,
             client: ScriptedLLMClient(content: "unused"),
@@ -176,7 +176,7 @@ final class ConsultationResultRenderingTests: XCTestCase {
             isError: false, signal: .changeRequest(targetRole: "ghost_role", changes: "c", reasoning: "r")
         )
         var conversation: [ChatMessage] = []
-        await service.appendCollaborationResult(
+        _ = await service.appendCollaborationResult(
             result: result, toolCallID: toolCallID, roleForMessage: initiatorRole,
             stepID: stepID, task: task, runIndex: 0, stepIndex: 0,
             client: ScriptedLLMClient(content: "unused"),
@@ -256,7 +256,7 @@ final class ConsultationResultRenderingTests: XCTestCase {
             isError: false, signal: .cancelDelegation(childTaskID: 42, reason: nil)
         )
         var conversation: [ChatMessage] = []
-        await service.appendCollaborationResult(
+        _ = await service.appendCollaborationResult(
             result: result, toolCallID: toolCallID, roleForMessage: initiatorRole,
             stepID: stepID, task: task, runIndex: 0, stepIndex: 0,
             client: ScriptedLLMClient(content: "unused"),
@@ -287,7 +287,7 @@ final class ConsultationResultRenderingTests: XCTestCase {
         // Deliberately NO _testRegisterStepTask → isExecutionLive == false.
 
         var conversation: [ChatMessage] = []
-        await service.appendCollaborationResult(
+        _ = await service.appendCollaborationResult(
             result: consultationResult(),
             toolCallID: task.runs[0].steps[0].toolCalls[0].id,
             roleForMessage: initiatorRole,

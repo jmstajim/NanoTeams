@@ -23,8 +23,8 @@ final class LocalModelReloadSignalTests: XCTestCase {
     private let taskID = 11
     private var config = LLMConfig(baseURLString: "http://127.0.0.1:1234", modelName: "m")
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         ledger = PromptPrefixLedger()
         sut = LLMExecutionService(repository: NTMSRepository(), prefixLedger: ledger)
         delegate = MockLLMExecutionDelegate()
@@ -32,9 +32,9 @@ final class LocalModelReloadSignalTests: XCTestCase {
         sut._testRegisterStepTask(stepID: stepID, taskID: taskID)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut = nil; delegate = nil; ledger = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Harness

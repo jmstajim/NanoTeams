@@ -28,17 +28,17 @@ final class ComputerUseCancellationTests: XCTestCase, @unchecked Sendable {
 
     private var sut: LLMExecutionService!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         // Matches the sibling computer-use suites: no delegate is wired, so the persistence
         // side of `finalizeToolResult` is inert and only `conversationMessages` records the
         // append. Repository injection is required outright — CLAUDE.md §Strict DIP.
         sut = LLMExecutionService(repository: NTMSRepository())
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// A 100×100 pt region captured at 100×100 px with its origin at the global top-left, so

@@ -20,13 +20,13 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
     var tempDir: URL!
     let fm = FileManager.default
 
-    override func setUpWithError() throws {
+    override func setUp() async throws {
         tempDir = fm.temporaryDirectory
             .appendingPathComponent("ToolUnavailabilityClassifierTests-\(UUID().uuidString)")
         try fm.createDirectory(at: tempDir, withIntermediateDirectories: true)
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         try? fm.removeItem(at: tempDir)
         tempDir = nil
     }
@@ -406,21 +406,22 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
     // I7: `async` keeps this test off the Xcode 26.3 sync-method abort path
     // (CLAUDE.md "Common API pitfalls"). The classifier-only tests above
     // construct value types only and stay safe as sync.
-    func testGuidance_preconditionFailed_directsAwayFromRetry() async {
-        let sut = LLMExecutionService(repository: NTMSRepository())
-
+    func testGuidance_preconditionFailed_directsAwayFromRetry() async throws {
         let call = StepToolCall(name: "git_add", argumentsJSON: "{}")
         let envelope = LLMExecutionService.makeUnavailableToolResult(
             call: call, canonicalName: "git_add",
             scope: "for this role", reason: .gitRepoMissing
         )
 
-        let guidance = sut.buildToolErrorGuidance(result: envelope)
-
+        // The blocker is named by the ENVELOPE, which the model reads one turn earlier;
+        // the direction restating it was the duplication `ToolErrorNotePolicy` removed.
         XCTAssertTrue(
-            guidance.contains("requires a git repository"),
-            "envelope message must surface, got: \(guidance)"
+            envelope.outputJSON.contains("requires a git repository"),
+            "the envelope must name the missing prerequisite, got: \(envelope.outputJSON)"
         )
+
+        let guidance = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope))
+
         XCTAssertTrue(
             guidance.contains("Do not retry 'git_add'"),
             "anti-loop instruction must appear, got: \(guidance)"
@@ -428,6 +429,10 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
         XCTAssertFalse(
             guidance.contains("with the correct arguments"),
             "generic retry suffix is misleading for preconditions, got: \(guidance)"
+        )
+        XCTAssertFalse(
+            guidance.contains("requires a git repository"),
+            "the direction must not restate the envelope, got: \(guidance)"
         )
     }
 
@@ -482,19 +487,25 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
     /// "pick a different tool" — what every other reason says — would send the
     /// model hunting a substitute that does not exist, and it would never record
     /// the plan that unblocks it.
+    /// The whole instruction lives in the ENVELOPE, and that is why `ToolErrorNotePolicy`
+    /// adds nothing here: the retired direction paraphrased "record the plan, then call it
+    /// again" in different words, which reads as a second, different instruction.
     func testGuidance_planRequired_tellsTheModelToRetryAfterRecordingThePlan() {
-        let sut = LLMExecutionService(repository: NTMSRepository())
         let call = StepToolCall(name: ToolNames.writeFile, argumentsJSON: "{}")
         let envelope = LLMExecutionService.makeUnavailableToolResult(
             call: call, canonicalName: ToolNames.writeFile,
             scope: "for this role", reason: .withheldUntilPlanRecorded
         )
+        let message = envelope.outputJSON
 
-        let guidance = sut.buildToolErrorGuidance(result: envelope)
+        XCTAssertTrue(message.contains(ToolNames.updateScratchpad), message)
+        XCTAssertTrue(message.contains("again"), "the retry IS the instruction: \(message)")
+        XCTAssertFalse(message.contains("Do not retry"), message)
+        XCTAssertFalse(message.contains("different tool"), message)
 
-        XCTAssertTrue(guidance.contains(ToolNames.updateScratchpad), guidance)
-        XCTAssertTrue(guidance.contains("works on the next turn"), guidance)
-        XCTAssertFalse(guidance.contains("Do not retry"), "the retry IS the instruction: \(guidance)")
-        XCTAssertFalse(guidance.contains("different tool"), guidance)
+        XCTAssertNil(
+            ToolErrorNotePolicy.direction(for: envelope),
+            "the envelope states the remedy AND the retry — a paraphrase is a second instruction"
+        )
     }
 }

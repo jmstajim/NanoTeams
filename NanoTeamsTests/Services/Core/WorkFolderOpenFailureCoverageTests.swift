@@ -24,21 +24,21 @@ import XCTest
 ///     refreshed scan — which a failed settings.json write produces just as reliably as a binary
 ///     file, since `mutateWorkFolder` reverts memory from disk on failure.
 @MainActor
-final class WorkFolderOpenFailureCoverageTests: NTMSOrchestratorTestBase {
+final class WorkFolderOpenFailureCoverageTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private var otherDir: URL!
     /// Directories whose permissions a test narrowed; restored in tearDown or the recursive
     /// cleanup of `tempDir` fails and leaks (2026-08-08).
     private var chmodRestore: [URL] = []
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         otherDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("wf19-other-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: otherDir, withIntermediateDirectories: true)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         for url in chmodRestore {
             try? FileManager.default.setAttributes(
                 [.posixPermissions: 0o755], ofItemAtPath: url.path)
@@ -46,7 +46,7 @@ final class WorkFolderOpenFailureCoverageTests: NTMSOrchestratorTestBase {
         chmodRestore = []
         if let otherDir { try? FileManager.default.removeItem(at: otherDir) }
         otherDir = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures

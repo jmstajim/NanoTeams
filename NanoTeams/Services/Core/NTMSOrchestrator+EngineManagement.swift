@@ -49,6 +49,81 @@ extension NTMSOrchestrator {
         return engine
     }
 
+    /// Wakes the engine for `taskID` so it observes durable state a Supervisor-side mutation
+    /// just wrote. TOTAL where `taskEngines[taskID]?.notifyExternalEvent()` was not: it CREATES
+    /// the engine when none exists and STARTS a `.pending` one.
+    ///
+    /// Those are the two silent no-ops that let a flipped role sit inert forever. Observed
+    /// 2026-08-15: the Autovisor's `manage_role request_changes` on task #24 returned `ok:true`,
+    /// persisted `.revisionRequested`, and woke nothing.
+    /// - **No engine object.** After an app restart `taskEngines` is empty — `openWorkFolder`
+    ///   runs `stopAllEngines()`, and `ensureTaskLoaded` → `syncEngineStateFromRun` seeds only
+    ///   `engineState[taskID]` (`guard taskEngines[taskID] == nil else { return }`), so the
+    ///   optional chain swallowed the call. Same shape after `stopEngine` (`control_task stop`,
+    ///   `closeTask`, delegation teardown).
+    /// - **`.pending` engine.** `TeamEngine.notifyExternalEvent()` resumes only from `.paused` /
+    ///   `.needsAcceptance` / `.needsSupervisorInput` / `.done` / `.failed`. `.pending` is both a
+    ///   freshly-constructed engine AND what `stop()` leaves behind. This arm is load-bearing,
+    ///   not defensive: `holdDownstreamForRevision` CREATES a `.pending` engine (its
+    ///   `engineForTask` call) and then declines to start it.
+    ///
+    /// The `else` arm stays `notifyExternalEvent()` and must NOT become `start()`: `start()`
+    /// calls `stop()`, which cancels and clears EVERY per-role task. A live `.paused` engine's
+    /// siblings must survive — `startRevisionRoles` re-registers only the role it wakes.
+    /// `.running` needs no arm; `notifyExternalEvent` is already a no-op there, correctly, since
+    /// a live loop re-reads `roleStatuses` on its next 250 ms tick.
+    ///
+    /// Returns `false` when the wake was REFUSED, so callers can report honestly instead of
+    /// trading an invisible stall for a different invisible stall.
+    ///
+    /// Callers must keep this the LAST statement with no `await` after it: the Autovisor's
+    /// `reportingError` reads `errorSurfaceCount` immediately on return, so a suspension would
+    /// attribute the woken run loop's own error to the caller's action.
+    ///
+    /// Deliberately does NOT call `cancelRoleTasks` (that is `restartRole`'s job) and does NOT
+    /// run `resumeRun`'s step-restoration branches — it is not a substitute for either.
+    @discardableResult
+    func wakeEngine(taskID: Int) -> Bool {
+        // A run already being created will start the engine itself. `startRun` clears its
+        // engine-state guard, inserts `startingRunTaskIDs`, and only THEN suspends across
+        // `refreshAgentInstructions` / `ensureTaskLoaded` / `createNewRun`. Racing that window
+        // registers and starts an engine against the OLD run; `startRun`'s own `start()` is then
+        // swallowed by its `guard state != .running`, leaving one loop reconciled against a
+        // replaced run — with `TaskStepKey` colliding across runs because
+        // `StepExecution.id == roleID`. `engineForTask` is a WRITE, not a read; that is the whole
+        // difference from the nil-swallow this method replaces.
+        guard !startingRunTaskIDs.contains(taskID), !forcingRunTaskIDs.contains(taskID) else {
+            return false
+        }
+
+        // Team generation owns the eventual start (`spawnTeamGeneration` ends in
+        // `engineForTask(taskID).start()`). A loop launched against the placeholder run finds
+        // `Run.activeWorkRoleIDs` trivially empty (the placeholder roster has no work roles) and
+        // retires the run `.done` with no team ever generated — the wedge `resumeRun` documents
+        // where it re-enters generation instead.
+        guard !isGeneratingTeam(taskID: taskID), !needsTeamGeneration(taskID: taskID) else {
+            return false
+        }
+
+        // CLOSED: `closeTask` finalized every non-terminal role to `.done` and tore the engine
+        // down; the run loop's `findReadyRoles` has no `closedAt` awareness, so a wake here
+        // resurrects a finished task. Same refusal `resumeRun` states. `restartRole` is the one
+        // primitive that legitimately revives a closed task, and it clears `closedAt` in its own
+        // mutation BEFORE waking, so this guard is already satisfied for it.
+        //
+        // NO RUN: `runLoop`'s first guard would `transition(to: .failed)` — which is not merely
+        // cosmetic, because `onStateChanged` delivers `.terminal(.failed)` to any delegating
+        // parent suspended in `awaitTaskTerminalState`. Load-bearing only for
+        // `finishAdvisoryRoleAwaiting`, the one caller with no run guard of its own.
+        guard let task = loadedTask(taskID), task.closedAt == nil, task.runs.last != nil else {
+            return false
+        }
+
+        let engine = engineForTask(taskID)
+        if engine.state == .pending { engine.start() } else { engine.notifyExternalEvent() }
+        return true
+    }
+
     func stopEngine(for taskID: Int) {
         taskEngines[taskID]?.stop()
         taskEngines.removeValue(forKey: taskID)

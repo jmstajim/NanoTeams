@@ -8,15 +8,15 @@ final class FolderAccessManagerTests: XCTestCase, @unchecked Sendable {
     var manager: FolderAccessManager!
     var testSuiteName: String!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         // Use a unique test suite to avoid polluting real UserDefaults
         testSuiteName = "FolderAccessManagerTests.\(UUID().uuidString)"
 
         manager = FolderAccessManager()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         manager = nil
         // Clean up test UserDefaults
         if let suiteName = testSuiteName {
@@ -25,7 +25,7 @@ final class FolderAccessManagerTests: XCTestCase, @unchecked Sendable {
         testSuiteName = nil
         // Also clear the standard defaults key used by FolderAccessManager
         UserDefaults.standard.removeObject(forKey: "NanoTeams.projectFolderBookmark.v1")
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Initial State Tests
@@ -155,8 +155,8 @@ final class FolderAccessManagerIntegrationTests: XCTestCase {
     var manager: FolderAccessManager!
     var tempDir: URL!
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
         manager = FolderAccessManager()
 
         // Create a temporary directory for testing
@@ -169,7 +169,7 @@ final class FolderAccessManagerIntegrationTests: XCTestCase {
         UserDefaults.standard.removeObject(forKey: "NanoTeams.projectFolderBookmark.v1")
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         manager = nil
         // Clean up temp directory
         if let tempDir = tempDir {
@@ -178,7 +178,7 @@ final class FolderAccessManagerIntegrationTests: XCTestCase {
         tempDir = nil
         // Clear bookmark
         UserDefaults.standard.removeObject(forKey: "NanoTeams.projectFolderBookmark.v1")
-        try super.tearDownWithError()
+        try await super.tearDown()
     }
 
     // MARK: - Bookmark Persistence Flow Tests

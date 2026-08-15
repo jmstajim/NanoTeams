@@ -6,7 +6,7 @@ import XCTest
 /// Covers project lifecycle, task CRUD, run control, multi-task isolation,
 /// engine state synchronization, and in-memory mutation logic.
 @MainActor
-final class NTMSOrchestratorTests: NTMSOrchestratorTestBase {
+final class NTMSOrchestratorTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Initial State
 
@@ -325,7 +325,7 @@ final class NTMSOrchestratorTests: NTMSOrchestratorTestBase {
         await sut.openWorkFolder(tempDir)
 
         let id1 = await sut.createTask(title: "Task A", supervisorTask: "A")!
-        let id2 = await sut.createTask(title: "Task B", supervisorTask: "B")!
+        _ = await sut.createTask(title: "Task B", supervisorTask: "B")!
 
         // When we switched from Task A to Task B, Task A should be preserved
         let task1 = sut.loadedTask(id1)
@@ -843,7 +843,7 @@ final class NTMSOrchestratorTests: NTMSOrchestratorTestBase {
 
         // Original file must still exist
         XCTAssertTrue(FileManager.default.fileExists(atPath: projectFile.path))
-        XCTAssertEqual(try String(contentsOf: projectFile), "do not delete")
+        XCTAssertEqual(try String(contentsOf: projectFile, encoding: .utf8), "do not delete")
     }
 
     func testCreatePreparedTaskAndStart_whitespaceClippedText_normalizesToNil() async throws {
@@ -878,7 +878,7 @@ final class NTMSOrchestratorTests: NTMSOrchestratorTestBase {
             stagedAttachments: []
         )
 
-        guard let taskID = await sut.createPreparedTaskAndStart(request: request) else {
+        guard await sut.createPreparedTaskAndStart(request: request) != nil else {
             XCTFail("Expected task creation to succeed")
             return
         }

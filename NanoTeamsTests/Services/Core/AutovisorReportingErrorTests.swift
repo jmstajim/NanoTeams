@@ -16,7 +16,7 @@ import XCTest
 /// keeps firing its recurrence. Same class as the one `retryTeamGenerationReportingResult`
 /// documents; that one reads durable task state instead, which these verbs do not have.
 @MainActor
-final class AutovisorReportingErrorTests: NTMSOrchestratorTestBase {
+final class AutovisorReportingErrorTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     func testErrorConsumedByTheBannerMidOperation_isStillReported() async {
         let result = await sut._testReportingError("Deleted task #1.") {

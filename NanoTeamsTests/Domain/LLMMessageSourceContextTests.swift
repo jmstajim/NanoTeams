@@ -569,7 +569,10 @@ final class LLMMessageSourceContextTests: XCTestCase {
     /// RED: flip `.retryNudge` to `true` → this fails, and the repetition warning starts
     /// resetting the count it was emitted about.
     func testAppAuthoredTurns_areNotABoundary() {
-        for context: MessageSourceContext in [.serverError, .loopCorrection, .retryNudge] {
+        for context: MessageSourceContext in [
+            .serverError, .loopCorrection, .retryNudge,
+            .toolAcknowledgement, .runtimeWarning, .screenDescription,
+        ] {
             XCTAssertFalse(
                 context.carriesUnsolicitedInformation,
                 "\(context.rawValue) is the app talking to the model — nothing arrived"
@@ -596,18 +599,21 @@ final class LLMMessageSourceContextTests: XCTestCase {
         case .supervisorMessage: return .boundary
         case .consultation, .meeting, .changeRequest, .supervisorAnswer: return .solicitedAnswer
         case .delegatedQuestion, .delegationEscalation: return .delegationChatter
-        case .serverError, .loopCorrection, .retryNudge: return .appAuthored
+        case .serverError, .loopCorrection, .retryNudge,
+             .toolAcknowledgement, .runtimeWarning, .screenDescription: return .appAuthored
         }
     }
 
     /// The buckets and the predicate must agree: exactly `.boundary` is a boundary.
+    ///
+    /// Sweeps `allCases` — unlike the tables above, this one asserts nothing about which side a
+    /// new case belongs on, only that `bucket` and the predicate answer alike. The compiler
+    /// already forces the author of a new case through `bucket`, so a literal list here would
+    /// add a second place to forget and no coverage.
     func testBucketing_agreesWithThePredicate() {
-        for context: MessageSourceContext in [
-            .supervisorMessage,
-            .consultation, .meeting, .changeRequest, .supervisorAnswer,
-            .delegatedQuestion, .delegationEscalation,
-            .serverError, .loopCorrection, .retryNudge,
-        ] {
+        XCTAssertGreaterThanOrEqual(MessageSourceContext.allCases.count, 13,
+                                    "anti-vacuity: a short allCases would check almost nothing")
+        for context in MessageSourceContext.allCases {
             XCTAssertEqual(
                 context.carriesUnsolicitedInformation,
                 bucket(context) == .boundary,

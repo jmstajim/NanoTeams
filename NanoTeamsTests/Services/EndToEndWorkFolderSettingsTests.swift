@@ -18,7 +18,7 @@ import XCTest
 /// 8. Settings survive across restart.
 /// 9. contextPrompt edits round-trip identically (custom templates).
 @MainActor
-final class EndToEndWorkFolderSettingsTests: NTMSOrchestratorTestBase {
+final class EndToEndWorkFolderSettingsTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Scenario 1: Description update persists
 

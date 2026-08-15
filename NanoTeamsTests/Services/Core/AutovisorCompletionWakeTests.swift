@@ -12,19 +12,19 @@ import XCTest
 /// condition wakes the parked manager immediately; an already-reviewed one is not
 /// re-delivered (deliver-once); `.stuck` is excluded from the immediate path.
 @MainActor
-final class AutovisorCompletionWakeTests: NTMSOrchestratorTestBase {
+final class AutovisorCompletionWakeTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private var formState: QuickCaptureFormState!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         formState = QuickCaptureFormState()
         sut.quickCaptureFormState = formState
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         formState = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     @discardableResult
@@ -142,7 +142,7 @@ final class AutovisorCompletionWakeTests: NTMSOrchestratorTestBase {
 
     func testCompletedTask_wakesParkedManager() async {
         let mgrID = await parkedManager()
-        await makeCompletedStartupTask()
+        _ = await makeCompletedStartupTask()
         let before = runCount(mgrID)
 
         await sut.wakeAutovisorForEvents()
@@ -154,7 +154,7 @@ final class AutovisorCompletionWakeTests: NTMSOrchestratorTestBase {
 
     func testAskSupervisorTask_wakesParkedManager() async {
         let mgrID = await parkedManager()
-        await makeAskingStartupTask()
+        _ = await makeAskingStartupTask()
         let before = runCount(mgrID)
 
         await sut.wakeAutovisorForEvents()

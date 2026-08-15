@@ -11,8 +11,8 @@ final class NestedTaskStorageTests: XCTestCase {
     var repository: NTMSRepository!
     var paths: NTMSPaths!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         workFolderRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("NanoTeams-nested-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: workFolderRoot, withIntermediateDirectories: true)
@@ -20,12 +20,12 @@ final class NestedTaskStorageTests: XCTestCase {
         paths = NTMSPaths(workFolderRoot: workFolderRoot)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         try? FileManager.default.removeItem(at: workFolderRoot)
         repository = nil
         paths = nil
         workFolderRoot = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Path computation

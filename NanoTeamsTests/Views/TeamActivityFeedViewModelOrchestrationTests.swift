@@ -25,15 +25,15 @@ final class TeamActivityFeedViewModelOrchestrationTests: XCTestCase {
 
     var viewModel: TeamActivityFeedViewModel!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         viewModel = TeamActivityFeedViewModel()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         viewModel = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fingerprint Short-Circuit

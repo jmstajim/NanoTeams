@@ -103,8 +103,8 @@ final class ChangeRequestHandlerFlowTests: XCTestCase {
     private let targetRoleID = "team_pm"
     private let taskID = 501
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -117,13 +117,13 @@ final class ChangeRequestHandlerFlowTests: XCTestCase {
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service?.cancelAllExecutions()
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
         mockDelegate = nil
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: Validation refusals (no CR recorded, no meeting opened)
@@ -562,8 +562,8 @@ final class ChangeRequestPropagationTailTests: XCTestCase {
     private var mockDelegate: MockLLMExecutionDelegate!
     private var tempDir: URL!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -576,13 +576,13 @@ final class ChangeRequestPropagationTailTests: XCTestCase {
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service?.cancelAllExecutions()
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
         mockDelegate = nil
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// `getDownstreamRoles` is a transitive BFS, not a one-hop lookup: amending the
@@ -757,8 +757,8 @@ final class StepLifecycleLoopTopArmTests: XCTestCase {
     private let stepID = "loop_top_step"
     private let taskID = 611
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -773,14 +773,14 @@ final class StepLifecycleLoopTopArmTests: XCTestCase {
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service?.cancelAllExecutions()
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
         stubClient = nil
         mockDelegate = nil
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: park (`wait_for_events`)
@@ -929,7 +929,7 @@ final class StepLifecycleLoopTopArmTests: XCTestCase {
 /// idempotence, the stale-pin corner, and the disable→enable recurrence restore that
 /// the production comment calls out as a fixed bug.
 @MainActor
-final class AutovisorLifecycleTailTests: NTMSOrchestratorTestBase {
+final class AutovisorLifecycleTailTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private var taskCount: Int { sut.snapshot?.tasksIndex.tasks.count ?? 0 }
 

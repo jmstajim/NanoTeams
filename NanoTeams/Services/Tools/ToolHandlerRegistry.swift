@@ -154,9 +154,14 @@ nonisolated enum ToolHandlerRegistry {
     /// added later joins automatically (same contract as `defaultStorageBlocked`).
     /// Consumed by `PlanningPhasePolicy` to build the planning toolset.
     ///
-    /// Deliberately excludes `.shell` — `bash` can mutate anything, and its
-    /// approval gate can park the step, which the planning→implementation
-    /// boundary is not built to survive.
+    /// Still excludes `.shell`, but the reason is narrow: membership here is a property of
+    /// the TOOL, decided without ever seeing a command, and `bash` writes or does not
+    /// depending on the command string. It is NOT a claim that `bash` is unfit for the
+    /// planning phase — `PlanningPhasePolicy` admits it separately and makes it read-only by
+    /// KERNEL (a Seatbelt profile with every write scope off), a guarantee this static,
+    /// command-blind set cannot express. Do not "fix" the asymmetry by adding `.shell` here:
+    /// membership must stay phase-independent, or the next consumer of this set inherits a
+    /// promise that only the planning phase's per-call narrowing keeps.
     static var readOnlyTools: Set<String> { fileReadTools.union(gitReadTools) }
 
     /// Read-only Git tools: `git_status`, `git_log`, `git_diff`, `git_branch_list`.

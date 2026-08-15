@@ -1410,7 +1410,7 @@ final class ToolsFileSystemTests: XCTestCase {
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("FILE_NOT_FOUND"))
         // Original content should be unchanged
-        let content = try String(contentsOf: paths.internalDir.appendingPathComponent("tools.json"))
+        let content = try String(contentsOf: paths.internalDir.appendingPathComponent("tools.json"), encoding: .utf8)
         XCTAssertEqual(content, "original content")
     }
 

@@ -14,14 +14,14 @@ import XCTest
 /// The first test pins the PREMISE (ids really do collide, on the first task of every
 /// folder), because every other test in this file is only interesting if it holds.
 @MainActor
-final class QuickCaptureFolderScopeCoverageTests: NTMSOrchestratorTestBase {
+final class QuickCaptureFolderScopeCoverageTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     /// The orchestrator holds `quickCaptureFormState` weakly, so the test must own it.
     var formState: QuickCaptureFormState!
     var folderB: URL!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         formState = QuickCaptureFormState()
         sut.quickCaptureFormState = formState
         folderB = FileManager.default.temporaryDirectory
@@ -29,11 +29,11 @@ final class QuickCaptureFolderScopeCoverageTests: NTMSOrchestratorTestBase {
         try? FileManager.default.createDirectory(at: folderB, withIntermediateDirectories: true)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let folderB { try? FileManager.default.removeItem(at: folderB) }
         folderB = nil
         formState = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Helpers

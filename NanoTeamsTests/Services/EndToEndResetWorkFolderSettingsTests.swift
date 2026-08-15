@@ -19,7 +19,7 @@ import XCTest
 /// 7. Reset + reopen is idempotent (second reset == first reset).
 /// 8. Reset recovers from corruption (e.g. unreadable settings.json).
 @MainActor
-final class EndToEndResetWorkFolderSettingsTests: NTMSOrchestratorTestBase {
+final class EndToEndResetWorkFolderSettingsTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Scenario 1: Reset wipes .nanoteams tasks
 

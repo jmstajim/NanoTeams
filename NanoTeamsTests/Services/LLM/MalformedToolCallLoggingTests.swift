@@ -39,8 +39,8 @@ final class MalformedToolCallLoggingTests: XCTestCase {
     private static let channelOnlyPayload =
         "<|channel|>commentary<|message|>just thinking out loud, no tool call here"
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
@@ -69,7 +69,7 @@ final class MalformedToolCallLoggingTests: XCTestCase {
         runtime = rt
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let tempDir { try? fileManager.removeItem(at: tempDir) }
         tempDir = nil
         netURL = nil
@@ -79,7 +79,7 @@ final class MalformedToolCallLoggingTests: XCTestCase {
         service = nil
         task = nil
         stepID = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Helpers

@@ -33,10 +33,23 @@ final class PrefixCacheReporter {
     /// produce a duplicate `ForEach` ID (CLAUDE.md #22).
     private(set) var countsByOwner: [String: Int] = [:]
 
-    /// Estimated wall-clock the misses cost, using the measured cold-prefill rate.
-    var estimatedSecondsLost: Double {
-        PrefixCachePolicy.estimatedSeconds(forTokens: discardedTokensTotal)
-    }
+    /// Distinct suspects seen per cause class, so the popover can name a lead.
+    ///
+    /// `countsByCause` keys on `CauseClass`, which erases `Cause.serverDroppedCache`'s payload —
+    /// that is correct for the banner-dedup job it was written for, and it is also why the popover
+    /// row could never say anything beyond "Server dropped the cached prefix". Collected here
+    /// instead of widening the dedup key, so two evictions still share one banner.
+    ///
+    /// A `Set`, not the last value: with several distinct suspects there IS no lead, and picking
+    /// one would read as an accusation the data does not support.
+    private(set) var suspectsByCause: [PrefixCachePolicy.CauseClass: Set<String>] = [:]
+
+    /// Wall-clock the misses cost: measured where the server priced it, estimated otherwise.
+    ///
+    /// Accumulated per miss rather than derived from `discardedTokensTotal`, because the two
+    /// summands are no longer the same kind of number — one miss can be measured and the next
+    /// estimated, and a single token total cannot represent that.
+    private(set) var estimatedSecondsLost: Double = 0
 
     // MARK: - On-screen routing
 
@@ -66,8 +79,15 @@ final class PrefixCacheReporter {
     func report(_ miss: PrefixCacheMiss) -> String? {
         missCount += 1
         discardedTokensTotal += miss.diagnosis.discardedTokens
+        estimatedSecondsLost += miss.diagnosis.estimatedSeconds
         countsByCause[miss.diagnosis.cause.causeClass, default: 0] += 1
         countsByOwner[miss.owner.displayName, default: 0] += 1
+        if case .serverDroppedCache(let suspect) = miss.diagnosis.cause,
+            let suspect, !suspect.isEmpty
+        {
+            suspectsByCause[.serverDroppedCache, default: []].insert(
+                LLMCallOwner.displayName(forKey: suspect))
+        }
 
         guard let taskID = miss.taskID, let runID = miss.runID, taskID == onScreenTaskID
         else { return nil }
@@ -91,8 +111,19 @@ final class PrefixCacheReporter {
         guard taskID == onScreenTaskID else { return }
         missCount = 0
         discardedTokensTotal = 0
+        estimatedSecondsLost = 0
         countsByCause.removeAll()
         countsByOwner.removeAll()
+        suspectsByCause.removeAll()
+    }
+
+    /// The lead to show beside a cause row, or `nil` when there is none to show.
+    ///
+    /// Exactly one distinct suspect is a lead. Zero is silence, and several is a scatter — naming
+    /// one of them would be an accusation the aggregate cannot support.
+    func suspectLead(for cause: PrefixCachePolicy.CauseClass) -> String? {
+        guard let suspects = suspectsByCause[cause], suspects.count == 1 else { return nil }
+        return suspects.first
     }
 
     #if DEBUG

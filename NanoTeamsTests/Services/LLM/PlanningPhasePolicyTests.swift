@@ -138,29 +138,91 @@ final class PlanningPhasePolicyTests: XCTestCase {
     func testPlanningToolNames_intersectsWithTheGivenTools() {
         let tools = [tool(ToolNames.updateScratchpad), tool(ToolNames.readFile),
                      tool(ToolNames.writeFile)]
-        XCTAssertEqual(PlanningPhasePolicy.planningToolNames(in: tools),
+        XCTAssertEqual(PlanningPhasePolicy.planningToolNames(in: tools, bashAdmitted: true),
                        [ToolNames.updateScratchpad, ToolNames.readFile])
-        XCTAssertFalse(PlanningPhasePolicy.planningToolNames(in: tools).contains(ToolNames.gitLog),
-                       "a tool the role does not have must never be offered")
+        XCTAssertFalse(
+            PlanningPhasePolicy.planningToolNames(in: tools, bashAdmitted: true)
+                .contains(ToolNames.gitLog),
+            "a tool the role does not have must never be offered")
     }
 
-    /// The membership rule is the CRITERION, not a hand-kept list: a tool belongs
-    /// iff it can neither suspend the step nor mutate work-folder source. The
-    /// Xcode runners satisfy both — `ToolHandler.handle` is synchronous by
-    /// signature, they emit no `ToolSignal`, and `build_diagnostics.json` is
-    /// written at step COMPLETION, not in the tool loop. `bash` fails both halves.
-    func testPlanningToolNames_includesGitReadVisionAndXcode() {
+    /// The membership rule is the CRITERION, not a hand-kept list: a tool belongs iff it can
+    /// neither put an unrecoverable turn on the wire nor mutate work-folder source. The Xcode
+    /// runners satisfy both structurally — `ToolHandler.handle` is synchronous by signature,
+    /// they emit no `ToolSignal`, and `build_diagnostics.json` is written at step COMPLETION,
+    /// not in the tool loop. `git_commit` fails the second outright and no mechanism rescues it.
+    ///
+    /// `bash` satisfies the first structurally and the second only while the sandbox enforces
+    /// it, which is what `bashAdmitted` carries — see the admission test below.
+    ///
+    /// RED: drop the `if bashAdmitted { insert }` → `bash` vanishes from the admitted set and the
+    /// first assertion fails; make the insert unconditional → it appears in the withheld case and
+    /// the second fails.
+    func testPlanningToolNames_includesGitReadVisionXcodeAndBash() {
         let tools = [tool(ToolNames.gitDiff), tool(ToolNames.analyzeImage),
                      tool(ToolNames.runXcodebuild), tool(ToolNames.runXcodetests),
                      tool(ToolNames.gitCommit), tool(ToolNames.bash)]
-        let names = PlanningPhasePolicy.planningToolNames(in: tools)
-        XCTAssertEqual(names, [ToolNames.gitDiff, ToolNames.analyzeImage,
-                               ToolNames.runXcodebuild, ToolNames.runXcodetests])
-        XCTAssertFalse(names.contains(ToolNames.bash),
-                       "bash can mutate, and its approval gate can park the step")
-        XCTAssertFalse(names.contains(ToolNames.gitCommit),
-                       "git-write mutates the repo — the discarded exploration transcript "
-                           + "would become load-bearing")
+        XCTAssertEqual(PlanningPhasePolicy.planningToolNames(in: tools, bashAdmitted: true),
+                       [ToolNames.gitDiff, ToolNames.analyzeImage, ToolNames.runXcodebuild,
+                        ToolNames.runXcodetests, ToolNames.bash])
+        XCTAssertEqual(PlanningPhasePolicy.planningToolNames(in: tools, bashAdmitted: false),
+                       [ToolNames.gitDiff, ToolNames.analyzeImage, ToolNames.runXcodebuild,
+                        ToolNames.runXcodetests],
+                       "with no enforcement available, bash must not be offered")
+        XCTAssertFalse(
+            PlanningPhasePolicy.planningToolNames(in: tools, bashAdmitted: true)
+                .contains(ToolNames.gitCommit),
+            "git-write mutates the repo — the discarded exploration transcript "
+                + "would become load-bearing")
+    }
+
+    /// `bash_output` is never admitted, on either setting: its only producer is `bash` with
+    /// `run_in_background`, which the handler refuses during the phase, so the ids it could
+    /// address belong to other steps — and its `stop` action is an irreversible side effect
+    /// whose only record dies at the boundary.
+    ///
+    /// RED: `planningTools.insert(ToolNames.bashOutput)` beside the bash insert → both rows fail.
+    func testPlanningToolNames_neverAdmitsBashOutput() {
+        let tools = [tool(ToolNames.bash), tool(ToolNames.bashOutput)]
+        for admitted in [true, false] {
+            XCTAssertFalse(
+                PlanningPhasePolicy.planningToolNames(in: tools, bashAdmitted: admitted)
+                    .contains(ToolNames.bashOutput),
+                "bashAdmitted: \(admitted)")
+        }
+    }
+
+    /// When the caller's admission test fails, `bash` must land in `withheldByPhase` — not
+    /// merely be absent. That is what produces `plan_required` rather than the catch-all
+    /// "not available for this role", and it is TRUE: after the boundary the same command runs
+    /// under the user's own settings.
+    ///
+    /// RED: make the insert unconditional → `bash` moves to `allowed` and both assertions fail.
+    func testAuthorization_bashNotAdmitted_isWithheldByThePhaseNotSilentlyAbsent() {
+        let tools = [tool(ToolNames.updateScratchpad), tool(ToolNames.readFile),
+                     tool(ToolNames.bash)]
+        let auth = PlanningPhasePolicy.authorization(
+            for: .continuePlanning, tools: tools, bashAdmitted: false)
+
+        XCTAssertFalse(auth.allowed.contains(ToolNames.bash))
+        XCTAssertTrue(auth.withheldByPhase.contains(ToolNames.bash))
+    }
+
+    /// `isPlanningPhase` is carried, never inferred. A role whose entire toolset already sits
+    /// inside the planning set withholds NOTHING, so `!withheldByPhase.isEmpty` would read
+    /// "not planning" and hand exactly that role an unnarrowed bash for the whole phase.
+    ///
+    /// RED: derive the flag as `!withheldByPhase.isEmpty` → `isPlanningPhase` reads false here,
+    /// while the partition and unrestricted tests below stay green (which is exactly what makes
+    /// the inference look safe).
+    func testAuthorization_isPlanningPhase_isTrueEvenWhenNothingIsWithheld() {
+        let tools = [tool(ToolNames.updateScratchpad), tool(ToolNames.readFile),
+                     tool(ToolNames.gitLog), tool(ToolNames.bash)]
+        let auth = PlanningPhasePolicy.authorization(
+            for: .continuePlanning, tools: tools, bashAdmitted: true)
+
+        XCTAssertTrue(auth.withheldByPhase.isEmpty, "fixture premise: this role withholds nothing")
+        XCTAssertTrue(auth.isPlanningPhase)
     }
 
     /// Without a selected scheme, step 3.1 of `resolveToolSchemasCore` has already
@@ -171,7 +233,7 @@ final class PlanningPhasePolicyTests: XCTestCase {
     func testPlanningToolNames_withoutAScheme_xcodeIsNeitherAllowedNorWithheld() {
         let toolsWithoutScheme = [tool(ToolNames.updateScratchpad), tool(ToolNames.readFile)]
         let auth = PlanningPhasePolicy.authorization(
-            for: .continuePlanning, tools: toolsWithoutScheme)
+            for: .continuePlanning, tools: toolsWithoutScheme, bashAdmitted: true)
 
         XCTAssertFalse(auth.allowed.contains(ToolNames.runXcodebuild))
         XCTAssertFalse(auth.withheldByPhase.contains(ToolNames.runXcodebuild),
@@ -181,7 +243,8 @@ final class PlanningPhasePolicyTests: XCTestCase {
     func testAuthorization_partitionsTheToolsetDuringPlanning() {
         let tools = [tool(ToolNames.updateScratchpad), tool(ToolNames.search),
                      tool(ToolNames.writeFile)]
-        let auth = PlanningPhasePolicy.authorization(for: .continuePlanning, tools: tools)
+        let auth = PlanningPhasePolicy.authorization(
+            for: .continuePlanning, tools: tools, bashAdmitted: true)
 
         XCTAssertEqual(auth.allowed, [ToolNames.updateScratchpad, ToolNames.search])
         XCTAssertEqual(auth.withheldByPhase, [ToolNames.writeFile])
@@ -193,9 +256,11 @@ final class PlanningPhasePolicyTests: XCTestCase {
         let tools = [tool(ToolNames.updateScratchpad), tool(ToolNames.writeFile)]
         for decision in [PlanningPhasePolicy.Decision.crossBoundary,
                          .closeWithoutRebuild, .execution] {
-            let auth = PlanningPhasePolicy.authorization(for: decision, tools: tools)
+            let auth = PlanningPhasePolicy.authorization(
+                for: decision, tools: tools, bashAdmitted: true)
             XCTAssertEqual(auth.allowed, Set(tools.map(\.name)), "\(decision)")
             XCTAssertTrue(auth.withheldByPhase.isEmpty, "\(decision)")
+            XCTAssertFalse(auth.isPlanningPhase, "\(decision)")
         }
     }
 
@@ -230,6 +295,49 @@ final class PlanningPhasePolicyTests: XCTestCase {
                           "sorted — the prefix cache keys on exact bytes")
     }
 
+    /// Advertising `bash` without saying it cannot write would be advertise-then-reject for
+    /// every write command. The annotation is what makes the admission honest.
+    ///
+    /// RED: delete the `if explore.contains(bash)` block → the brief carries no annotation and
+    /// both assertions fail.
+    func testPlanningBrief_annotatesBashAsReadOnly() {
+        let brief = PlanningPhasePolicy.planningBrief(
+            exploreToolNames: [ToolNames.bash, ToolNames.search], expectedArtifacts: [])
+        XCTAssertTrue(brief.contains("read-only"))
+        XCTAssertTrue(brief.contains("until your plan is recorded"))
+    }
+
+    /// A role without `bash` must get the brief it got before the annotation existed — byte for
+    /// byte. Pins that the annotation is keyed on MEMBERSHIP and that the derived, sorted tool
+    /// line is untouched.
+    ///
+    /// RED: emit the annotation unconditionally → the bash-less brief gains a "read-only" line.
+    func testPlanningBrief_withoutBash_carriesNoAnnotationAndAnUnchangedToolLine() {
+        let brief = PlanningPhasePolicy.planningBrief(
+            exploreToolNames: [ToolNames.search, ToolNames.gitLog], expectedArtifacts: [])
+        XCTAssertFalse(brief.contains("read-only"))
+        XCTAssertTrue(brief.contains("These tools run right now: git_log, search.\n"))
+    }
+
+    /// The annotation lives on its OWN line: the tool line reads to a small model as a set of
+    /// NAMES, and a parenthetical inside it is the shape those models copy into their arguments.
+    ///
+    /// RED: decorate the entry in-list (e.g. `"bash (read-only)"`) → sorting survives, but the
+    /// list line carries a parenthesis and the name-only assertion fails.
+    func testPlanningBrief_bashKeepsItsSortedPlaceAndTheListStaysNameOnly() {
+        let brief = PlanningPhasePolicy.planningBrief(
+            exploreToolNames: [ToolNames.search, ToolNames.bash, ToolNames.gitLog],
+            expectedArtifacts: [])
+        guard let line = brief.components(separatedBy: "\n")
+            .first(where: { $0.hasPrefix("These tools run right now:") })
+        else { return XCTFail("no tool line in:\n\(brief)") }
+
+        XCTAssertFalse(line.contains("("), "the list must carry names only")
+        XCTAssertLessThan(line.range(of: ToolNames.bash)!.lowerBound,
+                          line.range(of: ToolNames.gitLog)!.lowerBound,
+                          "sorted — the prefix cache keys on exact bytes")
+    }
+
     func testPlanningBrief_omitsToolLine_whenOnlyTheScratchpadIsAvailable() {
         let brief = PlanningPhasePolicy.planningBrief(
             exploreToolNames: [ToolNames.updateScratchpad], expectedArtifacts: [])
@@ -261,6 +369,31 @@ final class PlanningPhasePolicyTests: XCTestCase {
         XCTAssertFalse(seed.contains(ToolNames.createArtifact))
     }
 
+    /// The seed turn is the LAST instruction the role gets before it starts working,
+    /// and — since the scratchpad acknowledgement left the wire — nothing speaks
+    /// again after each `update_scratchpad`. So its direction has to survive being
+    /// re-read after every completed step.
+    ///
+    /// "Execute step 1 of your plan" was true exactly once: from the second write
+    /// onward the newest instruction on the wire pointed at work already done, and
+    /// the gap was papered over by a per-write "Continue with the next step." turn
+    /// appended to every role in the app. Identifying the next step by a PREDICATE
+    /// the model can re-evaluate is what makes that turn unnecessary.
+    ///
+    /// The fixture keeps `notes` free of ordinals so the assertion scans the
+    /// template, not the plan a role happened to write.
+    ///
+    /// RED: revert to "Execute step 1 of your plan, then call update_scratchpad …"
+    /// → this fails.
+    func testImplementationSeedTurn_identifiesTheNextStepByPredicate_notByOrdinal() {
+        let seed = PlanningPhasePolicy.implementationSeedTurn(
+            notes: "x", expectedArtifacts: [])
+        XCTAssertFalse(seed.lowercased().contains("step 1"),
+                       "an ordinal is true exactly once; after the first write it names finished work")
+        XCTAssertTrue(seed.contains("struck through"),
+                      "the next step must be identified by state the model can re-check; got: \(seed)")
+    }
+
     /// The markers are the phase's only identity. A brief that stops matching
     /// `wireCarriesBrief` would strand the step in the planning phase forever.
     func testMarkersRoundTripThroughTheirOwnBuilders() {
@@ -271,11 +404,7 @@ final class PlanningPhasePolicyTests: XCTestCase {
                        "the seed must NOT read as a brief, or the boundary would re-fire")
     }
 
-    func testScratchpadAck_announcesTheTransitionOnlyDuringPlanning() {
-        XCTAssertTrue(PlanningPhasePolicy.scratchpadAck(isPlanningWire: true)
-            .contains("implementation phase"))
-        XCTAssertFalse(PlanningPhasePolicy.scratchpadAck(isPlanningWire: false)
-            .contains("implementation phase"),
-                       "a role with no phase must not be told about a transition that never happened")
-    }
+    // The scratchpad acknowledgement moved to `ScratchpadNotePolicy` — the phase
+    // is one of three writers, and the wording is display-only for all of them.
+    // Its tests live in `ScratchpadNotePolicyTests`.
 }

@@ -17,7 +17,7 @@ final class RoleColorDefaultsTests: XCTestCase {
 
     // MARK: - Hex format invariants
 
-    private func assertValidHex(_ hex: String, role: String, file: StaticString = #file, line: UInt = #line) {
+    private func assertValidHex(_ hex: String, role: String, file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertEqual(hex.count, 7, "Role \(role): hex must be 7 chars (`#RRGGBB`)", file: file, line: line)
         XCTAssertEqual(hex.first, "#", "Role \(role): hex must start with `#`", file: file, line: line)
         let hexDigits = hex.dropFirst()

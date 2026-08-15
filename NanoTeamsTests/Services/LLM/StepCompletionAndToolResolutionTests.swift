@@ -38,8 +38,8 @@ final class StepCompletionAndToolResolutionTests: XCTestCase {
     private var detachedService: LLMExecutionService!
     private var delegate: MockLLMExecutionDelegate!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
             .standardizedFileURL
@@ -52,12 +52,12 @@ final class StepCompletionAndToolResolutionTests: XCTestCase {
         service.attach(delegate: delegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         service = nil
         detachedService = nil
         delegate = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures

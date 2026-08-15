@@ -25,8 +25,8 @@ final class StoreConfigurationTests: XCTestCase {
     private var originalLLMProvider: String?
     private var originalProviderEndpoints: Data?
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
         // Store original UserDefaults values to restore after tests
         originalLLMBaseURL = UserDefaults.standard.string(forKey: UserDefaultsKeys.llmBaseURL)
         originalLLMModel = UserDefaults.standard.string(forKey: UserDefaultsKeys.llmModel)
@@ -51,7 +51,7 @@ final class StoreConfigurationTests: XCTestCase {
         config = StoreConfiguration()
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         // Restore original UserDefaults values
         if let original = originalLLMBaseURL {
             UserDefaults.standard.set(original, forKey: UserDefaultsKeys.llmBaseURL)
@@ -101,7 +101,7 @@ final class StoreConfigurationTests: XCTestCase {
             UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.quickCaptureEmbedFiles)
         }
 
-        try super.tearDownWithError()
+        try await super.tearDown()
     }
 
     // MARK: - Initialization Tests

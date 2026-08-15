@@ -24,14 +24,14 @@ final class GlobalContextDefaultTests: XCTestCase {
 
     private var storage: InMemoryStorage!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         storage = InMemoryStorage()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         storage = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Fresh storage seeded with a stored value, plus the config that read it.

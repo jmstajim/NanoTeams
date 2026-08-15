@@ -104,7 +104,7 @@ final class LLMTokenLeakGuardTests: XCTestCase {
     // MARK: - Helper
 
     private func assertNoBannedKeys<T: Encodable>(
-        in value: T, type: String, file: StaticString = #file, line: UInt = #line
+        in value: T, type: String, file: StaticString = #filePath, line: UInt = #line
     ) throws {
         let encoder = JSONCoderFactory.makePersistenceEncoder()
         let data = try encoder.encode(value)

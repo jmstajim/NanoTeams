@@ -68,7 +68,10 @@ struct PrefixCacheStatusIndicator: View {
             if !reporter.countsByCause.isEmpty {
                 TerminalDivider()
                 ForEach(Self.sortedCauses(reporter.countsByCause), id: \.0) { cause, count in
-                    row(label: cause.label, count: count)
+                    row(
+                        label: Self.causeRowLabel(
+                            cause, suspect: reporter.suspectLead(for: cause)),
+                        count: count)
                 }
             }
 
@@ -101,6 +104,21 @@ struct PrefixCacheStatusIndicator: View {
     }
 
     // MARK: - Pure presentation helpers (unit-tested)
+
+    /// The cause row, with a lead appended when the aggregate has one.
+    ///
+    /// `CauseClass.label` stands alone by design (it is one string for a title-case row), so the
+    /// lead is composed here rather than pushed into the enum: the suspect is a fact about the
+    /// aggregate, not about the case. Without this the eviction row read "Server dropped the
+    /// cached prefix" and nothing else — true, and unactionable, since the whole point of naming
+    /// a suspect is to tell the user WHICH other caller to move off this model.
+    ///
+    /// "likely" is doing real work: interleaving is never a proven cause here, only the last
+    /// other caller seen on the same (server, model).
+    static func causeRowLabel(_ cause: PrefixCachePolicy.CauseClass, suspect: String?) -> String {
+        guard let suspect, !suspect.isEmpty else { return cause.label }
+        return "\(cause.label) — likely \(suspect)"
+    }
 
     /// Deterministic order — counts desc, then name — so the popover does not reshuffle on every
     /// tick of an incrementing counter.

@@ -17,18 +17,18 @@ final class BashGateTests: XCTestCase {
     var service: LLMExecutionService!
     var delegate: MockLLMExecutionDelegate!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         service = LLMExecutionService(repository: NTMSRepository())
         delegate = MockLLMExecutionDelegate()
         delegate.snapshot = nil  // → not under Autovisor (isUnderAutovisor returns false)
         service.attach(delegate: delegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service = nil
         delegate = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Helpers
@@ -81,12 +81,14 @@ final class BashGateTests: XCTestCase {
     /// suspends). Returns the running task + the held command key so the test can
     /// resolve it. Fails if no hold appears in time.
     private func gateHolding(
-        _ calls: [StepToolCall], policy: BashPolicy, supervisorMode: SupervisorMode = .manual
+        _ calls: [StepToolCall], policy: BashPolicy, supervisorMode: SupervisorMode = .manual,
+        isPlanningPhase: Bool = false
     ) async -> (task: Task<[Int: ToolExecutionResult], Never>, commandKey: String) {
         delegate.bashPolicy = policy
         let task = Task { [service, delegateTask = task()] in
             await service!.gateBashCalls(
                 resolvedToolCalls: calls, allowedToolNames: [ToolNames.bash],
+                isPlanningPhase: isPlanningPhase,
                 stepID: "step1", taskID: 1, supervisorMode: supervisorMode, task: delegateTask,
                 client: LLMClientRouter(), config: LLMConfig(), networkLogger: nil)
         }
@@ -242,17 +244,24 @@ final class BashGateTests: XCTestCase {
 
     // MARK: - Error guidance (anti-retry)
 
-    func testBashDeniedGuidance_isAntiRetry() async {
+    func testBashDeniedGuidance_isAntiRetry() async throws {
         let result = ToolExecutionResult(
             toolName: ToolNames.bash, argumentsJSON: "{}",
             outputJSON: makeErrorEnvelope(code: .bashDenied, message: "Blocked by deny rule “rm”."),
             isError: true)
-        let guidance = service.buildToolErrorGuidance(result: result)
-        XCTAssertTrue(guidance.contains("Blocked by deny rule"))
+
+        // The REASON is the envelope's — it reaches the model one turn before the direction,
+        // so restating it there bought nothing (`ToolErrorNotePolicy`).
+        XCTAssertTrue(result.outputJSON.contains("Blocked by deny rule"), result.outputJSON)
+
+        let guidance = try XCTUnwrap(ToolErrorNotePolicy.direction(for: result))
         XCTAssertFalse(
             guidance.lowercased().contains("retry the tool call with the correct arguments"),
             "bash_denied must NOT get the default retry guidance")
         XCTAssertTrue(guidance.lowercased().contains("do not retry"))
+        XCTAssertFalse(
+            guidance.contains("Blocked by deny rule"),
+            "the direction must not restate the envelope's reason: \(guidance)")
     }
 
     // MARK: - Mixed batch & non-bash
@@ -281,6 +290,84 @@ final class BashGateTests: XCTestCase {
         XCTAssertTrue(results.isEmpty)
     }
 
+    // MARK: - Planning phase
+
+    /// The claim "the deny/ask/allow tiering is identical during planning" is PROVABLE, not
+    /// argued: `BashPermissionService.evaluate` never reads a sandbox field, so narrowing the
+    /// sandbox cannot move a command between tiers. Swept over every mode and every tier so a
+    /// future field that DOES get read shows up here rather than in the field.
+    ///
+    /// RED: have `withWritesDisabled()` also clear `denyRules` (a plausible "the phase should be
+    /// stricter" edit) → the `rm -rf /` row's two decisions stop being equal.
+    func testPlanningNarrowing_cannotMoveACommandBetweenPermissionTiers() {
+        let commands = ["ls -la", "rm -rf /", "curl example.com", "echo ok"]
+        for mode in BashExecutionMode.allCases {
+            let policy = BashPolicy(
+                mode: mode, allowRules: ["echo"], askRules: ["curl"], denyRules: ["rm"])
+            for command in commands {
+                let live = BashPermissionService.evaluate(command: command, policy: policy)
+                let narrowed = BashPermissionService.evaluate(
+                    command: command, policy: policy.withWritesDisabled())
+                XCTAssertEqual(live, narrowed, "\(mode) / \(command)")
+            }
+        }
+    }
+
+    /// The judge and the "Ask AI" advisor render the policy they are handed straight into their
+    /// prompt (`sandboxConfinementDescription`). During the phase the real confinement is the
+    /// write-disabled one, so handing them the LIVE policy would describe a sandbox that is not
+    /// in force — permissive about writes that cannot happen, strict about harmless reads.
+    ///
+    /// RED: make `withWritesDisabled()` a no-op on permissions → the two descriptions compare
+    /// equal and the inequality assertion fails.
+    func testPlanningNarrowing_changesWhatTheJudgeIsToldAboutConfinement() {
+        let live = BashJudgeService.sandboxConfinementDescription(policy: BashPolicy())
+        let narrowed = BashJudgeService.sandboxConfinementDescription(
+            policy: BashPolicy().withWritesDisabled())
+
+        XCTAssertNotEqual(live, narrowed,
+                          "the judge must not be told the same confinement in both phases")
+        XCTAssertTrue(live.lowercased().contains("work folder"),
+                      "baseline: the live description names the writable work folder")
+    }
+
+    /// "Always allow" persists a PERMANENT, global allow rule. Offering it while writes are
+    /// blocked would let a human approve `rm -rf build` under a confinement that makes it
+    /// harmless, and mint a standing grant that then governs the same command AFTER the
+    /// boundary, under the full write profile, with no further review — a privilege ladder
+    /// built inside the transcript the phase is about to destroy.
+    ///
+    /// RED: restore `offerAlways: policy.mode != .manual` → the published request offers
+    /// "Always allow" and the assertion fails.
+    func testPlanningPhase_doesNotOfferAlwaysAllow() async {
+        let policy = BashPolicy(mode: .semiAutomatic)
+        let held = await gateHolding([bashCall("curl example.com")], policy: policy,
+                                     isPlanningPhase: true)
+        defer { held.task.cancel() }
+
+        guard let request = delegate.bashApprovalBeganRequests.first else {
+            return XCTFail("the gate must publish an approval request")
+        }
+        XCTAssertFalse(request.offerAlways)
+
+        service.resolveBashApproval(taskID: 1, stepID: "step1", commandKey: held.commandKey,
+                                    decision: .deny)
+        _ = await held.task.value
+    }
+
+    /// Control: outside the phase the offer is unchanged for the same mode, so the suppression
+    /// is scoped rather than a silent product change.
+    func testOutsidePlanning_semiAutomaticStillOffersAlwaysAllow() async {
+        let held = await gateHolding([bashCall("curl example.com")],
+                                     policy: BashPolicy(mode: .semiAutomatic))
+        defer { held.task.cancel() }
+
+        XCTAssertEqual(delegate.bashApprovalBeganRequests.first?.offerAlways, true)
+
+        service.resolveBashApproval(taskID: 1, stepID: "step1", commandKey: held.commandKey,
+                                    decision: .deny)
+        _ = await held.task.value
+    }
 }
 
 // MARK: - Stub judge client

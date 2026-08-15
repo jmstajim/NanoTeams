@@ -48,6 +48,26 @@ nonisolated enum LLMCallOwner: Hashable, Sendable {
         }
     }
 
+    /// The inverse projection of `key` → `displayName`, for the one place that holds a key and
+    /// not the owner: the ledger's activity ring records `owner.key` (its format is pinned by
+    /// `PromptPrefixLedgerTests`), so a suspect arrives at the UI as `step:42:autovisor_autovisor`
+    /// while the row beside it shows `displayName`. Rendering both spellings in one popover reads
+    /// as two different callers.
+    ///
+    /// Lives here, next to the two projections it bridges, so a new case cannot add a `key`
+    /// prefix and leave this behind. Drops exactly the leading components `key` added, so an id
+    /// that itself contains `:` (a meeting chain is `taskID:runID:meetingID`) survives intact.
+    static func displayName(forKey key: String) -> String {
+        if key.hasPrefix("step:") {
+            let rest = key.dropFirst("step:".count)
+            guard let separator = rest.firstIndex(of: ":") else { return String(rest) }
+            return String(rest[rest.index(after: separator)...])
+        }
+        if key.hasPrefix("chain:") { return String(key.dropFirst("chain:".count)) }
+        if key.hasPrefix("oneShot:") { return String(key.dropFirst("oneShot:".count)) }
+        return key
+    }
+
     /// Whether this owner accumulates a prefix worth protecting. A one-shot cannot be a victim —
     /// its conversation is new every time — but it can still be a suspect.
     var accumulatesPrefix: Bool {

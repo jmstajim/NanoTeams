@@ -21,8 +21,8 @@ final class PausePreservesStreamingContentTests: XCTestCase, @unchecked Sendable
     private var mockDelegate: MockLLMExecutionDelegate!
     private var tempDir: URL!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -33,11 +33,11 @@ final class PausePreservesStreamingContentTests: XCTestCase, @unchecked Sendable
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         service = nil
         mockDelegate = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Contract: cancelStepExecution awaits the catch handler
@@ -909,7 +909,7 @@ private final class StreamPersistingMockDelegate: LLMExecutionDelegate {
         streamingRoles[stepID] = role
 
         let msg = LLMMessage(id: messageID, role: .assistant, content: "")
-        await mutateTask(taskID: taskID) { task in
+        _ = await mutateTask(taskID: taskID) { task in
             TaskMutationService.appendLLMMessage(msg, to: stepID, in: &task)
         }
     }
@@ -935,7 +935,7 @@ private final class StreamPersistingMockDelegate: LLMExecutionDelegate {
         let messageID = streamingMessageIDs[stepID] ?? UUID()
         let role = streamingRoles[stepID] ?? .softwareEngineer
 
-        await mutateTask(taskID: taskID) { task in
+        _ = await mutateTask(taskID: taskID) { task in
             TaskMutationService.commitStreamingContent(
                 stepID: stepID,
                 messageID: messageID,
@@ -953,7 +953,7 @@ private final class StreamPersistingMockDelegate: LLMExecutionDelegate {
     var discardStreamingCalls: [(String, UUID, Int)] = []
     func discardStreaming(stepID: String, messageID: UUID, taskID: Int) async {
         discardStreamingCalls.append((stepID, messageID, taskID))
-        await mutateTask(taskID: taskID) { task in
+        _ = await mutateTask(taskID: taskID) { task in
             TaskMutationService.removeLLMMessage(id: messageID, from: stepID, in: &task)
         }
         streamingMessageIDs[stepID] = nil

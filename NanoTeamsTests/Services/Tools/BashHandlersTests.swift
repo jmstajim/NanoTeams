@@ -35,8 +35,21 @@ final class BashHandlersTests: XCTestCase {
             allowUnsandboxedFallback: false)
     }
 
-    private func context() -> ToolExecutionContext {
-        ToolExecutionContext(workFolderRoot: workDir, taskID: 1, runID: 0, roleID: "r")
+    private func context(isPlanningPhase: Bool = false) -> ToolExecutionContext {
+        ToolExecutionContext(workFolderRoot: workDir, taskID: 1, runID: 0, roleID: "r",
+                             isPlanningPhase: isPlanningPhase)
+    }
+
+    private func errorEnvelope(_ json: String) -> [String: Any]? {
+        guard let data = json.data(using: .utf8) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    private func meta(_ json: String) -> [String: Any]? {
+        guard let data = json.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return obj["meta"] as? [String: Any]
     }
 
     private func successData(_ json: String) -> [String: Any]? {
@@ -228,5 +241,89 @@ final class BashHandlersTests: XCTestCase {
         XCTAssertFalse(r.isError)
         let data = successData(r.outputJSON)
         XCTAssertNotNil(data?["command_id"], "string-encoded true must run in background. Got: \(r.outputJSON)")
+    }
+
+    // MARK: - Planning phase
+
+    /// A detached process keeps the profile it was LAUNCHED with for its whole life, so one
+    /// started during the phase would carry the write block across the boundary and past it,
+    /// with no way to re-profile it. Refused rather than handed back crippled.
+    ///
+    /// `plan_required`, not INVALID_ARGS: the argument is well-formed and the identical call
+    /// works next turn — only that error code reaches `ToolErrorNotePolicy.direction`'s retry arm.
+    ///
+    /// RED: delete the `context.isPlanningPhase, runInBackground` guard → the envelope becomes a
+    /// success carrying a `command_id` and all three assertions fail.
+    func testRunInBackground_duringPlanning_isRefusedWithPlanRequired() {
+        let r = makeTool().handle(
+            context: context(isPlanningPhase: true),
+            args: ["command": "sleep 5", "run_in_background": true])
+
+        XCTAssertTrue(r.isError)
+        XCTAssertEqual(errorEnvelope(r.outputJSON)?["error"] as? String, "plan_required")
+        XCTAssertEqual(errorEnvelope(r.outputJSON)?["tool"] as? String, ToolNames.bash)
+        XCTAssertNil(successData(r.outputJSON)?["command_id"],
+                     "no process may be started — the refusal must precede the launch")
+    }
+
+    /// Control: the refusal is scoped to the phase, not a permanent regression.
+    ///
+    /// RED: make the guard unconditional → the background start is refused outside the phase too.
+    func testRunInBackground_outsidePlanning_stillStarts() {
+        let r = makeTool().handle(
+            context: context(), args: ["command": "echo bg", "run_in_background": true])
+        XCTAssertFalse(r.isError)
+        XCTAssertNotNil(successData(r.outputJSON)?["command_id"])
+    }
+
+    /// The envelope states the confinement structurally, so the model can tell a
+    /// sandbox refusal from a filesystem one without parsing stderr.
+    ///
+    /// RED: pass `nil` instead of `true` in the planning arm → `writes_blocked` is absent.
+    func testForegroundEnvelope_duringPlanning_carriesWritesBlocked() {
+        let r = makeTool().handle(
+            context: context(isPlanningPhase: true), args: ["command": "echo hi"])
+        XCTAssertEqual(successData(r.outputJSON)?["writes_blocked"] as? Bool, true)
+    }
+
+    /// ABSENT, not `false`: `writes_blocked` is only ever interesting when true, and a key on
+    /// every ordinary bash result is schema noise on a wire whose only speed lever is byte
+    /// stability.
+    ///
+    /// RED: make `BashResult.writes_blocked` non-optional `Bool` → the key appears and the
+    /// absence assertion fails.
+    func testForegroundEnvelope_outsidePlanning_omitsWritesBlocked() {
+        let r = makeTool().handle(context: context(), args: ["command": "echo hi"])
+        let data = successData(r.outputJSON)
+        XCTAssertNotNil(data, "precondition: the call succeeded")
+        XCTAssertNil(data?["writes_blocked"])
+    }
+
+    /// A write the SANDBOX refused arrives as an ordinary non-zero exit with `isError == false`,
+    /// which `ToolErrorNotePolicy.direction` structurally never sees. So the retry contract is taught
+    /// in the envelope — otherwise the model reads `Operation not permitted` and concludes the
+    /// file is protected, or that it needs `sudo`.
+    ///
+    /// RED: delete the `meta:` argument from the `.completed` success result → no warning reaches
+    /// the envelope.
+    func testPlanningWriteDenial_teachesTheRetryContract() {
+        let r = makeTool().handle(
+            context: context(isPlanningPhase: true),
+            args: ["command": "echo 'x: Operation not permitted' >&2; exit 1"])
+        let warnings = meta(r.outputJSON)?["warnings"] as? [String] ?? []
+        XCTAssertTrue(warnings.contains { $0.contains("update_scratchpad") },
+                      "got: \(r.outputJSON)")
+    }
+
+    /// The same failure outside the phase must NOT claim a planning-phase sandbox refused it —
+    /// there, `Operation not permitted` really is the filesystem talking.
+    ///
+    /// RED: drop the `isPlanningPhase` term from `planningWriteDenialMeta`'s guard → the warning
+    /// fires outside the phase and the emptiness assertion fails.
+    func testWriteDenialWarning_neverFiresOutsidePlanning() {
+        let r = makeTool().handle(
+            context: context(),
+            args: ["command": "echo 'x: Operation not permitted' >&2; exit 1"])
+        XCTAssertTrue((meta(r.outputJSON)?["warnings"] as? [String] ?? []).isEmpty)
     }
 }

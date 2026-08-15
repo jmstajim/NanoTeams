@@ -26,7 +26,7 @@ private final class UncheckedBox<T>: @unchecked Sendable {
 /// - Closing a folder with the feature on tears down the coordinator.
 /// - `onExploratorySearchSettingChanged` is idempotent when state matches.
 @MainActor
-final class ExploratorySearchUserScenarioTests: NTMSOrchestratorTestBase {
+final class ExploratorySearchUserScenarioTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Toggle ON — happy path
 

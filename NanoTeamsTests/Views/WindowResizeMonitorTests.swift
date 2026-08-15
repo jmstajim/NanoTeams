@@ -18,15 +18,15 @@ final class WindowResizeMonitorTests: XCTestCase {
 
     private var monitor: WindowResizeMonitor!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         monitor = WindowResizeMonitor()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         monitor?.unbind()
         monitor = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Build an offscreen NSWindow on demand. Construction lives inside the

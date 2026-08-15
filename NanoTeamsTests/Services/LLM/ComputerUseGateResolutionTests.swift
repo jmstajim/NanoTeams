@@ -38,8 +38,8 @@ final class ComputerUseGateResolutionTests: XCTestCase {
     private let stepID = "step1"
     private let taskID = 1
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         service = LLMExecutionService(repository: NTMSRepository())
         delegate = MockLLMExecutionDelegate()
         delegate.snapshot = nil  // → not under Autovisor (isUnderAutovisor returns false)
@@ -47,11 +47,11 @@ final class ComputerUseGateResolutionTests: XCTestCase {
         judgeClient = RecordingComputerUseJudgeClient()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service = nil
         delegate = nil
         judgeClient = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures

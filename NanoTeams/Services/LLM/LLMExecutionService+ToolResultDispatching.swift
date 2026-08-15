@@ -388,9 +388,29 @@ extension LLMExecutionService {
         )
         await processCreateArtifactResult(result: result, stepID: stepID, taskID: taskID)
 
-        if result.isError {
-            let guidance = buildToolErrorGuidance(result: result)
+        // Conditional, and `nil` is the common case for `edit_file`: the envelope is the
+        // preceding turn, so a direction that only restates it costs context and teaches
+        // nothing (`ToolErrorNotePolicy`).
+        if result.isError, let guidance = ToolErrorNotePolicy.direction(for: result) {
             conversationMessages.append(ChatMessage(role: .user, content: guidance))
+            // Persisted despite being invisible, and that is not belt-and-braces — two
+            // consumers read the display record rather than the wire:
+            // `ConversationReplay.rebuildFromDisplayRecord` (the `wireTranscript`-less
+            // fallback, which would otherwise re-show the model its failed call with the
+            // steering stripped) and `DelegatedSupervisorAnswerService.buildSeed`, which drops
+            // `.tool` turns outright — making this the only surviving evidence in that seed
+            // that a call failed at all.
+            //
+            // Deliberately NOT the `.retryNudge` the eight `handleNoToolCalls` sites carry.
+            // Those follow a bare assistant turn, and the loop warning spans SEVERAL cards;
+            // nothing else on screen records either, so their rows are the whole point. The
+            // discriminator is origin, not position: does this comment on one event the feed
+            // already draws? Same question, same answer, same wording as the screenshot turn
+            // in `+ComputerUse` — a second, less informative entry for one event.
+            //
+            // feed-invisible-by-design: this comments on ONE event the feed already draws —
+            // the failed call's own card. Every arm that still emits is a constant keyed on
+            // the error CODE, so the row restated the red line directly above it.
             await appendLLMMessage(stepID: stepID, taskID: taskID, role: .user, content: guidance)
         }
 

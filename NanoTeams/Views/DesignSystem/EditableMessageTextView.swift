@@ -80,7 +80,7 @@ struct EditableMessageTextView: NSViewRepresentable {
         textView.placeholderText = placeholder
         // Clear the undo stack on unlock: the improve stream wrote via
         // `.string =`, which doesn't register undo actions, so a Cmd+Z after
-        // a stream would surface incoherent partial states. The Revert chip
+        // a stream would surface incoherent partial states. The Revert button
         // is the sanctioned undo for an improve.
         if textView.isInputLocked && !isInputLocked {
             textView.undoManager?.removeAllActions()

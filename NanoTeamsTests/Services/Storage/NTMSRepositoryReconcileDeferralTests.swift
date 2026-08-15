@@ -997,7 +997,7 @@ final class NTMSRepositoryReconcileDeferralTests: XCTestCase {
     /// Autovisor carve-out and the additive tools merge must still apply.
     func testUnreadableTaskJSON_failsClosed_butStillReconcilesAutovisor() throws {
         _ = try sut.openOrCreateWorkFolder(at: root)
-        let f = try seedStaleFAANGPrompt()
+        _ = try seedStaleFAANGPrompt()
 
         let store = AtomicJSONStore()
         var teamsFile = try store.read(TeamsFile.self, from: paths.teamsJSON)

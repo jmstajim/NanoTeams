@@ -44,8 +44,8 @@ final class SearchIndexCoordinatorStopGateTests: XCTestCase {
 
     private var embedder: CountingEmbeddingClient!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         embedder = CountingEmbeddingClient()
         tempDir = fm.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -54,12 +54,12 @@ final class SearchIndexCoordinatorStopGateTests: XCTestCase {
         try? fm.createDirectory(at: internalDir, withIntermediateDirectories: true)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let tempDir { try? fm.removeItem(at: tempDir) }
         tempDir = nil
         internalDir = nil
         embedder = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private var indexPath: String {

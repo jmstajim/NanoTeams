@@ -52,8 +52,8 @@ final class VisionAndComputerUseApprovalFlowTests: XCTestCase {
     private let toolCallID = VisionAndComputerUseApprovalFlowTests.toolCallIDValue
     private let providerID = VisionAndComputerUseApprovalFlowTests.providerIDValue
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -74,7 +74,7 @@ final class VisionAndComputerUseApprovalFlowTests: XCTestCase {
         delegate.taskToMutate = Self.makeTask()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
         service = nil
@@ -82,7 +82,7 @@ final class VisionAndComputerUseApprovalFlowTests: XCTestCase {
         tracker = nil
         client = nil
         MonotonicClock.shared.reset()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures

@@ -16,7 +16,7 @@ import XCTest
 ///   2. openWorkFolder again → triggers StatusRecoveryService + syncEngineStateFromRun
 ///   3. assert `taskEngineStates[taskID]`
 @MainActor
-final class SyncEngineStateFromRunTests: NTMSOrchestratorTestBase {
+final class SyncEngineStateFromRunTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Helpers
 

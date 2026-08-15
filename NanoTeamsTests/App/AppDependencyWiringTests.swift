@@ -35,17 +35,17 @@ final class AppDependencyWiringTests: XCTestCase {
     private var monitor: LLMStatusMonitor!
     private var quickCapture: QuickCaptureController!
 
-    override func tearDown() {
+    override func tearDown() async throws {
         monitor?.stopMonitoring()
         monitor = nil
         dictation = nil
         quickCapture = nil
         store = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func makeSubjects() async {
-        store = await TestOrchestrator.make()
+        store = TestOrchestrator.make()
         dictation = DictationService()
         monitor = LLMStatusMonitor()
         quickCapture = QuickCaptureController(

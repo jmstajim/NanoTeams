@@ -68,4 +68,31 @@ final class BashExecutionModeTests: XCTestCase {
             XCTAssertEqual(try JSONDecoder().decode([BashExecutionMode].self, from: data), [mode])
         }
     }
+
+    // MARK: - allowsUnattendedCommands (the planning phase's admission term)
+
+    /// RED: return `true` for `.manual` → the `.manual` assertion fails.
+    func testAllowsUnattendedCommands_isTrueOnlyForSemiAutomaticAndAuto() {
+        XCTAssertFalse(BashExecutionMode.off.allowsUnattendedCommands)
+        XCTAssertFalse(BashExecutionMode.manual.allowsUnattendedCommands)
+        XCTAssertTrue(BashExecutionMode.semiAutomatic.allowsUnattendedCommands)
+        XCTAssertTrue(BashExecutionMode.auto.allowsUnattendedCommands)
+    }
+
+    /// The predicate's JUSTIFICATION, not a restatement of it: what makes `.manual` unfit for a
+    /// planning phase is that its step-1b `.ask` sits ABOVE the read-only bypass, so not even
+    /// `ls` runs unattended. Without this the admission rule looks like an arbitrary cutoff and
+    /// the next reader "simplifies" it back to `mode != .off`.
+    ///
+    /// RED: move the `.manual` tier below the read-only bypass in
+    /// `BashPermissionService.evaluate` → the `.manual` row's expected/actual disagree here while
+    /// the predicate test above stays green.
+    func testAllowsUnattendedCommands_matchesWhetherAReadOnlyCommandActuallyRunsUnattended() {
+        for mode in BashExecutionMode.allCases {
+            let decision = BashPermissionService.evaluate(
+                command: "ls -la", policy: BashPolicy(mode: mode))
+            let ranUnattended: Bool = if case .allow = decision { true } else { false }
+            XCTAssertEqual(ranUnattended, mode.allowsUnattendedCommands, "\(mode)")
+        }
+    }
 }

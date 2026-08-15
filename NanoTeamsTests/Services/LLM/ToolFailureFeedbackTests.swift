@@ -53,7 +53,7 @@ final class ToolFailureFeedbackTests: XCTestCase {
     /// RED: revert `requiredArgumentsHint` to "" → the guidance names only the first
     /// missing key, so three missing arguments cost three round-trips.
     func testInvalidArgs_namesEveryRequiredParameterAndWhatArrived() {
-        let hint = LLMExecutionService.requiredArgumentsHint(
+        let hint = ToolErrorNotePolicy.requiredArgumentsHint(
             toolName: ToolNames.editFile, argumentsJSON: #"{"new_text":"B"}"#)
 
         XCTAssertTrue(hint.contains("path"), hint)
@@ -65,7 +65,7 @@ final class ToolFailureFeedbackTests: XCTestCase {
     }
 
     func testInvalidArgs_withNoArgumentsAtAll_saysSo() {
-        let hint = LLMExecutionService.requiredArgumentsHint(
+        let hint = ToolErrorNotePolicy.requiredArgumentsHint(
             toolName: ToolNames.editFile, argumentsJSON: "")
         XCTAssertTrue(hint.contains("no arguments"), hint)
     }
@@ -75,7 +75,7 @@ final class ToolFailureFeedbackTests: XCTestCase {
     /// clause `requires: .` appended to every failure.
     func testToolWithNoRequiredParameters_getsNoHint() {
         XCTAssertEqual(
-            LLMExecutionService.requiredArgumentsHint(
+            ToolErrorNotePolicy.requiredArgumentsHint(
                 toolName: ToolNames.gitStatus, argumentsJSON: "{}"),
             "")
     }
@@ -83,7 +83,7 @@ final class ToolFailureFeedbackTests: XCTestCase {
     /// An unknown tool name (a hallucinated one) has no schema to quote.
     func testUnknownTool_getsNoHint() {
         XCTAssertEqual(
-            LLMExecutionService.requiredArgumentsHint(
+            ToolErrorNotePolicy.requiredArgumentsHint(
                 toolName: "no_such_tool", argumentsJSON: "{}"),
             "")
     }

@@ -55,7 +55,8 @@ extension LLMExecutionService {
         commandKey: String,
         workingDirectory: String?,
         offerAlways: Bool,
-        judgeConfig: LLMConfig
+        judgeConfig: LLMConfig,
+        judgePolicy: BashPolicy
     ) async -> BashApprovalDecision {
         let key = TaskStepKey(taskID: taskID, stepID: stepID)
         let waiter = BashApprovalWaiter()
@@ -74,6 +75,7 @@ extension LLMExecutionService {
             commands: [command],
             workingDirectories: [workingDirectory],
             judgeConfig: judgeConfig,
+            judgePolicy: judgePolicy,
             createdAt: createdAt)
 
         delegate?.bashApprovalDidBegin(

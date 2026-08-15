@@ -13,15 +13,15 @@ final class NewTeamSheetRequestTests: XCTestCase {
 
     var sut: NTMSOrchestrator!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         sut = TestOrchestrator.make()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     func testInitially_isNotArmed() {

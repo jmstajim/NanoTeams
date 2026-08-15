@@ -7,14 +7,14 @@ import XCTest
 @MainActor
 final class EndToEndSupervisorAcceptanceTests: XCTestCase {
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         MonotonicClock.shared.reset()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Test 1: finalOnly — all done → needsSupervisorAcceptance
@@ -65,7 +65,7 @@ final class EndToEndSupervisorAcceptanceTests: XCTestCase {
 
     func testRevision_preservesArtifactsAndSetsRevisionComment() {
         var task = makeTaskWithDoneStep()
-        let stepID = task.runs[0].steps[0].id
+        _ = task.runs[0].steps[0].id
 
         // Add supervisor feedback
         task.runs[0].steps[0].messages.append(

@@ -460,11 +460,18 @@ extension LLMExecutionService {
                 delegate.appendStreamingThinking(
                     stepID: stepID, taskID: taskID, content: promoted)
             }
-            // Loop break: drop later occurrences of any duplicated (name, args) signature
-            // — only the first instance of each is kept and executed.
-            if loopDetected {
-                resolvedToolCalls = Self.deduplicateToolCalls(resolvedToolCalls)
-            }
+            // Drop later occurrences of any duplicated (name, args) signature — only the
+            // first instance of each is kept and executed.
+            //
+            // UNCONDITIONAL, not gated on `loopDetected`. That gate assumed a duplicate
+            // could only arrive via a streaming break, but the break has its own
+            // preconditions (native deltas, or Harmony with `harmonyCloseCount >= 2`) and
+            // a reply can carry an exact repeat without tripping any of them: measured on
+            // a real run, a byte-identical 2795-byte `edit_file` executed twice inside one
+            // 56-call response. Re-running an identical call cannot produce a different
+            // result — the second is pure cost, and for a mutating tool it is a second
+            // write attempt against state the first one already changed.
+            resolvedToolCalls = Self.deduplicateToolCalls(resolvedToolCalls)
 
             if thinkingLoopSignal != nil {
                 // Top-level thinking-loop break: DISCARD the looping generation —

@@ -13,7 +13,7 @@ import XCTest
 // hardest to notice.
 //
 // Ordered by consequence, not by line count:
-//   1. `buildToolErrorGuidance` — the text the MODEL reads after a failed tool
+//   1. `ToolErrorNotePolicy.direction` — the text the MODEL reads after a failed tool
 //      call. Three whole branches (`plan_required`, `precondition_failed`,
 //      `bash_denied`) were never exercised; each exists specifically because the
 //      default branch's wording sends the model into a loop.
@@ -66,27 +66,21 @@ private struct NilFallbackStreamError: Error, LocalizedError {
     var errorDescription: String? { "scripted stream failure" }
 }
 
-// MARK: - 1. Tool-error guidance: the three never-exercised branches
+// MARK: - 1. Tool-error direction: the three never-exercised branches
 
-/// `buildToolErrorGuidance` turns a failed tool result into the `.user` follow-up
-/// the model reads. Its `default` arm blames arguments unless the code family says
-/// otherwise; three codes exist precisely because that wording is wrong for them.
-/// Until now none of the three had a test, so deleting any of the three `case`s
-/// would have compiled, shipped, and produced plausible-but-looping guidance.
+/// `ToolErrorNotePolicy` turns a failed tool result into the `.user` follow-up the model
+/// reads. Its `default` arm blames arguments unless the code family says otherwise; three
+/// codes exist precisely because that wording is wrong for them. Until this suite none of
+/// the three had a test, so deleting any of the three `case`s would have compiled, shipped,
+/// and produced plausible-but-looping guidance.
+///
+/// The nil-resolutions under test narrowed when the policy stopped restating the envelope:
+/// the intro fallbacks (`?? "Tool 'X' becomes available…"`, `?? "Tool 'X' is unavailable."`,
+/// `?? "The command was blocked…"`) went with the intros. What remains — and is pinned
+/// here — is the tool-name resolution `(dict["tool"] as? String) ?? result.toolName`, which
+/// is what keeps an anti-retry instruction attached to a named call.
 @MainActor
 final class NilFallbackToolErrorGuidanceTests: XCTestCase {
-
-    var sut: LLMExecutionService!
-
-    override func setUp() {
-        super.setUp()
-        sut = LLMExecutionService(repository: NTMSRepository())
-    }
-
-    override func tearDown() {
-        sut = nil
-        super.tearDown()
-    }
 
     // MARK: plan_required
 
@@ -99,11 +93,10 @@ final class NilFallbackToolErrorGuidanceTests: XCTestCase {
     /// hand-rolled envelope, so a change to the envelope shape breaks this test
     /// instead of silently orphaning the branch.
     ///
-    /// RED: route `.withheldUntilPlanRecorded` to `errorCode = "precondition_failed"`
-    /// (or delete the `plan_required` case so it falls through to `default`) → the
-    /// guidance gains "Do not retry 'read_file'", the model looks for a substitute
-    /// tool that does not exist, and never records the plan that unblocks it →
-    /// `XCTAssertFalse(guidance.lowercased().contains("do not retry"))` fails.
+    /// RED: route `.withheldUntilPlanRecorded` to `errorCode = "precondition_failed"` (or
+    /// delete the `plan_required` case so it falls through to `default`) → the model is
+    /// handed "Do not retry 'read_file'", looks for a substitute tool that does not exist,
+    /// and never records the plan that unblocks it → the nil assertion fails.
     func testPlanRequired_steersTowardRecordingThePlanAndRepeatingTheCall() async {
         let call = StepToolCall(name: "read_file", argumentsJSON: #"{"path":"a.swift"}"#)
         let envelope = LLMExecutionService.makeUnavailableToolResult(
@@ -112,51 +105,49 @@ final class NilFallbackToolErrorGuidanceTests: XCTestCase {
             scope: "for this role",
             reason: .withheldUntilPlanRecorded
         )
-
-        let guidance = sut.buildToolErrorGuidance(result: envelope)
+        let message = envelope.outputJSON
 
         XCTAssertTrue(
-            guidance.contains("update_scratchpad"),
-            "the unblocking call must be named — it is the only exit from this state; got: \(guidance)"
+            message.contains("update_scratchpad"),
+            "the unblocking call must be named — it is the only exit from this state; got: \(message)"
         )
         XCTAssertTrue(
-            guidance.contains("'read_file' works on the next turn"),
-            "the retry contract must be stated explicitly, got: \(guidance)"
+            message.contains("call 'read_file' again"),
+            "the retry contract must be stated explicitly, got: \(message)"
         )
         XCTAssertFalse(
-            guidance.lowercased().contains("do not retry"),
-            "plan_required is temporal, not structural — anti-retry steering strands the model; got: \(guidance)"
+            message.lowercased().contains("do not retry"),
+            "plan_required is temporal, not structural — anti-retry steering strands the model; got: \(message)"
         )
         XCTAssertFalse(
-            guidance.contains("Choose a different tool"),
-            "no substitute tool exists for a phase-withheld call, got: \(guidance)"
+            message.contains("different tool"),
+            "no substitute tool exists for a phase-withheld call, got: \(message)"
         )
+        // Everything above is in the envelope, which the model reads one turn earlier — so
+        // the policy adds nothing. A paraphrase here reads as a SECOND instruction.
+        XCTAssertNil(ToolErrorNotePolicy.direction(for: envelope))
     }
 
-    /// Same branch, degraded envelope: neither `tool` nor `message` present. Both
-    /// fallbacks fire together, and the tool name has to come from the RESULT rather
-    /// than the envelope — otherwise the model is told "Tool '' becomes available"
-    /// and cannot tell which call to repeat, which is worse than no guidance at all.
+    /// The tool-name resolution, on the arm that still uses it. A degraded envelope carries
+    /// no `tool` field, so the name has to come from the RESULT — otherwise the model is
+    /// told "do not retry ''" and cannot tell which call was refused, which is worse than
+    /// no direction at all.
     ///
     /// RED: drop the `?? result.toolName` fallback (e.g. `dict?["tool"] as? String ?? ""`)
-    /// → the guidance renders empty quotes → `guidance.contains("'read_lines'")` fails.
-    func testPlanRequired_bareEnvelope_namesTheToolFromTheResult() async {
+    /// → the direction renders empty quotes → `contains("'read_lines'")` fails.
+    func testToolNotAuthorized_bareEnvelope_namesTheToolFromTheResult() async throws {
         let envelope = ToolExecutionResult(
             toolName: "read_lines",
             argumentsJSON: "{}",
-            outputJSON: #"{"error":"plan_required"}"#,
+            outputJSON: #"{"error":"tool_not_authorized"}"#,
             isError: true
         )
 
-        let guidance = sut.buildToolErrorGuidance(result: envelope)
+        let guidance = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope))
 
         XCTAssertTrue(
-            guidance.contains("Tool 'read_lines' becomes available once your plan is recorded."),
-            "the synthesized intro must name the tool from the result, got: \(guidance)"
-        )
-        XCTAssertTrue(
-            guidance.contains("update_scratchpad"),
-            "the fallback intro must still be followed by the unblocking instruction, got: \(guidance)"
+            guidance.contains("do not retry 'read_lines'"),
+            "the anti-loop instruction must name the tool from the result, got: \(guidance)"
         )
         XCTAssertFalse(
             guidance.contains("''"),
@@ -174,7 +165,7 @@ final class NilFallbackToolErrorGuidanceTests: XCTestCase {
     /// RED: delete the `precondition_failed` case → the guidance loses "Do not retry
     /// 'git_add'" and gains the argument-blaming default direction →
     /// `guidance.contains("Do not retry 'git_add'")` fails.
-    func testPreconditionFailed_namesTheWorkFolderBlockerAndForbidsRetry() async {
+    func testPreconditionFailed_namesTheWorkFolderBlockerAndForbidsRetry() async throws {
         let call = StepToolCall(name: "git_add", argumentsJSON: #"{"paths":["a.swift"]}"#)
         let envelope = LLMExecutionService.makeUnavailableToolResult(
             call: call,
@@ -183,19 +174,20 @@ final class NilFallbackToolErrorGuidanceTests: XCTestCase {
             reason: .gitRepoMissing
         )
 
-        let guidance = sut.buildToolErrorGuidance(result: envelope)
-
         XCTAssertTrue(
-            guidance.contains(".git"),
-            "the envelope names the actual blocker; synthesizing over it loses it, got: \(guidance)"
+            envelope.outputJSON.contains(".git"),
+            "the ENVELOPE names the actual blocker, got: \(envelope.outputJSON)"
         )
+
+        let guidance = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope))
+
         XCTAssertTrue(
             guidance.contains("Do not retry 'git_add'"),
             "a work-folder precondition cannot be fixed from inside the role, got: \(guidance)"
         )
         XCTAssertTrue(
             guidance.contains("the precondition is set by the work folder, not by your arguments"),
-            "the guidance must say WHY retrying is pointless, got: \(guidance)"
+            "the direction must say WHY retrying is pointless, got: \(guidance)"
         )
         // The default arm's ACTUAL wording for this envelope, not "Fix the arguments and retry."
         // That string is emitted only under `case "INVALID_ARGS"`, and the code there is read as
@@ -209,15 +201,12 @@ final class NilFallbackToolErrorGuidanceTests: XCTestCase {
         )
     }
 
-    /// Degraded `precondition_failed` envelope: no `tool`, no `message`. Both fallback
-    /// arms fire. The synthesized intro is deliberately vague ("is unavailable") because
-    /// with no message there is no blocker to name — but it must still name the tool, or
-    /// the anti-retry instruction attaches to nothing.
+    /// Degraded `precondition_failed` envelope: no `tool`, no `message`. The direction is
+    /// unchanged by that — it never read the message — but it must still name the tool from
+    /// the result, or the anti-retry instruction attaches to nothing.
     ///
-    /// RED: drop the `?? "Tool '\(toolName)' is unavailable."` fallback (e.g. return the
-    /// suffix alone when `message` is absent) → the guidance opens mid-sentence with no
-    /// subject → `guidance.hasPrefix("Tool 'run_xcodebuild' is unavailable.")` fails.
-    func testPreconditionFailed_bareEnvelope_fallsBackToAToolNamingIntro() async {
+    /// RED: drop the `?? result.toolName` fallback → the direction says "Do not retry ''".
+    func testPreconditionFailed_bareEnvelope_stillNamesTheToolFromTheResult() async throws {
         let envelope = ToolExecutionResult(
             toolName: "run_xcodebuild",
             argumentsJSON: "{}",
@@ -225,16 +214,13 @@ final class NilFallbackToolErrorGuidanceTests: XCTestCase {
             isError: true
         )
 
-        let guidance = sut.buildToolErrorGuidance(result: envelope)
+        let guidance = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope))
 
-        XCTAssertTrue(
-            guidance.hasPrefix("Tool 'run_xcodebuild' is unavailable."),
-            "the fallback intro must name the tool and lead the message, got: \(guidance)"
-        )
         XCTAssertTrue(
             guidance.contains("Do not retry 'run_xcodebuild'"),
             "the anti-retry instruction must survive a message-less envelope, got: \(guidance)"
         )
+        XCTAssertFalse(guidance.contains("''"), "got: \(guidance)")
     }
 
     // MARK: bash_denied
@@ -252,7 +238,7 @@ final class NilFallbackToolErrorGuidanceTests: XCTestCase {
     /// `_DENIED` family arm produces "Tool 'bash' failed: [BASH_DENIED] …" — the machine
     /// code leaks into the prose and the alternatives disappear →
     /// `XCTAssertFalse(guidance.contains("[BASH_DENIED]"))` fails.
-    func testBashDenied_surfacesThePolicyReasonAndOffersAlternatives() async {
+    func testBashDenied_surfacesThePolicyReasonAndOffersAlternatives() async throws {
         let envelope = ToolExecutionResult(
             toolName: "bash",
             argumentsJSON: #"{"command":"rm -rf /"}"#,
@@ -260,12 +246,13 @@ final class NilFallbackToolErrorGuidanceTests: XCTestCase {
             isError: true
         )
 
-        let guidance = sut.buildToolErrorGuidance(result: envelope)
-
         XCTAssertTrue(
-            guidance.hasPrefix("Blocked by deny rule: rm"),
-            "the policy's own reason is the only actionable detail; it must lead, got: \(guidance)"
+            envelope.outputJSON.contains("Blocked by deny rule: rm"),
+            "the policy's own reason is the ENVELOPE's, got: \(envelope.outputJSON)"
         )
+
+        let guidance = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope))
+
         XCTAssertTrue(
             guidance.contains("Do NOT retry this command"),
             "a denied command never executed — retrying re-hits the same policy, got: \(guidance)"
@@ -278,58 +265,43 @@ final class NilFallbackToolErrorGuidanceTests: XCTestCase {
             guidance.contains("[BASH_DENIED]"),
             "the bracketed code prefix belongs to the default arm — its presence proves this branch was bypassed, got: \(guidance)"
         )
-    }
-
-    /// Degraded `bash_denied` envelope: the nested `error.message` is absent, so the
-    /// reason falls back to a generic policy phrasing. The anti-retry instruction must
-    /// survive — it is the load-bearing half, and without a reason it is ALL the model
-    /// has to go on.
-    ///
-    /// RED: drop the `?? "The command was blocked by the command-permission policy."`
-    /// fallback (e.g. `let reason = nested ?? ""`) → the guidance opens with a stray
-    /// space and no statement of what happened →
-    /// `guidance.hasPrefix("The command was blocked")` fails.
-    func testBashDenied_withoutANestedMessage_stillStatesTheBlockAndForbidsRetry() async {
-        let envelope = ToolExecutionResult(
-            toolName: "bash",
-            argumentsJSON: #"{"command":"ls"}"#,
-            outputJSON: #"{"ok":false,"error":{"code":"BASH_DENIED"}}"#,
-            isError: true
-        )
-
-        let guidance = sut.buildToolErrorGuidance(result: envelope)
-
-        XCTAssertTrue(
-            guidance.hasPrefix("The command was blocked by the command-permission policy."),
-            "the fallback must state the block itself, not just the consequence, got: \(guidance)"
-        )
-        XCTAssertTrue(
-            guidance.contains("Do NOT retry this command"),
-            "the anti-retry instruction must survive a message-less envelope, got: \(guidance)"
+        XCTAssertFalse(
+            guidance.contains("Blocked by deny rule: rm"),
+            "the direction must not restate the envelope's reason, got: \(guidance)"
         )
     }
 
-    /// An EMPTY nested message is not a message. `.flatMap { $0.isEmpty ? nil : $0 }`
-    /// collapses it to the same fallback, so the guidance can never open with a bare
-    /// space followed by "Do NOT retry" — a shape that reads to the model as truncated
-    /// output rather than a policy decision.
+    /// The direction for `bash_denied` is a CONSTANT: it says the block is policy and lists
+    /// the ways out, and it does not read the envelope's message at all.
     ///
-    /// RED: change the nested read to a plain `as? String` (dropping the empty check)
-    /// → the guidance starts with a space → `guidance.hasPrefix("The command")` fails.
-    func testBashDenied_emptyNestedMessage_isTreatedAsAbsent() async {
-        let envelope = ToolExecutionResult(
-            toolName: "bash",
-            argumentsJSON: "{}",
-            outputJSON: #"{"ok":false,"error":{"code":"BASH_DENIED","message":""}}"#,
-            isError: true
-        )
+    /// That property is what retired three separate nil-fallbacks (`?? "The command was
+    /// blocked…"`, the empty-string collapse, the leading-space shape). Pinning the
+    /// invariant is stronger than pinning each fallback: it holds for envelope shapes
+    /// nobody has thought of yet, including ones with no `error` object at all.
+    ///
+    /// RED: reintroduce the reason as an intro → the three directions stop being equal.
+    func testBashDenied_directionIsConstant_becauseItNeverReadsTheMessage() async throws {
+        let shapes: [(String, String)] = [
+            ("full", makeErrorEnvelope(code: .bashDenied, message: "Blocked by deny rule: rm")),
+            ("no message", #"{"ok":false,"error":{"code":"BASH_DENIED"}}"#),
+            ("empty message", #"{"ok":false,"error":{"code":"BASH_DENIED","message":""}}"#),
+        ]
 
-        let guidance = sut.buildToolErrorGuidance(result: envelope)
+        var directions: [String] = []
+        for (label, json) in shapes {
+            let envelope = ToolExecutionResult(
+                toolName: "bash", argumentsJSON: #"{"command":"ls"}"#,
+                outputJSON: json, isError: true)
+            let guidance = try XCTUnwrap(
+                ToolErrorNotePolicy.direction(for: envelope), "\(label) produced no direction")
+            XCTAssertFalse(
+                guidance.hasPrefix(" "),
+                "\(label): a missing reason must never render as a leading space, got: '\(guidance)'")
+            directions.append(guidance)
+        }
 
-        XCTAssertTrue(
-            guidance.hasPrefix("The command was blocked by the command-permission policy."),
-            "an empty message must route to the fallback, not render as a leading space, got: '\(guidance)'"
-        )
+        XCTAssertEqual(Set(directions).count, 1,
+                       "the direction must not vary with the envelope's message: \(directions)")
     }
 }
 
@@ -400,8 +372,8 @@ final class NilFallbackCollaborationNoTeamTests: XCTestCase {
     /// executes, and `NTMSPaths` is pure path arithmetic.
     private var phantomFolder: URL!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
@@ -412,11 +384,11 @@ final class NilFallbackCollaborationNoTeamTests: XCTestCase {
         mockDelegate.loggingEnabled = false
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         mockDelegate = nil
         service = nil
         phantomFolder = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func install(_ task: NTMSTask) {
@@ -740,18 +712,18 @@ final class NilFallbackAmendmentPropagationTests: XCTestCase {
 
     private let taskID = 91
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         mockDelegate = nil
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// PM produces "Spec"; SWE requires it. `getDownstreamRoles(of: pm)` == [swe].
@@ -883,7 +855,7 @@ final class NilFallbackAmendmentPropagationTests: XCTestCase {
 /// Nothing here touches disk: `createTask` and `mutateWorkFolder` both open with
 /// `guard let url = workFolderURL`, which is nil for an orchestrator that never
 /// opened a folder.
-final class NilFallbackAutovisorNoFolderTests: NTMSOrchestratorTestBase {
+final class NilFallbackAutovisorNoFolderTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     /// The per-review creation cap must still bind when there is no folder to read a
     /// user-tuned value from — otherwise a manager pass with an unreadable snapshot

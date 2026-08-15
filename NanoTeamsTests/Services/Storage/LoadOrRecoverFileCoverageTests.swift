@@ -19,7 +19,7 @@ final class LoadOrRecoverFileCoverageTests: XCTestCase, @unchecked Sendable {
     private struct Model: Codable, Equatable { var value: Int }
 
     /// Refuses to move anything, so the back-up rung fails and the overwrite rung runs.
-    private final class MoveRefusingFileManager: FileManager, @unchecked Sendable {
+    private final class MoveRefusingFileManager: FileManager {
         nonisolated(unsafe) var moveAttempts: [String] = []
         override func moveItem(at srcURL: URL, to dstURL: URL) throws {
             moveAttempts.append(srcURL.lastPathComponent)

@@ -108,8 +108,8 @@ final class DelegationSuccessEnvelopeTests: XCTestCase {
     private var delegate: MockLLMExecutionDelegate!
     private var tempDir: URL!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("NTDelegEnvelopes-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -120,13 +120,13 @@ final class DelegationSuccessEnvelopeTests: XCTestCase {
         service.attach(delegate: delegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
         service?.cancelAllExecutions()
         service = nil
         delegate = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: Fixtures
@@ -515,19 +515,19 @@ final class DelegationAwaiterEnvelopeWiringTests: XCTestCase {
     private var service: LLMExecutionService!
     private var delegate: MockLLMExecutionDelegate!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         service = LLMExecutionService(repository: NTMSRepository())
         delegate = MockLLMExecutionDelegate()
         service.attach(delegate: delegate)
         service._testRegisterStepTask(stepID: deParentStepID, taskID: deParentTID)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service?.cancelAllExecutions()
         service = nil
         delegate = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: Fixtures
@@ -766,18 +766,18 @@ final class LLMExecutionServiceTaskStateMutationTests: XCTestCase {
     private let stepID = "startup_software_engineer"
     private let taskID = 7
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         service = LLMExecutionService(repository: NTMSRepository())
         delegate = MockLLMExecutionDelegate()
         service.attach(delegate: delegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service?.cancelAllExecutions()
         service = nil
         delegate = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: Fixtures

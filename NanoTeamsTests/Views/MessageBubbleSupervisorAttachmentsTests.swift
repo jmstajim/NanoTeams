@@ -25,8 +25,8 @@ import XCTest
 @MainActor
 final class MessageBubbleSupervisorAttachmentsTests: XCTestCase {
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
     }
 

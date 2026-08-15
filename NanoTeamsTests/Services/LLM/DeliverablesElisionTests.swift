@@ -17,14 +17,14 @@ import XCTest
 @MainActor
 final class DeliverablesElisionTests: XCTestCase {
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         MonotonicClock.shared.reset()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Literal-pin: no producing-role template ships `{expectedArtifacts}.`

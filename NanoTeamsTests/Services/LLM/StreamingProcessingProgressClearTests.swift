@@ -23,18 +23,18 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
     private var service: LLMExecutionService!
     private var delegate: MockLLMExecutionDelegate!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         service = LLMExecutionService(repository: NTMSRepository())
         delegate = MockLLMExecutionDelegate()
         service.attach(delegate: delegate)
         service._testRegisterStepTask(stepID: "step1", taskID: 1)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service = nil
         delegate = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Clear on first thinking delta

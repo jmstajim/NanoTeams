@@ -11,14 +11,14 @@ final class ErrorBannerModifierTests: XCTestCase {
 
     var store: NTMSOrchestrator!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         store = TestOrchestrator.make()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         store = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - lastErrorMessage Baseline
@@ -83,35 +83,23 @@ final class ErrorBannerModifierTests: XCTestCase {
     }
 
     // MARK: - Partial Staging Error Message Format
-
-    func testStagingErrorMessage_singleFileSkipped() {
-        let total = 3
-        let staged = 2
-        let skipped = total - staged
-
-        let message = "\(skipped) of \(total) files could not be attached."
-        XCTAssertEqual(message, "1 of 3 files could not be attached.")
-    }
-
-    func testStagingErrorMessage_allFilesSkipped() {
-        let total = 5
-        let staged = 0
-        let skipped = total - staged
-
-        let message = "\(skipped) of \(total) files could not be attached."
-        XCTAssertEqual(message, "5 of 5 files could not be attached.")
-    }
-
-    func testStagingErrorMessage_noFilesSkipped_noMessageSet() {
-        let total = 3
-        let staged = 3
-
-        // The controller only sets lastErrorMessage when stagedCount < total
-        if staged < total {
-            store.lastErrorMessage = "\(total - staged) of \(total) files could not be attached."
-        }
-        XCTAssertNil(store.lastErrorMessage, "No error should be set when all files staged successfully")
-    }
+    //
+    // Deliberately empty. Three tests lived here that built the failure string
+    // inside the test and compared it against a literal, without calling any
+    // production symbol — so they passed no matter what `ClipboardStagingPolicy`
+    // did, and the compiler eventually said so out loud ("will never be
+    // executed": `staged < total` over two `let` constants folds to `false`, so
+    // the one branch that touched `store` was unreachable and the test degraded
+    // into a duplicate of `testLastErrorMessage_initiallyNil`).
+    //
+    // The real coverage is in `ClipboardStagingPolicyTests`, which drives
+    // `ClipboardStagingPolicy.plan` itself:
+    // `testStagingFailure_reportsTheCount` pins the exact wording,
+    // `testAllFilesStage_noFailureMessage` pins the silent path, and
+    // `testMixedDuplicateAndFailure_countsOnlyTheFailure` pins the count.
+    // A banner-level test would have to go through
+    // `QuickCaptureController.stageCapturedContent`, the one site that writes
+    // `store.lastErrorMessage`.
 }
 
 // MARK: - ErrorBannerView Tests

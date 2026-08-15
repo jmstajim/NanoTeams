@@ -34,18 +34,18 @@ final class CollaborationEnvelopeShapePinTests: XCTestCase {
     private let stepID = "manager"
     private let taskID = 88
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         mockDelegate = nil
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Every Autovisor management signal, both outcomes of the shared
@@ -79,7 +79,7 @@ final class CollaborationEnvelopeShapePinTests: XCTestCase {
         seedStep(toolCallID: toolCallID, toolName: ToolNames.controlTask)
 
         var conversation: [ChatMessage] = []
-        await service.appendCollaborationResult(
+        _ = await service.appendCollaborationResult(
             result: makeResult(toolName: ToolNames.controlTask,
                                signal: .controlTask(taskID: 5, verb: .stop)),
             toolCallID: toolCallID, roleForMessage: .autovisor, stepID: stepID,
@@ -112,7 +112,7 @@ final class CollaborationEnvelopeShapePinTests: XCTestCase {
         }
         if !ok {
             XCTAssertNotNil(dict["error"],
-                            "\(label): a failing envelope must carry `error` so buildToolErrorGuidance "
+                            "\(label): a failing envelope must carry `error` so ToolErrorNotePolicy.direction "
                                 + "can pick a recovery direction; got: \(envelope)")
         }
     }
@@ -166,7 +166,7 @@ final class CollaborationEnvelopeShapePinTests: XCTestCase {
         let toolCallID = UUID()
         seedStep(toolCallID: toolCallID, toolName: toolName)
         var conversation: [ChatMessage] = []
-        await service.appendCollaborationResult(
+        _ = await service.appendCollaborationResult(
             result: makeResult(toolName: toolName, signal: signal),
             toolCallID: toolCallID, roleForMessage: .autovisor, stepID: stepID,
             task: mockDelegate.taskToMutate!, runIndex: 0, stepIndex: 0,

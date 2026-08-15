@@ -12,8 +12,8 @@ final class WorkFolderManagementServiceTests: XCTestCase {
     /// Fresh service instance for round-trip persistence tests
     private var freshService: WorkFolderManagementService!
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
         tempDir = fileManager.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
             .standardizedFileURL
@@ -23,7 +23,7 @@ final class WorkFolderManagementServiceTests: XCTestCase {
         freshService = WorkFolderManagementService(repository: repository)
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         if let tempDir {
             try? fileManager.removeItem(at: tempDir)
         }
@@ -31,7 +31,7 @@ final class WorkFolderManagementServiceTests: XCTestCase {
 //        freshService = nil
         repository = nil
         tempDir = nil
-        try super.tearDownWithError()
+        try await super.tearDown()
     }
 
     // MARK: - openOrCreateWorkFolder

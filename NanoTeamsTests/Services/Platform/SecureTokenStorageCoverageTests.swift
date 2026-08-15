@@ -202,8 +202,13 @@ final class SecureTokenStorageCoverageTests: XCTestCase {
     func testKeychain_loadToken_absentEntry_returnsNilWithoutThrowing() throws {
         let sut = KeychainSecureTokenStorage(service: testService("read"))
         do {
-            XCTAssertNil(try sut.loadToken(forKey: "http://127.0.0.1:1234"))
-        } catch KeychainError.unhandled(let status) {
+            // `try` is hoisted out of the assertion on purpose: `XCTAssertNil`
+            // takes an `@autoclosure () throws -> Any?` and is NOT `rethrows`,
+            // so a `try` written inside it is caught by XCTest and can never
+            // reach the `catch` below — which silently kills the XCTSkip path.
+            let value = try sut.loadToken(forKey: "http://127.0.0.1:1234")
+            XCTAssertNil(value)
+        } catch KeychainError.unhandled(let status) where platformIsKeychainUnavailable(status) {
             throw XCTSkip("Keychain lookup refused on this runner (status \(status)).")
         }
     }
@@ -219,8 +224,9 @@ final class SecureTokenStorageCoverageTests: XCTestCase {
     func testKeychain_loadToken_emptyKey_returnsNilWithoutThrowing() throws {
         let sut = KeychainSecureTokenStorage(service: testService("read-emptykey"))
         do {
-            XCTAssertNil(try sut.loadToken(forKey: ""))
-        } catch KeychainError.unhandled(let status) {
+            let value = try sut.loadToken(forKey: "")
+            XCTAssertNil(value)
+        } catch KeychainError.unhandled(let status) where platformIsKeychainUnavailable(status) {
             throw XCTSkip("Keychain lookup refused on this runner (status \(status)).")
         }
     }

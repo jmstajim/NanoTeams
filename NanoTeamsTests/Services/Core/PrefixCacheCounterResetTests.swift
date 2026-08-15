@@ -11,7 +11,7 @@ import XCTest
 /// Autovisor starts a run every minute, so a global reset there would discard the counts of the
 /// user's own tasks on the manager's cadence. Both directions are pinned below.
 @MainActor
-final class PrefixCacheCounterResetTests: NTMSOrchestratorTestBase {
+final class PrefixCacheCounterResetTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private func reportMiss(task: Int, run: Int) {
         sut.prefixCacheReporter.report(PrefixCacheMiss(

@@ -8,8 +8,8 @@ final class TaskMutationServiceTests: XCTestCase {
     private var tempDir: URL!
     private var repository: NTMSRepository!
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
         // Use standardizedFileURL to resolve symlinks (/var -> /private/var on macOS)
         tempDir = fileManager.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -18,18 +18,18 @@ final class TaskMutationServiceTests: XCTestCase {
         repository = NTMSRepository()
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         if let tempDir {
             try? fileManager.removeItem(at: tempDir)
         }
         repository = nil
         tempDir = nil
-        try super.tearDownWithError()
+        try await super.tearDown()
     }
 
     private func createTaskWithStep() throws -> (task: NTMSTask, stepID: String) {
         _ = try repository.openOrCreateWorkFolder(at: tempDir)
-        var (context, _) = try repository.createTask(at: tempDir, title: "Test Task", supervisorTask: "Test Goal")
+        let (context, _) = try repository.createTask(at: tempDir, title: "Test Task", supervisorTask: "Test Goal")
         var task = context.activeTask!
 
         let stepID = "test_step"
@@ -915,7 +915,7 @@ final class TaskMutationServiceTests: XCTestCase {
 
     func testMutationsOnTaskWithMultipleRuns() throws {
         _ = try repository.openOrCreateWorkFolder(at: tempDir)
-        var (context, _) = try repository.createTask(at: tempDir, title: "Multi-Run Task", supervisorTask: "Goal")
+        let (context, _) = try repository.createTask(at: tempDir, title: "Multi-Run Task", supervisorTask: "Goal")
         var task = context.activeTask!
 
         // Add first run with a step

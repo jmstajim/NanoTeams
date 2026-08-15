@@ -16,7 +16,7 @@ import XCTest
 /// is gone, and the user-actionable recovery for "folder deleted" is not
 /// the same as "permission denied".
 @MainActor
-final class SwitchTaskErrorClassificationTests: NTMSOrchestratorTestBase {
+final class SwitchTaskErrorClassificationTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private let persistenceSuffix = "will not persist across app restarts"
 

@@ -20,7 +20,7 @@ final class BootstrapLegacyCleanupCoverageTests: XCTestCase, @unchecked Sendable
     /// Refuses to delete the legacy orphan and nothing else, so the rest of bootstrap — the orphan
     /// temp-file sweep, the directory probes, the split-file writes — runs against the real
     /// filesystem and can still be asserted on.
-    private final class ProjectJSONRemovalRefusingFileManager: FileManager, @unchecked Sendable {
+    private final class ProjectJSONRemovalRefusingFileManager: FileManager {
         nonisolated(unsafe) var refusals: [String] = []
 
         override func removeItem(at url: URL) throws {

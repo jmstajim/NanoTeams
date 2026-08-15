@@ -15,19 +15,19 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
     var codingAgent: Team!
     var allTeams: [Team]!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         faang = TeamTemplateFactory.faang()
         codingAgent = TeamTemplateFactory.codingAgent()
         allTeams = TeamTemplateFactory.allTemplates
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         faang = nil
         codingAgent = nil
         allTeams = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Helpers

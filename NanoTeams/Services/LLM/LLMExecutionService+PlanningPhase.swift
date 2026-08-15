@@ -53,7 +53,16 @@ extension LLMExecutionService {
             wireCarriesClosedMarker: PlanningPhasePolicy.wireCarriesClosedMarker(
                 conversationMessages)
         )
-        let authorization = PlanningPhasePolicy.authorization(for: decision, tools: tools)
+        // Read fresh every iteration, like every other input above. A user who turns the sandbox
+        // off — or switches the mode down to `.manual` — mid-phase moves `bash` into
+        // `withheldByPhase` on the very next iteration: fail-closed, and `plan_required` stays
+        // literally true (after the boundary it runs under their own settings). No delegate ⇒
+        // no policy ⇒ no enforcement ⇒ do not advertise.
+        let bashPolicy = delegate?.bashPolicy
+        let authorization = PlanningPhasePolicy.authorization(
+            for: decision, tools: tools,
+            bashAdmitted: bashPolicy?.sandboxEnabled == true
+                && bashPolicy?.mode.allowsUnattendedCommands == true)
 
         switch decision {
         case .enterPlanning:

@@ -7,7 +7,7 @@ import XCTest
 /// demand (the same hook `startRun` fires), and edited via the persisted
 /// add/remove/restore APIs.
 @MainActor
-final class AgentInstructionsOrchestratorTests: NTMSOrchestratorTestBase {
+final class AgentInstructionsOrchestratorTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private func writeFile(_ relativePath: String, _ content: String = "instructions") throws {
         let url = tempDir.appendingPathComponent(relativePath)

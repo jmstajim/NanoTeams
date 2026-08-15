@@ -5,7 +5,7 @@ import XCTest
 /// E2E tests for multi-task concurrent execution: engine isolation, task switching,
 /// background task preservation, and adapter routing.
 @MainActor
-final class EndToEndMultiTaskTests: NTMSOrchestratorTestBase {
+final class EndToEndMultiTaskTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Test 1: Two tasks created successfully
 

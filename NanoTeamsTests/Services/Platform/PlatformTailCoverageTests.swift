@@ -41,8 +41,8 @@ final class GPlatAnswerModeTransitionTests: XCTestCase {
     private var coordinator: GPlatStubModeCoordinator!
     private var sut: QuickCaptureController!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         // The process-global singleton is not used here, but a sibling class may have
         // left state on it; resetting keeps this class from being blamed for a crash
         // in someone else's leaked panel.
@@ -54,11 +54,11 @@ final class GPlatAnswerModeTransitionTests: XCTestCase {
         )
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut = nil
         coordinator = nil
         QuickCaptureController.shared._testReset()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func payload(
@@ -164,19 +164,19 @@ final class GPlatPanelCallbackWiringTests: XCTestCase {
 
     var sut: QuickCaptureController!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         sut = QuickCaptureController.shared
         sut._testReset()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         // Order the real NSPanel out before dropping the reference — `_testReset`
         // nils `panel` without hiding it.
         sut.dismissPanel()
         sut._testReset()
         sut = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// AppKit ordered the panel out by a route we did not initiate. The controller's
@@ -237,20 +237,20 @@ final class GPlatPanelCallbackWiringTests: XCTestCase {
 /// that dispatches it) were both unreached, because every existing test injects the
 /// `startRunForTesting` seam that short-circuits them.
 @MainActor
-final class GPlatQueueStartWakeTests: NTMSOrchestratorTestBase {
+final class GPlatQueueStartWakeTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private var controller: QuickCaptureController!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         QuickCaptureController.shared._testReset()
         controller = QuickCaptureController(formState: QuickCaptureFormState())
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         controller = nil
         QuickCaptureController.shared._testReset()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func waitUntil(_ predicate: () -> Bool, timeout: TimeInterval = 3.0) async {
@@ -342,20 +342,20 @@ final class GPlatQueueStartWakeTests: NTMSOrchestratorTestBase {
 /// `prependQueuedMessages` helper instead and left the arm itself unreached. Attachment
 /// finalization is not a race: a staged path with no file behind it fails every time.
 @MainActor
-final class GPlatBackstopFlushFailureTests: NTMSOrchestratorTestBase {
+final class GPlatBackstopFlushFailureTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private var controller: QuickCaptureController!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         QuickCaptureController.shared._testReset()
         controller = QuickCaptureController(formState: QuickCaptureFormState())
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         controller = nil
         QuickCaptureController.shared._testReset()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func waitUntil(_ predicate: () -> Bool, timeout: TimeInterval = 3.0) async {
@@ -431,20 +431,20 @@ final class GPlatBackstopFlushFailureTests: NTMSOrchestratorTestBase {
 /// two must behave the same way: report which files could not be embedded, and still
 /// submit, because the user's typed answer is independent of the attachments.
 @MainActor
-final class GPlatSubmitAnswerEmbedFailureTests: NTMSOrchestratorTestBase {
+final class GPlatSubmitAnswerEmbedFailureTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private var controller: QuickCaptureController!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         QuickCaptureController.shared._testReset()
         controller = QuickCaptureController(formState: QuickCaptureFormState())
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         controller = nil
         QuickCaptureController.shared._testReset()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// RED: delete the `if !result.failedFiles.isEmpty { ... }` block → no banner, and
@@ -515,14 +515,14 @@ final class GPlatSubmitAnswerEmbedFailureTests: NTMSOrchestratorTestBase {
 @MainActor
 final class GPlatInertSelectionCapturerTests: XCTestCase {
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         QuickCaptureController.shared._testReset()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         QuickCaptureController.shared._testReset()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// RED: change `init`'s `?? InertSelectionCapturer()` to `?? SystemSelectionCapturer()`

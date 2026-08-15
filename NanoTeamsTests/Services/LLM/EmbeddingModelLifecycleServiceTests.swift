@@ -8,16 +8,16 @@ final class EmbeddingModelLifecycleServiceTests: XCTestCase {
     var client: RecordingLLMClient!
     var sut: EmbeddingModelLifecycleService!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         client = RecordingLLMClient()
         sut = EmbeddingModelLifecycleService(client: client)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut = nil
         client = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures

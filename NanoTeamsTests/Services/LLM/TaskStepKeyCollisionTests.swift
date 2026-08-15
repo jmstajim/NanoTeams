@@ -23,14 +23,14 @@ final class StreamingPreviewManagerCrossTaskIsolationTests: XCTestCase, @uncheck
     private let taskA = 39
     private let taskB = 40
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         sut = StreamingPreviewManager()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Seeds a full set of live indicator state for one task's step.
@@ -183,18 +183,18 @@ final class ExecutionStateCrossTaskIsolationTests: XCTestCase, @unchecked Sendab
     private let taskA = 39
     private let taskB = 40
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service?.cancelAllExecutions()
         service = nil
         mockDelegate = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// A long-suspended stand-in for a live LLM stream; finishes promptly when
@@ -346,7 +346,7 @@ final class ExecutionStateCrossTaskIsolationTests: XCTestCase, @unchecked Sendab
 /// iterated B's steps and called `cancelStepExecution(stepID:)` on the shared
 /// key — killing A's live LLM stream (the trace's `EXEC end task=39 via=cancelStep`).
 @MainActor
-final class PauseRunCrossTaskCollisionTests: NTMSOrchestratorTestBase {
+final class PauseRunCrossTaskCollisionTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private let sharedStepID = "startup_software_engineer"
 
@@ -564,8 +564,8 @@ final class PostTeardownWriteBarrierTests: XCTestCase, @unchecked Sendable {
     private let stepID = "test_step"
     private let taskID = 0
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
         service.attach(delegate: mockDelegate)
@@ -576,11 +576,11 @@ final class PostTeardownWriteBarrierTests: XCTestCase, @unchecked Sendable {
             id: taskID, title: "T", supervisorTask: "G", runs: [run])
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service?.cancelAllExecutions()
         service = nil
         mockDelegate = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     func testPersistTokenUsage_afterTeardown_isDropped() async {
@@ -645,14 +645,14 @@ final class StreamingSnapshotKeyingTests: XCTestCase, @unchecked Sendable {
     private var manager: StreamingPreviewManager!
     private let stepID = "startup_software_engineer"
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         manager = StreamingPreviewManager()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         manager = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     func testSnapshot_readsUnderOwningTaskID_notTheOtherTasks() async {
@@ -767,18 +767,18 @@ final class PostTeardownWriteBarrierCornerTests: XCTestCase, @unchecked Sendable
         func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
     }
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service?.cancelAllExecutions()
         service = nil
         mockDelegate = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func makeTask(id: Int) -> NTMSTask {
@@ -1057,18 +1057,18 @@ final class OrphanStreamCommitDropTests: XCTestCase, @unchecked Sendable {
         func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
     }
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service?.cancelAllExecutions()
         service = nil
         mockDelegate = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     func testBulkCancelMidStream_dropsTheFinalCommit() async throws {
@@ -1182,18 +1182,18 @@ final class DelegationGenerationTeardownTests: XCTestCase, @unchecked Sendable {
         func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
     }
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service?.cancelAllExecutions()
         service = nil
         mockDelegate = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Parent task whose generated team contains a top-level delegator role

@@ -11,7 +11,7 @@ import XCTest
 /// "did anything change?" test would look at — which is how the first cut came to report
 /// `ok:true` for a call that regenerated nothing.
 @MainActor
-final class TeamGenerationRetryReportingTests: NTMSOrchestratorTestBase {
+final class TeamGenerationRetryReportingTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Nothing to retry
 

@@ -127,7 +127,7 @@ nonisolated struct CreateArtifactTool: ToolHandler {
             if !ArtifactConstants.isValidArtifactName(name) {
                 if context.expectedArtifacts.isEmpty {
                     // Emit the executor's `tool_not_authorized` envelope shape so
-                    // `buildToolErrorGuidance` routes through the bespoke
+                    // `ToolErrorNotePolicy.direction` routes through the bespoke
                     // "don't retry" branch — the args aren't the cause; the
                     // tool itself shouldn't be in the role's schema. The
                     // generic `commandFailed` envelope falls through to "retry

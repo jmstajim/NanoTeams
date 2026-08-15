@@ -23,18 +23,18 @@ final class CollaborationDelegationDispatchTests: XCTestCase {
     private let stepID = "agent_step"
     private let taskID = 91
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         mockDelegate = nil
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - delegate_to_team
@@ -70,7 +70,7 @@ final class CollaborationDelegationDispatchTests: XCTestCase {
     }
 
     /// Eligibility is a policy rejection, not an argument error: the envelope must
-    /// carry `DELEGATION_DENIED` so `buildToolErrorGuidance` steers the model away
+    /// carry `DELEGATION_DENIED` so `ToolErrorNotePolicy.direction` steers the model away
     /// from retrying rather than toward fixing its arguments.
     func testDelegateToTeam_nonPeerRole_isDeniedNotInvalidArgs() async {
         let toolCallID = UUID()
@@ -219,7 +219,7 @@ final class CollaborationDelegationDispatchTests: XCTestCase {
             providerID: "tc_1", toolName: toolName, argumentsJSON: "{}",
             outputJSON: #"{"ok":true,"data":{"status":"pending"}}"#,
             isError: false, signal: signal)
-        await service.appendCollaborationResult(
+        _ = await service.appendCollaborationResult(
             result: result, toolCallID: toolCallID, roleForMessage: roleForMessage,
             stepID: stepID, task: mockDelegate.taskToMutate!, runIndex: 0, stepIndex: 0,
             client: InertLLMClient(), config: LLMConfig(), networkLogger: nil,

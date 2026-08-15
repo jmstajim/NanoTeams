@@ -8,17 +8,17 @@ final class ChatModeEngineTests: XCTestCase {
     var sut: TeamEngine!
     var mockStore: MockTeamEngineStore!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         mockStore = MockTeamEngineStore()
         sut = TeamEngine(store: mockStore)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut.stop()
         sut = nil
         mockStore = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Helpers

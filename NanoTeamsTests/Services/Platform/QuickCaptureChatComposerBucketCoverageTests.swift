@@ -25,17 +25,17 @@ final class QuickCaptureChatComposerBucketCoverageTests: XCTestCase {
     private var capturer: BucketTestCapturer!
     private var controller: QuickCaptureController!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         QuickCaptureController.shared._testReset()
         capturer = BucketTestCapturer()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         controller = nil
         capturer = nil
         QuickCaptureController.shared._testReset()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func makeController() -> QuickCaptureController {

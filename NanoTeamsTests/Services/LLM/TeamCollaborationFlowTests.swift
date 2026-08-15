@@ -12,8 +12,8 @@ final class TeamCollaborationFlowTests: XCTestCase {
     var mockDelegate: MockLLMExecutionDelegate!
     var tempDir: URL!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -25,14 +25,14 @@ final class TeamCollaborationFlowTests: XCTestCase {
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service = nil
         mockDelegate = nil
         if let tempDir {
             try? FileManager.default.removeItem(at: tempDir)
         }
         tempDir = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Helpers

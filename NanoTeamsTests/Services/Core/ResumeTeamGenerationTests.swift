@@ -17,7 +17,7 @@ import XCTest
 /// Generation therefore always fails in transport, which is exactly what we want — the
 /// assertions are about whether generation was ENTERED, not about its result.
 @MainActor
-final class ResumeTeamGenerationTests: NTMSOrchestratorTestBase {
+final class ResumeTeamGenerationTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - The fix
 

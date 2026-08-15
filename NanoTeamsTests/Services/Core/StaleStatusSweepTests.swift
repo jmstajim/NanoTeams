@@ -18,7 +18,7 @@ import XCTest
 /// summary in `tasks_index.json`, and the sidebar rendered it verbatim until
 /// the user clicked into the task.
 @MainActor
-final class StaleStatusSweepTests: NTMSOrchestratorTestBase {
+final class StaleStatusSweepTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Helpers
 
@@ -178,7 +178,7 @@ final class StaleStatusSweepTests: NTMSOrchestratorTestBase {
         let a = await sut.createTask(title: "A", supervisorTask: "a")!
         await sut.mutateTask(taskID: a) { task in
             task.setStoredChatMode(false)
-            var step = StepExecution(
+            let step = StepExecution(
                 id: "worker", role: .softwareEngineer, title: "Work",
                 status: .needsSupervisorInput,
                 needsSupervisorInput: true,
@@ -425,7 +425,7 @@ final class StaleStatusSweepTests: NTMSOrchestratorTestBase {
         let a = await sut.createTask(title: "A", supervisorTask: "a")!
         await sut.mutateTask(taskID: a) { task in
             task.setStoredChatMode(false)
-            var step = StepExecution(
+            let step = StepExecution(
                 id: "worker", role: .softwareEngineer, title: "Work",
                 status: .needsSupervisorInput,
                 needsSupervisorInput: true,
@@ -839,7 +839,7 @@ final class StaleStatusSweepTests: NTMSOrchestratorTestBase {
         await sut.mutateWorkFolder { $0.state.autovisorTaskID = mgr }
         await sut.ensureTaskLoaded(mgr)
         await sut.mutateTask(taskID: mgr) { task in
-            var step = StepExecution(
+            let step = StepExecution(
                 id: "autovisor", role: .softwareEngineer, title: "Autovisor",
                 status: .needsSupervisorInput,
                 needsSupervisorInput: true,

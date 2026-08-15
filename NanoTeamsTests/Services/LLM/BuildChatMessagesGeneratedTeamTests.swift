@@ -14,18 +14,18 @@ final class BuildChatMessagesGeneratedTeamTests: XCTestCase, @unchecked Sendable
     private var service: LLMExecutionService!
     private var mockDelegate: MockLLMExecutionDelegate!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service?.cancelAllExecutions()
         service = nil
         mockDelegate = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     func testBuildChatMessages_generatedTeam_systemPromptUsesGeneratedRoster() {

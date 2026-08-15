@@ -279,6 +279,10 @@ final class SeatbeltSandboxTests: XCTestCase {
             BashSandboxPermissions(workFolderWrite: false),
             BashSandboxPermissions(tempWrite: false),
             BashSandboxPermissions(workFolderWrite: false, tempWrite: false),
+            // The planning-phase profile: every write scope off. Must compile and RUN under the
+            // real binary like every other variant — this is the profile `BashTool` builds for
+            // the whole phase, so a shell that cannot start under it would take the feature down.
+            BashSandboxPermissions().withWritesDisabled(),
             BashSandboxPermissions(credentialRead: true),
             BashSandboxPermissions(everythingElseWrite: true),
             BashSandboxPermissions(

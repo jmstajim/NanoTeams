@@ -22,7 +22,7 @@ import XCTest
 /// These tests confirm that the orchestrator's API contract holds under
 /// parallel awaits, not that it's lock-free concurrent.
 @MainActor
-final class EndToEndConcurrentTaskCreationTests: NTMSOrchestratorTestBase {
+final class EndToEndConcurrentTaskCreationTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Scenario 1: 10 parallel creates all succeed with unique IDs
 

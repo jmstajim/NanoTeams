@@ -19,17 +19,17 @@ final class MessageTextLayoutCacheTests: XCTestCase {
     private var cache: MessageTextLayoutCache!
     private var storage: NSTextStorage!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         cache = MessageTextLayoutCache()
         storage = NSTextStorage(string: "Hello, world. This is a sample bubble that should wrap onto two or three lines at a narrow width.")
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         cache?.dismantle()
         cache = nil
         storage = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Cache hit / miss

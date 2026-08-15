@@ -28,8 +28,8 @@ final class PlanningBoundaryStateResetCoverageTests: XCTestCase {
     private let config = LLMConfig(
         provider: .ollama, baseURLString: "http://127.0.0.1:11434", modelName: "llama3.1")
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         sut = LLMExecutionService(repository: NTMSRepository())
         delegate = MockLLMExecutionDelegate()
         sut.attach(delegate: delegate)
@@ -37,10 +37,10 @@ final class PlanningBoundaryStateResetCoverageTests: XCTestCase {
         sut._testSetPrefixCacheState(stepID: stepID, taskID: taskID)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut = nil
         delegate = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// One request through the post-send truncation observer. The detector is a delta, so a

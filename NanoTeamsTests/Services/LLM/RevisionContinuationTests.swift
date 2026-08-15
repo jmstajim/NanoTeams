@@ -17,8 +17,8 @@ final class RevisionContinuationTests: XCTestCase {
     var mockDelegate: MockLLMExecutionDelegate!
     var tempDir: URL!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -33,14 +33,14 @@ final class RevisionContinuationTests: XCTestCase {
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let tempDir {
             try? FileManager.default.removeItem(at: tempDir)
         }
         tempDir = nil
         mockDelegate = nil
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - resetStepForRevision Tests
@@ -103,7 +103,7 @@ final class RevisionContinuationTests: XCTestCase {
 
         await simulateResetStepForRevision(task: &task, stepID: stepID)
 
-        let updated = mockDelegate.taskToMutate!.runs[0].steps[0]
+        _ = mockDelegate.taskToMutate!.runs[0].steps[0]
     }
 
     func testResetStepForRevision_setsRevisionComment() async {
@@ -275,7 +275,7 @@ final class RevisionContinuationTests: XCTestCase {
     /// the fallback-chain behavior itself is `RequestRevisionTests`, which drives the
     /// real adapter end-to-end.
     private func simulateResetStepForRevision(task: inout NTMSTask, stepID: String) async {
-        await mockDelegate.mutateTask(taskID: task.id) { task in
+        _ = await mockDelegate.mutateTask(taskID: task.id) { task in
             guard let location = task.locateStepInLatestRun(stepID: stepID) else { return }
             let step = task.runs[location.runIndex].steps[location.stepIndex]
             let status = step.status

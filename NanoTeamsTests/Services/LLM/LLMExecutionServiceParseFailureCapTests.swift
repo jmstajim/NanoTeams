@@ -35,8 +35,8 @@ final class LLMExecutionServiceParseFailureCapTests: XCTestCase {
     <|call|>{"name":"create_artifact","arguments":{"content":"<button onclick=\\"appendOperator('-')">-</button>","name":"index.html"}}<|end|>
     """
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
         service.attach(delegate: mockDelegate)
@@ -49,12 +49,12 @@ final class LLMExecutionServiceParseFailureCapTests: XCTestCase {
         service._testRegisterStepTask(stepID: stepID, taskID: task.id)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         mockDelegate = nil
         service = nil
         task = nil
         stepID = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Below threshold: continueLoop with retry nudge

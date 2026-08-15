@@ -8,8 +8,8 @@ final class ActivityFeedBuilderTests: XCTestCase {
 
     private typealias TN = ToolNames
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
     }
 

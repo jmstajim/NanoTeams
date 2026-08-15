@@ -9,7 +9,7 @@ import XCTest
 /// multi-task) shows a stale status label in the sidebar, and the scheduler's
 /// in-memory index scan misses background recurrences.
 @MainActor
-final class MutateTaskBackgroundIndexTests: NTMSOrchestratorTestBase {
+final class MutateTaskBackgroundIndexTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     func testBackgroundMutation_refreshesInMemoryTaskSummaryStatus() async {
         await sut.openWorkFolder(tempDir)

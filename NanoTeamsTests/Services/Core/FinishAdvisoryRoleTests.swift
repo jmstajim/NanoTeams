@@ -6,7 +6,7 @@ import XCTest
 /// Advisory roles have no output artifacts but have input artifacts (`isAdvisory`).
 /// Finish sets step→.done + role→.done directly, no intermediate states.
 @MainActor
-final class FinishAdvisoryRoleTests: NTMSOrchestratorTestBase {
+final class FinishAdvisoryRoleTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Helpers
 
@@ -100,7 +100,17 @@ final class FinishAdvisoryRoleTests: NTMSOrchestratorTestBase {
 
         let run = sut.activeTask?.runs.last
         XCTAssertEqual(run?.roleStatuses[roleID], .done)
-        XCTAssertTrue(run?.steps.isEmpty ?? false)
+        // The FINISHED role still gets no step — that is what "withoutStep" is about.
+        //
+        // This used to assert `run.steps.isEmpty`, which held only because the wake was a silent
+        // no-op with no engine object: `finishAdvisoryRoleAwaiting` called
+        // `taskEngines[taskID]?.notifyExternalEvent()` and this task has never had an engine.
+        // Now that the wake is total, the engine starts and does what its own comment promises —
+        // "check completion / start dependents" — so a step for the ROSTER's ready role
+        // legitimately appears (measured: `coding_assistant_coding_assistant`, `.running`).
+        // Asserting the whole array empty would re-pin the bug.
+        XCTAssertNil(run?.steps.first(where: { $0.effectiveRoleID == roleID }),
+                     "finishing a role that never had a step must not fabricate one for it")
     }
 
     // MARK: - Pending Step

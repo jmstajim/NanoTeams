@@ -5,7 +5,7 @@ import XCTest
 /// Tests for `restartRole()` — cascading role reset with automatic engine start.
 /// Verifies step/role cleanup, downstream cascade, closedAt clearing, and engine creation.
 @MainActor
-final class RestartRoleTests: NTMSOrchestratorTestBase {
+final class RestartRoleTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Helpers
 
@@ -187,7 +187,7 @@ final class RestartRoleTests: NTMSOrchestratorTestBase {
             if let pmIdx = wf.teams[teamIdx].roles.firstIndex(where: { $0.id == pmRoleID }) {
                 wf.teams[teamIdx].roles[pmIdx].dependencies.producesArtifacts = ["Product Requirements"]
             } else {
-                var pmRole = TeamRoleDefinition(id: pmRoleID, name: "PM", prompt: "", toolIDs: [], usePlanningPhase: false, dependencies: RoleDependencies(requiredArtifacts: [], producesArtifacts: ["Product Requirements"]))
+                let pmRole = TeamRoleDefinition(id: pmRoleID, name: "PM", prompt: "", toolIDs: [], usePlanningPhase: false, dependencies: RoleDependencies(requiredArtifacts: [], producesArtifacts: ["Product Requirements"]))
                 wf.teams[teamIdx].roles.append(pmRole)
             }
             if let sweIdx = wf.teams[teamIdx].roles.firstIndex(where: { $0.id == sweRoleID }) {

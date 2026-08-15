@@ -47,19 +47,19 @@ final class TeamEngineScenarioTests: XCTestCase {
     var sut: TeamEngine!
     var mockStore: MockTeamEngineStore!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         mockStore = MockTeamEngineStore()
         sut = TeamEngine(store: mockStore)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut.stop()
         sut = nil
         mockStore = nil
         MonotonicClock.shared.reset()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Scenario 1: afterEachRole acceptance
@@ -302,8 +302,7 @@ final class TeamEngineScenarioTests: XCTestCase {
         // After revision starts, make step complete so engine reaches a terminal state
         // The engine will call resetStepForRevision, then runStep, then waitForStepCompletion
         let expectation = XCTestExpectation(description: "Engine processes revision")
-        sut.onStateChanged = { [weak self] state in
-            guard let self else { return }
+        sut.onStateChanged = { state in
             if state == .needsAcceptance || state == .done || state == .failed {
                 expectation.fulfill()
             }

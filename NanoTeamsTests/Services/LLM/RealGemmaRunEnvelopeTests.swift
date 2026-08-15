@@ -40,8 +40,8 @@ final class RealGemmaRunEnvelopeTests: XCTestCase {
     private let stepID = "step0"
     private let taskID = 0
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         mockClient = MockStreamClient()
         service = LLMExecutionService(repository: NTMSRepository())
@@ -51,10 +51,10 @@ final class RealGemmaRunEnvelopeTests: XCTestCase {
             LLMExecutionService.StepExecutionState()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service = nil; mockDelegate = nil; mockClient = nil
         MonotonicClock.shared.reset()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Feeds `reasoning` on the reasoning channel and `content` on the content

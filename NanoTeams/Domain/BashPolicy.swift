@@ -29,6 +29,30 @@ nonisolated enum BashExecutionMode: String, Codable, CaseIterable, Hashable {
 
     var displayName: String { Self.metadata[self]?.displayName ?? rawValue }
     var settingDescription: String { Self.metadata[self]?.description ?? "" }
+
+    /// Whether a command can reach `.allow` in this mode WITHOUT a human being asked.
+    ///
+    /// The discriminator is the reachability of `BashPermissionService.evaluate`'s read-only
+    /// bypass (its step 4), not the declaration order of these cases. `.manual` returns `.ask`
+    /// at step 1b — ABOVE the bypass, deliberately, because the user opted into confirming each
+    /// command — so no command whatsoever runs unattended there; `.off` denies at step 0.
+    /// `.semiAutomatic` and `.auto` both fall through to the bypass, so ordinary reads
+    /// (`ls`, `cat`, `grep`, `head`, `wc`, `jq`, `tree`, `diff`) resolve with neither a human
+    /// nor the judge.
+    ///
+    /// Consumed by `PlanningPhasePolicy`'s admission test: a planning phase is a fast
+    /// fact-gathering stretch, and under `.manual` it would degenerate into a per-command
+    /// approval queue (or, with no human present, into a wall of denials).
+    ///
+    /// Exhaustive `switch`, no `default`: a mode added later must be classified by whoever adds
+    /// it. Inferring the answer from case order would hand a new case whatever its neighbour
+    /// happened to have.
+    var allowsUnattendedCommands: Bool {
+        switch self {
+        case .off, .manual: false
+        case .semiAutomatic, .auto: true
+        }
+    }
 }
 
 /// How strict the Auto judge should be when ruling on an "ask" command.
@@ -175,5 +199,30 @@ nonisolated struct BashPolicy: Codable, Hashable, Sendable {
             ?? BashSandboxPermissions()
         self.allowUnsandboxedFallback = try c.decodeIfPresent(Bool.self, forKey: .allowUnsandboxedFallback) ?? false
         self.judgeOverride = try c.decodeIfPresent(LLMOverride.self, forKey: .judgeOverride)
+    }
+
+    /// The policy a step is REALLY running under while it is in its planning phase: the same
+    /// rules and the same mode, with the sandbox narrowed exactly as `BashTool` narrows it per
+    /// call and the unsandboxed fallback forced off.
+    ///
+    /// Two consumers, and both would otherwise describe a confinement that is not in force:
+    /// `BashJudgeService.sandboxConfinementDescription` renders `sandboxPermissions` verbatim
+    /// into the judge's system prompt (its own doc requires the REAL sandbox, "not a fixed
+    /// assumption"), and the "Ask AI" advisor behind a human approval card runs that same
+    /// description. Without this a judge would be told "writes are confined to the project work
+    /// folder" about a command that cannot write anywhere at all — wrong in the permissive
+    /// direction for writes and in the strict direction for harmless reads.
+    ///
+    /// `mode`, `restrictionLevel` and all three rule lists are untouched, which is what makes
+    /// the claim "the `.ask`/`.deny`/`.allow` tiering is unchanged during planning" PROVABLE:
+    /// `BashPermissionService.evaluate` never reads a sandbox field.
+    ///
+    /// `sandboxEnabled` is deliberately NOT forced true. Admission already requires it, so
+    /// forcing it here would mask a wiring bug instead of surfacing it.
+    func withWritesDisabled() -> BashPolicy {
+        var narrowed = self
+        narrowed.sandboxPermissions = sandboxPermissions.withWritesDisabled()
+        narrowed.allowUnsandboxedFallback = false
+        return narrowed
     }
 }

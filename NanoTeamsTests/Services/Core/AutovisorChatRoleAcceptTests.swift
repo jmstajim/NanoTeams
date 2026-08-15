@@ -7,7 +7,7 @@ import XCTest
 /// `performAutovisorAction` on synthetic chat teams with known role ids so the close
 /// decision (`Run.activeWorkRoles` over the resolved roster) is deterministic.
 @MainActor
-final class AutovisorChatRoleAcceptTests: NTMSOrchestratorTestBase {
+final class AutovisorChatRoleAcceptTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private let chatTeamID: NTMSID = "chat-accept-team"
 

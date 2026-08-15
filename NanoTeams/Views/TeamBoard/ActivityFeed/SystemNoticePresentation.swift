@@ -3,10 +3,17 @@ import Foundation
 /// Classifies a conversation turn as a SYSTEM-AUTHORED notice and derives the
 /// one-line form the activity feed collapses it into.
 ///
-/// Three `MessageSourceContext` cases are written by the runtime itself rather
-/// than by a human or a model: the retry nudges appended by `handleNoToolCalls`,
-/// the correction appended after a thinking loop was discarded, and the
-/// transient server-error retry note. Rendered as ordinary prose they are
+/// Five `MessageSourceContext` cases are written by the runtime itself rather
+/// than by a human or a model: the retry nudges (the eight `handleNoToolCalls`
+/// sites and the repetition warning), the correction appended after a thinking
+/// loop was discarded, the transient server-error retry note, the
+/// `update_scratchpad` acknowledgement, and a failure in the app's own work.
+/// The steering appended after a failed TOOL call used to be a sixth and is not:
+/// it comments on one event the feed already draws as a card, so it is persisted
+/// unattributed and never reaches this table — see `ToolErrorNotePolicy`.
+/// `.screenDescription` is runtime-generated too but is deliberately absent — it
+/// is CONTENT, the only record of what the model was shown, and a one-line row
+/// would hide the substance it then acted on. Rendered as ordinary prose they are
 /// indistinguishable from the working role's own turns — the feed attributes
 /// them to that role (`ActivityFeedBuilder` sets `displayRole = step.role`) and
 /// the `(retry)` header label only appears on a section boundary, which a nudge
@@ -52,6 +59,8 @@ nonisolated enum SystemNoticePresentation {
         .retryNudge: ("retry", false),
         .loopCorrection: ("loop correction", false),
         .serverError: ("server error", true),
+        .toolAcknowledgement: ("note", false),
+        .runtimeWarning: ("warning", true),
     ]
 
     private static let rowLabelPrefix = "system · "

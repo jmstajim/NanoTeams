@@ -16,8 +16,8 @@ final class MeetingToolCallLoggingTests: XCTestCase {
     private var jsonlURL: URL!
     private var netURL: URL!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         tempDir = fileManager.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -27,12 +27,12 @@ final class MeetingToolCallLoggingTests: XCTestCase {
         netURL = tempDir.appendingPathComponent("network_log.json")
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let tempDir { try? fileManager.removeItem(at: tempDir) }
         tempDir = nil
         jsonlURL = nil
         netURL = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Helpers
@@ -67,7 +67,7 @@ final class MeetingToolCallLoggingTests: XCTestCase {
         }
         let initial = TeamMeetingService.MeetingStreamResult(
             content: "", thinking: "", resolvedToolCalls: emitted)
-        let task = NTMSTask(id: 7, title: "T", supervisorTask: "g", runs: [Run(id: 0, steps: [])])
+        _ = NTMSTask(id: 7, title: "T", supervisorTask: "g", runs: [Run(id: 0, steps: [])])
         let context = TeamMeetingService.MeetingContext( initiatedBy: .softwareEngineer,
             participants: [.softwareEngineer, .productManager], availableArtifacts: [],
             artifactReader: { _ in nil }, team: nil,

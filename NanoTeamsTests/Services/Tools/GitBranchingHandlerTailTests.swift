@@ -660,7 +660,7 @@ final class GitBranchingHandlerTailTests: XCTestCase {
     private func run(_ tool: String, _ args: [String: Any]) async throws -> ToolExecutionResult {
         let json = String(data: try JSONSerialization.data(withJSONObject: args), encoding: .utf8)!
         let calls = [StepToolCall(name: tool, argumentsJSON: json)]
-        let results = await runtime.executeAll(context: context, toolCalls: calls)
+        let results = runtime.executeAll(context: context, toolCalls: calls)
         return try XCTUnwrap(results.first)
     }
 

@@ -42,7 +42,7 @@ final class PromptImprovementSession {
     /// per-delta internals are `@ObservationIgnored` so a delta burst doesn't
     /// re-evaluate host bodies that read session state.
     private(set) var phase: Phase = .idle
-    /// Non-nil → the Revert chip is visible; holds the text Revert restores.
+    /// Non-nil → the Revert button is visible; holds the text Revert restores.
     private(set) var revertText: String?
 
     var isImproving: Bool { phase == .waitingForFirstDelta || phase == .streaming }
@@ -72,7 +72,7 @@ final class PromptImprovementSession {
     /// Exact string of this stream's last field write; nil until the first
     /// write. CAS baseline for subsequent writes and for the restore.
     @ObservationIgnored private var lastWritten: String?
-    /// Final improved text of the last successful run — the Revert chip stays
+    /// Final improved text of the last successful run — the Revert button stays
     /// while the field still equals this value.
     @ObservationIgnored private var finalText: String?
     @ObservationIgnored private var accumulated = ""
@@ -157,8 +157,8 @@ final class PromptImprovementSession {
         stop()
     }
 
-    /// Revert chip: restore the user's original text (CAS-guarded — if the
-    /// field no longer holds the improved text, just retire the chip).
+    /// Revert button: restore the user's original text (CAS-guarded — if the
+    /// field no longer holds the improved text, just retire the revert offer).
     func revert() {
         guard let target = revertText else { return }
         if let read, let write, read() == finalText {

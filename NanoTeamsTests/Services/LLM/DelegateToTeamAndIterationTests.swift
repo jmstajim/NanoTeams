@@ -154,17 +154,17 @@ final class DelegateToTeamEntryResolutionTests: XCTestCase {
     private var service: LLMExecutionService!
     private var delegate: MockLLMExecutionDelegate!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         service = LLMExecutionService(repository: NTMSRepository())
         delegate = MockLLMExecutionDelegate()
         service.attach(delegate: delegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service = nil
         delegate = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Guards that must fire before anything is allocated
@@ -836,17 +836,17 @@ final class DelegationAwaiterUncoveredArmsTests: XCTestCase {
     private var service: LLMExecutionService!
     private var delegate: MockLLMExecutionDelegate!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         service = LLMExecutionService(repository: NTMSRepository())
         delegate = MockLLMExecutionDelegate()
         service.attach(delegate: delegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service = nil
         delegate = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// The defensive timeout — the one exit from the awaiter loop with real consequences,
@@ -1126,8 +1126,8 @@ final class LLMToolIterationOrchestrationTests: XCTestCase {
     private var tracker: ToolCallTracker!
     private var memoryStore: MemoryTagStore!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("nt-iter-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -1145,7 +1145,7 @@ final class LLMToolIterationOrchestrationTests: XCTestCase {
         memoryStore = MemoryTagStore(workFolderRoot: tempDir)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
         memoryStore = nil
@@ -1153,7 +1153,7 @@ final class LLMToolIterationOrchestrationTests: XCTestCase {
         runtime = nil
         service = nil
         delegate = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// The very first guard. It must return BEFORE the force-indexed

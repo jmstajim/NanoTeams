@@ -193,7 +193,7 @@ final class ReachabilityProbedTailCoverageTests: XCTestCase {
     ///
     /// If a future SDK renames or hides `__enumerator`, this stops COMPILING. That is the right
     /// failure mode — loud, and at the seam — rather than a test that quietly stops covering the arm.
-    private final class NilEnumeratorFileManager: FileManager, @unchecked Sendable {
+    private final class NilEnumeratorFileManager: FileManager {
         private(set) var enumeratorCalls = 0
 
         override func __enumerator(

@@ -220,13 +220,6 @@ struct MessageComposer<SettingsMenu: View>: View {
 
                 settingsMenu
 
-                if hasAttachments {
-                    let count = attachments.count + clipTexts.count
-                    Text("\(count) item\(count == 1 ? "" : "s")")
-                        .font(Typography.caption)
-                        .foregroundStyle(Colors.textSecondary)
-                }
-
                 Spacer()
 
                 // `⌘⏎` (or `⏎`) keyhint chip — terminal-idiom shortcut nudge

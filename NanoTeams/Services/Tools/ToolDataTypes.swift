@@ -47,7 +47,7 @@ enum ToolErrorCode: String, Codable {
     /// unavailable (Manual mode in an autonomous / Autovisor / headless context —
     /// Auto mode runs unattended). Distinct from `COMMAND_FAILED` (the command
     /// ran and exited non-zero) — a denied command never executed. Routed to a
-    /// don't-retry guidance via `buildToolErrorGuidance`'s `bash_denied` case.
+    /// don't-retry guidance via `ToolErrorNotePolicy.direction`'s `bash_denied` case.
     /// (A foreground timeout is surfaced as a success envelope with
     /// `timed_out: true`, not an error code.)
     case bashDenied = "BASH_DENIED"

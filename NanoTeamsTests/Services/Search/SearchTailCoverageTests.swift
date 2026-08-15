@@ -140,8 +140,8 @@ final class ESearchCoordinatorTailTests: XCTestCase {
     var internalDir: URL!
     let fm = FileManager.default
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         tempDir = fm.temporaryDirectory
             .appendingPathComponent("esearch-\(UUID().uuidString)", isDirectory: true)
             .standardizedFileURL
@@ -150,12 +150,12 @@ final class ESearchCoordinatorTailTests: XCTestCase {
         try? fm.createDirectory(at: internalDir, withIntermediateDirectories: true)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let internalDir { chmod(internalDir.path, 0o700) }
         if let tempDir { try? fm.removeItem(at: tempDir) }
         tempDir = nil
         internalDir = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func write(_ relPath: String, content: String) throws {

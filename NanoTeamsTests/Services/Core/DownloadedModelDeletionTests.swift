@@ -6,12 +6,12 @@ import XCTest
 /// overlay, the unload-before-delete step, the reference warning, and the
 /// deliberate decision NOT to rewrite configuration behind a delete.
 @MainActor
-final class DownloadedModelDeletionTests: NTMSOrchestratorTestBase {
+final class DownloadedModelDeletionTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private var store: RecordingDownloadedModelStore!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         store = RecordingDownloadedModelStore()
         embeddingClient = RecordingLLMClient()
         chatLifecycleClient = RecordingLLMClient()
@@ -22,9 +22,9 @@ final class DownloadedModelDeletionTests: NTMSOrchestratorTestBase {
         )
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         store = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func lmStudioConfig(_ url: String = "http://127.0.0.1:1234") -> LLMConfig {

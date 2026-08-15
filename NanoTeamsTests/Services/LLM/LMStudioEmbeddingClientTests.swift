@@ -418,7 +418,7 @@ final class LMStudioEmbeddingClientTests: XCTestCase {
     private func assertThrows<E: Error>(
         _ type: E.Type,
         matching predicate: (E) -> Bool,
-        file: StaticString = #file,
+        file: StaticString = #filePath,
         line: UInt = #line,
         _ operation: () async throws -> Void
     ) async {

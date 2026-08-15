@@ -16,7 +16,7 @@ import XCTest
 /// "Working", every review affordance (all of which reduce to `isReadyForFinalAcceptance`)
 /// was hidden, and the only offered control was a "resume" that RE-RAN the finished role.
 @MainActor
-final class CompletedRunRestartRecoveryTests: NTMSOrchestratorTestBase {
+final class CompletedRunRestartRecoveryTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Helpers
 

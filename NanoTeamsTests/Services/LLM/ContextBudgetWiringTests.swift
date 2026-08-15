@@ -24,8 +24,8 @@ final class ContextBudgetWiringTests: XCTestCase {
         [ChatMessage(role: .user, content: String(repeating: "token ", count: 4000))]
     }
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         client = ProbeCountingLLMClient()
         service = LLMExecutionService(repository: NTMSRepository(), clientFactory: { [c = client!] in c })
@@ -33,11 +33,11 @@ final class ContextBudgetWiringTests: XCTestCase {
         service.attach(delegate: delegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         client = nil
         delegate = nil
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func config() -> LLMConfig {

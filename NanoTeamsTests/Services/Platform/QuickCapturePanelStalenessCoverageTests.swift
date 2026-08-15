@@ -48,15 +48,15 @@ final class QuickCapturePanelStalenessCoverageTests: XCTestCase {
     private var coordinator: ScriptedModeCoordinator!
     private var tempDir: URL!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         QuickCaptureController.shared._testReset()
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("qc-stale-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut?._testIsPanelVisible = false
         sut = nil
         store = nil
@@ -65,7 +65,7 @@ final class QuickCapturePanelStalenessCoverageTests: XCTestCase {
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
         QuickCaptureController.shared._testReset()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Every test here drives a rebuild, so the availability skip lives in the shared
@@ -80,7 +80,7 @@ final class QuickCapturePanelStalenessCoverageTests: XCTestCase {
             formState: QuickCaptureFormState(),
             selectionCapturer: InertSelectionCapturer()
         )
-        store = await TestOrchestrator.make()
+        store = TestOrchestrator.make()
         await store.openWorkFolder(tempDir)
         dictation = DictationService()
         controller.store = store

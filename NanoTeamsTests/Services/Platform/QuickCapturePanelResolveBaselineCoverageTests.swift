@@ -21,28 +21,28 @@ final class QuickCapturePanelResolveBaselineCoverageTests: XCTestCase {
     private var controller: QuickCaptureController!
     private var workFolder: URL!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         QuickCaptureController.shared._testReset()
         workFolder = FileManager.default.temporaryDirectory
             .appendingPathComponent("qc-baseline-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: workFolder, withIntermediateDirectories: true)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         controller = nil
         store = nil
         if let workFolder { try? FileManager.default.removeItem(at: workFolder) }
         workFolder = nil
         QuickCaptureController.shared._testReset()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Wired but NOT yet visible — `presentPanelSync` guards on `!isPanelVisible`, so every test
     /// that drives the show pipeline has to start off screen.
     private func makeWired() async -> QuickCaptureController {
         let made = QuickCaptureController(formState: QuickCaptureFormState())
-        store = await TestOrchestrator.make()
+        store = TestOrchestrator.make()
         await store.openWorkFolder(workFolder)
         made.store = store
         made.dictation = nil

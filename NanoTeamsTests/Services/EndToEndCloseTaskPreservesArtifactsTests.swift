@@ -18,7 +18,7 @@ import XCTest
 /// 8. Engine for the closed task is stopped (no further LLM work).
 /// 9. Survives reopen — the closed state persists.
 @MainActor
-final class EndToEndCloseTaskPreservesArtifactsTests: NTMSOrchestratorTestBase {
+final class EndToEndCloseTaskPreservesArtifactsTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private func seedTaskWithAllDoneSteps() async -> Int {
         await sut.openWorkFolder(tempDir)

@@ -13,7 +13,7 @@ import XCTest
 ///    finalization fails.
 /// 7. Combine answer text + attachment paths into `effectiveSupervisorAnswer`.
 @MainActor
-final class EndToEndSupervisorAnswerSubmitTests: NTMSOrchestratorTestBase {
+final class EndToEndSupervisorAnswerSubmitTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private func seedStepNeedingInput(taskID: Int, stepID: String = "pm",
                                        question: String = "Should I use Redis?") async

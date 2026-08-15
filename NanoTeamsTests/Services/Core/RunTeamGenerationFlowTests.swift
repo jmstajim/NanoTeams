@@ -43,7 +43,7 @@ import XCTest
 /// deterministically against a URL that fails before the stream ever yields — racing a
 /// `Task.cancel()` against the producer would be a flake, not a pin.
 @MainActor
-final class RunTeamGenerationFlowTests: NTMSOrchestratorTestBase {
+final class RunTeamGenerationFlowTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Entry guards
 

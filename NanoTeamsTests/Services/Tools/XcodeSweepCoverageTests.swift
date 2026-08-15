@@ -516,6 +516,6 @@ final class XcodeSweepCoverageTests: XCTestCase {
 /// A `FileManager` that reports every directory as empty. Used to prove an injected file
 /// manager actually reaches the code under test — the real one would answer correctly and
 /// hide the drop.
-final class BlindFileManager: FileManager, @unchecked Sendable {
+final class BlindFileManager: FileManager {
     override func contentsOfDirectory(atPath path: String) throws -> [String] { [] }
 }

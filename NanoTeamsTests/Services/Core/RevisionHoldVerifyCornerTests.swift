@@ -19,7 +19,7 @@ import XCTest
 ///      a `.failed` step with NO streaming preview registered (clearing an
 ///      inactive key is a safe no-op while the status still resets).
 @MainActor
-final class RevisionHoldVerifyCornerTests: NTMSOrchestratorTestBase {
+final class RevisionHoldVerifyCornerTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Helpers (mirrors RevisionHoldCornerTests / ResetStepRevisionCornerTests)
 

@@ -30,8 +30,8 @@ final class ProcessToolResultsTests: XCTestCase {
     private let stepID = "startup_software_engineer"
     private let taskID = 7
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("ProcessToolResultsTests-\(UUID().uuidString)", isDirectory: true)
@@ -43,13 +43,13 @@ final class ProcessToolResultsTests: XCTestCase {
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
         mockDelegate = nil
         service = nil
         MonotonicClock.shared.reset()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Group A: empty / degenerate batches
@@ -187,7 +187,7 @@ final class ProcessToolResultsTests: XCTestCase {
 
     /// An error result flips the card red, records an unsuccessful tracker entry, and
     /// appends a `.user` guidance turn AFTER the `.tool` turn — on the wire and on the
-    /// step. `INVALID_ARGS` takes `buildToolErrorGuidance`'s `default` arm, which must
+    /// step. `INVALID_ARGS` takes `ToolErrorNotePolicy.direction`'s `default` arm, which must
     /// prefix the typed code and steer toward fixing arguments.
     func testProcessToolResults_errorResult_flipsCardAndAppendsTypedGuidance() async {
         let callID = UUID()
@@ -230,6 +230,84 @@ final class ProcessToolResultsTests: XCTestCase {
         guard persisted.count == 2 else { return }
         XCTAssertEqual(persisted[1].role, .user)
         XCTAssertEqual(persisted[1].content, guidance)
+        // Durable but deliberately INVISIBLE, and the two are independent: it is persisted
+        // because `rebuildFromDisplayRecord` and `DelegatedSupervisorAnswerService.buildSeed`
+        // read the display record rather than the wire; it is unattributed because
+        // `ActivityFeedBuilder` drops `.user` turns with neither a source role nor a context,
+        // which is what keeps a `system · retry` row from restating the card directly above
+        // it. Every arm is a constant keyed on the error code, so the row carried nothing the
+        // card does not. See the `feed-invisible-by-design:` note at the call site.
+        XCTAssertNil(persisted[1].sourceContext,
+                     "The direction comments on the failed call's own card — attributing it "
+                     + "puts the same sentence on screen twice for one event")
+    }
+
+    /// End-to-end, on the surface the Supervisor actually looks at: a failed call
+    /// produces its card and NOTHING underneath it.
+    ///
+    /// The two assertions above are about a field; this is about the screen, and it
+    /// is the one that states the defect. The reported shape was a red card reading
+    /// "This command needs human approval …, but no human is available to review it.
+    /// Ask the supervisor to allow unattended command approval." with a dim
+    /// `system · retry` row beneath it reading "Do NOT retry this command — the block
+    /// is set by policy…" — the same sentence twice, for one event.
+    ///
+    /// Driven through the real `processToolResults` rather than a hand-built
+    /// `LLMMessage`, because the defect was in the ATTRIBUTION the dispatcher chose,
+    /// which a hand-built fixture would simply restate. Anti-vacuity is the card
+    /// assertion: if the walk found no items at all, "no notice row" would pass
+    /// against an empty feed.
+    func testProcessToolResults_errorResult_rendersOneCardAndNoNoticeRowUnderIt() async {
+        let callID = UUID()
+        let call = makeCall(id: callID, providerID: "tc_0", name: ToolNames.bash,
+                            argumentsJSON: #"{"command":"xcodebuild test"}"#)
+        let task = makeTask(toolCalls: [call])
+        installTask(task)
+
+        // The reported envelope, verbatim from `+BashGate`'s no-human arm.
+        let denied = #"{"ok":false,"error":{"code":"BASH_DENIED","message":"This command needs human approval (Manual mode — every command needs your approval.), but no human is available to review it. Ask the supervisor to allow unattended command approval."}}"#
+        let result = makeResult(
+            providerID: "tc_0", toolName: ToolNames.bash,
+            argumentsJSON: #"{"command":"xcodebuild test"}"#, outputJSON: denied, isError: true
+        )
+
+        var conversation: [ChatMessage] = []
+        _ = await drive(
+            calls: [call], results: [result], task: task,
+            conversation: &conversation, tracker: ToolCallTracker()
+        )
+
+        guard let step = currentStep() else { return XCTFail("step vanished") }
+        let items = ActivityFeedBuilder.buildTimelineItems(
+            steps: [step], run: Run(id: 0, steps: [step]),
+            stepArtifactContentCache: [:], debugModeEnabled: false,
+            isStreaming: { _ in false }
+        )
+
+        let cards = items.compactMap { tagged -> StepToolCall? in
+            if case .toolCall(let c, _, _, _) = tagged.item { return c }
+            return nil
+        }
+        XCTAssertEqual(cards.count, 1, "The failed call must be on screen — this is the anti-vacuity floor")
+        XCTAssertEqual(cards.first?.isError, true)
+
+        // `SystemNoticePresentation.resolve` is the exact predicate the bubble uses to
+        // pick the `system · …` row, so asking it is asking the view.
+        let notices = items.compactMap { tagged -> SystemNoticePresentation.Notice? in
+            guard case .llmMessage(let message, _, _, _) = tagged.item else { return nil }
+            return SystemNoticePresentation.resolve(
+                context: message.sourceContext, content: message.content)
+        }
+        XCTAssertTrue(notices.isEmpty,
+                      "The card already carries the reason; a notice under it restates it. Got: "
+                      + notices.map(\.rowLabel).joined(separator: ", "))
+
+        // Half two of the contract, and it belongs in the same test: the model must
+        // still be steered, or a later "the row is noise" cleanup deletes the steering
+        // with it and nothing turns red.
+        XCTAssertEqual(conversation.count, 2, "tool turn + direction")
+        XCTAssertTrue((conversation.last?.content ?? "").contains("Do NOT retry this command"),
+                      "Got: \(conversation.last?.content ?? "")")
     }
 
     /// The executor-emitted envelope shape stores the code as a TOP-LEVEL string
@@ -484,10 +562,18 @@ final class ProcessToolResultsTests: XCTestCase {
 
     // MARK: - Group F: scratchpad side effect
 
-    /// `update_scratchpad` writes the step's scratchpad and appends exactly ONE
-    /// acknowledgement turn. With no planning brief on the wire the ack takes
-    /// its non-planning wording.
-    func testProcessToolResults_scratchpadResult_updatesScratchpadAndAppendsOneAck() async {
+    /// `update_scratchpad` writes the step's scratchpad and — for an ordinary role —
+    /// says nothing on either surface.
+    ///
+    /// The acknowledgement used to ship unconditionally: on the wire, where the
+    /// tool's own `{ok:true,…}` envelope already confirms the write, and in the
+    /// feed, where the tool card already renders `→ ok`. Neither reader learned
+    /// anything from it, and its wording ("Plan updated. Continue with the next
+    /// step.") described a planning phase most roles do not have.
+    ///
+    /// RED: restore the unconditional `conversationMessages.append` → the wire
+    /// assertion fails; restore the unconditional `appendLLMMessage` → the feed one does.
+    func testProcessToolResults_scratchpadResult_updatesScratchpadAndSaysNothing() async {
         let callID = UUID()
         let args = #"{"content":"1. Read the sources\n2. Edit the parser"}"#
         let call = makeCall(id: callID, providerID: "tc_0", name: ToolNames.updateScratchpad,
@@ -509,13 +595,19 @@ final class ProcessToolResultsTests: XCTestCase {
         let scratchpad: String? = currentStep()?.scratchpad ?? nil
         XCTAssertEqual(scratchpad, "1. Read the sources\n2. Edit the parser")
 
-        XCTAssertEqual(conversation.count, 2, "tool turn + exactly one scratchpad ack")
-        guard conversation.count == 2 else { return }
+        XCTAssertEqual(conversation.count, 1,
+                       "tool turn only — the model already has the tool envelope; got: "
+                       + "\(conversation.map { $0.content ?? "" })")
+        guard conversation.count == 1 else { return }
         XCTAssertEqual(conversation[0].role, .tool)
-        XCTAssertEqual(conversation[1].role, .user)
-        XCTAssertEqual(conversation[1].content,
-                       PlanningPhasePolicy.scratchpadAck(isPlanningWire: false),
-                       "No planning brief on the wire ⇒ the plain 'plan updated' wording")
+
+        // `llmConversation` still carries the tool-call record itself — that is the
+        // card the feed renders. What must NOT be there is a note beside it.
+        let notes = (currentStep()?.llmConversation ?? [])
+            .filter { $0.sourceContext == .toolAcknowledgement }
+        XCTAssertTrue(notes.isEmpty,
+                      "the tool card already renders `→ ok`; a note would duplicate it. Got: "
+                      + "\(notes.map { $0.content })")
     }
 
     // MARK: - Group G: the explicit `.teamCreation` arm

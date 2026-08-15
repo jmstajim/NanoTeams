@@ -2,7 +2,7 @@ import XCTest
 
 @testable import NanoTeams
 
-/// Every retry nudge `handleNoToolCalls` appends must carry `.retryNudge`.
+/// Every `.user` turn production records must carry attribution, or state why it does not.
 ///
 /// The defect: all eight nudge sites wrote `role: .user` with `sourceRole == nil` and
 /// `sourceContext == nil`, and `ActivityFeedBuilder` drops exactly that shape. So the app
@@ -24,8 +24,8 @@ final class RetryNudgeVisibilityTests: XCTestCase {
     private var task: NTMSTask!
     private var stepID: String!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
         service.attach(delegate: mockDelegate)
@@ -36,12 +36,12 @@ final class RetryNudgeVisibilityTests: XCTestCase {
         service._testRegisterStepTask(stepID: stepID, taskID: task.id)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         mockDelegate = nil
         service = nil
         task = nil
         stepID = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func producingRole() -> TeamRoleDefinition {
@@ -150,21 +150,25 @@ final class RetryNudgeVisibilityTests: XCTestCase {
             .deletingLastPathComponent()  // repo root
     }
 
-    /// The files the scan pin reads, each with the number of `.user` record sites it is
-    /// expected to hold. Also the resolves-pin's markers, so the markers are files every
-    /// compiling checkout carries (the public mirror ships no CLAUDE.md).
+    /// The production root the scan walks. EVERY `*.swift` under it, not a list.
     ///
-    /// `+ToolLoopState.swift` is here because scanning only `+StepFlowControl.swift` was
-    /// precisely the "a branch added later would be invisible on screen" hole this pin
-    /// exists to close — just one file over. Its loop warning shipped with no
-    /// `sourceContext` from the day it was written, so the Supervisor watched a role read
-    /// the same six files forever with nothing on screen saying the app had noticed. The
-    /// pin could not see it: the property is "no site was forgotten", and the pin had
-    /// itself forgotten a site.
-    private static let scannedPaths: [(path: String, expectedUserRecordSites: Int)] = [
-        ("NanoTeams/Services/LLM/LLMExecutionService+StepFlowControl.swift", 10),
-        ("NanoTeams/Services/LLM/LLMExecutionService+ToolLoopState.swift", 2),
-    ]
+    /// A list was the hole this pin kept falling into. It began at one file; scanning only
+    /// `+StepFlowControl.swift` missed the loop warning in `+ToolLoopState.swift` one file
+    /// over, which had shipped with no `sourceContext` from the day it was written — the
+    /// Supervisor watched a role read the same six files forever with nothing on screen
+    /// saying the app had noticed. Adding that second path fixed the instance and left the
+    /// class open: three more files still held five unattributed sites, among them the
+    /// `update_scratchpad` acknowledgement (fires on every plan update) and the recovery
+    /// steering after a failed tool call (31 of 40 `edit_file` calls in one observed run).
+    /// The property is "no site was forgotten", and a pin that enumerates the places to look
+    /// forgets sites for a living.
+    private static let scannedRoot = "NanoTeams"
+
+    /// Anti-vacuity floor for the walk: a broken `#filePath` derivation, a renamed root or a
+    /// glob that stops recursing would otherwise scan nothing and pass. Far below the real
+    /// count (~700 files, ~20 `.user` sites) so ordinary growth or pruning never trips it.
+    private static let minimumFilesScanned = 200
+    private static let minimumUserRecordSites = 12
 
     /// The only way to record an unattributed `.user` turn: say why, at the call site.
     /// Assembled at runtime so this file's own prose cannot satisfy the scan.
@@ -188,21 +192,40 @@ final class RetryNudgeVisibilityTests: XCTestCase {
         return nil
     }
 
-    /// No `.user` turn recorded by the runtime's nudge/correction path may lack attribution.
-    ///
-    /// A source pin because the property is "no site was forgotten" — and eight of them
-    /// were. A ninth branch added later would compile, pass every behavioural test above,
-    /// and be invisible on screen, which is precisely the failure mode this fixes.
-    func testEveryUserTurnRecordedByFlowControl_carriesAContext() throws {
-        for (path, expected) in Self.scannedPaths {
-            let source = try String(
-                contentsOf: repoRoot.appendingPathComponent(path), encoding: .utf8)
+    /// Every `*.swift` under the production root, in a stable order.
+    private func productionSources() throws -> [(path: String, source: String)] {
+        let root = repoRoot.appendingPathComponent(Self.scannedRoot)
+        guard let walker = FileManager.default.enumerator(
+            at: root, includingPropertiesForKeys: nil)
+        else { return [] }
+        var out: [(String, String)] = []
+        for case let url as URL in walker where url.pathExtension == "swift" {
+            let relative = url.path.replacingOccurrences(of: repoRoot.path + "/", with: "")
+            out.append((relative, try String(contentsOf: url, encoding: .utf8)))
+        }
+        return out.sorted { $0.0 < $1.0 }
+    }
 
+    /// No `.user` turn recorded ANYWHERE in production may lack attribution.
+    ///
+    /// A source pin because the property is "no site was forgotten" — and eight of them were,
+    /// then one more, then five more. A branch added later would compile, pass every
+    /// behavioural test above, and be invisible on screen, which is precisely the failure mode
+    /// this fixes.
+    ///
+    /// Keyed on `appendLLMMessage(` — the helper that writes to `step.llmConversation` and
+    /// nothing else. That is what makes a target-wide walk precise rather than noisy: it
+    /// catches every real site and naturally excludes the consultation-chat sites, which build
+    /// a bare `LLMMessage(` into `RoleConsultationChat.messages`, a store the activity feed
+    /// never reads.
+    func testEveryUserTurnRecordedInProduction_carriesAContext() throws {
+        let sources = try productionSources()
+        var checked = 0
+        for (path, source) in sources {
             // The call spans lines, so join the whole file and scan each `appendLLMMessage(`
             // invocation up to its closing paren.
             let opener = "appendLLMMessage" + "("
             var searchStart = source.startIndex
-            var checked = 0
             while let open = source.range(of: opener, range: searchStart..<source.endIndex) {
                 // Balanced scan, NOT the first `)`. A call whose content argument
                 // interpolates — `content: "\(prefix)\(answer)"` — closes a paren before the
@@ -230,14 +253,29 @@ final class RetryNudgeVisibilityTests: XCTestCase {
                     + "ActivityFeedBuilder's no-source filter — attribute it, or state why "
                     + "not with a `\(Self.exemptionMarker)` note. Call: \(call)")
             }
-            // +StepFlowControl: eight retry nudges plus the thinking-loop correction, which
-            // already carried `.loopCorrection` and is the precedent this fix follows — plus
-            // the planning-phase "that looked like a tool call" nudge, which replaced
-            // recording a failed call as the step's plan.
-            // +ToolLoopState: the loop warning and the supervisor auto-answer.
-            XCTAssertEqual(
-                checked, expected,
-                "Expected \(expected) `.user` record sites in \(path); adjust deliberately")
+        }
+        XCTAssertGreaterThanOrEqual(
+            checked, Self.minimumUserRecordSites,
+            "Only \(checked) `.user` record sites found across \(sources.count) files — the "
+            + "walk or the opener is wrong, and a pin that checks almost nothing passes")
+    }
+
+    /// A walk that silently reaches nothing passes the pin above vacuously, which is how a
+    /// source scan dies: `#filePath` derivation breaks, or the root is renamed, and the
+    /// assertion loop simply never runs.
+    func testTheWalkReachesTheWholeProductionTree() throws {
+        let sources = try productionSources()
+        XCTAssertGreaterThanOrEqual(sources.count, Self.minimumFilesScanned)
+        // Recursion, not just the top level: these live several directories deep, and the
+        // five sites the file-list version missed were all in nested folders.
+        for expected in [
+            "NanoTeams/Services/LLM/LLMExecutionService+StepFlowControl.swift",
+            "NanoTeams/Services/LLM/LLMExecutionService+ToolLoopState.swift",
+            "NanoTeams/Services/LLM/LLMExecutionService+ToolResultSideEffects.swift",
+            "NanoTeams/Services/LLM/LLMExecutionService+ToolResultDispatching.swift",
+            "NanoTeams/Services/LLM/LLMExecutionService+ComputerUse.swift",
+        ] {
+            XCTAssertTrue(sources.contains { $0.path == expected }, "walk missed \(expected)")
         }
     }
 
@@ -275,12 +313,16 @@ final class RetryNudgeVisibilityTests: XCTestCase {
     }
 
     /// A broken `#filePath`→repoRoot derivation would scan nothing and pass vacuously.
+    ///
+    /// The marker is the production root itself — a directory every compiling checkout
+    /// carries, including the public mirror, which ships build sources only.
     func testRepoRootResolves() {
-        for (path, _) in Self.scannedPaths {
-            XCTAssertTrue(
-                FileManager.default.fileExists(
-                    atPath: repoRoot.appendingPathComponent(path).path),
-                "scanned file missing: \(path)")
-        }
+        var isDirectory: ObjCBool = false
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: repoRoot.appendingPathComponent(Self.scannedRoot).path,
+                isDirectory: &isDirectory),
+            "production root missing: \(Self.scannedRoot)")
+        XCTAssertTrue(isDirectory.boolValue, "\(Self.scannedRoot) must be the source directory")
     }
 }

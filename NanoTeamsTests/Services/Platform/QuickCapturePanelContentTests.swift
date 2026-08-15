@@ -17,14 +17,14 @@ final class QuickCapturePanelContentTests: XCTestCase {
 
     var sut: QuickCapturePanel!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         sut = QuickCapturePanel(contentRect: NSRect(x: 0, y: 0, width: 400, height: 500))
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     func testSetContent_installsAHostingView() {

@@ -703,8 +703,8 @@ final class ScreenInputHotkeyRegistrationTests: XCTestCase {
     private let openKeyCode = UInt32(kVK_ANSI_0)
     private let clipKeyCode = UInt32(kVK_ANSI_K)
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
     }
 

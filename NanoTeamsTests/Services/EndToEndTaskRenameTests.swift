@@ -20,18 +20,18 @@ import XCTest
 /// 7. Rename of the active task is reflected in the in-memory active task.
 /// 8. Tasks index entry's title stays in sync with `task.json`.
 @MainActor
-final class EndToEndTaskRenameTests: NTMSOrchestratorTestBase {
+final class EndToEndTaskRenameTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private var tms: TaskManagementState!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         tms = TaskManagementState()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         tms = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Scenario 1: Request seeds rename state

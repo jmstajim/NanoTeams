@@ -18,7 +18,7 @@ import XCTest
 /// `testStaleRoleReference_lookupByID_returnsPostSaveRole` case, which
 /// pins the id-only equality property the UI fix depends on.
 @MainActor
-final class RoleEditorSavePersistenceTests: NTMSOrchestratorTestBase {
+final class RoleEditorSavePersistenceTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     /// Simulates the full Delegation-tab Save flow against the real
     /// orchestrator:

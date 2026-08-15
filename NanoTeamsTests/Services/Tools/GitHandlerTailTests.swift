@@ -170,7 +170,7 @@ final class GitHandlerTailTests: XCTestCase {
     /// Sibling of the case above with ONE difference: an untracked file exists, so
     /// git says "nothing added to commit but untracked files present" instead of
     /// "nothing to commit". That is the SAME failure class and must carry the same
-    /// code — it used to fall through to COMMAND_FAILED, and `buildToolErrorGuidance`
+    /// code — it used to fall through to COMMAND_FAILED, and `ToolErrorNotePolicy.direction`
     /// routes the two codes differently.
     ///
     /// The message must still name the remedy: reclassifying alone would have

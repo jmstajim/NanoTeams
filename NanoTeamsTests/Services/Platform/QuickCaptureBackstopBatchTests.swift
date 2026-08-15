@@ -14,7 +14,7 @@ import XCTest
 /// the batched fix, the FIRST backstop fire delivers all eligible messages in
 /// one combined Supervisor turn — these tests pin that contract end-to-end.
 @MainActor
-final class QuickCaptureBackstopBatchTests: NTMSOrchestratorTestBase {
+final class QuickCaptureBackstopBatchTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Helpers
 

@@ -21,15 +21,15 @@ import XCTest
 /// forever. These tests drive the REAL orchestrator + engine + streaming pipeline
 /// through that exact sequence and assert task 39's survival.
 @MainActor
-final class ConcurrentSameTeamTasksScenarioTests: NTMSOrchestratorTestBase {
+final class ConcurrentSameTeamTasksScenarioTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private var startupTeamID: NTMSID!
     private var sweRoleID: String!
 
-    override func tearDown() {
+    override func tearDown() async throws {
         startupTeamID = nil
         sweRoleID = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Opens the work folder, activates the bundled Startup team (the team from the

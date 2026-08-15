@@ -97,8 +97,8 @@ final class IterationTerminalArmsCoverageTests: XCTestCase {
     private var tracker: ToolCallTracker!
     private var memoryStore: MemoryTagStore!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("nt-ufc-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -115,7 +115,7 @@ final class IterationTerminalArmsCoverageTests: XCTestCase {
         memoryStore = MemoryTagStore(workFolderRoot: tempDir)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
         memoryStore = nil
@@ -123,7 +123,7 @@ final class IterationTerminalArmsCoverageTests: XCTestCase {
         emptyRuntime = nil
         service = nil
         delegate = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: Fixtures
@@ -732,7 +732,15 @@ final class EditFileBlankAnchorCoverageTests: XCTestCase {
     }
 
     /// A newline-only anchor must reach the matcher unmodified, so it matches the
-    /// file's first line break literally and the edit lands.
+    /// file's line break literally and the edit lands.
+    ///
+    /// The fixture deliberately has NO trailing newline, so the anchor is unique. It used to be
+    /// `"alpha\nbeta\n"` — two newlines — and the assertion below then read "an untouched anchor
+    /// replaces the FIRST newline in place", which quietly pinned `edit_file`'s exact path
+    /// silently editing the first of N matches under `ok:true`. That was a defect (2026-08-15),
+    /// not this test's subject: what it exists to pin is that a whitespace-only `old_text` is not
+    /// rejected at ARGUMENT VALIDATION, and an unambiguous fixture pins exactly that and nothing
+    /// else. The ambiguous case has its own test below.
     ///
     /// RED: a whitespace-only `old_text` rejection added to argument validation →
     /// the edit is refused for an anchor that is plainly in the file.
@@ -748,7 +756,7 @@ final class EditFileBlankAnchorCoverageTests: XCTestCase {
     /// derive a third.
     func testEditFile_anchorOfOnlyBlankLines_isNotRewrittenAndStillMatches() throws {
         let file = workDir.appendingPathComponent("a.txt")
-        try "alpha\nbeta\n".write(to: file, atomically: true, encoding: .utf8)
+        try "alpha\nbeta".write(to: file, atomically: true, encoding: .utf8)
 
         let result = EditFileTool(
             resolver: SandboxPathResolver(workFolderRoot: workDir), fileManager: fm
@@ -763,8 +771,33 @@ final class EditFileBlankAnchorCoverageTests: XCTestCase {
         XCTAssertEqual(data["replacements_made"] as? Int, 1,
                        "the blank anchor must match literally: \(result.outputJSON)")
         XCTAssertEqual(
-            try String(contentsOf: file, encoding: .utf8), "alpha\nGAMMA\nbeta\n",
-            "an untouched anchor replaces the FIRST newline in place")
+            try String(contentsOf: file, encoding: .utf8), "alpha\nGAMMA\nbeta",
+            "an untouched anchor replaces the line break in place")
+    }
+
+    /// The other half of the same anchor: a newline-only `old_text` is the LEAST specific anchor
+    /// a model can send, so on a file with several line breaks it is exactly the case where
+    /// "edit the first one" writes somewhere the model did not point at. It refuses, and the
+    /// message names the way out.
+    ///
+    /// RED: delete the occurrence count from `EditFileTool`'s exact path → the first newline is
+    /// rewritten and the call reports `ok:true`, `replacements_made: 1`.
+    func testEditFile_blankAnchorMatchingSeveralLineBreaks_refusesRatherThanPickingOne() throws {
+        let file = workDir.appendingPathComponent("b.txt")
+        try "alpha\nbeta\n".write(to: file, atomically: true, encoding: .utf8)
+
+        let result = EditFileTool(
+            resolver: SandboxPathResolver(workFolderRoot: workDir), fileManager: fm
+        ).handle(
+            context: ToolExecutionContext(workFolderRoot: workDir, taskID: 1, runID: 0, roleID: "r"),
+            args: ["path": "b.txt", "old_text": "\n", "new_text": "\nGAMMA\n"]
+        )
+
+        XCTAssertTrue(result.isError, result.outputJSON)
+        XCTAssertTrue(result.outputJSON.contains("ANCHOR_AMBIGUOUS"), result.outputJSON)
+        XCTAssertEqual(
+            try String(contentsOf: file, encoding: .utf8), "alpha\nbeta\n",
+            "file must be untouched")
     }
 
     /// The populated counterpart, so the guard is pinned as a special case rather

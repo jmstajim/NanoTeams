@@ -39,8 +39,8 @@ final class AutovisorHangIncidentRegressionTests: XCTestCase {
     private let stepID = "autovisor_autovisor"
     private let taskID = 0
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         mockClient = MockStreamClient()
         service = LLMExecutionService(repository: NTMSRepository())
@@ -50,12 +50,12 @@ final class AutovisorHangIncidentRegressionTests: XCTestCase {
             LLMExecutionService.StepExecutionState()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service = nil
         mockDelegate = nil
         mockClient = nil
         MonotonicClock.shared.reset()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// The manager's schema, reduced to the tools this pass actually reached for.

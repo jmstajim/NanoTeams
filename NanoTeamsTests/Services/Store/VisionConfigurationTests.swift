@@ -13,8 +13,8 @@ final class VisionConfigurationTests: XCTestCase {
     private var storage: InMemoryStorage!
     private var config: StoreConfiguration!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         storage = InMemoryStorage()
         config = StoreConfiguration(storage: storage)
         config.llmModelName = ""
@@ -23,10 +23,10 @@ final class VisionConfigurationTests: XCTestCase {
         config.visionBaseURLString = ""
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         config = nil
         storage = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - isVisionConfigured

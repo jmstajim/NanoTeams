@@ -7,14 +7,14 @@ import XCTest
 @MainActor
 final class EndToEndPromptPipelineTests: XCTestCase {
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         MonotonicClock.shared.reset()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Test 1: FAANG Engineer full assembly
@@ -186,7 +186,7 @@ final class EndToEndPromptPipelineTests: XCTestCase {
 
     func testPromptPipeline_pipelineContext_includesPriorSteps() {
         let team = makeFAANGTeam()
-        let pmRole = team.roles.first { $0.name == "Product Manager" }!
+        _ = team.roles.first { $0.name == "Product Manager" }!
         let tlRole = team.roles.first { $0.name == "Tech Lead" }!
 
         let pmStep = StepExecution(

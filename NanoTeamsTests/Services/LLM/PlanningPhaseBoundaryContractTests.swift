@@ -30,8 +30,8 @@ final class PlanningPhaseBoundaryContractTests: XCTestCase {
         ToolSchema(name: ToolNames.createArtifact, description: "A", parameters: .object(properties: [:])),
     ]
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         service = LLMExecutionService(repository: NTMSRepository())
         delegate = MockLLMExecutionDelegate()
         service.attach(delegate: delegate)
@@ -42,9 +42,9 @@ final class PlanningPhaseBoundaryContractTests: XCTestCase {
         service._testRegisterStepTask(stepID: stepID, taskID: task.id)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service = nil; delegate = nil; task = nil; stepID = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures

@@ -21,6 +21,12 @@ nonisolated struct PendingBashApproval: Hashable {
     /// The effective LLM config the gate would judge with (global + role override),
     /// snapshotted so the advisor hits the same judge endpoint/model as the real gate.
     let judgeConfig: LLMConfig
+    /// The policy the gate would judge with, snapshotted for the same reason as `judgeConfig`:
+    /// during a planning-phase hold the real confinement is the write-disabled one, and
+    /// `sandboxConfinementDescription` renders whatever it is handed straight into the prompt.
+    /// Reading the LIVE policy here would tell the advisor "writes are confined to the project
+    /// work folder" about a command that cannot write at all.
+    let judgePolicy: BashPolicy
     /// Monotonic per-instance discriminator. The approval UI keys its advisory state
     /// to this token, so a later (or byte-identical re-held) approval gets a fresh
     /// advisory pass instead of rendering the prior instance's verdicts.
@@ -52,6 +58,7 @@ extension LLMExecutionService {
     func gateBashCalls(
         resolvedToolCalls: [StepToolCall],
         allowedToolNames: Set<String>,
+        isPlanningPhase: Bool = false,
         stepID: String,
         taskID: Int,
         supervisorMode: SupervisorMode,
@@ -67,6 +74,19 @@ extension LLMExecutionService {
         else { return [:] }
 
         let policy = delegate?.bashPolicy ?? BashPolicy()
+        // What the REVIEWERS must reason about. During the planning phase `BashTool` rebuilds
+        // its profile with every write scope off, so the live policy no longer describes the
+        // confinement in force — and both reviewers render it verbatim:
+        // `BashJudgeService.sandboxConfinementDescription` into the judge's system prompt, and
+        // the "Ask AI" advisor behind a human approval card through the same function. Told the
+        // wrong sandbox, the judge is permissive about writes that cannot happen and strict
+        // about reads that are harmless.
+        //
+        // `BashPermissionService.evaluate` below keeps the UNNARROWED `policy` on purpose: it
+        // never reads a sandbox field, so passing either one is equivalent — and passing the
+        // real one keeps "the deny/ask/allow tiering is identical during planning" true by
+        // construction rather than by inspection.
+        let judgePolicy = isPlanningPhase ? policy.withWritesDisabled() : policy
         let underAutovisor = isUnderAutovisor(task: task)
         let humanPresent = (supervisorMode == .manual) && !underAutovisor
 
@@ -97,7 +117,7 @@ extension LLMExecutionService {
                     await noteInterleavingCall(label: "bash judge", config: config)
                     let verdict = await BashJudgeService.judge(
                         command: command, workingDirectory: workingDir,
-                        policy: policy, config: config, client: client, logger: networkLogger)
+                        policy: judgePolicy, config: config, client: client, logger: networkLogger)
                     if verdict.allowed {
                         continue
                     } else {
@@ -109,10 +129,18 @@ extension LLMExecutionService {
                     // Allow → leave the index unhandled so the call flows to
                     // executeToolCalls and runs for real; Deny → synthesize a denial.
                     // A Pause cancels the await → `.deny` (fail safe; re-prompts on resume).
+                    // `offerAlways` is suppressed during the phase, and that is a safety rule,
+                    // not tidiness. "Always allow" persists a permanent, global allow rule
+                    // (`NTMSOrchestrator+BashAdvice`), so a human approving `rm -rf build` while
+                    // writes are blocked would be minting a standing grant that takes effect
+                    // AFTER the boundary, under the full write profile, with no further review —
+                    // a decision made about a write-blocked run silently governing a
+                    // write-enabled one, created inside the transcript the phase then destroys.
                     let decision = await awaitBashApproval(
                         taskID: taskID, stepID: stepID, command: command, commandKey: commandKey,
                         workingDirectory: BashArguments.workingDirectory(fromJSON: call.argumentsJSON),
-                        offerAlways: policy.mode != .manual, judgeConfig: config)
+                        offerAlways: policy.mode != .manual && !isPlanningPhase,
+                        judgeConfig: config, judgePolicy: judgePolicy)
                     switch decision {
                     case .allow:
                         continue
@@ -124,12 +152,18 @@ extension LLMExecutionService {
                     // Manual mode with no human (autonomous team / Autovisor / headless)
                     // → deny. The recourse named here must be one the MODEL can act on:
                     // it cannot open a Settings pane, so name what the supervisor would
-                    // change, never where they would click. `buildToolErrorGuidance`'s
-                    // `bash_denied` arm appends the don't-retry half, so this stays terse.
+                    // change, never where they would click. `ToolErrorNotePolicy.direction`'s
+                    // `bash_denied` arm appends the don't-retry half, so this stays terse —
+                    // and names only the recourse that arm CANNOT: a supervisor-side setting.
+                    // Its generic "use a read-only or already-approved command" used to be
+                    // spelled here too, so the model was handed the same alternative twice in
+                    // consecutive turns. That arm keeps the generic half for the four sibling
+                    // envelopes (deny rule, declined, judge, mode Off) that name no
+                    // alternative at all; this is the one envelope that over-explained.
                     synthetic[idx] = makeBashDeniedResult(
                         call: call,
                         reason: "This command needs human approval (\(reason)), but no human is available to review it. "
-                            + "Ask the supervisor to allow unattended command approval, or use a command that needs no review.")
+                            + "Ask the supervisor to allow unattended command approval.")
                 }
             }
         }

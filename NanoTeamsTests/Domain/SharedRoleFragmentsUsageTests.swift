@@ -16,7 +16,7 @@ final class SharedRoleFragmentsUsageTests: XCTestCase {
         _ roleID: String,
         _ fragment: String,
         _ fragmentName: String,
-        file: StaticString = #file,
+        file: StaticString = #filePath,
         line: UInt = #line
     ) {
         guard let prompt = SystemTemplates.rolePrompts[roleID] else {

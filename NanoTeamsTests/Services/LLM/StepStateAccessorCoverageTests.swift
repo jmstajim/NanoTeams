@@ -30,14 +30,14 @@ final class StepStateAccessorCoverageTests: XCTestCase {
 
     var service: LLMExecutionService!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         service = LLMExecutionService(repository: NTMSRepository())
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private static let unknownStep = "no-such-role"

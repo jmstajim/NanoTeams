@@ -29,8 +29,8 @@ final class ComputerUseCoercionTests: XCTestCase {
     // `private` because the stub type is file-scoped.
     private var judgeClient: UnusedJudgeClient!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         service = LLMExecutionService(repository: NTMSRepository())
         delegate = MockLLMExecutionDelegate()
         delegate.snapshot = nil  // → not under Autovisor
@@ -38,11 +38,11 @@ final class ComputerUseCoercionTests: XCTestCase {
         judgeClient = UnusedJudgeClient()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service = nil
         delegate = nil
         judgeClient = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Helpers

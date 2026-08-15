@@ -12,7 +12,7 @@ import XCTest
 /// These pin the bounded rollback: one extra pass per key per loop-park episode, never
 /// a tight wake loop.
 @MainActor
-final class AutovisorLoopParkRedeliveryTests: NTMSOrchestratorTestBase {
+final class AutovisorLoopParkRedeliveryTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private func pinManager() async -> Int {
         await sut.openWorkFolder(tempDir)

@@ -21,7 +21,7 @@ import XCTest
 ///   an answer, so the continuation in `startStepExecution` fires regardless of
 ///   `step.messages`/`llmConversation` state.
 @MainActor
-final class ResumeAfterRestartAnswerTests: NTMSOrchestratorTestBase {
+final class ResumeAfterRestartAnswerTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Attachment-finalize failure → returns false, lastErrorMessage set
 

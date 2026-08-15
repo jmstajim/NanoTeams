@@ -6,16 +6,20 @@ import XCTest
 /// and `requestBashJudgeAdvice` returns per-command advice WITHOUT consuming the
 /// pending approval or recording a decision (the human still answers).
 @MainActor
-final class BashAdviceOrchestratorTests: NTMSOrchestratorTestBase {
+final class BashAdviceOrchestratorTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     @discardableResult
-    private func seedPending(taskID: Int, stepID: String, commands: [String]) -> Date {
+    private func seedPending(
+        taskID: Int, stepID: String, commands: [String],
+        judgePolicy: BashPolicy = BashPolicy()
+    ) -> Date {
         let token = MonotonicClock.shared.now()
         sut.llmExecutionService.pendingBashApprovals[TaskStepKey(taskID: taskID, stepID: stepID)] =
             PendingBashApproval(
                 commands: commands,
                 workingDirectories: commands.map { _ in nil },
                 judgeConfig: LLMConfig(),
+                judgePolicy: judgePolicy,
                 createdAt: token)
         return token
     }

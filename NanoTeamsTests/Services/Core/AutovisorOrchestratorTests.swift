@@ -6,7 +6,7 @@ import XCTest
 /// BEFORE any engine start — so they run without LM Studio. (The success paths that
 /// start an engine are covered by the handler/value tests, not here.)
 @MainActor
-final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase {
+final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     /// Opens the temp work folder and pins a freshly-created (non-running) task as
     /// the manager, without enabling the feature (so no engine/LLM is started).

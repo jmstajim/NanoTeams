@@ -92,8 +92,8 @@ final class QuickCaptureControllerStateTests: XCTestCase {
 
     var sut: QuickCaptureController!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         sut = QuickCaptureController.shared
         sut._testReset()
         if sut._testIsInAnswerMode { sut._testExitAnswerMode() }
@@ -115,7 +115,7 @@ final class QuickCaptureControllerStateTests: XCTestCase {
         sut._testIsPanelVisible = false
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if sut._testIsInAnswerMode { sut._testExitAnswerMode() }
         sut.formState.supervisorTask = ""
         sut.formState.title = ""
@@ -128,7 +128,7 @@ final class QuickCaptureControllerStateTests: XCTestCase {
         sut._testIsPanelVisible = false
         UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.quickCaptureKeepOpenInChat)
         sut = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     func testInitialState() {
@@ -177,12 +177,12 @@ final class QuickCaptureControllerStateTests: XCTestCase {
 // MARK: - Mode Resolution Tests
 
 @MainActor
-final class QuickCaptureModeResolutionTests: NTMSOrchestratorTestBase {
+final class QuickCaptureModeResolutionTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     var controller: QuickCaptureController!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         controller = QuickCaptureController.shared
         controller._testReset()
         controller.store = sut
@@ -191,14 +191,14 @@ final class QuickCaptureModeResolutionTests: NTMSOrchestratorTestBase {
         controller.formState.supervisorTask = ""
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         controller.store = nil
         controller.isTaskSelected = false
         controller._testForceNewTaskMode = false
         controller.formState.supervisorTask = ""
         if controller._testIsInAnswerMode { controller._testExitAnswerMode() }
         controller = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Creates a task with a run containing a step that needs supervisor input.
@@ -663,8 +663,8 @@ final class QuickCaptureAnswerModeTests: XCTestCase {
 
     var sut: QuickCaptureController!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         sut = QuickCaptureController.shared
         sut._testReset()
         if sut._testIsInAnswerMode { sut._testExitAnswerMode() }
@@ -679,7 +679,7 @@ final class QuickCaptureAnswerModeTests: XCTestCase {
         sut._testForceNewTaskMode = false
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if sut._testIsInAnswerMode { sut._testExitAnswerMode() }
         sut.formState.supervisorTask = ""
         sut.formState.title = ""
@@ -691,7 +691,7 @@ final class QuickCaptureAnswerModeTests: XCTestCase {
         sut._testForceNewTaskMode = false
         UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.quickCaptureKeepOpenInChat)
         sut = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     func testEnterAnswerMode_startsAFreshAnswerAndLeavesTheTaskDraftAlone() {
@@ -825,7 +825,7 @@ final class QuickCaptureAnswerModeTests: XCTestCase {
 // MARK: - Answer Supervisor Question Resume Tests
 
 @MainActor
-final class AnswerSupervisorQuestionResumeTests: NTMSOrchestratorTestBase {
+final class AnswerSupervisorQuestionResumeTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private func createTaskWithSupervisorQuestion(answer: String? = nil) async -> (Int, String)? {
         await sut.openWorkFolder(tempDir)
@@ -893,7 +893,7 @@ final class AnswerSupervisorQuestionResumeTests: NTMSOrchestratorTestBase {
 // MARK: - Team Selection Fallback Tests
 
 @MainActor
-final class QuickCaptureTeamSelectionTests: NTMSOrchestratorTestBase {
+final class QuickCaptureTeamSelectionTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     var controller: QuickCaptureController!
 
@@ -901,8 +901,8 @@ final class QuickCaptureTeamSelectionTests: NTMSOrchestratorTestBase {
     /// preference after forcing it off in `setUp`.
     private var savedKeepOpenInChat: Bool!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         controller = QuickCaptureController.shared
         controller._testReset()
         controller.store = sut
@@ -921,7 +921,7 @@ final class QuickCaptureTeamSelectionTests: NTMSOrchestratorTestBase {
         controller.keepOpenInChat = false
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         controller.formState.selectedTeamID = nil
         controller.formState.supervisorTask = ""
         controller.formState.title = ""
@@ -929,7 +929,7 @@ final class QuickCaptureTeamSelectionTests: NTMSOrchestratorTestBase {
         controller.keepOpenInChat = savedKeepOpenInChat
         savedKeepOpenInChat = nil
         controller = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// When selectedTeamID is nil and activeTeamID is nil, task creation should
@@ -1026,12 +1026,12 @@ final class QuickCaptureTeamSelectionTests: NTMSOrchestratorTestBase {
 /// transitions for the same task. See plan in `recursive-hopping-cocke.md` and
 /// CLAUDE.md "Quick Capture System" section.
 @MainActor
-final class QuickCaptureChatWorkingComposerTests: NTMSOrchestratorTestBase {
+final class QuickCaptureChatWorkingComposerTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     var controller: QuickCaptureController!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         controller = QuickCaptureController.shared
         controller._testReset()
         controller.store = sut
@@ -1047,7 +1047,7 @@ final class QuickCaptureChatWorkingComposerTests: NTMSOrchestratorTestBase {
         controller._testForceNewTaskMode = false
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if controller._testIsInAnswerMode { controller._testExitAnswerMode() }
         controller.formState._testClearAnswerDrafts()
         controller.formState.supervisorTask = ""
@@ -1059,7 +1059,7 @@ final class QuickCaptureChatWorkingComposerTests: NTMSOrchestratorTestBase {
         controller._testLastRefreshedTaskID = nil
         controller.store = nil
         controller = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Creates a chat-mode task in `.running`, drives `refreshPanelIfVisible` once so

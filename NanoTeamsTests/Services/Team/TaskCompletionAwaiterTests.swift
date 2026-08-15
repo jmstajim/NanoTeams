@@ -7,14 +7,14 @@ final class TaskCompletionAwaiterTests: XCTestCase {
 
     var awaiter: TaskCompletionAwaiter!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         awaiter = TaskCompletionAwaiter()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         awaiter = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - register/deliver round-trip

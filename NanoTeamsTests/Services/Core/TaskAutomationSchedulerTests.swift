@@ -6,7 +6,7 @@ import XCTest
 /// (`NTMSOrchestrator+Scheduling`). Deterministic via the injectable `now:`
 /// parameters — no wall-clock waits, no real tick loop.
 @MainActor
-final class TaskAutomationSchedulerTests: NTMSOrchestratorTestBase {
+final class TaskAutomationSchedulerTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Minute-boundary alignment
 

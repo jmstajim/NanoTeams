@@ -69,7 +69,7 @@ final class ReadLinesLineLimitTests: XCTestCase {
         return url
     }
 
-    private func assertEndLine(_ json: String, _ expected: Int, file: StaticString = #file, line: UInt = #line) {
+    private func assertEndLine(_ json: String, _ expected: Int, file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertTrue(
             json.contains("\"end_line\":\(expected)") || json.contains("\"end_line\" : \(expected)"),
             "expected end_line=\(expected) in result; got: \(json)",
@@ -77,7 +77,7 @@ final class ReadLinesLineLimitTests: XCTestCase {
         )
     }
 
-    private func assertStartLine(_ json: String, _ expected: Int, file: StaticString = #file, line: UInt = #line) {
+    private func assertStartLine(_ json: String, _ expected: Int, file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertTrue(
             json.contains("\"start_line\":\(expected)") || json.contains("\"start_line\" : \(expected)"),
             "expected start_line=\(expected) in result; got: \(json)",
@@ -85,7 +85,7 @@ final class ReadLinesLineLimitTests: XCTestCase {
         )
     }
 
-    private func assertTotalLines(_ json: String, _ expected: Int, file: StaticString = #file, line: UInt = #line) {
+    private func assertTotalLines(_ json: String, _ expected: Int, file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertTrue(
             json.contains("\"total_lines\":\(expected)") || json.contains("\"total_lines\" : \(expected)"),
             "expected total_lines=\(expected) in result; got: \(json)",

@@ -24,14 +24,14 @@ final class QuickCapturePanelCancelOperationTests: XCTestCase {
 
     var sut: QuickCapturePanel!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         sut = QuickCapturePanel()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// When a host wires `onCancelKeyPressed`, Escape (cancelOperation) must

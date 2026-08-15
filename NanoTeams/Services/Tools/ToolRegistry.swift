@@ -11,6 +11,19 @@ nonisolated struct ToolExecutionContext: Hashable {
     /// instead of "Спецификация калькулятора"). Empty for roles without
     /// declared deliverables (advisory/chat roles).
     var expectedArtifacts: [String] = []
+    /// True only while the owning step is in its PLANNING phase.
+    ///
+    /// Per-CALL, and that is forced rather than chosen: the phase flips in the MIDDLE of a step,
+    /// while a handler's own dependencies are baked ONCE per step by
+    /// `ToolHandlerRegistry.buildHandlers` (driven from `+StepLifecycle`). This context is built
+    /// per tool BATCH, so it is the only channel that can carry a per-iteration fact down to a
+    /// `ToolHandler`.
+    ///
+    /// Read by `BashTool` alone — to narrow its Seatbelt profile to "no writes" for the duration
+    /// of the phase, which is what lets `PlanningPhasePolicy` admit `bash` at all. Every other
+    /// handler ignores it. Defaults `false`: meetings build their own context and never enter
+    /// the phase, and the default keeps the tool-handler test corpus compiling unchanged.
+    var isPlanningPhase: Bool = false
 }
 
 /// Out-of-band signal from a tool handler indicating special processing is needed.

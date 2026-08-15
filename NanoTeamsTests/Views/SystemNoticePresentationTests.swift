@@ -17,11 +17,22 @@ import XCTest
 /// assertion a hand-maintained list would silently stop making.
 final class SystemNoticePresentationTests: XCTestCase {
 
-    /// The three system-authored contexts. Spelled out here rather than read
+    /// The five system-authored contexts. Spelled out here rather than read
     /// back from the production table — a pin that sources its expectation from
     /// the thing it pins asserts nothing.
+    ///
+    /// `.screenDescription` is deliberately absent: it is runtime-GENERATED but it is
+    /// CONTENT — the only record of what the model was shown — so collapsing it to a
+    /// one-liner would hide the substance the model then acted on.
     private static let expectedNoticeContexts: Set<MessageSourceContext> = [
-        .retryNudge, .loopCorrection, .serverError,
+        .retryNudge, .loopCorrection, .serverError, .toolAcknowledgement, .runtimeWarning,
+    ]
+
+    /// The notice kinds that render RED. `.serverError` is a failed LLM call; `.runtimeWarning`
+    /// is a failure in the app's own work (a memory write that did not reach disk) whose remedy
+    /// belongs to the human. Everything else is a correction and must stay neutral.
+    private static let expectedErrorContexts: Set<MessageSourceContext> = [
+        .serverError, .runtimeWarning,
     ]
 
     // MARK: - Truth table over every context
@@ -65,20 +76,48 @@ final class SystemNoticePresentationTests: XCTestCase {
         XCTAssertEqual(notice?.isError, false)
     }
 
-    func testResolve_serverError_labelsAndIsTheOnlyErrorKind() {
+    func testResolve_serverError_labels() {
         let notice = SystemNoticePresentation.resolve(context: .serverError, content: "body")
         XCTAssertEqual(notice?.rowLabel, "system · server error")
         XCTAssertEqual(notice?.windowTitle, "server error")
         XCTAssertEqual(notice?.isError, true)
+    }
 
-        for context in Self.expectedNoticeContexts where context != .serverError {
+    func testResolve_toolAcknowledgement_labels() {
+        let notice = SystemNoticePresentation.resolve(context: .toolAcknowledgement, content: "body")
+        XCTAssertEqual(notice?.rowLabel, "system · note")
+        XCTAssertEqual(notice?.windowTitle, "note")
+        XCTAssertEqual(notice?.isError, false)
+    }
+
+    func testResolve_runtimeWarning_labels() {
+        let notice = SystemNoticePresentation.resolve(context: .runtimeWarning, content: "body")
+        XCTAssertEqual(notice?.rowLabel, "system · warning")
+        XCTAssertEqual(notice?.windowTitle, "warning")
+        XCTAssertEqual(notice?.isError, true)
+    }
+
+    /// Exactly the failure kinds render red. A correction painted red reads as a crash the user
+    /// must act on; a failure painted neutral is the disk filling up in grey six-point text.
+    func testResolve_exactlyTheFailureKindsRenderRed() {
+        for context in Self.expectedNoticeContexts {
             XCTAssertEqual(
-                SystemNoticePresentation.resolve(context: context, content: "b")?.isError, false,
-                "\(context) is a correction, not a failure — it must not render red")
+                SystemNoticePresentation.resolve(context: context, content: "b")?.isError,
+                Self.expectedErrorContexts.contains(context),
+                "\(context): red-ness disagrees with whether it reports a failure")
         }
     }
 
-    /// Drift guard against `MessageSourceContext.displayLabel`. Two of the three
+    /// The description of a screenshot is runtime-generated but it is CONTENT — the only record
+    /// of what the model was shown. A one-line row would hide the substance it acted on.
+    ///
+    /// RED: add `.screenDescription` to the production `kinds` table → this fires, and so does
+    /// the `allCases` truth table above.
+    func testResolve_screenDescription_staysProse() {
+        XCTAssertNil(SystemNoticePresentation.resolve(context: .screenDescription, content: "a UI"))
+    }
+
+    /// Drift guard against `MessageSourceContext.displayLabel`. Four of the five
     /// kinds have a Domain label; the row must agree with it or the same concept
     /// would read differently in the feed row and in the transcript's `(retry)`
     /// anchor. `.serverError` is the documented exception — Domain deliberately
@@ -91,6 +130,12 @@ final class SystemNoticePresentationTests: XCTestCase {
         XCTAssertEqual(
             SystemNoticePresentation.resolve(context: .loopCorrection, content: "b")?.windowTitle,
             MessageSourceContext.loopCorrection.displayLabel)
+        XCTAssertEqual(
+            SystemNoticePresentation.resolve(context: .toolAcknowledgement, content: "b")?.windowTitle,
+            MessageSourceContext.toolAcknowledgement.displayLabel)
+        XCTAssertEqual(
+            SystemNoticePresentation.resolve(context: .runtimeWarning, content: "b")?.windowTitle,
+            MessageSourceContext.runtimeWarning.displayLabel)
 
         XCTAssertEqual(MessageSourceContext.serverError.displayLabel, "serverError",
                        "Domain still has no label for it — the raw-value fallback is pinned by "

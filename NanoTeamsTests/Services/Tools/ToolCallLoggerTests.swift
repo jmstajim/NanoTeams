@@ -243,9 +243,16 @@ final class ToolCallLoggerTests: XCTestCase {
 
         let queue = DispatchQueue(label: "test.concurrent", attributes: .concurrent)
 
+        // Captured as locals so the concurrent blocks don't capture `self`
+        // (a non-Sendable XCTestCase). `ToolCallLogger` is `@unchecked Sendable`
+        // and serializes every append internally — that fan-in is what is under
+        // test; the records are built up front so nothing else crosses threads.
+        let logger = try XCTUnwrap(self.logger)
+        let records = (0..<writeCount).map { makeRecord(toolName: "tool_\($0)") }
+
         for i in 0..<writeCount {
             queue.async {
-                self.logger.append(self.makeRecord(toolName: "tool_\(i)"))
+                logger.append(records[i])
                 expectation.fulfill()
             }
         }

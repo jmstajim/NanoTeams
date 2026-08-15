@@ -68,8 +68,8 @@ final class QuickCaptureSelectionCoverageTests: XCTestCase {
     private var controller: QuickCaptureController!
     private var tempDir: URL!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         QuickCaptureController.shared._testReset()
         capturer = ScriptedSelectionCapturer()
         hotkeys = ReplayingHotkeyManager()
@@ -78,14 +78,14 @@ final class QuickCaptureSelectionCoverageTests: XCTestCase {
         try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         controller = nil
         hotkeys = nil
         capturer = nil
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
         QuickCaptureController.shared._testReset()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// A store with a REAL work folder open. The hotkey tests need this: with no folder,
@@ -93,7 +93,7 @@ final class QuickCaptureSelectionCoverageTests: XCTestCase {
     /// default-storage tree under Application Support — a side effect outside the temp
     /// dir, and slow enough that the capture is not observable within a bounded wait.
     private func makeStoreWithWorkFolder() async -> NTMSOrchestrator {
-        let store = await TestOrchestrator.make()
+        let store = TestOrchestrator.make()
         await store.openWorkFolder(tempDir)
         return store
     }
@@ -297,7 +297,7 @@ final class QuickCaptureSelectionCoverageTests: XCTestCase {
     /// RED: remove the `guard !didSetupHotkeys` → four key codes are registered.
     func testSetup_isIdempotent() async {
         let sut = makeController()
-        let store = await TestOrchestrator.make()
+        let store = TestOrchestrator.make()
         let dictation = DictationService()
 
         sut.setup(store: store, dictation: dictation)

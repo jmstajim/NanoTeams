@@ -19,16 +19,16 @@ final class StoreConfigurationFeatureTipsTests: XCTestCase {
     var storage: InMemoryStorage!
     var config: StoreConfiguration!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         storage = InMemoryStorage()
         config = StoreConfiguration(storage: storage)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         config = nil
         storage = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Stringly-typed mutators (used by view code)

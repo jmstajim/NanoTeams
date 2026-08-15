@@ -33,16 +33,16 @@ final class AppUpdateCheckerTests: XCTestCase {
     private var mock: MockNetworkSession!
     private var sut: AppUpdateChecker!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         mock = MockNetworkSession()
         sut = AppUpdateChecker(session: mock)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut = nil
         mock = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Happy path

@@ -22,8 +22,8 @@ final class ToolResultSideEffectsCornerTests: XCTestCase {
     private let stepID = "worker_step"
     private let taskID = 77
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
@@ -35,12 +35,12 @@ final class ToolResultSideEffectsCornerTests: XCTestCase {
         mockDelegate.workFolderURL = tempDir
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
         mockDelegate = nil
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Autovisor memory write-through
@@ -65,6 +65,55 @@ final class ToolResultSideEffectsCornerTests: XCTestCase {
                        "a SUCCESSFUL write must not warn; got: \(conversation.map { $0.content ?? "" })")
     }
 
+    /// The manager's feed note names the ONE fact the tool card cannot: the
+    /// write-through to folder settings. The card only knows the scratchpad string
+    /// was accepted — the handler runs detached and never sees the service.
+    ///
+    /// The wording matters as much as its presence. The manager's own prompt sends
+    /// it from the memory write (step 6) straight to `wait_for_events` (step 7), so
+    /// the retired "Plan updated. Continue with the next step." both named a thing
+    /// it does not have and pushed against its terminal action.
+    ///
+    /// RED: classify the manager as `.ordinaryRole` → the note disappears and this fails.
+    func testScratchpad_onAutovisorStep_notesTheWriteThrough_andNeverMentionsAPlan() async {
+        seedAutovisorStep()
+        var conversation: [ChatMessage] = []
+
+        await service.processScratchpadResult(
+            result: scratchpadResult(content: "Watching task #3."),
+            stepID: stepID, taskID: taskID,
+            conversationMessages: &conversation)
+
+        let notes = (step()?.llmConversation ?? []).filter { $0.sourceContext == .toolAcknowledgement }
+        XCTAssertEqual(notes.count, 1, "exactly one note; got: \(notes.map { $0.content })")
+        let note = notes.first?.content ?? ""
+        XCTAssertTrue(note.lowercased().contains("memory"),
+                      "the note exists to report the write-through; got: \(note)")
+        XCTAssertFalse(note.lowercased().contains("plan updated"),
+                       "the manager records memory, not a plan; got: \(note)")
+        XCTAssertFalse(note.lowercased().contains("next step"),
+                       "a directive here pushes against wait_for_events; got: \(note)")
+    }
+
+    /// The manager's successful write says nothing to the MODEL. Everything it
+    /// needs is in the tool envelope, and this step runs on a schedule forever —
+    /// an app-authored turn per pass is pure recurring cost.
+    ///
+    /// RED: restore the unconditional `conversationMessages.append` → this fails.
+    func testScratchpad_onAutovisorStep_successPutsNothingOnTheWire() async {
+        seedAutovisorStep()
+        var conversation: [ChatMessage] = []
+
+        await service.processScratchpadResult(
+            result: scratchpadResult(content: "Watching task #3."),
+            stepID: stepID, taskID: taskID,
+            conversationMessages: &conversation)
+
+        XCTAssertTrue(conversation.isEmpty,
+                      "a successful write is already confirmed by the tool envelope; got: "
+                      + "\(conversation.map { $0.content ?? "" })")
+    }
+
     /// A failed settings write must reach the manager. Memory is its only
     /// cross-run state — a silent failure means it forgets and re-derives next
     /// pass, with nothing anywhere saying why.
@@ -86,6 +135,67 @@ final class ToolResultSideEffectsCornerTests: XCTestCase {
         let persisted = step()?.llmConversation.first { $0.content.contains("Memory write to disk failed") }
         XCTAssertNotNil(persisted, "the warning must survive into llmConversation, not only this iteration")
         XCTAssertEqual(persisted?.role, .user)
+    }
+
+    /// A failed write used to be followed immediately by "Plan updated. Continue
+    /// with the next step." — the model was told to retry and to move on, in two
+    /// adjacent turns, and the Supervisor saw a RED warning followed by a note
+    /// saying all was well.
+    ///
+    /// RED: return a confirmation for `.writeFailed` on either surface → this fails.
+    func testScratchpad_onAutovisorStep_persistFailure_addsNoContradictorySecondTurn() async {
+        seedAutovisorStep()
+        mockDelegate.persistAutovisorMemoryResult = false
+        var conversation: [ChatMessage] = []
+
+        await service.processScratchpadResult(
+            result: scratchpadResult(content: "remember this"),
+            stepID: stepID, taskID: taskID,
+            conversationMessages: &conversation)
+
+        XCTAssertEqual(conversation.count, 1,
+                       "the warning is the ONLY wire turn a failed write earns; got: "
+                       + "\(conversation.map { $0.content ?? "" })")
+
+        let notes = (step()?.llmConversation ?? []).filter { $0.sourceContext == .toolAcknowledgement }
+        XCTAssertTrue(notes.isEmpty,
+                      "a reassuring note beside a failure warning is the contradiction this removes; "
+                      + "got: \(notes.map { $0.content })")
+    }
+
+    /// Blank content clears the step's scratchpad but deliberately leaves the
+    /// standing memory alone (see the test above). The manager therefore asked for
+    /// something the app declined to do — and unless it is told, the old text
+    /// reappears in its prompt next pass with nothing explaining why.
+    ///
+    /// This is the one acknowledgement that still reaches the MODEL: it corrects a
+    /// false belief rather than confirming a success.
+    ///
+    /// RED: drop the `.clearedWithoutPersisting` arm → both assertions fail.
+    func testScratchpad_onAutovisorStep_blankContent_tellsBothReadersMemoryIsUnchanged() async {
+        seedAutovisorStep()
+        var conversation: [ChatMessage] = []
+
+        await service.processScratchpadResult(
+            result: scratchpadResult(content: "   \n  "),
+            stepID: stepID, taskID: taskID,
+            conversationMessages: &conversation)
+
+        XCTAssertTrue(mockDelegate.persistedAutovisorMemory.isEmpty,
+                      "premise: a blank update still must not overwrite standing memory")
+
+        let wire = conversation.compactMap { $0.content }
+        XCTAssertEqual(wire.count, 1, "the model must learn its clear did not take; got: \(wire)")
+        XCTAssertTrue(wire.first?.contains("unchanged") ?? false, "got: \(wire)")
+        // Same rule as the memory-failure warning beside it: a `.system` copy
+        // corrupts stateless rebuilds with a mid-conversation system message.
+        XCTAssertEqual(conversation.first?.role, .user,
+                       "app-authored wire turns ship as .user")
+
+        let notes = (step()?.llmConversation ?? []).filter { $0.sourceContext == .toolAcknowledgement }
+        XCTAssertEqual(notes.count, 1, "the Supervisor sees it too; got: \(notes.map { $0.content })")
+        XCTAssertEqual(notes.first?.content, wire.first,
+                       "one text, both surfaces — the two readers must not disagree")
     }
 
     /// A whitespace-only scratchpad on the manager is not memory — the guard is
@@ -119,6 +229,49 @@ final class ToolResultSideEffectsCornerTests: XCTestCase {
                       "only the manager's scratchpad is standing memory")
         XCTAssertEqual(step()?.scratchpad, "my private plan",
                        "the ordinary role's scratchpad still lands on its own step")
+
+        // Both surfaces stay silent: the tool envelope confirms the write to the
+        // model, the tool card confirms it to the Supervisor. This role has no
+        // memory write-through and no phase boundary, so there is no third fact.
+        XCTAssertTrue(conversation.isEmpty,
+                      "got: \(conversation.map { $0.content ?? "" })")
+        XCTAssertTrue((step()?.llmConversation ?? []).isEmpty,
+                      "got: \((step()?.llmConversation ?? []).map { $0.content })")
+    }
+
+    // MARK: - The planning writer, reached through the classifier
+
+    /// The `.planningPhase` arm is the ONLY producer of the transition note, and it
+    /// is selected from the WIRE (`isMidPlanning`), not from the role. Without a
+    /// test that puts a brief on the wire, `} else if ... {` could be deleted — or
+    /// collapsed into `.ordinaryRole` — with the whole suite still green, and line
+    /// coverage would not notice either, since the condition is evaluated (false)
+    /// on every ordinary write.
+    ///
+    /// RED: replace the `isMidPlanning` branch with `writer = .ordinaryRole` → this fails.
+    func testScratchpad_midPlanningWire_notesTheTransition_andStillSaysNothingToTheModel() async {
+        seedOrdinaryStep()
+        var conversation: [ChatMessage] = [
+            ChatMessage(role: .user, content: PlanningPhasePolicy.planningBrief(
+                exploreToolNames: [ToolNames.readFile], expectedArtifacts: ["Notes"])),
+        ]
+        XCTAssertTrue(PlanningPhasePolicy.isMidPlanning(conversation),
+                      "premise: the fixture really is a mid-planning wire")
+
+        await service.processScratchpadResult(
+            result: scratchpadResult(content: "1. Read the sources\n2. Edit the parser"),
+            stepID: stepID, taskID: taskID,
+            conversationMessages: &conversation)
+
+        let notes = (step()?.llmConversation ?? []).filter { $0.sourceContext == .toolAcknowledgement }
+        XCTAssertEqual(notes.count, 1, "got: \(notes.map { $0.content })")
+        XCTAssertTrue(notes.first?.content.contains("implementation phase") ?? false,
+                      "the note explains why the next bubble is a fresh conversation; got: "
+                      + "\(notes.first?.content ?? "nil")")
+
+        XCTAssertEqual(conversation.count, 1,
+                       "the brief only — the transition note is display-only, and the boundary "
+                       + "would discard a wire copy anyway; got: \(conversation.map { $0.content ?? "" })")
     }
 
     // MARK: - Artifact name resolution when the step is not in the latest run

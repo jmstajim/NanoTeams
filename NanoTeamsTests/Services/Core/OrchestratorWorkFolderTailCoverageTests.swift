@@ -200,7 +200,7 @@ final class AOrchFailingRepository: NTMSRepositoryProtocol, @unchecked Sendable 
 /// `DelegationLoopWatcher` is thoroughly tested, its orchestrator-side witness
 /// was not.
 @MainActor
-final class AOrchStreamingTailTests: NTMSOrchestratorTestBase {
+final class AOrchStreamingTailTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: mutateTaskInMemory — index recovery (`+Streaming` L25)
 
@@ -448,7 +448,7 @@ final class AOrchStreamingTailTests: NTMSOrchestratorTestBase {
 /// Dropping that loop is silent: the role's system prompt simply ships without
 /// the skill body it was configured with, and nothing reports it.
 @MainActor
-final class AOrchGeneratedTeamSkillsTests: NTMSOrchestratorTestBase {
+final class AOrchGeneratedTeamSkillsTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     /// Writes a project skill and returns the id the scanner assigns to it — the
     /// id shape is the scanner's business, so it is derived rather than spelled out.
@@ -526,8 +526,8 @@ final class AOrchPersistRefusalTailTests: XCTestCase, @unchecked Sendable {
     private var repo: AOrchFailingRepository!
     private var sut: NTMSOrchestrator!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("aorch-refusal-\(UUID().uuidString)", isDirectory: true)
@@ -537,13 +537,13 @@ final class AOrchPersistRefusalTailTests: XCTestCase, @unchecked Sendable {
         sut = TestOrchestrator.make(repository: repo)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut?.stopAllEngines()
         sut = nil
         repo = nil
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: mutateTask — cancellation is not a failure (`+StateMutation` L45 / L69)
@@ -826,8 +826,8 @@ final class AOrchTeamsDiffEncodeFailureTests: XCTestCase, @unchecked Sendable {
     private var repo: AOrchFailingRepository!
     private var sut: NTMSOrchestrator!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("aorch-teamsdiff-\(UUID().uuidString)", isDirectory: true)
@@ -837,12 +837,12 @@ final class AOrchTeamsDiffEncodeFailureTests: XCTestCase, @unchecked Sendable {
         sut = TestOrchestrator.make(repository: repo)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut = nil
         repo = nil
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// A non-finite graph coordinate makes `JSONEncoder` throw (its default
@@ -896,8 +896,8 @@ final class AOrchBundledUpdateSeverityTests: XCTestCase, @unchecked Sendable {
     private let fm = FileManager.default
     private var paths: NTMSPaths { NTMSPaths(workFolderRoot: tempDir) }
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         tempDir = fm.temporaryDirectory
             .appendingPathComponent("aorch-bundled-\(UUID().uuidString)", isDirectory: true)
@@ -906,12 +906,12 @@ final class AOrchBundledUpdateSeverityTests: XCTestCase, @unchecked Sendable {
         sut = TestOrchestrator.make()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut?.stopAllEngines()
         sut = nil
         if let tempDir { try? fm.removeItem(at: tempDir) }
         tempDir = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Seeds a task whose role is `.working` beside a `.running` step — exactly the
@@ -989,8 +989,8 @@ final class AOrchTaskCreationBootstrapTests: XCTestCase, @unchecked Sendable {
     private var configuration: StoreConfiguration!
     private var sut: NTMSOrchestrator!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("aorch-bootstrap-\(UUID().uuidString)", isDirectory: true)
@@ -1000,13 +1000,13 @@ final class AOrchTaskCreationBootstrapTests: XCTestCase, @unchecked Sendable {
         sut = TestOrchestrator.make(configuration: configuration)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut?.stopAllEngines()
         sut = nil
         configuration = nil
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// With no folder open, the creation path must bootstrap the LAST-OPENED folder
@@ -1073,8 +1073,8 @@ final class AOrchStagingRaceTailTests: XCTestCase, @unchecked Sendable {
     private var phantomFM: PhantomFileManager!
     private var sut: NTMSOrchestrator!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("aorch-staging-\(UUID().uuidString)", isDirectory: true)
@@ -1084,12 +1084,12 @@ final class AOrchStagingRaceTailTests: XCTestCase, @unchecked Sendable {
         sut = TestOrchestrator.make(fileManager: phantomFM)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut = nil
         phantomFM = nil
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// The file passes the existence check and is gone by the time its size is read.
@@ -1137,8 +1137,8 @@ final class AOrchQueuedMessageBackstopTests: XCTestCase, @unchecked Sendable {
     private var sut: NTMSOrchestrator!
     private var controller: QuickCaptureController { QuickCaptureController.shared }
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         QuickCaptureController.shared._testReset()
         tempDir = FileManager.default.temporaryDirectory
@@ -1148,13 +1148,13 @@ final class AOrchQueuedMessageBackstopTests: XCTestCase, @unchecked Sendable {
         sut = TestOrchestrator.make()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         QuickCaptureController.shared._testReset()
         sut?.stopAllEngines()
         sut = nil
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// The witness must actually forward. Driven through the one flush outcome that

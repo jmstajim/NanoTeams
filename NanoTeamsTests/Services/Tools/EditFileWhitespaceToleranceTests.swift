@@ -232,6 +232,84 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "m  \nn\nz\nm\t\nn\n", "file must be untouched")
     }
 
+    // MARK: - Ambiguity on the EXACT path
+
+    /// The tolerant path has refused ambiguous anchors since it was written; the exact path had
+    /// no such check at all, so an `old_text` occurring N times without `replace_all` silently
+    /// edited the FIRST occurrence and answered `ok:true` with `replacements_made: 1`. A
+    /// wrong-location write reported as a success is the worst class of failure this tool has.
+    /// RED: delete the occurrence count from the exact-path loop → the first `dup()` is rewritten,
+    /// the file changes, and the call reports success.
+    func testExactMatchInSeveralPlaces_withoutReplaceAll_refusesAndLeavesTheFileAlone() throws {
+        let original = "dup()\nmiddle\ndup()\n"
+        let url = try writeFile("dup.txt", original)
+
+        let result = runEdit(path: "dup.txt", oldText: "dup()", newText: "changed()")
+
+        XCTAssertTrue(result.isError)
+        XCTAssertTrue(result.outputJSON.contains("ANCHOR_AMBIGUOUS"), result.outputJSON)
+        XCTAssertTrue(result.outputJSON.contains("matches 2 places"), result.outputJSON)
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), original, "file must be untouched")
+    }
+
+    /// The exact path matched byte-for-byte, so the tolerant path's "when ignoring trailing
+    /// whitespace" would be a false diagnosis — it would send the model hunting a whitespace
+    /// problem it does not have. Same error CODE (so `ToolErrorNotePolicy.direction` steers both), a
+    /// different sentence.
+    /// RED: reuse the tolerant path's message verbatim → the model is told its exact anchor has a
+    /// whitespace problem, and `replace_all` is never mentioned as the other way out.
+    func testExactAmbiguity_doesNotBlameTrailingWhitespace_andNamesReplaceAll() throws {
+        _ = try writeFile("dup2.txt", "dup()\nmiddle\ndup()\n")
+
+        let result = runEdit(path: "dup2.txt", oldText: "dup()", newText: "changed()")
+
+        XCTAssertFalse(result.outputJSON.contains("ignoring trailing whitespace"), result.outputJSON)
+        XCTAssertTrue(result.outputJSON.contains("replace_all"), result.outputJSON)
+    }
+
+    /// `replace_all` is exactly what the refusal points at, so it must still work.
+    /// RED: hoist the occurrence check above the `!replaceAll` guard → `replace_all: true` starts
+    /// erroring on the very input it exists for.
+    func testExactMatchInSeveralPlaces_withReplaceAll_stillReplacesEveryOne() throws {
+        let url = try writeFile("dup3.txt", "dup()\nmiddle\ndup()\n")
+
+        let result = runEdit(path: "dup3.txt", oldText: "dup()", newText: "changed()", replaceAll: true)
+
+        XCTAssertFalse(result.isError, result.outputJSON)
+        XCTAssertTrue(result.outputJSON.contains("\"replacements_made\":2"), result.outputJSON)
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "changed()\nmiddle\nchanged()\n")
+    }
+
+    /// The index-0 rule's other half. The model's LITERAL anchor carries a `read_lines` gutter and
+    /// matches nothing; the gutter-stripped repair then matches twice. That ambiguity belongs to a
+    /// TRANSFORMED candidate, so it is recorded rather than returned — a later candidate could
+    /// still be unique — and surfaces only once every candidate is exhausted.
+    /// RED: return immediately instead of recording (drop the `index == 0` condition) → a
+    /// transformed candidate's ambiguity becomes terminal, and any later candidate that WOULD have
+    /// matched uniquely never gets its turn.
+    func testTransformedCandidateAmbiguity_isDeferredThenReported() throws {
+        let original = "foo()\nbar\nfoo()\n"
+        let url = try writeFile("gutter.txt", original)
+
+        let result = runEdit(path: "gutter.txt", oldText: "1\tfoo()", newText: "1\tchanged()")
+
+        XCTAssertTrue(result.isError, result.outputJSON)
+        XCTAssertTrue(result.outputJSON.contains("ANCHOR_AMBIGUOUS"), result.outputJSON)
+        XCTAssertTrue(result.outputJSON.contains("matches 2 places"), result.outputJSON)
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), original, "file must be untouched")
+    }
+
+    /// The common case must not regress: one occurrence still edits without ceremony.
+    /// RED: treat any match as ambiguous (drop the `> 1`) → every single-occurrence edit refuses.
+    func testExactMatchInOnePlace_isUnaffected() throws {
+        let url = try writeFile("once.txt", "only()\nmiddle\n")
+
+        let result = runEdit(path: "once.txt", oldText: "only()", newText: "changed()")
+
+        XCTAssertFalse(result.isError, result.outputJSON)
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "changed()\nmiddle\n")
+    }
+
     /// Whole-line semantics: a partial-line content difference never fallback-matches.
     func testMidLineContentDifference_noFallback() throws {
         _ = try writeFile("l.txt", "value = compute(); // cached\nnext();\n")
@@ -242,8 +320,17 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
         XCTAssertTrue(result.outputJSON.contains("ANCHOR_NOT_FOUND"))
     }
 
-    /// Leading-whitespace mismatch (tabs vs spaces) is diagnosed, never auto-edited.
-    func testIndentationMismatch_errorNamesIndentationAndLine() throws {
+    /// Tabs-vs-spaces is now REPAIRED, not merely diagnosed.
+    ///
+    /// This test previously pinned the refusal ("diagnosed, never auto-edited"). It was
+    /// flipped deliberately: the anchor→file indentation here is a well-defined map
+    /// (`"    "→"\t"`, `"        "→"\t\t"`), so the replacement can be rewritten into
+    /// the file's convention with no guessing. Refusing it was the behaviour that sent
+    /// a real model into a spaces-perturbing loop. The case where the map is NOT
+    /// well-defined still refuses — see `testIrregularFileIndentation_refusesAndQuotesTheFile`.
+    ///
+    /// RED: drop the tier-3 branch → ANCHOR_NOT_FOUND again.
+    func testIndentationMismatch_isRepairedIntoTheFilesConvention() throws {
         let url = try writeFile("m.swift", "// header\n\n\tif (x) {\n\t\tgo();\n\t}\n")
 
         let result = runEdit(
@@ -252,11 +339,63 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
             newText: "    if (y) {\n        go();\n    }"
         )
 
-        XCTAssertTrue(result.isError)
+        XCTAssertFalse(result.isError, result.outputJSON)
+        XCTAssertEqual(dataField(result, "matched_ignoring_indentation") as? Bool, true)
+        XCTAssertEqual(
+            try String(contentsOf: url, encoding: .utf8),
+            "// header\n\n\tif (y) {\n\t\tgo();\n\t}\n",
+            "the replacement must adopt the file's tabs, not keep the model's spaces")
+    }
+
+    /// The refusal that survives: the file's own indentation is irregular, so the SAME
+    /// anchor depth corresponds to two different file depths — here `"    "` maps to
+    /// `"    "` on the first line and to `"     "` (five) on the third. That is the
+    /// real MeditationApp shape. There is no consistent translation, the correct
+    /// output is unknowable, and the tool returns the file's bytes instead of a guess.
+    ///
+    /// Note this is NOT simply "tabs somewhere": a fixture whose differing lines sit
+    /// at DIFFERENT anchor depths still yields a well-defined map and is repaired. The
+    /// conflict has to be on one key.
+    ///
+    /// RED: drop the "map must be a function" check → the edit applies and writes a guess.
+    func testIrregularFileIndentation_refusesAndQuotesTheFile() throws {
+        let original = "// header\n\n    let a = 1\n        deeper()\n     let b = 2\n"
+        let url = try writeFile("irregular.swift", original)
+
+        let result = runEdit(
+            path: "irregular.swift",
+            oldText: "    let a = 1\n        deeper()\n    let b = 2",
+            newText: "    let a = 9\n        deeper()\n    let b = 2"
+        )
+
+        XCTAssertTrue(result.isError, result.outputJSON)
         XCTAssertTrue(result.outputJSON.contains("ANCHOR_NOT_FOUND"))
         XCTAssertTrue(result.outputJSON.contains("ignoring indentation"), result.outputJSON)
-        XCTAssertTrue(result.outputJSON.contains("near line 3"), result.outputJSON)
-        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "// header\n\n\tif (x) {\n\t\tgo();\n\t}\n", "file must be untouched")
+        XCTAssertTrue(
+            result.outputJSON.contains("     let b = 2"),
+            "must quote the file's five-space line so it can be copied: \(result.outputJSON)")
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), original, "file must be untouched")
+    }
+
+    /// A replacement line at a depth the anchor never contained cannot be placed —
+    /// there is no evidence for what it should become — so the whole edit is refused
+    /// rather than extrapolated.
+    ///
+    /// RED: pass unmapped prefixes through unchanged → writes 6-space lines into a
+    /// tab-indented file under `ok:true`.
+    func testReplacementAtANovelDepth_refusesRatherThanExtrapolating() throws {
+        let original = "\tif (x) {\n\t\tgo();\n\t}\n"
+        let url = try writeFile("novel.swift", original)
+
+        let result = runEdit(
+            path: "novel.swift",
+            oldText: "    if (x) {\n        go();\n    }",
+            // 12 spaces is a third depth: the anchor only ever showed 4 and 8.
+            newText: "    if (x) {\n        go();\n            deeper();\n    }"
+        )
+
+        XCTAssertTrue(result.isError, result.outputJSON)
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), original, "file must be untouched")
     }
 
     // MARK: - File boundaries
@@ -352,10 +491,15 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     // MARK: - Diagnostics and disclosure
 
-    /// A leading-whitespace mismatch is diagnosed even when the anchor ALSO
-    /// differs in trailing whitespace (trimBoth covers both ends).
-    func testCombinedLeadingAndTrailingMismatch_firesIndentationHint() throws {
-        _ = try writeFile("v.swift", "\tif (x) {  \n\t\tgo();\n\t}\n")
+    /// A leading-whitespace mismatch is handled even when the anchor ALSO differs in
+    /// trailing whitespace (trimBoth covers both ends). Flipped alongside
+    /// `testIndentationMismatch_isRepairedIntoTheFilesConvention`: the map is
+    /// well-defined, so this repairs rather than refuses. The zero-indent replacement
+    /// needs no translation — no indentation means no indentation in either convention.
+    ///
+    /// RED: drop the tier-3 branch → ANCHOR_NOT_FOUND.
+    func testCombinedLeadingAndTrailingMismatch_isRepaired() throws {
+        let url = try writeFile("v.swift", "\tif (x) {  \n\t\tgo();\n\t}\n")
 
         let result = runEdit(
             path: "v.swift",
@@ -363,8 +507,9 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
             newText: "x"
         )
 
-        XCTAssertTrue(result.isError)
-        XCTAssertTrue(result.outputJSON.contains("ignoring indentation"), result.outputJSON)
+        XCTAssertFalse(result.isError, result.outputJSON)
+        XCTAssertEqual(dataField(result, "matched_ignoring_indentation") as? Bool, true)
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "x\n")
     }
 
     func testAnchorLongerThanFile_hintsLineCount() throws {

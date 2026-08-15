@@ -9,7 +9,7 @@ import XCTest
 ///
 /// What flows through this parser is the only thing a role learns about WHERE a conflict
 /// is: the conflict envelope is an `ErrorEnvelope` (`data` is `nil`) and
-/// `buildToolErrorGuidance`'s default arm surfaces only `error.message`.
+/// `ToolErrorNotePolicy.direction`'s default arm surfaces only `error.message`.
 final class GitConflictParserTests: XCTestCase {
 
     // MARK: - The five shapes git emits for a two-parent merge

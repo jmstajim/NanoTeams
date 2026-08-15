@@ -21,8 +21,8 @@ final class StoreConfigurationModelResolutionTests: XCTestCase {
 
     private let base = "http://127.0.0.1:1234"
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         storage = InMemoryStorage()
         config = StoreConfiguration(storage: storage)
         config.llmBaseURLString = base
@@ -35,10 +35,10 @@ final class StoreConfigurationModelResolutionTests: XCTestCase {
         config.computerUseJudgeLLMOverride = nil
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         config = nil
         storage = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Vision fallback

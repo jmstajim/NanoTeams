@@ -13,6 +13,7 @@ import XCTest
 /// drives nothing meaningful — the lifecycle is the persistence ledger. These
 /// tests pin the contract the field's handlers produce, so a regression in
 /// the field code surfaces as a wrong persisted state here.
+@MainActor
 final class LLMTokenFieldLifecycleScenarioTests: XCTestCase {
 
     // MARK: - Scenario 1: Vision toggle must not delete the shared LLM token

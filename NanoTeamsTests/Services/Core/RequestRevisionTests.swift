@@ -13,7 +13,7 @@ import XCTest
 /// prefixed message content. Pre-fix, the derive-from-message path produced
 /// "Supervisor Feedback: Supervisor Feedback: …" in the activity feed and on the wire.
 @MainActor
-final class RequestRevisionTests: NTMSOrchestratorTestBase {
+final class RequestRevisionTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Helpers
 

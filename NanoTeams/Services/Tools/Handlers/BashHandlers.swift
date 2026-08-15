@@ -85,10 +85,37 @@ nonisolated struct BashTool: ToolHandler {
             }
             let runInBackground = optionalBool(args, "run_in_background", default: false)
 
+            // A detached process keeps the profile it was LAUNCHED with for its whole life, and
+            // during the planning phase that profile blocks every write. It would carry the block
+            // across the boundary and past it, unfixable — so refuse rather than hand back a
+            // permanently crippled server. `plan_required`, not INVALID_ARGS: the argument is
+            // well-formed, the PHASE is the blocker, and the identical call works next turn.
+            if context.isPlanningPhase, runInBackground {
+                return makePlanRequiredResult(
+                    toolName: Self.name, args: args,
+                    message: "Background commands are unavailable until your plan is recorded — a "
+                        + "detached process would keep this phase's write-blocked sandbox for its "
+                        + "whole life. Run it in the foreground, or start it after calling "
+                        + "update_scratchpad.")
+            }
+
+            // Per-call narrowing: during the planning phase the command may read anything the
+            // user's own grants allow and write nothing. It CANNOT ride the handler's stored
+            // fields — those are baked once per step by `ToolHandlerRegistry.buildHandlers`, and
+            // the phase flips mid-step, so `context` is the only channel that carries it.
+            //
+            // The fallback goes off with it: `allowUnsandboxedFallback` re-runs the command with
+            // NO confinement, which would silently retract the very guarantee that admits `bash`
+            // to the phase.
+            let effectivePermissions = context.isPlanningPhase
+                ? sandboxPermissions.withWritesDisabled()
+                : sandboxPermissions
+            let effectiveFallback = context.isPlanningPhase ? false : allowUnsandboxedFallback
+
             let sandboxProfile = sandboxEnabled
                 ? SeatbeltSandbox.profile(
                     workFolderRoot: workFolderRoot,
-                    permissions: sandboxPermissions,
+                    permissions: effectivePermissions,
                     fileManager: fileManager)
                 : nil
 
@@ -117,7 +144,8 @@ nonisolated struct BashTool: ToolHandler {
             // MARK: Foreground
             // ProcessRunnerError.cancelled propagates to ToolErrorHandler → makeCancelledResult.
             let outcome = try runForeground(
-                command: command, cwd: cwd, timeout: timeoutSec, sandboxProfile: sandboxProfile)
+                command: command, cwd: cwd, timeout: timeoutSec, sandboxProfile: sandboxProfile,
+                fallbackAllowed: effectiveFallback)
 
             switch outcome {
             case .timedOut(let stdout, let stderr, let ranSandboxed):
@@ -126,14 +154,15 @@ nonisolated struct BashTool: ToolHandler {
                     toolName: Self.name, args: args,
                     data: BashResult(
                         exit_code: nil, stdout: stdout, stderr: stderr, timed_out: true,
-                        sandboxed: ranSandboxed))
+                        sandboxed: ranSandboxed,
+                        writes_blocked: context.isPlanningPhase ? true : nil))
 
             case .completed(let result, let ranSandboxed):
                 // Sandbox failed to launch and no fallback was allowed. `ranSandboxed` keeps this
                 // branch off the post-fallback path, where the command demonstrably DID run.
                 if ranSandboxed, let sandboxProfile, sandboxProfile != "",
                    SeatbeltSandbox.isSandboxDenialFailure(exitCode: result.exitCode, stderr: result.stderr),
-                   !allowUnsandboxedFallback {
+                   !effectiveFallback {
                     return makeErrorResult(
                         toolName: Self.name, args: args, code: .bashDenied,
                         message: "The macOS sandbox failed to initialize for this command, and running unsandboxed is not permitted. The command was not run — this is an environment failure, not an argument problem.")
@@ -146,7 +175,11 @@ nonisolated struct BashTool: ToolHandler {
                         stdout: result.stdout,
                         stderr: result.stderr,
                         timed_out: false,
-                        sandboxed: ranSandboxed))
+                        sandboxed: ranSandboxed,
+                        writes_blocked: context.isPlanningPhase ? true : nil),
+                    meta: Self.planningWriteDenialMeta(
+                        isPlanningPhase: context.isPlanningPhase,
+                        exitCode: result.exitCode, stderr: result.stderr))
             }
         }
     }
@@ -170,8 +203,40 @@ nonisolated struct BashTool: ToolHandler {
     /// The retry deliberately gets the full `timeout` again: a wrapper failure is decided before
     /// the child starts, so the first attempt costs milliseconds, and shortening the second would
     /// silently give the model less time than it asked for.
+    /// A write the SANDBOX refused reaches the model as an ORDINARY non-zero exit: the schema
+    /// says outright that a non-zero exit is normal output, `isError` stays false, and
+    /// `ToolErrorNotePolicy.direction` runs only for `result.isError`. So the retry contract cannot be
+    /// taught there — it is taught here, in the envelope, and only here. Without it the model
+    /// reads `Operation not permitted` and concludes the file is protected, or that it needs
+    /// `sudo`, neither of which is true.
+    ///
+    /// A `meta.warnings` line rather than an error envelope, on purpose: the command RAN, part
+    /// of its stdout may be perfectly valid, and flipping `isError` would contradict the schema
+    /// AND drop the result out of `MemoryTagStore.processBash`, which passes errors through
+    /// untagged.
+    ///
+    /// The stderr substring is a heuristic and is allowed to be one: it only ever ADDS a
+    /// sentence, and the structural fact (`writes_blocked` on the envelope) is reported whether
+    /// or not it matches.
+    private static func planningWriteDenialMeta(
+        isPlanningPhase: Bool, exitCode: Int32, stderr: String
+    ) -> ToolResultMeta {
+        guard isPlanningPhase, exitCode != 0,
+              stderr.lowercased().contains("operation not permitted")
+        else { return ToolResultMeta() }
+        return ToolResultMeta(warnings: [
+            "This write was refused by the planning-phase sandbox, not by the shell or the "
+                + "filesystem. Record your findings and numbered plan with update_scratchpad; "
+                + "writes unlock on the next turn.",
+        ])
+    }
+
+    /// `fallbackAllowed` is passed IN rather than read off `self.allowUnsandboxedFallback`: the
+    /// planning phase forces it off per call, and a parameter that shadowed the stored property
+    /// would silently hand the stored value to any future use added inside this function.
     private func runForeground(
-        command: String, cwd: URL, timeout: TimeInterval, sandboxProfile: String?
+        command: String, cwd: URL, timeout: TimeInterval, sandboxProfile: String?,
+        fallbackAllowed: Bool
     ) throws -> ForegroundOutcome {
         func run(profile: String?) throws -> ForegroundOutcome {
             do {
@@ -187,7 +252,7 @@ nonisolated struct BashTool: ToolHandler {
         guard case .completed(let result, _) = first,
               sandboxProfile != nil,
               SeatbeltSandbox.isSandboxDenialFailure(exitCode: result.exitCode, stderr: result.stderr),
-              allowUnsandboxedFallback
+              fallbackAllowed
         else { return first }
         return try run(profile: nil)
     }
@@ -268,6 +333,11 @@ private nonisolated struct BashResult: Encodable {
     let stderr: String
     let timed_out: Bool
     let sandboxed: Bool
+    /// `true` while the step is in its planning phase, where the Seatbelt profile is rebuilt
+    /// with every write scope off. Optional so the synthesized `Encodable` OMITS the key
+    /// outside the phase — a `false` on every ordinary bash call would be schema noise on the
+    /// wire for a fact that is only ever interesting when it is true.
+    let writes_blocked: Bool?
 }
 
 private nonisolated struct BashBackgroundData: Encodable {

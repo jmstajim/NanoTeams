@@ -4,7 +4,7 @@ import XCTest
 final class HarmonyToolCallParserTests: XCTestCase {
     func testParsesHarmonyJSONCall() {
         let input = "Hello\n<|call|>{\"name\":\"write_artifact\",\"arguments\":{\"kind\":\"plan\",\"name\":\"P\",\"content\":\"Hi\"}}<|end|>ignored"
-        let parser = HarmonyToolCallParser()
+        _ = HarmonyToolCallParser()
         let calls = CallMarkerStrategy().parse(from: input)
 
         XCTAssertEqual(calls.count, 1)
@@ -14,7 +14,7 @@ final class HarmonyToolCallParserTests: XCTestCase {
 
     func testParsesHarmonyFunctionWrapperCall() {
         let input = "<|call|>{\"id\":\"abc\",\"function\":{\"name\":\"ask_supervisor\",\"arguments\":\"{\\\"question\\\":\\\"Are we good?\\\"}\"}}<|end|>"
-        let parser = HarmonyToolCallParser()
+        _ = HarmonyToolCallParser()
         let calls = CallMarkerStrategy().parse(from: input)
 
         XCTAssertEqual(calls.count, 1)
@@ -25,7 +25,7 @@ final class HarmonyToolCallParserTests: XCTestCase {
 
     func testParsesHarmonyNamePlusJSONArguments() {
         let input = "<|call|>write_artifact {\"kind\":\"plan\",\"name\":\"P\"}<|end|>"
-        let parser = HarmonyToolCallParser()
+        _ = HarmonyToolCallParser()
         let calls = CallMarkerStrategy().parse(from: input)
 
         XCTAssertEqual(calls.count, 1)
@@ -48,7 +48,7 @@ final class HarmonyToolCallParserTests: XCTestCase {
         // Issue: LLM output "read_file>" which got logged as tool name
         // Expected: Parser should not extract tool name with trailing special characters
         let input = "<|call|>read_file>"
-        let parser = HarmonyToolCallParser()
+        _ = HarmonyToolCallParser()
         let calls = CallMarkerStrategy().parse(from: input)
 
         // Either: no calls extracted (parser stops at malformed input)
@@ -63,7 +63,7 @@ final class HarmonyToolCallParserTests: XCTestCase {
         // Issue: LLM output "git_branch>{"action":"create",...}" as tool name
         // Expected: Parser should either parse correctly or reject gracefully
         let input = "<|call|>git_branch>{\"action\":\"create\",\"name\":\"feature\"}"
-        let parser = HarmonyToolCallParser()
+        _ = HarmonyToolCallParser()
         let calls = CallMarkerStrategy().parse(from: input)
 
         // The parser should either:
@@ -77,7 +77,7 @@ final class HarmonyToolCallParserTests: XCTestCase {
 
     func testToolNameWithSpecialCharactersRejected() {
         // Parser should only accept alphanumeric, underscore, dash, period in tool names
-        let parser = HarmonyToolCallParser()
+        _ = HarmonyToolCallParser()
 
         // Test various malformed inputs
         let malformedInputs = [
@@ -104,7 +104,7 @@ final class HarmonyToolCallParserTests: XCTestCase {
     func testEmptyToolNameAfterCallMarker() {
         // Edge case: <|call|> followed immediately by JSON (no tool name)
         let input = "<|call|> {\"name\": \"read_file\", \"arguments\": {}}"
-        let parser = HarmonyToolCallParser()
+        _ = HarmonyToolCallParser()
         let calls = CallMarkerStrategy().parse(from: input)
 
         // Should parse the JSON format correctly
@@ -115,7 +115,7 @@ final class HarmonyToolCallParserTests: XCTestCase {
     func testToolNameWithTrailingWhitespace() {
         // Tool name followed by whitespace then arguments
         let input = "<|call|>read_file   {\"path\": \"test.swift\"}"
-        let parser = HarmonyToolCallParser()
+        _ = HarmonyToolCallParser()
         let calls = CallMarkerStrategy().parse(from: input)
 
         XCTAssertEqual(calls.count, 1)
@@ -125,7 +125,7 @@ final class HarmonyToolCallParserTests: XCTestCase {
     func testIncompleteJSON() {
         // Incomplete JSON arguments - parser should handle gracefully
         let input = "<|call|>read_file {\"path\": \"test.swift\""  // Missing closing brace
-        let parser = HarmonyToolCallParser()
+        _ = HarmonyToolCallParser()
         let calls = CallMarkerStrategy().parse(from: input)
 
         // Parser should either not extract or extract with what it can parse
@@ -140,7 +140,7 @@ final class HarmonyToolCallParserTests: XCTestCase {
         <|call|>bad>tool {}
         <|call|>write_file {\"path\": \"b.swift\", \"content\": \"test\"}<|end|>
         """
-        let parser = HarmonyToolCallParser()
+        _ = HarmonyToolCallParser()
         let calls = CallMarkerStrategy().parse(from: input)
 
         // At minimum, the valid calls should be extracted
@@ -155,7 +155,7 @@ final class HarmonyToolCallParserTests: XCTestCase {
     func testChannelMarkerWithMalformedToolName() {
         // Channel format with malformed tool name
         let input = "<|channel|>commentary to=bad>tool<|message|>{}"
-        let parser = HarmonyToolCallParser()
+        _ = HarmonyToolCallParser()
         let calls = ChannelMarkerStrategy().parse(from: input)
 
         // Should either extract "bad" (stopping at >) or nothing
@@ -167,7 +167,7 @@ final class HarmonyToolCallParserTests: XCTestCase {
     func testToolNameExtractionStopsAtInvalidChars() {
         // Verify the extractIdentifier behavior - should stop at special characters
         let input = "<|call|>git_status> {}"
-        let parser = HarmonyToolCallParser()
+        _ = HarmonyToolCallParser()
         let calls = CallMarkerStrategy().parse(from: input)
 
         // Parser's extractIdentifier stops at non-identifier chars,
@@ -384,7 +384,7 @@ final class HarmonyToolCallParserTests: XCTestCase {
         <|call|>bad>{}<|end|>
         <|call|>good_tool {"arg": "value"}<|end|>
         """
-        let parser = HarmonyToolCallParser()
+        _ = HarmonyToolCallParser()
         let calls = CallMarkerStrategy().parse(from: input)
 
         // Should still find valid calls
@@ -583,7 +583,7 @@ final class HarmonyToolCallParserTests: XCTestCase {
     func testExtractChannelMarker_withLiteralNewlines() {
         // Full flow: Harmony <|channel|> format with markdown content containing literal newlines
         let input = "<|channel|>commentary to=create_artifact code<|message|>{\"name\":\"World Compendium\",\"content\":\"# Star Wars\nA long time ago\nin a galaxy far away\"}"
-        let parser = HarmonyToolCallParser()
+        _ = HarmonyToolCallParser()
         let calls = ChannelMarkerStrategy().parse(from: input)
 
         XCTAssertEqual(calls.count, 1)

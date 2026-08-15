@@ -13,7 +13,7 @@ import XCTest
 /// chance to run, so the state is deterministic and LLM-independent (same pattern
 /// as `ResumeAfterRestartAnswerTests`).
 @MainActor
-final class ResumeFailedStepTests: NTMSOrchestratorTestBase {
+final class ResumeFailedStepTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     /// Seeds the latest run with a single `.failed` step whose role is `.failed`,
     /// carrying a non-empty conversation + session so revival can be proven

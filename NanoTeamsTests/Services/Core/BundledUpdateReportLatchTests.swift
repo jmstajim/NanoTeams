@@ -22,8 +22,8 @@ final class BundledUpdateReportLatchTests: XCTestCase {
     private let fm = FileManager.default
     private var paths: NTMSPaths { NTMSPaths(workFolderRoot: root) }
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         tempDir = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try? fm.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -32,12 +32,12 @@ final class BundledUpdateReportLatchTests: XCTestCase {
         sut = TestOrchestrator.make()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let tempDir { try? fm.removeItem(at: tempDir) }
         sut = nil
         tempDir = nil
         root = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Seeds an unreadable `task.json` (a directory at that path throws a

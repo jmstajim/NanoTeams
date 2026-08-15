@@ -157,8 +157,8 @@ final class QuickCaptureControllerCallbackTests: XCTestCase {
 
     var sut: QuickCaptureController!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         sut = QuickCaptureController.shared
         sut._testReset()
@@ -170,7 +170,7 @@ final class QuickCaptureControllerCallbackTests: XCTestCase {
         sut._testIsPanelVisible = false
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if sut._testIsInAnswerMode { sut._testExitAnswerMode() }
         sut.formState.supervisorTask = ""
         sut.isTaskSelected = false
@@ -178,7 +178,7 @@ final class QuickCaptureControllerCallbackTests: XCTestCase {
         sut._testIsPanelVisible = false
         sut._testReset()
         sut = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: handlePanelHidden
@@ -329,19 +329,19 @@ final class QuickCaptureControllerInitDefaultsTests: XCTestCase {
 
     private var savedKeepOpen: Any?
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         savedKeepOpen = UserDefaults.standard.object(forKey: UserDefaultsKeys.quickCaptureKeepOpenInChat)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let savedKeepOpen {
             UserDefaults.standard.set(savedKeepOpen, forKey: UserDefaultsKeys.quickCaptureKeepOpenInChat)
         } else {
             UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.quickCaptureKeepOpenInChat)
         }
         savedKeepOpen = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// A fresh install has no stored preference. The default must be `true` —
@@ -426,15 +426,15 @@ final class QuickCaptureSetupHotkeyFailureTests: XCTestCase {
     /// documented as lazy (no AVFoundation / Speech APIs touched).
     private var dictation: DictationService!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         dictation = DictationService()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         dictation = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func makeController(refusing keyCodes: Set<UInt32>) -> (QuickCaptureController, RefusingHotkeyManager) {

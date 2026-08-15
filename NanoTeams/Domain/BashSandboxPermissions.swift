@@ -83,4 +83,35 @@ nonisolated struct BashSandboxPermissions: Codable, Hashable, Sendable {
         self.homeRead = try c.decodeIfPresent(Bool.self, forKey: .homeRead) ?? everythingElseRead
         self.homeWrite = try c.decodeIfPresent(Bool.self, forKey: .homeWrite) ?? everythingElseWrite
     }
+
+    /// The same grants with every WRITE scope off and every READ scope untouched.
+    ///
+    /// MONOTONE by construction: no field can go `false → true`, so the result is never wider
+    /// than the receiver under any configuration. That is the property the caller leans on —
+    /// it narrows the user's OWN settings rather than substituting a fixed profile, so someone
+    /// who already turned writes off sees no change and someone who narrowed reads keeps that.
+    ///
+    /// Reads are deliberately untouched: the header above calls narrowing them a footgun (the
+    /// shell needs broad reads to run anything at all), and the only reason to narrow writes is
+    /// to stop MUTATION, which reads cannot cause.
+    ///
+    /// `tempWrite` goes off with the rest, and that is load-bearing rather than tidiness.
+    /// `SeatbeltSandbox` emits the write allow-list as `(subpath …)` clauses and its narrow-write
+    /// branch emits no work-folder deny, so a work folder living under `$TMPDIR` or
+    /// `/private/tmp` stays writable through the TEMP grant even with `workFolderWrite: false` —
+    /// a property `SeatbeltSandboxTests.testProfile_workFolderWriteOff_blocksInsideWrite` already
+    /// works around by placing its fixture under HOME. With every scope off the write clause
+    /// carries only the dev-node literals and `(deny default)` answers everything else, so "no
+    /// writes" is checkable by reading the profile instead of by re-deriving a containment
+    /// argument each time a scope is added.
+    ///
+    /// Credential writes need no mention: `SeatbeltSandbox` denies them unconditionally.
+    func withWritesDisabled() -> BashSandboxPermissions {
+        var narrowed = self
+        narrowed.workFolderWrite = false
+        narrowed.tempWrite = false
+        narrowed.homeWrite = false
+        narrowed.everythingElseWrite = false
+        return narrowed
+    }
 }

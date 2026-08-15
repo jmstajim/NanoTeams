@@ -14,7 +14,7 @@ private final class RefusalCounter: @unchecked Sendable {
 
 /// Reports every file as existing but refuses to stat the named ones. `attributesOfItem`
 /// is overridable on `FileManager`; `replaceItemAt` is not (it lives in an extension).
-private final class AttributeRefusingFileManager: FileManager, @unchecked Sendable {
+private final class AttributeRefusingFileManager: FileManager {
     private let refusedNames: Set<String>
     private let counter: RefusalCounter
 

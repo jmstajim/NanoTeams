@@ -162,12 +162,10 @@ final class AcceptanceServiceExtendedTests: XCTestCase {
     // MARK: - Artifact Acceptance Tests
 
     func testArtifactAcceptance_AllModes() {
-        let artifacts: [String] = [
-            "Product Requirements", "Implementation Plan", "Design Spec", "Engineering Notes",
-            "Test Plan",
-        ]
+        // Only afterEachArtifact mode should return true. The artifact name is
+        // irrelevant — `shouldRequestAcceptanceForArtifact` takes only the mode,
+        // so the list of names this test used to carry proved nothing.
 
-        // Only afterEachArtifact mode should return true (artifact name is irrelevant)
         XCTAssertTrue(
             AcceptanceService.shouldRequestAcceptanceForArtifact(
                 mode: .afterEachArtifact

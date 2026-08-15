@@ -14,8 +14,8 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
     private var service: LLMExecutionService!
     private var mock: MockLLMExecutionDelegate!
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
         tempDir = fm.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try fm.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -25,12 +25,12 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
         service.attach(delegate: mock)
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         if let tempDir { try? fm.removeItem(at: tempDir) }
         tempDir = nil
         service = nil
         mock = nil
-        try super.tearDownWithError()
+        try await super.tearDown()
     }
 
     private func makeExploratorySearchToolResult(

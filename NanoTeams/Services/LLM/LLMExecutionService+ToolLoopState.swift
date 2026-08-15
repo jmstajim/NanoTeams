@@ -113,6 +113,11 @@ extension LLMExecutionService {
         // said once more. The count stays out, for the same reason as its siblings.
         case .repetitiveFailure(let tool, _, let code):
             return "failing:\(tool):\(code ?? "-")@\(epoch)"
+        // Distinct from the line above even at the same (tool, code): the two describe
+        // different conditions — arguments held vs arguments varied — and a model that
+        // moves from one to the other has changed its behaviour and earns a second word.
+        case .persistentToolError(let tool, _, let code):
+            return "persistent:\(tool):\(code)@\(epoch)"
         }
     }
 
@@ -179,6 +184,26 @@ extension LLMExecutionService {
             }
             return "Loop detected: '\(tool)' has failed \(count) times in a row with "
                 + "identical arguments\(codeClause). \(directive)\(escalation)"
+
+        case .persistentToolError(let tool, let count, let code):
+            // The inverse of every other arm's advice. "Change the arguments" is what
+            // the model has already done \(count) times, so repeating it would send it
+            // back into the loop that produced this warning.
+            let directive: String
+            if code == "ANCHOR_NOT_FOUND", allowedToolNames.contains(ToolNames.readFile) {
+                // The one code whose way out is measured rather than guessed: in the run
+                // this arm was written for, the model escaped by re-reading the file and
+                // anchoring on a line with no leading whitespace — first try, after four
+                // failures spent adjusting spaces.
+                directive = "Your anchor text is the problem, not the replacement. "
+                    + "Call read_file, then anchor on a short line that starts at "
+                    + "column 0 and is unique in the file."
+            } else {
+                directive = "Changing the arguments is not working — read the error "
+                    + "message and take a different step."
+            }
+            return "Loop detected: '\(tool)' has failed \(count) times in a row with the "
+                + "same error (\(code)) despite different arguments. \(directive)\(escalation)"
         }
     }
 

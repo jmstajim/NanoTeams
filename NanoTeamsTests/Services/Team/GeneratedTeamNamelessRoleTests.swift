@@ -88,7 +88,7 @@ final class GeneratedTeamNamelessRoleTests: XCTestCase {
         """#
         let config = try JSONCoderFactory.makeWireDecoder()
             .decode(GeneratedTeamConfig.self, from: Data(json.utf8))
-        let build = try GeneratedTeamBuilder.build(from: config)
+        let build = GeneratedTeamBuilder.build(from: config)
         let workers = build.team.roles.filter { !$0.isSupervisor }
         XCTAssertEqual(workers.count, 2)
         XCTAssertEqual(Set(workers.map(\.id)).count, 2, "ids come from UUID, never from the name")
@@ -105,7 +105,7 @@ final class GeneratedTeamNamelessRoleTests: XCTestCase {
         """#
         let config = try JSONCoderFactory.makeWireDecoder()
             .decode(GeneratedTeamConfig.self, from: Data(json.utf8))
-        let build = try GeneratedTeamBuilder.build(from: config)
+        let build = GeneratedTeamBuilder.build(from: config)
         XCTAssertFalse(
             build.warnings.contains { $0.contains("no tools") },
             "a role that produces nothing legitimately holds no tools")
@@ -127,7 +127,7 @@ final class GeneratedTeamNamelessRoleTests: XCTestCase {
             config.roles.first?.name.lowercased(), "supervisor",
             "a synthesized name matching isSupervisorName drops the role")
 
-        let build = try GeneratedTeamBuilder.build(from: config)
+        let build = GeneratedTeamBuilder.build(from: config)
         XCTAssertEqual(
             build.team.nonSupervisorRoles.count, 1,
             "the generated team must still have a worker role")

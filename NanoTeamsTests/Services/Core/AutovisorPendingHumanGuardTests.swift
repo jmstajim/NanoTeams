@@ -13,19 +13,19 @@ import XCTest
 /// Guard cases keep the manager parked (no real engine spawned). Control cases
 /// let the real supersede run and immediately `stopEngineForTask` to tidy.
 @MainActor
-final class AutovisorPendingHumanGuardTests: NTMSOrchestratorTestBase {
+final class AutovisorPendingHumanGuardTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private var formState: QuickCaptureFormState!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         formState = QuickCaptureFormState()
         sut.quickCaptureFormState = formState   // orchestrator holds it weakly
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         formState = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Opens the folder, pins + enables a manager whose latest run holds one parked
@@ -230,7 +230,7 @@ final class AutovisorPendingHumanGuardTests: NTMSOrchestratorTestBase {
         // When the guard defers, it must NOT mark the triggering event notified or
         // stamp the wake debounce — otherwise the event would be silently dropped
         // instead of injected once the manager resumes to `.running`.
-        let mgrID = await parkedManager(answer: "qwen3.5 default")
+        _ = await parkedManager(answer: "qwen3.5 default")
         await makeFailedStartupTask()
 
         await sut.wakeAutovisorForEvents()

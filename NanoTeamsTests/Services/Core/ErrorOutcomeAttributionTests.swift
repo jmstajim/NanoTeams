@@ -26,8 +26,8 @@ final class ErrorOutcomeAttributionTests: XCTestCase, @unchecked Sendable {
     private var repo: SelectivelyFailingRepository!
     private var sut: NTMSOrchestrator!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("error-attribution-\(UUID().uuidString)", isDirectory: true)
@@ -37,12 +37,12 @@ final class ErrorOutcomeAttributionTests: XCTestCase, @unchecked Sendable {
         sut = TestOrchestrator.make(repository: repo)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut = nil
         repo = nil
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - The counter itself

@@ -51,6 +51,13 @@ nonisolated struct CallMarkerStrategy: ToolCallParsingStrategy {
                 // `<|end|>`, fall back to the raw body and route it through the repair chain.
                 // Reached ONLY when the clean walker fails, so well-formed (incl. multi-call)
                 // envelopes are untouched.
+                //
+                // A `,"` junk tail no longer arrives here — the walker's mid-string EOF
+                // salvage handles that shape — but an anchor marched past `<|end|>` by quote-
+                // parity inversion still does, and this fallback is what recovers the LATER
+                // envelope in that case. Note the raw body keeps everything before `<|end|>`,
+                // so it cannot repair a trailing `,"` on its own: every re-escape split leaves
+                // the stray comma-quote in place.
                 if let endRange = tail.range(of: Self.endMarker, range: idx..<tail.endIndex) {
                     let rawBody = String(tail[idx..<endRange.lowerBound])
                     if let call = ToolCallParsingHelpers.parseToolCallFromJSON(rawBody) {

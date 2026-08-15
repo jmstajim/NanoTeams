@@ -9,25 +9,25 @@ import XCTest
 /// queueing so the card keeps the draft intact. Engine state is forced to `.running`
 /// so the success path never spawns a real `startRun` (no LM Studio needed).
 @MainActor
-final class AutovisorSendMessageTests: NTMSOrchestratorTestBase {
+final class AutovisorSendMessageTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private var formState: QuickCaptureFormState!
     private var externalSourceDir: URL!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         tempDir = tempDir.resolvingSymlinksInPath()
         formState = QuickCaptureFormState()
         sut.quickCaptureFormState = formState   // orchestrator holds it weakly
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let externalSourceDir {
             try? FileManager.default.removeItem(at: externalSourceDir)
         }
         externalSourceDir = nil
         formState = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Opens the work folder (which seeds the Autovisor team) and pins a non-running

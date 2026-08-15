@@ -5,7 +5,7 @@ import XCTest
 /// and skill/clip cards. All paths are file ops + in-memory task mutation — no
 /// engine, no LM Studio.
 @MainActor
-final class AutovisorGoalAttachmentTests: NTMSOrchestratorTestBase {
+final class AutovisorGoalAttachmentTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     /// Opens the temp work folder and pins a freshly-created (non-running) task as
     /// the manager, without enabling the feature (no engine/LLM started).

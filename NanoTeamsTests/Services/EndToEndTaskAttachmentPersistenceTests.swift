@@ -16,7 +16,7 @@ import XCTest
 /// 6. `hasInitialInput` remains true after reload for tasks with any
 ///    combination of task/brief/attachments/clips.
 @MainActor
-final class EndToEndTaskAttachmentPersistenceTests: NTMSOrchestratorTestBase {
+final class EndToEndTaskAttachmentPersistenceTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Helpers
 

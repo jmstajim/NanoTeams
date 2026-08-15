@@ -14,19 +14,19 @@ final class ConsultationChatTemplateTests: XCTestCase {
     var mockDelegate: MockLLMExecutionDelegate!
     var faang: Team!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
         service.attach(delegate: mockDelegate)
         faang = TeamTemplateFactory.faang()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service = nil
         mockDelegate = nil
         faang = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func makeTask() -> NTMSTask {

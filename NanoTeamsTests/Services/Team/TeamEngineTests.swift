@@ -124,16 +124,16 @@ final class TeamEngineTests: XCTestCase {
     var sut: TeamEngine!
     var mockStore: MockTeamEngineStore!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         mockStore = MockTeamEngineStore()
         sut = TeamEngine(store: mockStore)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut = nil
         mockStore = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - 1. testInitialState_isPending

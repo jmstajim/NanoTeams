@@ -17,7 +17,7 @@ import XCTest
 /// Every test method is `async` — a sync `@MainActor` test that constructs a
 /// `@MainActor` class `abort()`s on CI (CLAUDE.md §Testing).
 @MainActor
-final class AutovisorRunNowForceTests: NTMSOrchestratorTestBase {
+final class AutovisorRunNowForceTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private var formState: QuickCaptureFormState!
 
@@ -27,16 +27,16 @@ final class AutovisorRunNowForceTests: NTMSOrchestratorTestBase {
     /// spawned Task boundary.
     private var runCountAtCancel: Int?
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         formState = QuickCaptureFormState()
         sut.quickCaptureFormState = formState   // orchestrator holds it weakly
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         formState = nil
         runCountAtCancel = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixture

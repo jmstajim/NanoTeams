@@ -15,7 +15,7 @@ import XCTest
 /// `ClipboardCaptureService.captureSelection`, which posts a real ⌘C. Nothing here does — the
 /// captured result is constructed directly.
 @MainActor
-final class QuickCaptureClipboardStagingTests: NTMSOrchestratorTestBase {
+final class QuickCaptureClipboardStagingTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private var formState: QuickCaptureFormState!
     private var controller: QuickCaptureController!
@@ -23,8 +23,8 @@ final class QuickCaptureClipboardStagingTests: NTMSOrchestratorTestBase {
     /// in-project references and skips the copy — a different branch from the one under test.
     private var sourceDir: URL!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         sourceDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("qc-clip-src-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: sourceDir, withIntermediateDirectories: true)
@@ -33,12 +33,12 @@ final class QuickCaptureClipboardStagingTests: NTMSOrchestratorTestBase {
         controller.store = sut
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let sourceDir { try? FileManager.default.removeItem(at: sourceDir) }
         sourceDir = nil
         controller = nil
         formState = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// A work folder is required for `stageAttachment` to have anywhere to copy to.

@@ -126,6 +126,17 @@ struct ToolCallItemView: View {
         }
     }
 
+    /// `→ ok` / `→ error`, and deliberately nothing more.
+    ///
+    /// The card carried the failure REASON inline for one build. It read as diagnosis and
+    /// was not: every arm of `ToolErrorNotePolicy` that still speaks is a CONSTANT keyed on
+    /// the error code, so a role stuck on one rejection produced a column of identical red
+    /// paragraphs. A constant does not earn permanent screen space — the reason is one tap
+    /// away, in full and selectable, via `ActivityDetailWindow.toolCall` below.
+    ///
+    /// This is not the `system · retry` row returning by another route either: that row was
+    /// removed because it restated the envelope to the MODEL, an argument about context cost
+    /// that this view never touched.
     @ViewBuilder
     private var resultIndicator: some View {
         if call.resultJSON == nil || call.isAnalyzing || call.isGeneratingTeam {

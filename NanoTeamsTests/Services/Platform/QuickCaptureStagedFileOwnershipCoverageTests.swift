@@ -17,8 +17,8 @@ final class QuickCaptureStagedFileOwnershipCoverageTests: XCTestCase {
     private var workFolder: URL!
     private var outsideDir: URL!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         QuickCaptureController.shared._testReset()
         workFolder = FileManager.default.temporaryDirectory
             .appendingPathComponent("qc-files-wf-\(UUID().uuidString)", isDirectory: true)
@@ -29,7 +29,7 @@ final class QuickCaptureStagedFileOwnershipCoverageTests: XCTestCase {
         }
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         controller = nil
         store = nil
         for dir in [workFolder, outsideDir].compactMap({ $0 }) {
@@ -38,12 +38,12 @@ final class QuickCaptureStagedFileOwnershipCoverageTests: XCTestCase {
         workFolder = nil
         outsideDir = nil
         QuickCaptureController.shared._testReset()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func makeWired() async -> QuickCaptureController {
         let made = QuickCaptureController(formState: QuickCaptureFormState())
-        store = await TestOrchestrator.make()
+        store = TestOrchestrator.make()
         await store.openWorkFolder(workFolder)
         made.store = store
         controller = made

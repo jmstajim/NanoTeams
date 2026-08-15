@@ -22,14 +22,14 @@ final class StoreConfigurationRetiredKeysTests: XCTestCase {
 
     private var storage: InMemoryStorage!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         storage = InMemoryStorage()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         storage = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     func testInit_removesRetiredSamplingKeys() {

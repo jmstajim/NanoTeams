@@ -23,7 +23,7 @@ import XCTest
 /// 7. Revision without comment is rejected or no-ops silently (error
 ///    surfaced).
 @MainActor
-final class EndToEndRoleAcceptanceReviewTests: NTMSOrchestratorTestBase {
+final class EndToEndRoleAcceptanceReviewTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private func seedTaskWithNeedsAcceptanceStep(
         stepID: String = "pm",

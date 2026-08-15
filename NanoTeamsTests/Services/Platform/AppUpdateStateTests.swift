@@ -46,8 +46,8 @@ final class AppUpdateStateTests: XCTestCase {
     private var config: StoreConfiguration!
     private var sut: AppUpdateState!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         mock = MockNetworkSession()
         config = StoreConfiguration(storage: InMemoryStorage())
         // Payload with tag much higher than any CFBundleShortVersionString,
@@ -58,11 +58,11 @@ final class AppUpdateStateTests: XCTestCase {
         sut = AppUpdateState(checker: AppUpdateChecker(session: mock), config: config)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut = nil
         config = nil
         mock = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Throttle

@@ -44,15 +44,9 @@ private final class PlatformFakeConfigurationStorage: ConfigurationStorage, @unc
     }
 }
 
-/// Statuses that mean "this runner has no usable Keychain" rather than "the
-/// production code is wrong". File-scope so it can be used from a `catch … where`
-/// clause without any question of capturing `self`.
-private func platformIsKeychainUnavailable(_ status: OSStatus) -> Bool {
-    status == errSecMissingEntitlement
-        || status == errSecInteractionNotAllowed
-        || status == errSecAuthFailed
-        || status == errSecNotAvailable
-}
+// `platformIsKeychainUnavailable` moved to `Support/KeychainAvailability.swift`
+// so `SecureTokenStorageCoverageTests` shares this exact status set instead of
+// keeping a second copy that could drift.
 
 /// Resolves bookmark data the same way `FolderAccessManager` does, so a test can
 /// assert "the stored bookmark now points at X" without depending on the exact
@@ -213,8 +207,14 @@ final class PlatformSecureTokenStorageSurfaceTests: XCTestCase {
     func testKeychain_loadToken_distinctAccounts_bothMissIndependently() throws {
         let sut = KeychainSecureTokenStorage(service: uniqueTestService("two-accounts"))
         do {
-            XCTAssertNil(try sut.loadToken(forKey: "http://localhost:1234"))
-            XCTAssertNil(try sut.loadToken(forKey: "http://127.0.0.1:1234"))
+            // `try` is hoisted out of the assertion on purpose: `XCTAssertNil`
+            // takes an `@autoclosure () throws -> Any?` and is NOT `rethrows`,
+            // so a `try` written inside it is caught by XCTest and can never
+            // reach the `catch` below — which silently kills the XCTSkip path.
+            let localhostValue = try sut.loadToken(forKey: "http://localhost:1234")
+            XCTAssertNil(localhostValue)
+            let loopbackValue = try sut.loadToken(forKey: "http://127.0.0.1:1234")
+            XCTAssertNil(loopbackValue)
         } catch KeychainError.unhandled(let status) where platformIsKeychainUnavailable(status) {
             throw XCTSkip("Keychain unavailable on this runner (status \(status)).")
         }
@@ -341,8 +341,8 @@ final class PlatformFolderAccessManagerRestoreTests: XCTestCase {
     private var manager: FolderAccessManager!
     private var tempRoot: URL!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         storage = PlatformFakeConfigurationStorage()
         manager = FolderAccessManager(storage: storage)
         tempRoot = FileManager.default.temporaryDirectory
@@ -350,7 +350,7 @@ final class PlatformFolderAccessManagerRestoreTests: XCTestCase {
         try? FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         // Release the manager BEFORE the directories go away: its `deinit` calls
         // `stopSecurityScopedAccessIfNeeded` on the URL it is still holding.
         manager = nil
@@ -359,7 +359,7 @@ final class PlatformFolderAccessManagerRestoreTests: XCTestCase {
             try? FileManager.default.removeItem(at: tempRoot)
         }
         tempRoot = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: helpers
@@ -595,14 +595,14 @@ final class PlatformQuickCapturePanelGeometryTests: XCTestCase {
 
     private var floor: NSSize { QuickCapturePanel.panelMinSize }
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         savedAutosaveEntry = UserDefaults.standard.object(forKey: Self.autosaveDefaultsKey)
         UserDefaults.standard.removeObject(forKey: Self.autosaveDefaultsKey)
         sut = QuickCapturePanel()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut?.orderOut(nil)
         sut = nil
         if let savedAutosaveEntry {
@@ -611,7 +611,7 @@ final class PlatformQuickCapturePanelGeometryTests: XCTestCase {
             UserDefaults.standard.removeObject(forKey: Self.autosaveDefaultsKey)
         }
         savedAutosaveEntry = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func notification(_ name: Notification.Name) -> Notification {
@@ -923,15 +923,15 @@ final class PlatformQuickCapturePanelGeometryTests: XCTestCase {
 /// suites bind) and resets it in both `setUp` and `tearDown`, per CLAUDE.md
 /// 2026-07-07.
 @MainActor
-final class PlatformQuickCaptureTaskCreationTests: NTMSOrchestratorTestBase {
+final class PlatformQuickCaptureTaskCreationTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private var controller: QuickCaptureController!
     /// `keepOpenInChat` persists through `UserDefaults.standard`; snapshot it so
     /// these tests do not rewrite the developer's preference.
     private var savedKeepOpenInChat: Bool!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         controller = QuickCaptureController.shared
         controller._testReset()
         controller.store = sut
@@ -946,12 +946,12 @@ final class PlatformQuickCaptureTaskCreationTests: NTMSOrchestratorTestBase {
         sut.configuration.llmBaseURL = "http://127.0.0.1:1"
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         controller.keepOpenInChat = savedKeepOpenInChat
         savedKeepOpenInChat = nil
         controller._testReset()
         controller = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func writeFile(_ name: String, bytes: Data) -> URL {
@@ -1160,13 +1160,13 @@ final class PlatformQuickCaptureTaskCreationTests: NTMSOrchestratorTestBase {
 // MARK: - QuickCaptureController+TaskCreation — submitAnswer / cancelDraft
 
 @MainActor
-final class PlatformQuickCaptureAnswerSubmissionTests: NTMSOrchestratorTestBase {
+final class PlatformQuickCaptureAnswerSubmissionTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private var controller: QuickCaptureController!
     private var savedKeepOpenInChat: Bool!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         controller = QuickCaptureController.shared
         controller._testReset()
         controller.store = sut
@@ -1175,12 +1175,12 @@ final class PlatformQuickCaptureAnswerSubmissionTests: NTMSOrchestratorTestBase 
         sut.configuration.llmBaseURL = "http://127.0.0.1:1"
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         controller.keepOpenInChat = savedKeepOpenInChat
         savedKeepOpenInChat = nil
         controller._testReset()
         controller = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: fixtures

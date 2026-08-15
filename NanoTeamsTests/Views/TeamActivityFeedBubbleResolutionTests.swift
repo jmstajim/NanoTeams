@@ -17,8 +17,8 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
 
     typealias StreamingSnapshot = TeamActivityFeedView.StreamingSnapshot
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
     }
 

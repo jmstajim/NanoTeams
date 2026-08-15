@@ -15,7 +15,7 @@ import XCTest
 /// 7. Delete sequentially-created tasks → next task ID keeps increasing
 ///    (sequential IDs don't reuse deleted slots).
 @MainActor
-final class EndToEndTaskDeletionTests: NTMSOrchestratorTestBase {
+final class EndToEndTaskDeletionTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Scenario 1: Delete non-active task preserves state
 

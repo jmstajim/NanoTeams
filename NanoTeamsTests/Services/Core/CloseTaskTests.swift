@@ -4,7 +4,7 @@ import XCTest
 
 /// Tests for closeTask — step finalization, LLM cancellation, meeting cleanup.
 @MainActor
-final class CloseTaskTests: NTMSOrchestratorTestBase {
+final class CloseTaskTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Chat Mode: Step Finalization
 

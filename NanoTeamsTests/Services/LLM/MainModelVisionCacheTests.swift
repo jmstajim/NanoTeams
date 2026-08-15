@@ -39,16 +39,16 @@ final class MainModelVisionCacheTests: XCTestCase, @unchecked Sendable {
     var sut: LLMExecutionService!
     private var client: ProbeCountingClient!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         sut = LLMExecutionService(repository: NTMSRepository())
         client = ProbeCountingClient()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut = nil
         client = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func config(url: String = "http://localhost:1234", model: String = "m1") -> LLMConfig {

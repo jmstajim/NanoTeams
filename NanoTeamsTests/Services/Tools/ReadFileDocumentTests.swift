@@ -732,7 +732,7 @@ final class ReadFileDocumentTests: XCTestCase {
     }
 
     func testSearchDocuments_findsMatchInPPTX() throws {
-        let pptxURL = try makePPTX(at: "slides.pptx", slides: [
+        _ = try makePPTX(at: "slides.pptx", slides: [
             "Introduction slide",
             "Agenda PPTXMARKER777 item",
             "Conclusion",

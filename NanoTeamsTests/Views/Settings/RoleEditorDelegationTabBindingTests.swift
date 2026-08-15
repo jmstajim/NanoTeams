@@ -20,7 +20,11 @@ final class RoleEditorDelegationTabBindingTests: XCTestCase {
     /// over `get: { holder.value } / set: { holder.value = $0 }` behaves
     /// exactly like SwiftUI's `@State`: the binding closures reference a
     /// single source of truth instead of a captured value copy.
-    private final class StateHolder {
+    /// `@unchecked Sendable` because SwiftUI's `Binding.init(get:set:)` takes
+    /// `@escaping @Sendable` closures. Every test in this file is synchronous and
+    /// single-threaded — the holder models `@State`'s single source of truth,
+    /// which is the property under test.
+    private final class StateHolder: @unchecked Sendable {
         var value: RoleEditorState = RoleEditorState()
     }
 

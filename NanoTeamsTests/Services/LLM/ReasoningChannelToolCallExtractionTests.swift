@@ -51,8 +51,8 @@ final class ReasoningChannelToolCallExtractionTests: XCTestCase {
     private let stepID = "test_step"
     private let taskID = 0
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         mockClient = MockStreamClient()
         service = LLMExecutionService(repository: NTMSRepository())
         mockDelegate = MockLLMExecutionDelegate()
@@ -60,11 +60,11 @@ final class ReasoningChannelToolCallExtractionTests: XCTestCase {
         service.executionStates[TaskStepKey(taskID: taskID, stepID: stepID)] = LLMExecutionService.StepExecutionState()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         service = nil
         mockDelegate = nil
         mockClient = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Episode 1 — read_file emitted entirely in reasoning channel

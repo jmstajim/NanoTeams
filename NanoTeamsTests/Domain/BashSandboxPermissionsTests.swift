@@ -23,6 +23,74 @@ final class BashSandboxPermissionsTests: XCTestCase {
         XCTAssertFalse(p.homeWrite)
     }
 
+    // MARK: - withWritesDisabled (the planning phase's kernel guarantee)
+
+    /// Every field of the narrowed value, over ALL 2^8 configurations of the eight `Bool`
+    /// grants. Two properties in one sweep: writes are off unconditionally, and nothing else
+    /// moved — so the transform is MONOTONE (no field can go `false → true`) and the planning
+    /// phase provably narrows the user's own settings rather than substituting its own.
+    ///
+    /// The sweep matters more than a spot check: a per-field regression that only shows up when
+    /// some OTHER field is set (e.g. clearing `credentialRead` only when `everythingElseRead`
+    /// is off) survives any hand-picked fixture.
+    ///
+    /// RED: drop `narrowed.tempWrite = false` → fires on every configuration with temp on.
+    /// RED: add `narrowed.credentialRead = true` → fires wherever the source had it off.
+    func testWithWritesDisabled_clearsEveryWriteScopeAndTouchesNothingElse() {
+        for bits in 0..<256 {
+            func bit(_ i: Int) -> Bool { bits & (1 << i) != 0 }
+            let base = BashSandboxPermissions(
+                workFolderRead: bit(0), workFolderWrite: bit(1),
+                tempRead: bit(2), tempWrite: bit(3),
+                credentialRead: bit(4), homeRead: bit(5), homeWrite: bit(6),
+                everythingElseRead: bit(7), everythingElseWrite: bit(1) && bit(3))
+            let narrowed = base.withWritesDisabled()
+            let ctx = "bits=\(bits)"
+
+            XCTAssertFalse(narrowed.workFolderWrite, ctx)
+            XCTAssertFalse(narrowed.tempWrite, ctx)
+            XCTAssertFalse(narrowed.homeWrite, ctx)
+            XCTAssertFalse(narrowed.everythingElseWrite, ctx)
+
+            XCTAssertEqual(narrowed.workFolderRead, base.workFolderRead, ctx)
+            XCTAssertEqual(narrowed.tempRead, base.tempRead, ctx)
+            XCTAssertEqual(narrowed.homeRead, base.homeRead, ctx)
+            XCTAssertEqual(narrowed.everythingElseRead, base.everythingElseRead, ctx)
+            XCTAssertEqual(narrowed.credentialRead, base.credentialRead, ctx)
+        }
+    }
+
+    /// The guarantee, read off the PROFILE rather than off the struct: with no write scope
+    /// granted, `SeatbeltSandbox` emits a write clause carrying only dev-node literals, so
+    /// `(deny default)` answers every real filesystem write. That is what makes "bash cannot
+    /// mutate work-folder source during planning" checkable instead of argued.
+    ///
+    /// This is also why `tempWrite` must go off with the rest: the write allow-list is a set of
+    /// `(subpath …)` clauses with no work-folder deny beneath it, so a temp grant covers a work
+    /// folder that lives under `$TMPDIR` — exactly the layout this suite's own sibling test
+    /// avoids by putting its fixture under HOME.
+    ///
+    /// RED: restore `tempWrite` in `withWritesDisabled()` → `(subpath` reappears.
+    func testWithWritesDisabled_profileGrantsNoWriteSubpathAtAll() {
+        let profile = SeatbeltSandbox.profile(
+            workFolderRoot: URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("nanoteams-planning-profile"),
+            permissions: BashSandboxPermissions().withWritesDisabled())
+
+        // Slice the write ALLOW clause only: the credential write-DENY further down legitimately
+        // carries `(subpath …)`, so a whole-profile search would always find one.
+        guard let start = profile.range(of: "(allow file-write*"),
+              let end = profile.range(of: #"(regex #"^/dev/ttys[0-9]+$"))"#,
+                                      range: start.upperBound..<profile.endIndex)
+        else { return XCTFail("no write clause in:\n\(profile)") }
+        let writeClause = String(profile[start.lowerBound..<end.upperBound])
+
+        XCTAssertFalse(writeClause.contains("(subpath "),
+                       "a write subpath survived the narrowing:\n\(writeClause)")
+        XCTAssertTrue(writeClause.contains("/dev/null"),
+                      "dev nodes must stay writable — pipes and 2>/dev/null depend on them")
+    }
+
     func testCodable_roundTrip() throws {
         let p = BashSandboxPermissions(
             workFolderWrite: false, tempWrite: true, credentialRead: true, everythingElseWrite: true)

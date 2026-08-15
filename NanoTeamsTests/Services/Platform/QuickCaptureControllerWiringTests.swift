@@ -39,8 +39,8 @@ final class QuickCaptureControllerWiringTests: XCTestCase {
         sut.dictation = dictation
     }
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         sut = QuickCaptureController.shared
         sut._testReset()
         if sut._testIsInAnswerMode { sut._testExitAnswerMode() }
@@ -53,7 +53,7 @@ final class QuickCaptureControllerWiringTests: XCTestCase {
         sut._testIsPanelVisible = false
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if sut._testIsInAnswerMode { sut._testExitAnswerMode() }
         sut.formState.supervisorTask = ""
         sut.isTaskSelected = false
@@ -65,7 +65,7 @@ final class QuickCaptureControllerWiringTests: XCTestCase {
         store = nil
         dictation = nil
         sut = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Generic invariant: whatever mode `resolveMode()` produces,

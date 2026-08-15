@@ -59,7 +59,53 @@ nonisolated enum MessageSourceContext: String, Codable, CaseIterable {
     ///
     /// Deliberately NOT `.loopCorrection`: that one means "the stream looped and was
     /// discarded", and labelling a tokens-only retry with it would be a new lie.
+    ///
+    /// **NOT carried by the recovery steering appended after a tool call FAILED**
+    /// (`ToolErrorNotePolicy`), which it briefly was. Same act — the runtime telling the
+    /// model its attempt did not land — but a different answer to the question above,
+    /// because that steering comments on ONE event the feed already draws: the failed
+    /// call's own card. Every arm that still emits is a constant keyed on the error code —
+    /// one sentence per CODE, spent per INCIDENT — so the row said the same thing under
+    /// every red arrow. That is also why the card stopped rendering the reason inline: the
+    /// full envelope opens on tap instead, and neither surface pays for a constant twice.
+    /// The turn is persisted unattributed, behind a `feed-invisible-by-design:` note at its
+    /// call site.
+    ///
+    /// So the discriminator for this context is ORIGIN, not "is the runtime speaking":
+    /// does the turn comment on something already on screen? The nudges above follow a
+    /// BARE assistant turn and the loop warning spans SEVERAL cards — nothing else records
+    /// either, which is what makes their rows the whole point.
     case retryNudge
+    /// The runtime's acknowledgement of a tool call that SUCCEEDED — today the
+    /// `update_scratchpad` note, composed by `ScratchpadNotePolicy`.
+    ///
+    /// **Display-only, and no longer emitted on every write.** It used to ship on the wire too,
+    /// carrying a "continue with the next step" directive; both halves are gone. The note now
+    /// appears only when there is a fact the tool card's `→ ok` cannot carry — the Autovisor's
+    /// memory write-through, or the planning phase's fresh-conversation boundary. The one
+    /// remaining model-facing turn on that path (the manager's blank write, which does NOT clear
+    /// standing memory) is appended to the wire untagged, so a turn carrying THIS context was
+    /// never sent.
+    ///
+    /// Deliberately NOT `.retryNudge`: nothing went wrong, and mislabelling it "retry" would be
+    /// the same kind of new lie that keeps `.loopCorrection` off the nudges. Its own doc comment
+    /// has claimed since it was written that it "exists so the activity feed reads coherently";
+    /// without a context it never reached the feed at all.
+    case toolAcknowledgement
+    /// A failure in the APP'S OWN work that the model has to know about, raised while servicing
+    /// a call the model made — today the Autovisor's memory-write-to-disk failure.
+    ///
+    /// Not `.serverError`: that one is display-only and rewritten in place across retry
+    /// attempts, whereas this warning really is sent. It is the one runtime-authored context
+    /// that renders RED, because the remedy (a full disk, a permissions problem) belongs to the
+    /// human reading the feed, not to the model reading the turn.
+    case runtimeWarning
+    /// Text description of a screenshot, produced by the Vision model for a main model that
+    /// cannot see images (`+ComputerUse`'s describe-then-tell path).
+    ///
+    /// Ordinary CONTENT rather than a system notice — it is the only record of what the model
+    /// was actually shown, so it renders as a normal bubble instead of a one-line row.
+    case screenDescription
 
     /// Did this turn PUSH information at the model that no tool call of its own asked for?
     ///
@@ -98,6 +144,11 @@ nonisolated enum MessageSourceContext: String, Codable, CaseIterable {
     /// the detector reset itself with its own warning — it would fire once and then never
     /// again for as long as the model kept looping.
     ///
+    /// `.toolAcknowledgement` / `.runtimeWarning` / `.screenDescription` are `false` for the
+    /// self-immunizing reason above: each is stamped strictly AFTER the call that produced it
+    /// (`update_scratchpad`, `screen_capture`), so counting one would let a model spinning on
+    /// that very tool refresh its own cutoff with every repeat.
+    ///
     /// Exhaustive on purpose — no `default`. A context added later must be classified by
     /// whoever adds it; the compiler asks, because either answer is silently wrong for the
     /// other kind (a missed boundary blames the model for reacting to news; a spurious one
@@ -109,7 +160,8 @@ nonisolated enum MessageSourceContext: String, Codable, CaseIterable {
             return true
         case .consultation, .meeting, .changeRequest, .supervisorAnswer,
              .delegatedQuestion, .delegationEscalation,
-             .serverError, .loopCorrection, .retryNudge:
+             .serverError, .loopCorrection, .retryNudge,
+             .toolAcknowledgement, .runtimeWarning, .screenDescription:
             return false
         }
     }
@@ -124,6 +176,9 @@ nonisolated enum MessageSourceContext: String, Codable, CaseIterable {
         .delegationEscalation: "escalation",
         .loopCorrection: "loop correction",
         .retryNudge: "retry",
+        .toolAcknowledgement: "note",
+        .runtimeWarning: "warning",
+        .screenDescription: "screen description",
     ]
 
     var displayLabel: String { Self.displayLabelMap[self] ?? rawValue }

@@ -6,6 +6,7 @@ import XCTest
 /// decides between the editable SecureField and the "Inherits the token…"
 /// hint. The rule is the actual user-facing UX boundary, so we pin it as a
 /// pure function rather than mounting SwiftUI.
+@MainActor
 final class LLMTokenFieldCanEditTests: XCTestCase {
 
     func testCanEdit_isEnabled_andNonEmptyURL_true() {

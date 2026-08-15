@@ -11,19 +11,19 @@ import XCTest
 /// Injection tests force `.running` so no real run is spawned (no LM Studio); the
 /// final self-retrigger test spawns (and immediately stops) one real pass.
 @MainActor
-final class AutovisorMidReviewInjectionTests: NTMSOrchestratorTestBase {
+final class AutovisorMidReviewInjectionTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private var formState: QuickCaptureFormState!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         formState = QuickCaptureFormState()
         sut.quickCaptureFormState = formState   // orchestrator holds it weakly
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         formState = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Opens the work folder, pins a manager task, turns the feature on (flag only —

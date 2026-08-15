@@ -22,8 +22,8 @@ final class StepLifecycleTerminalArmTests: XCTestCase {
     private let stepID = "swe"
     private let taskID = 33
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         MonotonicClock.shared.reset()
         service = LLMExecutionService(repository: NTMSRepository())
         service.retryDelaySeconds = 1
@@ -36,12 +36,12 @@ final class StepLifecycleTerminalArmTests: XCTestCase {
         service.attach(delegate: mockDelegate)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
         mockDelegate = nil
         service = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - .completed

@@ -18,8 +18,8 @@ final class PrefixCacheWiringTests: XCTestCase {
     private let taskID = 7
     private var config = LLMConfig(baseURLString: "http://127.0.0.1:1234", modelName: "m")
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         repository = NTMSRepository()
         ledger = PromptPrefixLedger()
         sut = LLMExecutionService(repository: repository, prefixLedger: ledger)
@@ -28,12 +28,12 @@ final class PrefixCacheWiringTests: XCTestCase {
         sut._testRegisterStepTask(stepID: stepID, taskID: taskID)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         sut = nil
         delegate = nil
         ledger = nil
         repository = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Ledger ownership
@@ -315,6 +315,55 @@ final class PrefixCacheWiringTests: XCTestCase {
         guard case .serverDroppedCache = delegate.prefixCacheMisses.first?.diagnosis.cause else {
             return XCTFail("expected serverDroppedCache, got \(delegate.prefixCacheMisses)")
         }
+    }
+
+    /// The reporting site is the ONE frame holding both the verdict and `serverPrefill`, so it is
+    /// where the miss gets priced from the server's own numbers instead of the display constant.
+    /// 450 µs/token measured against a 27 µs/token floor over 1000 tokens = 0.423 s of real extra
+    /// work; the constant would have quoted `discardedTokens × 0.45 ms` instead, a number derived
+    /// from a different model on different hardware.
+    /// RED: stop stamping `diagnosis.measuredExtraSeconds` in `reportPrefixCacheMissIfAny` → the
+    /// miss falls back to the estimate and the popover misreports the cost by whatever factor
+    /// this machine differs from `bench_baseline`.
+    func testReportedMiss_carriesTheServerMeasuredCost() async {
+        _ = await record([system("s"), user(bulk)])
+        await seedWarmFloor(nsPerToken: 27_000)
+        let observation = await record([system("s"), user(bulk), user("next")])
+        await detect(observation, serverPrefill: ServerPrefillReport(
+            prefillNs: 450_000_000, promptTokens: 1000))
+
+        let measured = delegate.prefixCacheMisses.first?.diagnosis.measuredExtraSeconds
+        XCTAssertEqual(measured ?? 0, 0.423, accuracy: 0.001)
+    }
+
+    /// A structural miss is decided by `compare` BEFORE the send, so its diagnosis cannot carry a
+    /// measurement of its own — stamping at the reporting site is what prices it anyway.
+    /// RED: move the stamp into `PrefixCachePolicy.resolve` → `resolve` returns `structural`
+    /// untouched for these, and the largest misses in the app keep the estimate forever.
+    func testStructuralMiss_isAlsoPricedFromTheServerNumbers() async {
+        await seedWarmFloor(nsPerToken: 27_000)
+        let observation = await observeRealRewrite()
+        await detect(observation, serverPrefill: ServerPrefillReport(
+            prefillNs: 450_000_000, promptTokens: 1000))
+
+        XCTAssertEqual(
+            delegate.prefixCacheMisses.first?.diagnosis.cause, .conversationRewritten(atSegment: 1))
+        XCTAssertEqual(
+            delegate.prefixCacheMisses.first?.diagnosis.measuredExtraSeconds ?? 0,
+            0.423, accuracy: 0.001)
+    }
+
+    /// No server numbers, no price — the estimate stays, rather than a fabricated zero.
+    /// RED: default the missing floor or prefill to 0 in `measuredExtraSeconds` → an unpriceable
+    /// miss reports either "free" or the entire prefill as extra.
+    func testReportedMiss_withoutServerNumbers_keepsTheEstimate() async {
+        let observation = await observeRealRewrite()
+        await detect(observation)
+
+        XCTAssertNil(delegate.prefixCacheMisses.first?.diagnosis.measuredExtraSeconds)
+        XCTAssertGreaterThan(
+            delegate.prefixCacheMisses.first?.diagnosis.estimatedSeconds ?? 0, 0,
+            "the fallback must still produce a number for the popover")
     }
 
     func testWarmPrefill_isNotReported() async {

@@ -6,7 +6,7 @@ import XCTest
 /// `TeamGenerationServiceStreamTests`; these tests pin the contracts that bridge
 /// the service output to the in-memory task state.
 @MainActor
-final class TeamGenerationOrchestratorTests: NTMSOrchestratorTestBase {
+final class TeamGenerationOrchestratorTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Placeholder-string consistency (catches drift between files)
 

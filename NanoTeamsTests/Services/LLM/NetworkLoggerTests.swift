@@ -286,6 +286,12 @@ final class NetworkLoggerTests: XCTestCase {
         let expectation = XCTestExpectation(description: "Concurrent appends complete")
         expectation.expectedFulfillmentCount = 10
 
+        // Captured as a local so the concurrent blocks don't capture `self`
+        // (a non-Sendable XCTestCase). `NetworkLogger` is itself
+        // `@unchecked Sendable` and funnels every append through its own
+        // serial queue, so the fan-in is what is under test here.
+        let logger = try XCTUnwrap(self.logger)
+
         for i in 0..<10 {
             DispatchQueue.global().async {
                 let record = NetworkLogRecord(
@@ -301,7 +307,7 @@ final class NetworkLoggerTests: XCTestCase {
                     correlationID: UUID(),
                     stepID: nil
                 )
-                self.logger.append(record)
+                logger.append(record)
                 expectation.fulfill()
             }
         }

@@ -19,7 +19,7 @@ import XCTest
 /// 8. In-project reference attachments are NOT copied (stay in place).
 /// 9. Submit fails on finalization error → task removed (cleanup).
 @MainActor
-final class EndToEndQuickCaptureAttachmentLifecycleTests: NTMSOrchestratorTestBase {
+final class EndToEndQuickCaptureAttachmentLifecycleTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - Helpers
 
