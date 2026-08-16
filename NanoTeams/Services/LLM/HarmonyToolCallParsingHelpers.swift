@@ -106,11 +106,18 @@ nonisolated enum ToolCallParsingHelpers {
     /// call in that case needs a walker-state SNAPSHOT at the boundary (the pad count is
     /// EOF-`depth`, so a clamped anchor alone is not enough) — deliberately not done.
     ///
-    /// Note the missing-key-quote family (`,path":`, `HarmonyJSONDefectRepairTests`) is
-    /// safe here for a DIFFERENT reason, not the colon: parity inversion means no `}` is
-    /// ever processed outside a string, so `lastCloseEnd` stays nil and the raw-body
-    /// fallback still owns those payloads. Do not read those tests as evidence about the
-    /// colon discriminator.
+    /// The missing-key-quote family (`,path":`, `HarmonyJSONDefectRepairTests`) is NOT
+    /// reliably excluded by either arm's guards — an earlier note here claimed parity
+    /// inversion keeps every `}` inside a string so `lastCloseEnd` stays nil, and that
+    /// claim was falsified in production (CubeCraft task 8 run 0): any `]`/`}` inside a
+    /// LATER string value reads as structure under the inverted parity and becomes the
+    /// anchor, so this salvage returns a span truncated MID-VALUE that no regex repair
+    /// can terminate — and brackets inside `old_text`/`new_text` are the COMMON case
+    /// when editing code, not a corner. That composition's rescue is downstream and
+    /// deliberate: `CallMarkerStrategy` falls through to the `<|end|>`-bounded raw body
+    /// when a walked span fails to parse, and `parseAfterRepairAndRewalk` re-walks the
+    /// REPAIRED bytes, whose parity is correct. Do not read the family's tests as
+    /// evidence about the colon discriminator.
     static func extractJSONBracedValue(
         in s: Substring, from index: String.Index, salvageEndMarker: String? = nil
     ) -> (
@@ -655,6 +662,44 @@ nonisolated enum ToolCallParsingHelpers {
         }
         _bumpRepairFireCount()
         return dict
+    }
+
+    /// Last-resort rescue for an `<|end|>`-bounded `<|call|>` body whose UNREPAIRED bytes
+    /// poison the brace walk itself, so no downstream repair can help: repair FIRST, then
+    /// RE-WALK the repaired bytes.
+    ///
+    /// The composition this exists for (live: CubeCraft task 8 run 0, `qwen3.8:27b-mlx`):
+    /// a missing key-opening quote (`,path":`) PLUS a dropped trailing `}`. The quote
+    /// defect inverts string parity, so the walk over raw bytes anchors its EOF salvage on
+    /// a bracket INSIDE a later string value and truncates that value — a span no regex
+    /// can terminate. The plain raw-body parse fails too: the repair chain is regex-only
+    /// and cannot pad the missing brace. Repairing first restores parity; re-walking then
+    /// lets the walker's ordinary EOF salvage pad the closer, and the strict parse of that
+    /// span is the final gate — a repair mis-fire degrades to nil, never to a corrupted
+    /// dispatch (same argument as `repairOverescapedKeyValuePair`'s call-path safety note).
+    ///
+    /// Gated on the repair actually CHANGING the bytes: re-walking unrepaired bytes would
+    /// reproduce the exact failure the caller already has. `extractCallObject` rather than
+    /// the bare walker, so the premature-closer repair composes here too.
+    ///
+    /// Counter note: a rescue whose re-walked span parses strictly bumps
+    /// `repairFireCount` once, here. In the corner where the span needs the re-escape
+    /// layer as well it can count twice — acceptable imprecision for a diagnostics
+    /// counter (the regex chain cannot fire twice: its repairs are idempotent, so
+    /// `parseAfterRepair` on already-repaired bytes returns nil).
+    static func parseAfterRepairAndRewalk(_ rawBody: String) -> StepToolCall? {
+        let sanitized = JSONUtilities.sanitizeJSONControlCharacters(rawBody)
+        let repaired = repairCommonJSONDefects(sanitized)
+        guard repaired != sanitized else { return nil }
+        let sub = Substring(repaired)
+        let start = skipWhitespace(in: sub, from: sub.startIndex)
+        guard start < sub.endIndex, sub[start] == "{" else { return nil }
+        guard let (span, _) = extractCallObject(
+            in: sub, from: start, endMarker: CallMarkerStrategy.endMarker)
+        else { return nil }
+        guard let call = parseToolCallFromJSON(span) else { return nil }
+        _bumpRepairFireCount()
+        return call
     }
 
     /// Tool arguments the file/artifact tools accept (`write_file` / `edit_file` /

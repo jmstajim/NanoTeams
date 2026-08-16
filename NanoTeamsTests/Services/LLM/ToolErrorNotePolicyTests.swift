@@ -254,6 +254,26 @@ final class ToolErrorNotePolicyTests: XCTestCase {
             "a typed diagnosis is the whole answer — restating it was the defect")
     }
 
+    /// The interior-whitespace diagnosis (tier 3.5) is typed like its siblings, so the
+    /// same suppression applies. Pinned explicitly because in the sweep below this row
+    /// only ever exercises the anti-vacuity arms — `direction` returns nil for it, so
+    /// the non-duplication assertion never runs on it and would stay green if the
+    /// suppression broke the OTHER way (a direction appearing).
+    ///
+    /// RED: give `interiorWhitespaceMismatch` `key: nil` → the legacy character-level
+    /// steering reappears and this assertion fails.
+    func testAnchorNotFound_interiorDiagnosis_addsNothing() async throws {
+        let result = try runEdit(
+            fileContents: "let s = a  + b;\nlet s = a   + b;\n",
+            oldText: "let s = a + b;")
+
+        XCTAssertTrue(result.outputJSON.contains("interior_whitespace_mismatch"), result.outputJSON)
+
+        XCTAssertNil(
+            ToolErrorNotePolicy.direction(for: result),
+            "the typed interior diagnosis is the whole answer, like its three siblings")
+    }
+
     /// The legacy diagnoses compose their message as `anchorNotFoundMessage + " " + hint`
     /// (`FileWriteHandlers`), so the hint is ALREADY on the wire. Restating it put the same
     /// sentence there twice.
@@ -470,6 +490,11 @@ final class ToolErrorNotePolicyTests: XCTestCase {
             ("ANCHOR_NOT_FOUND (typed)",
              try runEdit(fileContents: "let a = 1\nlet b = 2\nlet c = 3\n",
                          oldText: "struct NeverExisted {}")),
+            // Two lines equal only once interior runs collapse; the drifted anchor is
+            // located but ambiguous → the interior_whitespace_mismatch diagnosis.
+            ("ANCHOR_NOT_FOUND (interior)",
+             try runEdit(fileContents: "let s = a  + b;\nlet s = a   + b;\n",
+                         oldText: "let s = a + b;")),
             ("ANCHOR_NOT_FOUND (legacy)",
              try runEdit(fileContents: "a\nb\n", oldText: "a\nb\nc\nd")),
             ("ANCHOR_AMBIGUOUS",

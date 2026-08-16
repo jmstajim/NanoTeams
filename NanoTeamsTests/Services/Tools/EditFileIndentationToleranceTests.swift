@@ -217,7 +217,7 @@ final class EditFileIndentationToleranceTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), original)
     }
 
-    // MARK: - The three not-found states
+    // MARK: - The not-found diagnoses
 
     /// The anchor's first line is found, then the window breaks. Both sides are named
     /// so the model can fix the transcription without re-reading blind.
@@ -276,119 +276,114 @@ final class EditFileIndentationToleranceTests: XCTestCase {
         XCTAssertTrue(message(blank).contains("whitespace-only"), message(blank))
     }
 
-    // MARK: - Unit-level: the map itself
+    // MARK: - Unit-level: pairing + the map
 
     /// Direct pins on `reindentToFileConvention`, which is where the whole tier's
     /// safety lives. Driving it through the tool would need a fixture per row.
     func testReindentToFileConvention_truthTable() {
-        // Consistent map, all replacement depths known → translated.
+        // Consistent map, all replacement depths known → translated. (Both lines
+        // are CHANGED content, so neither pairs — this is the map at work.)
         XCTAssertEqual(
             EditFileTool.reindentToFileConvention(
                 newLines: ["    a", "        b"],
                 anchorLines: ["    x", "        y"],
-                fileLines: ["\tx", "\t\ty"])?.lines,
+                fileLines: ["\tx", "\t\ty"],
+                tier: .leading).lines,
             ["\ta", "\t\tb"])
 
-        // Same key, two values → not a function.
-        XCTAssertNil(
-            EditFileTool.reindentToFileConvention(
-                newLines: ["    a"],
-                anchorLines: ["    x", "    y"],
-                fileLines: ["    x", "     y"]))
+        // Same key, two values: the CONFLICTED key is dropped — unusable for an
+        // unpaired line, so the model's own bytes land instead of a refusal. (The
+        // per-depth conflict was the task-7 refusal class; per line it never
+        // existed, and a line pairing with a window line never consults the map.)
+        let conflicted = EditFileTool.reindentToFileConvention(
+            newLines: ["    a"],
+            anchorLines: ["    x", "    y"],
+            fileLines: ["    x", "     y"],
+            tier: .leading)
+        XCTAssertEqual(conflicted.lines, ["    a"])
+        XCTAssertEqual(conflicted.passedThroughCount, 1)
 
-        // A REWRITE (same line count) introducing a depth the anchor never showed is
-        // still refused: every line here replaces a line of the window, so the file
-        // has a convention for all of them and an unknown depth is unplaceable.
-        // Only content BEYOND the window may keep the model's own indentation.
-        XCTAssertNil(
-            EditFileTool.reindentToFileConvention(
-                newLines: ["    a", "            deep"],
-                anchorLines: ["    x", "        y"],
-                fileLines: ["\tx", "\t\ty"]))
+        // A REWRITE (same line count) introducing a depth the anchor never showed:
+        // the unknown-depth line keeps the model's bytes — and drags the whole
+        // unpaired set with it (all-or-nothing, see the straddle test below).
+        let unknownDepth = EditFileTool.reindentToFileConvention(
+            newLines: ["    a", "            deep"],
+            anchorLines: ["    x", "        y"],
+            fileLines: ["\tx", "\t\ty"],
+            tier: .leading)
+        XCTAssertEqual(unknownDepth.lines, ["    a", "            deep"])
+        XCTAssertEqual(unknownDepth.passedThroughCount, 2)
 
-        // Blank lines carry no depth and are passed through untouched.
+        // Blank lines carry no depth: an unpaired blank is untouched, a PAIRED one
+        // takes the file's spelling (asserted end-to-end in the per-line suite).
         XCTAssertEqual(
             EditFileTool.reindentToFileConvention(
                 newLines: ["    a", "", "    b"],
                 anchorLines: ["    x", "", "    y"],
-                fileLines: ["\tx", "", "\ty"])?.lines,
+                fileLines: ["\tx", "", "\ty"],
+                tier: .leading).lines,
             ["\ta", "", "\tb"])
-
-        // Mismatched window length is not a translation problem — refuse.
-        XCTAssertNil(
-            EditFileTool.reindentToFileConvention(
-                newLines: ["a"], anchorLines: ["    x"], fileLines: ["\tx", "\ty"]))
-
-        // An anchor of only blank lines yields no map at all.
-        XCTAssertNil(
-            EditFileTool.reindentToFileConvention(
-                newLines: ["a"], anchorLines: ["   "], fileLines: [""]))
     }
 
     /// The insertion idiom: `new_text` reproduces the anchor and appends new code.
-    /// The reproduced head is translated (the file has a convention for it); the
+    /// The reproduced head PAIRS with the window (the file has bytes for it); the
     /// appended tail keeps the model's indentation, because the anchor gave no
     /// evidence for those depths and inventing one is the extrapolation this
     /// function refuses to do.
     ///
-    /// RED: return `0..<0` from `freeRegion` unconditionally → nil.
+    /// RED: skip the pairing pass entirely → the head lines miss the map's keys
+    /// check nothing, but the head stays at the model's 4/8 instead of the file's
+    /// tabs and both equalities fail.
     func testReindentToFileConvention_appendAfterAnchor_translatesHeadKeepsTail() {
         let result = EditFileTool.reindentToFileConvention(
             newLines: ["    x", "        y", "", "  newTop", "      newDeep"],
             anchorLines: ["    x", "        y"],
-            fileLines: ["\tx", "\t\ty"])
+            fileLines: ["\tx", "\t\ty"],
+            tier: .leading)
 
-        XCTAssertEqual(result?.lines, ["\tx", "\t\ty", "", "  newTop", "      newDeep"])
-        XCTAssertEqual(result?.passedThroughCount, 2)
+        XCTAssertEqual(result.lines, ["\tx", "\t\ty", "", "  newTop", "      newDeep"])
+        XCTAssertEqual(result.passedThroughCount, 2)
     }
 
-    /// The mirror idiom — new code inserted BEFORE the anchor.
+    /// The mirror idiom — new code inserted BEFORE the anchor. Greedy in-order
+    /// pairing finds the reproduced tail wherever it sits.
     ///
-    /// RED: drop the `suffix` arm of `freeRegion` → nil.
+    /// RED: pair only a PREFIX of the replacement against the window (positional
+    /// from index 0) → the tail lines stay at the model's depths and the equality
+    /// fails.
     func testReindentToFileConvention_insertBeforeAnchor_translatesTailKeepsHead() {
         let result = EditFileTool.reindentToFileConvention(
             newLines: ["  newTop", "", "    x", "        y"],
             anchorLines: ["    x", "        y"],
-            fileLines: ["\tx", "\t\ty"])
+            fileLines: ["\tx", "\t\ty"],
+            tier: .leading)
 
-        XCTAssertEqual(result?.lines, ["  newTop", "", "\tx", "\t\ty"])
-        XCTAssertEqual(result?.passedThroughCount, 1)
+        XCTAssertEqual(result.lines, ["  newTop", "", "\tx", "\t\ty"])
+        XCTAssertEqual(result.passedThroughCount, 1)
     }
 
-    /// A longer replacement that does NOT reproduce the anchor at either end is not
-    /// an insertion — the model rewrote the window itself, so there is no region the
-    /// file has no opinion about, and an unknown depth is still a refusal.
+    /// An unpaired set whose every depth is a map key is translated as a WHOLE —
+    /// leaving it in the model's convention would split the new code's style from
+    /// the head that was just rewritten.
     ///
-    /// RED: treat "longer than the anchor" as evidence of insertion on its own →
-    /// writes the unmapped line.
-    func testReindentToFileConvention_longerButUnaligned_refuses() {
-        XCTAssertNil(
-            EditFileTool.reindentToFileConvention(
-                newLines: ["    a", "        b", "            deep"],
-                anchorLines: ["    x", "        y"],
-                fileLines: ["\tx", "\t\ty"]))
-    }
-
-    /// A free region whose every depth is a map key is translated as a WHOLE — leaving
-    /// it in the model's convention would split the appended block's style from the head
-    /// that was just rewritten.
-    ///
-    /// RED: pass every free-region line through → `["\tx", "    a"]`, count 1.
-    func testReindentToFileConvention_freeRegionFullyExpressible_isTranslated() {
+    /// RED: pass every unpaired line through unconditionally → `["\tx", "    a"]`,
+    /// count 1.
+    func testReindentToFileConvention_unpairedFullyExpressible_isTranslated() {
         let result = EditFileTool.reindentToFileConvention(
             newLines: ["    x", "    a"],
             anchorLines: ["    x"],
-            fileLines: ["\tx"])
+            fileLines: ["\tx"],
+            tier: .leading)
 
-        XCTAssertEqual(result?.lines, ["\tx", "\ta"])
-        XCTAssertEqual(result?.passedThroughCount, 0)
+        XCTAssertEqual(result.lines, ["\tx", "\ta"])
+        XCTAssertEqual(result.passedThroughCount, 0)
     }
 
-    /// …but a free region that STRADDLES the key set is emitted verbatim, entire.
+    /// …but an unpaired set that STRADDLES the key set is emitted verbatim, entire.
     ///
     /// This is the correctness core of the all-or-nothing rule. The map relabels depths
     /// without preserving their order, so translating the lines it covers and keeping the
-    /// rest re-orders the appended block's own nesting — the one thing that block means.
+    /// rest re-orders the new block's own nesting — the one thing that block means.
     ///
     /// Here a 2-space model meets a 4-space file (map {2→4, 4→8}) and appends a block at
     /// 4/6/4. Per-line, the opener lands at 8, its child at 6 and the closer at 8: the
@@ -396,23 +391,24 @@ final class EditFileIndentationToleranceTests: XCTestCase {
     /// Mangled in Swift, an IndentationError in Python — and `edit_file` has no extension
     /// gating.
     ///
-    /// RED: consult the map before the free-region branch (the per-line policy that
-    /// shipped first) → the inversion above, with count 1.
-    func testReindentToFileConvention_freeRegionStraddlingTheKeySet_isKeptVerbatim() {
+    /// RED: consult the map per unpaired line (the policy that shipped first) →
+    /// the inversion above, with count 1.
+    func testReindentToFileConvention_unpairedStraddlingTheKeySet_isKeptVerbatim() {
         let result = EditFileTool.reindentToFileConvention(
             newLines: ["  func f() {", "    g()", "    h() {", "      deep()", "    }"],
             anchorLines: ["  func f() {", "    g()"],
-            fileLines: ["    func f() {", "        g()"])
+            fileLines: ["    func f() {", "        g()"],
+            tier: .leading)
 
         XCTAssertEqual(
-            result?.lines,
+            result.lines,
             ["    func f() {", "        g()", "    h() {", "      deep()", "    }"],
             "the window is translated; the appended block keeps its own nesting")
-        XCTAssertEqual(result?.passedThroughCount, 3)
+        XCTAssertEqual(result.passedThroughCount, 3)
 
         // The property, stated independently of the exact bytes: inside the appended
         // block a line the model wrote deeper than its opener must not come out shallower.
-        let written = result?.lines ?? []
+        let written = result.lines
         let opener = written[2].prefix { $0 == " " }.count
         let child = written[3].prefix { $0 == " " }.count
         XCTAssertGreaterThan(child, opener, "nesting inside the appended block must survive")

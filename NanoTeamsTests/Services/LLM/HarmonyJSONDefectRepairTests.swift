@@ -1040,4 +1040,88 @@ final class HarmonyJSONDefectRepairTests: XCTestCase {
         XCTAssertNil(ToolCallParsingHelpers.malformedJSONDiagnostic(in: envelope),
                      "repair-recoverable envelope must not get a strict-parse diagnostic")
     }
+
+    // MARK: - qwen3.8:27b-mlx: missing key quote + dropped closing brace (composed)
+
+    /// Reduced from CubeCraft `tasks/8/runs/0/network_log.json` response 85235A94
+    /// (2026-08-16, Ollama `qwen3.8:27b-mlx`): TWO defects in one `edit_file` envelope —
+    /// the `path` key lost its OPENING quote (`,path":`, the family
+    /// `repairMissingQuoteBeforeJSONKey` exists for) AND the final closing brace is
+    /// missing (`"}` before `<|end|>` where `"}}` was needed). Each alone is recoverable;
+    /// composed they poisoned the pipeline, because the brace walk runs on UNREPAIRED
+    /// bytes: the missing quote inverts string parity from that point on, `old_text`'s
+    /// value reads as structure, its `]` becomes the mid-string EOF salvage's anchor, and
+    /// the "salvaged" span is truncated mid-value — unrepairable by any regex. The run's
+    /// call died as `malformed_tool_call` although every argument was complete.
+    /// `new_text` is shortened (the run's was 2478 bytes); `old_text` is verbatim.
+    private static let composedDefectEnvelope =
+        "<|call|>"
+        + #"{"name":"edit_file","arguments":{"new_text":"const TEX_SIZE = 16;\n",path":"CubeCraft/game.js","old_text":"  const GROUND_COLOR = [ 70, 110, 50 ];    // floor plane\n"}"#
+        + "<|end|>"
+
+    /// Same composition, but the broken key is NOT identifier-shaped (`my-path`), so
+    /// `repairMissingQuoteBeforeJSONKey` cannot match and no repair changes the bytes.
+    private static let unrepairableComposedEnvelope =
+        "<|call|>"
+        + #"{"name":"edit_file","arguments":{"new_text":"const A = 1;\n",my-path":"a/b.js","old_text":"x = [ 1, 2 ];  // keep\n"}"#
+        + "<|end|>"
+
+    /// Sanity for the rescue tests below: on the UNREPAIRED bytes the walker's mid-string
+    /// EOF salvage anchors on the `]` INSIDE `old_text`'s value and truncates the span
+    /// there, discarding `;    // floor plane\n` — which is why parsing the walked span
+    /// can never recover this envelope and the raw-body rescue exists. Pins the poisoning
+    /// so a future fixture edit can't make the recovery test pass for the wrong reason.
+    func testComposedDefect_walkedSpanIsTruncatedInsideOldText_preCondition() {
+        let callRange = Self.composedDefectEnvelope.range(of: "<|call|>")!
+        let tail = Self.composedDefectEnvelope[callRange.upperBound...]
+        guard let (span, _) = ToolCallParsingHelpers.extractJSONBracedValue(
+            in: tail, from: tail.startIndex, salvageEndMarker: "<|end|>")
+        else {
+            return XCTFail("the mid-string EOF salvage is expected to fire on this shape")
+        }
+        XCTAssertTrue(span.hasSuffix("]}}"),
+                      "salvage truncates right after old_text's `]` and pads `}}`: \(span.suffix(40))")
+        XCTAssertFalse(span.contains("// floor plane"),
+                       "the bytes after the poisoned anchor are discarded from the span")
+    }
+
+    /// RED: revert `CallMarkerStrategy`'s fall-through to the raw-body fallback (continue
+    /// unconditionally after a walked-span parse failure), or drop the
+    /// `parseAfterRepairAndRewalk` layer → this envelope yields 0 calls again and the
+    /// 1-rescued-call assertion fails (verified both ways: mutations M1 and M2).
+    func testComposedDefect_missingKeyQuotePlusDroppedCloser_recoversTheFullCall() {
+        let calls = HarmonyToolCallParser().extractAllToolCalls(
+            from: Self.composedDefectEnvelope)
+        guard calls.count == 1 else {
+            return XCTFail("expected exactly 1 rescued call, got \(calls.count)")
+        }
+        XCTAssertEqual(calls[0].name, "edit_file")
+        let args = JSONUtilities.parseJSONDictionary(calls[0].argumentsJSON)
+        XCTAssertEqual(args?["path"] as? String, "CubeCraft/game.js")
+        XCTAssertEqual(args?["new_text"] as? String, "const TEX_SIZE = 16;\n")
+        XCTAssertEqual(
+            args?["old_text"] as? String,
+            "  const GROUND_COLOR = [ 70, 110, 50 ];    // floor plane\n",
+            "old_text must survive COMPLETE — the model sent it complete; truncating it at "
+            + "the `]` (the walker's salvage anchor) is the poisoning this rescue removes")
+    }
+
+    /// The rescue consumes exactly its own `<|call|>…<|end|>` block: a healthy sibling
+    /// envelope after it must still parse. Pins the fallback's cursor advancement.
+    func testComposedDefect_rescueDoesNotDisturbAHealthySiblingEnvelope() {
+        let healthy = #"<|call|>{"name":"git_status","arguments":{}}<|end|>"#
+        let calls = HarmonyToolCallParser().extractAllToolCalls(
+            from: Self.composedDefectEnvelope + "\n" + healthy)
+        XCTAssertEqual(calls.map(\.name), ["edit_file", "git_status"])
+    }
+
+    /// The rescue is gated on a repair actually CHANGING the bytes — rewalking unrepaired
+    /// bytes would reproduce the same poisoned span. With no matching repair the payload
+    /// must stay undispatched (a malformed card + retry nudge), never a fabricated call.
+    func testComposedDefect_unrepairableKeyShape_staysUndispatched() {
+        let calls = HarmonyToolCallParser().extractAllToolCalls(
+            from: Self.unrepairableComposedEnvelope)
+        XCTAssertTrue(calls.isEmpty,
+                      "no repair matches `,my-path\":` — nothing may dispatch: \(calls)")
+    }
 }

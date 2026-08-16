@@ -37,20 +37,39 @@ nonisolated struct CallMarkerStrategy: ToolCallParsingStrategy {
                 {
                     if let call = ToolCallParsingHelpers.parseToolCallFromJSON(jsonText) {
                         results.append(call)
+                        cursor = ToolCallParsingHelpers.advanceCursor(
+                            in: tail, from: endIdx, endMarker: Self.endMarker)
+                        continue
                     }
-                    cursor = ToolCallParsingHelpers.advanceCursor(
-                        in: tail, from: endIdx, endMarker: Self.endMarker)
-                    continue
+                    // The walked span didn't parse. When the block is `<|end|>`-delimited,
+                    // fall THROUGH to the raw-body fallback below instead of dropping the
+                    // call: a "successful" walk over unrepaired bytes can be poisoned by the
+                    // very defect the repair chain exists to fix. Live case (CubeCraft
+                    // task 8 run 0, qwen3.8:27b-mlx): a missing key-opening quote
+                    // (`,path":`) inverted string parity, `old_text`'s value read as
+                    // structure, its `]` anchored the mid-string EOF salvage, and the span
+                    // came back truncated MID-VALUE — unrepairable, while the RAW body was
+                    // fully recoverable (repair the quote, re-walk, pad the one missing
+                    // brace). Without `<|end|>` the raw body is unbounded — keep the old
+                    // advance-and-drop.
+                    guard tail.range(of: Self.endMarker, range: idx..<tail.endIndex) != nil
+                    else {
+                        cursor = ToolCallParsingHelpers.advanceCursor(
+                            in: tail, from: endIdx, endMarker: Self.endMarker)
+                        continue
+                    }
                 }
 
-                // Brace walker couldn't balance the span. The repairs in
+                // Raw-body fallback — reached when the walker couldn't balance the span at
+                // all, OR when its span failed to parse (see above). The repairs in
                 // `parseToolCallFromJSON` cover defects the walker cannot (a missing key
                 // OPENING quote — `,path":` instead of `,"path":` — flips string parity so
-                // the closing `}}` get swallowed as string content, leaving the walker
-                // unbalanced with no `}` ever closed → nil). When the block is delimited by
-                // `<|end|>`, fall back to the raw body and route it through the repair chain.
-                // Reached ONLY when the clean walker fails, so well-formed (incl. multi-call)
-                // envelopes are untouched.
+                // closing braces can be swallowed as string content), and
+                // `parseAfterRepairAndRewalk` covers the composition the plain raw-body
+                // parse cannot: repairs are regex-only with no brace padding, so a body
+                // that ALSO dropped its trailing closer needs the repaired bytes re-walked
+                // for the walker's EOF salvage to pad them. Well-formed (incl. multi-call)
+                // envelopes never reach either arm.
                 //
                 // A `,"` junk tail no longer arrives here — the walker's mid-string EOF
                 // salvage handles that shape — but an anchor marched past `<|end|>` by quote-
@@ -60,7 +79,9 @@ nonisolated struct CallMarkerStrategy: ToolCallParsingStrategy {
                 // the stray comma-quote in place.
                 if let endRange = tail.range(of: Self.endMarker, range: idx..<tail.endIndex) {
                     let rawBody = String(tail[idx..<endRange.lowerBound])
-                    if let call = ToolCallParsingHelpers.parseToolCallFromJSON(rawBody) {
+                    if let call = ToolCallParsingHelpers.parseToolCallFromJSON(rawBody)
+                        ?? ToolCallParsingHelpers.parseAfterRepairAndRewalk(rawBody)
+                    {
                         results.append(call)
                     }
                     cursor = endRange.upperBound

@@ -133,30 +133,42 @@ final class EditFileRealRunRegressionTests: XCTestCase {
         content.components(separatedBy: "\n").filter { $0 == text }.count
     }
 
-    // MARK: - Tier 3b: located, but not translatable — hand back the bytes
+    // MARK: - Tier 3b: the irregular window, resolved per line
 
     /// 09:58:38.469 — `SessionHistoryStore.swift`, the very first failure of the run.
     /// The anchor's `"    "` corresponds to `"     "` on the doc-comment lines and to
-    /// `"    "` on the members, so there is no consistent translation and the correct
-    /// output is genuinely unknown. Refuse — but return the file's exact bytes, which
-    /// is what turns the next attempt into a copy instead of another guess.
+    /// `"    "` on the members — the per-depth map's one genuine conflict, and the
+    /// run's only located-but-refused call. Per line the conflict never existed:
+    /// each reproduced line pairs with its own file line and takes its bytes, and
+    /// the model's new properties keep the model's own (disclosed).
     ///
-    /// RED: return `.absent`/`nil` instead of `.indentationMismatch` → no file text.
-    /// RED: drop the function check in `reindentToFileConvention` → writes a guess.
-    func testReal_sessionHistoryDocComments_refusesAndReturnsExactBytes() throws {
+    /// RED: emit the model's bytes for a PAIRED line (skip the file-leading arm in
+    /// `reindentToFileConvention`) → the five-space doc comment collapses to four
+    /// and the first line-anchored assert fails.
+    func testReal_sessionHistoryDocComments_landsKeepingTheFilesFiveSpaceDocs() throws {
         let failure = EditFileRealRunFixtures.failure(at: "2026-08-15T09:58:38.469")
         let result = try replay(failure)
 
-        XCTAssertTrue(result.isError)
-        XCTAssertTrue(result.outputJSON.contains("ANCHOR_NOT_FOUND"))
-        XCTAssertEqual(try onDisk(failure), failure.contentAtFailure,
-                       "a refusal must leave the file byte-identical")
-
-        let text = message(result)
-        XCTAssertTrue(text.contains("ignoring indentation"), text)
+        XCTAssertFalse(result.isError, result.outputJSON)
+        let written = try onDisk(failure)
+        // The reproduced doc comments PAIR with their own file lines and keep the
+        // file's irregular FIVE spaces — under the per-depth map this very window
+        // was the one genuine conflict refusal of the run (4sp → {5sp, 4sp}).
         XCTAssertTrue(
-            text.contains("     /// Raw, persisted history. Streaks and totals are derived from this."),
-            "the message must carry the file's FIVE-space line verbatim so it can be copied: \(text)")
+            written.contains("\n     /// Raw, persisted history. Streaks and totals are derived from this."),
+            "the file's five-space line survives, line-anchored")
+        XCTAssertTrue(
+            written.contains("\n     /// Directory + file where history is persisted."),
+            "both irregular doc lines keep the file's bytes")
+        // The NEW properties land with the model's own four-space docs — the
+        // conflicted key is unusable, so nothing is guessed for them — disclosed.
+        XCTAssertTrue(
+            written.contains("\n    /// Transient, non-persisted message when the last save failed."),
+            "the inserted properties keep the model's bytes")
+        XCTAssertEqual(dataField(result, "matched_ignoring_indentation") as? Bool, true,
+                       "a paired doc line's leading DID change (model 4sp → file 5sp): \(result.outputJSON)")
+        XCTAssertTrue(Self.warningTexts(result).contains { $0.contains("kept your own indentation") },
+                      "the kept depths are disclosed: \(Self.warningTexts(result))")
     }
 
     /// 09:59:01.393 — the guess-loop escalation, 23 seconds after the failure above.
@@ -342,8 +354,8 @@ final class EditFileRealRunRegressionTests: XCTestCase {
     ///
     /// This is the anti-vacuum pin for the whole change: the individual tests above
     /// each prove one bucket is reachable, and this one proves the split has not
-    /// silently shifted. It is also the number that justifies the work — 8 of the 31
-    /// calls now simply succeed, and the remaining 23 get a diagnosis naming the
+    /// silently shifted. It is also the number that justifies the work — 10 of the
+    /// 31 calls now simply succeed, and the remaining 21 get a diagnosis naming the
     /// actual problem instead of whitespace advice.
     ///
     /// RED: collapse `.diverges` into `.absent` (drop the `bestPartialMatch` arm) →
@@ -379,12 +391,14 @@ final class EditFileRealRunRegressionTests: XCTestCase {
 
         XCTAssertEqual(EditFileRealRunFixtures.failures.count, 31, "fixture set drifted")
         XCTAssertTrue(unclassified.isEmpty, "unclassified: \(unclassified)")
-        // 9, not the original 8: the encoder-tail call at 09:59:01.393 moved from
-        // "located but refused" to "applied" when the append rule landed. The one
-        // remaining refusal is the genuine map conflict at 09:58:38.469, where the
-        // anchor's `"    "` corresponds to two different file depths.
-        XCTAssertEqual(applied, 9, "calls recovered outright")
-        XCTAssertEqual(indentationRefusal, 1, "located but untranslatable")
+        // 10 across three steps of the same tolerance: 8 when tier 3 landed, +1
+        // when the append rule landed (09:59:01.393), +1 when per-line alignment
+        // dissolved the map conflict at 09:58:38.469 — the run's ONE
+        // located-but-refused call, whose anchor depth corresponded to two file
+        // depths. No located refusals remain in this corpus; the buckets left are
+        // the honest ones — stale copies and hallucinated code.
+        XCTAssertEqual(applied, 10, "calls recovered outright")
+        XCTAssertEqual(indentationRefusal, 0, "located windows all translate per line now")
         XCTAssertEqual(diverging, 7, "stale anchors")
         XCTAssertEqual(absent, 14, "anchors naming code that never existed")
     }

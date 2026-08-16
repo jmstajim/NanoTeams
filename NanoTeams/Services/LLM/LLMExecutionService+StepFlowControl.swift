@@ -478,6 +478,19 @@ extension LLMExecutionService {
         let tail = text[callRange.upperBound...]
         let start = ToolCallParsingHelpers.skipWhitespace(in: tail, from: tail.startIndex)
         guard start < tail.endIndex, tail[start] == "{" else { return nil }
+        // The `<|end|>`-bounded RAW bytes, not the walker's span: the card exists to show
+        // the model's attempt verbatim, and the walker's EOF salvage TRUNCATES mid-value
+        // and pads synthetic closers — bytes the model never emitted. CubeCraft task 8
+        // run 0 recorded `old_text` cut at its `]` plus a fabricated `}}`, and the
+        // truncation read as the model's defect during diagnosis when the model's actual
+        // `old_text` was complete. The walker remains the fallback for a buffer with no
+        // end marker (a cut-off stream), where no better boundary exists.
+        if let endRange = tail.range(
+            of: CallMarkerStrategy.endMarker, range: start..<tail.endIndex)
+        {
+            return String(tail[start..<endRange.lowerBound])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         return ToolCallParsingHelpers.extractJSONBracedValue(in: tail, from: start)?.0
     }
 

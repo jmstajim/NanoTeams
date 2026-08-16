@@ -637,8 +637,24 @@ extension LLMExecutionService {
                         toolCalls: toolCallMessages
                     ))
             } else {
+                // Zero resolved calls. Content truncation at the marker exists so resolved
+                // calls can re-materialize from `toolCalls` — but with none resolved,
+                // nothing re-materializes the envelope, so the turn must ALSO carry the
+                // unresolved buffer verbatim. The prose-less shape already does (the anchor
+                // branch below); this covers the model that narrates a line BEFORE
+                // `<|call|>` — CubeCraft task 8 run 0: the resent turn held only "Now I
+                // have enough context…" while the retry nudge claimed the attempt was
+                // "quoted verbatim in your previous turn". Same cap, same rationale as the
+                // anchor branch.
+                var content = cleanedContent
+                if let anchor = Self.unresolvedEnvelopeAnchor(result.harmonyBuffer) {
+                    content = [cleanedContent, anchor]
+                        .compactMap { $0 }
+                        .filter { !$0.isEmpty }
+                        .joined(separator: "\n\n")
+                }
                 conversationMessages.append(
-                    ChatMessage(role: .assistant, content: cleanedContent))
+                    ChatMessage(role: .assistant, content: content))
             }
         } else {
             // The model produced a turn that yields no assistant content and no resolved

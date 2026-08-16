@@ -1219,4 +1219,75 @@ final class StreamingPostStreamArmsTests: XCTestCase {
         XCTAssertEqual(messages.count, 1,
                        "the in-memory wire array is still updated — it is not persisted state")
     }
+
+    // MARK: - Unresolved envelope + pre-marker prose (the wire must carry both)
+
+    /// CubeCraft task 8 run 0 (2026-08-16): the model narrated one line, then emitted a
+    /// malformed `<|call|>` envelope. The content was truncated at the marker (correct —
+    /// resolved calls re-materialize from `toolCalls`), but with ZERO resolved calls
+    /// nothing re-materializes it, and the prose being non-empty skipped the raw-buffer
+    /// anchor branch — so the resent turn carried ONLY the prose while the retry nudge
+    /// said the attempt was "quoted verbatim in your previous turn". The model was asked
+    /// to compare bytes that were no longer anywhere on the wire.
+    /// RED: revert the zero-calls arm to appending `cleanedContent` alone → the prose
+    /// survives and the envelope vanishes again.
+    func testProcessStreamingResult_proseWithUnresolvedEnvelope_carriesBothOnTheWire() async {
+        let unresolved = "<|call|>{\"name\":\"edit_file\",\"arguments\":{broken}<|end|>"
+        var messages: [ChatMessage] = []
+        await service.processStreamingResult(
+            LLMExecutionService.StreamingResult(
+                assistantContent: "Now I have enough context.",
+                thinkingContent: "",
+                resolvedToolCalls: [],
+                sawHarmonyMarker: true,
+                harmonyBuffer: unresolved),
+            stepID: stepID, taskID: taskID, conversationMessages: &messages)
+
+        XCTAssertEqual(messages.count, 1)
+        let content = messages[0].content ?? ""
+        XCTAssertTrue(content.contains("Now I have enough context."),
+                      "the prose the model wrote before the marker must survive: \(content)")
+        XCTAssertTrue(content.contains(unresolved),
+                      "the unresolved envelope must ride the same turn VERBATIM — the "
+                      + "malformed-JSON nudge points the model at it: \(content)")
+    }
+
+    /// A turn whose calls RESOLVED is untouched: the envelope re-materializes from
+    /// `toolCalls` on the wire, so appending the buffer would ship it twice.
+    func testProcessStreamingResult_resolvedCalls_doNotAlsoCarryTheBuffer() async {
+        installTask()
+        var messages: [ChatMessage] = []
+        await service.processStreamingResult(
+            LLMExecutionService.StreamingResult(
+                assistantContent: "Prose.",
+                thinkingContent: "",
+                resolvedToolCalls: [
+                    StepToolCall(name: ToolNames.gitStatus, argumentsJSON: "{}")
+                ],
+                sawHarmonyMarker: true,
+                harmonyBuffer: "<|call|>{\"name\":\"git_status\",\"arguments\":{}}<|end|>"),
+            stepID: stepID, taskID: taskID, conversationMessages: &messages)
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].content, "Prose.",
+                       "resolved calls re-materialize the envelope — no buffer append")
+        XCTAssertEqual(messages[0].toolCalls?.count, 1)
+    }
+
+    /// The prose-less shape keeps its existing anchor: buffer alone, verbatim.
+    func testProcessStreamingResult_bufferWithoutProse_carriesTheBufferAlone() async {
+        let unresolved = "<|call|>{\"name\":\"edit_file\",\"arguments\":{broken}<|end|>"
+        var messages: [ChatMessage] = []
+        await service.processStreamingResult(
+            LLMExecutionService.StreamingResult(
+                assistantContent: "",
+                thinkingContent: "",
+                resolvedToolCalls: [],
+                sawHarmonyMarker: true,
+                harmonyBuffer: unresolved),
+            stepID: stepID, taskID: taskID, conversationMessages: &messages)
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].content, unresolved)
+    }
 }

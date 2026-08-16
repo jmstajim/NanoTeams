@@ -43,6 +43,9 @@ nonisolated extension MemoryTagStore {
     ///   and STRONGER — this fallback does not merely locate the window, it REWRITES the
     ///   replacement's leading whitespace. A model told nothing here believes the bytes
     ///   it sent are the bytes on disk, and builds its next anchor from that belief.
+    /// - `matched_ignoring_interior_whitespace`: the interior-collapse tier keeps the
+    ///   FILE's spacing for every line the model merely reproduced, so the model's
+    ///   interior padding is NOT what landed — same next-anchor argument as above.
     /// - `meta.warnings`: the only channel naming lines the tool left in the model's own
     ///   indentation rather than the file's, so a partly-rewritten replacement is not
     ///   presented as wholly rewritten.
@@ -71,6 +74,9 @@ nonisolated extension MemoryTagStore {
         }
         if data?["matched_ignoring_indentation"] as? Bool == true {
             taggedContent += ",\"matched_ignoring_indentation\":true"
+        }
+        if data?["matched_ignoring_interior_whitespace"] as? Bool == true {
+            taggedContent += ",\"matched_ignoring_interior_whitespace\":true"
         }
         let warnings = (envelope?["meta"] as? [String: Any])?["warnings"] as? [String] ?? []
         if !warnings.isEmpty {

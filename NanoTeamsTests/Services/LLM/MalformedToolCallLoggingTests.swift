@@ -39,6 +39,17 @@ final class MalformedToolCallLoggingTests: XCTestCase {
     private static let channelOnlyPayload =
         "<|channel|>commentary<|message|>just thinking out loud, no tool call here"
 
+    /// Unrecoverable composed defect (mirrors `HarmonyJSONDefectRepairTests`'s
+    /// `unrepairableComposedEnvelope`): the non-identifier `my-path` key defeats every
+    /// repair, and the missing-opening-quote inverts string parity so the walker's
+    /// mid-string EOF salvage TRUNCATES the span inside `old_text`'s value (anchor = its
+    /// `]`) and pads synthetic `}}`. What matters here: the walker's output is NOT the
+    /// model's attempt, and the card/audit record must not present it as one.
+    private static let salvageTruncatedPayload =
+        "[reasoning]\nPlanning the edit.\n[/reasoning]\n\nAdding the block.\n\n<|call|>"
+        + #"{"name":"edit_file","arguments":{"new_text":"const A = 1;\n",my-path":"a/b.js","old_text":"x = [ 1, 2 ];  // keep\n"}"#
+        + "<|end|>"
+
     override func setUp() async throws {
         try await super.setUp()
         MonotonicClock.shared.reset()
@@ -174,6 +185,46 @@ final class MalformedToolCallLoggingTests: XCTestCase {
         let lines = jsonlLines()
         XCTAssertEqual(lines.count, 1)
         XCTAssertTrue(lines[0].contains("MISSING_TOOL_NAME"))
+    }
+
+    /// The record must carry the model's RAW attempt, never the walker's salvaged span.
+    /// The salvage truncates mid-value and pads synthetic closers, so recording ITS
+    /// output shows bytes the model never emitted — in CubeCraft task 8 run 0 the card
+    /// displayed `old_text` cut at `[ 70, 110, 50 ]` plus a fabricated `}}`, and the
+    /// truncation read as the model's defect during diagnosis when the model's actual
+    /// `old_text` was complete.
+    /// RED: revert `extractCallEnvelope` to returning `extractJSONBracedValue(...)?.0` →
+    /// the record ends at the salvage anchor again.
+    func testMalformedRecord_carriesRawBytes_notTheWalkersSalvagedSpan() async {
+        var messages: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: Self.salvageTruncatedPayload,
+            sawHarmonyMarker: true,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            runtime: runtime
+        )
+
+        let netRecords = await waitForNetworkRecords()
+        guard netRecords.count == 1 else {
+            return XCTFail("expected exactly 1 network record, got \(netRecords.count)")
+        }
+        let body = netRecords[0].body ?? ""
+        // `2 ];` exists only PAST the salvage anchor (the salvage cuts right after `]`),
+        // and carries no JSON-escapable characters, so it survives the log encoding.
+        XCTAssertTrue(body.contains("2 ];"),
+                      "the bytes after the salvage anchor are part of the model's attempt")
+        XCTAssertFalse(body.contains("]}}"),
+                       "the walker's synthetic `}}` pad is a parser artifact, not the attempt")
+
+        let lines = jsonlLines()
+        guard lines.count == 1 else {
+            return XCTFail("expected exactly 1 jsonl record, got \(lines.count)")
+        }
+        XCTAssertTrue(lines[0].contains("2 ];"))
+        XCTAssertFalse(lines[0].contains("]}}"))
     }
 
     func testChannelOnly_logsNothing() async {

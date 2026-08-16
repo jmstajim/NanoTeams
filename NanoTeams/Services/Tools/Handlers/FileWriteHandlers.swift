@@ -154,6 +154,7 @@ nonisolated struct EditFileTool: ToolHandler {
             let count: Int
             var matchedIgnoringTrailingWhitespace = false
             var matchedIgnoringIndentation = false
+            var matchedIgnoringInteriorWhitespace = false
             var indentationPassedThroughLines = 0
             // Selection goes through range(of:) — the same primitive the
             // single-replacement arm splices with — so "located but could not be
@@ -208,8 +209,12 @@ nonisolated struct EditFileTool: ToolHandler {
                     count = replacedCount
                     switch kind {
                     case .trailingWhitespace: matchedIgnoringTrailingWhitespace = true
-                    case .indentation(let passedThrough):
-                        matchedIgnoringIndentation = true
+                    case .indentation(let leadingRewritten, let passedThrough):
+                        matchedIgnoringIndentation = leadingRewritten
+                        indentationPassedThroughLines = passedThrough
+                    case .interiorWhitespace(let alsoReindented, let passedThrough):
+                        matchedIgnoringInteriorWhitespace = true
+                        matchedIgnoringIndentation = alsoReindented
                         indentationPassedThroughLines = passedThrough
                     }
                 case .ambiguous(let matchCount):
@@ -242,6 +247,12 @@ nonisolated struct EditFileTool: ToolHandler {
                 // file's convention. A model that sees this knows its own
                 // indentation was not what landed.
                 var matched_ignoring_indentation: Bool?
+                // The window matched only when runs of spaces/tabs INSIDE the line
+                // were collapsed, and the FILE's spacing was kept for every line the
+                // replacement merely reproduced — the model's interior padding is
+                // NOT what landed there. Composes with the flag above when the
+                // anchor also drifted in leading whitespace.
+                var matched_ignoring_interior_whitespace: Bool?
             }
 
             // No silent repair: the model is told that part of its replacement was
@@ -250,13 +261,43 @@ nonisolated struct EditFileTool: ToolHandler {
             // it builds from memory depends on knowing which is which.
             var warnings: [String] = []
             if indentationPassedThroughLines > 0 {
+                // The rewrite clause is conditional: either tier can pass lines
+                // through under an identity emission (leadingRewritten false), and a
+                // warning claiming a rewrite would contradict the same envelope's
+                // omitted `matched_ignoring_indentation` flag. "New", not "appended":
+                // the pass-through set is whatever paired with no window line —
+                // appended, inserted mid-window, or a rewritten line — and a warning
+                // must not assert a position it did not check.
+                let rewriteClause = matchedIgnoringIndentation
+                    ? "Anchor indentation was rewritten to match the file. " : ""
                 warnings.append(
-                    "Anchor indentation was rewritten to match the file. "
-                    + "\(indentationPassedThroughLines) appended line"
+                    rewriteClause
+                    + "\(indentationPassedThroughLines) new line"
                     + (indentationPassedThroughLines == 1 ? "" : "s")
                     + " kept your own indentation — the anchor showed no depth for "
                     + (indentationPassedThroughLines == 1 ? "it" : "them") + ". "
                     + "Re-read the region if it must match the file's style."
+                )
+            }
+            // A tolerant-tier edit whose only difference WAS the whitespace collapses
+            // into a byte-level no-op: the file's spacing wins on both sides, so the
+            // envelope's `replacements_made: 1` would otherwise present a formatting
+            // change that never landed as a clean success — and a formatting-intent
+            // model would retry forever with no signal to react to. Worded per tier:
+            // the interior tier owns spacing runs, the indentation tier leading
+            // whitespace, and naming the wrong one sends the model to fix the wrong
+            // characters.
+            if matchedIgnoringInteriorWhitespace, newContent == content {
+                warnings.append(
+                    "The edit left the file unchanged: old_text and new_text differ only "
+                    + "inside whitespace runs, where the file's own spacing wins. To change "
+                    + "spacing itself, old_text must match the file exactly."
+                )
+            } else if matchedIgnoringIndentation, newContent == content {
+                warnings.append(
+                    "The edit left the file unchanged: old_text and new_text differ only "
+                    + "in leading whitespace, where the file's own indentation wins. To "
+                    + "change indentation itself, old_text must match the file exactly."
                 )
             }
 
@@ -265,7 +306,8 @@ nonisolated struct EditFileTool: ToolHandler {
                 data: EditFileData(
                     path: path, replacements_made: count,
                     matched_ignoring_trailing_whitespace: matchedIgnoringTrailingWhitespace ? true : nil,
-                    matched_ignoring_indentation: matchedIgnoringIndentation ? true : nil
+                    matched_ignoring_indentation: matchedIgnoringIndentation ? true : nil,
+                    matched_ignoring_interior_whitespace: matchedIgnoringInteriorWhitespace ? true : nil
                 ),
                 meta: ToolResultMeta(warnings: warnings)
             )
@@ -340,16 +382,31 @@ nonisolated struct EditFileTool: ToolHandler {
         let new: String
     }
 
-    /// Which tolerance located the window — disclosed to the model, because the two
-    /// differ in what they did to its `new_text` (nothing, vs re-indented it).
+    /// Which tolerance located the window — disclosed to the model, because they
+    /// differ in what they did to its `new_text` (nothing, vs re-indented it, vs
+    /// kept the FILE's bytes for lines it merely reproduced).
     ///
     /// `indentation` carries how many replacement lines kept the model's OWN
-    /// indentation because they lie outside the matched window (see
+    /// indentation because they pair with no window line (see
     /// `reindentToFileConvention`). It is a count rather than a flag so the
-    /// disclosure can name a number instead of hedging.
+    /// disclosure can name a number instead of hedging. `leadingRewritten` gates
+    /// the `matched_ignoring_indentation` flag: an emission that changed no leading
+    /// whitespace (the replacement dropped every drifted anchor line) must not
+    /// claim a re-indent that never happened.
+    ///
+    /// `interiorWhitespace` composes with the indentation repair (an anchor can
+    /// drift in BOTH — CubeCraft attempts 3–4 dropped their leading indent after the
+    /// old misdiagnosis told them whitespace was not the problem), so it carries the
+    /// indentation facts alongside its own rather than suppressing them: a
+    /// single-valued kind is exactly how the composed case would silently lose
+    /// `matched_ignoring_indentation` and the pass-through warning.
+    /// `alsoReindented` is true only when a line's leading whitespace actually
+    /// changed — an identity emission must not disclose a re-indent that never
+    /// happened.
     enum TolerantMatchKind {
         case trailingWhitespace
-        case indentation(passedThroughLines: Int)
+        case indentation(leadingRewritten: Bool, passedThroughLines: Int)
+        case interiorWhitespace(alsoReindented: Bool, passedThroughLines: Int)
     }
 
     enum TolerantEditOutcome {
@@ -379,17 +436,43 @@ nonisolated struct EditFileTool: ToolHandler {
         case whitespaceOnlyAnchor
         /// Anchor cannot fit: it has more lines than the file has.
         case anchorLongerThanFile(anchorLines: Int, fileLines: Int)
-        /// The window exists but its indentation could not be translated (see
-        /// `reindentToFileConvention`). Carries the file's exact bytes so the next
-        /// attempt is a copy rather than another guess.
+        /// SEVERAL windows match once indentation is ignored, so editing one would
+        /// be a wrong-location guess. (A unique window always translates per line —
+        /// see `reindentToFileConvention` — so ambiguity is the only refusal left
+        /// on this route.) Carries the first window's exact bytes: matching one
+        /// occurrence byte-for-byte is itself a way to disambiguate.
         case indentationMismatch(lines: [Int], fileText: String)
         /// The anchor's first line was found, but the window breaks at
         /// `anchorLine` (0-based into the anchor).
         case diverges(anchorLine: Int, fileLine: Int, modelText: String, fileText: String?)
-        /// Not one line of the anchor appears in the file.
+        /// The window exists once runs of spaces/tabs INSIDE the line are collapsed,
+        /// but the edit was refused — the `cause` names why, because the two routes
+        /// take different recoveries and prescribing the wrong one is the
+        /// misdiagnosis class this state exists to remove. Carries the file's exact
+        /// bytes, same as `indentationMismatch` and for the same reason.
+        case interiorWhitespaceMismatch(lines: [Int], fileText: String, cause: InteriorRefusalCause)
+        /// Not one line of the anchor appears in the file — under any ASCII
+        /// spelling, interior-collapsed included. (Two shapes keep this message's
+        /// whitespace denial imperfect, both accepted: a sub-line FRAGMENT with
+        /// interior drift — the collapsed comparison is whole-line by design, a
+        /// fragment's splice boundary inside a normalized line is undefined, and the
+        /// motivating run's fragment attempt would have silently deleted the rest of
+        /// the line — and interior UNICODE spaces (NBSP and friends), which
+        /// `collapseInterior` deliberately leaves alone because inside a string
+        /// literal they are content. Every whole-line ASCII anchor that reaches here
+        /// makes the denial true.)
         case absent
 
-        /// The `details["diagnosis"]` key. Present only for the three states whose
+        /// Why a collapse-located window was refused — only ambiguity remains (a
+        /// unique window always translates per line). `ambiguous` carries whether
+        /// `replace_all` was requested: the caller who asked for every occurrence
+        /// must not be told to make the target unique — the occurrences differ in
+        /// their spacing, which is a different blocker with a different cure.
+        nonisolated enum InteriorRefusalCause {
+            case ambiguous(replaceAllRequested: Bool)
+        }
+
+        /// The `details["diagnosis"]` key. Present only for the four states whose
         /// message SUPERSEDES the generic character-level steering in
         /// `ToolErrorNotePolicy.direction`; the two legacy states keep the old shape
         /// (generic sentence + appended hint) so their pins stay meaningful.
@@ -397,6 +480,7 @@ nonisolated struct EditFileTool: ToolHandler {
             switch self {
             case .indentationMismatch: "indentation_mismatch"
             case .diverges: "diverges"
+            case .interiorWhitespaceMismatch: "interior_whitespace_mismatch"
             case .absent: "absent"
             case .whitespaceOnlyAnchor, .anchorLongerThanFile: nil
             }
@@ -413,7 +497,7 @@ nonisolated struct EditFileTool: ToolHandler {
                 "old_text is whitespace-only — anchor on adjacent non-blank lines instead."
             case .anchorLongerThanFile(let anchorLines, let fileLines):
                 "old_text has more lines (\(anchorLines)) than the file (\(fileLines))."
-            case .indentationMismatch, .diverges, .absent:
+            case .indentationMismatch, .diverges, .interiorWhitespaceMismatch, .absent:
                 nil
             }
         }
@@ -438,29 +522,49 @@ nonisolated struct EditFileTool: ToolHandler {
                 // are calibrated on it. The bytes are still handed over: they are
                 // evidence, and cheap.
                 //
-                // What they are NOT is an instruction. This message used to close with
-                // "copy those lines byte-for-byte", and MeditationApp task 28 measured
-                // what that buys: three consecutive retries, the model reading the
-                // eight-space line back as "9 leading spaces" in its own reasoning, and
-                // an escape only when it abandoned the indented anchor for a zero-indent
-                // one. Asking a model that has just failed to count spaces to count them
-                // again is the one thing known not to work; name the way out it found.
-                //
-                // The advice is deliberately state-NEUTRAL. THREE states reach this arm
-                // and only one of them is an irregular file: the window matched in
-                // several places (ambiguity), the window is unique but the replacement
-                // carries a depth that cannot be placed, or the anchor's one depth
-                // corresponds to two file depths. An earlier draft asserted irregularity
-                // outright and was therefore false on two routes in three — including
-                // one an existing test stages against a uniformly tab-indented file.
-                // Steering the model to a column-0 anchor is right on all three.
+                // What they are NOT is an instruction to count spaces. An earlier
+                // message closed with "copy those lines byte-for-byte", and
+                // MeditationApp task 28 measured what that buys: three consecutive
+                // retries, the model reading the eight-space line back as "9 leading
+                // spaces" in its own reasoning. The cure for ambiguity — the ONE
+                // state on this route now — is more surrounding lines, not a
+                // character-level correction.
                 return "old_text not found in \(path). Lines match ignoring indentation near "
                     + "line\(lines.count > 1 ? "s" : "") "
                     + lines.prefix(3).map(String.init).joined(separator: ", ")
-                    + " — check leading whitespace (tabs vs spaces). "
+                    + " — the anchor fits several regions that differ only in their "
+                    + "indentation, so editing one would be a wrong-location guess. "
+                    + "Include a neighbouring line in old_text to make the target unique. "
+                    + "The first region's exact text is:\n\(fileText)"
+
+            case .interiorWhitespaceMismatch(let lines, let fileText, let cause):
+                // Located but ambiguous — the one refusal left on this route. The
+                // advice is per-cause: a `replace_all` caller asked for every
+                // occurrence on purpose and must not be told to make the target
+                // unique. The file's bytes are DATA either way, not an instruction
+                // to copy: task 28 measured that a model told to copy bytes
+                // re-counts the spaces and misses; extending the anchor needs no
+                // space-counting.
+                //
+                // Wording constraints (pinned by the census + advice sweeps in
+                // `EditFileRealRunRegressionTests`): must not contain the census
+                // classifiers ("ignoring indentation" / "none of its lines appear" /
+                // "but line") nor the advice phrases ("whitespace and indentation" /
+                // "check leading whitespace").
+                let advice: String
+                switch cause {
+                case .ambiguous(replaceAllRequested: false):
+                    advice = "Include a neighbouring line in old_text to make the target unique."
+                case .ambiguous(replaceAllRequested: true):
+                    advice = "The occurrences differ in their spacing, so replace_all cannot "
+                        + "treat them as one — edit each occurrence separately, anchored with "
+                        + "a neighbouring line."
+                }
+                return "old_text nearly matches \(path) at line\(lines.count > 1 ? "s" : "") "
+                    + lines.prefix(3).map(String.init).joined(separator: ", ")
+                    + " — only the spacing inside the line differs (runs of spaces between words). "
                     + "The file's exact text there is:\n\(fileText)\n"
-                    + "Rather than reproducing that indentation, anchor on a nearby line "
-                    + "that starts at column 0."
+                    + advice
 
             case .diverges(let anchorLine, let fileLine, let modelText, let fileText):
                 // Name BOTH sides. The model cannot diff its anchor against a file it
@@ -487,12 +591,12 @@ nonisolated struct EditFileTool: ToolHandler {
     static let anchorNotFoundMessage = "old_text not found in file. Make sure it matches exactly including whitespace and indentation. Do not include line numbers from read_lines output."
 
     /// Last-resort anchor matching for old_text that differs from the file only in
-    /// trailing whitespace (including the CR of CRLF line endings) — in either
-    /// direction: whitespace dirt in the file is invisible in read output, and
-    /// whitespace the model hallucinated into its own anchor is equally invisible
-    /// to it. Whole-line windows only; leading whitespace stays significant (a
-    /// leading-whitespace (indentation) mismatch is diagnosed in the hint, never
-    /// auto-edited). A trailing newline on the anchor is a line terminator (see
+    /// whitespace (including the CR of CRLF line endings) — in either direction:
+    /// whitespace dirt in the file is invisible in read output, and whitespace the
+    /// model hallucinated into its own anchor is equally invisible to it. Whole-line
+    /// windows only, in tiers: trailing whitespace (spliced away), then leading
+    /// whitespace, then interior runs (both repaired per line — see
+    /// `reindentToFileConvention`). A trailing newline on the anchor is a line terminator (see
     /// `splitAnchorLines`) and the same semantics are mirrored onto `newText` —
     /// notably, an empty `newText` then deletes the matched lines rather than
     /// leaving a blank line. Replacement lines adopt `\r` endings when the
@@ -562,7 +666,8 @@ nonisolated struct EditFileTool: ToolHandler {
         // agent runs) is read faithfully and then re-emitted by the model in canonical
         // form, so the anchor misses forever and the model starts perturbing spaces.
         //
-        // Auto-fix requires a UNIQUE window: several windows may each need a different
+        // A UNIQUE window always translates (per-line — see `reindentToFileConvention`).
+        // The one refusal left is ambiguity: several windows may each need a different
         // translation, and picking one would be a wrong-location guess.
         for (oldLines, hadTerminator, newText) in lineCandidates {
             let matches = windowMatches(
@@ -572,25 +677,89 @@ nonisolated struct EditFileTool: ToolHandler {
             if matches.count == 1, let start = matches.first {
                 let fileWindow = Array(contentLines[start..<(start + oldLines.count)])
                 let newLines = replacementLines(newText: newText, hadTerminator: hadTerminator)
-                if let reindented = reindentToFileConvention(
-                    newLines: newLines, anchorLines: oldLines, fileLines: fileWindow
-                ) {
-                    return .replaced(
-                        newContent: spliceWindows(
-                            contentLines: contentLines, windows: [start],
-                            oldLineCount: oldLines.count, newLines: reindented.lines),
-                        count: 1,
-                        kind: .indentation(passedThroughLines: reindented.passedThroughCount)
-                    )
-                }
+                let reindented = reindentToFileConvention(
+                    newLines: newLines, anchorLines: oldLines, fileLines: fileWindow,
+                    tier: .leading)
+                return .replaced(
+                    newContent: spliceWindows(
+                        contentLines: contentLines, windows: [start],
+                        oldLineCount: oldLines.count, newLines: reindented.lines),
+                    count: 1,
+                    kind: .indentation(
+                        leadingRewritten: reindented.leadingRewritten,
+                        passedThroughLines: reindented.passedThroughCount)
+                )
             }
 
-            // Located but not translatable — hand back the file's exact bytes.
+            // Several windows — hand back the first one's exact bytes.
             return .notFound(.indentationMismatch(
                 lines: matches.prefix(3).map { $0 + 1 },
                 fileText: contentLines[matches[0]..<(matches[0] + oldLines.count)]
                     .map { $0.hasSuffix("\r") ? String($0.dropLast()) : $0 }
                     .joined(separator: "\n")
+            ))
+        }
+
+        // TIER 3.5 — the window exists but runs of spaces/tabs INSIDE the line differ.
+        //
+        // The motivating shape is an aligned-constant block (CubeCraft task 5, run 0):
+        // the file pads `= 1.05;  //` to a comment column that varies per line, the
+        // model re-emits the line with its own padding, and no earlier tier can see
+        // the match — leading and trailing trims leave interior runs significant.
+        // Measured there: after the miss the model re-read the exact bytes and STILL
+        // emitted one extra interior space, so no diagnosis can break that loop; only
+        // a repair can. Placement is provably non-shadowing: tier 3 returns
+        // unconditionally for the first candidate with a non-empty trimBoth window,
+        // so this scan is reachable only for inputs that previously ended in
+        // `.diverges` or `.absent` — and it must sit ABOVE `bestPartialMatch`,
+        // because a full collapsed window is stronger evidence than a partial
+        // trimBoth prefix.
+        //
+        // Two rules keep it as safe as the tiers above it:
+        // - A UNIQUE window is required; several collapse-located windows return a
+        //   typed diagnosis (routing it back to `.absent` would re-emit "this is
+        //   not a whitespace problem" for a window the tool just located). The gate
+        //   is not vacuous: collapsing merges lines that trimBoth keeps distinct —
+        //   the motivating file has such a pair.
+        // - The FILE's bytes win for every replacement line that merely REPRODUCES
+        //   its window line (the paired arm of `reindentToFileConvention`): tier 2
+        //   splices trailing dirt away and tier 3 rewrites the model's leading
+        //   whitespace into the file's convention, so a tier that wrote the MODEL's
+        //   interior padding over the file's would invert the ladder's own
+        //   invariant — and un-align the very block it matched. Only genuinely new
+        //   lines carry the model's bytes.
+        for (oldLines, hadTerminator, newText) in lineCandidates {
+            let matches = windowMatches(
+                contentLines: contentLines, oldLines: oldLines, scanBound: scanBound,
+                trim: collapseInterior)
+            guard !matches.isEmpty else { continue }
+
+            if matches.count == 1, let start = matches.first {
+                let fileWindow = Array(contentLines[start..<(start + oldLines.count)])
+                let rawNewLines = replacementLines(newText: newText, hadTerminator: hadTerminator)
+                let reindented = reindentToFileConvention(
+                    newLines: rawNewLines, anchorLines: oldLines, fileLines: fileWindow,
+                    tier: .interior)
+                return .replaced(
+                    newContent: spliceWindows(
+                        contentLines: contentLines, windows: [start],
+                        oldLineCount: oldLines.count, newLines: reindented.lines),
+                    count: 1,
+                    kind: .interiorWhitespace(
+                        // True only when a line's leading whitespace actually
+                        // CHANGED — the common interior-only case must not disclose
+                        // a re-indent that never happened.
+                        alsoReindented: reindented.leadingRewritten,
+                        passedThroughLines: reindented.passedThroughCount)
+                )
+            }
+
+            return .notFound(.interiorWhitespaceMismatch(
+                lines: matches.prefix(3).map { $0 + 1 },
+                fileText: contentLines[matches[0]..<(matches[0] + oldLines.count)]
+                    .map { $0.hasSuffix("\r") ? String($0.dropLast()) : $0 }
+                    .joined(separator: "\n"),
+                cause: .ambiguous(replaceAllRequested: replaceAll)
             ))
         }
 
@@ -669,77 +838,114 @@ nonisolated struct EditFileTool: ToolHandler {
         String(line.prefix { $0 == " " || $0 == "\t" })
     }
 
-    /// Rewrites `new_text`'s leading whitespace from the model's indentation
-    /// convention into the file's, or returns nil when the difference is not
-    /// expressible as a per-depth mapping.
+    /// Which tier is asking, i.e. which equivalence located the window — it decides
+    /// both the pairing key and what a PAIRED line is allowed to take from the file.
     ///
-    /// The rule is that `anchorIndent -> fileIndent` must be a FUNCTION over the
-    /// matched window. That admits the common repair (the model wrote four spaces
-    /// where the file uses a tab, at every depth) and refuses the case that actually
-    /// produced this code path: a file whose own indentation is irregular, where
-    /// `"    "` maps to `"     "` on one line and `"    "` on the next. There the
-    /// correct output is genuinely unknown, so the caller returns the file's bytes
-    /// instead of writing a guess.
+    /// `leading` (tier 3, window under `trimBoth`): a paired line's content is
+    /// byte-identical to its file line's, so it takes the file line's LEADING
+    /// whitespace and keeps the model's remainder — trailing stays the model's, the
+    /// same splice rule tier 2 applies.
     ///
-    /// Injectivity is deliberately NOT required. Two anchor depths collapsing onto
-    /// one file depth is exactly the shape of the repair we want most: a model that
+    /// `interior` (tier 3.5, window under `collapseInterior`): interior runs may
+    /// differ too, so a paired line takes the file line's BYTES entire — the file's
+    /// alignment padding is the very thing that tier exists to preserve.
+    nonisolated enum ReindentTier {
+        case leading
+        case interior
+    }
+
+    /// Rewrites `new_text`'s whitespace into the file's convention, PER LINE.
+    ///
+    /// Replacement lines PAIR with the matched window's lines — positionally when
+    /// the counts match (a pure rewrite; greedy matching there could let a line the
+    /// model MOVED steal a later window line's bytes), greedy in-order otherwise:
+    /// each replacement line claims the next unclaimed window line it equals under
+    /// the tier's key. One rule covers append-after, insert-before, MID-insertion,
+    /// delete-lines and grow-in-place edits alike. The pairing is order-preserving,
+    /// so a replacement that REORDERS window lines keeps the model's bytes for
+    /// whatever falls out of order — reordering is not "merely reproduced".
+    ///
+    /// A PAIRED line takes its own file line's whitespace (see `ReindentTier`).
+    /// This is what dissolved the per-depth map's conflict refusal: a window whose
+    /// own indentation is irregular ("    " maps to "     " on one line and "    "
+    /// on the next — CubeCraft task 7, where the run's OWN earlier append wrote the
+    /// irregularity) is only ambiguous in the per-depth abstraction, never per line.
+    ///
+    /// The UNPAIRED remainder is new content the file has no convention for. It
+    /// consults the depth map (anchorIndent → fileIndent over the window, blanks
+    /// skipped, CONFLICTED keys dropped as unusable) ALL-OR-NOTHING: either every
+    /// non-blank unpaired depth is a usable key and the whole set is relabelled into
+    /// the file's convention, or none of it is touched. That is a correctness
+    /// requirement, not a simplification — the map is a per-depth RELABELLING, not
+    /// order preserving. Measured, with a 2-space model against a 4-space file
+    /// (map {2→4, 4→8}) and an inserted block at 4/6/4: a per-line map policy
+    /// writes the opener at 8, its child at 6 — the child lands SHALLOWER than the
+    /// block enclosing it, under `ok:true`. In Swift that is mangled but compiles;
+    /// in Python it is an IndentationError, and `edit_file` has no extension gating.
+    ///
+    /// Injectivity of the map is deliberately NOT required. Two anchor depths
+    /// collapsing onto one file depth is the commonest real repair: a model that
     /// opened a block with four spaces and closed it with five is describing one
-    /// file depth twice, and refusing that would drop the commonest real win.
+    /// file depth twice.
     ///
-    /// A replacement line whose depth never appeared in the anchor is placed only if
-    /// it lies OUTSIDE the matched window — see `freeRegion`. Inside the window the
-    /// file has a demonstrated convention and an unknown depth is genuinely unplaceable,
-    /// so the whole edit is still refused rather than extrapolated. Zero-indent and
-    /// blank lines are exempt: no indentation means no indentation in either convention.
+    /// Zero-indent lines are exempt from the map only when `""` is not a key: if
+    /// the anchor began at top level and the file's window is nested, top level
+    /// means something here and the line is translated like any other.
     ///
-    /// The free region is then translated ALL-OR-NOTHING: either every depth in it is a
-    /// map key and the whole block is relabelled into the file's convention, or none of
-    /// it is touched. A per-line choice would re-order the block's own nesting, because
-    /// the map relabels depths without preserving their order — see the comment at the
-    /// decision itself.
-    ///
-    /// The outside-the-window rule is what makes INSERTION work at all. Measured on
-    /// MeditationApp task 28: every one of the four refusals appended a 25-line struct
-    /// after a three-line anchor, so `new_text` necessarily carried depths the anchor
-    /// could not have shown, and refusing cost 30% of the run without the model ever
-    /// recovering — it escaped by abandoning the indented anchor entirely.
+    /// Total for a located window — the refusals this function used to return
+    /// (conflicted key, unknown in-window depth) were measured on CubeCraft task 7
+    /// run 0 to cost 10 of 24 `edit_file` calls, every one of which the model later
+    /// achieved anyway by re-anchoring; the per-line result is the same edit
+    /// without the burned round-trips.
     static func reindentToFileConvention(
-        newLines: [String], anchorLines: [String], fileLines: [String]
-    ) -> Reindented? {
-        guard anchorLines.count == fileLines.count else { return nil }
+        newLines: [String], anchorLines: [String], fileLines: [String], tier: ReindentTier
+    ) -> Reindented {
+        let key: (String) -> String
+        switch tier {
+        case .leading: key = trimBoth
+        case .interior: key = collapseInterior
+        }
 
         var map: [String: String] = [:]
+        var conflicted: Set<String> = []
         for (anchor, file) in zip(anchorLines, fileLines) {
             // A blank line carries no depth information, and the two sides disagree
             // about blank lines constantly (the file has "", the model wrote spaces).
             guard !trimBoth(anchor).isEmpty else { continue }
-            let key = leadingWhitespace(anchor)
+            let mapKey = leadingWhitespace(anchor)
             let value = leadingWhitespace(file)
-            if let existing = map[key], existing != value { return nil }
-            map[key] = value
+            if let existing = map[mapKey], existing != value { conflicted.insert(mapKey) }
+            map[mapKey] = value
         }
-        guard !map.isEmpty else { return nil }
+        // A conflicted key answers two ways at once — unusable for lines that have
+        // nothing to pair with, so it is dropped rather than refusing the edit:
+        // dropping just routes the affected unpaired lines to the model's own bytes.
+        for mapKey in conflicted { map.removeValue(forKey: mapKey) }
 
-        let free = freeRegion(newLines: newLines, anchorLines: anchorLines)
+        // newIndex → file line it reproduces. Keys are precomputed once (the same
+        // rule `windowMatches` applies): the greedy scan probes each file line up
+        // to once per replacement line, and `collapseInterior` walks the string.
+        let newKeys = newLines.map(key)
+        let fileKeys = fileLines.map(key)
+        var pairedFileLine: [Int: String] = [:]
+        if newLines.count == fileLines.count {
+            for index in newLines.indices where newKeys[index] == fileKeys[index] {
+                pairedFileLine[index] = fileLines[index]
+            }
+        } else {
+            var cursor = 0
+            for index in newLines.indices {
+                let target = newKeys[index]
+                var probe = cursor
+                while probe < fileLines.count, fileKeys[probe] != target { probe += 1 }
+                guard probe < fileLines.count else { continue }
+                pairedFileLine[index] = fileLines[probe]
+                cursor = probe + 1
+            }
+        }
 
-        // The free region is ALL-OR-NOTHING, and that is a correctness requirement, not
-        // a simplification. The map is a per-depth RELABELLING; it is not order
-        // preserving. Translating some lines of an appended block and leaving the rest
-        // verbatim therefore re-orders the block's own nesting, which is the only meaning
-        // an appended block has — the file fixes the window's depths, but nothing fixes
-        // the new code's except its internal structure.
-        //
-        // Measured, with a 2-space model against a 4-space file (map {2→4, 4→8}) and an
-        // appended block at 4/6/4: a per-line policy writes the opener at 8, its child at
-        // 6, and the closer at 8 — the child lands SHALLOWER than the block enclosing it,
-        // under `ok:true`. In Swift that is mangled but compiles; `edit_file` has no
-        // extension gating, and in Python it is an IndentationError. Before this whole
-        // tolerance existed the same input was refused with the file's bytes, so a
-        // per-line policy converts a safe refusal into a wrong write.
-        //
-        // Neither real fixture (task 24, task 28) straddles the key set, so both stay
-        // byte-identical either way — the defect was invisible to them by luck.
-        let freeRegionIsTranslatable = free.allSatisfy { index in
+        let unpairedTranslatable = newLines.indices.allSatisfy { index in
+            if pairedFileLine[index] != nil { return true }
             let line = newLines[index]
             if trimBoth(line).isEmpty { return true }
             let prefix = leadingWhitespace(line)
@@ -750,81 +956,58 @@ nonisolated struct EditFileTool: ToolHandler {
         out.reserveCapacity(newLines.count)
         var passedThrough = 0
         for (index, line) in newLines.enumerated() {
+            if let fileLine = pairedFileLine[index] {
+                // Emitted file bytes are stripped of a trailing CR — `spliceWindows`
+                // owns the line-ending convention and re-attaches it per window, so
+                // keeping the CR here would write `\r\r\n`.
+                switch tier {
+                case .interior:
+                    out.append(stripTrailingCR(fileLine))
+                case .leading:
+                    out.append(
+                        leadingWhitespace(fileLine)
+                            + line.dropFirst(leadingWhitespace(line).count))
+                }
+                continue
+            }
             if trimBoth(line).isEmpty {
                 out.append(line)
                 continue
             }
             let prefix = leadingWhitespace(line)
-
-            if free.contains(index) {
-                // Expressible as a whole → the file's convention wins, and the block's
-                // nesting survives because every one of its depths is relabelled.
-                // Otherwise the model's own bytes, entire.
-                if freeRegionIsTranslatable, let mapped = map[prefix] {
-                    out.append(mapped + line.dropFirst(prefix.count))
-                } else {
-                    out.append(line)
-                    if !prefix.isEmpty { passedThrough += 1 }
-                }
-                continue
-            }
-
-            // Inside the window every line replaces a line the file has a depth for, so
-            // an unknown depth is unplaceable and the edit is refused.
-            //
-            // A zero-indent line is only passed through when the anchor never showed
-            // that depth: if `""` IS a key — the anchor began at top level and the
-            // file's window is nested — then top level means something here and the
-            // line must be translated like any other.
-            if let mapped = map[prefix] {
+            if unpairedTranslatable, let mapped = map[prefix] {
                 out.append(mapped + line.dropFirst(prefix.count))
-            } else if prefix.isEmpty {
-                out.append(line)
             } else {
-                return nil
+                out.append(line)
+                if !prefix.isEmpty { passedThrough += 1 }
             }
         }
-        return Reindented(lines: out, passedThroughCount: passedThrough)
+        // Blank lines are excluded for the same reason the map skips them: their
+        // whitespace is not indentation, and normalising a model's phantom spaces
+        // on a blank line into the file's "" must not disclose a re-indent.
+        return Reindented(
+            lines: out,
+            passedThroughCount: passedThrough,
+            leadingRewritten: zip(out, newLines).contains { emitted, raw in
+                !trimBoth(raw).isEmpty && leadingWhitespace(emitted) != leadingWhitespace(raw)
+            })
     }
 
-    /// The outcome of translating a replacement's indentation into the file's.
+    /// The outcome of translating a replacement's whitespace into the file's.
     nonisolated struct Reindented {
         let lines: [String]
-        /// How many lines were emitted with the model's OWN indentation because they
-        /// lie outside the matched window and carry a depth the anchor never showed.
-        /// Zero for a pure rewrite. Disclosed — a model whose indentation was partly
-        /// rewritten and partly kept cannot build its next anchor from memory unless
-        /// it is told which.
+        /// How many non-blank lines were emitted with the model's OWN indentation
+        /// because they pair with no window line and carry a depth the anchor never
+        /// showed. Disclosed — a model whose indentation was partly rewritten and
+        /// partly kept cannot build its next anchor from memory unless it is told
+        /// which.
         let passedThroughCount: Int
+        /// Whether any emitted line's LEADING whitespace differs from the raw
+        /// replacement's. Gates the `matched_ignoring_indentation` disclosure — an
+        /// emission that changed no leading whitespace must not claim a re-indent
+        /// that never happened.
+        let leadingRewritten: Bool
     }
-
-    /// Indices of `newLines` that are NOT a rewrite of the matched window, i.e. new
-    /// content the file has no convention for.
-    ///
-    /// Only two shapes carry that evidence: the replacement opens with the anchor
-    /// (append after it) or closes with it (insert before it). Anything else — the
-    /// model rewrote the window itself — has no free region at all, and every line
-    /// must be translated or the edit refused. Comparison ignores leading and
-    /// trailing whitespace, since reproducing it exactly is the very thing the model
-    /// has just failed at.
-    private static func freeRegion(newLines: [String], anchorLines: [String]) -> Range<Int> {
-        let newCount = newLines.count
-        let anchorCount = anchorLines.count
-        guard newCount > anchorCount, anchorCount > 0 else { return noFreeRegion }
-
-        func aligns(_ slice: ArraySlice<String>) -> Bool {
-            zip(slice, anchorLines).allSatisfy { trimBoth($0) == trimBoth($1) }
-        }
-        // Appended after the anchor: everything past the reproduced window is new.
-        if aligns(newLines.prefix(anchorCount)) { return anchorCount..<newCount }
-        // Inserted before it: everything up to the reproduced window is new.
-        if aligns(newLines.suffix(anchorCount)) { return 0..<(newCount - anchorCount) }
-        return noFreeRegion
-    }
-
-    /// "Every replacement line rewrites the window" — an empty index range, named
-    /// because `0..<0` at a `return` reads like a coordinate rather than an answer.
-    private static let noFreeRegion: Range<Int> = 0..<0
 
     /// The occurrence of the anchor's first line from which the most consecutive
     /// lines agree (ignoring leading and trailing whitespace), or nil when that line
@@ -886,6 +1069,32 @@ nonisolated struct EditFileTool: ToolHandler {
             }
         }
         return matches
+    }
+
+    /// The tier-3.5 line comparison: `trimBoth`, then every interior run of
+    /// spaces/tabs collapsed to a single space. Strictly weaker than trimBoth
+    /// equality, so the collapsed window set is a superset of tier 3's and a repair
+    /// tier 3 would have made can never be lost to this tier. Tabs collapse into
+    /// the same single space — interior tab-vs-space drift is the same class.
+    private static func collapseInterior(_ line: String) -> String {
+        let trimmed = trimBoth(line)
+        var out = String()
+        out.reserveCapacity(trimmed.count)
+        var previousWasRun = false
+        for character in trimmed {
+            if character == " " || character == "\t" {
+                if !previousWasRun { out.append(" ") }
+                previousWasRun = true
+            } else {
+                out.append(character)
+                previousWasRun = false
+            }
+        }
+        return out
+    }
+
+    private static func stripTrailingCR(_ line: String) -> String {
+        line.hasSuffix("\r") ? String(line.dropLast()) : line
     }
 
     /// Includes CR so CRLF files compare cleanly after splitting on "\n".
