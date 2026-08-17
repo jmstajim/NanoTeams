@@ -26,7 +26,7 @@ final class MessageBubbleStreamingIndicatorEquatableTests: XCTestCase {
         isImplicitStreamTarget: Bool = false,
         hasMessageContent: Bool = false,
         hasThinkingContent: Bool = false,
-        processingProgress: Double? = nil,
+        processingStatus: PromptProcessingStatus? = nil,
         hasStreamActivity: Bool = false,
         isStreamingToolCall: Bool = false
     ) -> MessageBubbleStreamingIndicator {
@@ -35,7 +35,7 @@ final class MessageBubbleStreamingIndicatorEquatableTests: XCTestCase {
             isImplicitStreamTarget: isImplicitStreamTarget,
             hasMessageContent: hasMessageContent,
             hasThinkingContent: hasThinkingContent,
-            processingProgress: processingProgress,
+            processingStatus: processingStatus,
             hasStreamActivity: hasStreamActivity,
             isStreamingToolCall: isStreamingToolCall
         )
@@ -62,7 +62,25 @@ final class MessageBubbleStreamingIndicatorEquatableTests: XCTestCase {
     }
 
     func testNotEqual_whenProcessingProgressDiffers() async {
-        XCTAssertNotEqual(Self.makeIndicator(), Self.makeIndicator(processingProgress: 0.5))
+        XCTAssertNotEqual(Self.makeIndicator(), Self.makeIndicator(processingStatus: .fraction(0.5)))
+    }
+
+    /// The three status values must be pairwise distinct to `.equatable()`, or
+    /// SwiftUI silently drops the transition between them. `nil` → "Waiting…",
+    /// `.indeterminate` → "Processing…", `.fraction(0)` → "Processing 0%" are
+    /// three different rendered strings, so collapsing any pair would freeze a
+    /// stale row on screen.
+    ///
+    /// RED: give `PromptProcessingStatus` an `==` that ignores its payload, or
+    /// map `.indeterminate` to `.fraction(0)` anywhere on the path -> fails.
+    func testNotEqual_acrossAllThreeStatusValues() async {
+        let none = Self.makeIndicator(isStreaming: true)
+        let indeterminate = Self.makeIndicator(isStreaming: true, processingStatus: .indeterminate)
+        let zero = Self.makeIndicator(isStreaming: true, processingStatus: .fraction(0))
+
+        XCTAssertNotEqual(none, indeterminate)
+        XCTAssertNotEqual(indeterminate, zero)
+        XCTAssertNotEqual(none, zero)
     }
 
     func testNotEqual_whenHasStreamActivityDiffers() async {
@@ -96,8 +114,8 @@ final class MessageBubbleStreamingIndicatorEquatableTests: XCTestCase {
     }
 
     func testEqual_whenSteadyStateProcessing() async {
-        let a = Self.makeIndicator(isStreaming: true, processingProgress: 0.42)
-        let b = Self.makeIndicator(isStreaming: true, processingProgress: 0.42)
+        let a = Self.makeIndicator(isStreaming: true, processingStatus: .fraction(0.42))
+        let b = Self.makeIndicator(isStreaming: true, processingStatus: .fraction(0.42))
         XCTAssertEqual(a, b)
     }
 
@@ -113,12 +131,12 @@ final class MessageBubbleStreamingIndicatorEquatableTests: XCTestCase {
         XCTAssertNotEqual(waiting, generating)
     }
 
-    /// `Generating → Processing` happens when `processingProgress` lands
+    /// `Generating → Processing` happens when `processingStatus` lands
     /// (typically nil → ~0.0–0.05) while `hasStreamActivity` is already true.
     /// Status row flips `"Generating"` → `"Processing"`.
     func testNotEqual_generatingToProcessing() async {
         let generating = Self.makeIndicator(isStreaming: true, hasStreamActivity: true)
-        let processing = Self.makeIndicator(isStreaming: true, processingProgress: 0.1, hasStreamActivity: true)
+        let processing = Self.makeIndicator(isStreaming: true, processingStatus: .fraction(0.1), hasStreamActivity: true)
         XCTAssertNotEqual(generating, processing)
     }
 
@@ -148,25 +166,25 @@ final class MessageBubbleStreamingIndicatorEquatableTests: XCTestCase {
 
     // MARK: - Numeric edge cases (defense against future "normalize" refactors)
 
-    /// `processingProgress` ticks in small deltas (~0.01) during real
+    /// `processingStatus` ticks in small deltas (~0.01) during real
     /// streaming. If a future refactor introduces fuzzy `Double?` equality
     /// (e.g. epsilon comparison), per-tick progress updates would silently
     /// stop propagating. Pin the boundary so synthesized `==` stays exact.
-    func testNotEqual_processingProgressMinorDelta() async {
-        let a = Self.makeIndicator(isStreaming: true, processingProgress: 0.10)
-        let b = Self.makeIndicator(isStreaming: true, processingProgress: 0.11)
+    func testNotEqual_processingStatusMinorDelta() async {
+        let a = Self.makeIndicator(isStreaming: true, processingStatus: .fraction(0.10))
+        let b = Self.makeIndicator(isStreaming: true, processingStatus: .fraction(0.11))
         XCTAssertNotEqual(a, b)
     }
 
-    /// `processingProgress: nil` and `processingProgress: 0.0` carry
+    /// `processingStatus: nil` and `processingStatus: .fraction(0.0)` carry
     /// **different** semantics — nil means "no progress signal at all"
     /// (status row shows "Waiting"/"Generating"), 0.0 means "progress 0%
     /// reported" (status row shows "Processing 0%"). A "normalize nil to
     /// zero" refactor would collapse them; this test stops that.
-    func testNotEqual_processingProgressNilVsZero() async {
+    func testNotEqual_processingStatusNilVsZero() async {
         XCTAssertNotEqual(
-            Self.makeIndicator(isStreaming: true, processingProgress: nil),
-            Self.makeIndicator(isStreaming: true, processingProgress: 0.0)
+            Self.makeIndicator(isStreaming: true, processingStatus: nil),
+            Self.makeIndicator(isStreaming: true, processingStatus: .fraction(0.0))
         )
     }
 }

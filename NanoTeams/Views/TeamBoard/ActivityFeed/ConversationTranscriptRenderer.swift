@@ -115,8 +115,14 @@ nonisolated enum ConversationTranscriptRenderer {
             let name = roleName(for: stepID, fallback: role, teamRoles: teamRoles)
             let anchor = makeAnchor(time: call.createdAt, roleName: name, stepID: stepID)
             let canonical = ToolRegistry.resolveToolName(call.name)
-            let summary = ToolCallSummarizer.summarizeArguments(
-                toolName: canonical, json: call.argumentsJSON,
+            // `cardSummary`, not `summarizeArguments`: this file's header promises the same
+            // one-line summary the card shows, and a successful `edit_file` shows where it
+            // landed rather than what it searched for.
+            let summary = ToolCallSummarizer.cardSummary(
+                toolName: canonical,
+                argumentsJSON: call.argumentsJSON,
+                resultJSON: call.resultJSON,
+                isError: call.isError == true,
                 resolveRoleName: { teamRoles.roleName(for: $0) }
             )
             let summaryStr = summary.isEmpty ? "" : "  \(summary)"

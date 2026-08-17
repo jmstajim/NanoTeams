@@ -19,7 +19,7 @@ import XCTest
 /// - `replaceContent` is idempotent: calling with the same content twice
 ///   leaves state unchanged.
 /// - `replaceContent` does not touch `thinkingPreviews` or
-///   `processingProgress`.
+///   `processingStatus`.
 @MainActor
 final class StreamingPreviewManagerReplaceContentTests: XCTestCase {
 
@@ -123,14 +123,14 @@ final class StreamingPreviewManagerReplaceContentTests: XCTestCase {
         let stepID = "pm"
         let messageID = UUID()
         manager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .productManager)
-        manager.updateProcessingProgress(stepID: stepID, taskID: 0, progress: 0.4)
+        manager.updateProcessingStatus(stepID: stepID, taskID: 0, status: .fraction(0.4))
         manager.append(stepID: stepID, taskID: 0, messageID: messageID,
                        role: .productManager, content: "Intro <|")
 
         manager.replaceContent(stepID: stepID, taskID: 0, messageID: messageID,
                                role: .productManager, content: "Intro ")
 
-        XCTAssertEqual(manager.processingProgress[TaskStepKey(taskID: 0, stepID: stepID)], 0.4)
+        XCTAssertEqual(manager.processingStatus[TaskStepKey(taskID: 0, stepID: stepID)], .fraction(0.4))
     }
 
     // MARK: - Rewind with no existing preview

@@ -54,7 +54,7 @@ struct MessageBubbleStreamingIndicator: View, Equatable {
     var isImplicitStreamTarget: Bool = false
     let hasMessageContent: Bool
     let hasThinkingContent: Bool
-    let processingProgress: Double?
+    let processingStatus: PromptProcessingStatus?
     /// True if the streaming pipeline has received at least one delta of
     /// any kind (thinking, content, tool-call) for this step. Lets the
     /// indicator distinguish "Waiting" (nothing arrived yet) from
@@ -85,6 +85,21 @@ struct MessageBubbleStreamingIndicator: View, Equatable {
                 Spacer()
             }
             .padding(.trailing, ActivityCardTokens.cardPadding)
+        } else if Self.reservesStatusSlot(
+            isStreaming: isStreaming,
+            hasMessageContent: hasMessageContent,
+            hasThinkingContent: hasThinkingContent,
+            isStreamingToolCall: isStreamingToolCall
+        ) {
+            // Height keeper — see `reservesStatusSlot`. The SAME `MonoCell` the
+            // real row's loader uses, so the reserved row is exactly the height
+            // the caption will occupy when it returns. Not a hidden
+            // `MessageLoaderLabel`: that would spin an 80ms ticker for a row
+            // nobody can see. `else if` (rather than a `ZStack` of conditions)
+            // is what makes the negative case a true `EmptyView`, which the
+            // enclosing `VStack` elides along with its `Spacing.xs` gap.
+            MonoCell(font: Typography.termXs)
+                .accessibilityHidden(true)
         }
     }
 
@@ -95,7 +110,7 @@ struct MessageBubbleStreamingIndicator: View, Equatable {
             isImplicitStreamTarget: isImplicitStreamTarget,
             hasMessageContent: hasMessageContent,
             hasThinkingContent: hasThinkingContent,
-            processingProgress: processingProgress,
+            processingStatus: processingStatus,
             hasStreamActivity: hasStreamActivity,
             isStreamingToolCall: isStreamingToolCall
         )
@@ -108,17 +123,20 @@ struct MessageBubbleStreamingIndicator: View, Equatable {
     /// nil for "no status row needed".
     ///
     /// Output strings are ready-to-render (no caller-side suffixing):
-    /// `"Processing 42%"` (ticking %), `"Generating…"` / `"Waiting…"`
-    /// (trailing `…` carries the "in progress" signal — same convention
-    /// as `MessageThinkingSection`'s `Thinking…` / `Thinking` toggle).
-    /// The verbs `Generating`/`Waiting` only exist in the streaming-live
-    /// branch — there is no settled form to render, so `…` is unambiguous.
+    /// `"Processing 42%"` (ticking %), `"Processing…"`, `"Generating…"` /
+    /// `"Waiting…"` (trailing `…` carries the "in progress" signal — same
+    /// convention as `MessageThinkingSection`'s `Thinking…` / `Thinking`
+    /// toggle). The verbs `Generating`/`Waiting` only exist in the
+    /// streaming-live branch — there is no settled form to render, so `…` is
+    /// unambiguous. `Processing` takes the `…` in its indeterminate form for
+    /// the same reason and drops it when a percentage is present, because
+    /// there the ticking number already carries the motion.
     static func resolveStatusText(
         isStreaming: Bool,
         isImplicitStreamTarget: Bool,
         hasMessageContent: Bool,
         hasThinkingContent: Bool,
-        processingProgress: Double?,
+        processingStatus: PromptProcessingStatus?,
         hasStreamActivity: Bool,
         isStreamingToolCall: Bool = false
     ) -> String? {
@@ -141,8 +159,8 @@ struct MessageBubbleStreamingIndicator: View, Equatable {
                 return "Generating…"
             }
             if hasMessageContent { return nil } // content is visible — no status row needed
-            if let progress = processingProgress {
-                return "Processing \(Int(progress * 100))%"
+            if let status = processingStatus {
+                return Self.processingText(for: status)
             }
             if hasStreamActivity {
                 // Tokens are flowing but not landing in content/thinking buffers
@@ -151,11 +169,15 @@ struct MessageBubbleStreamingIndicator: View, Equatable {
                 // assume the system is hung.
                 return "Generating…"
             }
+            // Nothing is in flight: the pre-send instant, or the sleep between a
+            // failed attempt and its retry (the streaming service clears the
+            // status when the stream throws, precisely so this window reads as
+            // waiting rather than as a frozen "Processing").
             return "Waiting…"
         }
         if isImplicitStreamTarget {
-            if let progress = processingProgress {
-                return "Processing \(Int(progress * 100))%"
+            if let status = processingStatus {
+                return Self.processingText(for: status)
             }
             if hasStreamActivity {
                 return "Generating…"
@@ -163,5 +185,105 @@ struct MessageBubbleStreamingIndicator: View, Equatable {
             return nil
         }
         return nil
+    }
+
+    /// Whether this view renders a row at all — the union of `body`'s two
+    /// branches, derived from the same two functions the body switches on so
+    /// the two cannot drift.
+    ///
+    /// Exposed because the row's TOP SPACING is a property of the bubble's
+    /// structure, not of this view: the status row and `MessageThinkingSection`
+    /// swap places in the same slot as a turn progresses, so the spacing rule
+    /// has to live in one place that can see both (`MessageBubbleView`). It
+    /// cannot simply pad this view from outside unconditionally — this
+    /// indicator is instantiated on every bubble and renders nothing most of
+    /// the time, and padding wrapped around that `EmptyView` would leave a
+    /// permanent strip under every quiet message in the feed.
+    static func rendersRow(
+        isStreaming: Bool,
+        isImplicitStreamTarget: Bool,
+        hasMessageContent: Bool,
+        hasThinkingContent: Bool,
+        processingStatus: PromptProcessingStatus?,
+        hasStreamActivity: Bool,
+        isStreamingToolCall: Bool
+    ) -> Bool {
+        let hasStatus = resolveStatusText(
+            isStreaming: isStreaming,
+            isImplicitStreamTarget: isImplicitStreamTarget,
+            hasMessageContent: hasMessageContent,
+            hasThinkingContent: hasThinkingContent,
+            processingStatus: processingStatus,
+            hasStreamActivity: hasStreamActivity,
+            isStreamingToolCall: isStreamingToolCall
+        ) != nil
+        return hasStatus || reservesStatusSlot(
+            isStreaming: isStreaming,
+            hasMessageContent: hasMessageContent,
+            hasThinkingContent: hasThinkingContent,
+            isStreamingToolCall: isStreamingToolCall
+        )
+    }
+
+    /// Whether an INVISIBLE one-line slot must be held open where the status
+    /// row would go.
+    ///
+    /// Once prose exists, the bubble's tail region churns: the status row
+    /// vanishes the instant content lands (the `hasMessageContent` suppression
+    /// in `resolveStatusText`), and the trailing `Thinking…` row appears when a
+    /// tool-call envelope starts streaming into the thinking preview. Each of
+    /// those is a whole row (11pt line + `Spacing.xs` ≈ 17pt) appearing or
+    /// vanishing under a feed pinned to the bottom. Holding ONE row open for
+    /// the live window turns them into pure swaps: the slot opens once when
+    /// prose first lands and closes once at commit, both times alongside a
+    /// larger legitimate change.
+    ///
+    /// Three gates, each stopping the reservation from reading as dead space:
+    ///
+    /// - `isStreaming` — deliberately NOT `isStreaming || isImplicitStreamTarget`.
+    ///   That branch of `resolveStatusText` is unreachable in production:
+    ///   `resolveBubbleInputs` returns `.committed` for any non-streaming
+    ///   bubble, and `.committed` hard-returns nil/false for the three fields
+    ///   the branch reads. Its silent window is not an instant but the WHOLE
+    ///   tool execution, so reserving there would park a blank row between a
+    ///   turn's `Thinking` row and the tool-call card it produced — undoing the
+    ///   turn grouping in `TeamActivityFeedView.rowTopPadding`.
+    /// - `hasMessageContent` — gates the reservation ON content, the opposite
+    ///   of how `resolveStatusText` reads the same flag. Before prose, the
+    ///   status row and the top `Thinking…` row occupy the SAME slot (the
+    ///   bubble's only child under the header) and already swap in place at
+    ///   constant height; reserving there would add a blank row under a live
+    ///   `Thinking…`.
+    /// - `!showsTrailingThinkingRow` — that row IS this slot's occupant.
+    ///   Derived from this view's own stored properties rather than threaded in
+    ///   as a flag, so `==` (and therefore `.equatable()`) needs no new member
+    ///   and cannot drift from the row it mirrors.
+    static func reservesStatusSlot(
+        isStreaming: Bool,
+        hasMessageContent: Bool,
+        hasThinkingContent: Bool,
+        isStreamingToolCall: Bool
+    ) -> Bool {
+        isStreaming
+            && hasMessageContent
+            && !MessageBubbleView.showsTrailingThinkingRow(
+                isStreaming: isStreaming,
+                hasMessageContent: hasMessageContent,
+                isStreamingToolCall: isStreamingToolCall,
+                hasThinkingContent: hasThinkingContent
+            )
+    }
+
+    /// Renders the prompt-processing window at the precision the provider
+    /// actually supplied. A server-reported fraction becomes a percentage; the
+    /// app's own "a request is in flight" claim stays a verb, because the only
+    /// number available to synthesize one would be an estimate whose measured
+    /// error runs 2–6× (see `PromptProcessingStatus` for the two estimators and
+    /// their calibration).
+    private static func processingText(for status: PromptProcessingStatus) -> String {
+        switch status {
+        case .fraction(let progress): return "Processing \(Int(progress * 100))%"
+        case .indeterminate: return "Processing…"
+        }
     }
 }

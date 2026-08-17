@@ -120,8 +120,8 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
         func discardStreaming(stepID _: String, messageID _: UUID, taskID _: Int) async {}
         func noteStreamLoop(taskID _: Int, stepID _: String, signal _: LoopSignal) -> Bool { true }
         func clearStreamingPreview(stepID _: String, taskID _: Int) {}
-        func updateStreamingProcessingProgress(stepID _: String, taskID _: Int, progress _: Double) {}
-        func clearStreamingProcessingProgress(stepID _: String, taskID _: Int) {}
+        func updateStreamingProcessingStatus(stepID _: String, taskID _: Int, status _: PromptProcessingStatus) {}
+        func clearStreamingProcessingStatus(stepID _: String, taskID _: Int) {}
         func markStreamActivity(stepID _: String, taskID _: Int) {}
         func markStreamingToolCall(stepID _: String, taskID _: Int) {}
 

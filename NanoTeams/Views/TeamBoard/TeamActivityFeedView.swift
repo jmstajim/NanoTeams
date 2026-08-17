@@ -403,6 +403,21 @@ struct TeamActivityFeedView: View {
     /// drifts up and the gate latches out of follow (the observed "stuck" failure).
     private static let scrollSettleMaxWaitMs = 220
 
+    /// Top padding for one feed row — two tiers plus a zero.
+    ///
+    /// Items of one model turn hug; a row that opens a turn gets clear air.
+    /// `showSectionHeader` needs no tier of its own: a role change IS a turn
+    /// change (`ActivityFeedBuilder.continuesTurn` rejects it), and the header
+    /// row supplies its own separation on top of the gap.
+    ///
+    /// Pinned by `ActivityFeedTurnGroupingTests`.
+    static func rowTopPadding(isFirst: Bool, continuesTurn: Bool) -> CGFloat {
+        if isFirst { return 0 }
+        return continuesTurn
+            ? ActivityCardTokens.turnHugSpacing
+            : ActivityCardTokens.turnGapSpacing
+    }
+
     private var timelineScrollView: some View {
         ScrollView {
             // NON-lazy on purpose (was LazyVStack — reverted 2026-07-07 after two
@@ -422,18 +437,18 @@ struct TeamActivityFeedView: View {
             // capped cards. Pinned by TeamActivityFeedContainerInvariantTests.
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(viewModel.cachedTimelineItems) { tagged in
-                    let isFirst = tagged.id == viewModel.cachedTimelineItems.first?.id
-                    let isToolCall: Bool = {
-                        if case .toolCall = tagged.item { return true }
-                        return false
-                    }()
-                    let topPadding: CGFloat = isFirst ? 0
-                        : tagged.showSectionHeader ? Spacing.s
-                        : isToolCall ? 2
-                        : Spacing.xs
+                    let topPadding = Self.rowTopPadding(
+                        isFirst: tagged.id == viewModel.cachedTimelineItems.first?.id,
+                        continuesTurn: tagged.continuesTurn
+                    )
                     VStack(alignment: .leading, spacing: 0) {
                         if let boundary = tagged.boundary {
+                            // The band introduces the item, so the gap belongs
+                            // ABOVE the band — otherwise the feed's single most
+                            // significant structural transition would breathe
+                            // less than an ordinary turn change.
                             TeamBoundaryBandView(boundary: boundary)
+                                .padding(.top, topPadding)
                         }
                         timelineItemView(for: tagged.item, showHeader: tagged.showSectionHeader)
                             .padding(.top, tagged.boundary == nil ? topPadding : 0)
@@ -791,7 +806,7 @@ struct TeamActivityFeedView: View {
                 roleDefinition: resolvedDef,
                 content: inputs.contentForBubble,
                 thinking: inputs.thinkingForBubble,
-                processingProgress: inputs.processingProgress,
+                processingStatus: inputs.processingStatus,
                 hasStreamActivity: inputs.hasStreamActivity,
                 isStreamingToolCall: inputs.isStreamingToolCall,
                 isStreaming: inputs.isStreaming,

@@ -55,6 +55,18 @@ nonisolated extension MemoryTagStore {
     /// you add a disclosure to the handler, add it here in the same edit — the envelope
     /// test in `EditFileInsertionReindentTests` passes either way, because it reads the
     /// handler's output and never reaches the wire.
+    ///
+    /// **`start_line` / `end_line` are the one deliberate omission.** They are not a
+    /// disclosure about what the tool DID to the model's replacement — the four flags above
+    /// all exist because the bytes on disk differ from the bytes the model sent, which
+    /// changes the next anchor it builds. A line number changes nothing the model does:
+    /// `edit_file` is anchored by text, not by position, so the number cannot be passed
+    /// back to it, and `read_lines` gets its own numbers from its own envelope. Forwarding
+    /// it would buy nothing and cost context on every edit, permanently — the cheapest
+    /// thing to spend a stock ~4096-token Ollama window on is nothing. They exist for the
+    /// activity-feed card and the exported conversation log, where a HUMAN is deciding
+    /// where to look. If a future change makes the model act on positions, this is the line
+    /// to revisit; until then the omission is the decision, not an oversight.
     func processEdit(_ result: ToolExecutionResult) -> TagProcessingResult {
         guard let path = extractPath(from: result.argumentsJSON),
               !result.isError else {

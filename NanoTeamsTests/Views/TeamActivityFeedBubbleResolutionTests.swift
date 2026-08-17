@@ -30,7 +30,7 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
             isStreaming: true,
             content: "live tokens…",
             thinking: "internal monologue",
-            processingProgress: 0.42,
+            processingStatus: .fraction(0.42),
             hasStreamActivity: true,
             isStreamingToolCall: false
         )
@@ -40,7 +40,7 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
         }
         XCTAssertEqual(content, "live tokens…")
         XCTAssertEqual(thinking, "internal monologue")
-        XCTAssertEqual(progress, 0.42)
+        XCTAssertEqual(progress, .fraction(0.42))
         XCTAssertTrue(hasActivity)
         XCTAssertFalse(toolCall)
     }
@@ -65,7 +65,7 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
             isStreaming: true,
             content: "still streaming…",
             thinking: nil,
-            processingProgress: nil,
+            processingStatus: nil,
             hasStreamActivity: true,
             isStreamingToolCall: false
         )
@@ -88,7 +88,7 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
             isStreaming: true,
             content: nil,
             thinking: nil,
-            processingProgress: nil,
+            processingStatus: nil,
             hasStreamActivity: false,
             isStreamingToolCall: false
         )
@@ -109,7 +109,7 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
             isStreaming: true,
             content: "I will now implement the fix.",
             thinking: "reasoning…",
-            processingProgress: nil,
+            processingStatus: nil,
             hasStreamActivity: true,
             isStreamingToolCall: true
         )
@@ -129,7 +129,7 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
         let msg = LLMMessage(role: .assistant, content: "done")
         let snap = StreamingSnapshot(
             isStreaming: false, content: nil, thinking: nil,
-            processingProgress: nil, hasStreamActivity: false,
+            processingStatus: nil, hasStreamActivity: false,
             isStreamingToolCall: true  // stale manager state must be discarded
         )
         let inputs = TeamActivityFeedView.resolveBubbleInputs(msg: msg, streaming: snap)
@@ -170,7 +170,7 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
         )
         let snap = StreamingSnapshot(
             isStreaming: false, content: nil, thinking: nil,
-            processingProgress: nil, hasStreamActivity: false,
+            processingStatus: nil, hasStreamActivity: false,
             isStreamingToolCall: false
         )
         let inputs = TeamActivityFeedView.resolveBubbleInputs(msg: msg, streaming: snap)
@@ -207,7 +207,7 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
         )
         let snap = StreamingSnapshot(
             isStreaming: false, content: nil, thinking: nil,
-            processingProgress: nil, hasStreamActivity: false,
+            processingStatus: nil, hasStreamActivity: false,
             isStreamingToolCall: false
         )
         let inputs = TeamActivityFeedView.resolveBubbleInputs(msg: msg, streaming: snap)
@@ -231,7 +231,7 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
         let msg = LLMMessage(role: .assistant, content: raw, sourceContext: nil)
         let snap = StreamingSnapshot(
             isStreaming: false, content: nil, thinking: nil,
-            processingProgress: nil, hasStreamActivity: false,
+            processingStatus: nil, hasStreamActivity: false,
             isStreamingToolCall: false
         )
         let inputs = TeamActivityFeedView.resolveBubbleInputs(msg: msg, streaming: snap)
@@ -250,7 +250,7 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
         let msg = LLMMessage(role: .assistant, content: "x", thinking: nil)
         let snap = StreamingSnapshot(
             isStreaming: false, content: nil, thinking: nil,
-            processingProgress: nil, hasStreamActivity: false,
+            processingStatus: nil, hasStreamActivity: false,
             isStreamingToolCall: false
         )
         let inputs = TeamActivityFeedView.resolveBubbleInputs(msg: msg, streaming: snap)

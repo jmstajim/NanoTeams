@@ -142,11 +142,26 @@ final class ToolCallSummarizerTests: XCTestCase {
         XCTAssertEqual(ToolCallSummarizer.summarizeArguments(toolName: TN.gitAdd, json: json), "3 files")
     }
 
-    func testSummarizeArguments_runXcodebuild_showsScheme() {
-        let json = """
-        {"scheme": "NanoTeams"}
-        """
-        XCTAssertEqual(ToolCallSummarizer.summarizeArguments(toolName: TN.runXcodebuild, json: json), "scheme: NanoTeams")
+    /// RED: re-add a `dict["scheme"]` entry for either Xcode tool → this fires.
+    ///
+    /// This replaces `testSummarizeArguments_runXcodebuild_showsScheme`, which asserted
+    /// `{"scheme":"NanoTeams"}` → `"scheme: NanoTeams"` against an input no caller can
+    /// produce: `RunXcodebuildTool.schema` is `JS.object(properties: [:])`
+    /// (`XcodeHandlers.swift:13`), and the scheme is resolved from `settings.json` by
+    /// `XcodeBuildRunner.resolveSchemes` — never from an argument. The old entry could
+    /// therefore never fire, so both cards always rendered bare while a green test said
+    /// otherwise. Pinning the fixture the tool actually receives (`{}`) is what makes the
+    /// membership in `toolsWithoutArgumentSummary` honest.
+    func testSummarizeArguments_xcodeRunners_takeNoArgumentsAndSayNothing() {
+        for tool in [TN.runXcodebuild, TN.runXcodetests] {
+            XCTAssertEqual(
+                ToolCallSummarizer.summarizeArguments(toolName: tool, json: "{}"), "",
+                "\(tool) declares no parameters — there is nothing to summarize")
+            XCTAssertFalse(
+                ToolCallSummarizer.hasArgumentSummarizer(for: tool),
+                "\(tool) must have no entry, not an entry that cannot fire")
+            XCTAssertTrue(ToolCallSummarizer.toolsWithoutArgumentSummary.contains(tool))
+        }
     }
 
     func testSummarizeArguments_createArtifact_returnsEmpty() {

@@ -36,8 +36,44 @@ extension LLMExecutionService {
     /// Post-commit cleanup (`ModelTokenCleaner.clean`) trims both ends —
     /// this strip only protects the live `SelectableMessageText` preview
     /// from the `[/reasoning]\n\n\n\n…` gap during streaming.
+    ///
+    /// The GROWTH path only. A buffer that is still growing may legitimately
+    /// end in whitespace the next delta continues from, so the tail is not
+    /// this function's business — see `stripSurroundingWhitespace` for the
+    /// rewind, where the content is final.
     static func stripLeadingWhitespace(_ s: String) -> String {
         String(s.drop(while: \.isWhitespace))
+    }
+
+    /// Trims BOTH ends, for the marker rewind only.
+    ///
+    /// At the rewind the prose is FINAL for the rest of the turn — every later
+    /// delta routes to the thinking pipe — so a trailing `\n\n` is not
+    /// "formatting between paragraphs" that the next token will continue, it
+    /// is a hanging tail before an envelope the user never sees. Rendered
+    /// verbatim by `SelectableMessageText` it becomes real empty line
+    /// fragments: the blank band under a streaming bubble for the whole
+    /// envelope-assembly window (measured ~29 s on a 4-call turn).
+    ///
+    /// Deliberately the SAME character set `ModelTokenCleaner.clean` uses, so
+    /// the preview is byte-identical to the value commit will produce and the
+    /// bubble cannot shift when the turn lands. Widening it past whitespace
+    /// would eat the prose's own last character —
+    /// `testRewind_noWhitespaceBeforeEnvelope_isUnchanged` is that guard.
+    ///
+    /// Internal whitespace is untouched — `testInternalNewlines_preservedAfterFirstNonWhitespaceChar`
+    /// pins that paragraph breaks inside the body still round-trip.
+    ///
+    /// Safe against `StreamingPreviewManager.replaceContent`, whose empty-guard
+    /// covers only the CREATE branch (an existing preview is overwritten
+    /// unconditionally): this can never empty a non-empty `preMarker`, because
+    /// the leading strip already ran, so the value either is empty or starts
+    /// with a non-whitespace character. Both ends of that are pinned end-to-end —
+    /// `testHarmonyEnvelope_pureToolCallAfterReasoning_stripsGapToEmpty` for the
+    /// all-whitespace case, `testRewind_tokensOnlyProse_staysDetectableAsTokensOnly`
+    /// for the all-tokens one.
+    static func stripSurroundingWhitespace(_ s: String) -> String {
+        s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - LLM Streaming
@@ -71,6 +107,18 @@ extension LLMExecutionService {
             await delegate.beginStreaming(
                 stepID: stepID, taskID: taskID,
                 messageID: streamingMessageID, role: roleForMessage)
+            // Claim the prompt-processing window for EVERY provider, strictly
+            // AFTER `beginStreaming` (which resets the status to nil). This is a
+            // fact we own — we are about to issue the send — not an inference
+            // about the server, so it needs no provider gate. LM Studio REFINES
+            // it to `.fraction` below when its `prompt_processing.*` frames
+            // arrive; Ollama has nothing further to say (its stream yields
+            // nothing at all until the first token), so `.indeterminate` stands
+            // for the whole load+prefill window. Without this the bubble reads
+            // "Waiting…" — which the user reports as "nothing is happening" —
+            // for a window measured in tens of seconds on large prompts.
+            delegate.updateStreamingProcessingStatus(
+                stepID: stepID, taskID: taskID, status: .indeterminate)
         }
 
         func appendAssistant(_ text: String) {
@@ -220,7 +268,7 @@ extension LLMExecutionService {
                     delegate.appendStreamingThinking(stepID: stepID, taskID: taskID, content: event.thinkingDelta)
                     delegate.markStreamActivity(stepID: stepID, taskID: taskID)
                     if !processingProgressCleared {
-                        delegate.clearStreamingProcessingProgress(stepID: stepID, taskID: taskID)
+                        delegate.clearStreamingProcessingStatus(stepID: stepID, taskID: taskID)
                         processingProgressCleared = true
                     }
                 }
@@ -234,12 +282,13 @@ extension LLMExecutionService {
                 // want a stale event to revive the "Processing X%" status
                 // after the user is already seeing tokens.
                 if !processingProgressCleared, let progress = event.processingProgress {
-                    delegate.updateStreamingProcessingProgress(stepID: stepID, taskID: taskID, progress: progress)
+                    delegate.updateStreamingProcessingStatus(
+                        stepID: stepID, taskID: taskID, status: .fraction(progress))
                 }
 
                 if !event.contentDelta.isEmpty {
                     if !processingProgressCleared {
-                        delegate.clearStreamingProcessingProgress(stepID: stepID, taskID: taskID)
+                        delegate.clearStreamingProcessingStatus(stepID: stepID, taskID: taskID)
                         processingProgressCleared = true
                     }
                     // Mark stream activity even when content lands in
@@ -329,24 +378,45 @@ extension LLMExecutionService {
                                 }
                             }
                             if let lower = earliestLower {
-                                // Strip leading whitespace from the rewind buffer
-                                // too — this is a separate funnel into
-                                // `assistantCollected`, so the same gap can
-                                // sneak through if the marker arrives in the
-                                // same chunk as the `[/reasoning]\n\n\n\n` tail.
-                                let preMarker = Self.stripLeadingWhitespace(String(uiBuffer[..<lower]))
+                                // Trim BOTH ends of the rewind buffer — this is a
+                                // separate funnel into `assistantCollected`, so the
+                                // same gap can sneak through if the marker arrives in
+                                // the same chunk as the `[/reasoning]\n\n\n\n` tail,
+                                // and the model's own `\n\n` before `<|call|>` would
+                                // otherwise sit on screen as blank lines for the whole
+                                // envelope assembly.
+                                //
+                                // WHITESPACE only here. Do NOT fold
+                                // `ModelTokenCleaner.stripTokens` into this value:
+                                // `+StepFlowControl`'s tokens-only retry fires on
+                                // `!assistantContent.isEmpty && clean(assistantContent).isEmpty`,
+                                // so handing it pre-cleaned content makes that
+                                // diagnostic unreachable. The preview gets the
+                                // token-stripped copy below; the wire is unaffected
+                                // either way (`clean(trim(x)) == clean(x)`).
+                                let preMarker = Self.stripSurroundingWhitespace(String(uiBuffer[..<lower]))
                                 assistantCollected = preMarker
                                 // Rewind the on-screen preview so partial marker
                                 // prefixes (e.g. `<`, `<|`) that were flushed by
                                 // the time/size heuristic don't linger — see
                                 // ModelTokenCleaner.containsModelTokens which only
                                 // strips once both `<|` and `|>` are present.
+                                //
+                                // `uiBuffer` holds RAW deltas while the append path
+                                // strips tokens per delta, so without this the rewind
+                                // puts a `<|…|>` back on screen that was already gone
+                                // (`<|end|>` is not in `harmonyMarkers`, so it can
+                                // precede the earliest one). Strip THEN re-trim:
+                                // removing a token can expose fresh trailing space.
+                                let previewContent = Self.stripSurroundingWhitespace(
+                                    ModelTokenCleaner.stripTokens(preMarker)
+                                )
                                 delegate.replaceStreamingPreview(
                                     stepID: stepID,
                                     taskID: taskID,
                                     messageID: streamingMessageID,
                                     role: roleForMessage,
-                                    content: preMarker
+                                    content: previewContent
                                 )
                                 // The post-marker slice the rewind just removed
                                 // from the content preview re-surfaces as live
@@ -371,7 +441,7 @@ extension LLMExecutionService {
                     // (preview-only) so the user watches the call being
                     // typed instead of staring at a frozen bubble.
                     if !processingProgressCleared {
-                        delegate.clearStreamingProcessingProgress(stepID: stepID, taskID: taskID)
+                        delegate.clearStreamingProcessingStatus(stepID: stepID, taskID: taskID)
                         processingProgressCleared = true
                     }
                     delegate.markStreamActivity(stepID: stepID, taskID: taskID)
@@ -404,7 +474,7 @@ extension LLMExecutionService {
             // Clear processing progress (stream completed successfully OR was
             // broken early by loop detection — either way, generation is done
             // from this iteration's perspective).
-            delegate.clearStreamingProcessingProgress(stepID: stepID, taskID: taskID)
+            delegate.clearStreamingProcessingStatus(stepID: stepID, taskID: taskID)
 
             // Resolve tool calls BEFORE the turn is committed. Every input below is final
             // once the stream loop exits, so the position is free — and it has to be
@@ -487,9 +557,25 @@ extension LLMExecutionService {
             }
         } catch is CancellationError {
             // Commit partial content on cancellation
-            delegate.clearStreamingProcessingProgress(stepID: stepID, taskID: taskID)
+            delegate.clearStreamingProcessingStatus(stepID: stepID, taskID: taskID)
             await commitStreamingContent()
             throw CancellationError()
+        } catch {
+            // Transport/server failure mid-stream. The retry lives in
+            // `+StepLifecycle`, which posts an "LLM server error … Retrying in Ns…"
+            // notice and then SLEEPS (`retryDelaySeconds`, 10s by default) before
+            // re-entering — and only that re-entry's `beginStreaming` resets the
+            // status. Without this clear the bubble spends the whole sleep
+            // insisting the server is processing our prompt while nothing is in
+            // flight: a frozen "Processing 47%" on LM Studio, a frozen
+            // "Processing…" on Ollama. Cleared, the resolver falls through to
+            // "Waiting…", which is exactly what is happening — we are waiting to
+            // retry. No commit here: the do-block's success path and the
+            // cancellation arm above own that, and a failed stream has no turn to
+            // commit. Errors that arrive mid-GENERATION are unaffected (the first
+            // delta already cleared the status, so this is a no-op for them).
+            delegate.clearStreamingProcessingStatus(stepID: stepID, taskID: taskID)
+            throw error
         }
 
         return StreamingResult(

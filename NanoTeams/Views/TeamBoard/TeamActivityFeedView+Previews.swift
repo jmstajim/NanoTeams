@@ -718,7 +718,7 @@ import SwiftUI
     let _ = {
         // 1. Processing progress
         streaming.beginStreaming(stepID: processingStepID, taskID: 0, messageID: processingMsgID, role: .techLead)
-        streaming.updateProcessingProgress(stepID: processingStepID, taskID: 0, progress: 0.42)
+        streaming.updateProcessingStatus(stepID: processingStepID, taskID: 0, status: .fraction(0.42))
 
         // 2. Empty streaming (no content, no thinking, no progress)
         streaming.beginStreaming(stepID: emptyStreamStepID, taskID: 0, messageID: emptyStreamMsgID, role: .productManager)

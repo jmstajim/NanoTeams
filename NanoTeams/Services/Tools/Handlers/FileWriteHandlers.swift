@@ -253,7 +253,21 @@ nonisolated struct EditFileTool: ToolHandler {
                 // NOT what landed there. Composes with the flag above when the
                 // anchor also drifted in leading whitespace.
                 var matched_ignoring_interior_whitespace: Bool?
+                // Where the change landed, in the numbering of the file as it now is —
+                // i.e. the numbering `read_lines` would report. Nil when the edit was a
+                // byte-level no-op (the tolerant tiers can splice back what was already
+                // there), because there is no line to point at and the accompanying
+                // warning already says the file is unchanged.
+                //
+                // DISPLAY ONLY. These two are deliberately NOT forwarded by
+                // `MemoryTagStore.processEdit`, so they never reach the model — see the
+                // note there. They exist for the activity-feed card and the exported
+                // conversation log, where a human is deciding where to look next.
+                var start_line: Int?
+                var end_line: Int?
             }
+
+            let editedSpan = EditedLineRange.compute(before: content, after: newContent)
 
             // No silent repair: the model is told that part of its replacement was
             // rewritten into the file's convention and part was left alone, because
@@ -307,7 +321,9 @@ nonisolated struct EditFileTool: ToolHandler {
                     path: path, replacements_made: count,
                     matched_ignoring_trailing_whitespace: matchedIgnoringTrailingWhitespace ? true : nil,
                     matched_ignoring_indentation: matchedIgnoringIndentation ? true : nil,
-                    matched_ignoring_interior_whitespace: matchedIgnoringInteriorWhitespace ? true : nil
+                    matched_ignoring_interior_whitespace: matchedIgnoringInteriorWhitespace ? true : nil,
+                    start_line: editedSpan?.startLine,
+                    end_line: editedSpan?.endLine
                 ),
                 meta: ToolResultMeta(warnings: warnings)
             )

@@ -36,7 +36,7 @@ final class StreamingPreviewManagerCrossTaskIsolationTests: XCTestCase, @uncheck
     /// Seeds a full set of live indicator state for one task's step.
     private func seedLiveStream(taskID: Int, messageID: UUID, content: String, thinking: String) {
         sut.beginStreaming(stepID: stepID, taskID: taskID, messageID: messageID, role: .softwareEngineer)
-        sut.updateProcessingProgress(stepID: stepID, taskID: taskID, progress: 0.5)
+        sut.updateProcessingStatus(stepID: stepID, taskID: taskID, status: .fraction(0.5))
         sut.append(stepID: stepID, taskID: taskID, messageID: messageID, role: .softwareEngineer, content: content)
         sut.appendThinking(stepID: stepID, taskID: taskID, content: thinking)
         sut.markStreamActivity(stepID: stepID, taskID: taskID)
@@ -85,7 +85,7 @@ final class StreamingPreviewManagerCrossTaskIsolationTests: XCTestCase, @uncheck
             sut.hasReceivedStreamActivity(stepID: stepID, taskID: taskB),
             "Task A's commit must not wipe task B's stream-activity flag (the lost-indicator bug)")
         XCTAssertTrue(sut.isStreamingToolCall(stepID: stepID, taskID: taskB))
-        XCTAssertNotNil(sut.processingProgress[TaskStepKey(taskID: taskB, stepID: stepID)])
+        XCTAssertNotNil(sut.processingStatus[TaskStepKey(taskID: taskB, stepID: stepID)])
         XCTAssertNotNil(sut.lastStreamActivity(stepID: stepID, taskID: taskB))
         XCTAssertTrue(sut.isStreaming(messageID: msgB))
     }
@@ -695,7 +695,7 @@ final class StreamingSnapshotKeyingTests: XCTestCase, @unchecked Sendable {
         manager.beginStreaming(stepID: stepID, taskID: parentTask, messageID: msgParent, role: .softwareEngineer)
         manager.beginStreaming(stepID: stepID, taskID: childTask, messageID: msgChild, role: .softwareEngineer)
 
-        manager.updateProcessingProgress(stepID: stepID, taskID: parentTask, progress: 0.4)
+        manager.updateProcessingStatus(stepID: stepID, taskID: parentTask, status: .fraction(0.4))
         manager.markStreamingToolCall(stepID: stepID, taskID: childTask)
         manager.appendThinking(stepID: stepID, taskID: childTask, content: "child reasons")
 
@@ -704,8 +704,8 @@ final class StreamingSnapshotKeyingTests: XCTestCase, @unchecked Sendable {
         let child = TeamActivityFeedView.makeStreamingSnapshot(
             manager: manager, messageID: msgChild, stepID: stepID, taskID: childTask)
 
-        XCTAssertEqual(parent.processingProgress, 0.4)
-        XCTAssertNil(child.processingProgress, "Parent's Processing % must not render on the child bubble")
+        XCTAssertEqual(parent.processingStatus, .fraction(0.4))
+        XCTAssertNil(child.processingStatus, "Parent's Processing % must not render on the child bubble")
         XCTAssertTrue(child.isStreamingToolCall)
         XCTAssertFalse(parent.isStreamingToolCall, "Child's tool-call assembly must not animate the parent bubble")
         XCTAssertEqual(child.thinking, "child reasons")

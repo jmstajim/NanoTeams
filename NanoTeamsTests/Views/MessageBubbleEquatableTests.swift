@@ -45,7 +45,7 @@ final class MessageBubbleEquatableTests: XCTestCase {
         roleDefinition: TeamRoleDefinition? = nil,
         content: String = "hello",
         thinking: String? = nil,
-        processingProgress: Double? = nil,
+        processingStatus: PromptProcessingStatus? = nil,
         hasStreamActivity: Bool = false,
         isStreamingToolCall: Bool = false,
         isStreaming: Bool = false,
@@ -64,7 +64,7 @@ final class MessageBubbleEquatableTests: XCTestCase {
             roleDefinition: roleDefinition,
             content: content,
             thinking: thinking,
-            processingProgress: processingProgress,
+            processingStatus: processingStatus,
             hasStreamActivity: hasStreamActivity,
             isStreamingToolCall: isStreamingToolCall,
             isStreaming: isStreaming,
@@ -120,7 +120,7 @@ final class MessageBubbleEquatableTests: XCTestCase {
     }
 
     func testNotEqual_whenProcessingProgressDiffers() async {
-        XCTAssertNotEqual(Self.makeBubble(), Self.makeBubble(processingProgress: 0.5))
+        XCTAssertNotEqual(Self.makeBubble(), Self.makeBubble(processingStatus: .fraction(0.5)))
     }
 
     func testNotEqual_whenHasStreamActivityDiffers() async {

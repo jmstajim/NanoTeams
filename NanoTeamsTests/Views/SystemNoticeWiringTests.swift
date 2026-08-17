@@ -23,7 +23,7 @@ final class SystemNoticeWiringTests: XCTestCase {
         XCTAssertEqual(message.sourceContextDisplayLabel, "retry",
                        "precondition: the header would otherwise show `(retry)`")
         XCTAssertNil(MessageBubbleView.headerSourceLabel(for: message, isSystemNotice: true),
-                     "the row already says `system · retry` — the header must not repeat it")
+                     "the row already says `system: retry` — the header must not repeat it")
     }
 
     func testHeaderSourceLabel_ordinaryTurn_keepsItsLabel() {
@@ -40,7 +40,7 @@ final class SystemNoticeWiringTests: XCTestCase {
     }
 
     /// The suppression is scoped to the FEED. `conversation_log.md` keeps the
-    /// label, because there the row's `system ·` prefix does not exist.
+    /// label, because there the row's `system:` prefix does not exist.
     func testTranscriptHelper_isUnaffectedBySuppression() {
         let message = LLMMessage(role: .user, content: "nudge", sourceContext: .retryNudge)
         _ = MessageBubbleView.headerSourceLabel(for: message, isSystemNotice: true)

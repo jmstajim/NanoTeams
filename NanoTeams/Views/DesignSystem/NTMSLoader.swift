@@ -25,10 +25,11 @@ import SwiftUI
 /// - **Sized** (`NTMSLoader(.small)`) — fixed `width × height` footprint from
 ///   a `Size` preset. Used for standalone loaders inside cards / panels.
 /// - **Font-based** (`NTMSLoader(font: Typography.termXs)`) — inline-with-text
-///   rendering, no frame, baseline-aligned to the supplied font. Used for the
-///   "Working" / "Thinking" / "Processing" caption rows next to a `Text`.
-///   Replaces the legacy `BrailleSpinner` (now removed) so the glitch effect
-///   is uniform across every spinner in the app.
+///   rendering in a `MonoCell` sized by the supplied font, so no glyph it draws
+///   can resize the row or shift the caption beside it. Used for the "Working"
+///   / "Thinking" / "Processing" caption rows next to a `Text`. Replaces the
+///   legacy `BrailleSpinner` (now removed) so the glitch effect is uniform
+///   across every spinner in the app.
 ///
 /// ```swift
 /// NTMSLoader()                              // .regular
@@ -107,14 +108,23 @@ struct NTMSLoader: View {
     /// Tick cadence — 80 ms, drives both rotation and glitch bursts.
     private static let tickInterval: Duration = .milliseconds(80)
     /// Rotating stick using monospaced box-drawing glyphs (clockwise).
-    private static let rotationFrames = ["│", "╱", "─", "╲"]
+    ///
+    /// Internal rather than `private` so `NTMSLoaderRenderModeTests` can assert
+    /// every frame resolves INSIDE SF Mono. That is the precondition which makes
+    /// `inlineCellFootprint` a metric-stable cell — a rotation frame served by a
+    /// fallback face would size the cell differently per frame and defeat it.
+    static let rotationFrames = ["│", "╱", "─", "╲"]
     /// Probability that an idle tick starts a glitch burst. Tuned so a burst
     /// happens roughly every ~3 seconds (~50 idle ticks × 80ms + burst).
     private static let glitchTriggerProbability: Double = 0.02
     /// Length of a glitch burst, in ticks.
     private static let glitchFrameRange: ClosedRange<Int> = 3...6
     /// Hacker-style glyph pool used during a glitch burst.
-    private static let glitchGlyphs: [String] = [
+    ///
+    /// Internal rather than `private` so the metrics test can measure it. 16 of
+    /// these 35 do NOT resolve inside SF Mono — see `inlineCellFootprint` for
+    /// what that used to cost and why the cell exists.
+    static let glitchGlyphs: [String] = [
         "0", "1", "⧄", "▒", "≡", "⌗", "█", "▓", "░",
         "≀", "⍰", "⏦", "⁊", "⸮", "／", "＼",
         "ｱ", "ｲ", "ｳ", "ｴ", "ｵ", "ﾊ", "ｶ", "ﾐ",
@@ -197,15 +207,16 @@ struct NTMSLoader: View {
     }
 
     /// Zero-cost invisible placeholder that preserves the spinner's footprint.
-    /// Sized variant uses an explicit frame; font variant uses a hidden text
-    /// of the first rotation glyph so its baseline-aware width is preserved.
+    /// Sized variant uses an explicit frame; the font variant uses an empty
+    /// `MonoCell` — the SAME cell the visible branch draws into, so toggling
+    /// `isVisible` cannot change the row's height or slide its sibling caption.
     @ViewBuilder
     private var hiddenPlaceholder: some View {
         switch footprint {
         case .sized(let size):
             Color.clear.frame(width: size.width, height: size.height)
         case .font(let font):
-            Text(Self.rotationFrames[0]).font(font).hidden()
+            MonoCell(font: font)
         }
     }
 
@@ -271,10 +282,19 @@ struct NTMSLoader: View {
             stack
                 .frame(width: size.width, height: size.height)
                 .accessibilityHidden(true)
-        case .font:
-            // No frame — the glyph's own metrics drive size and baseline so
-            // the spinner aligns with sibling text in an HStack.
-            stack
+        case .font(let font):
+            // The DRAWN glyph must not drive the cell. 16 of the 35 entries in
+            // `glitchGlyphs` resolve to a fallback face and change a metric —
+            // at 11pt `≀`/`⁊` are Monaco (+1.713pt line height), `／`/`＼` are
+            // PingFang SC (+4.136pt advance), the katakana are
+            // CJKSymbolsFallback (−1.520pt). Returning the bare stack here let
+            // each of those reflow the caption row and, through it, the whole
+            // message bubble, several times a minute. `MonoCell` pins the cell
+            // to the FONT's metrics and paints the glyph over it; a wide glyph
+            // spills into the gutter, which is what a torn signal should do,
+            // and moves nothing. Deliberately NOT clipped — clipping would
+            // shave the ±1px RGB-split copies the effect is made of.
+            MonoCell(font: font) { stack }
                 .accessibilityHidden(true)
         }
     }

@@ -3193,4 +3193,108 @@ final class ActivityFeedBuilderTests: XCTestCase {
         XCTAssertEqual(callIdx - msgIdx, 2,
             "A foreign item inside the commit→tool-call gap still sorts between bubble and call — the fix narrows but does not eliminate interleave")
     }
+
+    // MARK: - Turn grouping
+
+    private func llmItem(at t: Date, role: Role = .softwareEngineer, task: Int = 0) -> TeamActivityTimelineItem {
+        .llmMessage(message: makeMessage(content: "hi", at: t), role: role, stepID: "s", originTaskID: task)
+    }
+
+    private func toolItem(at t: Date, role: Role = .softwareEngineer, task: Int = 0) -> TeamActivityTimelineItem {
+        .toolCall(call: makeToolCall(at: t), role: role, stepID: "s", originTaskID: task)
+    }
+
+    /// RED: return `false` for `.toolCall` in `continuesTurn`'s first switch →
+    /// this fails, the hug is lost, and every tool-call card falls back to the
+    /// between-turns gap so a role's work stops reading as blocks.
+    func testContinuesTurn_toolCallAfterAssistantMessage_isTrue() {
+        XCTAssertTrue(ActivityFeedBuilder.continuesTurn(
+            item: toolItem(at: Date(timeIntervalSince1970: 2)),
+            previous: llmItem(at: Date(timeIntervalSince1970: 1))
+        ))
+    }
+
+    /// RED: let `.llmMessage` continue a turn (move it into the first switch's
+    /// `break` arm) → this fails, and the `Thinking` bubble hugs the tool-call
+    /// card ABOVE it instead of the calls it produced — exactly the ambiguity
+    /// in the reported screenshot.
+    func testContinuesTurn_assistantMessageAfterToolCall_isFalse() {
+        XCTAssertFalse(ActivityFeedBuilder.continuesTurn(
+            item: llmItem(at: Date(timeIntervalSince1970: 2)),
+            previous: toolItem(at: Date(timeIntervalSince1970: 1))
+        ))
+    }
+
+    /// RED: delete the `item.roleID == previous.roleID` conjunct → this fails,
+    /// and one role's first tool call hugs the previous role's last item at 2pt
+    /// as though they were one turn.
+    func testContinuesTurn_acrossRoleChange_isFalse() {
+        XCTAssertFalse(ActivityFeedBuilder.continuesTurn(
+            item: toolItem(at: Date(timeIntervalSince1970: 2), role: .codeReviewer),
+            previous: llmItem(at: Date(timeIntervalSince1970: 1), role: .softwareEngineer)
+        ))
+    }
+
+    /// RED: delete the `item.originTaskID == previous.originTaskID` conjunct →
+    /// this fails, and a delegated child team's first call hugs the parent's
+    /// last message straight across the team-boundary band.
+    func testContinuesTurn_acrossOriginTaskID_isFalse() {
+        XCTAssertFalse(ActivityFeedBuilder.continuesTurn(
+            item: toolItem(at: Date(timeIntervalSince1970: 2), task: 7),
+            previous: llmItem(at: Date(timeIntervalSince1970: 1), task: 0)
+        ))
+    }
+
+    /// The reported shape, end to end: two turns of one role, each a message
+    /// followed by the call it produced.
+    ///
+    /// RED: stop threading `prevItem` in `annotate` (pass `nil` to
+    /// `continuesTurn`) → this fails, every row reads as a turn start, and the
+    /// feed goes back to a flat list with no grouping at all.
+    func testBuildTimelineItems_stampsContinuesTurn_onTheCallsOfTheSameTurn() {
+        let t0 = Date(timeIntervalSince1970: 1)
+        let step = makeStep(
+            messages: [
+                makeMessage(content: "first", at: t0),
+                makeMessage(content: "second", at: t0.addingTimeInterval(2)),
+            ],
+            toolCalls: [
+                makeToolCall(at: t0.addingTimeInterval(1)),
+                makeToolCall(at: t0.addingTimeInterval(3)),
+            ]
+        )
+        let flags = build(steps: [step]).map(\.continuesTurn)
+        XCTAssertEqual(
+            flags, [false, true, false, true],
+            "Each assistant message opens a turn; the call it produced continues it."
+        )
+    }
+
+    /// The first row must never be pushed down — the feed already has its own
+    /// top padding, and a gap here would stack on it.
+    ///
+    /// RED: drop the `isFirst` guard from `rowTopPadding` → the two
+    /// first-row assertions fail, and the feed gains a stray gap above its
+    /// very first item.
+    func testRowTopPadding_tiers() {
+        XCTAssertEqual(TeamActivityFeedView.rowTopPadding(isFirst: true, continuesTurn: false), 0)
+        XCTAssertEqual(TeamActivityFeedView.rowTopPadding(isFirst: true, continuesTurn: true), 0)
+        XCTAssertEqual(
+            TeamActivityFeedView.rowTopPadding(isFirst: false, continuesTurn: true),
+            ActivityCardTokens.turnHugSpacing)
+        XCTAssertEqual(
+            TeamActivityFeedView.rowTopPadding(isFirst: false, continuesTurn: false),
+            ActivityCardTokens.turnGapSpacing)
+        // The break between turns must beat the ~5.7pt of optical whitespace
+        // that 13pt prose leaves under an 11pt status row even at zero padding.
+        // Equal tiers were tried and reported as still ambiguous: with no
+        // contrast the row looks as attached to the item above it as to its own
+        // message. See `ActivityCardTokens.turnGapSpacing` for the measurement.
+        XCTAssertGreaterThan(
+            ActivityCardTokens.turnGapSpacing, ActivityCardTokens.turnHugSpacing,
+            "A turn boundary must break more than the inside of a turn, or nothing groups.")
+        XCTAssertGreaterThanOrEqual(
+            ActivityCardTokens.turnGapSpacing, 2 * ActivityCardTokens.turnHugSpacing,
+            "The break needs to be visibly bigger, not bigger by a rounding error — 2pt of difference reads as none.")
+    }
 }

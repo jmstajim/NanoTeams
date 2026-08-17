@@ -118,7 +118,11 @@ struct SupervisorInputCard: View {
         } label: {
             HStack(spacing: Spacing.xs) {
                 Text("Thinking")
-                    .font(Typography.captionSemibold)
+                    // Same token as every other status caption in the feed
+                    // (`MessageLoaderLabel`, `MessageThinkingSection`) — this
+                    // row used `captionSemibold`, the same 11pt at a fourth
+                    // weight, for no reason anyone recorded.
+                    .font(Typography.termXs.weight(.medium))
                     .foregroundStyle(Colors.textTertiary)
                 Spacer()
             }

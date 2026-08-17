@@ -196,8 +196,12 @@ final class ToolCallTrackerTests: XCTestCase {
         )
 
         let calls = tracker.recentCalls(limit: 1)
-        // argumentsSummary now returns just the branch name; action is handled in generateStateContext
-        XCTAssertEqual(calls[0].argumentsSummary, "feature/new")
+        // The verb leads, because `create` and `delete` on one branch name are opposite
+        // outcomes and the card used to show only the name for both. (The previous
+        // expectation was "feature/new", justified by a comment saying the action was
+        // "handled in generateStateContext" — a function that no longer exists, so the
+        // verb was reaching no surface at all.)
+        XCTAssertEqual(calls[0].argumentsSummary, "create feature/new")
     }
 
     // MARK: - Result Summary Tests

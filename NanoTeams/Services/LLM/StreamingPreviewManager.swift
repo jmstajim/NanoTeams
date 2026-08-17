@@ -33,9 +33,12 @@ final class StreamingPreviewManager {
     /// @ObservationIgnored — polled by TimelineView like content.
     @ObservationIgnored private(set) var thinkingPreviews: [TaskStepKey: String] = [:]
 
-    /// Current prompt processing progress keyed by (taskID, stepID) (0.0–1.0).
+    /// Current prompt-processing status keyed by (taskID, stepID) — the window
+    /// between "request sent" and "first token". `.indeterminate` for every
+    /// provider from stream start; refined to `.fraction` by the servers that
+    /// narrate their prefill (LM Studio). See `PromptProcessingStatus`.
     /// @ObservationIgnored — polled by TimelineView.
-    @ObservationIgnored private(set) var processingProgress: [TaskStepKey: Double] = [:]
+    @ObservationIgnored private(set) var processingStatus: [TaskStepKey: PromptProcessingStatus] = [:]
 
     /// Per-step flag: `true` once ANY stream delta (thinking, content,
     /// harmony tool-call buffered, OpenAI tool-call delta) has been
@@ -75,7 +78,9 @@ final class StreamingPreviewManager {
     /// measurement, not a model-ordering timestamp). Cleared on commit/clear like
     /// `hasStreamActivity`.
     ///
-    /// Refreshed directly by `beginStreaming` and `updateProcessingProgress`, and by
+    /// Refreshed directly by `beginStreaming` and by `updateProcessingStatus` — the
+    /// latter only for `.fraction` (a server-reported figure is evidence; the app's
+    /// own `.indeterminate` claim is not) — and by
     /// `markStreamActivity`. Token-content deltas refresh it via the caller's PAIRED
     /// `markStreamActivity` call — `append`/`replaceContent`/`appendThinking` do NOT
     /// stamp it themselves (see `NTMSOrchestrator+Streaming`, which wraps each with
@@ -110,7 +115,7 @@ final class StreamingPreviewManager {
         hasStreamActivity[key] = nil
         streamingToolCall[key] = nil
         thinkingPreviews[key] = nil
-        processingProgress[key] = nil
+        processingStatus[key] = nil
         // The activity CLOCK is stamped, not cleared — stream begin is
         // server activity for the stuck-detector's hang heuristic.
         lastStreamActivityAt[key] = MonotonicClock.shared.now()
@@ -184,22 +189,31 @@ final class StreamingPreviewManager {
         thinkingPreviews[TaskStepKey(taskID: taskID, stepID: stepID), default: ""] += content
     }
 
-    // MARK: - Processing Progress
+    // MARK: - Processing Status
 
-    /// Updates the prompt processing progress for a step.
-    func updateProcessingProgress(stepID: String, taskID: Int, progress: Double) {
+    /// Updates the prompt-processing status for a step.
+    ///
+    /// The activity clock is stamped for `.fraction` ONLY. A server-reported
+    /// fraction IS server activity — a long prompt-processing phase (big context
+    /// on a slow machine) emits these before the first token, so it must refresh
+    /// the clock or the stuck-detector would mis-read the silent pre-token window
+    /// as a hang. `.indeterminate` carries no such evidence: it is the app's own
+    /// claim that it issued a send. Behaviourally that distinction is a no-op
+    /// today — `.indeterminate` is set exactly once, immediately after
+    /// `beginStreaming`, which stamps the clock itself — but it keeps the
+    /// invariant "the activity clock reflects server evidence" true for any
+    /// future caller that sets it more than once.
+    func updateProcessingStatus(stepID: String, taskID: Int, status: PromptProcessingStatus) {
         let key = TaskStepKey(taskID: taskID, stepID: stepID)
-        processingProgress[key] = progress
-        // Prompt-processing progress IS server activity — a long prompt-processing
-        // phase (big context on a slow machine) emits these before the first
-        // token, so it must refresh the activity clock or the stuck-detector would
-        // mis-read the silent pre-token window as a hang.
-        lastStreamActivityAt[key] = MonotonicClock.shared.now()
+        processingStatus[key] = status
+        if case .fraction = status {
+            lastStreamActivityAt[key] = MonotonicClock.shared.now()
+        }
     }
 
-    /// Clears the prompt processing progress for a step.
-    func clearProcessingProgress(stepID: String, taskID: Int) {
-        processingProgress[TaskStepKey(taskID: taskID, stepID: stepID)] = nil
+    /// Clears the prompt-processing status for a step.
+    func clearProcessingStatus(stepID: String, taskID: Int) {
+        processingStatus[TaskStepKey(taskID: taskID, stepID: stepID)] = nil
     }
 
     /// Marks the step as having received at least one stream delta. Idempotent
@@ -273,7 +287,7 @@ final class StreamingPreviewManager {
         previews[key] = nil
         streamingMessageIDs[key] = nil
         thinkingPreviews[key] = nil
-        processingProgress[key] = nil
+        processingStatus[key] = nil
         hasStreamActivity[key] = nil
         streamingToolCall[key] = nil
         lastStreamActivityAt[key] = nil
@@ -285,14 +299,14 @@ final class StreamingPreviewManager {
     func clear(stepID: String, taskID: Int) {
         let key = TaskStepKey(taskID: taskID, stepID: stepID)
         guard previews[key] != nil || streamingMessageIDs[key] != nil
-                || thinkingPreviews[key] != nil || processingProgress[key] != nil
+                || thinkingPreviews[key] != nil || processingStatus[key] != nil
                 || hasStreamActivity[key] != nil || streamingToolCall[key] != nil
                 || lastStreamActivityAt[key] != nil else { return }
         if let msgID = streamingMessageIDs[key] { activeMessageIDs.remove(msgID) }
         previews[key] = nil
         streamingMessageIDs[key] = nil
         thinkingPreviews[key] = nil
-        processingProgress[key] = nil
+        processingStatus[key] = nil
         hasStreamActivity[key] = nil
         streamingToolCall[key] = nil
         lastStreamActivityAt[key] = nil
@@ -302,14 +316,14 @@ final class StreamingPreviewManager {
     /// Clears all streaming previews.
     func clearAll() {
         guard !previews.isEmpty || !streamingMessageIDs.isEmpty
-                || !thinkingPreviews.isEmpty || !processingProgress.isEmpty
+                || !thinkingPreviews.isEmpty || !processingStatus.isEmpty
                 || !hasStreamActivity.isEmpty || !streamingToolCall.isEmpty
                 || !lastStreamActivityAt.isEmpty else { return }
         previews.removeAll()
         streamingMessageIDs.removeAll()
         activeMessageIDs.removeAll()
         thinkingPreviews.removeAll()
-        processingProgress.removeAll()
+        processingStatus.removeAll()
         hasStreamActivity.removeAll()
         streamingToolCall.removeAll()
         lastStreamActivityAt.removeAll()

@@ -82,8 +82,8 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     var appendStreamingThinkingCalls: [(String, String)] = []
     var commitStreamingCalls: [(String, Int, String, String?)] = []
     var clearStreamingPreviewCalls: [String] = []
-    var updateProcessingProgressCalls: [(String, Double)] = []
-    var clearProcessingProgressCalls: [String] = []
+    var updateProcessingStatusCalls: [(String, PromptProcessingStatus)] = []
+    var clearProcessingStatusCalls: [String] = []
     var markStreamActivityCalls: [String] = []
     func markStreamActivity(stepID: String, taskID: Int) {
         markStreamActivityCalls.append(stepID)
@@ -138,6 +138,15 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     func beginStreaming(stepID: String, taskID: Int, messageID: UUID, role: Role) async {
         beginStreamingCalls.append((stepID, messageID, role, taskID))
         streamingTaskIDTrace.append(("beginStreaming", stepID, taskID))
+        // Model the production reset: `StreamingPreviewManager.beginStreaming` sets
+        // `processingStatus[key] = nil`. Without this the double is a WEAKER
+        // recorder than the real store, and a mutation that hoists the
+        // `.indeterminate` claim ABOVE `beginStreaming` — which in production is
+        // wiped by exactly this line, reinstating the "Waiting…" bug the claim
+        // exists to fix — leaves every assertion in
+        // `StreamingProcessingProgressClearTests` green. A no-op under the
+        // correct ordering (nothing is recorded before the stream begins).
+        updateProcessingStatusCalls.removeAll()
         if plantsEmptyAssistantMessage, var task = taskToMutate, task.id == taskID {
             TaskMutationService.appendLLMMessage(
                 LLMMessage(id: messageID, role: .assistant, content: ""), to: stepID, in: &task)
@@ -182,14 +191,14 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
         streamingTaskIDTrace.append(("clearStreamingPreview", stepID, taskID))
     }
 
-    func updateStreamingProcessingProgress(stepID: String, taskID: Int, progress: Double) {
-        updateProcessingProgressCalls.append((stepID, progress))
-        streamingTaskIDTrace.append(("updateStreamingProcessingProgress", stepID, taskID))
+    func updateStreamingProcessingStatus(stepID: String, taskID: Int, status: PromptProcessingStatus) {
+        updateProcessingStatusCalls.append((stepID, status))
+        streamingTaskIDTrace.append(("updateStreamingProcessingStatus", stepID, taskID))
     }
 
-    func clearStreamingProcessingProgress(stepID: String, taskID: Int) {
-        clearProcessingProgressCalls.append(stepID)
-        streamingTaskIDTrace.append(("clearStreamingProcessingProgress", stepID, taskID))
+    func clearStreamingProcessingStatus(stepID: String, taskID: Int) {
+        clearProcessingStatusCalls.append(stepID)
+        streamingTaskIDTrace.append(("clearStreamingProcessingStatus", stepID, taskID))
     }
 
     var setMeetingParticipantsCalls: [(Set<String>, Int)] = []
@@ -2227,7 +2236,8 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
             networkLogger: nil
         )
 
-        XCTAssertEqual(result.assistantContent, "Hi ")
+        // Trailing space trimmed by the rewind's `stripSurroundingWhitespace`.
+        XCTAssertEqual(result.assistantContent, "Hi")
         XCTAssertTrue(result.sawHarmonyMarker)
     }
 

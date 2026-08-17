@@ -27,6 +27,13 @@ nonisolated enum TerminalGlyph {
     static let prompt    = "›"
     static let cursor    = "█"
     static let bullet    = "●"
+
+    /// Metric reference for `MonoCell` — not a status glyph, the yardstick the
+    /// cell is measured with. `│` (U+2502) is covered by SF Mono at every size
+    /// the app uses (pinned by `MonoCellReferenceGlyphTests`) and is also
+    /// `NTMSLoader.rotationFrames[0]`, so a cell and the spinner inside it
+    /// agree to the pixel.
+    static let cellReference = "│"
 }
 
 // MARK: - Status → Glyph
@@ -81,6 +88,15 @@ extension TaskStatus {
 /// canonical inline status marker (replaces SF-Symbol status dots in the
 /// terminal language). When `working`, animates via `NTMSLoader` (rotating
 /// stick + glitch bursts) using the supplied `font` for baseline alignment.
+///
+/// Both branches go through `MonoCell`, so a status change is a paint change
+/// and never a layout change. That matters because three of this vocabulary's
+/// glyphs are not covered by SF Mono and fall back to a face with different
+/// metrics: at 11pt `‖` (paused) is Monaco at 14.668 — **1.713pt taller** than
+/// the 12.955 every other glyph occupies — and `◆` (review) / `↻` (revision)
+/// are Menlo at 12.805. Without the cell, pausing a role or sending it to
+/// review resized its row, and in the tight graph nodes
+/// (`RoleNodeRuntimeView`) that shifted the node's whole layout.
 struct StatusGlyph: View {
     let glyph: String
     let color: Color
@@ -89,12 +105,15 @@ struct StatusGlyph: View {
 
     var body: some View {
         if animatesWork {
+            // Already a cell: `NTMSLoader`'s font footprint routes through `MonoCell`.
             NTMSLoader(font: font, color: color)
         } else {
-            Text(glyph)
-                .font(font)
-                .foregroundStyle(color)
-                .accessibilityHidden(true)
+            MonoCell(font: font) {
+                Text(glyph)
+                    .font(font)
+                    .foregroundStyle(color)
+            }
+            .accessibilityHidden(true)
         }
     }
 }

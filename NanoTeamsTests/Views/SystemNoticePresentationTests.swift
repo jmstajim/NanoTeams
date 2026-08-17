@@ -64,35 +64,35 @@ final class SystemNoticePresentationTests: XCTestCase {
 
     func testResolve_retryNudge_labels() {
         let notice = SystemNoticePresentation.resolve(context: .retryNudge, content: "body")
-        XCTAssertEqual(notice?.rowLabel, "system · retry")
+        XCTAssertEqual(notice?.rowLabel, "system: retry")
         XCTAssertEqual(notice?.windowTitle, "retry")
         XCTAssertEqual(notice?.isError, false)
     }
 
     func testResolve_loopCorrection_labels() {
         let notice = SystemNoticePresentation.resolve(context: .loopCorrection, content: "body")
-        XCTAssertEqual(notice?.rowLabel, "system · loop correction")
+        XCTAssertEqual(notice?.rowLabel, "system: loop correction")
         XCTAssertEqual(notice?.windowTitle, "loop correction")
         XCTAssertEqual(notice?.isError, false)
     }
 
     func testResolve_serverError_labels() {
         let notice = SystemNoticePresentation.resolve(context: .serverError, content: "body")
-        XCTAssertEqual(notice?.rowLabel, "system · server error")
+        XCTAssertEqual(notice?.rowLabel, "system: server error")
         XCTAssertEqual(notice?.windowTitle, "server error")
         XCTAssertEqual(notice?.isError, true)
     }
 
     func testResolve_toolAcknowledgement_labels() {
         let notice = SystemNoticePresentation.resolve(context: .toolAcknowledgement, content: "body")
-        XCTAssertEqual(notice?.rowLabel, "system · note")
+        XCTAssertEqual(notice?.rowLabel, "system: note")
         XCTAssertEqual(notice?.windowTitle, "note")
         XCTAssertEqual(notice?.isError, false)
     }
 
     func testResolve_runtimeWarning_labels() {
         let notice = SystemNoticePresentation.resolve(context: .runtimeWarning, content: "body")
-        XCTAssertEqual(notice?.rowLabel, "system · warning")
+        XCTAssertEqual(notice?.rowLabel, "system: warning")
         XCTAssertEqual(notice?.windowTitle, "warning")
         XCTAssertEqual(notice?.isError, true)
     }
@@ -154,7 +154,7 @@ final class SystemNoticePresentationTests: XCTestCase {
         let notice = SystemNoticePresentation.resolve(context: .serverError, content: "")
         XCTAssertNotNil(notice)
         XCTAssertEqual(notice?.preview, "")
-        XCTAssertEqual(notice?.rowLabel, "system · server error")
+        XCTAssertEqual(notice?.rowLabel, "system: server error")
     }
 
     func testResolve_whitespaceOnlyContent_stillANotice_withEmptyPreview() {
@@ -265,7 +265,7 @@ final class SystemNoticePresentationTests: XCTestCase {
             + "Retry with valid JSON, e.g. `<|call|>{\"name\":\"TOOL_NAME\",\"arguments\":"
             + "{\"param\":\"value\"}}<|end|>` — note the two closing braces before `<|end|>`."
         let notice = SystemNoticePresentation.resolve(context: .retryNudge, content: content)
-        XCTAssertEqual(notice?.rowLabel, "system · retry")
+        XCTAssertEqual(notice?.rowLabel, "system: retry")
         XCTAssertTrue(notice?.preview.hasPrefix("Your previous tool call had malformed JSON") == true)
         XCTAssertTrue(notice?.preview.hasSuffix("…") == true, "the nudge is longer than the cap")
         XCTAssertEqual(notice?.preview.count, SystemNoticePresentation.previewCharacterLimit + 1)

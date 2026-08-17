@@ -183,6 +183,13 @@ nonisolated final class ToolCallTracker: @unchecked Sendable {
             }
         }
 
+        // `summarizeArguments`, deliberately NOT `cardSummary`. That one refines a
+        // successful `edit_file` into the line range it touched, which is right for a
+        // display surface and wrong here: this summary is what the loop-warning text quotes
+        // back to the MODEL, and a line range is a fact the model cannot act on — it
+        // anchors edits by text, not by position. The anchor preview is what distinguishes
+        // successive edits to one file in that warning, which is the whole reason the
+        // `edit_file` entry summarizes the anchor at all.
         let argSummary = ToolCallSummarizer.summarizeArguments(toolName: toolName, json: argumentsJSON)
         let resultSummary = ToolCallSummarizer.summarizeResult(toolName: toolName, json: resultJSON)
 

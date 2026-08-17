@@ -27,9 +27,25 @@ nonisolated enum SystemNoticePresentation {
 
     /// The collapsed form of one system notice.
     struct Notice: Equatable {
-        /// Row text: `"system · retry"`. Carries the `system ·` prefix because
-        /// the row usually renders header-less under the working role's avatar,
+        /// Row text: `"system: retry"`. Carries the `system:` prefix because the
+        /// row usually renders header-less under the working role's avatar,
         /// where a bare `retry` would read as the ROLE retrying.
+        ///
+        /// A colon rather than the house `" · "`: that separator JOINS two
+        /// independent facts (`team · run`, `role · team`, the n-ary
+        /// `joined(separator: " · ")` sites), whereas here `system` QUALIFIES the
+        /// kind. It also survives the two multi-word kinds — `system: loop
+        /// correction` keeps the author/kind boundary that an unpunctuated
+        /// `system loop correction` would lose.
+        ///
+        /// The single space after it is the FLOOR, not a preference. The row is
+        /// 11pt SF Mono, whose cell is 1266/2048 em = 6.7998pt and is the same
+        /// for every glyph, so the gap can only be a whole number of cells; the
+        /// face contains no narrow space to spend less (U+2000/2002/2005/2006/
+        /// 2009/200A/202F/205F are all absent from its `cmap` and fall back to a
+        /// proportional face — the off-grid defect `MonoCell` exists to contain,
+        /// and a monospaced face would render one as a full cell regardless).
+        /// Tighter than one cell means this stops being a single `Text`.
         let rowLabel: String
         /// Detail-window title: the bare kind, `"retry"`.
         let windowTitle: String
@@ -63,7 +79,7 @@ nonisolated enum SystemNoticePresentation {
         .runtimeWarning: ("warning", true),
     ]
 
-    private static let rowLabelPrefix = "system · "
+    private static let rowLabelPrefix = "system: "
 
     /// Returns the collapsed form, or `nil` when the turn is ordinary content.
     ///

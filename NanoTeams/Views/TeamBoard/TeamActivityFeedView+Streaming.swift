@@ -28,11 +28,11 @@ extension TeamActivityFeedView {
 
     /// Per-tick inputs for `MessageBubbleView`. The two cases mirror the
     /// two states the dispatcher resolves:
-    /// - `.streaming` carries content/thinking + progress/activity/tool-call
+    /// - `.streaming` carries content/thinking + status/activity/tool-call
     ///   indicators; never carries attachments (those belong to the
     ///   committed turn only).
     /// - `.committed` carries content/thinking + attachments/clips; never
-    ///   carries `processingProgress`, `hasStreamActivity`, or
+    ///   carries `processingStatus`, `hasStreamActivity`, or
     ///   `isStreamingToolCall`.
     /// The discriminated union prevents illegal cross-mode field leakage
     /// at compile time (no "streaming bubble with attachments", no stale
@@ -41,7 +41,7 @@ extension TeamActivityFeedView {
         case streaming(
             content: String,
             thinking: String?,
-            processingProgress: Double?,
+            processingStatus: PromptProcessingStatus?,
             hasStreamActivity: Bool,
             isStreamingToolCall: Bool
         )
@@ -74,7 +74,7 @@ extension TeamActivityFeedView {
             }
         }
 
-        var processingProgress: Double? {
+        var processingStatus: PromptProcessingStatus? {
             switch self {
             case .streaming(_, _, let p, _, _): return p
             case .committed: return nil
@@ -126,7 +126,7 @@ extension TeamActivityFeedView {
             isStreaming: manager.isStreaming(messageID: messageID),
             content: manager.streamingContent(stepID: stepID, taskID: taskID),
             thinking: manager.streamingThinking(stepID: stepID, taskID: taskID),
-            processingProgress: manager.processingProgress[
+            processingStatus: manager.processingStatus[
                 TaskStepKey(taskID: taskID, stepID: stepID)],
             hasStreamActivity: manager.hasReceivedStreamActivity(
                 stepID: stepID, taskID: taskID),
@@ -141,7 +141,7 @@ extension TeamActivityFeedView {
         let isStreaming: Bool
         let content: String?
         let thinking: String?
-        let processingProgress: Double?
+        let processingStatus: PromptProcessingStatus?
         let hasStreamActivity: Bool
         let isStreamingToolCall: Bool
     }
@@ -228,7 +228,7 @@ extension TeamActivityFeedView {
             return .streaming(
                 content: streaming.content ?? "",
                 thinking: streaming.thinking,
-                processingProgress: streaming.processingProgress,
+                processingStatus: streaming.processingStatus,
                 hasStreamActivity: streaming.hasStreamActivity,
                 isStreamingToolCall: streaming.isStreamingToolCall
             )

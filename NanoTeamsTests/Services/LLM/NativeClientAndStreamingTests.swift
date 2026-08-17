@@ -820,11 +820,13 @@ final class StreamingPostStreamArmsTests: XCTestCase {
         ])
 
         XCTAssertTrue(result.sawHarmonyMarker)
-        XCTAssertEqual(result.assistantContent, "Reading now ")
+        // Trailing space trimmed: the rewind is where the prose becomes final,
+        // so it is trimmed at both ends to match what commit will produce.
+        XCTAssertEqual(result.assistantContent, "Reading now")
         XCTAssertEqual(result.resolvedToolCalls.map(\.name), [ToolNames.gitStatus])
 
         XCTAssertEqual(delegate.replaceStreamingPreviewCalls.count, 1)
-        XCTAssertEqual(delegate.replaceStreamingPreviewCalls[0].3, "Reading now ")
+        XCTAssertEqual(delegate.replaceStreamingPreviewCalls[0].3, "Reading now")
         XCTAssertEqual(delegate.markStreamingToolCallCalls, [stepID],
                        "the stream committed to an envelope — the Thinking loader takes over")
 
@@ -1016,7 +1018,7 @@ final class StreamingPostStreamArmsTests: XCTestCase {
                        "the provider id must survive so the tool message can name its call")
         XCTAssertEqual(delegate.markStreamingToolCallCalls, [stepID])
         XCTAssertEqual(delegate.markStreamActivityCalls, [stepID])
-        XCTAssertTrue(delegate.clearProcessingProgressCalls.contains(stepID))
+        XCTAssertTrue(delegate.clearProcessingStatusCalls.contains(stepID))
         let thinking = delegate.appendStreamingThinkingCalls.map(\.1).joined()
         XCTAssertEqual(thinking, ToolNames.readFile + "{\"path\":\"a.txt\"}")
     }
@@ -1084,7 +1086,7 @@ final class StreamingPostStreamArmsTests: XCTestCase {
 
         XCTAssertEqual(delegate.commitStreamingCalls.count, 1)
         XCTAssertEqual(delegate.commitStreamingCalls[0].2, "half a th")
-        XCTAssertTrue(delegate.clearProcessingProgressCalls.contains(stepID))
+        XCTAssertTrue(delegate.clearProcessingStatusCalls.contains(stepID))
     }
 
     // MARK: - processStreamingResult

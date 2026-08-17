@@ -190,7 +190,7 @@ final class StreamingPreviewManagerActivityTests: XCTestCase {
         let manager = StreamingPreviewManager()
         manager.markStreamingToolCall(stepID: "step1", taskID: 0)
         manager.markStreamActivity(stepID: "step1", taskID: 0)
-        manager.updateProcessingProgress(stepID: "step1", taskID: 0, progress: 0.5)
+        manager.updateProcessingStatus(stepID: "step1", taskID: 0, status: .fraction(0.5))
 
         manager.commit(stepID: "step1", taskID: 0)
 
@@ -198,8 +198,8 @@ final class StreamingPreviewManagerActivityTests: XCTestCase {
                        "commit must clear streamingToolCall even without a preview")
         XCTAssertFalse(manager.hasReceivedStreamActivity(stepID: "step1", taskID: 0),
                        "commit must clear hasStreamActivity even without a preview")
-        XCTAssertNil(manager.processingProgress[TaskStepKey(taskID: 0, stepID: "step1")],
-                     "commit must clear processingProgress even without a preview")
+        XCTAssertNil(manager.processingStatus[TaskStepKey(taskID: 0, stepID: "step1")],
+                     "commit must clear processingStatus even without a preview")
         XCTAssertNil(manager.lastStreamActivity(stepID: "step1", taskID: 0))
     }
 
@@ -265,11 +265,11 @@ final class StreamingPreviewManagerActivityTests: XCTestCase {
 
     func testBeginStreaming_resetsProcessingProgress() {
         let manager = StreamingPreviewManager()
-        manager.updateProcessingProgress(stepID: "step1", taskID: 0, progress: 0.47)
+        manager.updateProcessingStatus(stepID: "step1", taskID: 0, status: .fraction(0.47))
 
         manager.beginStreaming(stepID: "step1", taskID: 0, messageID: UUID(), role: .softwareEngineer)
 
-        XCTAssertNil(manager.processingProgress[TaskStepKey(taskID: 0, stepID: "step1")],
+        XCTAssertNil(manager.processingStatus[TaskStepKey(taskID: 0, stepID: "step1")],
                      "A fresh stream starts with no progress signal — a stale percent must not survive into the retry")
     }
 
@@ -338,9 +338,27 @@ final class StreamingPreviewManagerActivityTests: XCTestCase {
 
     func testUpdateProcessingProgress_stampsLastActivityTimestamp() {
         let manager = StreamingPreviewManager()
-        manager.updateProcessingProgress(stepID: "step1", taskID: 0, progress: 0.5)
+        manager.updateProcessingStatus(stepID: "step1", taskID: 0, status: .fraction(0.5))
         XCTAssertNotNil(manager.lastStreamActivity(stepID: "step1", taskID: 0),
                         "prompt-processing progress is server activity — must refresh the clock or a long pre-token phase reads as a hang")
+    }
+
+    /// The activity clock records SERVER evidence. A server-reported fraction is
+    /// evidence; `.indeterminate` is the app's own claim that it issued a send,
+    /// so it must not masquerade as a token arriving — that would let a future
+    /// caller suppress a genuine hang by re-asserting the claim.
+    ///
+    /// Behaviourally a no-op today (`performStreamingCall` sets `.indeterminate`
+    /// exactly once, immediately after `beginStreaming`, which stamps the clock
+    /// itself), which is why this is asserted against a bare manager.
+    ///
+    /// RED: drop the `if case .fraction` guard in `updateProcessingStatus` ->
+    /// the clock is stamped and this fails.
+    func testUpdateProcessingStatus_indeterminate_doesNotStampTheActivityClock() {
+        let manager = StreamingPreviewManager()
+        manager.updateProcessingStatus(stepID: "step1", taskID: 0, status: .indeterminate)
+        XCTAssertNil(manager.lastStreamActivity(stepID: "step1", taskID: 0),
+                     "an app-side 'request in flight' claim is not evidence that the server produced anything")
     }
 
     /// CRITICAL: the timestamp must be cleared in lockstep with `hasStreamActivity`.

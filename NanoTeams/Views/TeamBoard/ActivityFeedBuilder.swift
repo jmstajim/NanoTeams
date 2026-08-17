@@ -55,6 +55,20 @@ nonisolated enum ActivityFeedBuilder {
         /// to the parent). The view renders a slim band labeled with the team
         /// name and the delegating role for transitions into a child.
         let boundary: TeamBoundary?
+        /// True when this item CONTINUES the model turn opened by the item
+        /// above it — a tool call, or the artifact that call produced, emitted
+        /// by the assistant message directly above.
+        ///
+        /// The feed hugs continuations to their turn
+        /// (`ActivityCardTokens.turnHugSpacing`) and opens a clear gap before
+        /// the next one (`turnGapSpacing`), so a bubble that is nothing but a
+        /// `Thinking` row visibly belongs to the calls BELOW it rather than
+        /// floating equidistant between two cards.
+        ///
+        /// `var` with a default because four test helpers construct this type
+        /// with three arguments. `false` means "opens a turn", i.e. the larger
+        /// gap — the safe side for a hand-built item.
+        var continuesTurn: Bool = false
         var id: String { item.id }
     }
 
@@ -651,6 +665,48 @@ nonisolated enum ActivityFeedBuilder {
 
     // MARK: - Helpers
 
+    /// Whether `item` continues the model turn opened by `previous`.
+    ///
+    /// A model turn is one assistant utterance plus everything it emitted: the
+    /// `.llmMessage` (whose bubble carries the `Thinking` row and the status
+    /// row) and the `.toolCall` / `.artifact` items that message produced.
+    /// Reasoning PRECEDES its own calls, so a continuation hugs UPWARD to the
+    /// message that produced it — which is what puts the visual gap ABOVE a
+    /// lone `Thinking` row instead of below it.
+    ///
+    /// Derived from SEQUENCE, not from a key: `StepToolCall` carries no turn
+    /// index and `stepID` is the whole role step (an entire tool loop), so
+    /// there is no id to group on. Adjacency is sound here because
+    /// `buildTimelineItems` has already sorted by `createdAt` and
+    /// `NTMSOrchestrator.beginStreaming` pre-creates the assistant message
+    /// before any of that turn's calls can be appended.
+    ///
+    /// Conservative at the edges: meetings, change requests, notifications and
+    /// the supervisor brief are not part of any model turn, and a role or
+    /// origin-task change always breaks one.
+    ///
+    /// Known imprecision, not a regression: a tool-loop iteration that emits no
+    /// VISIBLE assistant message leaves two consecutive `.toolCall`s reading as
+    /// one turn. The literal `2` this rule replaces did exactly the same.
+    static func continuesTurn(
+        item: TeamActivityTimelineItem,
+        previous: TeamActivityTimelineItem?
+    ) -> Bool {
+        guard let previous else { return false }
+        switch item {
+        case .toolCall, .artifact: break
+        case .llmMessage, .meetingMessage, .changeRequest, .notification, .supervisorTask:
+            return false
+        }
+        switch previous {
+        case .llmMessage, .toolCall, .artifact: break
+        case .meetingMessage, .changeRequest, .notification, .supervisorTask:
+            return false
+        }
+        return item.roleID == previous.roleID
+            && item.originTaskID == previous.originTaskID
+    }
+
     /// Annotates sorted items with `showSectionHeader` and `boundary` flags.
     ///
     /// Section header fires when the consecutive `(roleID, originTaskID)` tuple
@@ -673,6 +729,7 @@ nonisolated enum ActivityFeedBuilder {
         var prevRoleID: String? = nil
         var prevOriginTaskID: Int? = nil
         var prevHadRoleID: Bool = false
+        var prevItem: TeamActivityTimelineItem? = nil
 
         for item in items {
             let curRoleID = item.roleID
@@ -723,10 +780,23 @@ nonisolated enum ActivityFeedBuilder {
                 boundary = nil
             }
 
-            tagged.append(TaggedItem(item: item, showSectionHeader: showHeader, boundary: boundary))
+            // Belt and braces: a header or a boundary band already separates the
+            // item visually, and both fire on exactly the role / origin-task
+            // changes `continuesTurn` rejects anyway.
+            let continues = !showHeader
+                && boundary == nil
+                && Self.continuesTurn(item: item, previous: prevItem)
+
+            tagged.append(TaggedItem(
+                item: item,
+                showSectionHeader: showHeader,
+                boundary: boundary,
+                continuesTurn: continues
+            ))
             prevRoleID = curRoleID
             prevOriginTaskID = curOriginTaskID
             prevHadRoleID = curRoleID != nil
+            prevItem = item
         }
         return tagged
     }

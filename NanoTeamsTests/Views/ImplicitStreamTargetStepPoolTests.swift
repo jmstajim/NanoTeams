@@ -175,7 +175,7 @@ final class MessageBubbleIndicatorImplicitTargetCornerTests: XCTestCase {
             isImplicitStreamTarget: true,
             hasMessageContent: false,
             hasThinkingContent: false,
-            processingProgress: nil,
+            processingStatus: nil,
             hasStreamActivity: false
         )
         XCTAssertNil(status)

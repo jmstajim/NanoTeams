@@ -17,7 +17,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             isImplicitStreamTarget: false,
             hasMessageContent: false,
             hasThinkingContent: false,
-            processingProgress: nil,
+            processingStatus: nil,
             hasStreamActivity: false
         )
         XCTAssertNil(result, "No status row when not streaming")
@@ -29,7 +29,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             isImplicitStreamTarget: false,
             hasMessageContent: false,
             hasThinkingContent: false,
-            processingProgress: 0.5,
+            processingStatus: .fraction(0.5),
             hasStreamActivity: true
         )
         XCTAssertNil(result, "isStreaming gates everything — even latent state from a finished stream must not surface a status row")
@@ -43,7 +43,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             isImplicitStreamTarget: false,
             hasMessageContent: true,
             hasThinkingContent: false,
-            processingProgress: nil,
+            processingStatus: nil,
             hasStreamActivity: true
         )
         XCTAssertNil(result, "Visible content makes the status row redundant — content itself is the visual indicator")
@@ -55,7 +55,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             isImplicitStreamTarget: false,
             hasMessageContent: false,
             hasThinkingContent: true,
-            processingProgress: nil,
+            processingStatus: nil,
             hasStreamActivity: true
         )
         XCTAssertNil(result, "Visible thinking section is its own indicator")
@@ -75,7 +75,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             isImplicitStreamTarget: false,
             hasMessageContent: false,
             hasThinkingContent: false,
-            processingProgress: 0.42,
+            processingStatus: .fraction(0.42),
             hasStreamActivity: true
         )
         XCTAssertEqual(result, "Processing 42%")
@@ -87,10 +87,60 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             isImplicitStreamTarget: false,
             hasMessageContent: false,
             hasThinkingContent: false,
-            processingProgress: 0.99,
+            processingStatus: .fraction(0.99),
             hasStreamActivity: false
         )
         XCTAssertEqual(result, "Processing 99%")
+    }
+
+    /// The indeterminate window — a provider that narrates nothing about its
+    /// prefill (Ollama) still says the server has the request. Renders the verb
+    /// with the "in progress" ellipsis rather than a number, because the only
+    /// number available would be an estimate whose measured error runs 2–6×.
+    ///
+    /// RED: return "Waiting…" (or nil) for `.indeterminate` -> fails. This is
+    /// the reported bug: a prefill window measured in tens of seconds reading
+    /// as "Waiting…", which users take to mean nothing is happening.
+    func testIndeterminate_returnsProcessingWithoutANumber() {
+        let result = MessageBubbleStreamingIndicator.resolveStatusText(
+            isStreaming: true,
+            isImplicitStreamTarget: false,
+            hasMessageContent: false,
+            hasThinkingContent: false,
+            processingStatus: .indeterminate,
+            hasStreamActivity: false
+        )
+        XCTAssertEqual(result, "Processing…")
+    }
+
+    /// `.indeterminate` outranks the activity fallback exactly as `.fraction`
+    /// does — its position in the ladder is the status slot, not a new tier.
+    func testIndeterminate_winsOverActivity() {
+        let result = MessageBubbleStreamingIndicator.resolveStatusText(
+            isStreaming: true,
+            isImplicitStreamTarget: false,
+            hasMessageContent: false,
+            hasThinkingContent: false,
+            processingStatus: .indeterminate,
+            hasStreamActivity: true
+        )
+        XCTAssertEqual(result, "Processing…")
+    }
+
+    /// …and loses to a live tool-call stream, for the same reason a stale
+    /// fraction does: tokens ARE flowing, so nothing may relabel that window as
+    /// prompt processing.
+    func testStreamingToolCall_winsOverIndeterminate() {
+        let result = MessageBubbleStreamingIndicator.resolveStatusText(
+            isStreaming: true,
+            isImplicitStreamTarget: false,
+            hasMessageContent: false,
+            hasThinkingContent: false,
+            processingStatus: .indeterminate,
+            hasStreamActivity: true,
+            isStreamingToolCall: true
+        )
+        XCTAssertEqual(result, "Generating…")
     }
 
     /// Activity flag without progress → "Generating…". This is the
@@ -106,7 +156,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             isImplicitStreamTarget: false,
             hasMessageContent: false,
             hasThinkingContent: false,
-            processingProgress: nil,
+            processingStatus: nil,
             hasStreamActivity: true
         )
         XCTAssertEqual(result, "Generating…")
@@ -121,7 +171,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             isImplicitStreamTarget: false,
             hasMessageContent: false,
             hasThinkingContent: false,
-            processingProgress: nil,
+            processingStatus: nil,
             hasStreamActivity: false
         )
         XCTAssertEqual(result, "Waiting…")
@@ -139,7 +189,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             isImplicitStreamTarget: false,
             hasMessageContent: false,
             hasThinkingContent: false,
-            processingProgress: 0.0,
+            processingStatus: .fraction(0.0),
             hasStreamActivity: false
         )
         XCTAssertEqual(result, "Processing 0%",
@@ -156,7 +206,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             isImplicitStreamTarget: false,
             hasMessageContent: false,
             hasThinkingContent: false,
-            processingProgress: 1.0,
+            processingStatus: .fraction(1.0),
             hasStreamActivity: false
         )
         XCTAssertEqual(result, "Processing 100%")
@@ -171,7 +221,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             isImplicitStreamTarget: false,
             hasMessageContent: true,
             hasThinkingContent: true,
-            processingProgress: 0.5,
+            processingStatus: .fraction(0.5),
             hasStreamActivity: true
         )
         XCTAssertNil(result)
@@ -198,7 +248,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             isImplicitStreamTarget: false,
             hasMessageContent: true,
             hasThinkingContent: false,
-            processingProgress: nil,
+            processingStatus: nil,
             hasStreamActivity: true,
             isStreamingToolCall: true
         )
@@ -216,7 +266,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             isImplicitStreamTarget: false,
             hasMessageContent: false,
             hasThinkingContent: true,
-            processingProgress: nil,
+            processingStatus: nil,
             hasStreamActivity: true,
             isStreamingToolCall: true
         )
@@ -230,7 +280,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             isImplicitStreamTarget: false,
             hasMessageContent: true,
             hasThinkingContent: true,
-            processingProgress: nil,
+            processingStatus: nil,
             hasStreamActivity: true,
             isStreamingToolCall: true
         )
@@ -238,7 +288,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
                      "Thinking-as-indicator wins over the fallback even with frozen prose present.")
     }
 
-    /// Defensive priority pin: if a stale `processingProgress` coexists
+    /// Defensive priority pin: if a stale `processingStatus` coexists
     /// with the tool-call flag (shouldn't happen — progress clears on the
     /// first delta, and the marker arrives via content deltas), the flag
     /// wins: tokens ARE flowing, "Processing N%" would be a lie.
@@ -248,7 +298,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             isImplicitStreamTarget: false,
             hasMessageContent: false,
             hasThinkingContent: false,
-            processingProgress: 0.99,
+            processingStatus: .fraction(0.99),
             hasStreamActivity: true,
             isStreamingToolCall: true
         )
@@ -265,7 +315,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             isImplicitStreamTarget: false,
             hasMessageContent: true,
             hasThinkingContent: true,
-            processingProgress: 0.99,
+            processingStatus: .fraction(0.99),
             hasStreamActivity: true,
             isStreamingToolCall: true
         )
@@ -282,7 +332,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             isImplicitStreamTarget: true,
             hasMessageContent: true,
             hasThinkingContent: false,
-            processingProgress: nil,
+            processingStatus: nil,
             hasStreamActivity: false,
             isStreamingToolCall: true
         )
@@ -298,7 +348,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             isImplicitStreamTarget: false,
             hasMessageContent: true,
             hasThinkingContent: false,
-            processingProgress: nil,
+            processingStatus: nil,
             hasStreamActivity: false,
             isStreamingToolCall: true
         )
@@ -321,7 +371,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             isImplicitStreamTarget: true,
             hasMessageContent: true,
             hasThinkingContent: false,
-            processingProgress: nil,
+            processingStatus: nil,
             hasStreamActivity: true
         )
         XCTAssertEqual(result, "Generating…",
@@ -334,7 +384,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             isImplicitStreamTarget: true,
             hasMessageContent: true,
             hasThinkingContent: false,
-            processingProgress: 0.42,
+            processingStatus: .fraction(0.42),
             hasStreamActivity: false
         )
         XCTAssertEqual(result, "Processing 42%",
@@ -345,13 +395,13 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
     /// guard: `0.0` is "started, 0% done", not "no signal" — the indicator must
     /// distinguish nil from 0.0. A future "normalize nil to zero" refactor would
     /// silently break the implicit branch the same way it would break streaming.
-    func testImplicitTarget_processingProgressZero_returnsProcessing() {
+    func testImplicitTarget_processingStatusZero_returnsProcessing() {
         let result = MessageBubbleStreamingIndicator.resolveStatusText(
             isStreaming: false,
             isImplicitStreamTarget: true,
             hasMessageContent: true,
             hasThinkingContent: false,
-            processingProgress: 0.0,
+            processingStatus: .fraction(0.0),
             hasStreamActivity: false
         )
         XCTAssertEqual(result, "Processing 0%")
@@ -363,7 +413,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             isImplicitStreamTarget: true,
             hasMessageContent: true,
             hasThinkingContent: false,
-            processingProgress: 0.5,
+            processingStatus: .fraction(0.5),
             hasStreamActivity: true
         )
         XCTAssertEqual(result, "Processing 50%",
@@ -381,7 +431,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             isImplicitStreamTarget: true,
             hasMessageContent: true,
             hasThinkingContent: false,
-            processingProgress: nil,
+            processingStatus: nil,
             hasStreamActivity: false
         )
         XCTAssertNil(result,
@@ -398,7 +448,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             isImplicitStreamTarget: true,
             hasMessageContent: true,
             hasThinkingContent: false,
-            processingProgress: nil,
+            processingStatus: nil,
             hasStreamActivity: true
         )
         XCTAssertNil(result,
@@ -413,7 +463,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             isImplicitStreamTarget: false,
             hasMessageContent: true,
             hasThinkingContent: false,
-            processingProgress: 0.5,
+            processingStatus: .fraction(0.5),
             hasStreamActivity: true
         )
         XCTAssertNil(result,

@@ -21,9 +21,12 @@ struct MessageThinkingSection: View {
             ))
         } label: {
             HStack(spacing: Spacing.xs) {
-                if isStreaming {
-                    NTMSLoader(font: Typography.termXs, color: Colors.accent)
-                }
+                // `isVisible:` rather than `if isStreaming` — the hidden branch
+                // is the same `MonoCell`, so the label keeps its column when the
+                // row settles from `Thinking…` to `Thinking`. Inserting the
+                // loader conditionally slid the label sideways by the cell's
+                // advance plus `Spacing.xs` (≈10.8pt at 11pt) on every commit.
+                NTMSLoader(font: Typography.termXs, isVisible: isStreaming, color: Colors.accent)
                 Text(isStreaming ? "Thinking…" : "Thinking")
                     .font(Typography.termXs.weight(.medium))
                     .foregroundStyle(Colors.textTertiary)

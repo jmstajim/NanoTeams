@@ -14,8 +14,20 @@ import XCTest
 /// the persisted `step.llmConversation` content is already clean —
 /// this strip is purely a streaming-preview fix.
 ///
-/// Strip is gated on `assistantCollected.isEmpty`, so internal / trailing
-/// whitespace are preserved once the first non-whitespace char is in.
+/// Two funnels, two rules — the distinction this suite exists to hold:
+///
+/// - GROWTH (`appendAssistant`): `stripLeadingWhitespace`, gated on
+///   `assistantCollected.isEmpty`. Leading only, because a buffer that is
+///   still growing may legitimately end in whitespace the next delta
+///   continues from.
+/// - REWIND (the marker branch): `stripSurroundingWhitespace`, BOTH ends.
+///   Here the prose is final for the rest of the turn — every later delta
+///   routes to the thinking pipe — so a trailing `\n\n` is a hanging tail
+///   before an envelope the user never sees, and it renders as real empty
+///   line fragments for the whole envelope-assembly window.
+///
+/// INTERNAL whitespace is preserved by both — see
+/// `testInternalNewlines_preservedAfterFirstNonWhitespaceChar`.
 @MainActor
 final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
 
@@ -178,10 +190,27 @@ final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
     }
 
     /// Same shape as the user's screenshots: a reasoning block, then visible
-    /// explanatory text, then a tool-call. The leading `\n\n\n\n` gap must
-    /// disappear, but the `\n\n` between the text and `<|call|>` must
-    /// survive as valid internal formatting.
-    func testHarmonyEnvelope_visibleContentAfterReasoning_stripsLeadingNotInternal() async throws {
+    /// explanatory text, then a tool-call. BOTH the leading `\n\n\n\n` and the
+    /// `\n\n` between the text and `<|call|>` must disappear from the preview.
+    ///
+    /// The trailing half was previously asserted the other way here, on the
+    /// rationale that "internal/trailing formatting may carry meaning". That
+    /// conflated internal with trailing: at the rewind the prose is FINAL
+    /// (later deltas go to the thinking pipe), so the `\n\n` is not a
+    /// paragraph break awaiting more text — it is what the user reported as a
+    /// blank band under the bubble, held for the whole envelope assembly.
+    /// Internal breaks keep their contract in
+    /// `testInternalNewlines_preservedAfterFirstNonWhitespaceChar`.
+    ///
+    /// RED: revert `stripSurroundingWhitespace` to `stripLeadingWhitespace` at
+    /// the rewind → assertion 3 fails with the trailing `\n\n` back.
+    ///
+    /// Assertion 3 is load-bearing precisely BECAUSE assertion 2 is not: the
+    /// preview is trimmed a second time on its own line (it also has to strip
+    /// tokens, which can expose fresh trailing space), so the preview alone is
+    /// defended twice and survives that single mutation. `assistantContent` is
+    /// the singly-defended value, so it is what pins the `preMarker` trim.
+    func testHarmonyEnvelope_visibleContentAfterReasoning_stripsLeadingAndTrailingNotInternal() async throws {
         let thinkingText = "The file is huge — about 1.1M lines. I should not read it whole; let me grep for crash markers first."
         let leadingGap = "\n\n\n\n"
         let visibleContent = "The file is very large. Let me search for crash-related keywords first."
@@ -193,7 +222,7 @@ final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
             StreamEvent(contentDelta: leadingGap + visibleContent + toolCallGap + toolCall)
         ]
 
-        _ = try await service.performStreamingCall(
+        let result = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .codingAgent,
             client: mockClient, config: LLMConfig(),
             tools: [], conversationMessages: [],
@@ -213,17 +242,28 @@ final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
         XCTAssertTrue(committed.hasPrefix("The file is very large"))
         XCTAssertEqual(committed, visibleContent)
 
-        // 2. Preview rewind carries the leading-stripped string (but keeps
-        //    trailing `\n\n` — `stripLeadingWhitespace` is leading-only by
-        //    design, internal/trailing formatting may carry meaning).
-        //    This is what fixes the visible gap in the activity feed bubble
-        //    during streaming, before `ModelTokenCleaner` runs on commit.
+        // 2. Preview rewind carries the string trimmed at BOTH ends — this is
+        //    what fixes the visible gap in the activity feed bubble during
+        //    streaming, before `ModelTokenCleaner` runs on commit.
         XCTAssertEqual(mockDelegate.replaceStreamingPreviewCalls.count, 1)
-        XCTAssertEqual(
-            mockDelegate.replaceStreamingPreviewCalls[0].3,
-            visibleContent + toolCallGap
+        let rewound = mockDelegate.replaceStreamingPreviewCalls[0].3
+        XCTAssertEqual(rewound, visibleContent)
+        XCTAssertFalse(rewound.hasPrefix("\n"))
+        XCTAssertFalse(
+            rewound.hasSuffix("\n"),
+            "the trailing gap is the reported blank band — it must not reach the preview"
         )
-        XCTAssertFalse(mockDelegate.replaceStreamingPreviewCalls[0].3.hasPrefix("\n"))
+        // The point of matching `ModelTokenCleaner.clean`'s character set: the
+        // bubble must not shift when the turn commits.
+        XCTAssertEqual(rewound, committed,
+                       "preview and committed content must be byte-identical")
+
+        // 3. The `preMarker` trim itself. `assistantContent` is the only value
+        //    the rewind's own trim is solely responsible for — see the RED note.
+        XCTAssertEqual(
+            result.assistantContent, visibleContent,
+            "the rewind must trim its own buffer, not lean on the preview's second trim"
+        )
 
         // 3. Joined preview history doesn't leak a leading `\n` either,
         //    in case the first chunk was pure whitespace and flushPendingUI
@@ -399,5 +439,129 @@ final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
         // delivered verbatim ("\n\nWorld") because the gate closed.
         let allPreview = mockDelegate.appendStreamingPreviewCalls.map(\.3).joined()
         XCTAssertEqual(allPreview, "Hello\n\nWorld")
+    }
+
+    // MARK: - Rewind: trailing half of the same defect class
+
+    func testStripSurroundingWhitespace_dropsBothEnds() {
+        XCTAssertEqual(
+            LLMExecutionService.stripSurroundingWhitespace("\n\nHello\n\n"),
+            "Hello"
+        )
+    }
+
+    func testStripSurroundingWhitespace_preservesInternalNewlines() {
+        XCTAssertEqual(
+            LLMExecutionService.stripSurroundingWhitespace("Hello\n\nWorld\n"),
+            "Hello\n\nWorld"
+        )
+    }
+
+    /// The reported symptom, end to end: prose, then the model's `\n\n`, then
+    /// the envelope. The rewind must hand the bubble prose with no tail — the
+    /// blank band was ~2 empty mono lines held for the whole assembly window.
+    ///
+    /// RED: `stripSurroundingWhitespace` → `stripLeadingWhitespace` at the
+    /// rewind → preview is `prose + "\n\n"` and both assertions fail.
+    func testRewind_trailingGapBeforeEnvelope_doesNotReachThePreview() async throws {
+        let prose = "Now let me read the rest of building_gallery.gd and the remaining files."
+        mockClient.deltas = [
+            StreamEvent(contentDelta: prose + "\n\n"
+                + #"<|call|>{"name":"git_status","arguments":{}}<|end|>"#)
+        ]
+
+        let result = try await service.performStreamingCall(
+            stepID: stepID, taskID: taskID, roleForMessage: .codingAgent,
+            client: mockClient, config: LLMConfig(),
+            tools: [], conversationMessages: [],
+            networkLogger: nil
+        )
+
+        XCTAssertTrue(result.sawHarmonyMarker)
+        XCTAssertEqual(mockDelegate.replaceStreamingPreviewCalls.count, 1)
+        XCTAssertEqual(mockDelegate.replaceStreamingPreviewCalls[0].3, prose)
+        // Anti-vacuum: the prose survives whole — the trim must not be
+        // eating content on its way to "no trailing whitespace".
+        XCTAssertEqual(result.assistantContent, prose)
+    }
+
+    /// No whitespace before the marker ⇒ byte-identical behaviour to before
+    /// the fix. This is the guard on WHICH character set the rewind trims:
+    /// the plan's whole design choice is that it matches
+    /// `ModelTokenCleaner.clean`'s, so preview and committed agree.
+    ///
+    /// RED: widen `stripSurroundingWhitespace` past whitespace — e.g.
+    /// `.whitespacesAndNewlines.union(.punctuationCharacters)` → the prose
+    /// loses its terminal `.` and the preview no longer matches what the
+    /// model actually said.
+    func testRewind_noWhitespaceBeforeEnvelope_isUnchanged() async throws {
+        let prose = "Applying the change now."
+        mockClient.deltas = [
+            StreamEvent(contentDelta: prose
+                + #"<|call|>{"name":"git_status","arguments":{}}<|end|>"#)
+        ]
+
+        _ = try await service.performStreamingCall(
+            stepID: stepID, taskID: taskID, roleForMessage: .codingAgent,
+            client: mockClient, config: LLMConfig(),
+            tools: [], conversationMessages: [],
+            networkLogger: nil
+        )
+
+        XCTAssertEqual(mockDelegate.replaceStreamingPreviewCalls[0].3, prose)
+    }
+
+    /// `uiBuffer` holds RAW deltas while the append path strips tokens per
+    /// delta, so the rewind could otherwise put a `<|…|>` back on screen that
+    /// was already gone. `<|end|>` is not in `harmonyMarkers`, so it can
+    /// legitimately precede the earliest one.
+    ///
+    /// RED: drop `ModelTokenCleaner.stripTokens` from the preview value →
+    /// the stray `<|end|>` reaches the bubble.
+    func testRewind_strayTokenBeforeMarker_doesNotReachThePreview() async throws {
+        mockClient.deltas = [
+            StreamEvent(contentDelta: "Done thinking.<|end|>\n\n"
+                + #"<|call|>{"name":"git_status","arguments":{}}<|end|>"#)
+        ]
+
+        _ = try await service.performStreamingCall(
+            stepID: stepID, taskID: taskID, roleForMessage: .codingAgent,
+            client: mockClient, config: LLMConfig(),
+            tools: [], conversationMessages: [],
+            networkLogger: nil
+        )
+
+        let rewound = mockDelegate.replaceStreamingPreviewCalls[0].3
+        XCTAssertFalse(rewound.contains("<|"),
+                       "the rewind must not reintroduce a token the append path removed")
+        XCTAssertEqual(rewound, "Done thinking.")
+    }
+
+    /// The regression guard for the fix's own scope: `+StepFlowControl`'s
+    /// tokens-only retry fires on `!assistantContent.isEmpty &&
+    /// clean(assistantContent).isEmpty`. Folding `stripTokens` into
+    /// `assistantCollected` (rather than only into the preview) would make
+    /// that branch unreachable, so the rewind must leave tokens in place on
+    /// the result even while stripping them from the preview.
+    ///
+    /// RED: apply `stripTokens` to `assistantCollected` too → the result is
+    /// empty and the diagnostic silently dies.
+    func testRewind_tokensOnlyProse_staysDetectableAsTokensOnly() async throws {
+        mockClient.deltas = [
+            StreamEvent(contentDelta: "<|end|>\n\n"
+                + #"<|call|>{"name":"git_status","arguments":{}}<|end|>"#)
+        ]
+
+        let result = try await service.performStreamingCall(
+            stepID: stepID, taskID: taskID, roleForMessage: .codingAgent,
+            client: mockClient, config: LLMConfig(),
+            tools: [], conversationMessages: [],
+            networkLogger: nil
+        )
+
+        XCTAssertFalse(result.assistantContent.isEmpty,
+                       "pre-cleaning here kills the tokens-only retry in +StepFlowControl")
+        XCTAssertTrue(ModelTokenCleaner.clean(result.assistantContent).isEmpty,
+                      "…and it must still clean to empty, or the branch never fires")
     }
 }

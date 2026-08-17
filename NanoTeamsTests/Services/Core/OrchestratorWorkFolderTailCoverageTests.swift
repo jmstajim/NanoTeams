@@ -327,34 +327,54 @@ final class AOrchStreamingTailTests: NTMSOrchestratorTestBase, @unchecked Sendab
     /// two concurrent tasks on the same team share a stepID (it IS the role id), so
     /// a stepID-only key would cross-wire their progress rows.
     ///
-    /// RED: drop the forwarding body -> `processingProgress` stays empty and the
+    /// RED: drop the forwarding body -> `processingStatus` stays empty and the
     /// first assertion fails. Key by stepID alone -> the second task's lookup
     /// returns task A's value and the isolation assertion fails.
     func testUpdateStreamingProcessingProgress_forwardsUnderTheCompositeKey() async {
-        sut.updateStreamingProcessingProgress(stepID: "engineer", taskID: 7, progress: 0.42)
+        sut.updateStreamingProcessingStatus(stepID: "engineer", taskID: 7, status: .fraction(0.42))
 
         XCTAssertEqual(
-            sut.streamingPreviewManager.processingProgress[
+            sut.streamingPreviewManager.processingStatus[
                 TaskStepKey(taskID: 7, stepID: "engineer")],
-            0.42)
+            .fraction(0.42))
         XCTAssertNil(
-            sut.streamingPreviewManager.processingProgress[
+            sut.streamingPreviewManager.processingStatus[
                 TaskStepKey(taskID: 8, stepID: "engineer")],
             "the same role id in another task must not inherit this progress")
+    }
+
+    /// The indeterminate status takes the same hop and the same composite key.
+    /// Pinned separately because it is the ONLY status Ollama ever produces — a
+    /// forwarding regression that happened to keep `.fraction` working would
+    /// leave that provider with no indicator at all.
+    ///
+    /// RED: drop the forwarding body -> `processingStatus` stays empty and the
+    /// first assertion fails. Key by stepID alone -> the isolation assertion fails.
+    func testUpdateStreamingProcessingStatus_indeterminate_forwardsUnderTheCompositeKey() async {
+        sut.updateStreamingProcessingStatus(stepID: "engineer", taskID: 7, status: .indeterminate)
+
+        XCTAssertEqual(
+            sut.streamingPreviewManager.processingStatus[
+                TaskStepKey(taskID: 7, stepID: "engineer")],
+            .indeterminate)
+        XCTAssertNil(
+            sut.streamingPreviewManager.processingStatus[
+                TaskStepKey(taskID: 8, stepID: "engineer")],
+            "the same role id in another task must not inherit this status")
     }
 
     /// Its clearing twin, so a regression that forwards the update but not the
     /// clear (leaving "Processing 99%" frozen for the whole generation) is caught.
     ///
-    /// RED: drop the forwarding body of `clearStreamingProcessingProgress` -> the
+    /// RED: drop the forwarding body of `clearStreamingProcessingStatus` -> the
     /// value survives and the assertion fails.
     func testClearStreamingProcessingProgress_removesTheEntry() async {
-        sut.updateStreamingProcessingProgress(stepID: "engineer", taskID: 7, progress: 0.99)
+        sut.updateStreamingProcessingStatus(stepID: "engineer", taskID: 7, status: .fraction(0.99))
 
-        sut.clearStreamingProcessingProgress(stepID: "engineer", taskID: 7)
+        sut.clearStreamingProcessingStatus(stepID: "engineer", taskID: 7)
 
         XCTAssertNil(
-            sut.streamingPreviewManager.processingProgress[
+            sut.streamingPreviewManager.processingStatus[
                 TaskStepKey(taskID: 7, stepID: "engineer")],
             "a stale progress value renders as a frozen 'Processing 99%' indicator")
     }

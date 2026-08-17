@@ -80,7 +80,9 @@ struct MeetingMessageItemView: View {
         } label: {
             HStack(spacing: Spacing.xs) {
                 Text("Thinking")
-                    .font(Typography.captionSemibold)
+                    // Same token as every other status caption in the feed —
+                    // see the twin row in `SupervisorInputCard`.
+                    .font(Typography.termXs.weight(.medium))
                     .foregroundStyle(Colors.textTertiary)
                 Spacer()
             }

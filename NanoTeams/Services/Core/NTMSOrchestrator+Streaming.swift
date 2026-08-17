@@ -166,15 +166,15 @@ extension NTMSOrchestrator {
         streamingPreviewManager.clear(stepID: stepID, taskID: taskID)
     }
 
-    // MARK: - Processing Progress
+    // MARK: - Processing Status
 
     // periphery:ignore - protocol conformance (LLMStreamingDelegate)
-    func updateStreamingProcessingProgress(stepID: String, taskID: Int, progress: Double) {
-        streamingPreviewManager.updateProcessingProgress(stepID: stepID, taskID: taskID, progress: progress)
+    func updateStreamingProcessingStatus(stepID: String, taskID: Int, status: PromptProcessingStatus) {
+        streamingPreviewManager.updateProcessingStatus(stepID: stepID, taskID: taskID, status: status)
     }
 
     // periphery:ignore - protocol conformance (LLMStreamingDelegate)
-    func clearStreamingProcessingProgress(stepID: String, taskID: Int) {
-        streamingPreviewManager.clearProcessingProgress(stepID: stepID, taskID: taskID)
+    func clearStreamingProcessingStatus(stepID: String, taskID: Int) {
+        streamingPreviewManager.clearProcessingStatus(stepID: stepID, taskID: taskID)
     }
 }

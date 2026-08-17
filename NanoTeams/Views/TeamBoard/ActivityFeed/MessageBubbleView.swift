@@ -28,7 +28,7 @@ struct MessageBubbleView: View {
     let roleDefinition: TeamRoleDefinition?
     let content: String
     let thinking: String?
-    let processingProgress: Double?
+    let processingStatus: PromptProcessingStatus?
     /// True when the streaming pipeline has observed at least one delta of
     /// any kind for this step (thinking, content, tool-call, harmony).
     /// Drives the "Waiting" → "Generating" status flip in
@@ -131,8 +131,25 @@ struct MessageBubbleView: View {
         ) && !hasMessageContent
     }
 
+    /// Top spacing for a status row — `Thinking…` / `Thinking` from
+    /// `MessageThinkingSection`, or `Waiting…` / `Processing 42%` /
+    /// `Generating…` from `MessageBubbleStreamingIndicator`.
+    ///
+    /// ONE function for both, because they are the same row taking turns: as a
+    /// turn progresses the indicator's caption is replaced by the thinking row
+    /// and back. When the two used different rules the swap moved the line by
+    /// the difference — measured at 2pt, on a row that changes several times
+    /// per turn, which is exactly the jump this whole change exists to remove.
+    ///
+    /// 2pt when something inside the bubble precedes the row; 0 when it is the
+    /// bubble's FIRST row, because the feed's own row gap already supplies that
+    /// space and stacking both is what made the row visibly float.
+    static func statusRowTopSpacing(hasRowAbove: Bool) -> CGFloat {
+        hasRowAbove ? ActivityCardTokens.statusRowTopSpacing : 0
+    }
+
     /// The header's `(source)` label. A collapsed system notice already spells
-    /// its kind out in the row (`system · retry`), so repeating it beside the
+    /// its kind out in the row (`system: retry`), so repeating it beside the
     /// role name says the same thing twice. Suppressed HERE rather than in
     /// `LLMMessage.sourceContextDisplayLabel` because `ConversationTranscriptRenderer`
     /// reads that same helper for `conversation_log.md`, where the label is the
@@ -175,7 +192,13 @@ struct MessageBubbleView: View {
                     .frame(width: ActivityCardTokens.avatarSize, height: 0)
             }
 
-            VStack(alignment: .leading, spacing: Spacing.xs) {
+            // `spacing: 0` — every gap in this stack is stated by the child that
+            // needs it. A uniform gap made the `Thinking` row float: it sat the
+            // same distance from the message it describes as from whatever was
+            // above, so the reasoning read as belonging to the wrong item.
+            // Status rows now take `statusRowTopSpacing` above and nothing
+            // below, which attaches them to their own content.
+            VStack(alignment: .leading, spacing: 0) {
                 if showHeader {
                     MessageBubbleHeader(
                         roleName: roleName,
@@ -205,6 +228,8 @@ struct MessageBubbleView: View {
                             isStreamingToolCall: isStreamingToolCall
                         )
                     )
+                    // Only the header can precede the top thinking row.
+                    .padding(.top, Self.statusRowTopSpacing(hasRowAbove: showHeader))
                 }
 
                 if hasMessageContent {
@@ -215,6 +240,7 @@ struct MessageBubbleView: View {
                     let contentText = SelectableMessageText(content: content)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                    Group {
                     if let systemNotice {
                         // The runtime talking to the model on the user's behalf.
                         // Collapsed to a dim one-liner that opens the full text
@@ -241,6 +267,12 @@ struct MessageBubbleView: View {
                     } else {
                         contentText
                     }
+                    }
+                    // Zero above the content when a thinking row precedes it —
+                    // that pairing is the whole point of the status row's
+                    // asymmetric spacing. With no thinking row the content
+                    // takes the ordinary gap under the header instead.
+                    .padding(.top, hasThinkingContent ? 0 : (showHeader ? Spacing.xs : 0))
                 }
 
                 if Self.showsTrailingThinkingRow(
@@ -260,14 +292,35 @@ struct MessageBubbleView: View {
                         roleName: roleName,
                         isStreaming: true
                     )
+                    // Always below the content, so always something above it.
+                    .padding(.top, Self.statusRowTopSpacing(hasRowAbove: true))
                 }
+
+                // Gated on `rendersRow`: this view is instantiated on every
+                // bubble and renders `EmptyView` most of the time, so an
+                // unconditional padding would leave a permanent strip under
+                // every quiet message. Same rule as the thinking row above —
+                // they occupy the same slot and must not differ, or the line
+                // moves each time the status changes.
+                let indicatorHasRow = MessageBubbleStreamingIndicator.rendersRow(
+                    isStreaming: isStreaming,
+                    isImplicitStreamTarget: isImplicitStreamTarget,
+                    hasMessageContent: hasMessageContent,
+                    hasThinkingContent: hasThinkingContent,
+                    processingStatus: processingStatus,
+                    hasStreamActivity: hasStreamActivity,
+                    isStreamingToolCall: isStreamingToolCall
+                )
+                let indicatorTop = indicatorHasRow
+                    ? Self.statusRowTopSpacing(hasRowAbove: showHeader || hasThinkingContent || hasMessageContent)
+                    : 0
 
                 MessageBubbleStreamingIndicator(
                     isStreaming: isStreaming,
                     isImplicitStreamTarget: isImplicitStreamTarget,
                     hasMessageContent: hasMessageContent,
                     hasThinkingContent: hasThinkingContent,
-                    processingProgress: processingProgress,
+                    processingStatus: processingStatus,
                     hasStreamActivity: hasStreamActivity,
                     isStreamingToolCall: isStreamingToolCall
                 )
@@ -276,6 +329,7 @@ struct MessageBubbleView: View {
                 // Processing steady state). Drift-guarded by
                 // `MessageBubbleStreamingIndicatorEquatableTests`.
                 .equatable()
+                .padding(.top, indicatorTop)
 
                 if !attachmentPaths.isEmpty || !clippedTexts.isEmpty {
                     ReadOnlyAttachmentGrid(
@@ -283,6 +337,7 @@ struct MessageBubbleView: View {
                         clippedTexts: clippedTexts,
                         workFolderURL: workFolderURL
                     )
+                    .padding(.top, Spacing.xs)
                 }
             }
         }
@@ -321,7 +376,7 @@ extension MessageBubbleView: Equatable {
             && lhs.roleDefinition?.id == rhs.roleDefinition?.id
             && lhs.content == rhs.content
             && lhs.thinking == rhs.thinking
-            && lhs.processingProgress == rhs.processingProgress
+            && lhs.processingStatus == rhs.processingStatus
             && lhs.hasStreamActivity == rhs.hasStreamActivity
             && lhs.isStreamingToolCall == rhs.isStreamingToolCall
             && lhs.isStreaming == rhs.isStreaming
@@ -347,7 +402,7 @@ extension MessageBubbleView: Equatable {
                 roleDefinition: nil,
                 content: "I'll implement the sorting algorithms now.",
                 thinking: nil,
-                processingProgress: nil,
+                processingStatus: nil,
                 isStreaming: false,
                 showHeader: true
             )
@@ -361,7 +416,7 @@ extension MessageBubbleView: Equatable {
                 roleDefinition: nil,
                 content: "Let me read the existing file first.",
                 thinking: "I should check what's already there before writing.",
-                processingProgress: nil,
+                processingStatus: nil,
                 isStreaming: false,
                 showHeader: true
             )
@@ -375,7 +430,7 @@ extension MessageBubbleView: Equatable {
                 roleDefinition: nil,
                 content: "",
                 thinking: nil,
-                processingProgress: nil,
+                processingStatus: nil,
                 isStreaming: true,
                 showHeader: true
             )
@@ -389,7 +444,7 @@ extension MessageBubbleView: Equatable {
                 roleDefinition: nil,
                 content: "",
                 thinking: nil,
-                processingProgress: 0.42,
+                processingStatus: .fraction(0.42),
                 isStreaming: true,
                 showHeader: true
             )
@@ -403,7 +458,7 @@ extension MessageBubbleView: Equatable {
                 roleDefinition: nil,
                 content: "",
                 thinking: "The user wants bubble sort and merge sort. I should check if there's an existing file first.",
-                processingProgress: nil,
+                processingStatus: nil,
                 isStreaming: true,
                 showHeader: true
             )
@@ -417,7 +472,7 @@ extension MessageBubbleView: Equatable {
                 roleDefinition: nil,
                 content: "I'll start by creating the Sorting.swift file with",
                 thinking: "Need to implement both algorithms.",
-                processingProgress: nil,
+                processingStatus: nil,
                 isStreaming: true,
                 showHeader: true
             )
@@ -431,7 +486,7 @@ extension MessageBubbleView: Equatable {
                 roleDefinition: nil,
                 content: "The file `src/main.js` already contains the integration. I will now implement the Save/Load system.",
                 thinking: "The previous edit failed because the state was different...\n<|call|>{\"name\":\"edit_file\",\"arguments\":{\"path\":\"src/engine/Game.js\"",
-                processingProgress: nil,
+                processingStatus: nil,
                 hasStreamActivity: true,
                 isStreamingToolCall: true,
                 isStreaming: true,
@@ -447,7 +502,7 @@ extension MessageBubbleView: Equatable {
                 roleDefinition: nil,
                 content: "Applying the change now.",
                 thinking: nil,
-                processingProgress: nil,
+                processingStatus: nil,
                 hasStreamActivity: true,
                 isStreamingToolCall: true,
                 isStreaming: true,
@@ -463,7 +518,7 @@ extension MessageBubbleView: Equatable {
                 roleDefinition: nil,
                 content: "The API should use REST endpoints.",
                 thinking: nil,
-                processingProgress: nil,
+                processingStatus: nil,
                 isStreaming: false,
                 showHeader: true
             )
@@ -485,7 +540,7 @@ extension MessageBubbleView: Equatable {
                     + "(parser error: No string key for value in object around line 1, column 1.). "
                     + "Retry with valid JSON.",
                 thinking: nil,
-                processingProgress: nil,
+                processingStatus: nil,
                 isStreaming: false,
                 showHeader: false
             )
@@ -503,7 +558,7 @@ extension MessageBubbleView: Equatable {
                 roleDefinition: nil,
                 content: "LLM server error (attempt 2/3): The request timed out. Retrying in 10s…",
                 thinking: nil,
-                processingProgress: nil,
+                processingStatus: nil,
                 isStreaming: false,
                 showHeader: true
             )
@@ -517,7 +572,7 @@ extension MessageBubbleView: Equatable {
                 roleDefinition: nil,
                 content: "Here is the second part of my response.",
                 thinking: nil,
-                processingProgress: nil,
+                processingStatus: nil,
                 isStreaming: false,
                 showHeader: false
             )

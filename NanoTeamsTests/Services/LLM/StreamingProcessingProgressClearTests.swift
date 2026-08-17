@@ -1,19 +1,19 @@
 import XCTest
 @testable import NanoTeams
 
-/// Pin: `processingProgress` indicator clears as soon as the first
+/// Pin: `processingStatus` indicator clears as soon as the first
 /// generation delta (thinking OR content) arrives — not at end-of-stream.
 ///
 /// User-reported symptom (2026-05-02): the activity feed showed
 /// "Processing 99%" while the model was actively generating tokens (visible
 /// in LM Studio's loaded-models panel as token count climbing). The
-/// pre-fix flow only cleared `processingProgress` at end-of-stream
+/// pre-fix flow only cleared `processingStatus` at end-of-stream
 /// (`LLMExecutionService+Streaming.swift:176`), so if LM Studio didn't
 /// emit `prompt_processing.end` (which would have set progress to 1.0)
 /// AND the last `prompt_processing.progress` was 0.99, the indicator
 /// stayed visually frozen at 99% throughout generation.
 ///
-/// Post-fix: any thinking or content delta clears `processingProgress`
+/// Post-fix: any thinking or content delta clears `processingStatus`
 /// immediately. Subsequent late `prompt_processing.*` events (defensive)
 /// are ignored — generation already started, no point re-flashing the
 /// indicator.
@@ -65,16 +65,17 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
             networkLogger: nil
         )
 
-        // Updates: 0.50, then 0.99 (in order). NO update for the thinking
-        // delta (it's not a `processingProgress` event).
-        let progressValues = delegate.updateProcessingProgressCalls.map(\.1)
-        XCTAssertEqual(progressValues, [0.50, 0.99],
-                       "Both prompt_processing.progress events must be forwarded in order")
+        // Updates: the service's own `.indeterminate` claim at stream start,
+        // then the server's 0.50 and 0.99 refining it (in order). NO update for
+        // the thinking delta (it's not a `prompt_processing` event).
+        let statuses = delegate.updateProcessingStatusCalls.map(\.1)
+        XCTAssertEqual(statuses, [.indeterminate, .fraction(0.50), .fraction(0.99)],
+                       "Both prompt_processing.progress events must be forwarded in order, after the stream-start claim")
 
         // Clear: at least once before stream-end. Pre-fix this would only
         // happen at end-of-stream (line 176); post-fix it fires on the first
         // thinking delta.
-        XCTAssertGreaterThanOrEqual(delegate.clearProcessingProgressCalls.count, 1,
+        XCTAssertGreaterThanOrEqual(delegate.clearProcessingStatusCalls.count, 1,
                                      "Indicator must clear at least once during the run")
 
         // Critical contract: the first clear comes BEFORE generation completes
@@ -107,8 +108,8 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
             networkLogger: nil
         )
 
-        XCTAssertEqual(delegate.updateProcessingProgressCalls.map(\.1), [0.95])
-        XCTAssertGreaterThanOrEqual(delegate.clearProcessingProgressCalls.count, 1,
+        XCTAssertEqual(delegate.updateProcessingStatusCalls.map(\.1), [.indeterminate, .fraction(0.95)])
+        XCTAssertGreaterThanOrEqual(delegate.clearProcessingStatusCalls.count, 1,
                                      "Content-only models must also clear on first content delta")
     }
 
@@ -140,9 +141,11 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
         )
 
         // Only the FIRST progress event should be forwarded — the late one
-        // arriving after thinking started must be ignored.
-        let progressValues = delegate.updateProcessingProgressCalls.map(\.1)
-        XCTAssertEqual(progressValues, [0.30],
+        // arriving after thinking started must be ignored. The leading
+        // `.indeterminate` is the stream-start claim, which precedes every
+        // server event by construction.
+        let statuses = delegate.updateProcessingStatusCalls.map(\.1)
+        XCTAssertEqual(statuses, [.indeterminate, .fraction(0.30)],
                        "Late prompt_processing.progress events must be filtered out once generation has started — otherwise the UI re-flashes 'Processing 99%' alongside visible tokens (the user's report)")
     }
 
@@ -207,8 +210,8 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
 
         XCTAssertGreaterThanOrEqual(delegate.markStreamActivityCalls.count, 1,
                                      "Tool-call delta must mark activity even though no content/thinking is visible")
-        XCTAssertGreaterThanOrEqual(delegate.clearProcessingProgressCalls.count, 1,
-                                     "Tool-call delta must also clear processingProgress — same flow as content/thinking")
+        XCTAssertGreaterThanOrEqual(delegate.clearProcessingStatusCalls.count, 1,
+                                     "Tool-call delta must also clear processingStatus — same flow as content/thinking")
     }
 
     // MARK: - markStreamingToolCall (envelope-as-thinking pipe + Generating fallback)
@@ -375,12 +378,16 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
 
     // MARK: - No progress, no thinking, only content (sanity)
 
-    func testNoProcessingEvents_clearStillCalledAtEndOfStream() async throws {
-        // Stream that has NO prompt_processing.* events at all (some
-        // providers / configurations skip them). Generation goes
-        // straight to content. The end-of-stream clear path still fires
-        // (line 176 in LLMExecutionService+Streaming.swift) — preserves
-        // the prior contract for the "no progress events" path.
+    /// The Ollama shape: a stream with NO `prompt_processing.*` events at all
+    /// (that provider yields nothing whatsoever between the send and the first
+    /// token). The service still claims the window with `.indeterminate` so the
+    /// bubble reads "Processing…" rather than "Waiting…", and the end-of-stream
+    /// clear still fires.
+    ///
+    /// RED: drop the `.indeterminate` set in `performStreamingCall` -> the
+    /// status list is empty and the first assertion fails (the indicator would
+    /// sit on "Waiting…" for the whole prefill, which is the reported bug).
+    func testNoProcessingEvents_claimsTheWindowAndClearsAtEndOfStream() async throws {
         let events: [StreamEvent] = [
             StreamEvent(contentDelta: "answer"),
         ]
@@ -397,9 +404,129 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
             networkLogger: nil
         )
 
-        XCTAssertTrue(delegate.updateProcessingProgressCalls.isEmpty)
-        XCTAssertGreaterThanOrEqual(delegate.clearProcessingProgressCalls.count, 1,
+        XCTAssertEqual(delegate.updateProcessingStatusCalls.map(\.1), [.indeterminate],
+                       "A provider that narrates nothing must still get the stream-start claim — otherwise its whole prefill window renders 'Waiting…'")
+        XCTAssertGreaterThanOrEqual(delegate.clearProcessingStatusCalls.count, 1,
                                      "End-of-stream clear must still fire even when no progress events arrived")
+    }
+
+    // MARK: - Ordering: the claim must follow beginStreaming
+
+    /// `beginStreaming` RESETS the status (`StreamingPreviewManager` sets
+    /// `processingStatus[key] = nil` there, so a mid-stream retry cannot inherit
+    /// the failed attempt's state). The `.indeterminate` claim therefore has to
+    /// be issued strictly AFTER it — hoisted above, it is wiped the instant it
+    /// is made, the manager keeps `nil`, and the Ollama bubble sits on
+    /// "Waiting…" for the entire prefill: the exact bug this claim exists to fix,
+    /// reintroduced with every assertion still green.
+    ///
+    /// The ordering is documented as load-bearing at the call site, so it gets a
+    /// pin that names it rather than relying on the prose. (The mock also models
+    /// the reset now, which reds the swap across this whole file; this test is
+    /// the one that says WHY.)
+    ///
+    /// RED: move the `updateStreamingProcessingStatus(…, .indeterminate)` call
+    /// above `await delegate.beginStreaming(…)` in `performStreamingCall` ->
+    /// the recorded order flips and this fails.
+    func testTheIndeterminateClaim_isIssuedAfterBeginStreaming_notBefore() async throws {
+        let client = ScriptedLLMClient(events: [StreamEvent(contentDelta: "hi")])
+
+        _ = try await service.performStreamingCall(
+            stepID: "step1",
+            taskID: 1,
+            roleForMessage: .softwareEngineer,
+            client: client,
+            config: stubConfig(),
+            tools: [],
+            conversationMessages: [],
+            networkLogger: nil
+        )
+
+        XCTAssertEqual(
+            delegate.streamingTaskIDTrace.prefix(2).map(\.method),
+            ["beginStreaming", "updateStreamingProcessingStatus"],
+            "the claim must follow the reset — reversed, `beginStreaming` erases it and the prefill window renders 'Waiting…'")
+    }
+
+    // MARK: - Stream failure must not freeze the indicator
+
+    /// A transport/server failure DURING the prompt-processing window. The retry
+    /// lives in `+StepLifecycle`, which posts "Retrying in Ns…" and then SLEEPS
+    /// before re-entering — and only that re-entry's `beginStreaming` resets the
+    /// status. Without the generic catch, the bubble spends the whole sleep
+    /// claiming the server is processing our prompt while nothing is in flight.
+    ///
+    /// RED: delete the `catch { … }` arm added beside `catch is CancellationError`
+    /// in `performStreamingCall` -> no clear is recorded after the `.indeterminate`
+    /// and this fails. (Ollama's shape is used here — no progress events — but the
+    /// same freeze applies to a half-finished "Processing 47%" on LM Studio.)
+    func testStreamFailsDuringPrefill_clearsTheStatusSoTheRetryWindowReadsAsWaiting() async throws {
+        let client = ScriptedLLMClient(
+            events: [], failure: LLMClientError.providerError("connection reset"))
+
+        do {
+            _ = try await service.performStreamingCall(
+                stepID: "step1",
+                taskID: 1,
+                roleForMessage: .softwareEngineer,
+                client: client,
+                config: stubConfig(),
+                tools: [],
+                conversationMessages: [],
+                networkLogger: nil
+            )
+            XCTFail("The scripted transport failure must propagate to the retry loop")
+        } catch is CancellationError {
+            XCTFail("A transport failure must not be reported as a cancellation")
+        } catch {
+            // expected — `+StepLifecycle` classifies and retries it
+        }
+
+        XCTAssertEqual(delegate.updateProcessingStatusCalls.map(\.1), [.indeterminate],
+                       "The window was claimed at stream start")
+        XCTAssertGreaterThanOrEqual(delegate.clearProcessingStatusCalls.count, 1,
+                                    "The status must be cleared when the stream throws — otherwise it stays frozen for the whole retry sleep, asserting work that is not happening")
+    }
+
+    /// The two catch arms are deliberately asymmetric, and this pins the half
+    /// that is easy to "unify" away: CANCELLATION commits the partial turn (a
+    /// Pause must preserve what the user already watched arrive), a transport
+    /// FAILURE must not — `+StepLifecycle` retries by re-sending the whole
+    /// conversation, so a committed partial would be joined by the retry's full
+    /// turn and the step would carry the answer twice.
+    ///
+    /// Also covers the status half: mid-generation the first delta already
+    /// cleared it, so the new arm adds no second meaning there.
+    ///
+    /// RED: add `await commitStreamingContent()` to the generic catch (mirroring
+    /// the cancellation arm above it) -> the partial "partial" turn is committed
+    /// and the commit assertion fails.
+    func testStreamFailsMidGeneration_doesNotCommitThePartialTurn() async throws {
+        let client = ScriptedLLMClient(
+            events: [StreamEvent(contentDelta: "partial")],
+            failure: LLMClientError.providerError("connection reset"))
+
+        do {
+            _ = try await service.performStreamingCall(
+                stepID: "step1",
+                taskID: 1,
+                roleForMessage: .softwareEngineer,
+                client: client,
+                config: stubConfig(),
+                tools: [],
+                conversationMessages: [],
+                networkLogger: nil
+            )
+            XCTFail("The scripted transport failure must propagate to the retry loop")
+        } catch {
+            // expected
+        }
+
+        XCTAssertTrue(delegate.commitStreamingCalls.isEmpty,
+                      "A failed stream has no turn to commit — the retry re-sends the whole conversation, so committing the partial here would leave the step carrying it twice")
+        XCTAssertEqual(delegate.updateProcessingStatusCalls.map(\.1), [.indeterminate],
+                       "No status is re-asserted once generation has started")
+        XCTAssertGreaterThanOrEqual(delegate.clearProcessingStatusCalls.count, 1)
     }
 
     // MARK: - Helpers
@@ -417,7 +544,13 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
     /// Used by tests to drive `performStreamingCall` deterministically.
     private final class ScriptedLLMClient: LLMClient, @unchecked Sendable {
         let events: [StreamEvent]
-        init(events: [StreamEvent]) { self.events = events }
+        /// Thrown after the scripted events drain — models a transport/server
+        /// failure mid-stream (the retryable class `+StepLifecycle` sleeps on).
+        let failure: Error?
+        init(events: [StreamEvent], failure: Error? = nil) {
+            self.events = events
+            self.failure = failure
+        }
 
         func streamChat(
             config _: LLMConfig,
@@ -428,11 +561,12 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
             roleName _: String?
         ) -> AsyncThrowingStream<StreamEvent, Error> {
             let scripted = events
+            let thrown = failure
             return AsyncThrowingStream { continuation in
                 for event in scripted {
                     continuation.yield(event)
                 }
-                continuation.finish()
+                continuation.finish(throwing: thrown)
             }
         }
 

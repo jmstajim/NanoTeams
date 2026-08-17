@@ -872,8 +872,8 @@ private final class StreamPersistingMockDelegate: LLMExecutionDelegate {
     var appendStreamingThinkingCalls: [(String, String)] = []
     var commitStreamingCalls: [(String, Int, String, String?)] = []
     var clearStreamingPreviewCalls: [String] = []
-    var updateProcessingProgressCalls: [(String, Double)] = []
-    var clearProcessingProgressCalls: [String] = []
+    var updateProcessingStatusCalls: [(String, PromptProcessingStatus)] = []
+    var clearProcessingStatusCalls: [String] = []
     var markStreamActivityCalls: [String] = []
     func markStreamActivity(stepID: String, taskID _: Int) { markStreamActivityCalls.append(stepID) }
     var markStreamingToolCallCalls: [String] = []
@@ -968,12 +968,12 @@ private final class StreamPersistingMockDelegate: LLMExecutionDelegate {
         streamingRoles[stepID] = nil
     }
 
-    func updateStreamingProcessingProgress(stepID: String, taskID _: Int, progress: Double) {
-        updateProcessingProgressCalls.append((stepID, progress))
+    func updateStreamingProcessingStatus(stepID: String, taskID _: Int, status: PromptProcessingStatus) {
+        updateProcessingStatusCalls.append((stepID, status))
     }
 
-    func clearStreamingProcessingProgress(stepID: String, taskID _: Int) {
-        clearProcessingProgressCalls.append(stepID)
+    func clearStreamingProcessingStatus(stepID: String, taskID _: Int) {
+        clearProcessingStatusCalls.append(stepID)
     }
 
     var setMeetingParticipantsCalls: [(Set<String>, Int)] = []

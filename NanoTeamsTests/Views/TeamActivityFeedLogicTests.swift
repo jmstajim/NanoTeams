@@ -969,7 +969,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         )
     }
 
-    /// Corner pin across the FULL flag matrix (128 combos), composing the
+    /// Corner pin across the FULL flag matrix (192 combos), composing the
     /// row helpers with the PRODUCTION `resolveStatusText`: at any moment at
     /// most ONE live indicator renders — animated top row, animated trailing
     /// row, or an indicator status text. Catches cross-component drift that
@@ -981,7 +981,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
             for hasContent in [false, true] {
                 for toolCall in [false, true] {
                     for hasThinking in [false, true] {
-                        for progress in [nil, 0.42] as [Double?] {
+                        for progress in [nil, .indeterminate, .fraction(0.42)] as [PromptProcessingStatus?] {
                             for activity in [false, true] {
                                 // Production never sets both: resolveImplicitStreamTarget
                                 // returns false for the live preview target. The
@@ -1005,7 +1005,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
                                     isImplicitStreamTarget: implicitTarget,
                                     hasMessageContent: hasContent,
                                     hasThinkingContent: hasThinking,
-                                    processingProgress: progress,
+                                    processingStatus: progress,
                                     hasStreamActivity: activity,
                                     isStreamingToolCall: toolCall)
 
@@ -1020,6 +1020,190 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         }
     }
 
+    // MARK: - Reserved status slot
+
+    /// Mirrors `MessageBubbleStreamingIndicator.body`: the reserve is the
+    /// `else` of the status row, so a caller can never get both.
+    private func effectivelyReserves(
+        isStreaming: Bool, implicitTarget: Bool, hasContent: Bool,
+        hasThinking: Bool, progress: PromptProcessingStatus?, activity: Bool, toolCall: Bool
+    ) -> Bool {
+        let status = MessageBubbleStreamingIndicator.resolveStatusText(
+            isStreaming: isStreaming, isImplicitStreamTarget: implicitTarget,
+            hasMessageContent: hasContent, hasThinkingContent: hasThinking,
+            processingStatus: progress, hasStreamActivity: activity,
+            isStreamingToolCall: toolCall)
+        guard status == nil else { return false }
+        return MessageBubbleStreamingIndicator.reservesStatusSlot(
+            isStreaming: isStreaming, hasMessageContent: hasContent,
+            hasThinkingContent: hasThinking, isStreamingToolCall: toolCall)
+    }
+
+    /// The reserve exists to make the bubble's tail height constant, so it must
+    /// never ADD a row beside one that is already there. Same matrix as the
+    /// exclusivity pin above, now counting the reserve as an occupant.
+    ///
+    /// RED: drop the `!showsTrailingThinkingRow(...)` conjunct from
+    /// `reservesStatusSlot` → this fails on every tool-call-with-thinking combo,
+    /// where a blank row is reserved directly beneath the live trailing
+    /// `Thinking…` row it was supposed to be standing in for.
+    func testTrailingSlot_occupiedAtMostOnce_acrossFullFlagMatrix() {
+        for isStreaming in [false, true] {
+            for hasContent in [false, true] {
+                for toolCall in [false, true] {
+                    for hasThinking in [false, true] {
+                        for progress in [nil, .indeterminate, .fraction(0.42)] as [PromptProcessingStatus?] {
+                            for activity in [false, true] {
+                                let implicitTarget = !isStreaming && activity
+                                let statusText = MessageBubbleStreamingIndicator.resolveStatusText(
+                                    isStreaming: isStreaming, isImplicitStreamTarget: implicitTarget,
+                                    hasMessageContent: hasContent, hasThinkingContent: hasThinking,
+                                    processingStatus: progress, hasStreamActivity: activity,
+                                    isStreamingToolCall: toolCall)
+                                let trailing = MessageBubbleView.showsTrailingThinkingRow(
+                                    isStreaming: isStreaming, hasMessageContent: hasContent,
+                                    isStreamingToolCall: toolCall, hasThinkingContent: hasThinking)
+                                let reserved = effectivelyReserves(
+                                    isStreaming: isStreaming, implicitTarget: implicitTarget,
+                                    hasContent: hasContent, hasThinking: hasThinking,
+                                    progress: progress, activity: activity, toolCall: toolCall)
+
+                                let occupancy = [statusText != nil, trailing, reserved].filter(\.self).count
+                                XCTAssertLessThanOrEqual(occupancy, 1,
+                                    "Tail slot occupied \(occupancy)× (status: \(statusText ?? "nil"), trailing: \(trailing), reserved: \(reserved)) at (isStreaming: \(isStreaming), hasContent: \(hasContent), toolCall: \(toolCall), hasThinking: \(hasThinking), progress: \(String(describing: progress)), activity: \(activity))")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Before prose lands, the status row and the top `Thinking…` row occupy the
+    /// SAME slot and already swap in place at constant height. Reserving there
+    /// would put a permanently blank row under a live reasoning row.
+    ///
+    /// RED: drop the `hasMessageContent` conjunct from `reservesStatusSlot` →
+    /// this fails, and every reasoning-phase bubble grows a blank row beneath
+    /// its `Thinking…` line for as long as the model is thinking.
+    func testTrailingSlot_isEmpty_whileReasoningIsTheOnlyRow() {
+        for toolCall in [false, true] {
+            XCTAssertFalse(
+                effectivelyReserves(
+                    isStreaming: true, implicitTarget: false, hasContent: false,
+                    hasThinking: true, progress: nil, activity: true, toolCall: toolCall),
+                "No reserve while reasoning is the only row (toolCall: \(toolCall))."
+            )
+        }
+    }
+
+    /// A finished message must keep exactly the height it has today. This is the
+    /// guard that stops the reserve from undoing the turn grouping: the
+    /// committed bubble of a role whose step is still running is the implicit
+    /// stream target for the WHOLE tool execution, so a reserve there would park
+    /// a blank row between a turn's `Thinking` row and the tool-call card it
+    /// produced.
+    ///
+    /// RED: drop the `isStreaming` conjunct from `reservesStatusSlot` → this
+    /// fails, and every committed bubble with prose in the feed grows a
+    /// permanent blank strip.
+    func testTrailingSlot_isEmpty_onEveryCommittedBubble() {
+        for hasContent in [false, true] {
+            for hasThinking in [false, true] {
+                for activity in [false, true] {
+                    XCTAssertFalse(
+                        effectivelyReserves(
+                            isStreaming: false, implicitTarget: activity,
+                            hasContent: hasContent, hasThinking: hasThinking,
+                            progress: nil, activity: activity, toolCall: false),
+                        "Committed bubble must reserve nothing (content: \(hasContent), thinking: \(hasThinking), activity: \(activity))."
+                    )
+                }
+            }
+        }
+    }
+
+    /// The whole point, as a sequence: one turn that reasons, writes prose, then
+    /// assembles a tool call. Counts the bubble's one-line rows (top thinking +
+    /// trailing thinking + tail slot); prose height is excluded because it grows
+    /// legitimately.
+    ///
+    /// RED: make `reservesStatusSlot` return `false` unconditionally → the
+    /// counts become [1, 1, 1, 2, 1], i.e. a row pops IN when the tool-call
+    /// envelope starts and drops OUT at commit — the ±17pt churn this reserve
+    /// exists to remove.
+    func testTrailingSlot_isConstantThroughOneLiveTurn_onceProseExists() {
+        // (isStreaming, hasContent, hasThinking, toolCall, progress, activity)
+        let steps: [(String, Bool, Bool, Bool, Bool, PromptProcessingStatus?, Bool)] = [
+            ("pre-send",        true,  false, false, false, nil,            false),
+            ("reasoning",       true,  false, true,  false, nil,            true),
+            ("prose streaming", true,  true,  true,  false, nil,            true),
+            ("envelope",        true,  true,  true,  true,  nil,            true),
+            ("committed",       false, true,  true,  false, nil,            false),
+        ]
+        var counts: [Int] = []
+        for (_, isStreaming, hasContent, hasThinking, toolCall, progress, activity) in steps {
+            let statusText = MessageBubbleStreamingIndicator.resolveStatusText(
+                isStreaming: isStreaming, isImplicitStreamTarget: false,
+                hasMessageContent: hasContent, hasThinkingContent: hasThinking,
+                processingStatus: progress, hasStreamActivity: activity,
+                isStreamingToolCall: toolCall)
+            let trailing = MessageBubbleView.showsTrailingThinkingRow(
+                isStreaming: isStreaming, hasMessageContent: hasContent,
+                isStreamingToolCall: toolCall, hasThinkingContent: hasThinking)
+            let reserved = effectivelyReserves(
+                isStreaming: isStreaming, implicitTarget: false, hasContent: hasContent,
+                hasThinking: hasThinking, progress: progress, activity: activity, toolCall: toolCall)
+            // The top section renders whenever thinking exists — animated or static.
+            let top = hasThinking
+            counts.append([top, trailing, statusText != nil || reserved].filter(\.self).count)
+        }
+        XCTAssertEqual(
+            counts, [1, 1, 2, 2, 1],
+            "Row count per step \(steps.map(\.0)): the slot must open once with the prose and close once at commit, never toggle around the envelope."
+        )
+    }
+
+    /// The reported jump: `Processing…` and `Thinking…` are the same row taking
+    /// turns, so if the two components space themselves differently the line
+    /// moves by that difference every time the status changes. It was measured
+    /// at 2pt — the indicator padded itself unconditionally while the thinking
+    /// row padded itself only under a header.
+    ///
+    /// RED: give either call site its own literal instead of
+    /// `statusRowTopSpacing(hasRowAbove:)` → the source scan below fails; change
+    /// the function to return a non-zero value for a first row → the equality
+    /// against the feed-supplied gap fails.
+    func testStatusRowTopSpacing_isOneRuleForBothRows() throws {
+        XCTAssertEqual(
+            MessageBubbleView.statusRowTopSpacing(hasRowAbove: false), 0,
+            "As the bubble's first row the feed's row gap is already the space above it; adding to it is what made the row float.")
+        XCTAssertEqual(
+            MessageBubbleView.statusRowTopSpacing(hasRowAbove: true),
+            ActivityCardTokens.statusRowTopSpacing)
+
+        // NanoTeamsTests/Views/<this file> → repo root.
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let bubble = try String(
+            contentsOf: repoRoot.appendingPathComponent(
+                "NanoTeams/Views/TeamBoard/ActivityFeed/MessageBubbleView.swift"),
+            encoding: .utf8)
+        let indicator = try String(
+            contentsOf: repoRoot.appendingPathComponent(
+                "NanoTeams/Views/TeamBoard/ActivityFeed/MessageBubbleStreamingIndicator.swift"),
+            encoding: .utf8)
+
+        // Thinking row, trailing thinking row, and the indicator — all three.
+        let routed = bubble.components(separatedBy: "Self.statusRowTopSpacing(hasRowAbove:").count - 1
+        XCTAssertGreaterThanOrEqual(
+            routed, 3,
+            "Every status row in the bubble must take its top spacing from the shared rule, or the rows drift apart again.")
+        XCTAssertFalse(
+            indicator.contains(".padding(.top,"),
+            "The indicator must not space itself — it cannot see what precedes it in the bubble, which is how it ended up 2pt lower than the thinking row it swaps with.")
+    }
+
     /// Liveness corner pin — the inverse of the exclusivity test: while
     /// streaming, the bubble must NEVER show zero animation. Every streaming
     /// state must surface at least one live signal: an animated thinking row,
@@ -1032,7 +1216,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         for hasContent in [false, true] {
             for toolCall in [false, true] {
                 for hasThinking in [false, true] {
-                    for progress in [nil, 0.42] as [Double?] {
+                    for progress in [nil, .indeterminate, .fraction(0.42)] as [PromptProcessingStatus?] {
                         for activity in [false, true] {
                             let top = renderedTopRowAnimates(
                                 isStreaming: true, hasContent: hasContent,
@@ -1047,7 +1231,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
                                 isImplicitStreamTarget: false,
                                 hasMessageContent: hasContent,
                                 hasThinkingContent: hasThinking,
-                                processingProgress: progress,
+                                processingStatus: progress,
                                 hasStreamActivity: activity,
                                 isStreamingToolCall: toolCall)
                             let growingProse = hasContent && !toolCall
@@ -1417,7 +1601,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
     /// change (e.g. `pauseRun`, `finishAdvisoryRole`) must invalidate the hash —
     /// otherwise the dispatcher's `resolveImplicitStreamTarget` keeps returning
     /// `true` against a stale `cachedAllSteps[i].status`, and a residual
-    /// `processingProgress` would mis-surface "Processing" on a paused step.
+    /// `processingStatus` would mis-surface "Processing" on a paused step.
     func testComputeRunDataVersion_changesWhenStepStatusFlips() {
         let stepRunning = makeStep(status: .running)
         let stepPaused = makeStep(status: .paused)

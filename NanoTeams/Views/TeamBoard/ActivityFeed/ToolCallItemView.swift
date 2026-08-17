@@ -95,8 +95,11 @@ struct ToolCallItemView: View {
                         .accessibilityLabel("Exploratory search")
                 }
                 if !hasCustomSummary {
-                    let argSummary = ToolCallSummarizer.summarizeArguments(
-                        toolName: canonicalName, json: call.argumentsJSON,
+                    let argSummary = ToolCallSummarizer.cardSummary(
+                        toolName: canonicalName,
+                        argumentsJSON: call.argumentsJSON,
+                        resultJSON: call.resultJSON,
+                        isError: call.isError == true,
                         resolveRoleName: { teamRoles.roleName(for: $0) }
                     )
                     if !argSummary.isEmpty {
@@ -134,7 +137,7 @@ struct ToolCallItemView: View {
     /// paragraphs. A constant does not earn permanent screen space — the reason is one tap
     /// away, in full and selectable, via `ActivityDetailWindow.toolCall` below.
     ///
-    /// This is not the `system · retry` row returning by another route either: that row was
+    /// This is not the `system: retry` row returning by another route either: that row was
     /// removed because it restated the envelope to the MODEL, an argument about context cost
     /// that this view never touched.
     @ViewBuilder

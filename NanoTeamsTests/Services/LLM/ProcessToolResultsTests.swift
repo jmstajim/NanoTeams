@@ -234,7 +234,7 @@ final class ProcessToolResultsTests: XCTestCase {
         // because `rebuildFromDisplayRecord` and `DelegatedSupervisorAnswerService.buildSeed`
         // read the display record rather than the wire; it is unattributed because
         // `ActivityFeedBuilder` drops `.user` turns with neither a source role nor a context,
-        // which is what keeps a `system · retry` row from restating the card directly above
+        // which is what keeps a `system: retry` row from restating the card directly above
         // it. Every arm is a constant keyed on the error code, so the row carried nothing the
         // card does not. See the `feed-invisible-by-design:` note at the call site.
         XCTAssertNil(persisted[1].sourceContext,
@@ -249,7 +249,7 @@ final class ProcessToolResultsTests: XCTestCase {
     /// is the one that states the defect. The reported shape was a red card reading
     /// "This command needs human approval …, but no human is available to review it.
     /// Ask the supervisor to allow unattended command approval." with a dim
-    /// `system · retry` row beneath it reading "Do NOT retry this command — the block
+    /// `system: retry` row beneath it reading "Do NOT retry this command — the block
     /// is set by policy…" — the same sentence twice, for one event.
     ///
     /// Driven through the real `processToolResults` rather than a hand-built
@@ -292,7 +292,7 @@ final class ProcessToolResultsTests: XCTestCase {
         XCTAssertEqual(cards.first?.isError, true)
 
         // `SystemNoticePresentation.resolve` is the exact predicate the bubble uses to
-        // pick the `system · …` row, so asking it is asking the view.
+        // pick the `system: …` row, so asking it is asking the view.
         let notices = items.compactMap { tagged -> SystemNoticePresentation.Notice? in
             guard case .llmMessage(let message, _, _, _) = tagged.item else { return nil }
             return SystemNoticePresentation.resolve(

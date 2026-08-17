@@ -9,7 +9,7 @@ import Foundation
 ///   something OTHER than what the call implies — the memory write failed, or the
 ///   standing memory was deliberately left alone. Both correct a false belief the
 ///   model would otherwise carry into its next pass.
-/// - **The feed** (what the SUPERVISOR reads, as a `system · note`) gets a note
+/// - **The feed** (what the SUPERVISOR reads, as a `system: note`) gets a note
 ///   only when there is a fact the tool card does not already carry. The card
 ///   already renders `$ update_scratchpad → ok`, so "it worked" is not news.
 ///
@@ -80,7 +80,7 @@ nonisolated enum ScratchpadNotePolicy {
 
     // MARK: - Surfaces
 
-    /// The `system · note` for the activity feed. `nil` = emit nothing.
+    /// The `system: note` for the activity feed. `nil` = emit nothing.
     ///
     /// Second person is deliberate: the feed renders the ROLE's conversation, so
     /// the note reads as the app addressing that role, which is how the

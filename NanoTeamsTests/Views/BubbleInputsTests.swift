@@ -19,13 +19,13 @@ final class BubbleInputsTests: XCTestCase {
         let inputs = BubbleInputs.streaming(
             content: "live",
             thinking: "thoughts",
-            processingProgress: 0.42,
+            processingStatus: .fraction(0.42),
             hasStreamActivity: true,
             isStreamingToolCall: false
         )
         XCTAssertEqual(inputs.contentForBubble, "live")
         XCTAssertEqual(inputs.thinkingForBubble, "thoughts")
-        XCTAssertEqual(inputs.processingProgress, 0.42)
+        XCTAssertEqual(inputs.processingStatus, .fraction(0.42))
         XCTAssertTrue(inputs.hasStreamActivity)
         XCTAssertFalse(inputs.isStreamingToolCall)
         XCTAssertTrue(inputs.attachmentPaths.isEmpty,
@@ -47,8 +47,8 @@ final class BubbleInputsTests: XCTestCase {
         XCTAssertEqual(inputs.thinkingForBubble, "rationale")
         XCTAssertEqual(inputs.attachmentPaths, ["/path/to/file.swift"])
         XCTAssertEqual(inputs.clippedTexts, ["let x = 1"])
-        XCTAssertNil(inputs.processingProgress,
-                     "Committed bubbles never carry processingProgress.")
+        XCTAssertNil(inputs.processingStatus,
+                     "Committed bubbles never carry processingStatus.")
         XCTAssertFalse(inputs.hasStreamActivity,
                        "Committed bubbles never claim stream activity.")
         XCTAssertFalse(inputs.isStreamingToolCall,
@@ -59,7 +59,7 @@ final class BubbleInputsTests: XCTestCase {
     /// dispatcher's `inputs.isStreaming` forwarding to `MessageBubbleView`
     /// stays in sync if the cases ever rearrange.
     func testIsStreaming_matchesCase() async {
-        let s = BubbleInputs.streaming(content: "x", thinking: nil, processingProgress: nil, hasStreamActivity: false, isStreamingToolCall: false)
+        let s = BubbleInputs.streaming(content: "x", thinking: nil, processingStatus: nil, hasStreamActivity: false, isStreamingToolCall: false)
         let c = BubbleInputs.committed(content: "x", thinking: nil, attachmentPaths: [], clippedTexts: [])
         XCTAssertTrue(s.isStreaming)
         XCTAssertFalse(c.isStreaming)
@@ -70,7 +70,7 @@ final class BubbleInputsTests: XCTestCase {
         let inputs = BubbleInputs.streaming(
             content: "frozen prose",
             thinking: nil,
-            processingProgress: nil,
+            processingStatus: nil,
             hasStreamActivity: true,
             isStreamingToolCall: true
         )
@@ -80,7 +80,7 @@ final class BubbleInputsTests: XCTestCase {
     // MARK: - Equatable synthesis
 
     func testEquatable_streamingVsCommitted_sameContent_neverEqual() async {
-        let s = BubbleInputs.streaming(content: "x", thinking: nil, processingProgress: nil, hasStreamActivity: false, isStreamingToolCall: false)
+        let s = BubbleInputs.streaming(content: "x", thinking: nil, processingStatus: nil, hasStreamActivity: false, isStreamingToolCall: false)
         let c = BubbleInputs.committed(content: "x", thinking: nil, attachmentPaths: [], clippedTexts: [])
         XCTAssertNotEqual(s, c, "Cross-case must never compare equal even with same content.")
     }
@@ -92,14 +92,14 @@ final class BubbleInputsTests: XCTestCase {
     }
 
     func testEquatable_sameCaseDifferentField_areNotEqual() async {
-        let a = BubbleInputs.streaming(content: "x", thinking: nil, processingProgress: 0.1, hasStreamActivity: true, isStreamingToolCall: false)
-        let b = BubbleInputs.streaming(content: "x", thinking: nil, processingProgress: 0.2, hasStreamActivity: true, isStreamingToolCall: false)
+        let a = BubbleInputs.streaming(content: "x", thinking: nil, processingStatus: .fraction(0.1), hasStreamActivity: true, isStreamingToolCall: false)
+        let b = BubbleInputs.streaming(content: "x", thinking: nil, processingStatus: .fraction(0.2), hasStreamActivity: true, isStreamingToolCall: false)
         XCTAssertNotEqual(a, b, "Different progress in same case must compare not-equal.")
     }
 
     func testEquatable_differentToolCallFlag_areNotEqual() async {
-        let a = BubbleInputs.streaming(content: "x", thinking: nil, processingProgress: nil, hasStreamActivity: true, isStreamingToolCall: false)
-        let b = BubbleInputs.streaming(content: "x", thinking: nil, processingProgress: nil, hasStreamActivity: true, isStreamingToolCall: true)
+        let a = BubbleInputs.streaming(content: "x", thinking: nil, processingStatus: nil, hasStreamActivity: true, isStreamingToolCall: false)
+        let b = BubbleInputs.streaming(content: "x", thinking: nil, processingStatus: nil, hasStreamActivity: true, isStreamingToolCall: true)
         XCTAssertNotEqual(a, b, "Tool-call flag flip must propagate through Equatable — the TimelineView tick relies on it.")
     }
 }

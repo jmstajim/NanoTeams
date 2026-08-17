@@ -374,10 +374,13 @@ protocol LLMStreamingDelegate: AnyObject {
     func noteStreamLoop(taskID: Int, stepID: String, signal: LoopSignal) -> Bool
     /// Clears the streaming preview for a step without committing.
     func clearStreamingPreview(stepID: String, taskID: Int)
-    /// Updates prompt processing progress for a step (0.0–1.0).
-    func updateStreamingProcessingProgress(stepID: String, taskID: Int, progress: Double)
-    /// Clears prompt processing progress for a step.
-    func clearStreamingProcessingProgress(stepID: String, taskID: Int)
+    /// Updates the prompt-processing status for a step — the window between
+    /// "request sent" and "first token". `.indeterminate` from stream start for
+    /// every provider; refined to `.fraction` by servers that narrate their
+    /// prefill. See `PromptProcessingStatus`.
+    func updateStreamingProcessingStatus(stepID: String, taskID: Int, status: PromptProcessingStatus)
+    /// Clears the prompt-processing status for a step.
+    func clearStreamingProcessingStatus(stepID: String, taskID: Int)
     /// Marks the step as having received at least one stream delta of any
     /// kind. Called from the streaming service on EVERY delta (thinking,
     /// content, tool-call, harmony-buffered) so the UI can distinguish

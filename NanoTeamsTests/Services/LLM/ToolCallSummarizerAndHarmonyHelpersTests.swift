@@ -75,17 +75,19 @@ final class ToolCallSummarizerAndHarmonyHelpersTests: XCTestCase {
             Self.summarize(TN.gitCheckout, #"{"branch":"develop"}"#))
     }
 
-    // MARK: - Xcode scheme extractor (both consumers, incl. the empty arm)
+    // MARK: - Xcode runners take no arguments
 
-    func testSummarizeArguments_runXcodetests_showsScheme() {
-        XCTAssertEqual(Self.summarize(TN.runXcodetests, #"{"scheme":"NanoTeams"}"#), "scheme: NanoTeams")
-    }
-
-    func testSummarizeArguments_schemeExtractor_missingScheme_returnsEmptyForBothTools() {
-        // The shared `schemeExtractor` closure's else-arm. Both Xcode tools use it, so a
-        // regression in one is a regression in both.
-        XCTAssertEqual(Self.summarize(TN.runXcodetests, "{}"), "")
-        XCTAssertEqual(Self.summarize(TN.runXcodebuild, "{}"), "")
+    /// RED: re-add a `scheme` entry for either tool → this fires.
+    ///
+    /// Replaces `testSummarizeArguments_runXcodetests_showsScheme`. Both tools declare
+    /// `JS.object(properties: [:])`, so `{"scheme":…}` is a fixture the runtime never
+    /// produces — the old pair asserted a reachable-looking success and an "empty arm"
+    /// for a closure that in production had ONLY the empty arm.
+    func testSummarizeArguments_xcodeRunners_haveNoEntryAtAll() {
+        for tool in [TN.runXcodetests, TN.runXcodebuild] {
+            XCTAssertEqual(Self.summarize(tool, "{}"), "")
+            XCTAssertFalse(ToolCallSummarizer.hasArgumentSummarizer(for: tool))
+        }
     }
 
     // MARK: - update_scratchpad (content resolution + truncation)
